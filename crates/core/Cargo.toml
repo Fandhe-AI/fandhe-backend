@@ -16,14 +16,16 @@ workspace = true
 # （crates/http、TASK-1.3）を提供する下位層であり、依存方向は
 # server → routes → http::* の一方向（TASK-1.5 で機械的保証）に従う。
 #
-# tokio の feature は次の 4 つに限定する（`cargo tree -p backend-framework-core`
+# tokio の feature は次の 5 つに限定する（`cargo tree -p backend-framework-core`
 # でこれ以外の重い依存が増えていないことを確認する）:
 # - `rt` / `net`: TCP リスナーと非同期ランタイム（接続受理ループ本体）
 # - `io-util`: bf-http::connection::read_request が要求する AsyncRead/AsyncWrite
 # - `time`: 読み取りタイムアウト（スロークライアント対策、.claude/rules/security.md）
+# - `sync`: accept ループの同時接続数上限（`tokio::sync::Semaphore`、
+#   リソース枯渇 DoS 対策、.claude/rules/security.md）
 [dependencies]
 bf-http = { path = "../http" }
-tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time"] }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time", "sync"] }
 
 # テスト専用（`#[tokio::test]` / `tokio::io::duplex` / マルチスレッドランタイム）。
 # 本体ビルドの feature 集合には影響しない。

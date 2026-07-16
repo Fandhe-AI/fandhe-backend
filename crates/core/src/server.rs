@@ -5,7 +5,9 @@
 //! 受理してこれらを呼び出すのは本モジュールの責務。[`Server`] がビルダーとして
 //! 拡張点実装（`Box<dyn ...>`）を保持し、[`Server::bind`] で得た [`BoundServer`]
 //! の [`BoundServer::run`] が accept ループを回して 1 接続ごとに
-//! [`handle_connection`] を spawn する。
+//! [`handle_connection`] を spawn する。同時接続数は
+//! [`DEFAULT_MAX_CONNECTIONS`]（[`Server::max_connections`] で変更可）を
+//! 上限とし、リソース枯渇 DoS を防ぐ（`.claude/rules/security.md`）。
 //!
 //! # コアループ本体は feature で分岐しない
 //!
@@ -45,6 +47,7 @@ use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
+use tokio::sync::Semaphore;
 
 use bf_http::body::BodyError;
 use bf_http::connection::{RequestError, read_request, should_keep_alive};
@@ -60,6 +63,17 @@ use crate::extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
 /// とどめ、チューニング可能化はサーバビルダー拡張の後続スコープとする
 /// （`.claude/rules/security.md` のリソース枯渇対策）。
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 同時接続数の既定上限（リソース枯渇 DoS 対策）。
+///
+/// accept ループが際限なく `tokio::spawn` すると、`READ_TIMEOUT` による
+/// 1 接続あたりのスロークライアント対策があっても、大量の同時接続による
+/// fd・メモリ消費（リソース枯渇 DoS）は防げない（`.claude/rules/security.md`）。
+/// [`BoundServer::run`] はこの上限を `tokio::sync::Semaphore` で強制し、
+/// 上限に達している間は新規 `accept` 自体を保留する（カーネルの listen
+/// backlog に滞留させ、あふれた分は OS 側で拒否させるフェイルクローズ設計）。
+/// 値のチューニングは [`Server::max_connections`] で行う。
+const DEFAULT_MAX_CONNECTIONS: usize = 10_000;
 
 /// リクエストに対する最終応答を生成する、コアが公開する既定ハンドラ拡張点。
 ///
@@ -87,19 +101,45 @@ pub trait Handler: Send + Sync {
 /// // 実際の起動例は crates/core/examples/minimal.rs を参照。
 /// let _ = server;
 /// ```
-#[derive(Default)]
 pub struct Server {
     middlewares: Vec<Box<dyn Middleware>>,
     gates: Vec<Box<dyn RequestGate>>,
     upgrade_handlers: Vec<Box<dyn UpgradeHandler>>,
     handler: Option<Box<dyn Handler>>,
+    max_connections: usize,
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Self {
+            middlewares: Vec::new(),
+            gates: Vec::new(),
+            upgrade_handlers: Vec::new(),
+            handler: None,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+        }
+    }
 }
 
 impl Server {
     /// 拡張点・ハンドラを 1 件も持たない空の [`Server`] を作る。
+    /// 同時接続数上限は [`DEFAULT_MAX_CONNECTIONS`]。
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 同時接続数の上限を設定する（既定 [`DEFAULT_MAX_CONNECTIONS`]）。
+    ///
+    /// [`BoundServer::run`] の accept ループはこの上限に達している間、
+    /// 新規接続の受理を保留する（リソース枯渇 DoS 対策、本モジュール冒頭の
+    /// doc・[`DEFAULT_MAX_CONNECTIONS`] の doc を参照）。`0` を指定した場合は
+    /// accept ループが永久に許可待ちでブロックし新規接続を一切受理できなく
+    /// なるため、[`Server::bind`] 側で最低 `1` に切り上げる。
+    #[must_use]
+    pub fn max_connections(mut self, max: usize) -> Self {
+        self.max_connections = max;
+        self
     }
 
     /// [`Middleware`] を登録する（登録順に `on_request` / `on_response` が呼ばれる）。
@@ -136,9 +176,14 @@ impl Server {
     /// 共有される（拡張点実装は `Send + Sync` を要求される理由）。
     pub async fn bind(self, addr: impl ToSocketAddrs) -> io::Result<BoundServer> {
         let listener = TcpListener::bind(addr).await?;
+        // 0 を指定すると accept ループが永久に許可待ちでブロックし、
+        // 新規接続を一切受理できなくなる（誤用によるデッドロック防止のため
+        // 最低 1 に切り上げる）。
+        let connection_limit = Arc::new(Semaphore::new(self.max_connections.max(1)));
         Ok(BoundServer {
             listener,
             server: Arc::new(self),
+            connection_limit,
         })
     }
 }
@@ -147,6 +192,10 @@ impl Server {
 pub struct BoundServer {
     listener: TcpListener,
     server: Arc<Server>,
+    /// 同時接続数の上限を強制するセマフォ（[`DEFAULT_MAX_CONNECTIONS`] の doc を参照）。
+    /// permit は [`BoundServer::run`] が spawn するコネクションタスクへ move し、
+    /// タスク終了（`handle_connection` の戻り）時に自動で解放される。
+    connection_limit: Arc<Semaphore>,
 }
 
 impl BoundServer {
@@ -159,12 +208,24 @@ impl BoundServer {
     ///
     /// 各コネクションは独立した tokio タスクで処理されるため、1 接続の
     /// 処理停滞（スロークライアント等）が他接続をブロックしない。
+    ///
+    /// 同時接続数は `connection_limit` セマフォで上限を強制する。上限に
+    /// 達している間は `accept` 自体を呼ばずに待機するため、あふれた接続は
+    /// カーネルの listen backlog に滞留し、backlog も尽きれば OS 側で
+    /// 拒否される（[`DEFAULT_MAX_CONNECTIONS`] の doc を参照）。
     pub async fn run(self) -> io::Result<()> {
         loop {
+            // セマフォが閉じられることはない（`close()` を呼ぶ経路がない）ため
+            // `acquire_owned` は必ず成功する。
+            let permit = Arc::clone(&self.connection_limit)
+                .acquire_owned()
+                .await
+                .expect("connection_limit semaphore is never closed");
             let (stream, _peer_addr) = self.listener.accept().await?;
             let server = Arc::clone(&self.server);
             tokio::spawn(async move {
                 handle_connection(&server, stream).await;
+                drop(permit);
             });
         }
     }
@@ -255,7 +316,12 @@ where
                     // マッチしたのに委譲先がない状態を黙って落とさず 501 で
                     // 明示的に拒否する（本モジュール冒頭の doc・try_handle_upgrade
                     // の doc を参照）。on_response は「委譲時は呼ばない」契約
-                    // のため呼ばない。
+                    // のため呼ばない（この 501 応答は委譲失敗のフォール
+                    // バックであり実処理の完了ではないため）。結果として
+                    // on_request は呼ばれるが対になる on_response が呼ばれない
+                    // 非対称が生じる点は意図的な仕様であり、Middleware 実装側は
+                    // 「on_request が必ず on_response を伴う」と仮定しないこと
+                    // （実プラグイン接続後は TASK-2.1 でこの非対称は解消される想定）。
                     let _ = stream
                         .write_all(&Response::empty(501).serialize(false))
                         .await;
@@ -656,6 +722,53 @@ mod tests {
         drop(client);
         // panic しないことのみを確認する（正常クローズであり応答は送らない）。
         handle_connection(&server, server_stream).await;
+    }
+
+    #[tokio::test]
+    async fn max_connections_limits_concurrent_accept() {
+        use tokio::time::timeout;
+
+        let handler = FixedHandler {
+            status: 200,
+            body: b"ok",
+            calls: AtomicUsize::new(0),
+        };
+        let server = Server::new().max_connections(1).handler(handler);
+        let bound = server.bind("127.0.0.1:0").await.unwrap();
+        let addr = bound.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = bound.run().await;
+        });
+
+        // client1 は何も送らず接続を張ったままにし、唯一の permit を占有する
+        // （handle_connection が read_request の最初の読み取りで待機し続ける）。
+        let client1 = TcpStream::connect(addr).await.unwrap();
+
+        // client2 はリクエストを送るが、permit が枯渇しているため run() の
+        // accept ループがまだこの接続を受理していないはずで、応答は来ない。
+        let mut client2 = TcpStream::connect(addr).await.unwrap();
+        client2
+            .write_all(b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut probe = [0u8; 1];
+        let no_response_yet = timeout(Duration::from_millis(200), client2.read(&mut probe)).await;
+        assert!(
+            no_response_yet.is_err(),
+            "max_connections が守られていれば client2 はまだ応答を受け取らないはず"
+        );
+
+        // client1 を閉じて permit を解放する。
+        drop(client1);
+
+        // run() が permit を取得して client2 を受理・処理するのを待つ。
+        let mut out = Vec::new();
+        timeout(Duration::from_secs(2), client2.read_to_end(&mut out))
+            .await
+            .expect("permit 解放後は client2 が受理されるはず")
+            .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
     }
 
     #[test]
