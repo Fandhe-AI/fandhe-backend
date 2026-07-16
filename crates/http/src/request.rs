@@ -60,6 +60,8 @@ impl RequestHead {
     /// 呼び出し元（重複 `Content-Length` 検査等、#67 が担う）は
     /// [`RequestHead::headers`] を使うこと。
     ///
+    /// # Examples
+    ///
     /// ```
     /// use bf_http::request::parse_request_head;
     ///
@@ -84,6 +86,21 @@ impl RequestHead {
     ///
     /// 同名ヘッダの重複検査（例: `Content-Length` の重複拒否）は呼び出し元
     /// （#67）が本イテレータを使って行う契約とする。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bf_http::request::parse_request_head;
+    ///
+    /// let buf = b"GET / HTTP/1.1\r\nX-A: 1\r\nX-B: 2\r\nX-A: 3\r\n\r\n";
+    /// let outcome = parse_request_head(buf).unwrap();
+    /// let head = match outcome {
+    ///     bf_http::request::ParseOutcome::Complete { head, .. } => head,
+    ///     _ => unreachable!(),
+    /// };
+    /// let all: Vec<_> = head.headers().collect();
+    /// assert_eq!(all, vec![("X-A", "1"), ("X-B", "2"), ("X-A", "3")]);
+    /// ```
     pub fn headers(&self) -> impl Iterator<Item = (&str, &str)> {
         self.headers.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
@@ -152,6 +169,8 @@ impl std::error::Error for ParseError {}
 /// - ヘッダ名は tchar のみ（コロン前の空白は tchar 違反として拒否）、値は
 ///   前後の OWS を trim し、trim 後の値に HTAB 以外の制御文字を含まない
 /// - 継続行（obs-fold）は拒否する
+///
+/// # Examples
 ///
 /// ```
 /// use bf_http::request::{parse_request_head, HttpVersion, ParseOutcome};

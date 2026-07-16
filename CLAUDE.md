@@ -24,7 +24,8 @@ backend-framework/
 ├── skills-lock.json       # 導入スキルのロック
 ├── docs/
 │   ├── spec/               # 仕様書 submodule（要件・タスク・ロードマップ）
-│   └── design/             # リポジトリ側設計ドキュメント（実装フェーズの設計判断を記録）
+│   ├── design/             # リポジトリ側設計ドキュメント（実装フェーズの設計判断を記録）
+│   └── dep-impact/         # 依存インパクト（依存数・バイナリサイズ・unsafe 件数）記録台帳（TASK-15.2）
 ├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）
 ├── rust-toolchain.toml    # stable + rustfmt/clippy
 ├── crates/                # cargo workspace
@@ -36,6 +37,10 @@ backend-framework/
 │   ├── README.md                      # 再現手順・複数回計測/中央値評価の規約
 │   ├── lib/common.sh                  # 共通関数（サーバ起動/停止・中央値算出・依存ツール検査）
 │   └── bench-http.sh / bench-rss.sh / bench-footprint.sh  # RPS・負荷時 RSS・起動時間/バイナリサイズ計測
+├── scripts/               # CI・運用スクリプト（TASK-15.2 で追加）
+│   ├── README.md                      # 使い方・前提ツール・CI との対応
+│   ├── dep-audit.sh                   # 全 feature 構成の cargo audit / cargo deny check（ci.yml dep-audit ジョブ）
+│   └── dep-impact.sh                  # 依存クレート数・バイナリサイズ・unsafe 件数の計測（markdown 出力）
 └── .claude/
     ├── agents/            # 目的別 sub-agent（research/implement/testing/quality/docs）
     ├── rules/             # 運用ルール（委譲・Rust 規約・セキュリティ 等）

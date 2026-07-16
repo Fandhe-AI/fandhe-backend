@@ -2,11 +2,19 @@ name: CI
 
 # TASK-1.1（docs/spec/05-tasks.md）: cargo workspace 全体の品質ゲート。
 # 以降の全実装タスク（TASK-1.2〜）はこの CI を前提に進める。
+# TASK-15.2（#17）: 依存監査（dep-audit ジョブ）を追加し、schedule（日次）で
+# コード変更のない期間に新規公開される RustSec advisory も検知できるようにした
+# （OWASP A06、.claude/rules/security.md）。schedule 実行時は fmt/clippy/test を
+# 省略し dep-audit のみ走らせ、self-hosted ランナーの負荷を抑える。
 on:
   pull_request:
     branches: [main]
   push:
     branches: [main]
+  schedule:
+    # update-external.yml（00:00 UTC）と 30 分ずらして負荷を分散する
+    - cron: "30 0 * * *"
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -22,6 +30,8 @@ jobs:
   fmt:
     name: cargo fmt --check
     runs-on: self-hosted
+    # schedule（日次）実行時は依存監査（dep-audit）のみを走らせる
+    if: github.event_name != 'schedule'
     steps:
       - name: Checkout
         # actions/checkout v6.0.3。update-external.yml と同一 SHA で固定する。
@@ -40,6 +50,7 @@ jobs:
   clippy:
     name: cargo clippy
     runs-on: self-hosted
+    if: github.event_name != 'schedule'
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -59,6 +70,7 @@ jobs:
   test:
     name: cargo test
     runs-on: self-hosted
+    if: github.event_name != 'schedule'
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -91,3 +103,35 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --all-features --no-deps
+
+  # --------------------------------------------------
+  # 依存監査（cargo audit / cargo deny check）を全 feature 構成で実行（TASK-15.2、#17）。
+  # deny.toml 冒頭コメントで宣言している CI 組み込み先。
+  # --------------------------------------------------
+  dep-audit:
+    name: cargo audit / cargo deny (all feature configs)
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      # self-hosted ランナー前提でツールをバージョン固定インストールする。
+      # 既に同一バージョンが入っていれば `cargo install` はスキップされ高速に完了する
+      # （サプライチェーン考慮: crates.io からバージョン固定で取得。.claude/rules/security.md）。
+      - name: Ensure cargo-deny 0.19.8
+        run: |
+          if ! cargo deny --version 2>/dev/null | grep -q ' 0\.19\.8$'; then
+            cargo install --locked cargo-deny@0.19.8
+          fi
+
+      - name: Ensure cargo-audit 0.22.2
+        run: |
+          if ! cargo audit --version 2>/dev/null | grep -q ' 0\.22\.2$'; then
+            cargo install --locked cargo-audit@0.22.2
+          fi
+
+      - name: dep-audit.sh（全 feature 構成の cargo audit / cargo deny check）
+        run: bash scripts/dep-audit.sh

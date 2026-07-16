@@ -69,6 +69,8 @@ impl std::error::Error for BodyError {}
 /// `Transfer-Encoding` が 1 つでも存在すれば拒否し、`Content-Length` は
 /// [`RequestHead::headers`] で全件走査して重複・構文・上限を検証する。
 ///
+/// # Examples
+///
 /// ```
 /// use bf_http::body::{body_length, BodyLength};
 /// use bf_http::request::{parse_request_head, ParseOutcome};
