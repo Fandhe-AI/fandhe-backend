@@ -43,3 +43,45 @@ impl std::fmt::Display for ProxyError {
 }
 
 impl std::error::Error for ProxyError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_messages_do_not_leak_internal_details() {
+        // 上流アドレス・生エラーメッセージを含まない定型文言のみであることを
+        // 固定する（.claude/rules/security.md のエラー情報漏えい対策）。
+        // 文言自体の安定性も PoC-9 教訓に基づき検証する。
+        assert_eq!(
+            ProxyError::UpstreamConnect.to_string(),
+            "upstream connect failed"
+        );
+        assert_eq!(
+            ProxyError::UpstreamTimeout.to_string(),
+            "upstream request timed out"
+        );
+        assert_eq!(
+            ProxyError::UpstreamProtocol.to_string(),
+            "upstream response is not valid HTTP/1.1"
+        );
+        assert_eq!(
+            ProxyError::UpstreamStatus.to_string(),
+            "upstream returned a non-success status"
+        );
+        assert_eq!(
+            ProxyError::AnswerTooLarge.to_string(),
+            "upstream answer exceeds max_answer_bytes"
+        );
+        assert_eq!(
+            ProxyError::Io.to_string(),
+            "I/O error while talking to upstream"
+        );
+    }
+
+    #[test]
+    fn implements_std_error() {
+        fn assert_error<E: std::error::Error>() {}
+        assert_error::<ProxyError>();
+    }
+}

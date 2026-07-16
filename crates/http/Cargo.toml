@@ -21,6 +21,8 @@ workspace = true
 [dependencies]
 tokio = { version = "1", default-features = false, features = ["io-util"] }
 
-# テスト専用（`#[tokio::test]` / `tokio::io::duplex`）。本体ビルドには影響しない。
+# テスト専用（`#[tokio::test]` / `tokio::io::duplex` / `tokio::time::timeout`）。
+# `time` は統合テスト（tests/http_flow.rs）でハング検知用のテスト内タイムアウトに
+# 使うのみで、本体ビルド・feature 無効時の依存グラフには一切影響しない。
 [dev-dependencies]
-tokio = { version = "1", default-features = false, features = ["io-util", "macros", "rt"] }
+tokio = { version = "1", default-features = false, features = ["io-util", "macros", "rt", "time"] }

@@ -414,4 +414,64 @@ mod tests {
         let err = read_request(&mut socket, &mut buf).await.unwrap_err();
         assert!(matches!(err, RequestError::Body(_)));
     }
+
+    #[test]
+    fn request_error_display_wraps_source_messages() {
+        // 上位（コアループ・plugin-webrtc-proxy 等）はこの Display 文言を
+        // ログ・エラー応答生成に使いうるため、内包エラーの文言が連結される
+        // ことを固定する（PoC-9 教訓）。
+        let parse_err = RequestError::from(ParseError::InvalidRequestLine);
+        assert_eq!(
+            parse_err.to_string(),
+            "request parse error: invalid request line"
+        );
+
+        let body_err = RequestError::from(BodyError::BodyTooLarge);
+        assert_eq!(
+            body_err.to_string(),
+            "request body error: Content-Length exceeds MAX_BODY_BYTES"
+        );
+
+        assert_eq!(
+            RequestError::UnexpectedEof.to_string(),
+            "unexpected EOF while reading request"
+        );
+
+        let io_err = RequestError::Io(std::io::Error::other("boom"));
+        assert_eq!(io_err.to_string(), "I/O error while reading request: boom");
+    }
+
+    #[test]
+    fn request_error_source_exposes_underlying_error() {
+        use std::error::Error;
+
+        let parse_err = RequestError::from(ParseError::InvalidHeader);
+        assert!(parse_err.source().is_some());
+
+        let body_err = RequestError::from(BodyError::DuplicateContentLength);
+        assert!(body_err.source().is_some());
+
+        // UnexpectedEof はこれ自体が終端要因であり、内包エラーを持たない契約。
+        assert!(RequestError::UnexpectedEof.source().is_none());
+
+        let io_err = RequestError::Io(std::io::Error::other("boom"));
+        assert!(io_err.source().is_some());
+    }
+
+    #[tokio::test]
+    async fn pipelined_second_request_parse_error_does_not_affect_first() {
+        // 1 リクエスト目が正常でも、パイプライン済みの 2 リクエスト目が不正なら
+        // 2 回目の read_request 呼び出しでのみエラーになることを固定する。
+        let mut socket: &[u8] = b"GET /a HTTP/1.1\r\n\r\nG@T /b HTTP/1.1\r\n\r\n";
+        let mut buf = Vec::new();
+
+        let first = read_request(&mut socket, &mut buf)
+            .await
+            .unwrap()
+            .expect("first request should be present");
+        assert_eq!(first.head.target, "/a");
+
+        let err = read_request(&mut socket, &mut buf).await.unwrap_err();
+        assert!(matches!(err, RequestError::Parse(_)));
+    }
 }

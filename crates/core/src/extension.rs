@@ -374,4 +374,47 @@ mod tests {
         let head = head_from(b"GET / HTTP/1.1\r\nAuthorization: Bearer x\r\n\r\n");
         assert_eq!(FailClosedGate.check(&head), GateOutcome::Allow);
     }
+
+    #[test]
+    fn gate_outcome_reject_carries_status_and_body() {
+        // `Reject` の `status`/`body` フィールドが正しく保持されることを固定する。
+        // コア側（#70）はこの数値をそのままステータス行に、body をそのまま
+        // レスポンスボディに使う契約であり、値の欠落・破損は直接クライアント
+        // 応答に波及する。
+        let outcome = GateOutcome::Reject {
+            status: 403,
+            body: b"forbidden".to_vec(),
+        };
+        match outcome {
+            GateOutcome::Reject { status, body } => {
+                assert_eq!(status, 403);
+                assert_eq!(body, b"forbidden");
+            }
+            GateOutcome::Allow => panic!("expected Reject"),
+        }
+    }
+
+    #[test]
+    fn gate_outcome_allow_and_reject_are_not_equal() {
+        // `PartialEq` 導出が variant を跨いで誤って等しいと判定しないことを固定する。
+        let allow = GateOutcome::Allow;
+        let reject = GateOutcome::Reject {
+            status: 401,
+            body: Vec::new(),
+        };
+        assert_ne!(allow, reject);
+    }
+
+    #[test]
+    fn gate_outcome_reject_with_different_status_are_not_equal() {
+        let a = GateOutcome::Reject {
+            status: 401,
+            body: Vec::new(),
+        };
+        let b = GateOutcome::Reject {
+            status: 403,
+            body: Vec::new(),
+        };
+        assert_ne!(a, b);
+    }
 }

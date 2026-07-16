@@ -636,4 +636,51 @@ mod tests {
         let buf = b"GET / HTTP/1.1\r\nX-Bad: a\xE9b\r\n\r\n";
         assert_eq!(parse_request_head(buf), Err(ParseError::InvalidHeader));
     }
+
+    #[test]
+    fn parse_error_display_messages_are_stable() {
+        // エラーメッセージが上位層（RequestError::Display 等）で連結される契約
+        // であり、文言が意図せず変わっていないことを固定する（PoC-9 教訓:
+        // Display 文言はステータス行同様に検証すべき出力の一部）。
+        assert_eq!(
+            ParseError::HeaderSectionTooLarge.to_string(),
+            "header section exceeds MAX_HEADER_BYTES"
+        );
+        assert_eq!(
+            ParseError::TooManyHeaders.to_string(),
+            "header count exceeds MAX_HEADER_COUNT"
+        );
+        assert_eq!(
+            ParseError::InvalidRequestLine.to_string(),
+            "invalid request line"
+        );
+        assert_eq!(
+            ParseError::UnsupportedVersion.to_string(),
+            "unsupported HTTP version"
+        );
+        assert_eq!(ParseError::InvalidHeader.to_string(), "invalid header");
+    }
+
+    #[test]
+    fn parse_error_implements_std_error() {
+        // `RequestError::source()`（connection.rs）が `&dyn std::error::Error` として
+        // 返せることをコンパイル時に固定する。
+        fn assert_error<E: std::error::Error>() {}
+        assert_error::<ParseError>();
+    }
+
+    #[test]
+    fn http_version_variants_are_distinct() {
+        assert_ne!(HttpVersion::Http10, HttpVersion::Http11);
+        assert_eq!(HttpVersion::Http11, HttpVersion::Http11);
+    }
+
+    #[test]
+    fn crlf_only_terminator_with_bare_lf_body_boundary_is_rejected() {
+        // ヘッダ終端は必ず `\r\n\r\n` のみで判定する。ヘッダ部内に bare LF が
+        // 混入した場合、行分割が崩れて tchar 違反として拒否されることを固定する
+        // （リクエストスマグリング対策の一環）。
+        let buf = b"GET / HTTP/1.1\r\nHost: example.com\nX-A: 1\r\n\r\n";
+        assert_eq!(parse_request_head(buf), Err(ParseError::InvalidHeader));
+    }
 }
