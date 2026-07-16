@@ -6,8 +6,11 @@
 # ライセンスも一律 FAIL する。本ファイルは PoC 実績設定をベースに、workspace 全体の
 # 依存監査（`cargo deny check`）で違反 0 件となる許可リストを定義する。
 #
-# CI ワークフローへの組み込み（.github/workflows/ci.yml）は TASK-15.2（#17）で行う。
-# 本タスクではローカルでの `cargo deny check` 通過確認までがスコープ。
+# CI ワークフロー（.github/workflows/ci.yml）の dep-audit ジョブが scripts/dep-audit.sh
+# 経由で本設定を全 feature 構成（no-default-features / default / 各 feature / all-features）
+# に対して実行する（TASK-15.2、#17）。dep-audit.sh は `cargo deny check` に
+# `--features` 系 CLI フラグが存在しないため、`cargo metadata` で構成ごとの依存グラフ
+# JSON を生成し `--metadata-path` で本設定に食わせることで構成を切り替える。
 
 [graph]
 # 全 feature 構成の依存を常に監査対象へ含める（REQ-15: 全 feature 構成で違反 0 件。
