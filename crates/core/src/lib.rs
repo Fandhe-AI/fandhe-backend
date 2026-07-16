@@ -44,7 +44,7 @@ pub use extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
 /// 最小公開 API として存在する。以降のタスクで実体実装（HTTP コア）に置き換わる過程でも、
 /// `cargo test` が本クレートに対して何かを検証し続けられるようにするための足場。
 ///
-/// # 例
+/// # Examples
 ///
 /// ```
 /// let version = backend_framework_core::version();

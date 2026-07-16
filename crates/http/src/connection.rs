@@ -97,6 +97,8 @@ impl From<BodyError> for RequestError {
 /// - HTTP/1.1: `close` token が含まれない限り keep-alive（既定 true）
 /// - HTTP/1.0: `keep-alive` token が含まれる場合のみ keep-alive（既定 false）
 ///
+/// # Examples
+///
 /// ```
 /// use bf_http::connection::should_keep_alive;
 /// use bf_http::request::{parse_request_head, ParseOutcome};
@@ -140,6 +142,8 @@ pub fn should_keep_alive(head: &RequestHead) -> bool {
 /// - `buf` が空の状態でヘッド読み取り前に EOF に達した場合は、正常なコネクション
 ///   終了として `Ok(None)` を返す
 /// - ヘッド途中・body 途中で EOF に達した場合は [`RequestError::UnexpectedEof`]
+///
+/// # Examples
 ///
 /// ```
 /// use bf_http::connection::read_request;
