@@ -62,6 +62,18 @@ use crate::extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
 /// 送ってくるまでのアイドル待ちの両方に同じ値を適用する。値は固定定数に
 /// とどめ、チューニング可能化はサーバビルダー拡張の後続スコープとする
 /// （`.claude/rules/security.md` のリソース枯渇対策）。
+///
+/// # 既知の限界（接続の総生存期間・総リクエスト数は無制限）
+///
+/// `READ_TIMEOUT` は「1 回の read 待ち」しか制限しないため、正当なクライアント
+/// が本タイムアウトより短い間隔でリクエストを送り続ける限り、1 接続が
+/// [`DEFAULT_MAX_CONNECTIONS`] の permit を無期限に保持できる
+/// （`.claude/rules/security.md` のリソース枯渇観点）。[`Server::max_connections`]
+/// による総量規制はあるが、多数のそうした長寿命接続で枯渇し得るため恒久対応
+/// ではない。接続の総生存期間・keep-alive 中の最大リクエスト数上限は
+/// `.claude/rules/out-of-scope-tracking.md` に従い別スコープの Issue として
+/// 起票すべき事項であり、本 PR ではユーザー承認前提のため起票していない
+/// （#70 レビュー指摘、TASK-1.4-2 のスコープ外）。
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 同時接続数の既定上限（リソース枯渇 DoS 対策）。
@@ -74,6 +86,14 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// backlog に滞留させ、あふれた分は OS 側で拒否させるフェイルクローズ設計）。
 /// 値のチューニングは [`Server::max_connections`] で行う。
 const DEFAULT_MAX_CONNECTIONS: usize = 10_000;
+
+/// `listener.accept()` がエラーを返した際、次の accept 試行までの待機時間。
+///
+/// EMFILE/ENFILE（fd 枯渇）のように accept エラーが連続しうる状況で、
+/// 待機なしにループし続けると CPU を専有するビジーループになる
+/// （`.claude/rules/security.md` のリソース枯渇観点）。[`BoundServer::run`]
+/// の doc を参照。
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(10);
 
 /// リクエストに対する最終応答を生成する、コアが公開する既定ハンドラ拡張点。
 ///
@@ -213,6 +233,20 @@ impl BoundServer {
     /// 達している間は `accept` 自体を呼ばずに待機するため、あふれた接続は
     /// カーネルの listen backlog に滞留し、backlog も尽きれば OS 側で
     /// 拒否される（[`DEFAULT_MAX_CONNECTIONS`] の doc を参照）。
+    ///
+    /// # accept エラーの扱い（可用性）
+    ///
+    /// `listener.accept()` が返すエラー（例: `ECONNABORTED` = accept 前の
+    /// クライアント切断、`EMFILE`/`ENFILE` = fd 枯渇）は、リスナー自体が
+    /// 壊れたことを意味しない一過性のものが大半である。Tokio 公式ドキュメント
+    /// （`TcpListener::accept`）も「多くの accept エラーはサーバ全体ではなく
+    /// 個々の接続に紐づくものであり、ログに残してループを継続するのが
+    /// 一般的な実践」と述べている。そのため本実装は accept エラーで `run()`
+    /// を終了させず、[`ACCEPT_ERROR_BACKOFF`] だけ待ってから次の accept を
+    /// 再試行する（`.claude/rules/security.md` の可用性・リソース枯渇観点。
+    /// 1 件の一過性エラーでリスナー全体が永久停止するのを防ぐ）。戻り値が
+    /// `io::Result` なのは将来の呼び出し側都合による API 安定性のためであり、
+    /// 現状の実装は（プロセス終了等の外的要因を除き）`Err` を返さず走り続ける。
     pub async fn run(self) -> io::Result<()> {
         loop {
             // セマフォが閉じられることはない（`close()` を呼ぶ経路がない）ため
@@ -221,7 +255,18 @@ impl BoundServer {
                 .acquire_owned()
                 .await
                 .expect("connection_limit semaphore is never closed");
-            let (stream, _peer_addr) = self.listener.accept().await?;
+
+            let stream = match self.listener.accept().await {
+                Ok((stream, _peer_addr)) => stream,
+                Err(err) => {
+                    // permit はここで（スコープを抜けると同時に）解放され、
+                    // 次のループ先頭で再取得される。上の doc を参照。
+                    drop(permit);
+                    eprintln!("backend_framework_core::server: accept に失敗しました: {err}");
+                    tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
+                    continue;
+                }
+            };
             let server = Arc::clone(&self.server);
             tokio::spawn(async move {
                 handle_connection(&server, stream).await;
