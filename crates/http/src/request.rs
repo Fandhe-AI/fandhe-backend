@@ -357,6 +357,12 @@ fn parse_version(version: &[u8]) -> Result<HttpVersion, ParseError> {
 /// - 値は前後の OWS（SP/HTAB）を trim し、trim 後に HTAB 以外の制御文字が
 ///   残っていれば拒否する
 /// - obs-fold（SP/HTAB で始まる継続行）はコロン欠如または名前の tchar 違反として拒否される
+/// - 制御文字チェックは RFC 9110 の `obs-text`（0x80–0xFF）を通過させるが、これは
+///   UTF-8 マルチバイト列の後続バイトを許容するためであり、生の obs-text を
+///   オペークなバイト列として保持する意図ではない。値は本関数の戻り値が
+///   `String`（= 有効な UTF-8 保証）であることに従い、最終的に厳密な UTF-8 として
+///   検証する。マルチバイト列として不正な生の obs-text（例: 単独の `0xE9`）は
+///   [`ParseError::InvalidHeader`] として拒否する
 fn parse_header_line(line: &[u8]) -> Result<(String, String), ParseError> {
     let colon_pos = line
         .iter()
@@ -591,6 +597,24 @@ mod tests {
     #[test]
     fn header_missing_colon_is_rejected() {
         let buf = b"GET / HTTP/1.1\r\nHostexample.com\r\n\r\n";
+        assert_eq!(parse_request_head(buf), Err(ParseError::InvalidHeader));
+    }
+
+    #[test]
+    fn valid_utf8_multibyte_header_value_is_accepted() {
+        // "café" の "é" は UTF-8 で 0xC3 0xA9（obs-text 範囲だが正当なマルチバイト列）。
+        let buf = b"GET / HTTP/1.1\r\nX-Name: caf\xC3\xA9\r\n\r\n";
+        let (head, _) = complete(buf);
+        assert_eq!(
+            head.headers().find(|(n, _)| *n == "X-Name").map(|(_, v)| v),
+            Some("café")
+        );
+    }
+
+    #[test]
+    fn lone_obs_text_byte_in_header_value_is_rejected() {
+        // 単独の 0xE9 は有効な UTF-8 マルチバイト列を構成しないため拒否する。
+        let buf = b"GET / HTTP/1.1\r\nX-Bad: a\xE9b\r\n\r\n";
         assert_eq!(parse_request_head(buf), Err(ParseError::InvalidHeader));
     }
 }
