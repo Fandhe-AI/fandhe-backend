@@ -37,6 +37,23 @@ const RESPONSE_HEAD_LIMIT: usize = 8 * 1024;
 /// `config.max_answer_bytes()` を超過する場合はいずれもエラーで返し、
 /// クライアントへは呼び出し元（[`crate::handler`]）が定型のフェイルクローズ
 /// 応答へ丸める契約とする（上流内部情報を漏らさない）。
+///
+/// # Examples
+///
+/// 上流が未リッスンのループバックアドレスへ接続を試み、フェイルクローズで
+/// `Err` になることを示す（外部ネットワークに依存しない決定的な例）。
+///
+/// ```
+/// use bf_plugin_webrtc_proxy::ProxyConfig;
+/// use bf_plugin_webrtc_proxy::client::forward_offer;
+///
+/// let config = ProxyConfig::new("127.0.0.1:1")
+///     .with_connect_timeout(std::time::Duration::from_millis(200));
+///
+/// let runtime = tokio::runtime::Runtime::new().unwrap();
+/// let result = runtime.block_on(forward_offer(&config, b"offer"));
+/// assert!(result.is_err());
+/// ```
 pub async fn forward_offer(config: &ProxyConfig, offer_body: &[u8]) -> Result<Vec<u8>, ProxyError> {
     let mut stream = tokio::time::timeout(
         config.connect_timeout(),

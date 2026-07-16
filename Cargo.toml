@@ -29,6 +29,13 @@ repository = "https://github.com/Fandhe-AI/backend-framework"
 # `unsafe_code = "warn"` は CI の `cargo clippy -- -D warnings` と組み合わせることで
 # 実質 deny として機能し、意図しない unsafe の混入を早期に検知する
 # （.claude/rules/coding-rust.md・.claude/rules/security.md）。
+# `missing_docs = "warn"` も同様に CI の `cargo clippy -- -D warnings` で
+# 実質 deny となるが、rustdoc 固有 lint（intra-doc リンク切れ等）は clippy では
+# 検査されないため、CI に独立の `doc` ジョブ（`RUSTDOCFLAGS=-D warnings` での
+# `cargo doc`）を追加し、doc コメント網羅率・整合性の両方を機械強制する
+# （TASK-11.2-2、docs/spec/05-tasks.md、#76）。値自体は spec の
+# `#![warn(missing_docs)]` 準拠のまま `warn` を維持し、ローカルの反復開発を
+# 阻害しない安全側の判断とする。
 [workspace.lints.rust]
 unsafe_code = "warn"
 missing_docs = "warn"
