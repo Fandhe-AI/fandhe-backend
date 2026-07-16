@@ -1,0 +1,70 @@
+name: CI
+
+# TASK-1.1（docs/spec/05-tasks.md）: cargo workspace 全体の品質ゲート。
+# 以降の全実装タスク（TASK-1.2〜）はこの CI を前提に進める。
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # --------------------------------------------------
+  # cargo fmt --check（整形差分の検出）
+  # --------------------------------------------------
+  fmt:
+    name: cargo fmt --check
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        # actions/checkout v6.0.3。update-external.yml と同一 SHA で固定する。
+        # submodule（docs/spec）は fmt/clippy/test に不要なため取得しない。
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+  # --------------------------------------------------
+  # cargo clippy -- -D warnings（lint ゲート）
+  # --------------------------------------------------
+  clippy:
+    name: cargo clippy
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      # --all-features を指定しておくことで、TASK-2.1 以降で feature（plugin-*）が
+      # 増えた際にも既定で全 feature を lint 対象にできる。feature 構成別の
+      # マトリクス化（無効化時の pay-for-what-you-use 検証）は TASK-2.2 のスコープ。
+      - name: cargo clippy --workspace --all-targets --all-features
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # --------------------------------------------------
+  # cargo test（doc test を含む）
+  # --------------------------------------------------
+  test:
+    name: cargo test
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      - name: cargo test --workspace --all-features
+        run: cargo test --workspace --all-features
