@@ -23,7 +23,8 @@ backend-framework/
 ├── README.md
 ├── skills-lock.json       # 導入スキルのロック
 ├── docs/
-│   └── spec/              # 仕様書 submodule（要件・タスク・ロードマップ）
+│   ├── spec/               # 仕様書 submodule（要件・タスク・ロードマップ）
+│   └── design/             # リポジトリ側設計ドキュメント（実装フェーズの設計判断を記録）
 ├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）
 ├── rust-toolchain.toml    # stable + rustfmt/clippy
 ├── crates/                # cargo workspace
