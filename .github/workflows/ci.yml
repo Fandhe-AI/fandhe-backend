@@ -6,6 +6,11 @@ name: CI
 # コード変更のない期間に新規公開される RustSec advisory も検知できるようにした
 # （OWASP A06、.claude/rules/security.md）。schedule 実行時は fmt/clippy/test を
 # 省略し dep-audit のみ走らせ、self-hosted ランナーの負荷を抑える。
+# TASK-11.4（#36）: PoC-9 で確認された「オフバイワンのバグがテスト失敗ではなく
+# `cargo test` のハングとして現れる」事例（docs/spec/04-requirements.md NFR-10）を受け、
+# 全ジョブに `timeout-minutes` を設定（多層防御・self-hosted runner の無期限占有防止）し、
+# test ジョブは cargo-nextest（.config/nextest.toml でテスト単位のタイムアウトを規定）に
+# 切り替えた。
 on:
   pull_request:
     branches: [main]
@@ -32,6 +37,9 @@ jobs:
     runs-on: self-hosted
     # schedule（日次）実行時は依存監査（dep-audit）のみを走らせる
     if: github.event_name != 'schedule'
+    # TASK-11.4（#36）: ハングしたジョブが self-hosted runner を無期限に占有しないための
+    # 上限（多層防御の一段目）。fmt --check は通常数秒〜数十秒で完了する。
+    timeout-minutes: 10
     steps:
       - name: Checkout
         # actions/checkout v6.0.3。update-external.yml と同一 SHA で固定する。
@@ -51,6 +59,8 @@ jobs:
     name: cargo clippy
     runs-on: self-hosted
     if: github.event_name != 'schedule'
+    # TASK-11.4（#36）: 多層防御の一段目。clippy はビルドを伴うため fmt より長めに確保する。
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -65,12 +75,21 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   # --------------------------------------------------
-  # cargo test（doc test を含む）
+  # cargo nextest run（テスト単位のタイムアウト付き） + cargo test --doc
+  # TASK-11.4（#36）: stable ツールチェーンでは `cargo test` 単体にテスト単位の
+  # タイムアウトを持たせられないため、cargo-nextest をテストランナーに採用する。
+  # ハング型退行は .config/nextest.toml（profile: ci）の slow-timeout により
+  # 個別テストの TIMEOUT 失敗として検知される（PoC-9 事例対応）。
+  # nextest は doc test を実行しないため、doc test 必須方針
+  # （.claude/rules/coding-rust.md）を守るべく `cargo test --doc` を別ステップで維持する。
   # --------------------------------------------------
   test:
     name: cargo test
     runs-on: self-hosted
     if: github.event_name != 'schedule'
+    # TASK-11.4（#36）: テスト単位のタイムアウト（nextest 側、最大 120 秒/テスト）に
+    # 加えたジョブ全体の上限。多層防御。
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -78,8 +97,25 @@ jobs:
       - name: Sync toolchain (rust-toolchain.toml)
         run: rustup show
 
-      - name: cargo test --workspace --all-features
-        run: cargo test --workspace --all-features
+      # self-hosted ランナー前提でバージョン固定インストールする（dep-audit ジョブと同じ方針）。
+      # 既に同一バージョンが入っていれば `cargo install` はスキップされ高速に完了する
+      # （サプライチェーン考慮: crates.io からバージョン固定で取得。.claude/rules/security.md）。
+      - name: Ensure cargo-nextest 0.9.137
+        run: |
+          if ! cargo nextest --version 2>/dev/null | grep -q ' 0\.9\.137 '; then
+            cargo install --locked cargo-nextest@0.9.137
+          fi
+
+      - name: cargo nextest run --workspace --all-features --profile ci
+        # テスト単位のタイムアウトは .config/nextest.toml（profile: ci）で規定。
+        # ハングしたテストは TIMEOUT として失敗扱いになりジョブ全体を止めずに検知できる。
+        run: cargo nextest run --workspace --all-features --profile ci
+
+      - name: cargo test --doc --workspace --all-features
+        # nextest は doc test を実行しないため別ステップで補う。
+        # テスト単位のタイムアウトは適用できないためステップ単位でガードする。
+        timeout-minutes: 15
+        run: cargo test --doc --workspace --all-features
 
   # --------------------------------------------------
   # 依存監査（cargo audit / cargo deny check）を全 feature 構成で実行（TASK-15.2、#17）。
@@ -88,6 +124,9 @@ jobs:
   dep-audit:
     name: cargo audit / cargo deny (all feature configs)
     runs-on: self-hosted
+    # TASK-11.4（#36）: 本ジョブ自体は「CI テスト」のタイムアウト対応（本イシューの主目的）
+    # のスコープ外だが、多層防御を一貫させるため他ジョブと同様に上限を設定する。
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
