@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'backend-framework: 日本語でやりとり / 調査・実装は subagent へ委譲し main 消費を抑える (delegation.md, delegation-impl.md) / pay-for-what-you-use 厳守 (feature 無効時は依存ゼロ) / Conventional Commits 厳守 (--no-verify 禁止) / implement-issue は計画承認後に実装'"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // empty' | { read -r f; case \"$f\" in *.rs) command -v rustfmt >/dev/null 2>&1 && rustfmt \"$f\" 2>/dev/null || true ;; esac; }"
+          }
+        ]
+      }
+    ]
+  }
+}
