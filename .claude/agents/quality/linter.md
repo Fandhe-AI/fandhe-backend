@@ -1,5 +1,5 @@
 ---
-subagent_type: linter
+name: linter
 description: "cargo fmt --check と cargo clippy -- -D warnings を実行し、整形・lint 違反を機械的に集計して報告する。軽量な機械作業に特化。"
 model: haiku
 tools: [Read, Grep, Glob, Bash]

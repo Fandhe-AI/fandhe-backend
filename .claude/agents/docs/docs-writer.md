@@ -1,5 +1,5 @@
 ---
-subagent_type: docs-writer
+name: docs-writer
 description: "CLAUDE.md / AGENTS.md / README のドキュメント更新と doc comment の整合維持を担う。実装差分に追随してドキュメントを最新化する。"
 model: haiku
 tools: [Read, Grep, Glob, Bash, Edit, Write]

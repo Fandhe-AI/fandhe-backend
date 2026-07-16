@@ -1,5 +1,5 @@
 ---
-subagent_type: fuzz-runner
+name: fuzz-runner
 description: "cargo-fuzz / afl.rs で HTTP パーサ等をファジングし、クラッシュ・パニック・未定義動作を検出して最小再現を報告する。nightly 前提。"
 model: sonnet
 tools: [Read, Grep, Glob, Bash, Edit, Write]

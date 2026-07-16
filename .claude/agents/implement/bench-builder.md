@@ -1,5 +1,5 @@
 ---
-subagent_type: bench-builder
+name: bench-builder
 description: "性能ベンチマーク・参照実装（axum-ref）・負荷試験を実装する。Criterion マイクロベンチと oha/wrk 負荷測定を担う。"
 model: sonnet
 tools: [Read, Grep, Glob, Bash, Edit, Write]

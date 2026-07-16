@@ -1,5 +1,5 @@
 ---
-subagent_type: security-auditor
+name: security-auditor
 description: "cargo audit/deny/geiger と OWASP Top 10・unsafe 監査でセキュリティを評価する。依存の脆弱性・ライセンス・攻撃表面を点検する読み取り専用エージェント。"
 model: sonnet
 tools: [Read, Grep, Glob, Bash]

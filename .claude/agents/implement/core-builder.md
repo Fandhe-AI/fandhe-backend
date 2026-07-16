@@ -1,5 +1,5 @@
 ---
-subagent_type: core-builder
+name: core-builder
 description: "HTTP/1.1 コア・ルーティング・3 種拡張点（Middleware/UpgradeHandler/RequestGate）を実装する。core/http/routes クレートの作成・編集を担う。"
 model: sonnet
 tools: [Read, Grep, Glob, Bash, Edit, Write]

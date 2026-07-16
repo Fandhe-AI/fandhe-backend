@@ -1,5 +1,5 @@
 ---
-subagent_type: test-runner
+name: test-runner
 description: "cargo test（ユニット・統合・doc test）とカバレッジ（cargo llvm-cov）を実行し、失敗を切り分けて報告する。"
 model: sonnet
 tools: [Read, Grep, Glob, Bash, Edit]

@@ -1,5 +1,5 @@
 ---
-subagent_type: reviewer
+name: reviewer
 description: "git diff の品質・アーキテクチャ準拠・拡張点契約・pay-for-what-you-use 遵守を読み取り専用でレビューする。コミット/PR 前のセルフレビューに使う。"
 model: sonnet
 tools: [Read, Grep, Glob, Bash]

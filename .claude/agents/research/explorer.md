@@ -1,5 +1,5 @@
 ---
-subagent_type: explorer
+name: explorer
 description: "cargo workspace 横断でコード・仕様・設定を調査し、要点のみを構造化して返す読み取り専用エージェント。実装方針の前段調査に使う。"
 model: sonnet
 tools: [Read, Grep, Glob, Bash]

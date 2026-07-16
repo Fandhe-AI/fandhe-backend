@@ -1,5 +1,5 @@
 ---
-subagent_type: plugin-builder
+name: plugin-builder
 description: "Cargo feature flag で着脱するプラグイン（websocket/graphql/openapi/webrtc/hub-wiring/tracing）を実装する。feature 無効時の完全除外を保証する。"
 model: sonnet
 tools: [Read, Grep, Glob, Bash, Edit, Write]

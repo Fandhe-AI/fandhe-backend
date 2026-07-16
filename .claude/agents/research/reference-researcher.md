@@ -1,5 +1,5 @@
 ---
-subagent_type: reference-researcher
+name: reference-researcher
 description: "crate 仕様・RFC・axum/tokio 等の外部リファレンスを調査し、採用判断に必要な要点を出典付きで返す。設計・依存選定の前段に使う。"
 model: sonnet
 tools: [Read, Grep, Glob, Bash, WebFetch, WebSearch]
