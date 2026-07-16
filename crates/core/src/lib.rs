@@ -33,6 +33,11 @@
 
 pub mod extension;
 
+// 3 拡張点はクレート直下からも参照できるよう re-export する。プラグイン側
+// （`crates/plugin-*`）はこの再エクスポート経由で `backend_framework_core::Middleware`
+// のように参照でき、`extension` モジュールの存在を意識せずに実装できる。
+pub use extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
+
 /// このクレートのバージョン文字列を返す。
 ///
 /// TASK-1.1 時点では workspace のビルド・doc test が機能する状態を確認するための
