@@ -1,0 +1,51 @@
+# cargo-deny ベースライン設定（TASK-15.1、docs/spec/05-tasks.md）。
+#
+# 依存監査基盤（REQ-15、docs/spec/04-requirements.md）の起点。
+# PoC-1（docs/spec/03-poc/fullscratch-performance/axum-ref/deny.toml 等）の発見どおり、
+# cargo-deny の初期設定（空の allow リスト）では MIT / Apache-2.0 等の一般的な OSS
+# ライセンスも一律 FAIL する。本ファイルは PoC 実績設定をベースに、workspace 全体の
+# 依存監査（`cargo deny check`）で違反 0 件となる許可リストを定義する。
+#
+# CI ワークフローへの組み込み（.github/workflows/ci.yml）は TASK-15.2（#17）で行う。
+# 本タスクではローカルでの `cargo deny check` 通過確認までがスコープ。
+
+[graph]
+# 全 feature 構成の依存を常に監査対象へ含める（REQ-15: 全 feature 構成で違反 0 件。
+# TASK-2.1 以降で plugin-* の optional 依存が増えても監査漏れを防ぐ）
+all-features = true
+
+[advisories]
+# RustSec advisory DB による既知脆弱性検知（OWASP A06、.claude/rules/security.md）。
+# ignore は空を維持し、無視が必要になった場合は理由コメント付きで追加する
+ignore = []
+
+[licenses]
+# 仕様（TASK-15.1 / REQ-15）の許可ライセンスリスト。許可リスト方式（デフォルト拒否）で
+# コピーレフト等の想定外ライセンス流入をフェイルクローズで防ぐ
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "Unicode-3.0",
+    "BSD-3-Clause",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+# workspace クレート（crates/*）は publish = false だが、
+# `license = "MIT OR Apache-2.0"`（Cargo.toml [workspace.package]）の
+# ライセンス検査対象から除外しない
+ignore = false
+
+[bans]
+# 重複バージョンは警告に留める（依存インパクトの計測・是正は TASK-15.2 以降の運用で扱う）
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+# 出所を crates.io のみに制限し、未知レジストリ・git 依存を FAIL させる
+# （PoC 設定の warn から強化。サプライチェーン攻撃面の最小化・タイポスクワッティング対策、
+# OWASP A08、.claude/rules/security.md）
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
