@@ -1,0 +1,28 @@
+[package]
+name = "axum-ref"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "axum を性能・フットプリント・攻撃表面比較用の参照実装として運用するバイナリ（TASK-1.2）"
+publish = false
+
+[lints]
+workspace = true
+
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）:
+# axum-ref は crates/core とは独立した比較専用バイナリであり、ここで追加する依存は
+# core・plugin-* には一切波及しない（`cargo tree -p backend-framework-core` で検証可能）。
+# axum は現行最新の安定版系列を採用する（reference-researcher 確認、2026-07 時点 0.8 系）。
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# tower の oneshot は axum Router を Service として直接叩く dev 専用テストにのみ使う。
+[dev-dependencies]
+tower = "0.5"
+
+# benches/ の計測スクリプトは release ビルドの axum-ref を対象にする（PoC-2 と同条件）。
+# lto はワークスペースルート Cargo.toml の [profile.release] に集約する。

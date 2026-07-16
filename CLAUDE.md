@@ -30,7 +30,11 @@ backend-framework/
 │   ├── core                           # 最小コア（TASK-1.1 で作成、実体は TASK-1.3 以降）
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（TASK-1.3〜1.4 以降で追加予定）
 │   ├── plugin-*                       # feature 着脱プラグイン（TASK-2.1 以降で追加予定）
-│   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加予定）
+│   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
+├── benches/               # 負荷生成・計測ハーネス（TASK-1.2 で追加、bench-builder 管轄）
+│   ├── README.md                      # 再現手順・複数回計測/中央値評価の規約
+│   ├── lib/common.sh                  # 共通関数（サーバ起動/停止・中央値算出・依存ツール検査）
+│   └── bench-http.sh / bench-rss.sh / bench-footprint.sh  # RPS・負荷時 RSS・起動時間/バイナリサイズ計測
 └── .claude/
     ├── agents/            # 目的別 sub-agent（research/implement/testing/quality/docs）
     ├── rules/             # 運用ルール（委譲・Rust 規約・セキュリティ 等）
