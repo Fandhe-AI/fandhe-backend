@@ -13,6 +13,14 @@ publish = false
 [lints]
 workspace = true
 
-# 依存はゼロを維持する（pay-for-what-you-use。.claude/rules/pay-for-what-you-use.md）。
-# I/O 層（tokio 依存）は TASK-1.3-2（#67）で本クレートに追加される想定。
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）: I/O 層は本クレートの
+# 唯一の実行時依存として tokio を追加するが、`io-util`（AsyncRead/AsyncReadExt のみ）に
+# 限定する。`net`/`rt`/`macros` 等は有効化しない — 実ソケットへの接続・ランタイム起動は
+# TASK-1.4（#13）の接続受理ループが担い、本クレートは `AsyncRead + Unpin` の汎用実装に
+# とどめるため。`cargo tree -p bf-http` で tokio 以外の依存が増えていないことを確認する。
 [dependencies]
+tokio = { version = "1", default-features = false, features = ["io-util"] }
+
+# テスト専用（`#[tokio::test]` / `tokio::io::duplex`）。本体ビルドには影響しない。
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["io-util", "macros", "rt"] }
