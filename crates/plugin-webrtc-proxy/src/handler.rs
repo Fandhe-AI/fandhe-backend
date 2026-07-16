@@ -140,7 +140,13 @@ mod tests {
         let head = head_from(b"POST /rtc/offer HTTP/1.1\r\n\r\n");
         let config = ProxyConfig::new("127.0.0.1:9000");
         let response = try_handle_rtc_offer(&head, b"", &config).await.unwrap();
+        // ステータス・reason・Content-Type・body の全件を検証する（PoC-9 教訓:
+        // ステータスコードのみの検証はクライアントが実際に受け取る内容の
+        // 一部しか見ておらず、reason/Content-Type/body の劣化を見逃す）。
         assert_eq!(response.status, 400);
+        assert_eq!(response.reason, "Bad Request");
+        assert_eq!(response.content_type, "text/plain; charset=utf-8");
+        assert_eq!(response.body, b"Bad Request");
     }
 
     #[tokio::test]
@@ -148,6 +154,18 @@ mod tests {
         let head = head_from(b"POST /rtc/offer HTTP/1.1\r\nContent-Length: 10\r\n\r\n");
         let config = ProxyConfig::new("127.0.0.1:9000");
         let response = try_handle_rtc_offer(&head, b"abc", &config).await.unwrap();
+        assert_eq!(response.status, 400);
+        assert_eq!(response.reason, "Bad Request");
+        assert_eq!(response.content_type, "text/plain; charset=utf-8");
+        assert_eq!(response.body, b"Bad Request");
+    }
+
+    #[tokio::test]
+    async fn non_numeric_content_length_is_rejected() {
+        // `Content-Length` が数値としてパース不能な場合も 400 で拒否する境界。
+        let head = head_from(b"POST /rtc/offer HTTP/1.1\r\nContent-Length: abc\r\n\r\n");
+        let config = ProxyConfig::new("127.0.0.1:9000");
+        let response = try_handle_rtc_offer(&head, b"x", &config).await.unwrap();
         assert_eq!(response.status, 400);
     }
 
@@ -158,6 +176,23 @@ mod tests {
         let config = ProxyConfig::new("127.0.0.1:9000").with_max_offer_bytes(8);
         let response = try_handle_rtc_offer(&head, &body, &config).await.unwrap();
         assert_eq!(response.status, 413);
+        assert_eq!(response.reason, "Payload Too Large");
+        assert_eq!(response.content_type, "text/plain; charset=utf-8");
+        assert_eq!(response.body, b"Payload Too Large");
+    }
+
+    #[tokio::test]
+    async fn offer_at_exact_max_bytes_is_forwarded() {
+        // 上限ちょうど（8 バイト）は拒否されず、実際に上流へ転送を試みる境界。
+        // 上流未起動のため 502/504 のいずれかになるが、413（拒否）にはならない
+        // ことでサイズ判定の境界（`>` であり `>=` でない）を固定する。
+        let body = vec![b'a'; 8];
+        let head = head_from(b"POST /rtc/offer HTTP/1.1\r\nContent-Length: 8\r\n\r\n");
+        let config = ProxyConfig::new("127.0.0.1:9000")
+            .with_max_offer_bytes(8)
+            .with_connect_timeout(std::time::Duration::from_millis(200));
+        let response = try_handle_rtc_offer(&head, &body, &config).await.unwrap();
+        assert_ne!(response.status, 413);
     }
 
     #[tokio::test]

@@ -286,4 +286,58 @@ mod tests {
         let head = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n";
         assert_eq!(parse_response_head(head).unwrap(), (200, 3));
     }
+
+    #[test]
+    fn parse_response_head_rejects_non_http_version_prefix() {
+        // ステータスラインが `HTTP/1.` で始まらない応答は上流のプロトコル違反
+        // として拒否する（.claude/rules/security.md の入力検証）。
+        let head = b"FOO/1.1 200 OK\r\nContent-Length: 3\r\n\r\n";
+        assert!(matches!(
+            parse_response_head(head),
+            Err(ProxyError::UpstreamProtocol)
+        ));
+    }
+
+    #[test]
+    fn parse_response_head_rejects_non_numeric_status() {
+        let head = b"HTTP/1.1 OK OK\r\nContent-Length: 3\r\n\r\n";
+        assert!(matches!(
+            parse_response_head(head),
+            Err(ProxyError::UpstreamProtocol)
+        ));
+    }
+
+    #[test]
+    fn parse_response_head_rejects_non_numeric_content_length() {
+        let head = b"HTTP/1.1 200 OK\r\nContent-Length: abc\r\n\r\n";
+        assert!(matches!(
+            parse_response_head(head),
+            Err(ProxyError::UpstreamProtocol)
+        ));
+    }
+
+    #[tokio::test]
+    async fn forward_offer_rejects_immediate_eof_before_headers_complete() {
+        // 上流が接続確立直後に何も送らず切断した場合、ヘッド終端
+        // （`\r\n\r\n`）に到達しないまま EOF となり `UpstreamProtocol` として
+        // 拒否されることを固定する（フェイルクローズ）。
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            drop(socket);
+        });
+
+        let config = ProxyConfig::new(addr);
+        let result = forward_offer(&config, b"offer").await;
+        // 接続直後の切断はタイミングによって「書き込み側で ECONNRESET/EPIPE
+        // を検出（Io）」と「書き込みは成功しヘッド未完了のまま読み取り側が
+        // EOF を検出（UpstreamProtocol）」のいずれもありうる。両者とも
+        // フェイルクローズ（クライアントへ内部情報を漏らさず 502 系に丸められる）
+        // という契約は共通のため、いずれのエラーでも合格とする。
+        assert!(matches!(
+            result,
+            Err(ProxyError::UpstreamProtocol) | Err(ProxyError::Io)
+        ));
+    }
 }
