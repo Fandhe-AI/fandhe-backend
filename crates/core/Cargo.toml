@@ -10,9 +10,22 @@ description = "backend-framework の最小コア（HTTP/1.1・3 種拡張点）�
 workspace = true
 
 # pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）:
-# コアは重い依存を持ち込まない。workspace 内クレートのみを依存とし、外部
-# crates.io 依存はゼロを維持する。bf-http は sans-IO な HTTP/1.1 パーサ
+# コアは重い依存を持ち込まない。workspace 内クレートのほか、コアループ
+# （接続受理・リクエストループ、TASK-1.4-2 / #70）が必要とする最小限の tokio
+# feature のみを追加する。bf-http は sans-IO な HTTP/1.1 パーサ
 # （crates/http、TASK-1.3）を提供する下位層であり、依存方向は
 # server → routes → http::* の一方向（TASK-1.5 で機械的保証）に従う。
+#
+# tokio の feature は次の 4 つに限定する（`cargo tree -p backend-framework-core`
+# でこれ以外の重い依存が増えていないことを確認する）:
+# - `rt` / `net`: TCP リスナーと非同期ランタイム（接続受理ループ本体）
+# - `io-util`: bf-http::connection::read_request が要求する AsyncRead/AsyncWrite
+# - `time`: 読み取りタイムアウト（スロークライアント対策、.claude/rules/security.md）
 [dependencies]
 bf-http = { path = "../http" }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time"] }
+
+# テスト専用（`#[tokio::test]` / `tokio::io::duplex` / マルチスレッドランタイム）。
+# 本体ビルドの feature 集合には影響しない。
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }

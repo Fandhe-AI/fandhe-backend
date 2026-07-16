@@ -4,7 +4,9 @@
 //! （ルーティング・プラグイン）のシンボルに依存しない。TASK-1.3（#12）の分解:
 //! 1. sans-IO なリクエストヘッドパーサ（[`request`]、TASK-1.3-1 / #66）
 //! 2. body フレーミング解釈（[`body`]）・keep-alive 判定・ソケット読み取り
-//!    ループ（[`connection`]、TASK-1.3-2 / #67 = 本クレート現在地）
+//!    ループ（[`connection`]、TASK-1.3-2 / #67）
+//! 3. HTTP/1.1 レスポンス直列化（[`response`]、TASK-1.4-2 / #70）。コアの
+//!    接続ループ（`crates/core/src/server.rs`）が唯一の呼び出し元。
 //!
 //! 読み取りバッファの接続単位再利用・`TCP_NODELAY` 最適化（TASK-1.3-3 / #68）
 //! は本クレートの後続サブタスク。本クレートの実行時依存は tokio の
@@ -17,3 +19,4 @@
 pub mod body;
 pub mod connection;
 pub mod request;
+pub mod response;
