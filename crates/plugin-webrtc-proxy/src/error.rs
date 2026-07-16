@@ -10,6 +10,14 @@
 //! エラー情報漏えい対策）。
 
 /// 上流 WebRTC サービスとの中継で発生しうるエラー。
+///
+/// # Examples
+///
+/// ```
+/// use bf_plugin_webrtc_proxy::ProxyError;
+///
+/// assert_eq!(ProxyError::UpstreamTimeout.to_string(), "upstream request timed out");
+/// ```
 #[derive(Debug)]
 pub enum ProxyError {
     /// 上流への TCP 接続確立に失敗した（接続拒否・名前解決失敗等）。

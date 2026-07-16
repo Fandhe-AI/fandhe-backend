@@ -32,6 +32,28 @@
 //! 次第、上位クレート（server 相当）から [`handler::try_handle_rtc_offer`] を
 //! 呼び出す形で配線する想定であり、本タスク（#74）のスコープはハンドラ本体の
 //! 実装・単体/統合テストまでとする。
+//!
+//! # Examples
+//!
+//! [`ProxyConfig`] を構築し、[`try_handle_rtc_offer`] へパスインターセプト
+//! させる最小の利用例（対象外パスなので `None` が返り、無関係なリクエストへの
+//! 性能影響がないことを示す）。
+//!
+//! ```
+//! use bf_http::request::{parse_request_head, ParseOutcome};
+//! use bf_plugin_webrtc_proxy::{ProxyConfig, try_handle_rtc_offer};
+//!
+//! let buf = b"GET /health HTTP/1.1\r\n\r\n";
+//! let head = match parse_request_head(buf).unwrap() {
+//!     ParseOutcome::Complete { head, .. } => head,
+//!     ParseOutcome::Incomplete => unreachable!(),
+//! };
+//! let config = ProxyConfig::new("127.0.0.1:9000");
+//!
+//! let runtime = tokio::runtime::Runtime::new().unwrap();
+//! let result = runtime.block_on(try_handle_rtc_offer(&head, b"", &config));
+//! assert!(result.is_none());
+//! ```
 
 pub mod client;
 pub mod config;

@@ -1,6 +1,6 @@
 //! body フレーミングの意味解釈（sans-IO）。
 //!
-//! [`request::parse_request_head`] が構文的に正しいと判定したヘッダ列から、
+//! [`crate::request::parse_request_head`] が構文的に正しいと判定したヘッダ列から、
 //! 「body を何バイト読むべきか」を決定する純関数を提供する。ソケット読み取り
 //! （[`crate::connection::read_request`]、TASK-1.3-2 / #67）はここで決まった
 //! バイト数だけ読み取る責務を持ち、本モジュール自体は I/O を一切行わない。

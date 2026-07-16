@@ -118,6 +118,29 @@ jobs:
         run: cargo test --doc --workspace --all-features
 
   # --------------------------------------------------
+  # cargo doc（rustdoc lint・missing_docs の機械強制ゲート）
+  # TASK-11.2-2（docs/spec/05-tasks.md、#76）: workspace ルート `[workspace.lints.rust]`
+  # の `missing_docs = "warn"` は clippy の `-D warnings` で実質 deny に昇格するが、
+  # rustdoc 固有 lint（intra-doc リンク切れ等）は clippy では検査されない。
+  # `RUSTDOCFLAGS=-D warnings` での `cargo doc` を独立ジョブとして追加し、
+  # doc コメント網羅率・整合性の両方を CI で機械強制する。
+  # --------------------------------------------------
+  doc:
+    name: cargo doc
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      - name: cargo doc --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --all-features --no-deps
+
+  # --------------------------------------------------
   # 依存監査（cargo audit / cargo deny check）を全 feature 構成で実行（TASK-15.2、#17）。
   # deny.toml 冒頭コメントで宣言している CI 組み込み先。
   # --------------------------------------------------

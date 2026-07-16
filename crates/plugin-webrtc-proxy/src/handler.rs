@@ -58,6 +58,8 @@ impl Response {
 ///   `502`（Bad Gateway）/`504`（Gateway Timeout）へ丸める。上流の内部情報
 ///   （アドレス・生エラーメッセージ・SDP 本文）はクライアント応答・ログに含めない
 ///
+/// # Examples
+///
 /// ```
 /// use bf_http::request::{parse_request_head, ParseOutcome};
 /// use bf_plugin_webrtc_proxy::{ProxyConfig, try_handle_rtc_offer};

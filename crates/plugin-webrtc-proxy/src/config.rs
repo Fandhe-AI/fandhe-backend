@@ -45,6 +45,8 @@ impl ProxyConfig {
     /// `upstream_addr` は MVP ではプライベートネットワーク内の HTTP/1.1 サーバを
     /// 前提とし、TLS/mTLS は本タスクのスコープ外（out-of-scope-tracking 対象）。
     ///
+    /// # Examples
+    ///
     /// ```
     /// use bf_plugin_webrtc_proxy::ProxyConfig;
     ///
@@ -60,61 +62,170 @@ impl ProxyConfig {
     }
 
     /// 上流のリクエストパスを上書きする（既定 `/rtc/offer`）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    ///
+    /// let config = ProxyConfig::new("127.0.0.1:9000").with_upstream_path("/webrtc/offer");
+    /// assert_eq!(config.upstream_path(), "/webrtc/offer");
+    /// ```
     pub fn with_upstream_path(mut self, path: impl Into<String>) -> Self {
         self.upstream_path = path.into();
         self
     }
 
     /// 接続確立タイムアウトを上書きする。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    ///
+    /// let config = ProxyConfig::new("127.0.0.1:9000")
+    ///     .with_connect_timeout(Duration::from_millis(500));
+    /// assert_eq!(config.connect_timeout(), Duration::from_millis(500));
+    /// ```
     pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
         self.connect_timeout = timeout;
         self
     }
 
     /// 上流応答待ちタイムアウトを上書きする。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    ///
+    /// let config = ProxyConfig::new("127.0.0.1:9000")
+    ///     .with_request_timeout(Duration::from_millis(1500));
+    /// assert_eq!(config.request_timeout(), Duration::from_millis(1500));
+    /// ```
     pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;
         self
     }
 
     /// クライアントから受理する SDP Offer の最大バイト数を上書きする。
+    ///
+    /// リソース枯渇（DoS）対策として上限を明示的に絞り込みたい場合に使う
+    /// （.claude/rules/security.md）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    ///
+    /// let config = ProxyConfig::new("127.0.0.1:9000").with_max_offer_bytes(1024);
+    /// assert_eq!(config.max_offer_bytes(), 1024);
+    /// ```
     pub fn with_max_offer_bytes(mut self, max_bytes: usize) -> Self {
         self.max_offer_bytes = max_bytes;
         self
     }
 
     /// 上流から受理する SDP Answer の最大バイト数を上書きする。
+    ///
+    /// リソース枯渇（DoS）対策として上限を明示的に絞り込みたい場合に使う
+    /// （.claude/rules/security.md）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    ///
+    /// let config = ProxyConfig::new("127.0.0.1:9000").with_max_answer_bytes(2048);
+    /// assert_eq!(config.max_answer_bytes(), 2048);
+    /// ```
     pub fn with_max_answer_bytes(mut self, max_bytes: usize) -> Self {
         self.max_answer_bytes = max_bytes;
         self
     }
 
     /// 上流アドレス（`host:port`）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    ///
+    /// let config = ProxyConfig::new("127.0.0.1:9000");
+    /// assert_eq!(config.upstream_addr(), "127.0.0.1:9000");
+    /// ```
     pub fn upstream_addr(&self) -> &str {
         &self.upstream_addr
     }
 
     /// 上流へ転送する際のリクエストパス。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    ///
+    /// let config = ProxyConfig::new("127.0.0.1:9000");
+    /// assert_eq!(config.upstream_path(), "/rtc/offer");
+    /// ```
     pub fn upstream_path(&self) -> &str {
         &self.upstream_path
     }
 
     /// 接続確立タイムアウト。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    ///
+    /// let config = ProxyConfig::new("127.0.0.1:9000");
+    /// assert!(config.connect_timeout().as_secs() > 0);
+    /// ```
     pub fn connect_timeout(&self) -> Duration {
         self.connect_timeout
     }
 
     /// 上流応答待ちタイムアウト。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    ///
+    /// let config = ProxyConfig::new("127.0.0.1:9000");
+    /// assert!(config.request_timeout().as_secs() > 0);
+    /// ```
     pub fn request_timeout(&self) -> Duration {
         self.request_timeout
     }
 
     /// クライアントから受理する SDP Offer の最大バイト数。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    ///
+    /// let config = ProxyConfig::new("127.0.0.1:9000");
+    /// assert_eq!(config.max_offer_bytes(), 64 * 1024);
+    /// ```
     pub fn max_offer_bytes(&self) -> usize {
         self.max_offer_bytes
     }
 
     /// 上流から受理する SDP Answer の最大バイト数。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    ///
+    /// let config = ProxyConfig::new("127.0.0.1:9000");
+    /// assert_eq!(config.max_answer_bytes(), 64 * 1024);
+    /// ```
     pub fn max_answer_bytes(&self) -> usize {
         self.max_answer_bytes
     }
