@@ -1,11 +1,12 @@
-//! backend-framework の最小コア（TASK-1.1 時点は placeholder）。
+//! backend-framework の最小コア。
 //!
 //! # このクレートの役割
 //!
 //! `crates/core` は HTTP/1.1 パーサ・keep-alive・3 種拡張点
-//! （`Middleware` / `UpgradeHandler` / `RequestGate`）を実装する最小コアの置き場所。
-//! TASK-1.1（`cargo workspace`・CI 基盤整備）時点では実体を持たず、以降のタスクの
-//! 受け皿として最小構成（依存 0 件・`unsafe` 0 件）を維持する。
+//! （`Middleware` / `UpgradeHandler` / `RequestGate`、[`extension`] モジュール）を
+//! 実装する最小コアの置き場所。TASK-1.4-1（#69）時点では 3 拡張点の trait 定義
+//! （+ doc test・単体テスト）のみを提供し、コアループ（接続受理・リクエストループ）
+//! による実接続は姉妹イシュー TASK-1.4-2（#70）で追加される。
 //!
 //! # workspace 内での依存方向
 //!
@@ -20,12 +21,22 @@
 //! 一切依存しない。プラグインは feature 経由でコアの拡張点（`Middleware` /
 //! `UpgradeHandler` / `RequestGate`）を実装する側であり、コアからプラグインへの
 //! 依存は発生しない（pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
+//! `bf-http`（sans-IO な HTTP/1.1 パーサ、TASK-1.3）は workspace 内の下位層クレート
+//! であり、外部 crates.io 依存はここでも増やさない。
 //!
 //! # 今後のタスクとの対応
 //!
-//! - TASK-1.3: HTTP/1.1 パーサ・keep-alive・バッファ再利用の実体実装
-//! - TASK-1.4: `Middleware` / `UpgradeHandler` / `RequestGate` の trait 定義とコアループ
-//! - TASK-1.5: 依存方向一方向性の機械的検証
+//! - TASK-1.4-2（#70）: コアループ（接続受理・リクエストループ）と
+//!   `#[cfg(feature)]` 付き `try_handle_*` ヘルパーによる拡張点の実接続
+//! - TASK-1.5（#14）: 依存方向一方向性の機械的検証
+//! - TASK-2.1（#18）: feature flag + `dep:` 構文によるプラグイン境界の確立
+
+pub mod extension;
+
+// 3 拡張点はクレート直下からも参照できるよう re-export する。プラグイン側
+// （`crates/plugin-*`）はこの再エクスポート経由で `backend_framework_core::Middleware`
+// のように参照でき、`extension` モジュールの存在を意識せずに実装できる。
+pub use extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
 
 /// このクレートのバージョン文字列を返す。
 ///
