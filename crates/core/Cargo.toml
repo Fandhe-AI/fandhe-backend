@@ -1,0 +1,16 @@
+[package]
+name = "backend-framework-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "backend-framework の最小コア（HTTP/1.1・3 種拡張点）。TASK-1.3 以降で実体を追加する"
+
+[lints]
+workspace = true
+
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）:
+# コアは重い依存を持ち込まない。tokio 等の必要な依存は実体実装を追加する
+# TASK-1.3（HTTP/1.1 パーサ・keep-alive 実装）で導入し、妥当性は
+# reference-researcher で確認したうえで追加する。
+[dependencies]

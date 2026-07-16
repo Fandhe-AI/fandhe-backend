@@ -24,10 +24,13 @@ backend-framework/
 ├── skills-lock.json       # 導入スキルのロック
 ├── docs/
 │   └── spec/              # 仕様書 submodule（要件・タスク・ロードマップ）
-├── crates/                # cargo workspace（TASK-1.1 以降で構築予定）
-│   ├── core / http / routes          # 最小コア・ルーティング・3 拡張点
-│   ├── plugin-*                       # feature 着脱プラグイン
-│   └── axum-ref                       # 性能比較用参照実装
+├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）
+├── rust-toolchain.toml    # stable + rustfmt/clippy
+├── crates/                # cargo workspace
+│   ├── core                           # 最小コア（TASK-1.1 で作成、実体は TASK-1.3 以降）
+│   ├── http / routes                  # HTTP プリミティブ・ルーティング（TASK-1.3〜1.4 以降で追加予定）
+│   ├── plugin-*                       # feature 着脱プラグイン（TASK-2.1 以降で追加予定）
+│   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加予定）
 └── .claude/
     ├── agents/            # 目的別 sub-agent（research/implement/testing/quality/docs）
     ├── rules/             # 運用ルール（委譲・Rust 規約・セキュリティ 等）
