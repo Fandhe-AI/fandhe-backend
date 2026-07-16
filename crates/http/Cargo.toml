@@ -1,0 +1,18 @@
+[package]
+name = "bf-http"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "backend-framework の最小 HTTP/1.1 コア（自前パーサ）。pay-for-what-you-use の起点として外部依存を持たない。"
+publish = false
+
+# workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する。
+# CI の `cargo clippy -- -D warnings` と組み合わせて実質 deny として機能する
+# （.claude/rules/coding-rust.md・.claude/rules/security.md）。
+[lints]
+workspace = true
+
+# 依存はゼロを維持する（pay-for-what-you-use。.claude/rules/pay-for-what-you-use.md）。
+# I/O 層（tokio 依存）は TASK-1.3-2（#67）で本クレートに追加される想定。
+[dependencies]
