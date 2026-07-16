@@ -76,6 +76,16 @@ start_server() {
         echo "エラー: ${TARGET_BIN} が見つかりません。先に 'cargo build --release' を実行してください" >&2
         exit 1
     fi
+    # TARGET_URL は TARGET_HOST/TARGET_PORT と独立に上書きできるが、起動するサーバは
+    # 常に TARGET_HOST:TARGET_PORT にバインドする。両者が食い違うと wait_for_health・
+    # oha が実際に起動したプロセスと異なる宛先を叩き、原因不明のタイムアウトや
+    # 誤ったサーバの計測につながるため、ここで整合性を検証する
+    # （TARGET_URL を明示的に上書きしていない既定構成では常に一致する）。
+    if [ "${TARGET_URL}" != "http://${TARGET_HOST}:${TARGET_PORT}" ]; then
+        echo "エラー: TARGET_URL（${TARGET_URL}）が TARGET_HOST:TARGET_PORT（${TARGET_HOST}:${TARGET_PORT}）と一致しません。" >&2
+        echo "        起動するサーバは TARGET_HOST:TARGET_PORT にバインドされるため、TARGET_URL は指定しないか同じ値に揃えてください" >&2
+        exit 1
+    fi
     BIND_ADDR="${TARGET_HOST}:${TARGET_PORT}" "${TARGET_BIN}" &
     SERVER_PID="$!"
 }
