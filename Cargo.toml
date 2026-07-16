@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = ["crates/http"]
+
+# NOTE: TASK-1.1（#10）が cargo workspace・CI 基盤整備の本タスク。
+# 本ファイルは TASK-1.3-1（#66）実装時点で workspace が未整備だったための
+# フォールバック（実装計画 §2 参照）。#10 マージ時に内容が競合・重複する場合は
+# #10 側の定義を正として統合すること。
