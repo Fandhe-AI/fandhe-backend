@@ -2,7 +2,8 @@
 
 `docs/spec/05-tasks.md` TASK-1.2 の成果物。`crates/axum-ref`（および将来のフルスクラッチ
 コア、TASK-1.6）を対象に RPS・レイテンシ・RSS・起動時間・バイナリサイズを再現手順付きで
-計測するためのスクリプト集。
+計測するためのスクリプト集。TASK-1.6-1（#71）で `bench-accept.sh`（axum-ref との比較・
+閾値判定を行う受け入れテスト）を追加した。
 
 ## なぜ複数回計測・中央値評価なのか
 
@@ -41,8 +42,10 @@ cargo build --release --bin axum-ref
 | `bench-http.sh` | RPS・p50・p95・p99（`GET /health`, `GET /hello/{name}`, `GET /users/{id}`, `POST /echo`） |
 | `bench-rss.sh` | 負荷時 RSS（試行内複数サンプル × 複数試行の中央値。PoC-2 の単発計測の是正） |
 | `bench-footprint.sh` | 起動時間・アイドル RSS・リリースバイナリサイズ |
+| `bench-accept.sh` | 上記 3 スクリプトを axum-ref（baseline）・コア側（対象）の順に実行し、比率・絶対差を算出して REQ-1・NFR-1・NFR-2 の基準で判定する受け入れテスト（TASK-1.6-1、#71） |
 
-共通関数は `lib/common.sh` に集約している（サーバ起動/停止・前提ツール検査・中央値算出）。
+共通関数は `lib/common.sh` に集約している（サーバ起動/停止・前提ツール検査・中央値算出・
+`RESULT_JSON` 機械可読出力ヘルパー・数値バリデーション）。
 
 ## 実行例
 
@@ -67,6 +70,7 @@ RUNS=3 DURATION=3s CONNECTIONS=16 ./benches/bench-http.sh
 | `TARGET_HOST` | `127.0.0.1` | バインド先ホスト（既定でループバックのみ、外部公開しない） |
 | `TARGET_PORT` | `3001` | バインド先ポート |
 | `SAMPLE_INTERVAL_SEC`（bench-rss.sh のみ） | `1` | 負荷印加中の RSS サンプリング間隔（秒） |
+| `RESULT_JSON`（bench-http.sh / bench-rss.sh / bench-footprint.sh） | 未指定 | 指定時、計測結果（中央値・raw 値）を機械可読 JSON として当該パスに書き出す（人間可読 stdout は変更なし）。`bench-accept.sh` が比較判定の入力として使う |
 
 ## 出力の読み方（実行結果例）
 
@@ -147,9 +151,60 @@ REQ-1 の起動時間絶対差基準（20ms 未満）に対しては十分な精
 - `bench-footprint.sh` は `RUNS` 回サーバを起動・停止するため、上記のポートの再利用待ちが
   発生しやすい。連続実行で失敗する場合は `TARGET_PORT` を変更する
 
-## 将来の再利用（TASK-1.6）
+## bench-accept.sh — 性能受け入れ判定（TASK-1.6-1）
 
-`TARGET_BIN` / `TARGET_HOST` / `TARGET_PORT` を差し替えることで、`crates/core` 側の
-フルスクラッチ実装が REQ-1 の axum 比基準（RPS 90% 以上・p95/p99 110% 以内・アイドル RSS
-110% 以内・バイナリ同等以下・起動時間絶対差 20ms 未満）を満たすかどうかの判定に
-そのまま流用できる。判定ロジック自体（axum-ref との比較・閾値判定）は TASK-1.6 のスコープ。
+`bench-http.sh` / `bench-rss.sh` / `bench-footprint.sh` を axum-ref（baseline）→
+コア側（対象、`CORE_BIN`）の順に実行し、中央値同士の比率・絶対差を算出して
+REQ-1・NFR-1・NFR-2 の基準で判定する受け入れテスト。1 件でも基準未達（FAIL）が
+あれば非 0 で終了する。
+
+### 判定基準
+
+| 指標 | 基準 | 既定の env 変数 |
+|------|------|----------------|
+| RPS（4 エンドポイントすべて） | axum 比 90% 以上 | `RPS_RATIO_MIN=0.90` |
+| p95・p99 レイテンシ（4 エンドポイントすべて） | axum 比 110% 以内 | `P95_RATIO_MAX=1.10` / `P99_RATIO_MAX=1.10` |
+| アイドル時 RSS | axum 比 110% 以内 | `IDLE_RSS_RATIO_MAX=1.10` |
+| リリースバイナリサイズ | axum 比 同等以下 | `BIN_SIZE_RATIO_MAX=1.00` |
+| 起動時間 | axum との絶対差 20ms 未満 | `STARTUP_DIFF_MAX_MS=20` |
+
+負荷時 RSS（`bench-rss.sh`）は REQ-1 の必須基準ではないため、判定表とは別に
+**参考値としてのみ**出力する。
+
+### 使い方
+
+```bash
+# 既定パラメータ（RUNS=5 DURATION=15s CONNECTIONS=128）で実行
+# CORE_BIN が指すバイナリが存在しない場合は判定を実施せず BLOCKED（終了コード 2）で終わる
+./benches/bench-accept.sh
+
+# コア側バイナリを明示指定して実行（TASK-1.4-2 #70・TASK-1.5 #14 マージ後の想定）
+CORE_BIN=target/release/backend-framework-core ./benches/bench-accept.sh
+
+# 判定表を markdown レポートにも追記する
+REPORT_MD=benches/reports/task-1.6-1-performance.md ./benches/bench-accept.sh
+
+# ハーネス自体の妥当性検証（axum-ref 同士のセルフ比較。全項目 PASS になるはず）
+CORE_BIN=target/release/axum-ref CORE_PORT=3102 ./benches/bench-accept.sh
+```
+
+### 終了コード
+
+| コード | 意味 |
+|--------|------|
+| `0` | 全項目 PASS |
+| `1` | 1 件以上 FAIL（性能基準未達） |
+| `2` | BLOCKED（`CORE_BIN` が指すバイナリが存在せず判定不能。baseline 側バイナリ欠如も `1` で別途エラー終了） |
+
+### 現状（2026-07-16 時点）
+
+`crates/core` 側はライブラリ（HTTP/1.1 パーサ・3 拡張点）のみで、axum-ref と等価な
+エンドポイントを提供する実行可能サーババイナリは TASK-1.4-2（#70）・TASK-1.5（#14）
+マージ後に追加される見込み。現時点で既定パラメータのまま実行すると `BLOCKED`
+（終了コード 2）で終了する。ハーネス自体の正しさは axum-ref 同士のセルフ比較
+（`CORE_BIN` に axum-ref を指定）で検証済み。実測結果は
+[`reports/task-1.6-1-performance.md`](reports/task-1.6-1-performance.md) を参照。
+
+`TARGET_BIN` / `TARGET_HOST` / `TARGET_PORT`（`bench-http.sh` 等の単体実行時）や
+`BASELINE_*` / `CORE_*`（`bench-accept.sh`）を差し替えることで、`crates/core` 側の
+実行可能バイナリが揃った時点で本スクリプトの変更なしにそのまま判定に使える設計にしている。
