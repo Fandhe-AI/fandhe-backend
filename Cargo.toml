@@ -32,3 +32,10 @@ repository = "https://github.com/Fandhe-AI/backend-framework"
 [workspace.lints.rust]
 unsafe_code = "warn"
 missing_docs = "warn"
+
+# 計測用リリースプロファイル（TASK-1.2、docs/spec/03-poc/fullscratch-performance/axum-ref
+# と同条件の `lto = true`）。`benches/*.sh` は `cargo build --release` の成果物を対象に
+# RPS・RSS・起動時間・バイナリサイズを計測するため、workspace 全体（axum-ref・将来の
+# フルスクラッチコア）に同一のリリース最適化条件を適用し、比較のノイズ要因を減らす。
+[profile.release]
+lto = true
