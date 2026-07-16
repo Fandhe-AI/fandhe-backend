@@ -162,12 +162,16 @@ calc_abs_diff() {
     local a="$1" b="$2"
     LC_NUMERIC=C awk -v a="${a}" -v b="${b}" 'BEGIN { d = a - b; if (d < 0) { d = -d }; printf "%.4f", d }'
 }
-# 比較 1: value >= threshold なら真（exit 0）
+# 比較 1: value >= threshold なら真（exit 0）。
+# calc_ratio が分母 0 で返す "nan" は awk 実装依存の数値変換に頼らず、
+# ここで明示的に FAIL（非 0 exit）として弾く（judge_le も同様）。
 judge_ge() {
+    [ "$1" = "nan" ] && return 1
     LC_NUMERIC=C awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 >= b + 0) }'
 }
 # 比較 2: value <= threshold なら真（exit 0）
 judge_le() {
+    [ "$1" = "nan" ] && return 1
     LC_NUMERIC=C awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 <= b + 0) }'
 }
 
