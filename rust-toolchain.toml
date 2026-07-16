@@ -1,0 +1,5 @@
+# stable ツールチェーンを基本とする（.claude/rules/coding-rust.md）。
+# fuzz / サニタイザ用の nightly は fuzz-runner が実行時に明示的に指定する。
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
