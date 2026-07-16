@@ -18,7 +18,6 @@ workspace = true
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 
 # tower の oneshot は axum Router を Service として直接叩く dev 専用テストにのみ使う。
 [dev-dependencies]

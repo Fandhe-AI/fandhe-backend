@@ -111,7 +111,10 @@ wait_for_health() {
             echo "${elapsed_ms}"
             return 0
         fi
-        sleep "$(awk "BEGIN { print ${interval_ms} / 1000 }")"
+        # LC_NUMERIC=C を明示: カンマを小数点区切りに使うロケール環境下では awk の出力が
+        # "0,005" のような形式になり sleep への引数として不正になる（Bugbot 指摘）。
+        # ロケールに関わらず "." 区切りを保証するため C ロケールを固定する。
+        sleep "$(LC_NUMERIC=C awk "BEGIN { print ${interval_ms} / 1000 }")"
         elapsed_ms=$((elapsed_ms + interval_ms))
     done
     echo "エラー: ${TARGET_URL}/health が ${timeout_ms}ms 以内に応答しませんでした" >&2
@@ -124,7 +127,9 @@ wait_for_health() {
 # p99 が 3 回中 1 回だけ 13.5ms、他は 4.3ms・1.0ms）を踏まえ、平均値ではなく
 # 中央値を標準の評価指標として採用する（README 参照）。
 median() {
-    sort -n | awk '
+    # LC_NUMERIC=C を明示: 偶数個の場合の平均値算出でカンマ小数点ロケールの影響を受け、
+    # 呼び出し元の数値比較・算術展開が壊れるのを防ぐ（wait_for_health と同根の Bugbot 指摘）。
+    LC_NUMERIC=C sort -n | LC_NUMERIC=C awk '
         { values[NR] = $1 }
         END {
             if (NR == 0) { exit 1 }

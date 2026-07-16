@@ -48,7 +48,17 @@ for ((trial = 1; trial <= RUNS; trial++)); do
         fi
         sleep "${SAMPLE_INTERVAL_SEC}"
     done
-    wait "${load_pid}" 2>/dev/null || true
+    # oha の終了コードを確認する。ここで失敗を握りつぶすと、負荷生成が
+    # 失敗・no-op でも収集済みのアイドル同然の RSS サンプルからそのまま
+    # 中央値を算出してしまい、最終結果を静かに歪める（Bugbot 指摘）。
+    load_exit_code=0
+    wait "${load_pid}" 2>/dev/null || load_exit_code="$?"
+    if [ "${load_exit_code}" -ne 0 ]; then
+        echo "エラー: 試行 ${trial} で負荷生成（oha）が失敗しました（終了コード ${load_exit_code}）。ログ: ${load_output_json}" >&2
+        cat "${load_output_json}" >&2 || true
+        rm -f "${load_output_json}"
+        exit 1
+    fi
     rm -f "${load_output_json}"
 
     if [ "${#samples[@]}" -eq 0 ]; then
