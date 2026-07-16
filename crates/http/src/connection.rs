@@ -116,9 +116,17 @@ pub fn should_keep_alive(head: &RequestHead) -> bool {
             .map(|token| token.trim())
     };
 
+    let has_close = || tokens().any(|token| token.eq_ignore_ascii_case("close"));
+
     match head.version {
-        HttpVersion::Http11 => !tokens().any(|token| token.eq_ignore_ascii_case("close")),
-        HttpVersion::Http10 => tokens().any(|token| token.eq_ignore_ascii_case("keep-alive")),
+        HttpVersion::Http11 => !has_close(),
+        // HTTP/1.0 はデフォルトが close なので `keep-alive` トークンが必要だが、
+        // `Connection: keep-alive, close` のように両方が指定された場合は
+        // `close` を優先して接続を閉じる（明示的な close 指定は他のトークン
+        // より優先されるべきという RFC 7230 の精神に合わせる）。
+        HttpVersion::Http10 => {
+            !has_close() && tokens().any(|token| token.eq_ignore_ascii_case("keep-alive"))
+        }
     }
 }
 
@@ -269,6 +277,14 @@ mod tests {
     fn http10_connection_keep_alive_enables_keep_alive() {
         let head = head_of(b"GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n");
         assert!(should_keep_alive(&head));
+    }
+
+    #[test]
+    fn http10_connection_keep_alive_and_close_disables_keep_alive() {
+        // `close` トークンが含まれる場合は HTTP/1.0 でも keep-alive を無効化する
+        // （Cursor Bugbot 指摘 #67 PR #102: close トークン無視のリグレッション回帰テスト）。
+        let head = head_of(b"GET / HTTP/1.0\r\nConnection: keep-alive, close\r\n\r\n");
+        assert!(!should_keep_alive(&head));
     }
 
     #[test]
