@@ -86,14 +86,28 @@ check_unsafe() {
     if [ -z "${unsafe_lines_all}" ]; then
         record_pass "B: unsafe 0件/根拠明記" "対象コアクレート（${CORE_DIRS[*]}）の src/ に unsafe 0 件"
     else
-        # unsafe が見つかった箇所ごとに直前行へ // SAFETY: があるか検査する。
+        # unsafe が見つかった箇所ごとに直前の非空行へ // SAFETY: があるか検査する。
+        # 空行を挟んで SAFETY コメントを書いた場合の false FAIL を避けるため、
+        # 直前行から遡って最初に現れる非空行のみを見る（ブロックコメント
+        # `/* ... */` 中の記述までは検査しない grep ベースの限界は残る。README に明記）。
         local missing_safety=0
         local file line
         while IFS=: read -r file line _rest; do
             local prev_line=$((line - 1))
-            local prev_content
-            prev_content="$(sed -n "${prev_line}p" "${file}" 2>/dev/null || true)"
-            if ! echo "${prev_content}" | grep -q '// SAFETY:'; then
+            local found_safety=0
+            while [ "${prev_line}" -ge 1 ]; do
+                local prev_content
+                prev_content="$(sed -n "${prev_line}p" "${file}" 2>/dev/null || true)"
+                if [ -z "$(echo "${prev_content}" | tr -d '[:space:]')" ]; then
+                    prev_line=$((prev_line - 1))
+                    continue
+                fi
+                if echo "${prev_content}" | grep -q '// SAFETY:'; then
+                    found_safety=1
+                fi
+                break
+            done
+            if [ "${found_safety}" -eq 0 ]; then
                 missing_safety=1
                 echo "  根拠欠落候補: ${file}:${line}" >&2
             fi

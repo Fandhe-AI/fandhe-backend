@@ -77,8 +77,24 @@ print_summary() {
     printf '%-6s-+-%-40s-+-%s\n' "------" "----------------------------------------" "----------------------------------------"
     local row
     for row in "${RESULT_ROWS[@]}"; do
-        IFS='|' read -r status criterion detail <<<"${row}"
-        printf '%-6s | %-40s | %s\n' "${status}" "${criterion}" "${detail}"
+        # "|" 区切りだが detail（第3フィールド）に実改行を含み得る（例: check_plugin_independence
+        # の複数行 grep 結果）。here-string 経由の `read` は改行までしか読まず 2 行目以降を
+        # silently 落とすため、パラメータ展開で先頭2つの "|" のみを区切りとして分割し、
+        # detail 内の改行はすべて継続行として表に残す。
+        local status="${row%%|*}"
+        local rest="${row#*|}"
+        local criterion="${rest%%|*}"
+        local detail="${rest#*|}"
+        local first_line="${detail%%$'\n'*}"
+        printf '%-6s | %-40s | %s\n' "${status}" "${criterion}" "${first_line}"
+        if [[ "${detail}" == *$'\n'* ]]; then
+            local cont_line
+            while IFS= read -r cont_line; do
+                # 空行はそのまま出力すると罫線が崩れるため読み飛ばす。
+                [ -z "${cont_line}" ] && continue
+                printf '%-6s | %-40s | %s\n' "" "" "${cont_line}"
+            done <<<"${detail#*$'\n'}"
+        fi
     done
     echo ""
     if [ "${HAS_FAIL}" -ne 0 ]; then
