@@ -1,0 +1,31 @@
+# backend-framework
+
+AI によるセキュリティ脆弱性発見リスクに備え、Rust で新規構築する軽量・高速・高並行なバックエンドフレームワークです。axum 級の性能を目標に、プラグインによる拡張（WebRTC / WebSocket）、多様な通信規格（GraphQL / tRPC）、OpenAPI 自動生成・容易なロギングを備えます。
+
+> フレームワーク名は仮称です。正式名称の決定は今後の課題です（[仕様リポジトリの `01-brainstorm.md`](./docs/spec/01-brainstorm.md) 参照）。
+
+## 仕様
+
+仕様書（ブレスト〜PoC〜要件定義〜タスク分解〜ロードマップ）は [Fandhe-AI/backend-framework-spec](https://github.com/Fandhe-AI/backend-framework-spec) で管理し、`docs/spec/` にサブモジュールとして取り込んでいます。
+
+```bash
+git clone --recurse-submodules git@github.com:Fandhe-AI/backend-framework.git
+# 既存クローンの場合
+git submodule update --init
+```
+
+| ドキュメント | 内容 |
+|-------------|------|
+| [`docs/spec/04-requirements.md`](./docs/spec/04-requirements.md) | MoSCoW 優先度付き要件（REQ-1〜15）・受け入れ基準 |
+| [`docs/spec/05-tasks.md`](./docs/spec/05-tasks.md) | タスク分解（全 56 タスク・依存関係・工数） |
+| [`docs/spec/06-roadmap.md`](./docs/spec/06-roadmap.md) | マイルストーン MS-1〜MS-6・着手判定 |
+
+## 開発の進め方
+
+`docs/spec/06-roadmap.md` のマイルストーンに従って実装します。
+
+- **MS-1**: 基盤構築（`cargo workspace`・CI・依存監査ベースライン）・最小コア（HTTP/1.1・3 種拡張点）・プラグイン機構
+- **MS-2〜MS-4**: Must 要件（性能ベンチマーク・セキュリティ・OpenAPI 自動生成ほか）
+- **MS-5〜MS-6**: Should 要件（GraphQL / tRPC・WebRTC / WebSocket プラグイン・micro-service-hub 共通配線）
+
+実装着手の最初のタスクは TASK-1.1（`cargo workspace`・CI 基盤整備）です。
