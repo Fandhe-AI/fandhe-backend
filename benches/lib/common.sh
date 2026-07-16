@@ -19,23 +19,27 @@ RUNS="${RUNS:-5}"
 DURATION="${DURATION:-15s}"
 CONNECTIONS="${CONNECTIONS:-128}"
 
-# 計測対象。既定は axum-ref だが、TASK-1.6 でフルスクラッチコアに差し替えて
-# 同一スクリプトを再利用できるようにする。
-TARGET_BIN="${TARGET_BIN:-target/release/axum-ref}"
-TARGET_HOST="${TARGET_HOST:-127.0.0.1}"
-TARGET_PORT="${TARGET_PORT:-3001}"
-TARGET_URL="${TARGET_URL:-http://${TARGET_HOST}:${TARGET_PORT}}"
-
 # common.sh を呼ぶ各スクリプトから見て workspace ルート相対で解決できるよう、
 # 呼び出し元スクリプトの1階層上（benches/ の親）を基準にする。
 WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# 計測対象。既定は axum-ref だが、TASK-1.6 でフルスクラッチコアに差し替えて
+# 同一スクリプトを再利用できるようにする。既定値は WORKSPACE_ROOT からの絶対パスに
+# 解決し、カレントディレクトリに依存せず常に同じバイナリを指すようにする
+# （TARGET_BIN を環境変数で明示的に上書きした場合はその値をそのまま使う）。
+TARGET_BIN="${TARGET_BIN:-${WORKSPACE_ROOT}/target/release/axum-ref}"
+TARGET_HOST="${TARGET_HOST:-127.0.0.1}"
+TARGET_PORT="${TARGET_PORT:-3001}"
+TARGET_URL="${TARGET_URL:-http://${TARGET_HOST}:${TARGET_PORT}}"
+
 SERVER_PID=""
 
-# 前提ツール（oha・jq）の存在検査。
+# 前提ツール（oha・jq・curl）の存在検査。
 #
 # 契約: 見つからなければ導入手順を案内して非 0 終了する。
 # スクリプトが外部バイナリを自動ダウンロードすることはない（サプライチェーン考慮）。
+# curl は wait_for_health が全スクリプト共通で使用するため、未導入時に原因不明の
+# タイムアウトへ誤誘導しないようここで検査する。
 check_dependencies() {
     local missing=0
     if ! command -v jq >/dev/null 2>&1; then
@@ -44,6 +48,10 @@ check_dependencies() {
     fi
     if ! command -v oha >/dev/null 2>&1; then
         echo "エラー: oha が見つかりません。導入してください（例: cargo install oha）" >&2
+        missing=1
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "エラー: curl が見つかりません。導入してください（例: apt install curl）" >&2
         missing=1
     fi
     if [ "${missing}" -ne 0 ]; then

@@ -21,6 +21,7 @@
 
 - [`oha`](https://github.com/hatoo/oha)（HTTP 負荷生成。`cargo install oha` で導入）
 - `jq`（JSON パース）
+- `curl`（`wait_for_health` によるサーバ起動完了検知に使用。全スクリプト共通の前提）
 - Linux（`ps -o rss=` を使用するため。Linux 以外では RSS 計測は動作しない）
 
 スクリプトはこれらの前提ツールを自動ダウンロードしない。冒頭で存在検査を行い、

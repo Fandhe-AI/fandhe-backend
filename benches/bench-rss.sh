@@ -33,8 +33,11 @@ trial_medians=()
 
 for ((trial = 1; trial <= RUNS; trial++)); do
     # 負荷印加をバックグラウンドで開始し、印加中に RSS を複数回サンプリングする。
+    # oha の出力は読まないため、固定・予測可能なパスではなく mktemp で
+    # 衝突・symlink 追従のないファイル名を都度生成する（CWE-377/59 対策）。
+    load_output_json="$(mktemp)"
     oha -z "${DURATION}" -c "${CONNECTIONS}" --no-tui --output-format json "${TARGET_URL}/health" \
-        >/tmp/bench-rss-load-"${trial}".json 2>&1 &
+        >"${load_output_json}" 2>&1 &
     load_pid="$!"
 
     samples=()
@@ -46,7 +49,7 @@ for ((trial = 1; trial <= RUNS; trial++)); do
         sleep "${SAMPLE_INTERVAL_SEC}"
     done
     wait "${load_pid}" 2>/dev/null || true
-    rm -f /tmp/bench-rss-load-"${trial}".json
+    rm -f "${load_output_json}"
 
     if [ "${#samples[@]}" -eq 0 ]; then
         echo "エラー: 試行 ${trial} で RSS サンプルを取得できませんでした" >&2
