@@ -1,0 +1,15 @@
+# docs/design/ について
+
+`docs/design/` は、本リポジトリ側で管理する実装フェーズの設計ドキュメント置き場である。
+`docs/spec/`（submodule、[Fandhe-AI/backend-framework-spec](https://github.com/Fandhe-AI/backend-framework-spec)）
+が要件定義・タスク一覧・ロードマップ・PoC 結果という「何を作るか・なぜ作るか」を扱う仕様書であるのに対し、
+`docs/design/` は個別タスクの実装着手時に確定させる「どう作るか」の設計判断を記録する。
+
+- `docs/spec/` の内容を書き換えない。設計ドキュメントから `docs/spec/**` へ根拠を相対リンク・参照するのみ
+- 各設計ドキュメントは対応する `docs/spec/05-tasks.md` のタスク ID（例: TASK-8.2）・要件 ID（例: REQ-8）と対応付ける
+- 実装が進み設計が確定・変更された場合はこのディレクトリを更新する（`docs/spec/` 側の PoC 記録は事後に書き換えない）
+
+## 現在のドキュメント
+
+- [`webrtc-process-isolation.md`](./webrtc-process-isolation.md): WebRTC プラグインの別プロセス切り出し設計
+  （TASK-8.2-1、REQ-8・Conditional Go 条件(2) 対応）
