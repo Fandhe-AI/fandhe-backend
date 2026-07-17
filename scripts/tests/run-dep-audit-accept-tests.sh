@@ -36,6 +36,28 @@ fail() {
     FAIL_COUNT=$((FAIL_COUNT + 1))
 }
 
+# dep-audit-accept.sh と同じセクションスコープ抽出（無 scope の grep によるコメント
+# アウト・コメント内記述の誤検知を避けるため、判定対象を該当 TOML セクション範囲に
+# 限定する）。dep-audit-accept.sh 本体の extract_toml_section と同一ロジックを
+# セルフテスト側でも再現する（本体を source せず fixture 経由で判定ロジックのみを
+# 検証する既存方針を維持するため）。
+extract_toml_section() {
+    local section_name="$1"
+    local file="$2"
+    # dep-audit-accept.sh の extract_toml_section と同一ロジック（文字列完全一致で
+    # セクション開始を判定。awk -v 経由の `\[`/`\]` 誤解釈を避け、コメント行は
+    # 誤 PASS を避けるため除外する）。
+    awk -v target="[${section_name}]" '
+        $0 == target { in_section = 1; next }
+        /^\[/ { in_section = 0 }
+        in_section {
+            line = $0
+            sub(/^[ \t]+/, "", line)
+            if (substr(line, 1, 1) != "#") print
+        }
+    ' "${file}"
+}
+
 # dep-audit-accept.sh 節 1b が使う判定ロジック（必須 5 ライセンスすべてが
 # [licenses] allow に含まれるか）を fixture に対して適用する。
 required_licenses=(
@@ -48,9 +70,10 @@ required_licenses=(
 
 licenses_complete() {
     local file="$1"
-    local lic
+    local section lic
+    section="$(extract_toml_section "licenses" "${file}")"
     for lic in "${required_licenses[@]}"; do
-        grep -qF "\"${lic}\"" "${file}" || return 1
+        printf '%s\n' "${section}" | grep -qF "\"${lic}\"" || return 1
     done
     return 0
 }
@@ -69,19 +92,36 @@ else
     fail "ライセンス欠落の fixture が誤って完備と判定された"
 fi
 
+if ! licenses_complete "${FIXTURES_DIR}/deny-license-comment-only.toml"; then
+    pass "[licenses] allow 外（コメントのみ）にライセンスが書かれた fixture は欠落と判定される（無 scope grep の誤 PASS 回帰検知）"
+else
+    fail "[licenses] allow 外のコメント記述を誤って完備と判定した（無 scope grep への退行）"
+fi
+
 echo ""
 echo "===== [graph] all-features 判定（節 1c）のロジック検証 ====="
 
-if grep -q "all-features = true" "${FIXTURES_DIR}/deny-full.toml"; then
+all_features_enabled() {
+    local file="$1"
+    extract_toml_section "graph" "${file}" | grep -q "all-features = true"
+}
+
+if all_features_enabled "${FIXTURES_DIR}/deny-full.toml"; then
     pass "all-features = true を含む fixture は PASS 相当と判定される"
 else
     fail "all-features = true を含む fixture が PASS 相当と判定されなかった"
 fi
 
-if ! grep -q "all-features = true" "${FIXTURES_DIR}/deny-missing-allfeatures.toml"; then
+if ! all_features_enabled "${FIXTURES_DIR}/deny-missing-allfeatures.toml"; then
     pass "all-features = false の fixture は FAIL 相当と判定される"
 else
     fail "all-features = false の fixture が誤って PASS 相当と判定された"
+fi
+
+if ! all_features_enabled "${FIXTURES_DIR}/deny-allfeatures-commented.toml"; then
+    pass "all-features = true がコメントアウトされ実値が false の fixture は FAIL 相当と判定される（無 scope grep の誤 PASS 回帰検知）"
+else
+    fail "コメントアウトされた all-features = true を誤って PASS 相当と判定した（無 scope grep への退行）"
 fi
 
 echo ""
@@ -90,11 +130,7 @@ echo "===== [advisories] ignore 判定（節 1d）のロジック検証 ====="
 ignore_is_empty() {
     local file="$1"
     local advisories_section ignore_line
-    advisories_section="$(awk '
-        /^\[advisories\]/ { in_section = 1; next }
-        /^\[/ { in_section = 0 }
-        in_section { print }
-    ' "${file}")"
+    advisories_section="$(extract_toml_section "advisories" "${file}")"
     ignore_line="$(printf '%s\n' "${advisories_section}" | grep '^ignore' || true)"
     [ -n "${ignore_line}" ] && printf '%s' "${ignore_line}" | grep -q '\[\]'
 }
@@ -117,6 +153,12 @@ if ignore_is_empty "${FIXTURES_DIR}/deny-commented-advisories.toml"; then
     pass "[advisories] 直後にコメント行を挟む fixture でも ignore = [] を空維持と判定できる"
 else
     fail "[advisories] 直後にコメント行を挟む fixture で ignore = [] を検出できなかった"
+fi
+
+if ! ignore_is_empty "${FIXTURES_DIR}/deny-missing-ignore-line.toml"; then
+    pass "[advisories] セクションに ignore 行自体が無い fixture は非空維持相当（要確認）と判定される"
+else
+    fail "ignore 行が無い fixture を誤って空維持と判定した"
 fi
 
 echo ""
@@ -168,10 +210,16 @@ else
     fail "実リポジトリの deny.toml から必須ライセンスの欠落が検出された（退行の可能性）"
 fi
 
-if grep -q "all-features = true" "${WORKSPACE_ROOT}/deny.toml"; then
+if all_features_enabled "${WORKSPACE_ROOT}/deny.toml"; then
     pass "実リポジトリの deny.toml は [graph] all-features = true を含む"
 else
     fail "実リポジトリの deny.toml から all-features = true が検出できない（退行の可能性）"
+fi
+
+if ignore_is_empty "${WORKSPACE_ROOT}/deny.toml"; then
+    pass "実リポジトリの deny.toml は [advisories] ignore = [] を維持している（TASK-15.1 実装済みの回帰検知。[advisories] ignore 行削除等の退行を検知）"
+else
+    fail "実リポジトリの deny.toml から [advisories] ignore = [] の空維持が検出できない（退行の可能性）"
 fi
 
 if fuzz_job_check "${WORKSPACE_ROOT}/.github/workflows/ci.yml"; then

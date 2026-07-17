@@ -34,10 +34,35 @@ if [ ! -f "${DENY_TOML}" ]; then
 else
     record_pass "1a: deny.toml 存在確認" "${DENY_TOML} が存在する"
 
+    # TOML セクション本体（次の [section] またはファイル末尾まで）を抽出する。
+    # コメントアウトされた設定やコメント内にのみ残った記述をファイル全体無scope の
+    # grep で誤って PASS 判定しないため、判定対象を該当セクションの範囲に限定する
+    # （セクション直後に説明コメント行が挟まる deny.toml の実際のレイアウトにも
+    # 対応するため、固定行数指定（-A1 等）ではなく awk でセクション範囲を切り出す）。
+    extract_toml_section() {
+        local section_name="$1"
+        local file="$2"
+        # 見出し行 "[section_name]" は awk -v 経由だと `\[`/`\]` が正規表現の
+        # エスケープではなく文字クラスとして解釈され誤マッチしうるため、正規表現
+        # ではなく文字列完全一致（target 変数との ==）でセクション開始を判定する。
+        # コメント行（先頭の空白除去後に `#` で始まる行）はコメントアウトされた
+        # 設定値・コメント内にのみ残った記述の誤 PASS を避けるため除外する。
+        awk -v target="[${section_name}]" '
+            $0 == target { in_section = 1; next }
+            /^\[/ { in_section = 0 }
+            in_section {
+                line = $0
+                sub(/^[ \t]+/, "", line)
+                if (substr(line, 1, 1) != "#") print
+            }
+        ' "${file}"
+    }
+
     # 仕様（TASK-15.1 / REQ-15）記載の許可ライセンス 5 件が [licenses] allow に
     # 含まれることを確認する。deny.toml は TASK-8.1（#26）で ISC を追加済みだが、
     # これは許可リストの「上位互換の拡張」であり 5 件の必須要件を損なわない
     # （許可リスト方式・デフォルト拒否の原則自体は変わらない）。
+    licenses_section="$(extract_toml_section "licenses" "${DENY_TOML}")"
     required_licenses=(
         "MIT"
         "Apache-2.0"
@@ -47,7 +72,7 @@ else
     )
     missing_licenses=()
     for lic in "${required_licenses[@]}"; do
-        if ! grep -qF "\"${lic}\"" "${DENY_TOML}"; then
+        if ! printf '%s\n' "${licenses_section}" | grep -qF "\"${lic}\""; then
             missing_licenses+=("${lic}")
         fi
     done
@@ -59,7 +84,8 @@ else
 
     # 全 feature 構成を監査対象に含める設定（TASK-2.1 以降で plugin-* の optional
     # 依存が増えても監査漏れを防ぐ前提）。
-    if grep -q "all-features = true" "${DENY_TOML}"; then
+    graph_section="$(extract_toml_section "graph" "${DENY_TOML}")"
+    if printf '%s\n' "${graph_section}" | grep -q "all-features = true"; then
         record_pass "1c: [graph] all-features" "all-features = true が設定されている（全 feature 構成を監査対象に含める）"
     else
         record_fail "1c: [graph] all-features" "[graph] all-features = true が見つかりません"
@@ -68,15 +94,7 @@ else
     # advisories.ignore は空維持が既定方針。非空の場合は運用上の許容（理由コメント
     # 付き追加）がありうるため FAIL ではなく WARN として可視化する
     # （フェイルクローズを弱めず、かつ正当な運用を誤検知しない）。
-    # [advisories] セクション本体（次の [section] またはファイル末尾まで）を
-    # 抽出してから ignore 行を探す。セクション直後に説明コメント行が挟まる
-    # deny.toml の実際のレイアウトに対応するため、固定行数指定（-A1 等）ではなく
-    # awk でセクション範囲を切り出す。
-    advisories_section="$(awk '
-        /^\[advisories\]/ { in_section = 1; next }
-        /^\[/ { in_section = 0 }
-        in_section { print }
-    ' "${DENY_TOML}")"
+    advisories_section="$(extract_toml_section "advisories" "${DENY_TOML}")"
     ignore_line="$(printf '%s\n' "${advisories_section}" | grep '^ignore' || true)"
     if [ -z "${ignore_line}" ]; then
         record_fail "1d: [advisories] ignore" "[advisories] セクション直後に ignore 行が見つかりません（想定形式との乖離、要確認）"
