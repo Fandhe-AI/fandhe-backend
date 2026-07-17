@@ -50,9 +50,9 @@ fn error_response(status: u16, body: &'static [u8]) -> Response {
 ///   .claude/rules/security.md）
 /// - `config.max_peer_connections()` に達している場合は新規 `RTCPeerConnection` を
 ///   生成せず `503` で拒否する（フェイルクローズ）。上限判定と予約枠の登録は
-///   [`WebRtcConfig::reserve_slot`] が単一ロック区間で行うため TOCTOU
+///   `WebRtcConfig::reserve_slot` が単一ロック区間で行うため TOCTOU
 ///   （time-of-check to time-of-use）は生じない。接続クローズ・失敗時は
-///   [`register_close_handler`] がレジストリから枠を除去するため、正常利用の
+///   `register_close_handler` がレジストリから枠を除去するため、正常利用の
 ///   蓄積のみでレジストリが単調増加し続けることはない
 /// - JSON/SDP のパース失敗・シグナリング内部エラーは `400`/`500`（内部情報を含まない
 ///   固定 JSON body）

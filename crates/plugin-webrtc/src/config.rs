@@ -6,8 +6,8 @@
 //! `OnceLock` グローバルは使わず [`WebRtcConfig`] インスタンス単位の
 //! フィールドとする（`.claude/rules/coding-rust.md` の AI ファースト保守性）。
 //!
-//! レジストリは「同時接続数上限の予約枠（[`RegistrySlot::Reserved`]）」と
-//! 「シグナリング成功済みの接続（[`RegistrySlot::Active`]）」を同一 `Mutex` 配下の
+//! レジストリは「同時接続数上限の予約枠（`RegistrySlot::Reserved`）」と
+//! 「シグナリング成功済みの接続（`RegistrySlot::Active`）」を同一 `Mutex` 配下の
 //! `Vec` で管理する。上限判定（`reserve_slot`）と枠の登録を同一ロック区間内で行う
 //! ことで、[`crate::handler::try_handle_rtc_offer`] の複数呼び出しが同時に
 //! `len() < max` を通過してから登録する TOCTOU（time-of-check to time-of-use）を
