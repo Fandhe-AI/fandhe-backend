@@ -111,11 +111,14 @@ fn main() {
     };
 
     let elapsed_secs = emit_elapsed.as_secs_f64();
-    let events_per_sec = if elapsed_secs > 0.0 {
-        total_events as f64 / elapsed_secs
-    } else {
-        f64::INFINITY
-    };
+    // タイマー分解能未満で完了した場合（elapsed_secs が 0.0）、素朴に割ると
+    // `events_per_sec` が `f64::INFINITY` になり `{:.2}` フォーマットで `inf` という
+    // 非 JSON トークンを出力してしまい、下流の `benches/tracing-backpressure-bench.sh`
+    // の `jq` パースが失敗する（Cursor Bugbot 指摘）。分母に極小の下限（1 ナノ秒相当）を
+    // 設けて有限値に丸め込み、常に valid JSON を出す契約を維持する。`elapsed_secs`
+    // フィールド自体は実測値（0.000000 のまま）を維持し、レート算出にのみ下限を適用する。
+    let elapsed_secs_for_rate = elapsed_secs.max(1e-9);
+    let events_per_sec = total_events as f64 / elapsed_secs_for_rate;
     let drop_rate_pct = if total_events > 0 {
         (dropped as f64 / total_events as f64) * 100.0
     } else {
