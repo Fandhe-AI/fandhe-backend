@@ -244,7 +244,7 @@ assert_exit_code "ユーザー承認が『未承認』のままは exit 1" 1 "${
 assert_contains "未承認のまま着手可と読める記録を拒否する" "${out_cond_unapproved}" "承認済み"
 
 # ==================================================
-# 回帰: is_unfilled の fail-closed 検知（PR #121 Bugbot 指摘 #1）
+# 回帰: is_unfilled の fail-closed 検知（PR #121 Bugbot 指摘 #1、再指摘含む）
 # ==================================================
 
 echo "===== 判定区分が『<...>』プレースホルダの末尾に余分な文字を含む場合も未記入扱い: exit 1 ====="
@@ -259,6 +259,60 @@ out_trailing="$(bash "${CHECK}" --input "${TRAILING_PLACEHOLDER}" 2>&1)"
 exit_trailing=$?
 set -e
 assert_exit_code "『<...>』の後に余分な文字が続くプレースホルダも未記入として拒否する" 1 "${exit_trailing}"
+
+# 上の判定区分ケースは「未知の値」チェックでも exit 1 になり得るため、is_unfilled の
+# fail-closed 修正そのものを検証したことにならない（Bugbot 再指摘）。判定区分に依らず
+# 常に必須の自由記述欄（不可・要エスカレーションの『該当カテゴリと判断根拠』）で、
+# プレースホルダの後ろに文字が付いたまま残っているケースを検証する。
+echo "===== 自由記述欄（該当カテゴリと判断根拠）でプレースホルダの後ろに文字が残っている場合も未記入扱い: exit 1 ====="
+FREE_TEXT_TRAILING="${WORKDIR}/free-text-trailing.md"
+cat > "${FREE_TEXT_TRAILING}" <<'EOF'
+## 判定区分
+
+不可・要エスカレーション
+
+## 該当カテゴリと判断根拠
+
+<不可 2 区分のみ必須。4 節のどのカテゴリに該当し、どの軸が不充足かを記述する。該当しない場合は「なし」> まだ書いていない
+
+## 要人間判断事項
+
+数値目標の提示を求める。
+
+## 代替案
+
+なし
+EOF
+set +e
+out_free_trailing="$(bash "${CHECK}" --input "${FREE_TEXT_TRAILING}" 2>&1)"
+exit_free_trailing=$?
+set -e
+assert_exit_code "自由記述欄でプレースホルダ後に余分な文字が残っていても未記入として拒否する" 1 "${exit_free_trailing}"
+assert_contains "該当カテゴリと判断根拠の未記入を報告する" "${out_free_trailing}" "該当カテゴリと判断根拠"
+
+# is_unfilled を「先頭が \"<\" ならすべて未記入」という広すぎる判定にすると、\"<100ms\" の
+# ような正当な自由記述の値が誤って fail-closed に巻き込まれる（Bugbot 再指摘）。
+# 閉じ \">\" を含まない「<」始まりの自由記述は記入済みとして受理されることを確認する。
+echo "===== 自由記述欄が『<』で始まるが閉じ『>』を含まない正当な値は記入済み扱い: exit 0 ====="
+FREE_TEXT_LT="${WORKDIR}/free-text-lt.md"
+cat > "${FREE_TEXT_LT}" <<'EOF'
+## 判定区分
+
+条件付き可
+
+## 着手条件
+
+<100ms 以内に応答することを受け入れ基準に明記してから着手する。
+
+## ユーザー承認
+
+承認済み
+EOF
+set +e
+out_free_lt="$(bash "${CHECK}" --input "${FREE_TEXT_LT}" 2>&1)"
+exit_free_lt=$?
+set -e
+assert_exit_code "『<』で始まるが閉じ『>』を含まない自由記述は記入済みとして受理する" 0 "${exit_free_lt}"
 
 # ==================================================
 # 回帰: extract_subsection は親セクション『## 3 軸判定結果』配下に限定する（PR #121 Bugbot 指摘 #2）
