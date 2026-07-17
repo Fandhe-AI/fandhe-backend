@@ -472,6 +472,19 @@ where
             None => Response::empty(404),
         };
 
+        // #70 Bugbot 指摘（Stale keep-alive after lifetime）: 上の `keep_alive` は
+        // `Handler::handle` 呼び出し前、`on_request` 直後の経過時間で決定している。
+        // `handle` の処理時間が長引き、その間に `max_connection_lifetime` を
+        // 超過した場合、`keep_alive` が古いまま `true` の応答を送ると
+        // 「生存期間超過時は応答で `Connection: close` を返す」という契約
+        // （上のコメント・`Server::max_connection_lifetime` の doc を参照）に
+        // 反する。レスポンス生成直後・送信直前に生存期間のみ再チェックし、
+        // 超過していれば `Connection: close` を確実に付与する
+        // （`should_keep_alive` と `requests_served` 側の判定は `handle` の
+        // 呼び出しで変化しないため再評価不要）。
+        let keep_alive =
+            keep_alive && connection_started_at.elapsed() < server.max_connection_lifetime;
+
         if stream
             .write_all(&response.serialize(keep_alive))
             .await
@@ -918,6 +931,50 @@ GET /c HTTP/1.1\r\n\r\n",
         assert!(
             elapsed < Duration::from_secs(5),
             "生存期間の上限近辺で閉じられるはずが {elapsed:?} かかった（READ_TIMEOUT 固定に戻っていないか確認）"
+        );
+    }
+
+    /// `Handler::handle` の処理中に指定時間だけスリープしてから固定レスポンスを
+    /// 返すトイ `Handler`（生存期間超過タイミングを `handle` の中に作るための道具）。
+    struct SlowHandler {
+        sleep_for: Duration,
+    }
+    impl Handler for SlowHandler {
+        fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
+            // `Handler::handle` は同期 API のため、テスト用に `std::thread::sleep`
+            // で処理時間の長期化を模擬する（本体側 await ではないため
+            // `.claude/rules/coding-rust.md` の「ブロッキング処理を await
+            // スレッドで実行しない」に抵触しない。単体テストのみで使用）。
+            std::thread::sleep(self.sleep_for);
+            Response::new(200, b"ok".to_vec())
+        }
+    }
+
+    #[tokio::test]
+    async fn keep_alive_becomes_close_when_lifetime_expires_during_handle() {
+        // #70 Bugbot 指摘（Stale keep-alive after lifetime）: keep_alive は
+        // `on_request` 直後の経過時間だけで決めると、`Handler::handle` の処理が
+        // 長引いて `max_connection_lifetime` を超えても応答が keep-alive の
+        // ままになってしまう。修正後は `handle` 完了後に生存期間を再チェックし、
+        // 超過していれば応答に `Connection: close` が付くことを確認する。
+        let lifetime = Duration::from_millis(30);
+        let handler = SlowHandler {
+            // handle 呼び出しの前は生存期間内、handle 完了時には確実に
+            // 超過しているように、生存期間よりわずかに長くスリープする。
+            sleep_for: lifetime + Duration::from_millis(50),
+        };
+        let server = Server::new()
+            .max_connection_lifetime(lifetime)
+            .handler(handler);
+
+        // keep-alive を要求する HTTP/1.1 リクエスト（Connection ヘッダなしは
+        // HTTP/1.1 既定で keep-alive）。
+        let response = roundtrip(&server, b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").await;
+
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(
+            response.contains("Connection: close"),
+            "handle 中に生存期間を超過したにもかかわらず keep-alive のまま応答した: {response:?}"
         );
     }
 
