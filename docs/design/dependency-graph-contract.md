@@ -148,6 +148,36 @@ E ファイルの理由記載は、`docs/design/` 配下の設計文書（新規
 3. **閉じない理由**: なぜ A〜D のいずれにも収まらなかったか
 4. **正当性根拠**: プラグイン実装ロジックの漏出でないことの説明・依存方向への影響有無
 
+### 4.3 記載例（TASK-10.6 / #90 / PR #156）
+
+`crates/plugin-tracing` にバックプレッシャー・ログ欠落率計測用の doc test 例
+（`examples/backpressure_probe.rs`）とテスト（`tests/backpressure.rs`）を追加した
+変更で、`extension-closure-check.sh` の分類規則（`benches/**` は D「ドキュメント・
+運用」の `docs/*`・`scripts/*` glob に該当せず E 判定になる）に基づき、以下 2 件が
+E（閉包違反候補）と判定された。
+
+1. **対象コミット/PR**: PR #156（#90、HEAD sha `aa326f1d6dec8523c0b4383a56631cebeaaa41ad`）
+2. **E ファイルパス**:
+   - `benches/reports/task-10.6-tracing-backpressure.md`
+   - `benches/tracing-backpressure-bench.sh`
+3. **閉じない理由**: いずれも `benches/` 配下の計測ハーネス・実測レポートであり、
+   `extension-closure-check.sh` の分類規則が D として明示的に許可するのは
+   `docs/*`・`scripts/*` 等の glob のみで `benches/*` は含まれないため、機械的に
+   A〜D いずれにも一致せず E（閉包違反候補）に分類される
+4. **正当性根拠**: 両ファイルは `crates/plugin-tracing` の実装ロジック（拡張点
+   `Middleware` 経由の非同期バッファ済み I/O、5 節参照ではなく本書 2 節契約一覧の
+   `Middleware` 行）そのものを変更するものではなく、既存構成（既定 lossy=true の
+   `tracing_appender::non_blocking`）の高負荷時ログ欠落率を計測するベンチスクリプト
+   （`benches/tracing-backpressure-bench.sh`）とその実測結果レポート
+   （`benches/reports/task-10.6-tracing-backpressure.md`）に過ぎない。計測対象の
+   拡張点契約（`Middleware`）・依存方向（`server → routes → http::*`、1 節）には
+   一切影響しない。`benches/README.md`（同一 PR で追加、A〜D の D に該当し PASS 済み）
+   に運用手順を記載済みであり、`benches/` 配下のベンチ追加が閉包違反候補となる本件は
+   `extension-closure-check.sh` の分類規則が `benches/*` を D に含めていないことに
+   起因する運用上のギャップであって、拡張点設計の閉包漏れではない
+   （`.claude/rules/out-of-scope-tracking.md` 対象として、`extension-closure-check.sh`
+   の D カテゴリに `benches/*` を追加する是正は別 Issue で扱う）
+
 ## 5. `bf-plugin-openapi` の非該当理由
 
 `bf-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも
