@@ -45,7 +45,15 @@ echo "==================================================="
 # チェック 1: コア全体の行カバレッジ 80% 以上
 # --------------------------------------------------
 if bash "${SCRIPT_DIR}/coverage.sh" >/tmp/accept-task-11-5-coverage.log 2>&1; then
-    core_line=$(grep -E '^TOTAL' /tmp/accept-task-11-5-coverage.log | tail -1)
+    # coverage.sh はコアの TOTAL 行の後にワークスペース全体の TOTAL 行も出力するため、
+    # 結合ログを grep '^TOTAL' | tail -1 すると workspace 全体の値を誤って拾う。
+    # coverage.sh が書き出す coverage 専用ファイル（コア対象のみ）から直接読む。
+    core_summary_file="${REPO_ROOT}/target/llvm-cov/summary-core.txt"
+    if [ -f "${core_summary_file}" ]; then
+        core_line=$(grep -E '^TOTAL' "${core_summary_file}" | tail -1)
+    else
+        core_line="(${core_summary_file} が見つかりません)"
+    fi
     report "1（カバレッジ 80% 以上）" "PASS" "coverage.sh が閾値を満たして終了しました（${core_line}）"
 else
     tail -5 /tmp/accept-task-11-5-coverage.log
@@ -107,6 +115,14 @@ fi
 # ci.yml の全ジョブに timeout-minutes があること・.config/nextest.toml に
 # slow-timeout があることを検査する（TASK-11.4、#36 の設定が退行していないことの
 # 受け入れ確認）。
+#
+# ジョブ本体（例: "  test:"）のキーは 4 スペースインデント（例: "    timeout-minutes:"）。
+# ステップ単位の timeout-minutes（例: doc-test ステップの 15 分制限）は
+# "        timeout-minutes:"（8 スペース、steps: → "      - name:" の下）に現れる。
+# インデント段を区別せずマッチすると、ステップレベルの timeout-minutes だけが
+# 存在してジョブ全体のタイムアウト上限が欠落しているケースを見逃す
+# （ジョブレベルの上限とステップレベルの上限は多層防御として別の意味を持つ）ため、
+# 厳密にジョブ直下（4 スペース）のみをジョブレベルの timeout-minutes として検査する。
 # --------------------------------------------------
 missing_timeout_jobs=$(awk '
     /^jobs:/ { in_jobs=1; next }
@@ -114,7 +130,7 @@ missing_timeout_jobs=$(awk '
         if (job != "" && !has_timeout) { print job }
         job=$0; gsub(/^  /, "", job); gsub(/:$/, "", job); has_timeout=0; next
     }
-    in_jobs && /timeout-minutes:/ { has_timeout=1 }
+    in_jobs && /^    timeout-minutes:/ { has_timeout=1 }
     END { if (job != "" && !has_timeout) print job }
 ' "${CI_FILE}")
 
@@ -136,8 +152,28 @@ fi
 #     workspace 内クレートにも依存してはならない最下層）
 # を機械的に検査する。
 # --------------------------------------------------
-edges_tsv=$(cargo metadata --no-deps --format-version 1 2>/dev/null \
-    | jq -r '.packages[] | .name as $from | .dependencies[] | select(.path != null) | "\($from)\t\(.name)"')
+# cargo metadata / jq のいずれかが失敗すると edges_tsv が空文字列になり、以降の
+# 循環検出・許可リストチェックのループが「対象 0 件」として素通りしてしまい、
+# 依存グラフを一切検証していないのに check 5 が PASS を報告する誤判定になる。
+# 各コマンドの終了ステータスを個別に検証し、失敗時は FAIL として報告して
+# 以降の判定ロジックを実行しない。
+metadata_json=$(cargo metadata --no-deps --format-version 1 2>/tmp/accept-task-11-5-metadata.log)
+metadata_status=$?
+edges_tsv=""
+metadata_ok=1
+if [ "${metadata_status}" -ne 0 ]; then
+    metadata_ok=0
+else
+    edges_tsv=$(printf '%s' "${metadata_json}" | jq -r '.packages[] | .name as $from | .dependencies[] | select(.path != null) | "\($from)\t\(.name)"' 2>/tmp/accept-task-11-5-jq.log)
+    jq_status=$?
+    if [ "${jq_status}" -ne 0 ]; then
+        metadata_ok=0
+    fi
+fi
+
+if [ "${metadata_ok}" -ne 1 ]; then
+    report "5（依存方向の一方向性）" "FAIL" "cargo metadata / jq による依存グラフ抽出に失敗しました。詳細: /tmp/accept-task-11-5-metadata.log, /tmp/accept-task-11-5-jq.log"
+else
 
 cycle_found=0
 if [ -n "${edges_tsv}" ]; then
@@ -214,6 +250,8 @@ elif [ "${#violating_edges[@]}" -gt 0 ]; then
 else
     report "5（依存方向の一方向性）" "PASS" "循環なし・全エッジがレイヤ順の許可リストに合致（$(echo "${edges_tsv}" | tr '\n' ';' | sed 's/\t/->/g')）"
 fi
+
+fi  # metadata_ok
 
 echo "==================================================="
 if [ "${overall_fail}" -ne 0 ]; then
