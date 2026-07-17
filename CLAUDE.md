@@ -114,7 +114,7 @@ main は判断・統合・ユーザー対話に集中する**。詳細は [rules
 | [code-comment-style.md](.claude/rules/code-comment-style.md) | コメント・doc comment 規約 |
 | [out-of-scope-tracking.md](.claude/rules/out-of-scope-tracking.md) | 実装対象外の追跡（Issue 化）規約 |
 | [improvement-proposal.md](.claude/rules/improvement-proposal.md) | 改善提案フロー・起票・承認の運用規約 |
-| [feature-modification.md](.claude/rules/feature-modification.md) | 追加機能改修フローのドキュメント追随・完遂判定の運用規約 |
+| [feature-modification.md](.claude/rules/feature-modification.md) | 機能要求→実装→テスト→ドキュメント追随→完遂判定の一貫改修フロー運用規約 |
 | [feasibility-guardrail.md](.claude/rules/feasibility-guardrail.md) | 対応可否自律判断ガードレール（曖昧要求・危険要求の不可判定規約） |
 
 ## Current Skills

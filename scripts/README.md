@@ -12,6 +12,10 @@ TASK-14.1（#39）で、CI 完遂判定基準（REQ-14）を branch protection �
 `setup-required-checks.sh` を追加した。TASK-14.3（#41）で、同スクリプトへ PR 必須化・
 force push/削除禁止のルールを追加し、受け入れテスト `tests/run-review-gate-tests.sh` を
 新設した（`docs/design/review-gate.md` 参照）。
+TASK-12.2-1（#81）で、機能要求の実装にテスト追加が伴うことを機械チェックする
+`feature-flow-check.sh` を追加した。フロー全体・運用規約は
+[`docs/design/feature-modification-flow.md`](../docs/design/feature-modification-flow.md)・
+[`.claude/rules/feature-modification.md`](../.claude/rules/feature-modification.md) を参照。
 TASK-12.3-2（#84）で、対応可否自律判断ガードレール（TASK-12.3-1、#83、
 `docs/design/feasibility-guardrail.md`）の判定記録バリデータ `feasibility-check.sh` と
 セルフテスト `tests/run-guardrail-tests.sh` を追加した。
@@ -28,6 +32,8 @@ TASK-12.3-2（#84）で、対応可否自律判断ガードレール（TASK-12.3
 | `accept-task-11-5.sh` | TASK-11.5（#37）受け入れテスト一式（カバレッジ・doc 網羅率・AGENTS.md 各節・CI タイムアウト・依存方向一方向性）を PASS/FAIL/PENDING で判定する | CI からは呼ばれない。TASK-11.5 系イシューのローカル受け入れ確認を想定 |
 | `unsafe-baseline.json` | `unsafe-triage.sh` のラチェット判定に使うクレート別ベースライン（コミット対象） | `unsafe-triage.sh --update-baseline` で再生成する |
 | `tests/run-triage-tests.sh` | `audit-triage.sh` / `unsafe-triage.sh` のセルフテスト（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
+| `feature-flow-check.sh` | 実装変更（`crates/<name>/src/**/*.rs`）に同一クレートのテスト追加が伴うことを検証する（機能改修フロー、REQ-12(b)） | CI からは呼ばれない（必須ゲート化は #82）。セルフテストのみ CI 化 |
+| `tests/run-feature-flow-tests.sh` | `feature-flow-check.sh` のセルフテスト（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `setup-required-checks.sh` | default branch の repository ruleset に `ci-complete` required status check・PR 必須化・force push/削除禁止を設定する | CI からは呼ばれない。管理者権限を持つ人間・CI 管理者がローカルで 1 回実行する運用（`docs/design/ci-completion-criteria.md`・`docs/design/review-gate.md` 参照） |
 | `tests/run-review-gate-tests.sh` | レビューゲート運用（TASK-14.3）の受け入れテスト。`--offline` は lint 表・ci.yml 構成の存在確認のみ（CI 常設）、既定モードは deny lint 検出・ruleset 検証を含むフル層（受け入れ実施時に手動/任意実行） | `--offline` は `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `feasibility-check.sh` | 対応可否自律判断ガードレール（`docs/design/feasibility-guardrail.md`）の判定記録（markdown）を検証する。`--template` は規約準拠のテンプレートを標準出力、`--input <record.md>` は形式・必須項目・fail-closed 原則を検証する | CI からは呼ばれない。判定記録の作成・着手前確認をエージェント・人間がローカルで実行する運用（`.claude/rules/feasibility-guardrail.md` 参照） |
@@ -208,3 +214,21 @@ AGENTS.md 各節・CI テストタイムアウト設定・依存方向の一方�
 PASS / FAIL / PENDING で出力する。AGENTS.md 本体は TASK-11.3（#35）のスコープのため、
 未作成時は FAIL ではなく PENDING（#35 待ち）として区別する。FAIL が 1 件でもあれば
 非 0 で終了し、PENDING のみなら 0 で終了する。
+
+## `feature-flow-check.sh` — 機能改修の実装/テスト同時性チェック（TASK-12.2-1、#81）
+
+```bash
+bash scripts/feature-flow-check.sh --base origin/main
+bash scripts/feature-flow-check.sh --base origin/main --allow-no-tests pseudo-crate "理由"
+```
+
+- `git diff --name-only -z <base>...<head>` で `crates/<name>/src/**/*.rs` の変更を検出し、
+  同一クレートのテスト変更（`crates/<name>/tests/**`、または src 差分の追加行に
+  `#[test]` / `#[tokio::test]` / `#[cfg(test)]` / doc test フェンス）が伴わなければ
+  `exit 1`（フェイルクローズ）。
+- `--allow-no-tests <crate> "<理由>"` で理由必須の明示的除外が可能（警告出力・レビューで
+  人間が確認する前提）。
+- CI からは呼ばれない。PR の必須ゲートとしての組み込みは #82（完遂判定への組み込み）の
+  スコープ。フロー全体・運用規約は
+  [`docs/design/feature-modification-flow.md`](../docs/design/feature-modification-flow.md)・
+  [`.claude/rules/feature-modification.md`](../.claude/rules/feature-modification.md) を参照。

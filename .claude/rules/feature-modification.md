@@ -1,11 +1,37 @@
-# 追加機能改修フロー 運用規約（ドキュメント追随・完遂判定）
+# 機能改修（機能要求→実装→テスト→ドキュメント追随→完遂判定）運用規約
 
-TASK-12.2-2（#82、REQ-12(b)）対応。機能要求を実装・テスト追加・ドキュメント更新まで
-一貫して改修するフローのうち、**ドキュメント追随**と**完遂判定**についてエージェントが
-従う規約。詳細フロー・責務分界は
+TASK-12.2-1（#81、REQ-12(b)）+ TASK-12.2-2（#82、REQ-12(b)）対応。外部から受け取った
+機能要求を AI が実装・テスト追加・ドキュメント追随・完遂判定まで一貫して改修する際に
+エージェントが従う規約。詳細フロー・段階ごとの担い手・責務分界は
 [[feature-modification-flow]]（`docs/design/feature-modification-flow.md`）を参照。
-機能要求 → 実装 → テストの基幹フロー整備は TASK-12.2-1（#81）を参照（本規約はその一部を
-構成する）。
+改善提案フロー（自動検知起点）の運用規約は [[improvement-proposal]] を参照
+（本規約は「外部からの機能要求」起点の対になるフロー）。
+
+## 機能要求の必須記載項目
+
+`.github/ISSUE_TEMPLATE/feature-request.yml`（ラベル `feature-request`）で受け付ける。
+必須: 概要・**受け入れ基準**・影響範囲の想定。
+
+## 受け入れ基準なし要求は実装着手しない
+
+- Issue form の必須化は GitHub UI レベルに留まり、API 経由の起票やテンプレート外の
+  Issue には強制力が及ばない。実装着手前に受け入れ基準の記載を必ず確認する
+- 受け入れ基準を欠く要求は実装に着手せず差し戻す（追加調査を要する下書きとして扱う。
+  [[improvement-proposal]] の「必須記載項目を欠く提案は改善提案として扱わない」と同一原則）
+- 曖昧要求・危険要求の可否判定（可 / 不可 / 要エスカレーション）の詳細ガードレールは
+  TASK-12.3（#83/#84）のスコープ。本規約は「受け入れ基準の有無」という最小条件のみを扱う
+
+## 実装にはテスト追加を伴う
+
+- 実装変更（`crates/<name>/src/**/*.rs`）には同一クレートのテスト追加
+  （`crates/<name>/tests/**` の変更、または `#[test]` / `#[tokio::test]` /
+  `#[cfg(test)]` / doc test の追加）を伴わせる
+- 機械チェックは `scripts/feature-flow-check.sh --base <base-rev>` で行う
+  （`scripts/tests/run-feature-flow-tests.sh` がセルフテスト）
+- テスト追加を省略する場合は `--allow-no-tests <crate> "<理由>"` で理由を必須明記し、
+  レビューで人間が理由の妥当性を確認する前提とする。暗黙スキップは行わない
+  （フェイルクローズ、[[security]]）
+- 公開 API には doc test を付ける（[[coding-rust]]・[[code-comment-style]]）
 
 ## ドキュメント追随チェックリスト
 
@@ -43,15 +69,32 @@ TASK-12.2-2（#82、REQ-12(b)）対応。機能要求を実装・テスト追加
 - 未完遂・部分完遂を握りつぶさず、深刻な問題は main エージェントからユーザーへ報告する
   （[[security]] と同一原則）
 
-## 実装・レビューフロー
+## 委譲
 
-- 実装・テスト追加後、PR 作成前に本書チェックリストでドキュメント追随を確認する
+- 実装は [[delegation-impl]] のパスベース委譲マッピングに従う
+  （`crates/core` 等 → `core-builder`、`crates/plugin-*` → `plugin-builder`）
+- pay-for-what-you-use（[[pay-for-what-you-use]]）を全実装で遵守する
+
+## 実装・承認ゲート
+
+- 機能改修の**自動適用・自動マージは行わない**。実装は必ず CI 通過（`fmt` / `clippy -D
+  warnings` / `test`）とレビューゲートを経る（[[improvement-proposal]] と同一原則）
+- 実装・テスト追加後、PR 作成前に本書のドキュメント追随チェックリストで追随を確認する
 - 委譲マッピングは [[delegation-impl]] に従う（`reviewer` / `security-auditor` によるセルフ
   レビューを経てから完遂判定に進む）
+
+## 握りつぶし禁止
+
+- `feature-flow-check.sh` の検知結果（テスト追加漏れ）を確認せずに無視・スキップしない
+- 深刻な問題は握りつぶさず main エージェントからユーザーへ明確に報告する（[[security]]）
 
 ## 参照
 
 - 詳細フロー・責務分界: [[feature-modification-flow]]（`docs/design/feature-modification-flow.md`）
+- 対になるフロー（改善提案）: [[improvement-proposal]]
+- 委譲マッピング: [[delegation-impl]]
+- Rust 規約: [[coding-rust]]
+- pay-for-what-you-use: [[pay-for-what-you-use]]
 - CI 完遂判定基準: [[ci-completion-criteria]]（`docs/design/ci-completion-criteria.md`）
 - スコープ外課題の追跡: [[out-of-scope-tracking]]
 - セキュリティ規約: [[security]]
