@@ -93,11 +93,29 @@ if [ -z "${BASE_REV}" ]; then
     exit 2
 fi
 
+# crates/<crate_dir>/Cargo.toml の [package] name を返す（存在しない・取得不能なら
+# 何も出力せず失敗を返す）。--allow-no-tests はディレクトリ名だけでなく Cargo
+# パッケージ名（例: backend-framework-core, bf-http）でも指定できるようにするための
+# 補助関数（Bugbot 指摘: ディレクトリ名比較のみだとパッケージ名指定時に免除が効かない）。
+crate_package_name() {
+    local crate_dir="$1"
+    local toml_content
+    toml_content="$(git show "${HEAD_REV}:crates/${crate_dir}/Cargo.toml" 2>/dev/null)" || return 1
+    printf '%s\n' "${toml_content}" | awk -F'"' '
+        /^\[package\]/ { in_pkg = 1; next }
+        /^\[/ { in_pkg = 0 }
+        in_pkg && /^[[:space:]]*name[[:space:]]*=/ { print $2; exit }
+    '
+}
+
 is_allowed() {
     local crate="$1"
+    local pkg
+    pkg="$(crate_package_name "${crate}")"
     local i
     for i in "${!ALLOW_NO_TESTS_CRATES[@]}"; do
-        if [ "${ALLOW_NO_TESTS_CRATES[$i]}" = "${crate}" ]; then
+        local given="${ALLOW_NO_TESTS_CRATES[$i]}"
+        if [ "${given}" = "${crate}" ] || { [ -n "${pkg}" ] && [ "${given}" = "${pkg}" ]; }; then
             echo "${ALLOW_NO_TESTS_REASONS[$i]}"
             return 0
         fi
@@ -132,11 +150,16 @@ for f in "${CHANGED_FILES[@]}"; do
         crates/*/src/*.rs)
             crate="$(printf '%s' "${f}" | cut -d/ -f2)"
             SRC_CHANGED["${crate}"]=1
-            # 追加行（+ で始まる行、diff ヘッダの +++ は除く）にテストマーカーが
-            # あるかを見る。doc test 追加を検知する近似ヒューリスティック
-            # （計画書 8 節に明記の既知の限界。誤検知は --allow-no-tests + レビューで運用）。
-            if git diff -U0 "${BASE_REV}...${HEAD_REV}" -- "${f}" \
-                | grep -E '^\+[^+]' \
+            # 変更差分の全文脈（追加行 `+` と前後の非変更コンテキスト行）にテスト
+            # マーカーが含まれるかを見る。フル文脈（大きな -U 値）を使うのは、
+            # 既存の `#[test]` 関数内のアサーションだけを書き換え、新規マーカー行を
+            # 追加しない編集（Bugbot 指摘: 追加行のみを見る -U0 だと未検出になり
+            # SRC_HAS_TEST_MARKER が立たず誤って exit 1 する）も検知するため。
+            # doc test 追加を検知する近似ヒューリスティック（計画書 8 節に明記の
+            # 既知の限界。誤検知は --allow-no-tests + レビューで運用）。
+            if git diff -U1000000 "${BASE_REV}...${HEAD_REV}" -- "${f}" \
+                | grep -E '^[+ ]' \
+                | grep -vE '^\+\+\+' \
                 | grep -qE "${TEST_MARKER_PATTERN}"; then
                 SRC_HAS_TEST_MARKER["${crate}"]=1
             fi

@@ -54,6 +54,12 @@ setup_repo() {
         cd "${dir}"
         git init -q
         mkdir -p crates/pseudo-crate/src crates/pseudo-crate/tests
+        cat > crates/pseudo-crate/Cargo.toml <<'EOF'
+[package]
+name = "pseudo-crate-pkg"
+version = "0.1.0"
+edition = "2021"
+EOF
         cat > crates/pseudo-crate/src/lib.rs <<'EOF'
 //! テスト用の擬似クレート。
 pub fn add(a: i32, b: i32) -> i32 {
@@ -210,6 +216,58 @@ exit7=$?
 set -e
 assert_exit_code "--base 未指定は exit 2" 2 "${exit7}"
 rm -rf "${REPO7}"
+
+echo "===== ケース8: src 内の既存 #[test] 本体のみ編集（新規マーカー行なし）は pass ====="
+# Bugbot 指摘（scripts/feature-flow-check.sh#L126-L141）の回帰テスト:
+# 追加行自体にテストマーカーが現れない編集（既存 #[test] 関数のアサーション変更）
+# でも、その差分の文脈に既存のテストマーカーが含まれていれば検知できることを確認する。
+REPO8="$(setup_repo)"
+(
+    cd "${REPO8}"
+    cat >> crates/pseudo-crate/src/lib.rs <<'EOF'
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_works_inline() {
+        assert_eq!(add(1, 1), 2);
+    }
+}
+EOF
+)
+commit_all "${REPO8}" "既存テストなし状態から inline テストモジュールを追加"
+BASE8="$(cd "${REPO8}" && git rev-parse HEAD)"
+sed -i.bak 's/assert_eq!(add(1, 1), 2);/assert_eq!(add(1, 1), 2); \/\/ 変更/' \
+    "${REPO8}/crates/pseudo-crate/src/lib.rs"
+rm -f "${REPO8}/crates/pseudo-crate/src/lib.rs.bak"
+commit_all "${REPO8}" "既存 #[test] 本体のみ編集（新規マーカー行なし）"
+set +e
+out8="$(run_check_in "${REPO8}" --base "${BASE8}" 2>&1)"
+exit8=$?
+set -e
+assert_exit_code "既存テスト本体のみの編集は exit 0" 0 "${exit8}"
+rm -rf "${REPO8}"
+
+echo "===== ケース9: --allow-no-tests に Cargo パッケージ名（ディレクトリ名と異なる）を指定しても許容される ====="
+# Bugbot 指摘（scripts/feature-flow-check.sh#L66-L75, #L95-L105）の回帰テスト:
+# --allow-no-tests はディレクトリ名（pseudo-crate）だけでなく Cargo パッケージ名
+# （pseudo-crate-pkg、Cargo.toml の [package] name）でも免除できることを確認する。
+REPO9="$(setup_repo)"
+BASE9="$(cd "${REPO9}" && git rev-parse HEAD)"
+cat >> "${REPO9}/crates/pseudo-crate/src/lib.rs" <<'EOF'
+
+pub fn noop2() {}
+EOF
+commit_all "${REPO9}" "テストなし src 変更（パッケージ名で明示除外予定）"
+set +e
+out9="$(run_check_in "${REPO9}" --base "${BASE9}" --allow-no-tests pseudo-crate-pkg "自明な no-op 追加のため" 2>&1)"
+exit9=$?
+set -e
+assert_exit_code "Cargo パッケージ名指定の --allow-no-tests は exit 0" 0 "${exit9}"
+assert_contains "除外理由を警告として出力する（パッケージ名指定）" "${out9}" "自明な no-op 追加のため"
+rm -rf "${REPO9}"
 
 echo
 echo "===== 結果: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} ====="
