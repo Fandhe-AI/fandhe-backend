@@ -19,6 +19,7 @@
 //! 適用指針を参照）。
 
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::OwnedSemaphorePermit;
 
 use bf_http::request::RequestHead;
 use bf_http::response::Response;
@@ -78,7 +79,8 @@ fn from_plugin_response(response: bf_plugin_webrtc_proxy::Response) -> Response 
 
 /// [`UpgradeHandler::matches`][crate::extension::UpgradeHandler::matches] が
 /// `true` を返した接続をプラグイン側へ委譲するための、一定シグネチャの
-/// Upgrade 型委譲シーム（TASK-4.1 / #22）。
+/// Upgrade 型委譲シーム（TASK-4.1 / #22、専用タスク再 spawn は
+/// TASK-4.2 / #23【条件(1)】）。
 ///
 /// `crates/core/src/server.rs` の `handle_connection` から、読み取りバッファ
 /// 解放（Conditional Go 条件(1)）・残余バイト列（`leftover`）退避の直後に
@@ -90,26 +92,57 @@ fn from_plugin_response(response: bf_plugin_webrtc_proxy::Response) -> Response 
 /// doc を参照）。`None` は「完全に委譲済みで呼び出し元はこれ以上ストリームに
 /// 触れない」ことを意味する。
 ///
-/// `websocket` feature 無効時は `stream`/`head`/`leftover`/`server` を一切
-/// 参照せず即座に `Some(stream)` を返し、`bf_plugin_websocket` への依存・
-/// 呼び出しコードともバイナリに含まれない（`cargo tree` で確認可能、
-/// pay-for-what-you-use）。
+/// # 委譲後の専用タスク再 spawn（TASK-4.2 / #23）
+///
+/// マッチ確定時、ハンドシェイク + エコーループ（`bf_plugin_websocket::handle_upgrade`）
+/// を呼び出し元の `handle_connection` タスク内でインラインに await せず、
+/// `tokio::spawn` した専用タスクへ完全に切り離す。`handle_connection` の
+/// tokio タスクは `read_request`・応答直列化等を含む大きなステートマシンで
+/// あり、そのままインライン await すると WS 接続の生存中ずっとこの大きな
+/// ステートマシンがメモリ上に残ってしまう（PoC-7 実測、接続あたり RSS が
+/// axum 比 155.2% となり Conditional Go 条件(1) の成功基準 110% を満たさな
+/// かった残差要因）。マッチ確定と同時に `handle_connection` 側は即座に
+/// `return`（呼び出し元で `None` を受けて終了）し、大きな future を解放
+/// する。新タスクは WS セッションのみを載せた小さな future になる
+/// （`docs/design/plugin-boundary.md` 5 節「委譲後の専用タスク再 spawn」
+/// パターンを参照）。
+///
+/// # `permit` の契約（DoS 対策の維持、TASK-4.2 / #23）
+///
+/// 同時接続数上限は [`BoundServer::run`][crate::server::BoundServer::run] が
+/// 保持する `OwnedSemaphorePermit` で強制される。素朴に再 spawn すると、
+/// 元の `handle_connection` タスクは即座に終了して permit を解放してしまい、
+/// 長時間生存する WS セッションが `max_connections` の上限強制から漏れる
+/// （リソース枯渇 DoS のリグレッション、`.claude/rules/security.md`）。
+/// これを避けるため、呼び出し元は `permit`（`&mut Option<OwnedSemaphorePermit>`）
+/// を渡し、本関数はマッチ確定時に [`Option::take`] で permit の所有権を奪って
+/// 新タスクへ move する。呼び出し元に残るのは `None` であり、`handle_connection`
+/// 側の通常の permit drop 経路（呼び出し元のラッパー、`server.rs` を参照）は
+/// 何も解放しない。permit は新タスク内で WS セッション終了まで保持され、
+/// セッション終了と同時に（タスクの戻りで）解放される。
+///
+/// `websocket` feature 無効時は `stream`/`head`/`leftover`/`server`/`permit`
+/// を一切参照せず即座に `Some(stream)` を返し、`bf_plugin_websocket` への
+/// 依存・呼び出しコード・`tokio::spawn` 呼び出しともバイナリに含まれない
+/// （`cargo tree` で確認可能、pay-for-what-you-use）。
 ///
 /// [`bf_plugin_websocket::handle_upgrade`] 内のエラー（ハンドシェイク検証
-/// 違反・I/O・プロトコルエラー）は本関数の境界で吸収し、panic としてコア
+/// 違反・I/O・プロトコルエラー）は新タスクの境界で吸収し、panic としてコア
 /// 境界を越えさせない（`.claude/rules/coding-rust.md`）。エラー発生時は
-/// 接続を静かにクローズしたものとして扱い `None` を返す（`handle_upgrade`
-/// 自体が 400/426 応答の送出、または I/O エラー時の未送出クローズを内部で
-/// 行っているため、呼び出し元がさらにフォールバック応答を重ねて送る必要は
-/// ない）。
+/// 接続を静かにクローズしたものとして扱う（`handle_upgrade` 自体が 400/426
+/// 応答の送出、または I/O エラー時の未送出クローズを内部で行っているため、
+/// 呼び出し元がさらにフォールバック応答を重ねて送る必要はない）。新タスク内
+/// で panic しても `tokio::spawn` のタスク境界で隔離され、コアの accept
+/// ループへは波及しない。
 pub(crate) async fn try_handle_upgrade<S>(
     stream: S,
     head: &RequestHead,
     leftover: Vec<u8>,
     server: &Server,
+    permit: &mut Option<OwnedSemaphorePermit>,
 ) -> Option<S>
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     #[cfg(feature = "websocket")]
     {
@@ -118,14 +151,26 @@ where
             .iter()
             .find(|config| bf_plugin_websocket::matches(head, config))
         {
-            let _ = bf_plugin_websocket::handle_upgrade(stream, head, leftover, config).await;
+            let config = config.clone();
+            let head = head.clone();
+            // permit の所有権をセッションタスクへ move する（上の doc の
+            // 「permit の契約」を参照）。呼び出し元には `None` が残り、
+            // 通常の permit drop 経路は何も解放しない。
+            let permit = permit.take();
+            tokio::spawn(async move {
+                // セッションが終了する（このタスクの future が完了する）まで
+                // permit を保持し、`max_connections` のカウントから漏れない
+                // ようにする。
+                let _permit = permit;
+                let _ = bf_plugin_websocket::handle_upgrade(stream, &head, leftover, &config).await;
+            });
             return None;
         }
     }
 
     #[cfg(not(feature = "websocket"))]
     {
-        let _ = (head, &leftover, server);
+        let _ = (head, &leftover, server, &permit);
     }
 
     Some(stream)
