@@ -25,7 +25,8 @@ backend-framework/
 ├── docs/
 │   ├── spec/               # 仕様書 submodule（要件・タスク・ロードマップ）
 │   ├── design/             # リポジトリ側設計ドキュメント（実装フェーズの設計判断を記録）
-│   └── dep-impact/         # 依存インパクト（依存数・バイナリサイズ・unsafe 件数）記録台帳（TASK-15.2）
+│   ├── dep-impact/         # 依存インパクト（依存数・バイナリサイズ・unsafe 件数）記録台帳（TASK-15.2）
+│   └── acceptance/         # REQ-1 等の受け入れ検証結果レポート（TASK-1.6-2 で追加）
 ├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）
 ├── rust-toolchain.toml    # stable + rustfmt/clippy
 ├── crates/                # cargo workspace
@@ -42,7 +43,11 @@ backend-framework/
 │   ├── README.md                      # 使い方・前提ツール・CI との対応
 │   ├── dep-audit.sh                   # 全 feature 構成の cargo audit / cargo deny check（ci.yml dep-audit ジョブ）
 │   ├── dep-impact.sh                  # 依存クレート数・バイナリサイズ・unsafe 件数の計測（markdown 出力）
-│   └── setup-required-checks.sh       # main の required status check（ci-complete）設定（TASK-14.1、#39）
+│   ├── setup-required-checks.sh       # main の required status check（ci-complete）設定（TASK-14.1、#39）
+│   └── accept/            # REQ-1 受け入れ検証スクリプト（TASK-1.6-2 で追加）
+│       ├── README.md                  # 検証基準・前提ツール・実行方法
+│       ├── lib/common.sh              # PASS/FAIL/SKIP/WARN 集計の共通関数
+│       └── core-deps-unsafe-audit.sh  # 依存数比・unsafe・audit/deny・LoC・拡張点・プラグイン非依存の検証本体
 └── .claude/
     ├── agents/            # 目的別 sub-agent（research/implement/testing/quality/docs）
     ├── rules/             # 運用ルール（委譲・Rust 規約・セキュリティ 等）
