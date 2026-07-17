@@ -247,7 +247,22 @@ fi
 #    （scripts/accept/core-deps-unsafe-audit.sh 基準 F と同一手法。TASK-11.1 で
 #    crates/core を対象に追加。bf-plugin-* 自体は「plugin」を正当に含むため
 #    検査対象にしない。依存方向はチェック 1 のホワイトリストが別途担保する）
+#
+#    例外: TASK-2.1（#18、PR #129）でチェック 1 のホワイトリストへ追加された
+#    唯一のエッジ backend-framework-core:bf-plugin-webrtc-proxy（本体チェック 1
+#    該当コメント・docs/design/plugin-boundary.md 6.1 節参照）に対応する実装。
+#    3 拡張点（Middleware/UpgradeHandler/RequestGate、いずれも dyn 互換性のため
+#    同期 API 限定）に載らない非同期アップグレード中継（WebRTC シグナリング
+#    プロキシへの委譲）専用に、crates/core/src/plugin.rs へ隔離してある。
+#    本チェックはこのファイル・crates/core/src/lib.rs の `mod plugin;` 宣言・
+#    crates/core/src/server.rs の `webrtc_proxy` 系シンボル・
+#    crates/core/Cargo.toml の `bf-plugin-webrtc-proxy` 依存に限り許可し、
+#    他プラグインへは一般化しない（bf-plugin-webrtc-proxy 以外の plugin- 依存・
+#    プラグイン固有シンボルは引き続き通常どおり FAIL する）。
 # ---------------------------------------------------------------------------
+webrtc_proxy_exception_file="crates/core/src/plugin.rs"
+webrtc_proxy_exception_symbol_pattern='bf_plugin_webrtc_proxy|webrtc_proxy|crate::plugin::|pub\(crate\) mod plugin;'
+
 plugin_hits_all=""
 for dir in crates/core crates/http crates/routes; do
     if [ -d "${dir}/src" ]; then
@@ -255,6 +270,11 @@ for dir in crates/core crates/http crates/routes; do
         # 識別子パターン（Plugin/plugin を含む識別子）のみを検査する。除外パターンは
         # grep -rn の "file:line:content" 形式を踏まえ "file:line:" プレフィックス込みで書く。
         hits="$(grep -rn --include='*.rs' -E '[A-Za-z_]*[Pp]lugin' "${dir}/src" | grep -v -E '^[^:]*:[0-9]+:[[:space:]]*//' || true)"
+        if [ "${dir}" = "crates/core" ] && [ -n "${hits}" ]; then
+            # webrtc-proxy 専用モジュール全体、および lib.rs/server.rs の
+            # webrtc_proxy 関連シンボルのみを例外として除外する（上記コメント参照）。
+            hits="$(printf '%s\n' "${hits}" | grep -v -E "^${webrtc_proxy_exception_file}:" | grep -v -E "${webrtc_proxy_exception_symbol_pattern}" || true)"
+        fi
         if [ -n "${hits}" ]; then
             plugin_hits_all="${plugin_hits_all}${hits}
 "
@@ -262,9 +282,17 @@ for dir in crates/core crates/http crates/routes; do
     else
         fail "3: プラグイン非依存（core/routes/http） — ${dir}/src が存在しません（検証対象なし。crates/routes 新設 PR 内で検出された場合は構成漏れ）"
     fi
-    if [ -f "${dir}/Cargo.toml" ] && grep -q 'plugin-' "${dir}/Cargo.toml"; then
-        plugin_hits_all="${plugin_hits_all}${dir}/Cargo.toml に plugin- 依存あり
+    if [ -f "${dir}/Cargo.toml" ]; then
+        # doc comment（`#` 行）中の「plugin-」誤検出を避け、実際の依存宣言行のみを対象にする
+        # （.rs 側のコメント除外と同一方針）。
+        cargo_toml_hits="$(grep -n 'plugin-' "${dir}/Cargo.toml" | grep -v -E '^[0-9]+:[[:space:]]*#' || true)"
+        if [ "${dir}" = "crates/core" ] && [ -n "${cargo_toml_hits}" ]; then
+            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v 'bf-plugin-webrtc-proxy' || true)"
+        fi
+        if [ -n "${cargo_toml_hits}" ]; then
+            plugin_hits_all="${plugin_hits_all}${dir}/Cargo.toml に plugin- 依存あり: ${cargo_toml_hits}
 "
+        fi
     fi
 done
 
