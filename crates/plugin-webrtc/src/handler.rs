@@ -23,6 +23,7 @@ use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::config::WebRtcConfig;
@@ -48,9 +49,11 @@ fn error_response(status: u16, body: &'static [u8]) -> Response {
 /// - `config.max_offer_bytes()` 超過は `413`（リソース枯渇対策、
 ///   .claude/rules/security.md）
 /// - `config.max_peer_connections()` に達している場合は新規 `RTCPeerConnection` を
-///   生成せず `503` で拒否する（フェイルクローズ。生成済み接続はクローズ処理を
-///   持たずプロセス生存期間中レジストリに残るため、恒久対応は TASK-8.3・#28へ
-///   申し送り）
+///   生成せず `503` で拒否する（フェイルクローズ）。上限判定と予約枠の登録は
+///   [`WebRtcConfig::reserve_slot`] が単一ロック区間で行うため TOCTOU
+///   （time-of-check to time-of-use）は生じない。接続クローズ・失敗時は
+///   [`register_close_handler`] がレジストリから枠を除去するため、正常利用の
+///   蓄積のみでレジストリが単調増加し続けることはない
 /// - JSON/SDP のパース失敗・シグナリング内部エラーは `400`/`500`（内部情報を含まない
 ///   固定 JSON body）
 /// - シグナリング全体（`set_remote_description` から ICE 候補収集完了まで）が
@@ -105,22 +108,36 @@ pub async fn try_handle_rtc_offer(
         return Some(error_response(413, br#"{"error":"offer_too_large"}"#));
     }
 
-    // 新規 RTCPeerConnection 生成の前に同時接続数上限を確認する（フェイルクローズ。
-    // 上限判定を signaling_timeout の外・パース処理の前に置くことで、上限超過時は
-    // webrtc-rs の重い初期化処理（MediaEngine・interceptor 登録）自体を走らせない）。
-    {
-        let registry = config.registry().lock().unwrap_or_else(|e| e.into_inner());
-        if registry.len() >= config.max_peer_connections() {
+    // 新規 RTCPeerConnection 生成の前に同時接続数上限を確認し、予約枠を登録する
+    // （フェイルクローズ。判定と登録を単一ロック区間で行う reserve_slot により
+    // TOCTOU を防ぐ。上限判定を signaling_timeout の外・パース処理の前に置くことで、
+    // 上限超過時は webrtc-rs の重い初期化処理（MediaEngine・interceptor 登録）自体を
+    // 走らせない）。
+    let slot_id = match config.reserve_slot() {
+        Some(id) => id,
+        None => {
             return Some(error_response(
                 503,
                 br#"{"error":"peer_connection_limit_reached"}"#,
             ));
         }
-    }
+    };
 
-    match tokio::time::timeout(config.signaling_timeout(), complete_signaling(body, config)).await {
+    match tokio::time::timeout(
+        config.signaling_timeout(),
+        complete_signaling(body, config, slot_id),
+    )
+    .await
+    {
         Ok(response) => Some(response),
-        Err(_elapsed) => Some(error_response(504, br#"{"error":"signaling_timeout"}"#)),
+        Err(_elapsed) => {
+            // タイムアウトで打ち切られた場合、complete_signaling 側の後始末
+            // （release_slot / activate_slot）は実行されない可能性があるため、
+            // 予約枠を明示的に解放する（release_slot は多重解放を許容する冪等な
+            // 操作なので、complete_signaling が既に解放済みでも安全）。
+            config.release_slot(slot_id);
+            Some(error_response(504, br#"{"error":"signaling_timeout"}"#))
+        }
     }
 }
 
@@ -128,16 +145,24 @@ pub async fn try_handle_rtc_offer(
 ///
 /// [`try_handle_rtc_offer`] から `tokio::time::timeout` で包んで呼ばれる
 /// （シグナリング全体のタイムアウト適用範囲を本関数の呼び出し全体に一致させるため、
-/// 早期 return を含む全経路がこの関数内で完結する設計）。
-async fn complete_signaling(body: &[u8], config: &WebRtcConfig) -> Response {
+/// 早期 return を含む全経路がこの関数内で完結する設計）。`slot_id` は呼び出し元が
+/// [`WebRtcConfig::reserve_slot`] で予約済みの枠 ID。**すべての失敗経路で
+/// `config.release_slot(slot_id)` を呼び、予約枠をリークさせない契約**とする
+/// （呼び出し元の `try_handle_rtc_offer` はタイムアウト時のみ独自に解放するため、
+/// この関数内の経路と合わせて二重解放になりうるが `release_slot` は冪等）。
+async fn complete_signaling(body: &[u8], config: &WebRtcConfig, slot_id: u64) -> Response {
     let offer: RTCSessionDescription = match serde_json::from_slice(body) {
         Ok(offer) => offer,
-        Err(_) => return error_response(400, br#"{"error":"invalid_offer_json"}"#),
+        Err(_) => {
+            config.release_slot(slot_id);
+            return error_response(400, br#"{"error":"invalid_offer_json"}"#);
+        }
     };
 
     let pc = match build_peer_connection().await {
         Ok(pc) => pc,
         Err(_) => {
+            config.release_slot(slot_id);
             return error_response(500, br#"{"error":"peer_connection_init_failed"}"#);
         }
     };
@@ -145,41 +170,73 @@ async fn complete_signaling(body: &[u8], config: &WebRtcConfig) -> Response {
     register_echo_handler(&pc);
 
     if pc.set_remote_description(offer).await.is_err() {
+        config.release_slot(slot_id);
         return error_response(400, br#"{"error":"invalid_remote_description"}"#);
     }
 
     let answer = match pc.create_answer(None).await {
         Ok(answer) => answer,
-        Err(_) => return error_response(500, br#"{"error":"create_answer_failed"}"#),
+        Err(_) => {
+            config.release_slot(slot_id);
+            return error_response(500, br#"{"error":"create_answer_failed"}"#);
+        }
     };
 
     // 非トリクル ICE: 候補収集が終わるまで応答を保留し、1 往復のシグナリングで
     // 完結させる（PoC-5 の簡易実装を踏襲。トリクル ICE は REQ-8 でスコープ外）。
     let mut gather_complete = pc.gathering_complete_promise().await;
     if pc.set_local_description(answer).await.is_err() {
+        config.release_slot(slot_id);
         return error_response(500, br#"{"error":"set_local_description_failed"}"#);
     }
     let _ = gather_complete.recv().await;
 
     let local_desc = match pc.local_description().await {
         Some(desc) => desc,
-        None => return error_response(500, br#"{"error":"local_description_missing"}"#),
+        None => {
+            config.release_slot(slot_id);
+            return error_response(500, br#"{"error":"local_description_missing"}"#);
+        }
     };
 
     let answer_bytes = match serde_json::to_vec(&local_desc) {
         Ok(bytes) => bytes,
-        Err(_) => return error_response(500, br#"{"error":"serialization_failed"}"#),
+        Err(_) => {
+            config.release_slot(slot_id);
+            return error_response(500, br#"{"error":"serialization_failed"}"#);
+        }
     };
 
-    // シグナリング成功。以降このプロセス内で `RTCPeerConnection` を保持し続ける
-    // （`WebRtcConfig::max_peer_connections` の doc・恒久対応の申し送りを参照）。
-    config
-        .registry()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push(pc);
+    // シグナリング成功。予約枠をアクティブな接続へ遷移させ、以降このプロセス内で
+    // `RTCPeerConnection` を保持し続ける。クローズ・失敗検知時の枠除去は
+    // register_close_handler が担う（レジストリの単調増加を防ぐ）。
+    register_close_handler(&pc, config, slot_id);
+    config.activate_slot(slot_id, pc);
 
     Response::new(200, answer_bytes).with_content_type("application/json")
+}
+
+/// 接続クローズ・失敗（`RTCPeerConnectionState::Closed`/`Failed`）を検知して
+/// レジストリから枠を除去するハンドラを登録する。
+///
+/// `Disconnected` は ICE 再接続で回復しうる非終端状態のため対象外とする
+/// （早すぎる除去は `Arc<RTCPeerConnection>` の最後の強参照を手放し、回復可能な
+/// 接続を誤ってクローズしてしまう）。クロージャは `pc` 自身への強参照を持たず
+/// `slot_id`（`Copy`）のみを捕捉するため、`pc` → クロージャ → `pc` の参照
+/// サイクル（メモリリーク）は生じない。
+fn register_close_handler(pc: &Arc<RTCPeerConnection>, config: &WebRtcConfig, slot_id: u64) {
+    let config = config.clone();
+    pc.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
+        let config = config.clone();
+        Box::pin(async move {
+            if matches!(
+                state,
+                RTCPeerConnectionState::Closed | RTCPeerConnectionState::Failed
+            ) {
+                config.release_slot(slot_id);
+            }
+        })
+    }));
 }
 
 /// メディアコーデック・インターセプタを登録した `RTCPeerConnection` を 1 つ生成する。
@@ -324,6 +381,33 @@ mod tests {
         assert_eq!(
             response.body,
             br#"{"error":"peer_connection_limit_reached"}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn close_handler_releases_slot_when_state_becomes_closed() {
+        // レビュー指摘（イシュー #26）の再発防止テスト: register_close_handler が
+        // RTCPeerConnectionState::Closed への遷移を検知してレジストリの枠を確実に
+        // 解放することを、ネットワーク I/O なしで直接検証する（`RTCPeerConnection::close`
+        // は state-change ハンドラを同期的に await して呼ぶため、ポーリング不要で決定的）。
+        let config = WebRtcConfig::new().with_max_peer_connections(1);
+        let slot_id = config.reserve_slot().expect("1 件目は予約できる");
+        let pc = build_peer_connection()
+            .await
+            .expect("RTCPeerConnection の生成に失敗した");
+        register_close_handler(&pc, &config, slot_id);
+        config.activate_slot(slot_id, Arc::clone(&pc));
+
+        assert!(
+            config.reserve_slot().is_none(),
+            "上限到達時（1/1 使用中）は新規予約できないはず"
+        );
+
+        pc.close().await.expect("close に失敗した");
+
+        assert!(
+            config.reserve_slot().is_some(),
+            "close 後はレジストリの枠が解放され、新規予約できるはず"
         );
     }
 
