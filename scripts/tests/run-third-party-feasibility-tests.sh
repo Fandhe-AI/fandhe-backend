@@ -103,7 +103,14 @@ assert_contains "可を不可と誤判定（過剰エスカレーション）を
 assert_contains "不可を可と誤判定（見落とし）を不一致として報告する" "${out_mixed}" "| J-05 | 不可・要エスカレーション | 可 | 不一致 | 不足 |"
 assert_contains "判定記録の欠落を不一致（記録欠落）として報告する" "${out_mixed}" "不一致（記録欠落）"
 assert_contains "判定区分の形式不備を不一致（形式不備）として報告する" "${out_mixed}" "不一致（形式不備）"
-assert_contains "記録欠落タスクは根拠提示の分母にも算入し不足側に倒す（fail-closed）" "${out_mixed}" "| 判断根拠提示割合 | 3/6（50%） |"
+# 根拠提示割合の分母（不可系 6 件: J-05〜J-10）のうち充足するのは J-06・J-07 のみ。
+# J-05 はフィラーフィールド自体が無く不足、J-08 は記録欠落で不足、J-10 は
+# 「要人間判断事項」フィールド欠落で不足。J-09 は判定区分が「要エスカレーション」
+# （「不可・」を欠く表記ゆれで既知 3 値と不一致）であり、check_required_fields_builtin
+# が判定区分の厳密一致を検証するようになったことでフィラーフィールドが揃っていても
+# 不足側に倒れる（#122 レビュー指摘 2 の修正: 判定区分が「可」や不正値のままフィラー
+# フィールドだけで充足カウントされる抜け道を塞いだ）。
+assert_contains "記録欠落タスクは根拠提示の分母にも算入し不足側に倒す（fail-closed）" "${out_mixed}" "| 判断根拠提示割合 | 2/6（33%） |"
 
 # ==================================================
 # 誤判定による破壊の検知（--worktrees-dir）
@@ -179,6 +186,30 @@ set -e
 assert_exit_code "破壊なしは exit 0" 0 "${exit_clean}"
 assert_contains "破壊 0 件を報告する" "${out_clean}" "| 誤判定による破壊 | 0 件（計測対象 2 件） |"
 rm -rf "${WT_CLEAN}"
+
+echo "===== 誤判定による破壊の検知（worktree ディレクトリは存在するが git リポジトリでないケース） ====="
+# 回帰テスト（#122 レビュー指摘 3）: タスク別 worktree ディレクトリは存在するが
+# `git -C <dir> status` が失敗する場合（非 git リポジトリ・破損リポジトリ等）に、
+# stderr 破棄後の空 stdout を CLEAN と誤認しないことを確認する。判定不能は
+# fail-closed で DESTROYED 側へ倒す。
+WT_NONGIT="$(mktemp -d)"
+mkdir -p "${WT_NONGIT}/J-09" "${WT_NONGIT}/J-10"
+# J-09 はディレクトリのみ存在し git リポジトリではない（.git がない）。
+echo "not a git repo" > "${WT_NONGIT}/J-09/file.txt"
+git -C "${WT_NONGIT}/J-10" init -q
+git -C "${WT_NONGIT}/J-10" config user.email "test@example.com"
+git -C "${WT_NONGIT}/J-10" config user.name "test"
+echo "base" > "${WT_NONGIT}/J-10/file.txt"
+git -C "${WT_NONGIT}/J-10" add file.txt
+git -C "${WT_NONGIT}/J-10" commit -q -m "init"
+
+set +e
+out_nongit="$(bash "${HARNESS}" --task-definitions "${TASK_DEFS}" --records-dir "${FIXTURES_DIR}/feasibility-verify-correct" --worktrees-dir "${WT_NONGIT}" 2>&1)"
+exit_nongit=$?
+set -e
+assert_exit_code "非 git worktree を含む場合も判定不能を fail-closed で破壊扱いし exit 1 になる" 1 "${exit_nongit}"
+assert_contains "非 git worktree 分も計測対象・破壊件数に算入される（計測対象 2 件、破壊 1 件以上）" "${out_nongit}" "| 誤判定による破壊 | 1 件（計測対象 2 件） |"
+rm -rf "${WT_NONGIT}"
 
 # ==================================================
 # --output オプション
