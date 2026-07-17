@@ -45,12 +45,26 @@ check_dep_count() {
         cargo generate-lockfile >/dev/null 2>&1
     fi
 
+    # `set -o pipefail` 下では cargo tree 自体の失敗（対象クレート未存在・ビルドエラー等）
+    # がパイプライン全体の終了コードに伝播し、`set -e` により代入文の時点でスクリプトが
+    # 中断してしまう（下記 core_deps==0 / axum_deps==0 の記録ガードに到達できない）。
+    # `|| true` でパイプラインの失敗を吸収し、失敗時は空文字列 → wc -l で 0 として
+    # 後続の記録ガードに必ず到達させる（正常系では cargo tree が exit 0 のため無害）。
     local core_deps axum_deps ratio_pct
-    core_deps="$(cargo tree -p backend-framework-core -e normal --prefix none 2>/dev/null | sed 's/ v[0-9].*$//' | sort -u | wc -l | tr -d ' ')"
-    axum_deps="$(cargo tree -p axum-ref -e normal --prefix none 2>/dev/null | sed 's/ v[0-9].*$//' | sort -u | wc -l | tr -d ' ')"
+    core_deps="$(cargo tree -p backend-framework-core -e normal --prefix none 2>/dev/null | sed 's/ v[0-9].*$//' | sort -u | wc -l | tr -d ' ' || true)"
+    axum_deps="$(cargo tree -p axum-ref -e normal --prefix none 2>/dev/null | sed 's/ v[0-9].*$//' | sort -u | wc -l | tr -d ' ' || true)"
 
     if [ "${axum_deps}" -eq 0 ]; then
         record_fail "A: 依存クレート数比" "axum-ref の依存数が 0 と算出された（測定不能）"
+        return
+    fi
+
+    # backend-framework-core に対する cargo tree 自体が失敗（クレート未存在・ビルド
+    # エラー等）すると core_deps も 0 になり得る。この場合 core_deps<=axum_deps/2 が
+    # 常に成立し「50% 以下の基準を満たした」と誤 PASS してしまうため、計測破綻として
+    # 明示的に FAIL 扱いする（axum_deps==0 と同様のフェイルクローズ）。
+    if [ "${core_deps}" -eq 0 ]; then
+        record_fail "A: 依存クレート数比" "core の依存数が 0 と算出された（cargo tree -p backend-framework-core 自体が失敗した可能性があり測定不能）"
         return
     fi
 
@@ -74,8 +88,11 @@ check_unsafe() {
         if [ -d "${dir}/src" ]; then
             # grep は該当 0 件で終了コード 1 を返すため `|| true` で set -e を回避する。
             # 0 件（PASS ケース）が本チェックの主経路であるため必須のガード。
+            # `// SAFETY: ... unsafe ...` のような行コメント中の "unsafe" 字句を実コード
+            # 上の unsafe 使用と誤認しないよう、grep -rn の "file:line:content" 形式を踏まえ
+            # 行頭が `//` の行コメントを除外する（基準 F のプラグイン非依存チェックと同一手法）。
             local hits
-            hits="$(grep -rn --include='*.rs' -E '\bunsafe\b' "${dir}/src" || true)"
+            hits="$(grep -rn --include='*.rs' -E '\bunsafe\b' "${dir}/src" | grep -v -E '^[^:]*:[0-9]+:[[:space:]]*//' || true)"
             if [ -n "${hits}" ]; then
                 unsafe_lines_all="${unsafe_lines_all}${hits}
 "
@@ -202,9 +219,13 @@ check_loc() {
     local dir total=0
     for dir in "${CORE_DIRS[@]}"; do
         if [ -d "${dir}/src" ]; then
+            # `set -o pipefail` 下では grep -v が該当 0 件（空行・// 行のみ、または対象
+            # ファイルなし）で終了コード 1 を返しパイプライン全体が失敗し得る。
+            # 集計結果記録・サマリ出力前にスクリプトが中断しないよう `|| true` で
+            # 各 grep -v 段を素通りさせる（wc -l は 0 を返すため最終カウントは正しく維持される）。
             local n
             n="$(find "${dir}/src" -name '*.rs' -exec cat {} + 2>/dev/null | \
-                grep -v -E '^\s*$' | grep -v -E '^\s*//' | wc -l | tr -d ' ')"
+                { grep -v -E '^\s*$' || true; } | { grep -v -E '^\s*//' || true; } | wc -l | tr -d ' ')"
             total=$((total + n))
         fi
     done
