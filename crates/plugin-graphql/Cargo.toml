@@ -4,18 +4,41 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "backend-framework の GraphQL プラグイン境界最小実装（TASK-2.4 / #21）。REQ-2 の「少なくとも2種のプラグインを feature flag で着脱できる」受け入れ基準向けに、パスインターセプト型のプラグイン境界パターンを webrtc-proxy とは独立した第 2 のインスタンスとして実証する。実 GraphQL 実行（async-graphql 等）は TASK-5.1（#38）のスコープであり、本クレートは POST /graphql への固定応答に限定する。"
+description = "backend-framework の GraphQL プラグイン実装（TASK-5.1 / #38）。パスインターセプト型のプラグイン境界パターン（TASK-2.4 / #21 で確立、webrtc-proxy と並ぶ第 2 インスタンス）を維持したまま、async-graphql による実クエリ実行へ内部実装を差し替える。"
 publish = false
 
-# workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
-# （.claude/rules/coding-rust.md・.claude/rules/security.md）。
+# workspace lints をそのまま継承する（`docs/design/unsafe-deny-lints.md` 第 1 層の
+# forbid を含む）。本番コード・テスト・doc test のいずれも `async_graphql::Object`
+# 派生マクロ（生成コードへ `#[allow(clippy::all, ...)]` を無条件付与し、workspace の
+# forbid と衝突して `E0453` を起こす）を使わない。`async_graphql::dynamic`
+# （`Schema::build` による実行時スキーマ構築 API、`dynamic-schema` feature）のみを
+# `src/lib.rs` の doc test・単体テストで使う（`crates/core/tests/
+# plugin_graphql_boundary.rs` と同型のパターン）ため、forbid→deny への局所
+# ダウングレードは不要（本クレートに手書きの `unsafe` は 0 件、
+# `.claude/rules/coding-rust.md`）。
 [lints]
 workspace = true
 
-# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）: 本クレートは
-# async-graphql 等の実行時依存を一切持たない（TASK-5.1 / #38 のスコープ）。
-# `bf-http` のみを workspace 内 path 依存として持ち、外部 crates.io 依存は
-# 0 件に保つ。`cargo tree -p bf-plugin-graphql` で `bf-http` 以外の依存が
-# 出ないことを継続的に確認する。
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）: async-graphql の
+# 推移的依存（PoC 実測 +95 クレート、バイナリ +1.51MB）はコア・他プラグインへ
+# 波及させず、`graphql` feature（crates/core/Cargo.toml、`optional = true` +
+# `dep:` 構文）を通じてのみ本クレートごと依存グラフへ載る。playground /
+# graphiql 等の開発 UI 系 feature は使わないため `default-features = false` と
+# し、実行に必要な最小 feature のみ個別に有効化する。`cargo tree -p
+# bf-plugin-graphql` で不要依存が混入していないことを継続的に確認する。
 [dependencies]
 bf-http = { path = "../http" }
+async-graphql = { version = "7", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 単体テスト（`#[tokio::test]`）・doc test でのみ使用。本体ビルドには影響しない
+# （dev-dependencies は release ビルドに一切含まれない、
+# `.claude/rules/pay-for-what-you-use.md`）。`dynamic-schema` feature
+# （`Schema::build` による実行時スキーマ構築 API）は `crates/core/Cargo.toml`
+# の dev-dependency と同一パターンで、`#[Object]` 派生マクロ（forbid lint 衝突、
+# 本ファイル冒頭の `[lints]` doc を参照）を使わずにテスト用スキーマを組み立てる
+# ためだけに使う。
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
+async-graphql = { version = "7", default-features = false, features = ["dynamic-schema"] }
