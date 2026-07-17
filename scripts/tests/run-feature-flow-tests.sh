@@ -269,6 +269,51 @@ assert_exit_code "Cargo パッケージ名指定の --allow-no-tests は exit 0"
 assert_contains "除外理由を警告として出力する（パッケージ名指定）" "${out9}" "自明な no-op 追加のため"
 rm -rf "${REPO9}"
 
+echo "===== ケース10: テストマーカーから遠く離れた無関係な src 編集は fail（コンテキスト窓の悪用縮小） ====="
+# Bugbot 指摘（scripts/feature-flow-check.sh#L159-164）の回帰テスト:
+# ファイル内にテストマーカーが存在していても、実際の変更箇所がそこから
+# 十分離れていれば（-U16 の窓外）、テスト追加なしとして正しく検知できることを
+# 確認する（旧実装は -U1000000 でファイル全体を文脈に含めるため誤って pass した。
+# -U16 は穴を縮小する近似ヒューリスティックであり、窓の境界付近は
+# --allow-no-tests + レビューでの運用が前提）。
+REPO10="$(setup_repo)"
+(
+    cd "${REPO10}"
+    {
+        echo
+        echo "#[cfg(test)]"
+        echo "mod tests {"
+        echo "    use super::*;"
+        echo
+        echo "    #[test]"
+        echo "    fn add_works_inline() {"
+        echo "        assert_eq!(add(1, 1), 2);"
+        echo "    }"
+        echo "}"
+        for i in $(seq 1 40); do
+            echo
+            echo "pub fn unrelated_padding_${i}() {}"
+        done
+        echo
+        echo "pub fn sub(a: i32, b: i32) -> i32 {"
+        echo "    a - b"
+        echo "}"
+    } >> crates/pseudo-crate/src/lib.rs
+)
+commit_all "${REPO10}" "テストブロックから離れた場所に無関係な関数を追加"
+BASE10="$(cd "${REPO10}" && git rev-parse HEAD)"
+sed -i.bak 's/    a - b/    a - b \/\/ 無関係な変更（テスト追加なし）/' \
+    "${REPO10}/crates/pseudo-crate/src/lib.rs"
+rm -f "${REPO10}/crates/pseudo-crate/src/lib.rs.bak"
+commit_all "${REPO10}" "テストマーカーから遠い無関係な変更（テスト追加なし）"
+set +e
+out10="$(run_check_in "${REPO10}" --base "${BASE10}" 2>&1)"
+exit10=$?
+set -e
+assert_exit_code "テストマーカーから遠い無関係な変更は exit 1" 1 "${exit10}"
+assert_contains "エラーにクレート名 pseudo-crate を含む（ケース10）" "${out10}" "pseudo-crate"
+rm -rf "${REPO10}"
+
 echo
 echo "===== 結果: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} ====="
 if [ "${FAIL_COUNT}" -ne 0 ]; then
