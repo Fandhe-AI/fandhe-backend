@@ -128,6 +128,7 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
 | `plugin-openapi` | OpenAPI ドキュメント生成 |
 | `plugin-webrtc` | in-process WebRTC（`webrtc-rs` 直接依存） |
 | `plugin-webrtc-proxy` | WebRTC シグナリングプロキシ（別プロセス切り出し型） |
+| `plugin-hub-wiring` | hub 共通配線（`RequestGate` 上の `TenantGate`。JWT (HS256) 検証 → `org_id` 抽出 → フェイルクローズ。依存逆転型プラグイン、`docs/design/plugin-boundary.md` 5.6 節） |
 | `axum-ref` | 性能比較用参照実装 |
 
 ### 変更手順

@@ -332,6 +332,61 @@ where
   場合は、再 spawn 時に必ずその所有権をセッションタスクへ move する
   （move し忘れは DoS リグレッションになる、5.4 節）
 
+## 5.6 Gate 型パターン（依存逆転型、TASK-9.1 / #61 で確立）
+
+`bf-plugin-hub-wiring`（`TenantGate`、JWT 検証 → `org_id` 抽出 →
+フェイルクローズ）は、4・5 節の 2 パターン（コア → プラグインの optional
+依存 + feature ゲート）とは逆に、**プラグイン → コアの一方向依存**（依存
+逆転型）を取る第 3 のプラグイン様式である。
+
+### 5.6.1 依存逆転を選べる条件
+
+4・5 節のパターンが依存逆転を採れなかった理由は、パスインターセプト型
+（`try_handle_rtc_offer` 等、上流への非同期中継を伴う）・Upgrade 型
+（ハンドシェイク検証・101 応答送出という非同期処理を要する）のいずれも、
+3 拡張点（`Middleware`/`UpgradeHandler`/`RequestGate`）の同期 API 制約
+（dyn 互換性のため、`crates/core/src/extension.rs` 冒頭 doc）に非同期呼び
+出しを持ち込めないことにあった（6.1 節）。
+
+`RequestGate` はヘッダ検査のみで完結する既存拡張点であり、`TenantGate` の
+判定（`Authorization` ヘッダ抽出 → HMAC-SHA256 検証、I/O なし）はこの同期
+API 制約に抵触しない。したがって:
+
+- `crates/core` の `Cargo.toml`・`server.rs`・`plugin.rs` は一切変更しない
+  （`optional = true` + `dep:` 構文も、非公開シームへの分岐追加も不要）
+- 利用側サービスが `bf-plugin-hub-wiring` を依存に加え、
+  `Server::gate(TenantGate::new(TenantGateConfig::new(secret)))`
+  （既存の公開 API `Server::gate`、TASK-1.4）で登録するだけで配線が完結する
+- `scripts/dep-direction-check.sh` の許可リストには汎用パターン
+  `bf-plugin-*:backend-framework-core`・`bf-plugin-*:bf-http` が既に存在する
+  ため、6.1 節のような個別例外追加は不要（`crates/plugin-hub-wiring/src/lib.rs`
+  に依存方向宣言 `server → routes → http::*` を記載するのみでチェック 2 も通過する）
+
+### 5.6.2 pay-for-what-you-use の成立根拠
+
+コア側に `dep:` ゲートを持たないため、feature フラグではなく
+「利用側が依存グラフに `bf-plugin-hub-wiring` を加えるか否か」で
+pay-for-what-you-use が成立する。`cargo tree -p backend-framework-core` に
+本クレート・その依存（`hmac`/`sha2`/`base64`/`serde`/`serde_json`）が
+一切現れないことで機械検証できる（コアが本クレートを依存に持たないため、
+そもそも現れようがない設計）。
+
+### 5.6.3 責務境界（`GateOutcome` はクレームを運ばない）
+
+`RequestGate::check` の戻り値 `GateOutcome` は許可/拒否の判定結果のみを運ぶ
+契約（`crates/core/src/extension.rs` doc、`docs/spec/03-poc/hub-wiring-middleware`
+PoC-6）であり、JWT 検証で抽出した `org_id` 等のクレームはコアへ一切渡らない
+（`bf-plugin-hub-wiring` 内の `jwt::Claims` に閉じる）。この境界により、
+コアは hub 固有シンボル（JWT・`org_id`）へ一切依存しないまま、依存逆転型
+プラグインからの利用を受け付けられる。
+
+### 5.6.4 後続 Gate 型プラグインへの適用指針
+
+新規プラグインが `RequestGate`/`Middleware` のみを実装し、判定・観測ロジック
+が同期 I/O なしで完結する場合は、まず本パターン（依存逆転、コア無変更）を
+検討すること。非同期処理・上流中継・コネクション奪取が必要になった時点で
+初めて 4・5 節のコア→プラグインパターンへ切り替える。
+
 ## 6. 検証コマンド
 
 | 検証 | コマンド | 期待結果 |
