@@ -49,16 +49,24 @@
 //! ```
 //! use bf_http::request::{parse_request_head, ParseOutcome};
 //! use bf_plugin_graphql::{try_handle_graphql, GraphQlConfig};
-//! use async_graphql::{EmptyMutation, EmptySubscription, Object, Schema};
+//! use async_graphql::Value;
+//! use async_graphql::dynamic::{Field, FieldFuture, Object, Schema, TypeRef};
 //!
-//! struct Query;
-//!
-//! #[Object]
-//! impl Query {
-//!     async fn hello(&self) -> &str {
-//!         "world"
-//!     }
-//! }
+//! // `async_graphql::dynamic`（実行時スキーマ構築 API）で組み立てる。
+//! // `#[Object]` 派生マクロは使わない（本クレート Cargo.toml の doc・
+//! // `docs/design/unsafe-deny-lints.md` を参照。マクロが生成コードへ無条件
+//! // 付与する `#[allow(clippy::all, ...)]` は workspace の forbid lint と
+//! // 衝突するため、本クレートは動的スキーマ API のみを doc test・単体テストで
+//! // 使い、workspace の forbid lint をそのまま継承する）。
+//! let query = Object::new("Query").field(Field::new(
+//!     "hello",
+//!     TypeRef::named_nn(TypeRef::STRING),
+//!     |_ctx| FieldFuture::new(async move { Ok(Some(Value::from("world"))) }),
+//! ));
+//! let schema = Schema::build(query.type_name(), None, None)
+//!     .register(query)
+//!     .finish()
+//!     .unwrap();
 //!
 //! let buf = b"GET /health HTTP/1.1\r\n\r\n";
 //! let head = match parse_request_head(buf).unwrap() {
@@ -66,7 +74,6 @@
 //!     ParseOutcome::Incomplete => unreachable!(),
 //! };
 //!
-//! let schema = Schema::new(Query, EmptyMutation, EmptySubscription);
 //! let config = GraphQlConfig::new(schema);
 //!
 //! let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -135,19 +142,19 @@ type BoxExecuteFn = Arc<
 /// # Examples
 ///
 /// ```
-/// use async_graphql::{EmptyMutation, EmptySubscription, Object, Schema};
+/// use async_graphql::Value;
+/// use async_graphql::dynamic::{Field, FieldFuture, Object, Schema, TypeRef};
 /// use bf_plugin_graphql::GraphQlConfig;
 ///
-/// struct Query;
-///
-/// #[Object]
-/// impl Query {
-///     async fn hello(&self) -> &str {
-///         "world"
-///     }
-/// }
-///
-/// let schema = Schema::new(Query, EmptyMutation, EmptySubscription);
+/// let query = Object::new("Query").field(Field::new(
+///     "hello",
+///     TypeRef::named_nn(TypeRef::STRING),
+///     |_ctx| FieldFuture::new(async move { Ok(Some(Value::from("world"))) }),
+/// ));
+/// let schema = Schema::build(query.type_name(), None, None)
+///     .register(query)
+///     .finish()
+///     .unwrap();
 /// let _config = GraphQlConfig::new(schema);
 /// ```
 #[derive(Clone)]
@@ -223,18 +230,20 @@ const INVALID_REQUEST_BODY: &str = "{\"errors\":[{\"message\":\"invalid request 
 /// # Examples
 ///
 /// ```
-/// use async_graphql::{EmptyMutation, EmptySubscription, Object, Schema};
+/// use async_graphql::Value;
+/// use async_graphql::dynamic::{Field, FieldFuture, Object, Schema, TypeRef};
 /// use bf_http::request::{parse_request_head, ParseOutcome};
 /// use bf_plugin_graphql::{try_handle_graphql, GraphQlConfig};
 ///
-/// struct Query;
-///
-/// #[Object]
-/// impl Query {
-///     async fn hello(&self) -> &str {
-///         "world"
-///     }
-/// }
+/// let query = Object::new("Query").field(Field::new(
+///     "hello",
+///     TypeRef::named_nn(TypeRef::STRING),
+///     |_ctx| FieldFuture::new(async move { Ok(Some(Value::from("world"))) }),
+/// ));
+/// let schema = Schema::build(query.type_name(), None, None)
+///     .register(query)
+///     .finish()
+///     .unwrap();
 ///
 /// let body = br#"{"query":"{ hello }"}"#;
 /// let request = format!(
@@ -246,7 +255,6 @@ const INVALID_REQUEST_BODY: &str = "{\"errors\":[{\"message\":\"invalid request 
 ///     ParseOutcome::Incomplete => unreachable!(),
 /// };
 ///
-/// let schema = Schema::new(Query, EmptyMutation, EmptySubscription);
 /// let config = GraphQlConfig::new(schema);
 ///
 /// let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -295,24 +303,41 @@ pub async fn try_handle_graphql(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_graphql::{EmptyMutation, EmptySubscription, Object, Schema};
+    use async_graphql::Value;
+    use async_graphql::dynamic::{Field, FieldFuture, InputValue, Object, Schema, TypeRef};
     use bf_http::request::{ParseOutcome, parse_request_head};
 
-    struct Query;
-
-    #[Object]
-    impl Query {
-        async fn hello(&self) -> &str {
-            "world"
-        }
-
-        async fn echo(&self, value: String) -> String {
-            value
-        }
-    }
-
+    /// `hello`（引数なし）・`echo(value: String)` を持つ最小デモスキーマ。
+    ///
+    /// `async_graphql::dynamic`（実行時スキーマ構築 API、`Schema::build`）で
+    /// 組み立てる。`#[Object]` 派生マクロは使わない（`crates/core/tests/
+    /// plugin_graphql_boundary.rs` と同型のパターン。マクロが生成コードへ
+    /// 無条件付与する `#[allow(clippy::all, ...)]` は workspace の forbid
+    /// lint（`docs/design/unsafe-deny-lints.md` 第 1 層）と衝突するため、
+    /// 本クレートは動的スキーマ API のみをテストで使い、workspace の forbid
+    /// lint をそのまま継承する。本クレート自身の Cargo.toml も参照）。
     fn demo_config() -> GraphQlConfig {
-        GraphQlConfig::new(Schema::new(Query, EmptyMutation, EmptySubscription))
+        let query = Object::new("Query")
+            .field(Field::new(
+                "hello",
+                TypeRef::named_nn(TypeRef::STRING),
+                |_ctx| FieldFuture::new(async move { Ok(Some(Value::from("world"))) }),
+            ))
+            .field(
+                Field::new("echo", TypeRef::named_nn(TypeRef::STRING), |ctx| {
+                    FieldFuture::new(async move {
+                        let value = ctx.args.try_get("value")?.string()?.to_owned();
+                        Ok(Some(Value::from(value)))
+                    })
+                })
+                .argument(InputValue::new("value", TypeRef::named_nn(TypeRef::STRING))),
+            );
+
+        let schema = Schema::build(query.type_name(), None, None)
+            .register(query)
+            .finish()
+            .expect("デモスキーマの構築は静的に妥当なので必ず成功する");
+        GraphQlConfig::new(schema)
     }
 
     fn head(raw: &[u8]) -> RequestHead {
