@@ -80,9 +80,14 @@ PoC-9 は次の 3 役を単一エージェント（同一セッション）が�
 1. **機械ゲート**（一次判定、`scripts/third-party-verify.sh` が実行）:
    - `cargo fmt --check`
    - `cargo clippy --all-features -- -D warnings`
-   - `cargo test --workspace --all-features`
-   - 起点コミットのテスト結果と突合し、リグレッション（既存テストの新規失敗）が
-     0 件であることを確認する
+   - `cargo nextest run --workspace --all-features --profile ci`（`.github/workflows/ci.yml`
+     の test ジョブ・TASK-11.4 と同一ランナー。テスト単位のハング検知を `cargo test` 単体より
+     細かい粒度で行う） + `cargo test --doc --workspace --all-features`（nextest は doc test
+     を実行しないため別途実行）
+   - `--baseline-tests` で起点コミットのテスト結果ログを渡した場合、起点コミットのテスト
+     結果と突合し、リグレッション（既存テストの新規失敗）が 0 件であることを確認する。
+     渡さない場合、またはログが見つからない場合は個々のテスト失敗をそのまま FAIL とする
+     （fail-closed）
    - いずれか失敗、またはタイムアウト（8 節）に達した場合は **FAIL**
 2. **受け入れ基準の充足確認**（二次判定、主観判定を含む）: タスク定義に記載された受け入れ
    基準を満たしているかを確認する。機械ゲートが PASS かつ受け入れ基準を満たす場合のみ

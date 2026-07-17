@@ -23,6 +23,11 @@ fi
 PASS_COUNT=0
 FAIL_COUNT=0
 
+# 固定名の一時ファイルは共有 /tmp 環境でシンボリックリンク攻撃・競合のリスクがある
+# （本体の third-party-verify.sh の GATE_LOG と同様に mktemp を使う。レビュー指摘、Issue #85）。
+TEST_OUTPUT_LOG="$(mktemp)"
+trap 'rm -f "${TEST_OUTPUT_LOG}"' EXIT
+
 pass() {
     echo "PASS: $1"
     PASS_COUNT=$((PASS_COUNT + 1))
@@ -38,24 +43,24 @@ assert_exit_code() {
     local expected="$2"
     shift 2
     local actual
-    "$@" >/tmp/third-party-verify-test-output.log 2>&1
+    "$@" >"${TEST_OUTPUT_LOG}" 2>&1
     actual=$?
     if [ "${actual}" -eq "${expected}" ]; then
         pass "${desc}（終了コード ${actual}）"
     else
         fail "${desc}（期待: ${expected}、実際: ${actual}）"
-        cat /tmp/third-party-verify-test-output.log >&2
+        cat "${TEST_OUTPUT_LOG}" >&2
     fi
 }
 
 assert_output_contains() {
     local desc="$1"
     local needle="$2"
-    if grep -qF -- "${needle}" /tmp/third-party-verify-test-output.log; then
+    if grep -qF -- "${needle}" "${TEST_OUTPUT_LOG}"; then
         pass "${desc}"
     else
         fail "${desc}（'${needle}' が出力に含まれません）"
-        cat /tmp/third-party-verify-test-output.log >&2
+        cat "${TEST_OUTPUT_LOG}" >&2
     fi
 }
 
@@ -81,17 +86,35 @@ else
     echo "===== フル層: 機械ゲートの PASS/FAIL 検出（cargo ビルドを伴うため時間を要する） ====="
 
     FIXTURE_DIR="$(mktemp -d)/third-party-verify-fixture"
+    FIXTURE_SETUP_LOG="$(mktemp)"
+    BASELINE_LOG="$(mktemp)"
     cleanup_fixture() {
         (cd "${REPO_ROOT}" && git worktree remove "${FIXTURE_DIR}" --force) >/dev/null 2>&1 || true
         rm -rf "${FIXTURE_DIR}"
+        rm -f "${TEST_OUTPUT_LOG}" "${FIXTURE_SETUP_LOG}" "${BASELINE_LOG}"
     }
     trap cleanup_fixture EXIT
 
-    if ! (cd "${REPO_ROOT}" && git worktree add "${FIXTURE_DIR}" HEAD) >/tmp/third-party-verify-test-fixture-setup.log 2>&1; then
-        fail "fixture worktree の作成に失敗しました（詳細: /tmp/third-party-verify-test-fixture-setup.log）"
+    if ! (cd "${REPO_ROOT}" && git worktree add "${FIXTURE_DIR}" HEAD) >"${FIXTURE_SETUP_LOG}" 2>&1; then
+        fail "fixture worktree の作成に失敗しました（詳細: ${FIXTURE_SETUP_LOG}）"
     else
         assert_exit_code "健全な worktree（HEAD 相当）は exit 0（PASS）" 0 bash "${HARNESS}" --worktree "${FIXTURE_DIR}" --task-id T-TEST-GOOD
         assert_output_contains "PASS ケースのメッセージ" "機械ゲートは PASS した"
+
+        # リグレッション突合: 起点コミットで既に失敗していたテストは新規リグレッションとして
+        # 検出されないこと、起点コミットにないテストが新規に失敗した場合は検出されることを
+        # 確認する（旧実装は grep パターンが nextest の実出力と一致せず、かつ突合ブロック自体が
+        # 到達不能な構造だったため機能していなかった。レビュー指摘、Issue #85）。
+        cat >"${BASELINE_LOG}" <<'BASELOG'
+        FAIL [   0.003s] (1/1) backend-framework-core third_party_verify_fixture_baseline::third_party_verify_fixture_pre_existing_failure
+BASELOG
+        printf '\n#[cfg(test)]\nmod third_party_verify_fixture_baseline {\n    #[test]\n    fn third_party_verify_fixture_pre_existing_failure() {\n        assert!(false);\n    }\n}\n' >>"${FIXTURE_DIR}/crates/core/src/lib.rs"
+        assert_exit_code "起点コミット由来の既知の失敗のみは baseline 突合で exit 0（PASS、リグレッションなし）" 0 bash "${HARNESS}" --worktree "${FIXTURE_DIR}" --task-id T-TEST-BASELINE-KNOWN --baseline-tests "${BASELINE_LOG}"
+        assert_output_contains "既知失敗のみのメッセージ" "リグレッションなし"
+
+        printf '\n#[cfg(test)]\nmod third_party_verify_fixture_new_regression {\n    #[test]\n    fn third_party_verify_fixture_new_failure() {\n        assert!(false);\n    }\n}\n' >>"${FIXTURE_DIR}/crates/core/src/lib.rs"
+        assert_exit_code "起点コミットにない新規失敗テストは baseline 突合で exit 1（FAIL、リグレッション検出）" 1 bash "${HARNESS}" --worktree "${FIXTURE_DIR}" --task-id T-TEST-BASELINE-NEW --baseline-tests "${BASELINE_LOG}"
+        assert_output_contains "新規リグレッションのメッセージ" "リグレッション検出"
 
         # 意図的にフォーマット崩れを注入し FAIL 検出を確認する（PoC-9 型の退行注入パターン
         # を踏襲。scripts/tests/run-review-gate-tests.sh の deny lint 検出テストと同型）。

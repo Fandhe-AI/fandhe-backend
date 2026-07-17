@@ -31,7 +31,7 @@ usage() {
 
   --worktree <path>        被験 AI が実装した使い捨て worktree の絶対パス（必須）
   --task-id <ID>           対象タスク ID（docs/reports/task-12-4-1-task-definitions.md 参照。必須）
-  --baseline-tests <file>  起点コミットの `cargo test` 出力ログ（リグレッション突合用。省略時は突合をスキップし判定に PENDING 注記を付与）
+  --baseline-tests <file>  起点コミットの `cargo nextest run --workspace --all-features --profile ci` 出力ログ（リグレッション突合用。省略時は突合をスキップし判定に PENDING 注記を付与）
 EOF
 }
 
@@ -87,6 +87,16 @@ if [ ! -d "${WORKTREE}/.git" ] && [ ! -f "${WORKTREE}/.git" ]; then
     exit 0
 fi
 
+# テストランナーは `.github/workflows/ci.yml` の test ジョブ（TASK-11.4、#36）と同一の
+# cargo-nextest（.config/nextest.toml の profile: ci、テスト単位 60 秒 slow-timeout /
+# 120 秒強制終了）を使う。素の `cargo test` は stable ツールチェーンでテスト単位の
+# タイムアウトを持てず、1 件のハングが全体を覆い隠す（レビュー指摘、Issue #85）。
+# 未導入はこのハーネス側の前提未充足であり worktree の欠陥ではないため PENDING とする。
+if ! command -v cargo-nextest >/dev/null 2>&1; then
+    echo "[PENDING] タスク ${TASK_ID}: cargo-nextest が見つかりません（cargo install --locked cargo-nextest@0.9.137 で導入してください）"
+    exit 0
+fi
+
 run_gate() {
     local desc="$1"
     shift
@@ -101,7 +111,9 @@ run_gate() {
 }
 
 GATE_LOG="$(mktemp)"
-trap 'rm -f "${GATE_LOG}"' EXIT
+TEST_LOG="$(mktemp)"
+TEST_RC_FILE="$(mktemp)"
+trap 'rm -f "${GATE_LOG}" "${TEST_LOG}" "${TEST_RC_FILE}"' EXIT
 
 overall_fail=0
 pending_note=""
@@ -119,7 +131,21 @@ echo "==================================================="
     if ! run_gate "cargo clippy --all-features -- -D warnings" cargo clippy --workspace --all-features -- -D warnings; then
         exit 1
     fi
-    if ! run_gate "cargo test --workspace --all-features" cargo test --workspace --all-features; then
+
+    # cargo-nextest はテスト失敗があると非 0 で終了するが、ここでは即座に FAIL 扱いに
+    # しない（後続のリグレッション突合に判定を委ねるため）。タイムアウト（124、
+    # ハング型退行、PoC-9 BUG-3 の教訓）だけはこの場で確定 FAIL とする。
+    timeout "${TIMEOUT_SECONDS}" cargo nextest run --workspace --all-features --profile ci >"${TEST_LOG}" 2>&1
+    test_rc=$?
+    echo "${test_rc}" >"${TEST_RC_FILE}"
+    if [ "${test_rc}" -eq 124 ]; then
+        echo "[FAIL] cargo nextest run --workspace --all-features --profile ci（タイムアウト。ログ: ${TEST_LOG}）"
+        exit 1
+    fi
+
+    # nextest は doc test を実行しないため、`.github/workflows/ci.yml` と同型に
+    # `cargo test --doc` を別ステップで補う（.claude/rules/coding-rust.md の doc test 必須方針）。
+    if ! run_gate "cargo test --doc --workspace --all-features" cargo test --doc --workspace --all-features; then
         exit 1
     fi
     exit 0
@@ -130,18 +156,43 @@ if [ "${gate_rc}" -ne 0 ]; then
     overall_fail=1
 fi
 
+test_rc="$(cat "${TEST_RC_FILE}" 2>/dev/null || true)"
+baseline_usable=0
+if [ -n "${BASELINE_TESTS}" ] && [ -f "${BASELINE_TESTS}" ]; then
+    baseline_usable=1
+fi
+
+# ベースライン突合が使えない（--baseline-tests 未指定、またはログファイル不在）場合は
+# 個々のテスト失敗をそのまま FAIL とする（fail-closed。突合できないなら楽観判定しない）。
+if [ "${overall_fail}" -eq 0 ] && [ -n "${test_rc}" ] && [ "${test_rc}" -ne 0 ] && [ "${baseline_usable}" -eq 0 ]; then
+    echo "[FAIL] cargo nextest run --workspace --all-features --profile ci（終了コード ${test_rc}。ログ: ${TEST_LOG}）"
+    overall_fail=1
+fi
+
 # リグレッション突合: ベースラインのテスト結果ログが与えられている場合のみ実施する。
 # 与えられない場合は機械ゲートの PASS/FAIL 判定はそのまま有効とし、リグレッション欄を
 # PENDING として区別する（FAIL とは混同しない）。
+#
+# 失敗テスト名の抽出は cargo-nextest の実出力形式に合わせる（cargo test 標準出力の
+# `test <name> ... FAILED` とは異なり、nextest は `<状態> [<経過時間>] (<n>/<m>) <crate>
+# <test名>` の行頭に `FAIL` / `TIMEOUT` を出す）。旧実装は `^FAILED ` で grep しており、
+# nextest（TASK-11.4 で採用済み）・cargo test のどちらの出力にも一致せず、かつこのブロック
+# 自体が `overall_fail -eq 0`（＝失敗テスト集合が必ず空になる構造）でしかリグレッション突合が
+# 発生しない設計だったため、実質的にリグレッション検出が機能していなかった（レビュー指摘、
+# Issue #85）。上のブロックで即時 FAIL を baseline 未指定時のみに限定したことで、baseline
+# 指定時は実際に失敗テスト集合を突合できる。
 if [ "${overall_fail}" -eq 0 ]; then
     if [ -n "${BASELINE_TESTS}" ]; then
         if [ ! -f "${BASELINE_TESTS}" ]; then
             pending_note="ベースラインログが見つかりません: ${BASELINE_TESTS}"
         else
-            # `test result:` 行は nextest/cargo test 標準出力の集計行。ここでは簡易的に
-            # 失敗テスト名の集合が起点コミットに対して増えていないかのみを突合する。
-            baseline_failed="$(grep -E '^FAILED ' "${BASELINE_TESTS}" 2>/dev/null | sort -u || true)"
-            current_failed="$(grep -E '^FAILED ' "${GATE_LOG}" 2>/dev/null | sort -u || true)"
+            extract_failed_tests() {
+                grep -E '^[[:space:]]*(FAIL|TIMEOUT) \[' "$1" 2>/dev/null \
+                    | sed -E 's/^[[:space:]]*(FAIL|TIMEOUT) \[[^]]*\][[:space:]]*(\([0-9 ]+\/[0-9 ]+\)[[:space:]]*)?//' \
+                    | sort -u
+            }
+            baseline_failed="$(extract_failed_tests "${BASELINE_TESTS}" || true)"
+            current_failed="$(extract_failed_tests "${TEST_LOG}" || true)"
             new_failed="$(comm -13 <(printf '%s\n' "${baseline_failed}") <(printf '%s\n' "${current_failed}") 2>/dev/null | grep -v '^$' || true)"
             if [ -n "${new_failed}" ]; then
                 echo "[FAIL] リグレッション検出: 起点コミットで PASS していたテストが失敗しています"
