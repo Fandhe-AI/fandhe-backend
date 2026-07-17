@@ -29,10 +29,15 @@ pub enum TracingOutput {
 ///   （`let _guard = init_tracing(config);`）として保持する
 /// - 非同期・バッファ済み writer は**バックプレッシャ時にイベントを破棄する
 ///   （lossy）**。有界チャネルが満杯の場合、`tracing` イベントは黙って失われる
-///   （`tracing-appender::non_blocking` の既定動作）。セキュリティ監査イベント等、
-///   欠落を許容できないログの扱いは AGENTS.md「ログ欠落の許容可否」節が示す
-///   とおり本クレートのスコープ外（TASK-10.6・#90）であり、本関数はこの論点を
-///   暗黙に解決しない
+///   （`tracing-appender::non_blocking` の既定動作）。この挙動は TASK-10.6（#90）で
+///   決定的統合テスト（`crates/plugin-tracing/tests/backpressure.rs`）により
+///   **実測済み**（推測ではない）: `lossy(true)`（本関数が使う既定）は満杯時に
+///   呼び出し側をブロックせずドロップし、`NonBlocking::error_counter().
+///   dropped_lines()` でドロップ件数を観測できる。高負荷時の欠落率実測・許容基準は
+///   `benches/reports/task-10.6-tracing-backpressure.md` を参照。セキュリティ監査
+///   イベント等、欠落を許容できないログは本関数の既定構成（lossy）の対象外とし、
+///   同レポート「許容基準」節が示す代替設計（ブロッキング経路・同期書き込み）を
+///   検討すること（AGENTS.md「ログ欠落の許容可否」節への回答）
 /// - グローバルサブスクライバの登録（`tracing::subscriber::set_global_default`）は
 ///   プロセスにつき 1 回のみ成功する。複数回呼ぶと 2 回目以降は登録に失敗するが、
 ///   本関数はこれを panic として扱わず、既存の登録をそのまま使わせるため呼び出し元
@@ -63,8 +68,9 @@ pub fn init_tracing(output: TracingOutput) -> WorkerGuard {
 
 /// `output` に応じた `non_blocking` writer を組み立てる。
 ///
-/// 現状 `Stdout` のみだが、将来の出力先追加（TASK-10.6 等）時にこの関数だけを
-/// 拡張すれば済むよう分離しておく。
+/// 現状 `Stdout` のみだが、将来の出力先追加（ファイル出力等）時にこの関数だけを
+/// 拡張すれば済むよう分離しておく（ファイル出力対応自体は TASK-10.6・#90 の
+/// スコープ外、`benches/reports/task-10.6-tracing-backpressure.md`「スコープ外」節）。
 fn make_non_blocking_writer(
     output: TracingOutput,
 ) -> (
