@@ -158,6 +158,7 @@ reason, content_type, body }`）はコアが送出する `bf_http::response::Res
 | lint | `cargo clippy -p backend-framework-core --all-targets --no-default-features -- -D warnings`／`--features webrtc-proxy`／`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 警告 0 件 |
 | doc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps` | 警告 0 件 |
 | 依存監査 | `scripts/dep-audit.sh` | `webrtc-proxy` を含む動的列挙構成で違反 0 件 |
+| pay-for-what-you-use 機械検証 | `scripts/pay-for-what-you-use-check.sh`（TASK-2.2、#19） | cargo tree/geiger・バイナリサイズ・全構成ビルドすべて PASS（`docs/design/pay-for-what-you-use-check.md` 参照） |
 
 ## 6.1 `scripts/dep-direction-check.sh` ホワイトリストの例外（TASK-1.5 との整合）
 
@@ -184,7 +185,9 @@ feature 無効時は本エッジ自体が未解決のまま消えるため pay-f
 
 ## 7. スコープ外（別タスクで対応）
 
-- `cargo tree`/`cargo geiger`/バイナリサイズ比較の機械的検証スクリプト整備 → TASK-2.2（#19）
+- `cargo tree`/`cargo geiger`/バイナリサイズ比較の機械的検証スクリプト整備 →
+  TASK-2.2（#19）で整備済み（`scripts/pay-for-what-you-use-check.sh`、
+  `docs/design/pay-for-what-you-use-check.md` 参照）
 - Middleware 非同期 I/O 必須化規約の AGENTS.md 整備 → TASK-2.3（#20）
 - WebSocket・GraphQL の 2 プラグイン着脱受け入れテスト、コンパイル時 vs
   動的ロードのトレードオフ設計文書 → TASK-2.4（#21）
