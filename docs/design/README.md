@@ -56,3 +56,6 @@
   REQ-2。`unsafe`・ABI 安定性・監査容易性の 3 観点で比較し、コンパイル時方式の採用根拠と
   限界を記述。`crates/plugin-graphql` + 既存 `webrtc-proxy` の 2 プラグイン受け入れ検証は
   `docs/acceptance/req2-plugin-mechanism.md` を参照）
+- [`webrtc-rs-version-strategy.md`](./webrtc-rs-version-strategy.md): `webrtc-rs` バージョン戦略
+  （TASK-8.3、#28、REQ-8。v0.17.x（保守モード）継続採用・Sans-I/O 系（v0.20 系/`rtc` クレート）の
+  移行トリガー基準・スコープ外機能の実装フェーズでの扱いを記述。ドラフト、最終承認は人間レビュー）
