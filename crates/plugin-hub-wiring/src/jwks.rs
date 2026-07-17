@@ -150,8 +150,8 @@ impl JwksKeySet {
             let n_b64 = raw.n.ok_or(JwksError::InvalidJson)?;
             let e_b64 = raw.e.ok_or(JwksError::InvalidJson)?;
 
-            let n = decode_key_component(n_b64)?;
-            let e = decode_key_component(e_b64)?;
+            let n = decode_key_component(n_b64, false)?;
+            let e = decode_key_component(e_b64, true)?;
 
             keys.push(RsaJwkPublic {
                 kid: kid.to_string(),
@@ -213,7 +213,12 @@ impl JwksKeySet {
 /// 残っていると鍵として拒否される（ring 内部の `io::Positive::from_be_bytes`）。
 /// JWK の `n`/`e`（[RFC 7518] Section 6.3.1）はビッグエンディアンの base64url
 /// であり先頭ゼロの禁止までは規定しないため、ここで明示的に剥がす。
-fn decode_key_component(b64: &str) -> Result<Vec<u8>, JwksError> {
+///
+/// `is_exponent` で `n`（モジュラス、上限 [`MAX_N_LEN`]）と `e`（公開指数、
+/// 上限 [`MAX_E_LEN`]）のどちらの上限を適用するかを呼び出し側が明示する。
+/// 過去に両者へ共通の緩い上限（`MAX_N_LEN.max(MAX_E_LEN)`）を使っていたため、
+/// `e` に最大 1024 byte（`MAX_N_LEN` 相当）まで意図せず通る余地があった。
+fn decode_key_component(b64: &str, is_exponent: bool) -> Result<Vec<u8>, JwksError> {
     let raw = URL_SAFE_NO_PAD
         .decode(b64)
         .map_err(|_| JwksError::InvalidKeyEncoding)?;
@@ -228,7 +233,8 @@ fn decode_key_component(b64: &str) -> Result<Vec<u8>, JwksError> {
             None => Vec::new(),
         }
     };
-    if stripped.len() > MAX_N_LEN.max(MAX_E_LEN) {
+    let max_len = if is_exponent { MAX_E_LEN } else { MAX_N_LEN };
+    if stripped.len() > max_len {
         return Err(JwksError::KeyTooLarge);
     }
     Ok(stripped)
@@ -275,13 +281,15 @@ impl SharedJwks {
     }
 
     /// 現行鍵集合の `Arc` clone を返す（読み取りロックを短時間保持するのみ）。
+    ///
+    /// `RwLock` が汚染（poisoned）された場合でも `into_inner()` で内部値を
+    /// 取り出し、panic させずに読み取りを継続する（意図的な回復戦略）。
+    /// 本ロックが保護するのは `Arc<JwksKeySet>` の差し替えのみで、汚染時に
+    /// 中途半端な書き込み状態が残ることはない（[`Self::set`] は
+    /// `Arc` の再代入のみで途中状態を持たない）ため、汚染後も安全に読み取れる。
+    /// ここで panic させると 1 リクエストの panic が全リクエストの認証経路へ
+    /// 連鎖する DoS を招くため、`.unwrap()` へは変更しないこと。
     pub fn snapshot(&self) -> Arc<JwksKeySet> {
-        // `RwLock` が汚染（poisoned）された場合、対象プロセスは既に
-        // 別スレッドの panic で異常状態にあり、読み取り継続は安全ではない。
-        // フェイルクローズの観点からここで panic させ、上位（コネクション
-        // ハンドラ）に異常を伝播させるのが安全側の選択（黙って空集合へ
-        // フォールバックすると全リクエスト拒否になり気付きにくい障害を生む
-        // よりは、明示的な panic の方が運用上検知しやすい）。
         Arc::clone(&self.0.read().unwrap_or_else(|e| e.into_inner()))
     }
 
