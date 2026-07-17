@@ -139,12 +139,28 @@ else
             # `docs/design/plugin-boundary.md` 6.1 節を参照）。本エッジも他
             # プラグインへ一般化せず、新規 Upgrade 型プラグインは本リストへの
             # 明示追加とレビューを要求する。
+            #
+            # 例外 3: `backend-framework-core:bf-plugin-tracing`（TASK-10.1、#56）。
+            # `Middleware` trait 自体は dyn 互換の同期 API
+            # （`crates/core/src/extension.rs`）であり、原理的にはプラグイン側が
+            # コアへ依存して直接 `impl Middleware` する「順方向」も選択肢だった。
+            # それでも `bf-plugin-websocket`（例外 2）と同一の非循環パターン
+            # （プラグインクレートは core に依存せず、`Middleware` 実装アダプタを
+            # コア側に置く）を踏襲したのは、`crates/plugin-tracing` を
+            # `crates/core` から独立に（`backend-framework-core` を解決せずに）
+            # ビルド・テストできる状態を維持するため（`cargo build -p
+            # bf-plugin-tracing` が `backend-framework-core` の全依存を引き込まずに
+            # 完結する。プラグイン境界の一貫性、`docs/design/plugin-boundary.md`
+            # 6.1 節）。`bf-plugin-tracing` 自体は他の Middleware 型プラグインへ
+            # 一般化せず、新規 Middleware 型プラグインは本リストへの明示追加と
+            # レビューを要求する。
             allowed_edge_patterns=(
                 "backend-framework-core:bf-http"
                 "backend-framework-core:bf-routes"
                 "backend-framework-core:bf-plugin-webrtc-proxy"
                 "backend-framework-core:bf-plugin-webrtc"
                 "backend-framework-core:bf-plugin-websocket"
+                "backend-framework-core:bf-plugin-tracing"
                 # TASK-2.4（#21）: REQ-2「少なくとも 2 種のプラグインを feature
                 # flag で着脱できる」受け入れ基準の第 2 インスタンス（パス
                 # インターセプト型）。根拠は上記
@@ -304,7 +320,14 @@ webrtc_proxy_exception_file="crates/core/src/plugin.rs"
 # bf-plugin-graphql の許可リスト例外に対応）を同一ファイルへ追加したため、
 # 例外シンボルパターンにも graphql 系識別子を含める（webrtc-proxy・webrtc・
 # websocket・graphql の 4 件に限定したまま維持し、一般化はしない）。
-webrtc_proxy_exception_symbol_pattern='bf_plugin_webrtc_proxy|bf_plugin_webrtc\b|webrtc_proxy|webrtc_config|bf_plugin_websocket|websocket|bf_plugin_graphql|crate::plugin::|pub\(crate\) mod plugin;'
+# TASK-10.1（#56）: `TracingMiddleware`（`crates/core/src/server.rs`、`tracing`
+# feature 限定）を同一方針で例外対象に加える。websocket と異なり
+# `crate::plugin::` シーム（Upgrade 型専用の非公開モジュール）は使わず、既存の
+# 汎用 `Middleware` 拡張点（`middlewares: Vec<Box<dyn Middleware>>`）へ登録する
+# だけの薄いアダプタのため `crates/core/src/plugin.rs` への追加は不要
+# （`Server::tracing` ビルダーメソッド・`TracingMiddleware` 構造体は
+# `crates/core/src/server.rs` に閉じる）。
+webrtc_proxy_exception_symbol_pattern='bf_plugin_webrtc_proxy|bf_plugin_webrtc\b|webrtc_proxy|webrtc_config|bf_plugin_websocket|websocket|bf_plugin_graphql|bf_plugin_tracing|TracingMiddleware|crate::plugin::|pub\(crate\) mod plugin;'
 
 plugin_hits_all=""
 for dir in crates/core crates/http crates/routes; do
@@ -335,9 +358,11 @@ for dir in crates/core crates/http crates/routes; do
             # feature 宣言（`bf-plugin-webrtc` は `bf-plugin-webrtc-proxy` の前方一致
             # 部分文字列でもあるため 1 パターンでまとめて除外できる）、
             # `bf-plugin-websocket =` の依存宣言・`dep:bf-plugin-websocket` の
-            # feature 宣言、および `bf-plugin-graphql =` の依存宣言・
-            # `dep:bf-plugin-graphql` の feature 宣言を許可する。
-            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v -E 'bf-plugin-webrtc(-proxy)?|bf-plugin-websocket|bf-plugin-graphql' || true)"
+            # feature 宣言、`bf-plugin-graphql =` の依存宣言・
+            # `dep:bf-plugin-graphql` の feature 宣言、および `bf-plugin-tracing =`
+            # の依存宣言・`dep:bf-plugin-tracing` の feature 宣言（TASK-10.1、#56）
+            # を許可する。
+            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v -E 'bf-plugin-webrtc(-proxy)?|bf-plugin-websocket|bf-plugin-graphql|bf-plugin-tracing' || true)"
         fi
         if [ -n "${cargo_toml_hits}" ]; then
             plugin_hits_all="${plugin_hits_all}${dir}/Cargo.toml に plugin- 依存あり: ${cargo_toml_hits}
