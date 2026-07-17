@@ -401,7 +401,10 @@ TASK-4.1（#22）で `backend-framework-core:bf-plugin-websocket` を同一方�
   だったため、「WebSocket」の代わりに本モジュール同型のパスインターセプト型第 2
   インスタンスとして GraphQL を選定した経緯は `crates/plugin-graphql` の doc コメントを
   参照。実 WebSocket 自体はその後 #137 のマージにより `websocket` feature として
-  別途配線済み）
+  別途配線済み。GraphQL 側も TASK-2.4 時点は `POST /graphql` への固定応答スタブに
+  留まっていたが、TASK-5.1（#38）で `async-graphql` による実クエリ実行へ差し替え、
+  `webrtc-proxy`・`webrtc` と同じ設定登録型パターン（スキーマ未登録時はフォール
+  スルー）に揃えた）
 - `chunk` バッファのヒープ化・委譲後タスク再 spawn による RSS 最適化 → TASK-4.2
 - 10,000 同時接続負荷試験・RSS 再計測 → TASK-4.3
 - プラグイン無効時の依存・unsafe・バイナリ 0 件の機械的受け入れテスト → TASK-4.4 / TASK-2.4（#21）
