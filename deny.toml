@@ -36,6 +36,12 @@ allow = [
     # OSI 承認・FSF Free/Libre 済みの寛容ライセンスであり、コピーレフト条項を持たない
     # （`cargo deny check` で機械検証、.claude/rules/security.md の依存監査）。
     "ISC",
+    # TASK-5.1（#38）: `graphql` feature（crates/plugin-graphql、async-graphql 7 系）が
+    # 推移的に引き込む `Inflector`（async-graphql-derive の依存、フィールド名の
+    # キャメルケース変換に使用）の宣言ライセンス。BSD-3-Clause と同系統の寛容ライセンス
+    # （OSI 承認・FSF Free/Libre 済み、コピーレフト条項なし）であり、既存の BSD-3-Clause
+    # 許可と同一の判断根拠で許可する（`cargo deny check` で機械検証）。
+    "BSD-2-Clause",
 ]
 confidence-threshold = 0.8
 

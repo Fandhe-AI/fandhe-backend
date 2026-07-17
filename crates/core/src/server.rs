@@ -217,6 +217,16 @@ pub struct Server {
     /// .claude/rules/pay-for-what-you-use.md）。
     #[cfg(feature = "websocket")]
     websocket_configs: Vec<bf_plugin_websocket::WebSocketConfig>,
+    /// `graphql` feature（TASK-5.1 / #38）有効時のみ意味を持つ、登録済み
+    /// GraphQL スキーマ設定。`crate::plugin::try_intercept` がこのフィールド
+    /// を参照して `POST /graphql` を実行するかどうかを判定する。`None`
+    /// （未登録、既定）の場合は feature が有効でもフォールスルーする
+    /// （`webrtc-proxy`・`webrtc` と同じ「設定登録型」パターン、
+    /// `crates/plugin-graphql` の crate doc を参照）。feature 無効時は
+    /// フィールド自体が構造体から消え、依存・コードともゼロコストになる
+    /// （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
+    #[cfg(feature = "graphql")]
+    graphql_config: Option<bf_plugin_graphql::GraphQlConfig>,
 }
 
 impl Default for Server {
@@ -235,6 +245,8 @@ impl Default for Server {
             webrtc_config: None,
             #[cfg(feature = "websocket")]
             websocket_configs: Vec::new(),
+            #[cfg(feature = "graphql")]
+            graphql_config: None,
         }
     }
 }
@@ -395,6 +407,29 @@ impl Server {
     #[cfg(feature = "websocket")]
     pub(crate) fn websocket_configs(&self) -> &[bf_plugin_websocket::WebSocketConfig] {
         &self.websocket_configs
+    }
+
+    /// GraphQL プラグイン（`crates/plugin-graphql`）を有効化する
+    /// （`graphql` feature 限定 API、TASK-5.1 / #38）。
+    ///
+    /// 登録すると `POST /graphql` が `RequestGate` → `UpgradeHandler` の評価を
+    /// 通過した後、既定 [`Handler`] より先にパスインターセプトされ、`config`
+    /// が保持するスキーマでクエリを実行する（対象外パスは素通りし、既定
+    /// `Handler` へフォールスルーする。`crate::plugin::try_intercept` の doc
+    /// を参照）。**未登録の場合は feature が有効でも常にフォールスルー**
+    /// （404）する（`webrtc-proxy`・`webrtc` と同じ設定登録型パターン）。
+    #[cfg(feature = "graphql")]
+    #[must_use]
+    pub fn graphql(mut self, config: bf_plugin_graphql::GraphQlConfig) -> Self {
+        self.graphql_config = Some(config);
+        self
+    }
+
+    /// `plugin::try_intercept` が参照する、登録済み GraphQL スキーマ設定
+    /// （`graphql` feature 限定、TASK-5.1 / #38）。
+    #[cfg(feature = "graphql")]
+    pub(crate) fn graphql_config(&self) -> Option<&bf_plugin_graphql::GraphQlConfig> {
+        self.graphql_config.as_ref()
     }
 
     /// `addr` に TCP リスナーをバインドし、[`BoundServer`] を返す。

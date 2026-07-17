@@ -55,10 +55,13 @@ bf-plugin-webrtc = { path = "../plugin-webrtc", optional = true }
 # trait を実装するアダプタはコア側（`crates/core/src/server.rs`）に置く。
 bf-plugin-websocket = { path = "../plugin-websocket", optional = true }
 
-# TASK-2.4（#21）: REQ-2 受け入れ基準「少なくとも 2 種のプラグインを feature
-# flag で着脱できる」を実証する第 2 のパスインターセプト型プラグイン境界
-# インスタンス（`crates/plugin-graphql` の doc を参照）。webrtc-proxy と同じく
-# `dep:` 構文で feature 無効時は依存グラフから完全除外される。
+# TASK-2.4（#21）で確立した第 2 のパスインターセプト型プラグイン境界
+# インスタンス（REQ-2「少なくとも 2 種のプラグインを feature flag で着脱
+# できる」実証）を、TASK-5.1（#38）で `async-graphql` による実クエリ実行へ
+# 差し替えた（`crates/plugin-graphql` の doc を参照）。`async-graphql` の
+# 推移的依存（PoC 実測 +95 クレート）は本クレートの内部にのみ現れ、
+# webrtc-proxy と同じく `dep:` 構文で feature 無効時は本行ごと依存グラフ
+# から完全除外される。
 bf-plugin-graphql = { path = "../plugin-graphql", optional = true }
 
 # feature 命名規約（`docs/design/plugin-boundary.md`）: プラグインクレート名
@@ -76,9 +79,24 @@ websocket = ["dep:bf-plugin-websocket"]
 graphql = ["dep:bf-plugin-graphql"]
 
 # テスト専用（`#[tokio::test]` / `tokio::io::duplex` / マルチスレッドランタイム）。
-# 本体ビルドの feature 集合には影響しない。
+# 本体ビルドの feature 集合には影響しない。`async-graphql` は
+# `crates/core/tests/plugin_graphql_boundary.rs`（`#![cfg(feature = "graphql")]`
+# でコンパイル自体を feature ゲート）がデモスキーマを組み立てるためだけに使う。
+# `dynamic-schema` feature（`Schema::build` による実行時スキーマ構築 API）を
+# 使い、`#[Object]` 派生マクロは使わない。`async-graphql-derive` の
+# `#[Object]` は生成コードへ `#[allow(clippy::all, ...)]` を無条件付与し、
+# `backend-framework-core`（コア crate。`.claude/rules/coding-rust.md` の
+# 「コアに不要な `unsafe` を持ち込まない」対象そのもの）が継承する workspace
+# の forbid lint（`docs/design/unsafe-deny-lints.md` 第 1 層）と衝突して
+# `E0453` でビルド不能になるため（`crates/plugin-graphql` は自クレート限定で
+# 同 lint を deny へ局所ダウングレードして回避しているが、コア crate 自体には
+# 同じ緩和を適用しない。forbid 層の防御対象はコア自身のコードであり、コアの
+# lint を下げてまで derive マクロを使う理由がないため）。dev-dependencies は
+# release ビルドに一切含まれないため pay-for-what-you-use の対象外
+# （`.claude/rules/pay-for-what-you-use.md`）。
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
+async-graphql = { version = "7", default-features = false, features = ["dynamic-schema"] }
 
 # `examples/webrtc_nfr6.rs`（TASK-8.4 / #29）は `bf-plugin-webrtc`（optional dep）を
 # 直接使うため、`webrtc` feature 無効時に `cargo build --workspace --all-targets` 等が

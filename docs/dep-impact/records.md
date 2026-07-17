@@ -99,6 +99,72 @@ licenses/sources）違反 0 件を確認した（TASK-8.4、詳細ログは
 られる実測上の性能影響が確認された（詳細は AGENTS.md 「WebRTC の攻撃表面と『使う/
 使わない』サービスの安全性方針」節）。
 
+## 2026-07-17 — `crates/plugin-graphql` を実 GraphQL 実行へ実装（#38、TASK-5.1）
+
+TASK-2.4（#21）のスタブ（`bf-http` のみ依存、外部依存 0 件）に `async-graphql = "7"`
+（`default-features = false`）・`serde`（derive）・`serde_json` を追加し、実クエリ実行を
+実装。事前見積もり（実装計画、PoC 実測）は「+95 クレート、バイナリ +1.51MB」だったが、
+実測は以下のとおり（`default-features = false` により playground/graphiql 等の
+開発 UI 系依存を含めていないため見積もりより少ない）。
+
+`bf-plugin-graphql` 自身が引き込む新規クレート数（`bf-http`・自身を除く）:
+
+```
+$ cargo tree -p bf-plugin-graphql -e normal --prefix none | sed 's/ (\*)$//' | sort -u \
+    | grep -v '^bf-http \|^bf-plugin-graphql ' | wc -l
+76
+```
+
+pay-for-what-you-use の受け入れ条件（`backend-framework-core` が `graphql` feature
+無効時に `async-graphql`/`bf-plugin-graphql` 系依存を一切解決しないこと）は
+`bash scripts/pay-for-what-you-use-check.sh` の全項目（cargo tree 陰性/陽性・
+cargo geiger・バイナリサイズ・全構成ビルド）で PASS を確認済み:
+
+```
+[PASS] b: cargo tree 検証（無効構成） — 全プラグインクレートが依存グラフから 0 件
+[PASS] b: cargo tree 検証（有効構成 graphql） — bf-plugin-graphql のみが出現し他プラグインの混入なし
+[PASS] c: cargo geiger 検証 — 無効構成の依存グラフにプラグインクレートは 0 件（unsafe 計上対象なし）
+[PASS] d: バイナリサイズ計測 — 無効構成 798680 bytes <= 有効構成 9106696 bytes（差分 8308016 bytes、
+    `--all-features` ビルドとの比較のため他プラグイン分を含む）
+```
+
+計測コマンド: `bash scripts/dep-impact.sh`（workspace 全体の参考値）
+
+### 依存クレート数（workspace メンバー除外・重複バージョンは union で 1 件として計上）
+
+| feature 構成 | 依存クレート数（直前エントリ差分） |
+|---|---|
+| --no-default-features | 265（+37） |
+| default | 265（+37） |
+| --all-features | 265（+37） |
+
+`crates/plugin-*` を含む全 workspace メンバーをそれぞれ自身の既定 feature で計測する
+方式であり、`crates/core` 単体の pay-for-what-you-use 遵守を測るものではない点は
+既存エントリと同様（`bf-plugin-graphql` 自身の新規依存が上記 76 件、workspace 全体の
+union 差分が +37 なのは `async-graphql`/`serde`/`serde_json`/`thiserror` 系の一部が
+既に他プラグイン（`plugin-webrtc`・`plugin-openapi` 等）経由で workspace の依存
+グラフに存在済みで union 上重複計上されないため）。
+
+`crates/core` の dev-dependencies（テスト専用、`async-graphql`（`dynamic-schema`
+feature））はリリースビルドに含まれないため pay-for-what-you-use の対象外
+（`.claude/rules/pay-for-what-you-use.md`）。
+
+### リリースバイナリサイズ
+
+| bin | サイズ (bytes) |
+|---|---|
+| axum-ref | 1374024 |
+
+`axum-ref` は `bf-plugin-graphql` に依存しないため、直前エントリとの差分は
+ビルド環境ノイズ（既存エントリと同様の注記）。
+
+### unsafe 件数
+
+`cargo-geiger` は `dep-impact.sh` 標準実行（`cargo geiger --all-features`）では
+webrtc 系の巨大依存グラフ解決に失敗したため未計測。pay-for-what-you-use-check.sh の
+`c: cargo geiger 検証` で「`graphql` feature 無効構成に対象クレート 0 件（unsafe
+計上対象なし）」は個別に確認済み（上記参照）。
+
 ## 2026-07-17 — `crates/plugin-webrtc` 追加（#26、TASK-8.1）
 
 `bf-plugin-webrtc`（`webrtc = "0.17"`（0.17.1 系）・`serde_json`・`tokio`（`time`
