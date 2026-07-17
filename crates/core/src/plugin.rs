@@ -35,17 +35,19 @@ use crate::server::Server;
 /// 無効」であり、呼び出し元は既定 `Handler::handle`（未登録時 404）へ
 /// フォールスルーする。
 ///
-/// `webrtc-proxy`・`webrtc` の両 feature が無効時は `server`/`head`/`body` を一切
-/// 参照せず即座に `None` を返す（`cargo tree` で `bf-plugin-webrtc-proxy`・
-/// `bf-plugin-webrtc` のいずれも現れないことに加え、本関数自体もコード上
-/// ゼロコストであることの根拠）。
+/// `webrtc-proxy`・`webrtc`・`graphql` のいずれの feature も無効時は
+/// `server`/`head`/`body` を一切参照せず即座に `None` を返す（`cargo tree` で
+/// `bf-plugin-webrtc-proxy`・`bf-plugin-webrtc`・`bf-plugin-graphql` のいずれも
+/// 現れないことに加え、本関数自体もコード上ゼロコストであることの根拠）。
+/// `graphql` feature は TASK-2.4（#21）で追加した第 2 のプラグイン境界
+/// インスタンス（`crates/plugin-graphql` の doc を参照）。
 ///
-/// 両 feature が同時に有効な場合（`--all-features` CI 構成）は `webrtc-proxy`
-/// （別プロセス切り出し型、REQ-8 の MVP 推奨方式）を先に評価する。両方を
-/// `Server` に登録していても `webrtc-proxy` 側が `Some` を返した時点で `webrtc`
-/// 側（in-process 型、TASK-8.1 / #26）は評価しない（実運用では通常どちらか
-/// 片方のみ登録するため、この優先順位が問題になるのは意図的に両方登録した
-/// 場合に限る。`crates/core/src/server.rs` の `Server::webrtc_proxy` /
+/// `webrtc-proxy`・`webrtc` が同時に有効な場合（`--all-features` CI 構成）は
+/// `webrtc-proxy`（別プロセス切り出し型、REQ-8 の MVP 推奨方式）を先に評価する。
+/// 両方を `Server` に登録していても `webrtc-proxy` 側が `Some` を返した時点で
+/// `webrtc` 側（in-process 型、TASK-8.1 / #26）は評価しない（実運用では通常
+/// どちらか片方のみ登録するため、この優先順位が問題になるのは意図的に両方
+/// 登録した場合に限る。`crates/core/src/server.rs` の `Server::webrtc_proxy` /
 /// `Server::webrtc` の doc を参照）。
 pub(crate) async fn try_intercept(
     server: &Server,
@@ -71,14 +73,21 @@ pub(crate) async fn try_intercept(
         }
     }
 
-    // feature が 1 つも有効でない場合は上の cfg ブロックが丸ごと消え、引数が
-    // 未使用になる。警告を出さないための明示的な no-op（いずれかの feature が
-    // 有効な場合は上のブロックが全引数を使用するため、このブロック自体も cfg で
-    // 排他する）。
-    #[cfg(not(any(feature = "webrtc-proxy", feature = "webrtc")))]
+    // TASK-2.4（#21）: REQ-2 の「2 種のプラグイン着脱」受け入れ基準を実証する
+    // 第 2 のパスインターセプト型プラグイン（`crates/plugin-graphql` の doc を
+    // 参照）。webrtc-proxy と同型の cfg-gated 分岐パターンをそのまま踏襲する。
+    #[cfg(feature = "graphql")]
     {
-        let _ = (server, head, body);
+        if let Some(response) = bf_plugin_graphql::try_handle_graphql(head) {
+            return Some(from_graphql_response(response));
+        }
     }
+
+    // feature 構成によっては上の cfg ブロックの一部・全部が消え、引数が未使用
+    // になりうる（webrtc-proxy 無効時は `server`・`body`、両方無効時は
+    // `head` も未使用）。参照型（`Copy`）の再読み込みは各分岐での使用有無に
+    // 関わらず安全なため、無条件の no-op で一括して警告を防ぐ。
+    let _ = (server, head, body);
 
     None
 }
@@ -148,4 +157,12 @@ where
     }
 
     Some(stream)
+}
+
+/// `bf_plugin_graphql::Response`（プラグイン側の中間表現）を
+/// [`bf_http::response::Response`] へ変換する。[`from_plugin_response`] と
+/// 同一の変換原則（`content_type` は `&'static str` 限定）に従う。
+#[cfg(feature = "graphql")]
+fn from_graphql_response(response: bf_plugin_graphql::Response) -> Response {
+    Response::new(response.status, response.body).with_content_type(response.content_type)
 }

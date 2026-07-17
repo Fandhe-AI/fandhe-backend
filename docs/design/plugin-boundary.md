@@ -308,8 +308,15 @@ TASK-4.1（#22）で `backend-framework-core:bf-plugin-websocket` を同一方�
   TASK-2.2（#19）で整備済み（`scripts/pay-for-what-you-use-check.sh`、
   `docs/design/pay-for-what-you-use-check.md` 参照）
 - Middleware 非同期 I/O 必須化規約の AGENTS.md 整備 → TASK-2.3（#20）
-- WebSocket・GraphQL の 2 プラグイン着脱受け入れテスト、コンパイル時 vs
-  動的ロードのトレードオフ設計文書 → TASK-2.4（#21）
+- 2 プラグイン着脱受け入れテスト・コンパイル時 vs 動的ロードのトレードオフ設計文書 →
+  TASK-2.4（#21）で整備済み（`graphql` feature（`crates/plugin-graphql`）+ 既存
+  `webrtc-proxy` feature の 2 インスタンスで実証。`docs/design/plugin-loading-tradeoffs.md`・
+  `docs/acceptance/req2-plugin-mechanism.md` を参照。TASK-2.4 着手時点で実 WebSocket
+  プラグイン（`crates/plugin-websocket`、TASK-4.1 / #22）が別 PR（#137）で並行実装中
+  だったため、「WebSocket」の代わりに本モジュール同型のパスインターセプト型第 2
+  インスタンスとして GraphQL を選定した経緯は `crates/plugin-graphql` の doc コメントを
+  参照。実 WebSocket 自体はその後 #137 のマージにより `websocket` feature として
+  別途配線済み）
 - `chunk` バッファのヒープ化・委譲後タスク再 spawn による RSS 最適化 → TASK-4.2
 - 10,000 同時接続負荷試験・RSS 再計測 → TASK-4.3
 - プラグイン無効時の依存・unsafe・バイナリ 0 件の機械的受け入れテスト → TASK-4.4 / TASK-2.4（#21）

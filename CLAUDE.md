@@ -32,8 +32,9 @@ backend-framework/
 ├── rust-toolchain.toml    # stable + rustfmt/clippy
 ├── crates/                # cargo workspace
 │   ├── core                           # 最小コア。`webrtc-proxy`（TASK-2.1、#18）・`webrtc`
-│   │                                    # （TASK-8.1、#26）・`websocket`（TASK-4.1、#22）feature で
-│   │                                    # 各プラグインを `dep:` 構文により着脱可能に配線済み
+│   │                                    # （TASK-8.1、#26）・`websocket`（TASK-4.1、#22）・
+│   │                                    # `graphql`（TASK-2.4、#21）の 4 feature で `dep:` 構文
+│   │                                    # により各プラグインを着脱可能に配線済み
 │   │                                    # （`webrtc-proxy` 優先評価）
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
@@ -42,6 +43,10 @@ backend-framework/
 │   ├── plugin-webrtc                  # in-process WebRTC プラグイン（`webrtc-rs` 直接依存、TASK-8.1、#26。
 │   │                                    # `crates/core` の `webrtc` feature 経由で配線。攻撃表面が大きいため
 │   │                                    # `plugin-webrtc-proxy` が MVP 推奨、クレート境界で完全分離）
+│   ├── plugin-graphql                 # GraphQL プラグイン境界の最小実装（`POST /graphql` 固定応答、
+│   │                                    # TASK-2.4、#21）。REQ-2 の「2 種のプラグイン着脱」受け入れ
+│   │                                    # 基準を webrtc-proxy と共に実証する第 2 インスタンス。
+│   │                                    # 実 GraphQL 実行（async-graphql 統合）は TASK-5.1、#38 のスコープ
 │   ├── plugin-openapi                 # OpenAPI ドキュメント生成プラグイン（ApiDoc + utoipa::path 定義、TASK-3.1、#30。
 │   │                                   # gen-openapi CLI・openapi.json 静的埋め込み、TASK-3.2、#31）
 │   ├── plugin-websocket                # WebSocket プラグイン（RFC 6455 ハンドシェイク検証・101 応答・

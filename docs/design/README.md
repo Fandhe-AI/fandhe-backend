@@ -51,3 +51,8 @@
   you-use 機械検証（TASK-2.2、#19、REQ-2。`scripts/pay-for-what-you-use-check.sh` に
   よる cargo tree/geiger・バイナリサイズ・全構成ビルドの PASS/FAIL 判定設計、
   `dep-impact.sh` との役割分担、セルフテスト・CI 組み込みを記述）
+- [`plugin-loading-tradeoffs.md`](./plugin-loading-tradeoffs.md): プラグインロード方式
+  （コンパイル時 feature flag vs 実行時動的ロード）の安全性トレードオフ（TASK-2.4、#21、
+  REQ-2。`unsafe`・ABI 安定性・監査容易性の 3 観点で比較し、コンパイル時方式の採用根拠と
+  限界を記述。`crates/plugin-graphql` + 既存 `webrtc-proxy` の 2 プラグイン受け入れ検証は
+  `docs/acceptance/req2-plugin-mechanism.md` を参照）
