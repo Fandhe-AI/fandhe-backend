@@ -15,19 +15,23 @@
 //!   一切現れない（pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）。
 //! - サーバ側 feature（`openapi = ["dep:bf-plugin-openapi"]` 相当）による配線は
 //!   TASK-2.1（#18、並列進行中）に接続点を委ねる。本クレート単体では未接続。
-//! - `GET /openapi.json` の静的埋め込み・生成 CLI（`gen-openapi`）は
-//!   TASK-3.2（#31）のスコープ。本クレートはドキュメント定義（[`ApiDoc`]・
-//!   スキーマ型）の提供のみを担う。
+//! - `GET /openapi.json` の静的埋め込み（[`OPENAPI_JSON`]）・生成 CLI（`gen-openapi`、
+//!   `gen-cli` feature）は TASK-3.2（#31）で実装済み。埋め込み実体の鮮度保証・
+//!   TASK-2.1 との接続契約は `embed.rs` の doc comment を参照。
 //!
 //! # 実行時コスト
 //! [`ApiDoc::openapi()`] はコンパイル時に構築されたメタデータから実行時に
 //! ドキュメント構造体を組み立てるのみで、サーバーのリクエスト処理経路からは
-//! 呼び出さない（PoC-4 成功基準 3: 実行時コストゼロ）。
+//! 呼び出さない（PoC-4 成功基準 3: 実行時コストゼロ）。[`OPENAPI_JSON`] は
+//! `include_str!` によるコンパイル時埋め込みの定数参照のみで、こちらも実行時コストは
+//! 文字列スライスの返却のみ（TASK-3.2、#31）。
 
 mod docs;
+mod embed;
 mod schemas;
 
 pub use docs::ApiDoc;
+pub use embed::OPENAPI_JSON;
 pub use schemas::{EchoBody, ErrorBody, SearchResponse, UserResponse};
 
 // doc test 内で `utoipa::OpenApi` トレイトの `openapi()` を呼べるようにするため、

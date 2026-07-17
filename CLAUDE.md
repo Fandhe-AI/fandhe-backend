@@ -33,7 +33,8 @@ backend-framework/
 │   ├── core                           # 最小コア（TASK-1.1 で作成、実体は TASK-1.3 以降）
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（TASK-1.3〜1.4 以降で追加予定）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
-│   ├── plugin-openapi                 # OpenAPI ドキュメント生成プラグイン（ApiDoc + utoipa::path 定義、TASK-3.1、#30）
+│   ├── plugin-openapi                 # OpenAPI ドキュメント生成プラグイン（ApiDoc + utoipa::path 定義、TASK-3.1、#30。
+│   │                                   # gen-openapi CLI・openapi.json 静的埋め込み、TASK-3.2、#31）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
 ├── benches/               # 負荷生成・計測ハーネス（TASK-1.2 で追加、bench-builder 管轄）
@@ -45,6 +46,7 @@ backend-framework/
 │   ├── dep-audit.sh                   # 全 feature 構成の cargo audit / cargo deny check（ci.yml dep-audit ジョブ）
 │   ├── dep-impact.sh                  # 依存クレート数・バイナリサイズ・unsafe 件数の計測（markdown 出力）
 │   ├── setup-required-checks.sh       # main の required status check（ci-complete）設定（TASK-14.1、#39）
+│   ├── openapi-two-stage.sh           # gen-openapi --check → cargo build --all-features の 2 段階ビルド検証（TASK-3.2、#31）
 │   └── accept/            # REQ-1 受け入れ検証スクリプト（TASK-1.6-2 で追加）
 │       ├── README.md                  # 検証基準・前提ツール・実行方法
 │       ├── lib/common.sh              # PASS/FAIL/SKIP/WARN 集計の共通関数

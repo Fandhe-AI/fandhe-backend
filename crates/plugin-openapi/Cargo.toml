@@ -23,7 +23,24 @@ workspace = true
 utoipa = { version = "5", default-features = true }
 serde = { version = "1", features = ["derive"] }
 
+# gen-cli feature（TASK-3.2、#31）専用の optional 依存。`gen-cli` 無効時（サーバ側から
+# lib として参照される通常経路）は `dep:` 構文により Cargo.lock 解決対象にも
+# `cargo tree` にも一切現れない（pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
+serde_json = { version = "1", optional = true }
+
 # ApiDoc::openapi() の JSON シリアライズ結果を検証するためのみ。本体ビルド
 # （lib.rs 以下、utoipa 経由の実行時コスト）には影響しない。
 [dev-dependencies]
 serde_json = "1"
+
+# gen-openapi CLI（TASK-3.2、#31）: `ApiDoc::openapi()` を JSON にシリアライズし
+# crates/plugin-openapi/openapi.json（embed.rs から include_str! で埋め込む実体）を
+# 生成・検証する開発用バイナリ。サーバー本体ビルドの通常経路には一切含まれない
+# （required-features によりデフォルトでは cargo build 対象外）。
+[features]
+gen-cli = ["dep:serde_json"]
+
+[[bin]]
+name = "gen-openapi"
+path = "src/bin/gen-openapi.rs"
+required-features = ["gen-cli"]
