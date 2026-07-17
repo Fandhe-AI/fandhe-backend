@@ -89,13 +89,13 @@ impl TracingLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bf_http::request::{parse_request_head, ParseOutcome};
+    use bf_http::request::{ParseOutcome, parse_request_head};
     use std::num::NonZeroU64;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tracing::subscriber::{self, Subscriber};
-    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
     use tracing_subscriber::Registry;
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
     fn sample_head() -> RequestHead {
         let buf = b"GET /health HTTP/1.1\r\nHost: example.com\r\n\r\n";

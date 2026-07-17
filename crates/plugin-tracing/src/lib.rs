@@ -1,6 +1,7 @@
 //! backend-framework の可観測性（トレーシング）プラグイン（TASK-10.1、REQ-10）。
 //!
-//! 拡張点対応: `Middleware`（`crates/core/src/extension.rs`）
+//! 拡張点対応: Middleware
+//! （拡張点定義: `crates/core/src/extension.rs`）
 //!
 //! # 背景・既知の制約
 //!
