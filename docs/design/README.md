@@ -77,3 +77,10 @@
   TS 型 → openapi-fetch クライアント」の一方向パイプライン設計・クライアントライブラリ
   選定結果（`openapi-fetch` 採用理由と比較表）・`--check`/`--update` 運用・
   サプライチェーン対策・TASK-6.2（#55）への接続点を記述）
+- [`outbox-consent-integration.md`](./outbox-consent-integration.md): Outbox・同意ゲート
+  実データモデル統合設計（TASK-9.4、#64、REQ-9。PoC-6 インメモリ実装（`Mutex<Vec<...>>`）
+  から `micro-service-hub` の Outbox Relay・同意管理サービス（PostgreSQL）への統合方針。
+  `OutboxStore`/`ConsentStore` trait による依存逆転維持・データモデル対応表・
+  アプリ層 403/データ層フェイルクローズ 0 行の 2 層拒否設計・完了判定を「設計完了」と
+  「E2E 統合検証完了」（#97、`micro-service-hub` Outbox Relay 完了 2026-09-30 以降）の
+  2 段階に分ける方針を記述）
