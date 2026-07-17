@@ -31,13 +31,27 @@
 //! 参照）。依存方向の機械検証は `scripts/dep-direction-check.sh`（TASK-1.5）が
 //! `cargo metadata` の依存エッジホワイトリスト照合で行う。
 //!
+//! # feature 一覧
+//!
+//! - `webrtc-proxy`（TASK-2.1 / #18）: `crates/plugin-webrtc-proxy` を
+//!   `optional = true` + `dep:` 構文で組み込み、[`server::Server::webrtc_proxy`]
+//!   で登録した `bf_plugin_webrtc_proxy::ProxyConfig` に基づき `POST
+//!   /rtc/offer` をパスインターセプトする。無効時（既定）は依存・コード・
+//!   `unsafe` を一切含まない（クレート非公開の `plugin` モジュールの doc・
+//!   `docs/design/plugin-boundary.md` を参照）。
+//!
 //! # 今後のタスクとの対応
 //!
-//! - TASK-2.1（#18）: feature flag + `dep:` 構文によるプラグイン境界の確立。
-//!   `server` モジュール内の `try_handle_upgrade` ヘルパーは本タスクで
-//!   実プラグインへの委譲実装に差し替わるシーム
+//! - `server` モジュール内の `try_handle_upgrade` ヘルパーは、実 WebSocket
+//!   プラグイン（TASK-4.1）配線までは常に委譲なしのスタブのまま残る。
+//!   TASK-2.1（#18）で確立したプラグイン境界パターン（feature flag + `dep:`
+//!   構文、cfg-free なコアループ + 固定シグネチャシーム）は非公開 `plugin`
+//!   モジュールの `try_intercept` によるパスインターセプト型として実証済みで
+//!   あり、Upgrade 型（`try_handle_upgrade`）を含む後続プラグインは
+//!   `docs/design/plugin-boundary.md` の適用手順に従って同パターンを踏襲する
 
 pub mod extension;
+pub(crate) mod plugin;
 pub mod server;
 
 // 3 拡張点はクレート直下からも参照できるよう re-export する。プラグイン側

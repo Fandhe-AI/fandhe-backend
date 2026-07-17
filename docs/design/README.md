@@ -43,3 +43,7 @@
   読み取りバッファ再利用・`TCP_NODELAY` 最適化（TASK-1.3-3、#68。`RecvBuffer` の
   遅延コンパクション・ゼロ埋め回避・容量有界化設計と、feature `net` の
   `socket::configure_stream`。TASK-1.4 / #70（接続受理ループ）への引き継ぎ事項を記述）
+- [`plugin-boundary.md`](./plugin-boundary.md): feature flag + `dep:` 構文による
+  プラグイン境界パターン（TASK-2.1、#18、REQ-2。feature 命名規約・cfg-free な
+  コアループ + 固定シグネチャシームの規約・パスインターセプト型（`webrtc-proxy`
+  で確立）/ Upgrade 型の適用指針・検証コマンドを記述）
