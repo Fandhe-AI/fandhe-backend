@@ -347,6 +347,28 @@ assert_exit_code "『## 3 軸判定結果』欠落時は無関係な場所の同
 assert_contains "3 軸判定結果の欠落を報告する" "${out_missing_parent}" "3 軸判定結果"
 
 # ==================================================
+# 回帰: CRLF 由来の末尾 \r が見出し一致・値比較を壊さない（PR #121 Bugbot 再指摘）
+# ==================================================
+
+echo "===== CRLF（\\r\\n）で保存された正当な『可』判定記録は規約適合: exit 0 ====="
+CRLF_OK="${WORKDIR}/crlf-ok.md"
+printf '## 判定区分\r\n\r\n可\r\n\r\n## 3 軸判定結果\r\n\r\n### 実施可能か\r\n\r\n受け入れ基準に落ちる。\r\n\r\n### 安全か\r\n\r\nsecurity.md と整合する。\r\n\r\n### 影響範囲が許容内か\r\n\r\nscripts/ のみに限定される。\r\n' > "${CRLF_OK}"
+set +e
+out_crlf_ok="$(bash "${CHECK}" --input "${CRLF_OK}" 2>&1)"
+exit_crlf_ok=$?
+set -e
+assert_exit_code "CRLF 保存の正当な『可』判定記録は見出し一致・値比較が壊れず規約適合と判定する" 0 "${exit_crlf_ok}"
+
+echo "===== CRLF（\\r\\n）で保存された正当な『条件付き可・承認済み』判定記録は規約適合: exit 0 ====="
+CRLF_COND="${WORKDIR}/crlf-conditional.md"
+printf '## 判定区分\r\n\r\n条件付き可\r\n\r\n## 着手条件\r\n\r\n受け入れ基準を明確化する。\r\n\r\n## ユーザー承認\r\n\r\n承認済み\r\n' > "${CRLF_COND}"
+set +e
+out_crlf_cond="$(bash "${CHECK}" --input "${CRLF_COND}" 2>&1)"
+exit_crlf_cond=$?
+set -e
+assert_exit_code "CRLF 保存の『条件付き可・承認済み』判定記録は『承認済み』の厳密一致が壊れず規約適合と判定する" 0 "${exit_crlf_cond}"
+
+# ==================================================
 # 引数エラー
 # ==================================================
 

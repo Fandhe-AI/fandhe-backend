@@ -111,9 +111,15 @@ EOF
 # 判定記録ファイルから "## <heading>" セクションの本文を抽出する。
 # 次の "## " 見出し（または EOF）までを本文として扱う。完全一致比較のみを用い、
 # 判定記録内の文字列を正規表現・シェルへ再解釈させない（OWASP A03 対策）。
+#
+# 各行の先頭で無条件に末尾の "\r"（CRLF 由来）を除去してから比較・出力する。
+# 除去しないと、CRLF で保存された判定記録では見出し行自体が "## 見出し\r" となり
+# "$0 == h" の完全一致が常に失敗し、判定区分が存在するにもかかわらず「欠落」として
+# fail-closed で拒否してしまう（正当な記録を誤って弾く形の抜け穴）。
 extract_section() {
     local file="$1" heading="$2"
     awk -v h="## ${heading}" '
+        { sub(/\r$/, "") }
         $0 == h { found=1; next }
         found && index($0, "## ") == 1 { found=0 }
         found { print }
@@ -124,7 +130,8 @@ extract_section() {
 # 親セクション（"## 3 軸判定結果"）の本文に限定してから小見出しを走査するため、
 # ファイル中の他の場所にある同名 "###" 見出しや、親セクション自体が欠落している
 # 場合を誤って一致させない（fail-closed。親セクション欠落時は空文字列を返し、
-# is_unfilled が真になり違反として検知される）。
+# is_unfilled が真になり違反として検知される）。extract_section で既に CRLF の
+# "\r" を除去した本文を受け取るため、ここでは追加の除去は不要。
 extract_subsection() {
     local file="$1" heading="$2"
     extract_section "${file}" "${H_THREE_AXES}" | awk -v h="### ${heading}" '
@@ -135,8 +142,9 @@ extract_subsection() {
 }
 
 # セクション本文の最初の非空行を返す（トリム済み）。プレースホルダ判定・空欄判定に使う。
+# 末尾の "\r" も除去する（extract_section 側で既に除去済みだが、防御的に二重で扱う）。
 first_nonblank_line() {
-    printf '%s\n' "$1" | awk 'NF { sub(/^[ \t]+/, ""); sub(/[ \t]+$/, ""); print; exit }'
+    printf '%s\n' "$1" | awk 'NF { sub(/\r$/, ""); sub(/^[ \t]+/, ""); sub(/[ \t]+$/, ""); print; exit }'
 }
 
 # 欄が「空欄」または「未記入プレースホルダ（<...> 形式）」なら真を返す（fail-closed 対象）。
