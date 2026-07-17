@@ -55,6 +55,12 @@ backend-framework/
 │   │                                    # tokio-tungstenite へのフレーミング委譲、TASK-4.1、#22。
 │   │                                    # `crates/core` の `websocket` feature 経由で `UpgradeHandler`
 │   │                                    # 拡張点配線、Upgrade 型プラグイン境界パターンの第 1 号）
+│   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
+│   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
+│   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O
+│   │                                    # （tracing-appender の non_blocking writer）を提供。`crates/core` の
+│   │                                    # `tracing` feature 経由で `Middleware` 拡張点配線、Middleware 型
+│   │                                    # プラグイン境界パターンの第 1 号、`docs/design/plugin-boundary.md` 5.6 節）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
 ├── ts/                     # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）。
