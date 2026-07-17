@@ -39,6 +39,8 @@ TASK-12.3-2（#84）で、対応可否自律判断ガードレール（TASK-12.3
 | `fuzz.sh` | `crates/http/fuzz`（cargo-fuzz、pinned nightly）の全 fuzz target を実行する。`--max-total-time` で 1 target あたりの実行秒数を切り替え、`--list` で target 名のみ列挙する（TASK-15.3-1、#87） | `.github/workflows/ci.yml` の `fuzz-smoke` ジョブから `--max-total-time 60` で呼ばれる |
 | `feasibility-check.sh` | 対応可否自律判断ガードレール（`docs/design/feasibility-guardrail.md`）の判定記録（markdown）を検証する。`--template` は規約準拠のテンプレートを標準出力、`--input <record.md>` は形式・必須項目・fail-closed 原則を検証する | CI からは呼ばれない。判定記録の作成・着手前確認をエージェント・人間がローカルで実行する運用（`.claude/rules/feasibility-guardrail.md` 参照） |
 | `tests/run-guardrail-tests.sh` | `feasibility-check.sh` のセルフテスト（PoC-9 T-11〜T-15 判定例 fixture・正常系・異常系、ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
+| `third-party-verify.sh` | TASK-12.4-1（#85）第三者検証ハーネス。被験 AI（別セッション・別モデル）が実装した使い捨て worktree に対し `fmt --check` / `clippy -D warnings` / `cargo test` を実行し PASS/FAIL/PENDING を判定する | CI からは呼ばれない。TASK-12.4-1 の完遂率再測定を実施する際にローカルで呼び出す運用（`docs/design/third-party-verification.md` 参照） |
+| `tests/run-third-party-verify-tests.sh` | `third-party-verify.sh` のセルフテスト。`--offline` は引数検証・PENDING 判定のみ（cargo ビルド不要）、既定モードは fixture worktree を作成して PASS/FAIL 検出まで確認するフル層 | CI からは呼ばれない（フル層は cargo ビルドを伴い時間を要するため） |
 
 ## 前提ツール
 
@@ -236,3 +238,29 @@ bash scripts/feature-flow-check.sh --base origin/main --allow-no-tests pseudo-cr
   スコープ。フロー全体・運用規約は
   [`docs/design/feature-modification-flow.md`](../docs/design/feature-modification-flow.md)・
   [`.claude/rules/feature-modification.md`](../.claude/rules/feature-modification.md) を参照。
+
+## `third-party-verify.sh` — 第三者検証ハーネス（TASK-12.4-1、#85）
+
+```bash
+bash scripts/third-party-verify.sh --worktree <path> --task-id <ID> \
+  [--baseline-tests <起点コミットの cargo test 出力ログ>]
+```
+
+`docs/design/third-party-verification.md`（TASK-12.4-1）の第三者検証プロトコルにおける
+完遂の一次判定（機械ゲート）を実行する。被験 AI（別セッション・別モデル）が実装した
+使い捨て worktree を対象に `cargo fmt --check` / `cargo clippy --all-features -- -D
+warnings` / `cargo test --workspace --all-features` を実行し、PASS / FAIL / PENDING を
+判定する（判定区分・完遂率の算出方法は同書 5 節を参照）。
+
+- `--worktree` にはメイン working copy 自体を指定できない（誤爆防止）。git worktree で
+  ないディレクトリ・存在しないパスは PENDING として扱う。
+- `--baseline-tests` 省略時は機械ゲートの PASS/FAIL 判定のみを行い、リグレッション突合は
+  PENDING として区別する（FAIL と混同しない）。
+- 各ゲートには上限時間（既定 600 秒、`THIRD_PARTY_VERIFY_TIMEOUT` で変更可）を設け、
+  被験実装のハングを「未完遂」として扱う（完遂率を楽観方向へ歪めない）。
+- 被験 AI が生成したコードは信頼しない前提のため、実行は指定 worktree 内に閉じ、メイン
+  working copy・共有設定には触れない。
+
+`tests/run-third-party-verify-tests.sh` はこのハーネス自体のセルフテスト。`--offline`
+は引数検証・PENDING 判定のみ（高速）、既定モードは fixture worktree を作成し PASS/FAIL
+検出まで確認するフル層（cargo ビルドを伴うため時間を要する。CI からは呼ばれない）。
