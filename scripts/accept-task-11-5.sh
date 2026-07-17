@@ -232,9 +232,16 @@ if [ -n "${edges_tsv}" ]; then
 fi
 
 # レイヤ順の許可リスト（from パターン:to パターン）。fnmatch 相当の shell パターンで判定する。
+# TASK-1.5（#14）で crates/routes（bf-routes）が新設され、`server → routes → http::*`
+# の中間層としてグラフに加わった。core は bf-routes 経由でも bf-http を直接（server.rs
+# が bf_http::request/response 型を参照するため）参照し続けるため、両エッジを許可する。
 allowed_edge_patterns=(
     "backend-framework-core:bf-http"
+    "backend-framework-core:bf-routes"
+    "bf-routes:bf-http"
     "bf-plugin-*:bf-http"
+    "bf-plugin-*:bf-routes"
+    "bf-plugin-*:backend-framework-core"
     "*routes*:bf-http"
 )
 

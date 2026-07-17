@@ -5,8 +5,9 @@
 #                       依存 0 件を維持し、重い依存・プラグイン固有シンボルを持ち込まない
 #                       （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
 #   - crates/http    : HTTP プリミティブ（TASK-1.3 以降で追加）。core から呼ばれる下位層
-#   - crates/routes  : ルーティング（TASK-1.4 以降で追加）。依存方向は
-#                       `server` → `routes` → `http::*` の一方向（TASK-1.5 で機械的に保証する）
+#   - crates/routes  : ルーティング（TASK-1.5、#14 で新設）。依存方向は
+#                       `server` → `routes` → `http::*` の一方向であり、
+#                       `scripts/dep-direction-check.sh` が機械的に保証する
 #   - crates/plugin-*: websocket / graphql / openapi / webrtc / hub-wiring / tracing。
 #                       Cargo feature + `dep:` 構文で着脱可能にし、無効時は依存・コード・
 #                       unsafe をゼロにする（TASK-2.1 以降）

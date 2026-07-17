@@ -117,8 +117,9 @@ impl Response {
 ///
 /// 未知のコードは空文字列を返す（`HTTP/1.1 <code> \r\n` のように reason
 /// phrase 省略として出力される。RFC 7230 上 reason phrase は省略可能）。
-/// テーブルはコアループ（`crates/core/src/server.rs`）が実際に払い出す
-/// ステータスコードに合わせて選定している。
+/// テーブルはコアループ（`crates/core/src/server.rs`）・`crates/routes`
+/// （`bf_routes::Router::dispatch`、TASK-1.5 / #14 でメソッド不一致時に 405 を
+/// 払い出す）が実際に払い出すステータスコードに合わせて選定している。
 fn reason_phrase(status: u16) -> &'static str {
     match status {
         200 => "OK",
@@ -127,6 +128,7 @@ fn reason_phrase(status: u16) -> &'static str {
         401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
+        405 => "Method Not Allowed",
         413 => "Payload Too Large",
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",

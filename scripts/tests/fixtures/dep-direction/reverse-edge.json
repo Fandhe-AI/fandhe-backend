@@ -1,0 +1,23 @@
+{
+  "packages": [
+    {
+      "name": "backend-framework-core",
+      "dependencies": [
+        { "name": "bf-http", "path": "/workspace/crates/http", "kind": null },
+        { "name": "bf-routes", "path": "/workspace/crates/routes", "kind": null }
+      ]
+    },
+    {
+      "name": "bf-routes",
+      "dependencies": [
+        { "name": "bf-http", "path": "/workspace/crates/http", "kind": null }
+      ]
+    },
+    {
+      "name": "bf-http",
+      "dependencies": [
+        { "name": "bf-routes", "path": "/workspace/crates/routes", "kind": null }
+      ]
+    }
+  ]
+}

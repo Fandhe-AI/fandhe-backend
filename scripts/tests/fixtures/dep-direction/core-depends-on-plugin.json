@@ -1,0 +1,21 @@
+{
+  "packages": [
+    {
+      "name": "backend-framework-core",
+      "dependencies": [
+        { "name": "bf-http", "path": "/workspace/crates/http", "kind": null },
+        { "name": "bf-plugin-webrtc-proxy", "path": "/workspace/crates/plugin-webrtc-proxy", "kind": null }
+      ]
+    },
+    {
+      "name": "bf-http",
+      "dependencies": []
+    },
+    {
+      "name": "bf-plugin-webrtc-proxy",
+      "dependencies": [
+        { "name": "bf-http", "path": "/workspace/crates/http", "kind": null }
+      ]
+    }
+  ]
+}
