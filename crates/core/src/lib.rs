@@ -39,6 +39,12 @@
 //!   /rtc/offer` をパスインターセプトする。無効時（既定）は依存・コード・
 //!   `unsafe` を一切含まない（クレート非公開の `plugin` モジュールの doc・
 //!   `docs/design/plugin-boundary.md` を参照）。
+//! - `webrtc`（TASK-8.1 / #26）: `crates/plugin-webrtc`（in-process 型、
+//!   `webrtc-rs` 直接依存）を同じくプラグイン境界パターンで組み込み、
+//!   [`server::Server::webrtc`] で登録した `bf_plugin_webrtc::WebRtcConfig` に
+//!   基づき `POST /rtc/offer` をパスインターセプトする。`webrtc-proxy` と
+//!   同時有効時は `webrtc-proxy` が優先される（`plugin::try_intercept` の
+//!   doc）。無効時（既定）は依存・コード・`unsafe` を一切含まない。
 //! - `websocket`（TASK-4.1 / #22）: `crates/plugin-websocket` を
 //!   `optional = true` + `dep:` 構文で組み込み、[`server::Server::websocket`]
 //!   で登録した `bf_plugin_websocket::WebSocketConfig` の指すパス（既定

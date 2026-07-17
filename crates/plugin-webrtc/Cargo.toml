@@ -1,0 +1,40 @@
+[package]
+name = "bf-plugin-webrtc"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "backend-framework の in-process WebRTC プラグイン（TASK-8.1）。SDP Offer/Answer・データチャネル確立を webrtc-rs でプロセス内完結させる。REQ-8 の MVP 推奨（別プロセス切り出し、crates/plugin-webrtc-proxy）とは対照的な高攻撃表面の選択肢であり、クレート境界で完全に分離する。"
+publish = false
+
+# workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
+# （.claude/rules/coding-rust.md・.claude/rules/security.md）。
+[lints]
+workspace = true
+
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）: 本クレートは
+# `crates/plugin-webrtc-proxy`（TASK-8.2-2、別プロセス切り出し型）とはクレート
+# 境界で完全に分離する。`webrtc`（0.17.1 系）は依存 +189 クレート・バイナリ
+# サイズ約 10.4 倍・`unsafe` Functions 約 2.2 倍という桁違いの依存インパクトを
+# 持つ（PoC-5、docs/spec の Conditional Go 条件(2)）ため、本クレート自体は
+# `webrtc` feature（`crates/core/Cargo.toml` の `optional = true` + `dep:` 構文）
+# 有効時にのみコアの依存グラフへ現れる（`cargo tree -p backend-framework-core`
+# で検証）。
+[dependencies]
+bf-http = { path = "../http" }
+webrtc = "0.17"
+serde_json = "1"
+# シグナリング全体タイムアウト（`WebRtcConfig::signaling_timeout`）のみに使う。
+# 接続受理・I/O は webrtc クレート自身の tokio ランタイム利用に委ねる。
+tokio = { version = "1", default-features = false, features = ["time"] }
+
+# 統合テスト（tests/webrtc_datachannel.rs）でループバック HTTP サーバ・クライアント側
+# RTCPeerConnection を動かすためのみ。本体ビルド（lib.rs 以下）には影響しない。
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = [
+  "net",
+  "io-util",
+  "time",
+  "macros",
+  "rt-multi-thread",
+] }

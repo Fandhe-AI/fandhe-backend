@@ -196,6 +196,13 @@ pub struct Server {
     /// （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
     #[cfg(feature = "webrtc-proxy")]
     webrtc_proxy_config: Option<bf_plugin_webrtc_proxy::ProxyConfig>,
+    /// `webrtc` feature（TASK-8.1 / #26）有効時のみ意味を持つ設定。
+    /// `crate::plugin::try_intercept` がこのフィールドを参照して `POST /rtc/offer`
+    /// を in-process の `RTCPeerConnection` シグナリングへ委譲するかどうかを判定
+    /// する。feature 無効時はフィールド自体が構造体から消え、依存・コードとも
+    /// ゼロコストになる（pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
+    #[cfg(feature = "webrtc")]
+    webrtc_config: Option<bf_plugin_webrtc::WebRtcConfig>,
     /// `websocket` feature（TASK-4.1 / #22）有効時のみ意味を持つ設定群。
     /// `crate::plugin::try_handle_upgrade` がこのフィールドを参照して
     /// `UpgradeHandler` 委譲成立後に `bf_plugin_websocket::handle_upgrade` へ
@@ -224,6 +231,8 @@ impl Default for Server {
             max_requests_per_connection: DEFAULT_MAX_REQUESTS_PER_CONNECTION,
             #[cfg(feature = "webrtc-proxy")]
             webrtc_proxy_config: None,
+            #[cfg(feature = "webrtc")]
+            webrtc_config: None,
             #[cfg(feature = "websocket")]
             websocket_configs: Vec::new(),
         }
@@ -326,6 +335,29 @@ impl Server {
     #[cfg(feature = "webrtc-proxy")]
     pub(crate) fn webrtc_proxy_config(&self) -> Option<&bf_plugin_webrtc_proxy::ProxyConfig> {
         self.webrtc_proxy_config.as_ref()
+    }
+
+    /// in-process WebRTC プラグイン（`crates/plugin-webrtc`）を有効化する
+    /// （`webrtc` feature 限定 API、TASK-8.1 / #26）。
+    ///
+    /// 登録すると `POST /rtc/offer` が `RequestGate` → `UpgradeHandler` の評価を
+    /// 通過した後、既定 [`Handler`] より先にパスインターセプトされ、`config` を
+    /// 使って `RTCPeerConnection` を生成しシグナリングを完結させる（対象外パスは
+    /// 素通りし、既定 `Handler` へフォールスルーする。`crate::plugin::try_intercept`
+    /// の doc を参照）。`webrtc-proxy`（別プロセス切り出し型）と同時に登録した
+    /// 場合は `webrtc-proxy` が優先される（`crate::plugin::try_intercept` の doc）。
+    #[cfg(feature = "webrtc")]
+    #[must_use]
+    pub fn webrtc(mut self, config: bf_plugin_webrtc::WebRtcConfig) -> Self {
+        self.webrtc_config = Some(config);
+        self
+    }
+
+    /// `plugin::try_intercept` が参照する、登録済み in-process WebRTC 設定
+    /// （`webrtc` feature 限定、TASK-8.1 / #26）。
+    #[cfg(feature = "webrtc")]
+    pub(crate) fn webrtc_config(&self) -> Option<&bf_plugin_webrtc::WebRtcConfig> {
+        self.webrtc_config.as_ref()
     }
 
     /// WebSocket プラグイン（`crates/plugin-websocket`）を有効化する

@@ -41,6 +41,13 @@ tokio = { version = "1", default-features = false, features = ["rt", "net", "io-
 # 一切現れない（`docs/design/plugin-boundary.md` の検証コマンドを参照）。
 bf-plugin-webrtc-proxy = { path = "../plugin-webrtc-proxy", optional = true }
 
+# TASK-8.1（#26）: in-process WebRTC プラグイン（`webrtc-rs` 直接依存）。
+# `webrtc-proxy`（上記、別プロセス切り出し型）とはクレート境界で完全に分離しており、
+# `webrtc` feature 無効時は `cargo tree -p backend-framework-core` に本行の依存が
+# 一切現れない（TASK-2.1 と同一のプラグイン境界パターン、
+# .claude/rules/pay-for-what-you-use.md）。
+bf-plugin-webrtc = { path = "../plugin-webrtc", optional = true }
+
 # TASK-4.1（#22）: `websocket` feature 有効時のみ依存として解決される
 # Upgrade 型プラグインの第 1 号。`bf-plugin-websocket` は循環依存を避けるため
 # `backend-framework-core` に依存しない（`crates/plugin-websocket/src/lib.rs`
@@ -61,6 +68,10 @@ bf-plugin-graphql = { path = "../plugin-graphql", optional = true }
 [features]
 default = []
 webrtc-proxy = ["dep:bf-plugin-webrtc-proxy"]
+# TASK-8.1（#26）。`webrtc-proxy` と同時に `--all-features` で有効化されても
+# 依存グラフ上は独立（`crate::plugin::try_intercept` の doc・
+# `docs/design/plugin-boundary.md` の優先順位の記述を参照）。
+webrtc = ["dep:bf-plugin-webrtc"]
 websocket = ["dep:bf-plugin-websocket"]
 graphql = ["dep:bf-plugin-graphql"]
 

@@ -36,11 +36,20 @@ use crate::server::Server;
 /// 無効」であり、呼び出し元は既定 `Handler::handle`（未登録時 404）へ
 /// フォールスルーする。
 ///
-/// `webrtc-proxy`・`graphql` の両 feature が無効時は `server`/`head`/`body` を
-/// 一切参照せず即座に `None` を返す（`cargo tree` で `bf-plugin-webrtc-proxy`・
-/// `bf-plugin-graphql` が現れないことに加え、本関数自体もコード上ゼロコストで
-/// あることの根拠）。`graphql` feature は TASK-2.4（#21）で追加した第 2 の
-/// プラグイン境界インスタンス（`crates/plugin-graphql` の doc を参照）。
+/// `webrtc-proxy`・`webrtc`・`graphql` のいずれの feature も無効時は
+/// `server`/`head`/`body` を一切参照せず即座に `None` を返す（`cargo tree` で
+/// `bf-plugin-webrtc-proxy`・`bf-plugin-webrtc`・`bf-plugin-graphql` のいずれも
+/// 現れないことに加え、本関数自体もコード上ゼロコストであることの根拠）。
+/// `graphql` feature は TASK-2.4（#21）で追加した第 2 のプラグイン境界
+/// インスタンス（`crates/plugin-graphql` の doc を参照）。
+///
+/// `webrtc-proxy`・`webrtc` が同時に有効な場合（`--all-features` CI 構成）は
+/// `webrtc-proxy`（別プロセス切り出し型、REQ-8 の MVP 推奨方式）を先に評価する。
+/// 両方を `Server` に登録していても `webrtc-proxy` 側が `Some` を返した時点で
+/// `webrtc` 側（in-process 型、TASK-8.1 / #26）は評価しない（実運用では通常
+/// どちらか片方のみ登録するため、この優先順位が問題になるのは意図的に両方
+/// 登録した場合に限る。`crates/core/src/server.rs` の `Server::webrtc_proxy` /
+/// `Server::webrtc` の doc を参照）。
 pub(crate) async fn try_intercept(
     server: &Server,
     head: &RequestHead,
@@ -53,6 +62,15 @@ pub(crate) async fn try_intercept(
                 bf_plugin_webrtc_proxy::try_handle_rtc_offer(head, body, config).await
         {
             return Some(from_plugin_response(response));
+        }
+    }
+
+    #[cfg(feature = "webrtc")]
+    {
+        if let Some(config) = server.webrtc_config()
+            && let Some(response) = bf_plugin_webrtc::try_handle_rtc_offer(head, body, config).await
+        {
+            return Some(response);
         }
     }
 
