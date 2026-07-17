@@ -25,6 +25,11 @@ name: CI
 # TASK-14.3（#41）: レビューゲート運用の受け入れテスト（scripts/tests/run-review-gate-tests.sh
 # --offline）を unsafe-triage ジョブに追加し、TASK-14.2 の deny lint 表・本ジョブ構成の
 # 退行を CI 常設で検知する（docs/design/review-gate.md 参照）。
+# TASK-12.3-2（#84）: 対応可否自律判断ガードレール（TASK-12.3-1、#83、
+# docs/design/feasibility-guardrail.md）の判定記録バリデータ（scripts/feasibility-check.sh）
+# のセルフテスト（scripts/tests/run-guardrail-tests.sh）を unsafe-triage ジョブに追加した。
+# 既存セルフテスト群と同列・軽量（ネットワーク・cargo ビルド不要）で、判定記録の形式・
+# 必須項目・fail-closed 原則の退行を CI 常設で検知する。
 on:
   pull_request:
     branches: [main]
@@ -290,6 +295,9 @@ jobs:
 
       - name: run-review-gate-tests.sh --offline（レビューゲート運用のオフライン退行検知、TASK-14.3、#41）
         run: bash scripts/tests/run-review-gate-tests.sh --offline
+
+      - name: run-guardrail-tests.sh（対応可否判定記録バリデータのセルフテスト、TASK-12.3-2、#84）
+        run: bash scripts/tests/run-guardrail-tests.sh
 
   # --------------------------------------------------
   # コア全体の行カバレッジ計測（TASK-11.5-2、#78）。

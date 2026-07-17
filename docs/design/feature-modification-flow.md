@@ -68,7 +68,7 @@ flowchart LR
 | 段階 | 内容 | 担い手 | 本書での扱い |
 |------|------|--------|-------------|
 | 機能要求受領 | Issue form（`.github/ISSUE_TEMPLATE/feature-request.yml`）で受付 | 利用者・ステークホルダー | 3 節 |
-| 要求解釈 | 受け入れ基準の存在確認。なければ差し戻し | AI エージェント（main） | 4 節（判定ロジック自体は TASK-12.3 への接続点） |
+| 要求解釈 | 受け入れ基準の存在確認。なければ差し戻し。曖昧要求・危険要求の可否判定（可 / 不可 / 要エスカレーション）の詳細ガードレールは [`feasibility-guardrail.md`](./feasibility-guardrail.md)（TASK-12.3-1、#83）、判定記録の機械検証は `scripts/feasibility-check.sh`（TASK-12.3-2、#84） | AI エージェント（main） | 4 節 |
 | 影響範囲判定 | 3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）・feature 構成への閉包判定 | AI エージェント（`explorer` 等） | 5 節 |
 | 実装 | パスベース委譲（[[delegation-impl]]）・pay-for-what-you-use 遵守 | `core-builder` / `plugin-builder` 等 | 6 節 |
 | テスト追加 | feature 構成別 `cargo test`・doc test・`scripts/feature-flow-check.sh` による同時性チェック | `test-runner` | 6 節 |
@@ -106,7 +106,9 @@ AI エージェントは実装着手前に受け入れ基準の記載を確認�
 
 **「曖昧要求・危険要求の不可判定」の詳細ガードレール（可 / 不可 / 要エスカレーションの
 判定基準）は TASK-12.3（#83/#84）のスコープ**であり、本書は「受け入れ基準の有無」という
-機械的に確認可能な最小条件のみを扱う。
+機械的に確認可能な最小条件のみを扱う。判定基準・判定記録の形式は
+[`feasibility-guardrail.md`](./feasibility-guardrail.md)（TASK-12.3-1、#83）が定め、
+判定記録の形式検証は `scripts/feasibility-check.sh`（TASK-12.3-2、#84）が機械化する。
 
 ## 5. 影響範囲判定
 
