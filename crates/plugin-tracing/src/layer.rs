@@ -26,14 +26,21 @@ use crate::sampler::Sampler;
 #[derive(Debug)]
 pub struct TracingLayer {
     sampler: Sampler,
+    /// 記録対象から除外するパスの集合（`TracingConfig::exclude_paths` を
+    /// そのまま保持、TASK-10.3 / #58）。件数は数件程度を想定するため
+    /// `Vec<String>` のまま線形走査で照合する（`record_response` の doc を
+    /// 参照）。
+    exclude_paths: Vec<String>,
 }
 
 impl TracingLayer {
-    /// `config.sample_interval` に従うサンプラーを持つレイヤーを作る。
+    /// `config.sample_interval` に従うサンプラーと `config.exclude_paths` を
+    /// 持つレイヤーを作る。
     #[must_use]
     pub fn new(config: &TracingConfig) -> Self {
         Self {
             sampler: Sampler::new(config.sample_interval),
+            exclude_paths: config.exclude_paths.clone(),
         }
     }
 
@@ -67,16 +74,32 @@ impl TracingLayer {
     /// 記録コスト削減を図る。旧 span に載せていた method・path はイベントの
     /// 構造化フィールドへ移すため、統合による情報欠落はない（"request accepted"
     /// イベントは固有フィールドを持たず、統合による情報損失は実質ゼロ）。
+    ///
+    /// 判定順序（TASK-10.3 / #58）: ① クエリ文字列除去 → ② `exclude_paths`
+    /// 完全一致照合 → ③ [`Sampler::should_sample`]。除外照合をサンプラー判定
+    /// より前に置くのは、(a) ヘルスチェック等の高頻度パスで `AtomicU64`
+    /// カウンタの `fetch_add` すら発生させずコストを文字列比較のみに抑える
+    /// ため、(b) 高頻度パスがサンプリング周期を消費して他パスの記録密度を
+    /// 歪めるのを防ぐため。クエリ除去を照合より前に置くのは、
+    /// `/health?probe=1` のようなクエリ付きリクエストも除外対象にするため
+    /// （「クエリ文字列除去後のパスと照合する」という [`TracingConfig::exclude_paths`]
+    /// の契約）。
     pub fn record_response(&self, head: &RequestHead, elapsed: Duration) {
-        if !self.sampler.should_sample() {
-            return;
-        }
-
-        // クエリ文字列（機密情報を含みうる）を除いた path 部分のみを記録する。
+        // クエリ文字列（機密情報を含みうる）を除いた path 部分のみを以降で使う。
         let path = head
             .target
             .split_once('?')
             .map_or(head.target.as_str(), |(path, _query)| path);
+
+        // 除外対象パスはサンプラーのカウンタを消費する前に即座に return する
+        // （本メソッドの doc「判定順序」を参照）。
+        if self.exclude_paths.iter().any(|excluded| excluded == path) {
+            return;
+        }
+
+        if !self.sampler.should_sample() {
+            return;
+        }
 
         tracing::info!(
             method = %head.method,
@@ -227,5 +250,103 @@ mod tests {
         assert_eq!(recorded[0], "/login");
         assert!(!recorded[0].contains("token"));
         assert!(!recorded[0].contains("SECRET123"));
+    }
+
+    fn head_for_target(target: &str) -> RequestHead {
+        let buf = format!("GET {target} HTTP/1.1\r\nHost: example.com\r\n\r\n");
+        match parse_request_head(buf.as_bytes()).unwrap() {
+            ParseOutcome::Complete { head, .. } => head,
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    /// TASK-10.3（#58）: `exclude_paths` に完全一致するパスは、`interval = 1`
+    /// （全件採択の設定）であっても span/event を一切記録しないことを検証する。
+    #[test]
+    fn record_response_skips_excluded_path() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let subscriber = Registry::default().with(CountingLayer(Arc::clone(&count)));
+
+        let config = TracingConfig::new(NonZeroU64::new(1).unwrap()).exclude_path("/health");
+        let layer = TracingLayer::new(&config);
+        let head = head_for_target("/health");
+
+        subscriber::with_default(subscriber, || {
+            for _ in 0..5 {
+                layer.record_response(&head, Duration::from_millis(1));
+            }
+        });
+
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+    }
+
+    /// クエリ文字列付き（`/health?probe=1`）でも、クエリ除去後のパスで完全一致
+    /// すれば除外されることを検証する（除外照合はクエリ除去後に行う契約）。
+    #[test]
+    fn record_response_skips_excluded_path_with_query_string() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let subscriber = Registry::default().with(CountingLayer(Arc::clone(&count)));
+
+        let config = TracingConfig::new(NonZeroU64::new(1).unwrap()).exclude_path("/health");
+        let layer = TracingLayer::new(&config);
+        let head = head_for_target("/health?probe=1");
+
+        subscriber::with_default(subscriber, || {
+            layer.record_response(&head, Duration::from_millis(1));
+        });
+
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+    }
+
+    /// TASK-10.3（#58）: 除外パスへのリクエストはサンプラーのカウンタを消費
+    /// しないため、非除外パスのサンプリング採択周期が乱れないことを検証する。
+    /// interval = 2 で「除外・非除外」を交互に 10 回流すと、除外照合が
+    /// カウンタより前にあるため非除外側（5 回）は 2 回に 1 回、すなわち
+    /// 2 回採択される（除外側が消費していれば周期がずれて別の結果になる）。
+    #[test]
+    fn record_response_excluded_path_does_not_consume_sampler_counter() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let subscriber = Registry::default().with(CountingLayer(Arc::clone(&count)));
+
+        let config = TracingConfig::new(NonZeroU64::new(2).unwrap()).exclude_path("/health");
+        let layer = TracingLayer::new(&config);
+        let excluded_head = head_for_target("/health");
+        let tracked_head = head_for_target("/");
+
+        subscriber::with_default(subscriber, || {
+            for _ in 0..5 {
+                layer.record_response(&excluded_head, Duration::from_millis(1));
+                layer.record_response(&tracked_head, Duration::from_millis(1));
+            }
+        });
+
+        // "/" 呼び出しは Sampler のカウンタで n = 0,1,2,3,4 の順に進み、
+        // `n % 2 == 0` を満たす n = 0,2,4 の 3 回が採択される
+        // （`Sampler::should_sample` の doc を参照）。1 採択あたり応答時 1 イベント
+        // （TASK-10.2 / #57 で span+2 イベントから統合）で合計 3。除外側
+        // （"/health"）がカウンタを消費していれば "/" のカウンタ進行が変わり、
+        // この値は一致しない。
+        assert_eq!(count.load(Ordering::Relaxed), 3);
+    }
+
+    /// 既定（`exclude_paths` 空）では従来どおり全パスがサンプリング対象になる
+    /// ことを検証する（TASK-10.1 の既存挙動に対する後方互換の回帰テスト）。
+    #[test]
+    fn record_response_with_empty_exclude_list_samples_normally() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let subscriber = Registry::default().with(CountingLayer(Arc::clone(&count)));
+
+        let config = TracingConfig::new(NonZeroU64::new(1).unwrap());
+        assert!(config.exclude_paths.is_empty());
+        let layer = TracingLayer::new(&config);
+        let head = head_for_target("/health");
+
+        subscriber::with_default(subscriber, || {
+            layer.record_response(&head, Duration::from_millis(1));
+        });
+
+        // exclude_paths が空なので、`/health` であっても通常どおり記録される
+        // （応答時 1 イベント、TASK-10.2 / #57 で span+2 イベントから統合）。
+        assert_eq!(count.load(Ordering::Relaxed), 1);
     }
 }
