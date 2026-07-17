@@ -13,9 +13,17 @@
 //!
 //! `handle_connection` 内に `#[cfg(feature = "...")]` を一切持たない
 //! （`docs/spec/03-poc` PoC-3 の設計規約）。プラグインの介入余地は一定
-//! シグネチャの `try_handle_upgrade` ヘルパー（本モジュール内の非公開関数）に
-//! 閉じ、feature 分岐が必要になった際もこのヘルパーの実装差し替えで完結させる
-//! （実 feature 導入自体は TASK-2.1 / #18 のスコープ）。
+//! シグネチャの 2 種のヘルパーに閉じる:
+//! - `try_handle_upgrade`（本モジュール内の非公開関数）: 長時間接続
+//!   （WebSocket 等）への委譲。実 WebSocket プラグイン（TASK-4.1）配線までは
+//!   常に `Some(stream)` を返すスタブのまま
+//! - `plugin::try_intercept`（非公開 `plugin` モジュール）: リクエスト/
+//!   レスポンス完結型プラグイン（WebRTC シグナリングプロキシ等）へのパス
+//!   インターセプト。TASK-2.1（#18）で確立した feature flag + `dep:` 構文の
+//!   プラグイン境界パターンの実装（`docs/design/plugin-boundary.md`）
+//!
+//! いずれも feature 分岐はヘルパー内部に閉じ、`handle_connection` 側は
+//! ヘルパーのシグネチャを変えずに済む。
 //!
 //! # 1 接続あたりの処理フロー
 //!
@@ -29,15 +37,21 @@
 //!       2. RequestGate::check（登録順、最初の Reject を優先。フェイルクローズ）
 //!       3. UpgradeHandler::matches（登録順。マッチしたら読み取りバッファを
 //!          明示解放してから try_handle_upgrade へ委譲）
-//!       4. Handler::handle（未登録時は 404）
-//!       5. レスポンス書き込み → Middleware::on_response
-//!       6. should_keep_alive(head) が false なら接続を閉じる
+//!       4. plugin::try_intercept（パスインターセプト型プラグイン。
+//!          Some(response) なら以降の Handler::handle をスキップ）
+//!       5. Handler::handle（未登録時、または try_intercept が None の場合。
+//!          未登録時は 404）
+//!       6. レスポンス書き込み → Middleware::on_response
+//!       7. should_keep_alive(head) が false なら接続を閉じる
 //! }
 //! ```
 //!
 //! `RequestGate` を `UpgradeHandler` より先に評価するのは、将来の hub
 //! TenantGate（TASK-9.1）が WebSocket アップグレードも既定拒否でゲート
 //! できるようにするため（フェイルクローズ、`docs/spec/04-requirements.md` REQ-9）。
+//! 同じ理由で `plugin::try_intercept` も `RequestGate` より後（`UpgradeHandler`
+//! の後）に評価し、ゲートの既定拒否がパスインターセプト型プラグインにも及ぶ
+//! ようにする。
 
 use std::future::Future;
 use std::io;
@@ -162,6 +176,13 @@ pub struct Server {
     max_connections: usize,
     max_connection_lifetime: Duration,
     max_requests_per_connection: usize,
+    /// `webrtc-proxy` feature（TASK-2.1 / #18）有効時のみ意味を持つ設定。
+    /// `crate::plugin::try_intercept` がこのフィールドを参照して `POST
+    /// /rtc/offer` を上流へ中継するかどうかを判定する。feature 無効時は
+    /// フィールド自体が構造体から消え、依存・コードともゼロコストになる
+    /// （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
+    #[cfg(feature = "webrtc-proxy")]
+    webrtc_proxy_config: Option<bf_plugin_webrtc_proxy::ProxyConfig>,
 }
 
 impl Default for Server {
@@ -174,6 +195,8 @@ impl Default for Server {
             max_connections: DEFAULT_MAX_CONNECTIONS,
             max_connection_lifetime: DEFAULT_MAX_CONNECTION_LIFETIME,
             max_requests_per_connection: DEFAULT_MAX_REQUESTS_PER_CONNECTION,
+            #[cfg(feature = "webrtc-proxy")]
+            webrtc_proxy_config: None,
         }
     }
 }
@@ -252,6 +275,28 @@ impl Server {
     pub fn handler(mut self, handler: impl Handler + 'static) -> Self {
         self.handler = Some(Box::new(handler));
         self
+    }
+
+    /// WebRTC シグナリングプロキシプラグイン（`crates/plugin-webrtc-proxy`）を
+    /// 有効化する（`webrtc-proxy` feature 限定 API、TASK-2.1 / #18）。
+    ///
+    /// 登録すると `POST /rtc/offer` が `RequestGate` → `UpgradeHandler` の
+    /// 評価を通過した後、既定 [`Handler`] より先にパスインターセプトされ、
+    /// `config` が指す上流 WebRTC サービスへ中継される（対象外パスは素通り
+    /// し、既定 `Handler` へフォールスルーする。`crate::plugin::try_intercept`
+    /// の doc を参照）。
+    #[cfg(feature = "webrtc-proxy")]
+    #[must_use]
+    pub fn webrtc_proxy(mut self, config: bf_plugin_webrtc_proxy::ProxyConfig) -> Self {
+        self.webrtc_proxy_config = Some(config);
+        self
+    }
+
+    /// `plugin::try_intercept` が参照する、登録済み WebRTC プロキシ設定
+    /// （`webrtc-proxy` feature 限定、TASK-2.1 / #18）。
+    #[cfg(feature = "webrtc-proxy")]
+    pub(crate) fn webrtc_proxy_config(&self) -> Option<&bf_plugin_webrtc_proxy::ProxyConfig> {
+        self.webrtc_proxy_config.as_ref()
     }
 
     /// `addr` に TCP リスナーをバインドし、[`BoundServer`] を返す。
@@ -480,10 +525,19 @@ where
             }
         }
 
-        let response = match &server.handler {
-            Some(handler) => handler.handle(&request.head, &request.body),
-            None => Response::empty(404),
-        };
+        // パスインターセプト型プラグイン（TASK-2.1 / #18）は既定 Handler より
+        // 先に評価する。`try_intercept` が `Some` を返した場合はプラグインが
+        // 処理を完結させたことを意味し、既定 Handler は呼ばない
+        // （モジュール冒頭の処理フロー doc・`crate::plugin::try_intercept` の
+        // doc を参照）。
+        let response =
+            match crate::plugin::try_intercept(server, &request.head, &request.body).await {
+                Some(response) => response,
+                None => match &server.handler {
+                    Some(handler) => handler.handle(&request.head, &request.body),
+                    None => Response::empty(404),
+                },
+            };
 
         // #70 Bugbot 指摘（Stale keep-alive after lifetime）: 上の `keep_alive` は
         // `Handler::handle` 呼び出し前、`on_request` 直後の経過時間で決定している。

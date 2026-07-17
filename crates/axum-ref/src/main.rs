@@ -17,6 +17,12 @@
 //! `cargo tree -p backend-framework-core` で axum/tokio 等が現れないことを
 //! 検証可能にしておくことが本クレート追加の前提条件。
 //!
+//! workspace 全体の依存方向規約（依存方向: server → routes → http::*、
+//! `docs/spec/04-requirements.md` REQ-1 / `docs/spec/05-tasks.md` TASK-11.1）との関係では、
+//! 本クレートはこの依存グラフの**外側**にある独立比較専用バイナリであり、workspace 内
+//! path 依存を一切持たない（持ってはならない）。依存方向の機械検証は
+//! `scripts/dep-direction-check.sh`（TASK-1.5 / TASK-11.1）が担う。
+//!
 //! # セキュリティ考慮
 //!
 //! 計測専用バイナリのため既定バインドは `127.0.0.1:3001`（ループバック限定）とし、

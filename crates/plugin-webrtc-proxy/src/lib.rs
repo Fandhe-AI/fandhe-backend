@@ -28,10 +28,25 @@
 //! # コアループへの配線について
 //!
 //! 本クレート単体では HTTP サーバのリスンループを持たない。コアの接続受理
-//! ループ（TASK-1.4-2 / #70）・feature 配線規約（TASK-2.1 / #18）が確立し
-//! 次第、上位クレート（server 相当）から [`handler::try_handle_rtc_offer`] を
-//! 呼び出す形で配線する想定であり、本タスク（#74）のスコープはハンドラ本体の
-//! 実装・単体/統合テストまでとする。
+//! ループ（TASK-1.4-2 / #70）は、`webrtc-proxy` feature（TASK-2.1 / #18、
+//! `backend_framework_core::server::Server::webrtc_proxy` で `ProxyConfig` を
+//! 登録）を有効化した際に、既定 `Handler` より先に非公開の
+//! `plugin::try_intercept` シームから [`handler::try_handle_rtc_offer`] を
+//! 呼び出す形で配線済みである（`docs/design/plugin-boundary.md` の
+//! プラグイン境界パターン第 1 号）。`webrtc-proxy` feature 無効時（既定）は
+//! 本クレート自体が `backend-framework-core` の依存グラフから除外される
+//! （`optional = true` + `dep:` 構文）。
+//!
+//! # workspace 内での依存方向
+//!
+//! `docs/spec/04-requirements.md` REQ-1 / `docs/spec/05-tasks.md` TASK-11.1 の方針に従い、
+//! workspace 全体の依存方向は次の一方向を維持する（依存方向: server → routes → http::*）。
+//! 本クレートはプラグイン層（`bf-plugin-*`）に位置し、コアの拡張点を実装する側であり、
+//! コア（`backend-framework-core`）・`bf-routes` からプラグインへの逆依存は発生しない
+//! （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。本クレートの
+//! workspace 内 path 依存は `bf-http`（下位層の sans-IO パーサ）のみで、`webrtc-rs` は
+//! 上述のとおり依存に含めない。依存方向の機械検証は `scripts/dep-direction-check.sh`
+//! （TASK-1.5 / TASK-11.1）が担う。
 //!
 //! # Examples
 //!

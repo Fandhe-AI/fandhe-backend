@@ -25,6 +25,14 @@
 //! 呼び出さない（PoC-4 成功基準 3: 実行時コストゼロ）。[`OPENAPI_JSON`] は
 //! `include_str!` によるコンパイル時埋め込みの定数参照のみで、こちらも実行時コストは
 //! 文字列スライスの返却のみ（TASK-3.2、#31）。
+//!
+//! # workspace 内での依存方向
+//! `docs/spec/04-requirements.md` REQ-1 / `docs/spec/05-tasks.md` TASK-11.1 の方針に従い、
+//! workspace 全体の依存方向は次の一方向を維持する（依存方向: server → routes → http::*）。
+//! 本クレートはプラグイン層（`bf-plugin-*`）に位置し、上述のとおり core / http / routes /
+//! 他プラグインのいずれにも依存せず、それらからの逆依存も発生しない
+//! （pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）。依存方向の機械検証は
+//! `scripts/dep-direction-check.sh`（TASK-1.5 / TASK-11.1）が担う。
 
 mod docs;
 mod embed;

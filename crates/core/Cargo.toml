@@ -32,6 +32,23 @@ bf-http = { path = "../http" }
 bf-routes = { path = "../routes" }
 tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time", "sync"] }
 
+# TASK-2.1（#18）: `webrtc-proxy` feature 有効時のみ依存として解決される
+# プラグイン境界の第 1 号（`optional = true` + `dep:` 構文、
+# .claude/rules/pay-for-what-you-use.md）。`dep:bf-plugin-webrtc-proxy` は
+# implicit feature（`bf-plugin-webrtc-proxy` という名前の feature が暗黙に
+# 生えてしまう挙動）を作らず、`webrtc-proxy` feature 名だけを公開 API とする。
+# feature 無効時は `cargo tree -p backend-framework-core` に本行の依存が
+# 一切現れない（`docs/design/plugin-boundary.md` の検証コマンドを参照）。
+bf-plugin-webrtc-proxy = { path = "../plugin-webrtc-proxy", optional = true }
+
+# feature 命名規約（`docs/design/plugin-boundary.md`）: プラグインクレート名
+# （`bf-plugin-<name>`）から `bf-plugin-` 接頭辞を除いた `<name>` を feature 名
+# とする。`default = []` によりビルド時に何も選択しなければプラグインは
+# コード・依存・unsafe とも一切バイナリに含まれない。
+[features]
+default = []
+webrtc-proxy = ["dep:bf-plugin-webrtc-proxy"]
+
 # テスト専用（`#[tokio::test]` / `tokio::io::duplex` / マルチスレッドランタイム）。
 # 本体ビルドの feature 集合には影響しない。
 [dev-dependencies]
