@@ -52,9 +52,9 @@ feature 分岐が必要になった場合も、コアループ側はヘルパー
 | シーム | 対象パターン | 状態 |
 |--------|-------------|------|
 | `plugin::try_handle_upgrade`（`crates/core/src/plugin.rs`） | 長時間接続（WebSocket 等）への委譲 | `websocket` feature で配線済み（TASK-4.1 / #22。5 節を参照） |
-| `plugin::try_intercept`（`crates/core/src/plugin.rs`） | リクエスト/レスポンス完結型プラグインへのパスインターセプト | `webrtc-proxy` で配線済み（本タスク） |
+| `plugin::try_intercept`（`crates/core/src/plugin.rs`） | リクエスト/レスポンス完結型プラグインへのパスインターセプト | `webrtc-proxy`（TASK-2.1）・`webrtc`（TASK-8.1 / #26、in-process 型）で配線済み |
 
-## 4. パスインターセプト型パターン（本タスクで確立）
+## 4. パスインターセプト型パターン（本タスクで確立、TASK-8.1 / #26 で 2 例目を追加）
 
 `plugin::try_intercept(server: &Server, head: &RequestHead, body: &[u8]) ->
 Option<bf_http::response::Response>` が固定シグネチャのシーム。
@@ -75,7 +75,16 @@ pub(crate) async fn try_intercept(
         }
     }
 
-    #[cfg(not(feature = "webrtc-proxy"))]
+    #[cfg(feature = "webrtc")]
+    {
+        if let Some(config) = server.webrtc_config()
+            && let Some(response) = bf_plugin_webrtc::try_handle_rtc_offer(head, body, config).await
+        {
+            return Some(response);
+        }
+    }
+
+    #[cfg(not(any(feature = "webrtc-proxy", feature = "webrtc")))]
     {
         let _ = (server, head, body);
     }
@@ -83,6 +92,14 @@ pub(crate) async fn try_intercept(
     None
 }
 ```
+
+TASK-8.1（#26）で `webrtc` feature（in-process 型、`crates/plugin-webrtc`）を
+2 例目として追加した。両 feature が `--all-features` で同時有効な場合、
+`webrtc-proxy`（別プロセス切り出し型、REQ-8 の MVP 推奨方式）を先に評価する
+運用判断とした（実運用では通常どちらか片方のみ `Server` へ登録するため、この
+優先順位が問題になるのは意図的に両方登録した場合に限る）。`webrtc` feature
+無効時は追加した cfg ブロックが丸ごと消え、`webrtc-proxy` 側の既存挙動には
+影響しない。
 
 - `Some(response)`: プラグインが処理を完結させた。呼び出し元（`handle_connection`）
   は既定 `Handler::handle` を呼ばずにこの応答をそのまま送出する
@@ -134,6 +151,15 @@ reason, content_type, body }`）はコアが送出する `bf_http::response::Res
 した。追加を怠ると `HTTP/1.1 502 \r\n` のように reason phrase が空文字へ
 劣化する。PoC-9 教訓: ステータスコードのみの検証はこの劣化を見逃す。統合
 テストは必ず reason/Content-Type/body まで含めて検証すること）。
+
+**TASK-8.1（#26）での簡素化**: `bf-plugin-webrtc-proxy` が独自の中間 `Response`
+型（`status`/`reason`/`content_type`/`body`）を持つのは、本パターン確立前
+（配線が未確立だった TASK-8.2-2 時点）の歴史的経緯である。`bf-plugin-webrtc`
+（TASK-8.1）は配線パターンが既に存在する状態で新設したため、この変換層を
+省き [`bf_http::response::Response`] を直接組み立てて返す（`try_intercept` は
+`Some(response)` をそのまま返し、`from_plugin_response` 相当の変換関数を経由
+しない）。後続プラグインも、配線パターン確立後に新設する場合はこの簡素化版
+（`bf_http::response::Response` を直接返す）を優先すること。
 
 ## 5. Upgrade 型パターン（TASK-4.1 / #22 で確立）
 
@@ -221,6 +247,91 @@ where
 6. feature 無効時はコード・依存・`unsafe` が完全に消えることを
    `cargo tree` で確認する
 
+### 5.4 委譲後の専用タスク再 spawn + permit 引き継ぎ（TASK-4.2 / #23【条件(1)】）
+
+PoC-7（`docs/spec/03-poc/high-concurrency-scale/README.md`）実測で、WebSocket
+長時間接続の接続あたり RSS が axum 比 155.2%（Conditional Go 条件(1) の成功
+基準 110% 未達）となった。原因は、`try_handle_upgrade` が
+`bf_plugin_websocket::handle_upgrade`（ハンドシェイク + エコーループ）を
+`handle_connection` タスクの future 内で**インラインに await** していたこと。
+`handle_connection` は `read_request`・応答直列化・keep-alive 制御などを含む
+大きな tokio タスクのステートマシンであり、インライン await のままだと WS
+接続の生存中ずっとこの大きなステートマシンがメモリ上に残ってしまう。
+
+是正として、マッチ確定時に WS セッション（ハンドシェイク + フレーミング）
+だけを載せた専用タスクを `tokio::spawn` し、元の `handle_connection` タスク
+は即座に `return` して大きな future を解放する構成へ変更した:
+
+```rust,ignore
+pub(crate) async fn try_handle_upgrade<S>(
+    stream: S,
+    head: &RequestHead,
+    leftover: Vec<u8>,
+    server: &Server,
+    permit: &mut Option<OwnedSemaphorePermit>,
+) -> Option<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    #[cfg(feature = "websocket")]
+    {
+        if let Some(config) = server.websocket_configs().iter()
+            .find(|config| bf_plugin_websocket::matches(head, config))
+        {
+            let config = config.clone();
+            let head = head.clone();
+            let permit = permit.take();          // permit をセッションタスクへ move
+            tokio::spawn(async move {
+                let _permit = permit;             // セッション終了まで保持
+                let _ = bf_plugin_websocket::handle_upgrade(stream, &head, leftover, &config).await;
+            });
+            return None;                          // 元タスクは即 return → 大きな future を解放
+        }
+    }
+    #[cfg(not(feature = "websocket"))]
+    { let _ = (head, &leftover, server, &permit); }
+    Some(stream)
+}
+```
+
+**permit 引き継ぎが必須の理由（DoS 対策の維持）**: 同時接続数上限は
+`BoundServer::run` が保持する `OwnedSemaphorePermit` で強制する
+（`.claude/rules/security.md` のリソース枯渇観点）。素朴に再 spawn すると、
+元の `handle_connection` タスクが即座に終了して permit を解放してしまい、
+長時間生存する WS セッションが `max_connections` のカウントから漏れる
+（リソース枯渇 DoS のリグレッション）。これを避けるため:
+
+- 呼び出し元（`crates/core/src/server.rs` の `handle_connection_with_permit`、
+  `pub(crate)`。公開 `handle_connection(server, stream)` はこれを `permit:
+  None` で呼ぶ薄いラッパー）は `permit: &mut Option<OwnedSemaphorePermit>`
+  を渡す
+- `try_handle_upgrade` はマッチ確定時に `permit.take()` で所有権を奪い、新
+  タスクへ move する。呼び出し元に残るのは `None`（drop しても no-op）
+- 新タスク側は `let _permit = permit;` でセッション終了までローカル変数と
+  して保持し、タスクの戻り（セッション終了）と同時に自動 drop される
+
+この結果、`S: AsyncRead + AsyncWrite + Unpin` に加えて `Send + 'static` 境界
+が新たに必要になる（`tokio::spawn` の要件）。`handle_connection`／
+`handle_connection_with_permit` の型パラメータ `S` にも同じ境界を追加した
+（`TcpStream`・`tokio::io::duplex` はいずれも充足する軽微な公開 API 変更）。
+
+観測可能な挙動の検証は `crates/core/tests/websocket_respawn.rs`
+（`handle_connection` タスクがハンドシェイク直後に完了すること・
+`max_connections(1)` 下で WS セッション生存中は 2 本目の接続が受理されない
+こと）を参照。
+
+### 5.5 後続 Upgrade 型プラグインへの適用指針（5.3 節の追補）
+
+5.3 節の手順に加え、コネクション単位の長時間委譲を行うプラグインは以下も
+踏襲する:
+
+- `try_handle_upgrade` 相当のシームで委譲確定時は `tokio::spawn` による
+  専用タスク再 spawn を検討する（インライン await のまま長時間 await する
+  と `handle_connection` の大きなステートマシンが解放されない、5.4 節）
+- 同時接続数上限を守るリソース（`OwnedSemaphorePermit` 等）を握っている
+  場合は、再 spawn 時に必ずその所有権をセッションタスクへ move する
+  （move し忘れは DoS リグレッションになる、5.4 節）
+
 ## 6. 検証コマンド
 
 | 検証 | コマンド | 期待結果 |
@@ -231,7 +342,7 @@ where
 | テスト | `cargo test -p backend-framework-core`（無効）／`--features webrtc-proxy`／`cargo test --workspace --all-features` | すべて green（`crates/core/tests/plugin_boundary.rs`・`plugin_boundary_disabled.rs`） |
 | lint | `cargo clippy -p backend-framework-core --all-targets --no-default-features -- -D warnings`／`--features webrtc-proxy`／`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 警告 0 件 |
 | doc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps` | 警告 0 件 |
-| 依存監査 | `scripts/dep-audit.sh` | `webrtc-proxy`・`websocket` を含む動的列挙構成で違反 0 件 |
+| 依存監査 | `scripts/dep-audit.sh` | `webrtc-proxy`・`webrtc`・`websocket` を含む動的列挙構成で違反 0 件（`webrtc` feature 有効化に伴い `deny.toml` の許可ライセンスへ `ISC` を追加済み） |
 | pay-for-what-you-use 機械検証 | `scripts/pay-for-what-you-use-check.sh`（TASK-2.2、#19） | cargo tree/geiger・バイナリサイズ・全構成ビルドすべて PASS（`docs/design/pay-for-what-you-use-check.md` 参照） |
 
 `websocket` feature（TASK-4.1 / #22）も同一パターンで検証済み:
@@ -263,8 +374,15 @@ feature 無効時は本エッジ自体が未解決のまま消えるため pay-f
 は維持される（6 節の検証コマンドで確認済み）。詳細な例外根拠・DFS 循環
 検出との関係は `scripts/dep-direction-check.sh` の当該コメントを正とする。
 
+TASK-8.1（#26）は同一理由（3 拡張点の同期 API 限定に非同期呼び出しを持ち込め
+ない）で `backend-framework-core:bf-plugin-webrtc` を 2 件目の個別例外として
+許可リストへ追加した。チェック 3（プラグイン非依存検査）の除外パターンも
+`bf_plugin_webrtc\b`（`bf_plugin_webrtc_proxy` の部分文字列にならないよう
+単語境界付き）・`webrtc_config` を追加して対応済み（`scripts/dep-direction-check.sh`
+本体コメント参照）。
+
 TASK-4.1（#22）で `backend-framework-core:bf-plugin-websocket` を同一方針で
-2 件目の例外として追加した（`bf-plugin-websocket` 自体は 5.2 節のとおり
+3 件目の例外として追加した（`bf-plugin-websocket` 自体は 5.2 節のとおり
 `backend-framework-core` に依存しないため循環にはならない）。あわせて
 チェック 3（プラグイン固有シンボル非依存検査）の例外シンボルパターンにも
 `bf_plugin_websocket`/`websocket` を追加している。

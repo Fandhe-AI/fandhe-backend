@@ -3,6 +3,59 @@
 `docs/dep-impact/README.md` の運用手順に従い、`crates/plugin-*` 追加・変更時の依存
 インパクト計測結果を追記する。エントリは新しい順に追加する。
 
+## 2026-07-17 — `crates/plugin-webrtc` 追加（#26、TASK-8.1）
+
+`bf-plugin-webrtc`（`webrtc = "0.17"`（0.17.1 系）・`serde_json`・`tokio`（`time`
+のみ）依存、workspace 内クレートへの依存は `bf-http` のみ）を追加。PoC-5 の実測どおり
+`webrtc` は依存 +189 クレート級のインパクトを持つ。
+
+`scripts/dep-impact.sh` は `cargo metadata` がワークスペース全体の依存グラフを解決する
+（`--features`/`--no-default-features` を渡してもワークスペースメンバー自体の
+manifest 解決には影響しない）という既知の制約により、`bf-plugin-webrtc` を workspace
+メンバーとして追加した時点で 3 構成すべてに `webrtc` 系依存が計上され、
+「feature 無効時の依存数が変化しないこと」を本スクリプト単体では区別できない
+（`bf-plugin-webrtc-proxy` 追加時も同様の制約を受けていた）。
+
+pay-for-what-you-use の受け入れ条件（`backend-framework-core` が `webrtc` feature
+無効時に `webrtc` 系依存を一切解決しないこと）は、より正確な
+`cargo tree -p backend-framework-core` で機械検証した:
+
+```
+$ cargo tree -p backend-framework-core | grep -c webrtc
+0
+$ cargo tree -p backend-framework-core --features webrtc | grep -c webrtc
+23
+```
+
+計測コマンド: `bash scripts/dep-impact.sh`（workspace 全体の参考値。上記 `cargo tree`
+差分検証と併読すること）
+
+### 依存クレート数（workspace メンバー除外・重複バージョンは union で 1 件として計上）
+
+| feature 構成 | 依存クレート数（ベースライン差分） |
+|---|---|
+| --no-default-features | 228（+174） |
+| default | 228（+174） |
+| --all-features | 228（+174） |
+
+上記の理由により 3 構成とも同一値（スクリプトの既知の制約。`webrtc` feature 単体の
+実インパクトは `cargo tree -p backend-framework-core --features webrtc` の差分
+（0 → 23 件、推移依存込みの重複除外前カウント）で判断すること）。
+
+### リリースバイナリサイズ
+
+| bin | サイズ (bytes) | ベースライン差分 |
+|---|---|---|
+| axum-ref | 1373104 | +14808（`bf-plugin-webrtc` に依存しないが、workspace 全体の
+  `Cargo.lock` 更新に伴うビルド環境差によるノイズ） |
+
+### unsafe 件数
+
+`cargo geiger` の実行が本環境で失敗したため未計測（`scripts/unsafe-triage.sh` による
+テキストベース走査では自コード（`crates/plugin-webrtc`）の `unsafe` は 0 件。
+依存側 `unsafe` 増分（`webrtc-rs` 由来）は PoC-5 実測（約 2.2 倍）を参照し、恒久的な
+計測は TASK-8.4（#29、攻撃表面評価）のスコープとする）。
+
 ## 2026-07-17 — `crates/plugin-websocket` 追加（#22、TASK-4.1）
 
 `bf-plugin-websocket`（`tokio-tungstenite = "0.30"`（`default-features = false`,

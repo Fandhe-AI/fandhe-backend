@@ -171,8 +171,10 @@ impl Response {
 /// テーブルはコアループ（`crates/core/src/server.rs`）・`crates/routes`
 /// （`bf_routes::Router::dispatch`、TASK-1.5 / #14 でメソッド不一致時に 405 を
 /// 払い出す）・`crates/plugin-webrtc-proxy`（TASK-2.1 / #18 の配線経由で
-/// 502/504 を払い出す。上流中継失敗時のフォールバックステータス）が実際に
-/// 払い出すステータスコードに合わせて選定している。
+/// 502/504 を払い出す。上流中継失敗時のフォールバックステータス）・
+/// `crates/plugin-webrtc`（TASK-8.1 / #26 の `try_handle_rtc_offer` が同時接続数
+/// 上限到達時に 503 を払い出す）が実際に払い出すステータスコードに合わせて
+/// 選定している。
 fn reason_phrase(status: u16) -> &'static str {
     match status {
         200 => "OK",
@@ -187,6 +189,7 @@ fn reason_phrase(status: u16) -> &'static str {
         500 => "Internal Server Error",
         501 => "Not Implemented",
         502 => "Bad Gateway",
+        503 => "Service Unavailable",
         504 => "Gateway Timeout",
         505 => "HTTP Version Not Supported",
         _ => "",
@@ -256,6 +259,14 @@ mod tests {
 
         let gateway_timeout = String::from_utf8(Response::empty(504).serialize(false)).unwrap();
         assert!(gateway_timeout.starts_with("HTTP/1.1 504 Gateway Timeout\r\n"));
+    }
+
+    #[test]
+    fn serialize_service_unavailable_has_reason_phrase() {
+        // TASK-8.1 / #26: crates/plugin-webrtc が同時接続数上限到達時に払い出す
+        // 503 が空 reason phrase に劣化しないことを確認する（PR #138 Bugbot 指摘）。
+        let service_unavailable = String::from_utf8(Response::empty(503).serialize(false)).unwrap();
+        assert!(service_unavailable.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
     }
 
     #[test]

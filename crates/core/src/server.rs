@@ -74,7 +74,7 @@ use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use bf_http::body::BodyError;
 use bf_http::buffer::RecvBuffer;
@@ -196,6 +196,13 @@ pub struct Server {
     /// （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
     #[cfg(feature = "webrtc-proxy")]
     webrtc_proxy_config: Option<bf_plugin_webrtc_proxy::ProxyConfig>,
+    /// `webrtc` feature（TASK-8.1 / #26）有効時のみ意味を持つ設定。
+    /// `crate::plugin::try_intercept` がこのフィールドを参照して `POST /rtc/offer`
+    /// を in-process の `RTCPeerConnection` シグナリングへ委譲するかどうかを判定
+    /// する。feature 無効時はフィールド自体が構造体から消え、依存・コードとも
+    /// ゼロコストになる（pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
+    #[cfg(feature = "webrtc")]
+    webrtc_config: Option<bf_plugin_webrtc::WebRtcConfig>,
     /// `websocket` feature（TASK-4.1 / #22）有効時のみ意味を持つ設定群。
     /// `crate::plugin::try_handle_upgrade` がこのフィールドを参照して
     /// `UpgradeHandler` 委譲成立後に `bf_plugin_websocket::handle_upgrade` へ
@@ -224,6 +231,8 @@ impl Default for Server {
             max_requests_per_connection: DEFAULT_MAX_REQUESTS_PER_CONNECTION,
             #[cfg(feature = "webrtc-proxy")]
             webrtc_proxy_config: None,
+            #[cfg(feature = "webrtc")]
+            webrtc_config: None,
             #[cfg(feature = "websocket")]
             websocket_configs: Vec::new(),
         }
@@ -326,6 +335,29 @@ impl Server {
     #[cfg(feature = "webrtc-proxy")]
     pub(crate) fn webrtc_proxy_config(&self) -> Option<&bf_plugin_webrtc_proxy::ProxyConfig> {
         self.webrtc_proxy_config.as_ref()
+    }
+
+    /// in-process WebRTC プラグイン（`crates/plugin-webrtc`）を有効化する
+    /// （`webrtc` feature 限定 API、TASK-8.1 / #26）。
+    ///
+    /// 登録すると `POST /rtc/offer` が `RequestGate` → `UpgradeHandler` の評価を
+    /// 通過した後、既定 [`Handler`] より先にパスインターセプトされ、`config` を
+    /// 使って `RTCPeerConnection` を生成しシグナリングを完結させる（対象外パスは
+    /// 素通りし、既定 `Handler` へフォールスルーする。`crate::plugin::try_intercept`
+    /// の doc を参照）。`webrtc-proxy`（別プロセス切り出し型）と同時に登録した
+    /// 場合は `webrtc-proxy` が優先される（`crate::plugin::try_intercept` の doc）。
+    #[cfg(feature = "webrtc")]
+    #[must_use]
+    pub fn webrtc(mut self, config: bf_plugin_webrtc::WebRtcConfig) -> Self {
+        self.webrtc_config = Some(config);
+        self
+    }
+
+    /// `plugin::try_intercept` が参照する、登録済み in-process WebRTC 設定
+    /// （`webrtc` feature 限定、TASK-8.1 / #26）。
+    #[cfg(feature = "webrtc")]
+    pub(crate) fn webrtc_config(&self) -> Option<&bf_plugin_webrtc::WebRtcConfig> {
+        self.webrtc_config.as_ref()
     }
 
     /// WebSocket プラグイン（`crates/plugin-websocket`）を有効化する
@@ -471,8 +503,12 @@ impl BoundServer {
             };
             let server = Arc::clone(&self.server);
             tokio::spawn(async move {
-                handle_connection(&server, stream).await;
-                drop(permit);
+                // permit は WebSocket 委譲時に `handle_connection_with_permit`
+                // 内部で専用タスクへ move されうる（TASK-4.2 / #23、
+                // `crate::plugin::try_handle_upgrade` の doc「permit の契約」
+                // を参照）。move された場合ここでの `drop` は無 op（`None`）
+                // であり、二重解放や早期解放は起きない。
+                handle_connection_with_permit(&server, stream, Some(permit)).await;
             });
         }
     }
@@ -491,9 +527,36 @@ impl BoundServer {
 ///
 /// 本関数の中に `#[cfg(feature = "...")]` を一切持たない（本モジュール冒頭の
 /// doc を参照）。
-pub async fn handle_connection<S>(server: &Server, mut stream: S)
+///
+/// 公開 API としては `permit` を持たない薄いラッパー
+/// （`handle_connection_with_permit`（`pub(crate)`）に `None` を渡すだけ）を
+/// 維持し、既存の呼び出し元・テスト（`tokio::io::duplex` を使う統合テスト等）
+/// との互換性を保つ。実接続（[`BoundServer::run`]）は `permit` を伴う内部版を
+/// 直接呼ぶ（本モジュール内の該当関数 doc を参照）。
+pub async fn handle_connection<S>(server: &Server, stream: S)
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    handle_connection_with_permit(server, stream, None).await;
+}
+
+/// [`handle_connection`] の内部実装（`pub(crate)`、TASK-4.2 / #23）。
+///
+/// `permit` は [`BoundServer::run`] が保持する同時接続数上限の
+/// `OwnedSemaphorePermit`（`.claude/rules/security.md` のリソース枯渇 DoS
+/// 対策）。関数が戻る時点で `permit`（ローカル所有の `Option`）はスコープを
+/// 抜けて自動的に drop され、`Some` なら通常どおり解放される。WebSocket
+/// への委譲が確定した場合は `crate::plugin::try_handle_upgrade` が
+/// `permit.take()` で所有権をセッション専用タスクへ move し、この関数側の
+/// `permit` は `None` のまま戻る（drop は no-op）。これにより、長時間生存
+/// する WS セッションも `max_connections` のカウントから漏れない
+/// （`crate::plugin::try_handle_upgrade` の doc「permit の契約」を参照）。
+pub(crate) async fn handle_connection_with_permit<S>(
+    server: &Server,
+    mut stream: S,
+    mut permit: Option<OwnedSemaphorePermit>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let mut buf = RecvBuffer::new();
     // 接続の総生存期間・keep-alive 中の総リクエスト数を計測する（#70 レビュー
@@ -603,7 +666,15 @@ where
             // （TASK-4.1 / #22、先行到着フレームを取りこぼさないため）。
             let leftover = buf.unread().to_vec();
             drop(buf);
-            match crate::plugin::try_handle_upgrade(stream, &request.head, leftover, server).await {
+            match crate::plugin::try_handle_upgrade(
+                stream,
+                &request.head,
+                leftover,
+                server,
+                &mut permit,
+            )
+            .await
+            {
                 Some(mut stream) => {
                     // websocket feature 無効時、または `UpgradeHandler` が
                     // マッチしたのに対応する Upgrade 型プラグインが未登録の

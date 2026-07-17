@@ -31,6 +31,11 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "Unicode-3.0",
     "BSD-3-Clause",
+    # TASK-8.1（#26）: `webrtc` feature（crates/plugin-webrtc、webrtc-rs 0.17 系）が
+    # 推移的に引き込む ring / rustls-webpki / untrusted の宣言ライセンス。
+    # OSI 承認・FSF Free/Libre 済みの寛容ライセンスであり、コピーレフト条項を持たない
+    # （`cargo deny check` で機械検証、.claude/rules/security.md の依存監査）。
+    "ISC",
 ]
 confidence-threshold = 0.8
 
