@@ -119,10 +119,24 @@ else
             # `docs/design/plugin-boundary.md` で検証済み。本エッジは他プラグインへ
             # 一般化せず（`bf-plugin-*` ワイルドカードにしない）、新規プラグインが
             # 同パターンを踏襲する際は本リストへの明示追加とレビューを要求する。
+            #
+            # 例外 2: `backend-framework-core:bf-plugin-websocket`（TASK-4.1、#22）。
+            # WebSocket は「委譲判定のみ」の `UpgradeHandler`（同期 API）に加え、
+            # ハンドシェイク検証・101 応答送出・フレーミング委譲という非同期処理を
+            # 要する Upgrade 型プラグインの第 1 号であり、webrtc-proxy と同型の
+            # 依存逆転（コア → プラグインの optional 依存）で表現する。
+            # `bf-plugin-websocket` 自体は循環依存を避けるため
+            # `backend-framework-core` に依存しない（下の
+            # `bf-plugin-*:backend-framework-core` パターンには乗らない設計、
+            # `crates/plugin-websocket/src/lib.rs` の doc・
+            # `docs/design/plugin-boundary.md` 6.1 節を参照）。本エッジも他
+            # プラグインへ一般化せず、新規 Upgrade 型プラグインは本リストへの
+            # 明示追加とレビューを要求する。
             allowed_edge_patterns=(
                 "backend-framework-core:bf-http"
                 "backend-framework-core:bf-routes"
                 "backend-framework-core:bf-plugin-webrtc-proxy"
+                "backend-framework-core:bf-plugin-websocket"
                 "bf-routes:bf-http"
                 "bf-plugin-*:bf-http"
                 "bf-plugin-*:bf-routes"
@@ -259,9 +273,15 @@ fi
 #    crates/core/Cargo.toml の `bf-plugin-webrtc-proxy` 依存に限り許可し、
 #    他プラグインへは一般化しない（bf-plugin-webrtc-proxy 以外の plugin- 依存・
 #    プラグイン固有シンボルは引き続き通常どおり FAIL する）。
+#
+#    TASK-4.1（#22）で `backend-framework-core:bf-plugin-websocket`（チェック 1
+#    該当コメント参照）を同様に許可した際、`bf_plugin_websocket` 系シンボル
+#    （`crates/core/src/plugin.rs` の Upgrade シーム実装・
+#    `crates/core/src/server.rs` の `websocket` 系ビルダー/フィールド）も
+#    webrtc-proxy と同一方針で例外対象に加える。
 # ---------------------------------------------------------------------------
 webrtc_proxy_exception_file="crates/core/src/plugin.rs"
-webrtc_proxy_exception_symbol_pattern='bf_plugin_webrtc_proxy|webrtc_proxy|crate::plugin::|pub\(crate\) mod plugin;'
+webrtc_proxy_exception_symbol_pattern='bf_plugin_webrtc_proxy|webrtc_proxy|bf_plugin_websocket|websocket|crate::plugin::|pub\(crate\) mod plugin;'
 
 plugin_hits_all=""
 for dir in crates/core crates/http crates/routes; do
@@ -287,7 +307,7 @@ for dir in crates/core crates/http crates/routes; do
         # （.rs 側のコメント除外と同一方針）。
         cargo_toml_hits="$(grep -n 'plugin-' "${dir}/Cargo.toml" | grep -v -E '^[0-9]+:[[:space:]]*#' || true)"
         if [ "${dir}" = "crates/core" ] && [ -n "${cargo_toml_hits}" ]; then
-            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v 'bf-plugin-webrtc-proxy' || true)"
+            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v -E 'bf-plugin-webrtc-proxy|bf-plugin-websocket' || true)"
         fi
         if [ -n "${cargo_toml_hits}" ]; then
             plugin_hits_all="${plugin_hits_all}${dir}/Cargo.toml に plugin- 依存あり: ${cargo_toml_hits}

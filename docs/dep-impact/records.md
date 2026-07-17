@@ -3,6 +3,53 @@
 `docs/dep-impact/README.md` の運用手順に従い、`crates/plugin-*` 追加・変更時の依存
 インパクト計測結果を追記する。エントリは新しい順に追加する。
 
+## 2026-07-17 — `crates/plugin-websocket` 追加（#22、TASK-4.1）
+
+`bf-plugin-websocket`（`tokio-tungstenite = "0.30"`（`default-features = false`,
+`handshake` feature のみ）・`futures-util`（`sink`/`std` feature のみ）依存、
+workspace 内クレートへの依存は `bf-http` のみ）を追加。`tokio-tungstenite` の
+`handshake` feature は推移的に `tungstenite`（`sha1`/`data-encoding`/`http`/
+`httparse`/`rand` 等）を引き込むため、workspace 全体の依存クレート数（本測定は
+`crates/plugin-*` を含む全 workspace メンバーをそれぞれ自身の既定 feature で
+計測する方式であり、`crates/core` 単体の pay-for-what-you-use 遵守を測るもの
+ではない点に注意）が増加している。
+
+`crates/core` 側の pay-for-what-you-use は個別に確認済み: `cargo tree -p
+backend-framework-core`（既定構成）に `bf-plugin-websocket`・`tokio-tungstenite`
+は一切現れず、`cargo tree -p backend-framework-core --features websocket` で
+初めて出現する（`docs/design/plugin-boundary.md` 6 節）。TLS 系（`native-tls`・
+`rustls`）・`connect`（クライアント接続関数群）feature は無効のままであり、
+これらの重い依存は一切増えていない。
+
+計測コマンド: `bash scripts/dep-impact.sh`
+
+### 依存クレート数（workspace メンバー除外・重複バージョンは union で 1 件として計上）
+
+| feature 構成 | 依存クレート数（直前エントリ差分） |
+|---|---|
+| --no-default-features | 73（+19） |
+| default | 73（+19） |
+| --all-features | 73（+19） |
+
+feature を持つ workspace メンバーが `crates/core`（`webrtc-proxy`/`websocket`）
+のみのため、`crates/plugin-websocket` 自身は常に自身の既定 feature（`handshake`
+のみ、`default-features = false`）でツリーに現れ、3 構成とも同一値になる。
+直前エントリ（54）比 +19 は `tokio-tungstenite`/`tungstenite` とその推移依存
+（`sha1`・`digest`・`data-encoding`・`http`・`httparse`・`rand` 系等）。
+
+### リリースバイナリサイズ
+
+| bin | サイズ (bytes) | 直前エントリ差分 |
+|---|---|---|
+| axum-ref | 1356936 | 0（`axum-ref` は `bf-plugin-websocket` に依存しない） |
+
+### unsafe 件数
+
+`cargo-geiger` 実行が環境要因で失敗（`scripts/unsafe-triage.sh` の対象は
+workspace 自身のコードのみで、`crates/plugin-websocket` は 0 件、
+`scripts/unsafe-baseline.json` の既定値と一致。依存 crate 側の unsafe 増減は
+本記録の対象外）。
+
 ## 2026-07-17 — `crates/plugin-openapi` 追加（#30、TASK-3.1）
 
 `bf-plugin-openapi`（`utoipa = "5"`（default features）・`serde`（derive）依存、

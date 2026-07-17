@@ -1,0 +1,59 @@
+[package]
+name = "bf-plugin-websocket"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "backend-framework の WebSocket プラグイン（TASK-4.1）。コアの UpgradeHandler 拡張点から委譲された接続に対し、RFC 6455 ハンドシェイクの検証・101 応答の送出・tokio-tungstenite へのフレーミング委譲を行う。"
+publish = false
+
+# workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
+# （.claude/rules/coding-rust.md・.claude/rules/security.md）。
+[lints]
+workspace = true
+
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）: 本クレートは
+# `crates/core` に依存しない（コア → 本クレートの optional 依存という
+# 単方向のエッジのみを許すため、循環依存を避ける設計上の要件。
+# docs/design/plugin-boundary.md 6.1 節・crates/core/src/plugin.rs の doc を
+# 参照）。UpgradeHandler trait を実装するアダプタはコア側（crates/core）に
+# 置き、本クレートは純関数 + 設定型のみを公開する。
+#
+# 依存は次の 3 つに限定する:
+# - `bf-http`: `RequestHead` の参照のみ（ハンドシェイク検証の入力）
+# - `tokio`: `io-util`（AsyncRead/AsyncWrite）のみ。ソケット I/O 自体は
+#   コア（crates/core）が保持する接続から渡される
+# - `tokio-tungstenite`: RFC 6455 フレーミング実装への委譲。
+#   `default-features = false` + `handshake` feature のみを有効化する。
+#   `handshake` feature は `Sec-WebSocket-Accept` 導出（`derive_accept_key`）
+#   に必要な `tungstenite/handshake`（sha1 + data-encoding）を有効化するために
+#   要る。`connect`（クライアント接続関数群、`tokio/net` 依存）・TLS 系
+#   feature は本クレートが必要としないため有効化しない
+#   （`cargo tree -p bf-plugin-websocket` で `native-tls` 等が現れないことを
+#   継続的に確認する）。
+[dependencies]
+bf-http = { path = "../http" }
+tokio = { version = "1", default-features = false, features = ["io-util"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = [
+  "handshake",
+] }
+# `WebSocketStream<S>` は Stream/Sink として `futures-util` の拡張トレイト
+# （`StreamExt::next` / `SinkExt::send`）越しに駆動する。tokio-tungstenite の
+# 推移的依存として既に解決されているため追加コストは実質ゼロだが、直接
+# 使用するトレイトは明示的な依存として宣言する（Rust の可視性規則上、
+# 推移的依存のトレイトを直接 import することはできない）。
+futures-util = { version = "0.3", default-features = false, features = [
+  "sink",
+  "std",
+] }
+
+# 統合テスト（tests/handshake_e2e.rs）で `tokio::io::duplex` + マルチスレッド
+# ランタイム・非同期テストマクロを使うためのみ。本体ビルド（lib.rs 以下）には
+# 影響しない。
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = [
+  "io-util",
+  "macros",
+  "rt-multi-thread",
+  "time",
+] }

@@ -1,17 +1,24 @@
-//! プラグインのパスインターセプト型シームヘルパー（TASK-2.1 / #18）。
+//! プラグインのパスインターセプト型・Upgrade 型シームヘルパー
+//! （パスインターセプト型: TASK-2.1 / #18、Upgrade 型: TASK-4.1 / #22）。
 //!
-//! [`crate::server`] の `handle_connection` が既定 `Handler::handle` を呼ぶ
-//! 直前に無条件で呼び出す固定シグネチャの委譲窓口。`#[cfg(feature = "...")]`
-//! を本モジュールの外へ一切漏らさないことで、コアループ本体
-//! （`handle_connection`）を feature で分岐させない設計規約
-//! （`crates/core/src/server.rs` 冒頭の doc、PoC-3）を守る。
+//! [`crate::server`] の `handle_connection` が呼ぶ固定シグネチャの委譲窓口を
+//! 2 種類集約する。`#[cfg(feature = "...")]` を本モジュールの外へ一切漏らさ
+//! ないことで、コアループ本体（`handle_connection`）を feature で分岐させ
+//! ない設計規約（`crates/core/src/server.rs` 冒頭の doc、PoC-3）を守る:
+//! - [`try_intercept`][]: リクエスト/レスポンス完結型プラグイン（WebRTC
+//!   シグナリングプロキシ等）へのパスインターセプト
+//! - [`try_handle_upgrade`][]: 長時間接続（WebSocket 等）への完全委譲
+//!   （`UpgradeHandler::matches` 成立後、コア側の読み取りバッファ解放
+//!   （Conditional Go 条件(1)）を経て呼ばれる）
 //!
-//! feature が 1 つも有効でない場合、本モジュールは即座に `None` を返す
-//! だけの薄い関数となり、実行時コスト・依存・コード・`unsafe` を一切追加
-//! しない（pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
-//! 新しいプラグインをパスインターセプト型で配線する際は、本モジュールへ
-//! cfg-gated な分岐を追加する形で拡張する（`docs/design/plugin-boundary.md`
-//! のプラグイン境界パターン・適用手順を参照）。
+//! feature が 1 つも有効でない場合、両関数とも即座に `None` を返すだけの
+//! 薄い関数となり、実行時コスト・依存・コード・`unsafe` を一切追加しない
+//! （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。新しい
+//! プラグインを配線する際は、本モジュールへ cfg-gated な分岐を追加する形で
+//! 拡張する（`docs/design/plugin-boundary.md` のプラグイン境界パターン・
+//! 適用指針を参照）。
+
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use bf_http::request::RequestHead;
 use bf_http::response::Response;
@@ -67,4 +74,59 @@ pub(crate) async fn try_intercept(
 #[cfg(feature = "webrtc-proxy")]
 fn from_plugin_response(response: bf_plugin_webrtc_proxy::Response) -> Response {
     Response::new(response.status, response.body).with_content_type(response.content_type)
+}
+
+/// [`UpgradeHandler::matches`][crate::extension::UpgradeHandler::matches] が
+/// `true` を返した接続をプラグイン側へ委譲するための、一定シグネチャの
+/// Upgrade 型委譲シーム（TASK-4.1 / #22）。
+///
+/// `crates/core/src/server.rs` の `handle_connection` から、読み取りバッファ
+/// 解放（Conditional Go 条件(1)）・残余バイト列（`leftover`）退避の直後に
+/// 呼ばれる。戻り値 `Some(stream)` は「委譲されず、呼び出し元が後続処理
+/// （フォールバック応答）を続けるべき」ことを意味し、`websocket` feature
+/// 無効時・`server.websocket_configs()` が空、または登録済みいずれの設定にも
+/// `bf_plugin_websocket::matches` が一致しない時のいずれかで発生する
+/// （呼び出し元は 501 を返す、`server.rs` の
+/// doc を参照）。`None` は「完全に委譲済みで呼び出し元はこれ以上ストリームに
+/// 触れない」ことを意味する。
+///
+/// `websocket` feature 無効時は `stream`/`head`/`leftover`/`server` を一切
+/// 参照せず即座に `Some(stream)` を返し、`bf_plugin_websocket` への依存・
+/// 呼び出しコードともバイナリに含まれない（`cargo tree` で確認可能、
+/// pay-for-what-you-use）。
+///
+/// [`bf_plugin_websocket::handle_upgrade`] 内のエラー（ハンドシェイク検証
+/// 違反・I/O・プロトコルエラー）は本関数の境界で吸収し、panic としてコア
+/// 境界を越えさせない（`.claude/rules/coding-rust.md`）。エラー発生時は
+/// 接続を静かにクローズしたものとして扱い `None` を返す（`handle_upgrade`
+/// 自体が 400/426 応答の送出、または I/O エラー時の未送出クローズを内部で
+/// 行っているため、呼び出し元がさらにフォールバック応答を重ねて送る必要は
+/// ない）。
+pub(crate) async fn try_handle_upgrade<S>(
+    stream: S,
+    head: &RequestHead,
+    leftover: Vec<u8>,
+    server: &Server,
+) -> Option<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    #[cfg(feature = "websocket")]
+    {
+        if let Some(config) = server
+            .websocket_configs()
+            .iter()
+            .find(|config| bf_plugin_websocket::matches(head, config))
+        {
+            let _ = bf_plugin_websocket::handle_upgrade(stream, head, leftover, config).await;
+            return None;
+        }
+    }
+
+    #[cfg(not(feature = "websocket"))]
+    {
+        let _ = (head, &leftover, server);
+    }
+
+    Some(stream)
 }

@@ -51,7 +51,7 @@ feature 分岐が必要になった場合も、コアループ側はヘルパー
 
 | シーム | 対象パターン | 状態 |
 |--------|-------------|------|
-| `try_handle_upgrade`（`server.rs` 内非公開関数） | 長時間接続（WebSocket 等）への委譲 | 実 WebSocket プラグイン（TASK-4.1）配線まではスタブ（常に `Some(stream)`） |
+| `plugin::try_handle_upgrade`（`crates/core/src/plugin.rs`） | 長時間接続（WebSocket 等）への委譲 | `websocket` feature で配線済み（TASK-4.1 / #22。5 節を参照） |
 | `plugin::try_intercept`（`crates/core/src/plugin.rs`） | リクエスト/レスポンス完結型プラグインへのパスインターセプト | `webrtc-proxy` で配線済み（本タスク） |
 
 ## 4. パスインターセプト型パターン（本タスクで確立）
@@ -135,16 +135,90 @@ reason, content_type, body }`）はコアが送出する `bf_http::response::Res
 劣化する。PoC-9 教訓: ステータスコードのみの検証はこの劣化を見逃す。統合
 テストは必ず reason/Content-Type/body まで含めて検証すること）。
 
-## 5. Upgrade 型パターンへの適用指針（後続タスク向け）
+## 5. Upgrade 型パターン（TASK-4.1 / #22 で確立）
 
-本タスクでは `try_handle_upgrade` の実差し替えは行わない（実 WebSocket
-プラグインが TASK-4.1 まで未実装のため）。後続タスクが差し替える際は、
-`try_intercept` と同型の設計原則を踏襲する:
+`bf-plugin-websocket`（`crates/plugin-websocket`）が Upgrade 型パターンの
+第 1 号実装。`try_intercept` と同型の設計原則を踏襲しつつ、Upgrade 型固有の
+差分が 2 点ある（5.1・5.2 節）。
+
+### 5.1 シームのシグネチャ変更（意図的な逸脱）
+
+当初のスタブ `try_handle_upgrade(stream, head, handlers: &[Box<dyn
+UpgradeHandler>])` は「シームのシグネチャを変えない」という本ドキュメント
+3 節の設計規約に反し、`Vec<u8>`（残余バイト列 `leftover`）+ `&Server`
+（設定取得用）を受け取る形に変更した:
+
+```rust,ignore
+pub(crate) async fn try_handle_upgrade<S>(
+    stream: S,
+    head: &RequestHead,
+    leftover: Vec<u8>,
+    server: &Server,
+) -> Option<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    #[cfg(feature = "websocket")]
+    {
+        if let Some(config) = server.websocket_config()
+            && bf_plugin_websocket::matches(head, config)
+        {
+            let _ = bf_plugin_websocket::handle_upgrade(stream, head, leftover, config).await;
+            return None;
+        }
+    }
+
+    #[cfg(not(feature = "websocket"))]
+    {
+        let _ = (head, &leftover, server);
+    }
+
+    Some(stream)
+}
+```
+
+変更理由:
+
+- `leftover`: `handle_connection` はアップグレード委譲前にコア側の読み取り
+  バッファを解放する（Conditional Go 条件(1)）が、解放前に
+  `RecvBuffer::unread()` で退避した残余バイト列（パイプライン済みの先行
+  フレーム等）を委譲先へ引き継ぐ必要がある。`bf_plugin_websocket::handle_upgrade`
+  はこれを `WebSocketStream::from_partially_read` へそのまま渡し、先行到着
+  フレームを取りこぼさない
+- `&Server`: 複数 Upgrade 型プラグインが将来増えた場合でも、各プラグインの
+  cfg-gated 設定（`server.websocket_config()` 等）へ本シーム経由で
+  アクセスできるようにするための一般化。`&[Box<dyn UpgradeHandler>]` では
+  「委譲判定のみ」の情報しか持てず、ハンドシェイク詳細検証・フレーミング
+  設定に必要な `WebSocketConfig` を渡せなかった
+
+`UpgradeHandler::matches`（同期 API、委譲判定のみの契約）自体は変更して
+いない。判定は `WebSocketUpgradeAdapter`（`crates/core/src/server.rs`、
+`Server::websocket` が内部登録）が `bf_plugin_websocket::matches` へ委譲する
+薄いラッパーとして担う。
+
+### 5.2 循環依存の回避
+
+`bf-plugin-websocket` は `backend-framework-core` に依存しない（`crates/plugin-websocket/src/lib.rs`
+の doc を参照）。コア → プラグインの optional 依存（`webrtc-proxy` と同型）
+のみを張るため、`UpgradeHandler` trait を実装するアダプタ
+（`WebSocketUpgradeAdapter`）はコア側（`crates/core/src/server.rs`）に置く。
+プラグイン自体は `matches` / `handle_upgrade` という純関数 + `WebSocketConfig`
+のみを公開する。
+
+### 5.3 後続 Upgrade 型プラグインへの適用手順
+
+新規 Upgrade 型プラグインを追加する際は以下を踏襲する:
 
 1. feature 命名規約（2 節）に従い `dep:` 構文で optional 依存を追加する
-2. `try_handle_upgrade` のシグネチャを変えずに内部を cfg-gated 分岐へ差し替える
-3. `Server` ビルダーへ cfg-gated な登録メソッドを追加する
-4. feature 無効時はコード・依存・`unsafe` が完全に消えることを
+2. プラグインクレートはコアに依存させない（5.2 節）。`UpgradeHandler`
+   アダプタはコア側（`server.rs`）に置く
+3. `plugin::try_handle_upgrade` へ cfg-gated 分岐を追加する（複数プラグインが
+   並存する場合は `UpgradeHandler::matches` の判定順にそのまま従う）
+4. `Server` ビルダーへ cfg-gated な登録メソッドを追加する
+5. `scripts/dep-direction-check.sh` の許可リストへ
+   `backend-framework-core:bf-plugin-<name>` を個別追加する（6.1 節と同じ
+   方針。`bf-plugin-*` への一般化はしない）
+6. feature 無効時はコード・依存・`unsafe` が完全に消えることを
    `cargo tree` で確認する
 
 ## 6. 検証コマンド
@@ -157,8 +231,14 @@ reason, content_type, body }`）はコアが送出する `bf_http::response::Res
 | テスト | `cargo test -p backend-framework-core`（無効）／`--features webrtc-proxy`／`cargo test --workspace --all-features` | すべて green（`crates/core/tests/plugin_boundary.rs`・`plugin_boundary_disabled.rs`） |
 | lint | `cargo clippy -p backend-framework-core --all-targets --no-default-features -- -D warnings`／`--features webrtc-proxy`／`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 警告 0 件 |
 | doc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps` | 警告 0 件 |
-| 依存監査 | `scripts/dep-audit.sh` | `webrtc-proxy` を含む動的列挙構成で違反 0 件 |
+| 依存監査 | `scripts/dep-audit.sh` | `webrtc-proxy`・`websocket` を含む動的列挙構成で違反 0 件 |
 | pay-for-what-you-use 機械検証 | `scripts/pay-for-what-you-use-check.sh`（TASK-2.2、#19） | cargo tree/geiger・バイナリサイズ・全構成ビルドすべて PASS（`docs/design/pay-for-what-you-use-check.md` 参照） |
+
+`websocket` feature（TASK-4.1 / #22）も同一パターンで検証済み:
+`cargo tree -p backend-framework-core --features websocket` で
+`bf-plugin-websocket`・`tokio-tungstenite` が出現し、`webrtc-rs` 系は
+出現しない。`crates/core/tests/websocket_upgrade.rs`（feature 有効側）・
+`websocket_upgrade_disabled.rs`（feature 無効側）で green。
 
 ## 6.1 `scripts/dep-direction-check.sh` ホワイトリストの例外（TASK-1.5 との整合）
 
@@ -183,6 +263,12 @@ feature 無効時は本エッジ自体が未解決のまま消えるため pay-f
 は維持される（6 節の検証コマンドで確認済み）。詳細な例外根拠・DFS 循環
 検出との関係は `scripts/dep-direction-check.sh` の当該コメントを正とする。
 
+TASK-4.1（#22）で `backend-framework-core:bf-plugin-websocket` を同一方針で
+2 件目の例外として追加した（`bf-plugin-websocket` 自体は 5.2 節のとおり
+`backend-framework-core` に依存しないため循環にはならない）。あわせて
+チェック 3（プラグイン固有シンボル非依存検査）の例外シンボルパターンにも
+`bf_plugin_websocket`/`websocket` を追加している。
+
 ## 7. スコープ外（別タスクで対応）
 
 - `cargo tree`/`cargo geiger`/バイナリサイズ比較の機械的検証スクリプト整備 →
@@ -191,4 +277,11 @@ feature 無効時は本エッジ自体が未解決のまま消えるため pay-f
 - Middleware 非同期 I/O 必須化規約の AGENTS.md 整備 → TASK-2.3（#20）
 - WebSocket・GraphQL の 2 プラグイン着脱受け入れテスト、コンパイル時 vs
   動的ロードのトレードオフ設計文書 → TASK-2.4（#21）
-- `try_handle_upgrade` の実プラグイン（plugin-websocket）委譲差し替え → TASK-4.1
+- `chunk` バッファのヒープ化・委譲後タスク再 spawn による RSS 最適化 → TASK-4.2
+- 10,000 同時接続負荷試験・RSS 再計測 → TASK-4.3
+- プラグイン無効時の依存・unsafe・バイナリ 0 件の機械的受け入れテスト → TASK-4.4 / TASK-2.4（#21）
+- ユーザー定義 WebSocket メッセージハンドラ API（エコー以外のアプリケーション
+  ロジック差し込み）→ 対応 Issue なし（Issue #22 実装計画 8 節、PR 本文で
+  新規 Issue 化を提案）
+- WebSocket 接続のアイドルタイムアウト・ping/pong ヘルスチェック → 対応 Issue
+  なし（DoS 対策の深掘り、PR 本文で提案）
