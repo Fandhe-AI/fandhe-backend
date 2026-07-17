@@ -39,6 +39,38 @@ repository = "https://github.com/Fandhe-AI/backend-framework"
 [workspace.lints.rust]
 unsafe_code = "warn"
 missing_docs = "warn"
+# `unsafe fn` 内でも `unsafe {}` ブロックを明示させる（TASK-14.2、#40、REQ-14）。
+# edition 2024 のデフォルトは既に deny だが、workspace lints 表に明記して
+# 将来 edition が変わっても意図が読み取れるようにする。
+unsafe_op_in_unsafe_fn = "deny"
+
+# 危険な `unsafe` パターンをビルド段階で機械的にブロックする多層防御（TASK-14.2、#40、
+# REQ-14、PoC-9: docs/spec/03-poc/ai-first-maintainability/README.md）。
+# 選定根拠・2 層設計の詳細は docs/design/unsafe-deny-lints.md を参照。
+#
+# 第 1 層（forbid）: メモリ安全性を直接壊す correctness 系。clippy デフォルトで既に deny だが、
+# `forbid` へ昇格することで `#[allow(...)]` によるコード側での抑制自体をコンパイルエラーにする。
+# PoC-9 が指摘した「AI が `#[allow]` を書いて CI を素通りする」経路を封じるのが目的で、
+# CI の `-D warnings` のみに依存しない多層防御を成す。
+[workspace.lints.clippy]
+uninit_vec = "forbid"
+uninit_assumed_init = "forbid"
+mem_replace_with_uninit = "forbid"
+transmuting_null = "forbid"
+wrong_transmute = "forbid"
+unsound_collection_transmute = "forbid"
+eager_transmute = "forbid"
+cast_slice_different_sizes = "forbid"
+zst_offset = "forbid"
+out_of_bounds_indexing = "forbid"
+not_unsafe_ptr_arg_deref = "forbid"
+
+# 第 2 層（deny）: `unsafe` の記述規律を強制する restriction 系。原則禁止だが、
+# 局所的な `#[allow(...)]` + コードレビューでの正当化により例外化しうる
+# （forbid 層と異なり `#[allow]` 自体は許容する）。
+undocumented_unsafe_blocks = "deny"
+unnecessary_safety_comment = "deny"
+multiple_unsafe_ops_per_block = "deny"
 
 # 計測用リリースプロファイル（TASK-1.2、docs/spec/03-poc/fullscratch-performance/axum-ref
 # と同条件の `lto = true`）。`benches/*.sh` は `cargo build --release` の成果物を対象に
