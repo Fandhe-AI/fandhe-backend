@@ -208,3 +208,30 @@ CORE_BIN=target/release/axum-ref CORE_PORT=3102 ./benches/bench-accept.sh
 `TARGET_BIN` / `TARGET_HOST` / `TARGET_PORT`（`bench-http.sh` 等の単体実行時）や
 `BASELINE_*` / `CORE_*`（`bench-accept.sh`）を差し替えることで、`crates/core` 側の
 実行可能バイナリが揃った時点で本スクリプトの変更なしにそのまま判定に使える設計にしている。
+
+## webrtc-nfr6-bench.sh / graphql-nfr6-bench.sh — プラグイン feature の NFR 計測
+
+`webrtc`（TASK-8.4、#29）・`graphql`（TASK-5.2、#53）の各 feature を有効化した際、
+無関係パス（`GET /`）への RPS・p95 レイテンシ影響が誤差範囲に収まることを検証する
+専用ハーネス。共通パターン: ベースライン（`crates/core/examples/minimal.rs`、対象
+feature 無効）と、計測対象 feature を有効化した専用 example（`webrtc_nfr6.rs` /
+`graphql_nfr6.rs`）へそれぞれ `oha` で負荷をかけ、RPS・p95 の中央値比（`RUNS` 回、
+既定 5 回）を算出する。production 配線自体は変更せず、計測専用の example を叩くのみ。
+
+```bash
+# 事前ビルド（各スクリプトとも自動ビルドしない）
+cargo build --release -p backend-framework-core --example minimal --no-default-features
+cargo build --release -p backend-framework-core --example webrtc_nfr6 --features webrtc
+cargo build --release -p backend-framework-core --example graphql_nfr6 --features graphql
+
+./benches/webrtc-nfr6-bench.sh
+./benches/graphql-nfr6-bench.sh
+```
+
+標準出力（stderr）へ実行ログ、標準出力（stdout）へ `rps_ratio_pct=` / `p95_ratio_pct=`
+等の machine-readable な結果を出す。`RUNS` / `DURATION` / `CONNECTIONS` を env で
+上書き可能（既定 `RUNS=5 DURATION=5s CONNECTIONS=32`）。判定（PASS/WARN/FAIL）は
+`scripts/accept/lib/nfr6-ratio.sh`（`evaluate_nfr6_ratio`）を呼ぶ
+`scripts/accept/webrtc-accept.sh` / `scripts/accept/graphql-accept.sh` が担う（実務
+許容帯 [95%, 105%]・狭義帯 [100.3%, 100.8%]）。実行結果レポートは
+`reports/task-8.4-webrtc-nfr6.md` / `reports/task-5.2-graphql-performance.md` を参照。
