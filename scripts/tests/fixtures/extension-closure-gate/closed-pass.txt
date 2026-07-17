@@ -1,0 +1,4 @@
+crates/plugin-websocket/src/lib.rs
+crates/plugin-websocket/src/config.rs
+docs/design/plugin-boundary.md
+crates/core/tests/websocket_upgrade.rs
