@@ -272,8 +272,12 @@ check_plugin_independence() {
         if [ -d "${dir}/src" ]; then
             # 日本語 doc comment 中の「プラグイン」誤検出を避けるため、// 行コメントは除外して
             # 識別子パターン（Plugin/plugin を含む識別子）のみを検査する。
+            # 注意: grep -rn の出力は "file:line:content" 形式のため、除外パターンは
+            # 素の "^\s*//" ではなく "file:line:" プレフィックスを踏まえたものにする必要がある
+            # （プレフィックス無視の "^\s*//" は常に不一致となり、コメント行を除外できない
+            # 誤りだった。TASK-1.6-2 #72 レビューで検出）。
             local hits
-            hits="$(grep -rn --include='*.rs' -E '[A-Za-z_]*[Pp]lugin' "${dir}/src" | grep -v -E '^\s*//' || true)"
+            hits="$(grep -rn --include='*.rs' -E '[A-Za-z_]*[Pp]lugin' "${dir}/src" | grep -v -E '^[^:]*:[0-9]+:[[:space:]]*//' || true)"
             if [ -n "${hits}" ]; then
                 hits_all="${hits_all}${hits}
 "
