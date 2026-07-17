@@ -1,7 +1,8 @@
 # scripts/accept — 受け入れ検証スクリプト
 
-`core-deps-unsafe-audit.sh`（REQ-1）・`plugin-mechanism-accept.sh`（REQ-2、TASK-2.4）の
-2 スクリプトを収録する。以下はまず REQ-1 側の詳細、REQ-2 側は本ファイル末尾を参照。
+`core-deps-unsafe-audit.sh`（REQ-1）・`plugin-mechanism-accept.sh`（REQ-2、TASK-2.4）・
+`webrtc-accept.sh`（REQ-8、TASK-8.4）・`graphql-accept.sh`（REQ-5、TASK-5.2）を収録する。
+以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
 
 `docs/spec/04-requirements.md` REQ-1（最小コア）の受け入れ基準のうち、**性能計測を除く**
 非性能系の受け入れ基準（依存クレート数比・unsafe 根拠・audit / deny・実質コード行数・
@@ -132,3 +133,45 @@ PASS を偽らない）。手動計測手順・実行結果は
 `scripts/tests/run-webrtc-accept-tests.sh` を参照。実行結果レポートは
 `docs/acceptance/req8-webrtc-attack-surface.md`、NFR-6 の詳細計測結果は
 `benches/reports/task-8.4-webrtc-nfr6.md` に記録する。
+
+## `graphql-accept.sh` — REQ-5（GraphQL）受け入れ検証（TASK-5.2、#53）
+
+`docs/spec/04-requirements.md` REQ-5 の受け入れ基準のうち TASK-5.2「GraphQL 受け入れ
+テスト」が担う 3 点を検証する。`lib/common.sh`（PASS/FAIL/SKIP/WARN 集計）と
+`lib/nfr6-ratio.sh`（NFR 判定ロジック単体、`webrtc-accept.sh` と共有）を使う
+`webrtc-accept.sh` と同型のオーケストレータ。
+
+```bash
+./scripts/accept/graphql-accept.sh
+```
+
+検証内容:
+
+1. `graphql` feature 無効時、`backend-framework-core` の依存ツリーに
+   `async-graphql` / `bf-plugin-graphql` 系依存が一切現れない
+   （`cargo tree -p backend-framework-core -e normal --no-default-features`。
+   `-e normal --no-default-features` は `crates/core` がテスト専用に持つ
+   `async-graphql` dev-dependency を除外するために必須）。
+   `scripts/pay-for-what-you-use-check.sh`（動的列挙のため graphql feature も自動
+   検証対象）も併走し、依存・unsafe・バイナリサイズ完全除外を二重に確認する
+2. `crates/plugin-graphql` 自コードの unsafe が 0 件（grep）
+3. 最小疎通（クエリ実行と結果 JSON の返却）。`cargo test -p backend-framework-core
+   --features graphql`（境界テスト `plugin_graphql_boundary.rs`）・
+   `cargo test -p bf-plugin-graphql`（契約テスト）に加え、ビルド済み
+   `graphql_nfr6` バイナリがあれば curl で `POST /graphql` に実際にクエリを送り
+   `data.hello == "world"` を live 検証する
+4. NFR（無関係パスへの RPS・レイテンシ影響）。計測用バイナリ
+   （`target/release/examples/minimal`・`target/release/examples/graphql_nfr6`）と
+   `oha` が揃っていれば `benches/graphql-nfr6-bench.sh` で empirical 計測し、
+   `webrtc-accept.sh` と同じ実務許容帯 [95%, 105%]（FAIL 境界）・狭義帯
+   [100.3%, 100.8%]（PASS/WARN 境界）と照合する。揃っていなければ SKIP + 実行手順を
+   案内する
+
+前提: `cargo build --release -p backend-framework-core --example minimal
+--no-default-features` と `... --example graphql_nfr6 --features graphql` を事前実行
+（本スクリプトは自動ビルドしない）。
+
+判定ロジックのオフライン・セルフテスト（cargo・ネットワーク非依存）は
+`scripts/tests/run-graphql-accept-tests.sh` を参照。実行結果レポートは
+`docs/acceptance/req5-graphql.md`、NFR の詳細計測結果は
+`benches/reports/task-5.2-graphql-performance.md` に記録する。
