@@ -6,7 +6,7 @@
 //! 拡張点実装（`Box<dyn ...>`）を保持し、[`Server::bind`] で得た [`BoundServer`]
 //! の [`BoundServer::run`] が accept ループを回して 1 接続ごとに
 //! [`handle_connection`] を spawn する。同時接続数は
-//! [`DEFAULT_MAX_CONNECTIONS`]（[`Server::max_connections`] で変更可）を
+//! `DEFAULT_MAX_CONNECTIONS`（[`Server::max_connections`] で変更可）を
 //! 上限とし、リソース枯渇 DoS を防ぐ（`.claude/rules/security.md`）。
 //!
 //! # コアループ本体は feature で分岐しない
@@ -79,9 +79,9 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 1 接続あたりの総生存期間の既定上限（リソース枯渇 DoS 対策）。
 ///
-/// [`READ_TIMEOUT`] は「1 回の read 待ち」しか制限しないため、これより短い
+/// `READ_TIMEOUT` は「1 回の read 待ち」しか制限しないため、これより短い
 /// 間隔で（例えば 1 バイトずつ）送信し続けるクライアントは、本上限がなければ
-/// [`DEFAULT_MAX_CONNECTIONS`] の permit を無期限に占有できてしまう。
+/// `DEFAULT_MAX_CONNECTIONS` の permit を無期限に占有できてしまう。
 /// [`handle_connection`] はコネクション開始時刻からの経過時間がこの値に達した
 /// 時点で（読み取り待ちに入る前に）接続を閉じ、permit を解放する。
 /// 値のチューニングは [`Server::max_connection_lifetime`] で行う。
@@ -89,7 +89,7 @@ const DEFAULT_MAX_CONNECTION_LIFETIME: Duration = Duration::from_secs(300);
 
 /// keep-alive 接続 1 本あたりに処理を許すリクエスト数の既定上限（リソース枯渇 DoS 対策）。
 ///
-/// [`DEFAULT_MAX_CONNECTION_LIFETIME`] とは独立に、短時間に大量の軽量リクエストを
+/// `DEFAULT_MAX_CONNECTION_LIFETIME` とは独立に、短時間に大量の軽量リクエストを
 /// 送り続けて 1 接続でハンドラ処理を占有し続ける経路を塞ぐ。上限に達した
 /// リクエストへの応答は `Connection: close` を伴い、以後 [`handle_connection`] は
 /// 同じ接続で次のリクエストを待たない。値のチューニングは
@@ -167,17 +167,17 @@ impl Default for Server {
 
 impl Server {
     /// 拡張点・ハンドラを 1 件も持たない空の [`Server`] を作る。
-    /// 同時接続数上限は [`DEFAULT_MAX_CONNECTIONS`]。
+    /// 同時接続数上限は `DEFAULT_MAX_CONNECTIONS`。
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 同時接続数の上限を設定する（既定 [`DEFAULT_MAX_CONNECTIONS`]）。
+    /// 同時接続数の上限を設定する（既定 `DEFAULT_MAX_CONNECTIONS`）。
     ///
     /// [`BoundServer::run`] の accept ループはこの上限に達している間、
     /// 新規接続の受理を保留する（リソース枯渇 DoS 対策、本モジュール冒頭の
-    /// doc・[`DEFAULT_MAX_CONNECTIONS`] の doc を参照）。`0` を指定した場合は
+    /// doc・`DEFAULT_MAX_CONNECTIONS` の doc を参照）。`0` を指定した場合は
     /// accept ループが永久に許可待ちでブロックし新規接続を一切受理できなく
     /// なるため、[`Server::bind`] 側で最低 `1` に切り上げる。
     #[must_use]
@@ -186,10 +186,10 @@ impl Server {
         self
     }
 
-    /// 1 接続あたりの総生存期間の上限を設定する（既定 [`DEFAULT_MAX_CONNECTION_LIFETIME`]）。
+    /// 1 接続あたりの総生存期間の上限を設定する（既定 `DEFAULT_MAX_CONNECTION_LIFETIME`）。
     ///
     /// [`handle_connection`] はコネクション開始からの経過時間がこの値に達すると、
-    /// 次のリクエストの読み取り待ちに入る前に接続を閉じる（[`READ_TIMEOUT`] の
+    /// 次のリクエストの読み取り待ちに入る前に接続を閉じる（`READ_TIMEOUT` の
     /// doc・`.claude/rules/security.md` のリソース枯渇観点を参照）。`Duration::ZERO`
     /// を指定すると最初のリクエストを読む前に接続を閉じてしまうため、実運用では
     /// 避けること。
@@ -200,11 +200,11 @@ impl Server {
     }
 
     /// keep-alive 接続 1 本あたりに処理を許すリクエスト数の上限を設定する
-    /// （既定 [`DEFAULT_MAX_REQUESTS_PER_CONNECTION`]）。
+    /// （既定 `DEFAULT_MAX_REQUESTS_PER_CONNECTION`）。
     ///
     /// 上限に達したリクエストへの応答は `Connection: close` を伴い、以後
     /// [`handle_connection`] は同じ接続で次のリクエストを待たない
-    /// （[`READ_TIMEOUT`] の doc・`.claude/rules/security.md` のリソース枯渇観点を
+    /// （`READ_TIMEOUT` の doc・`.claude/rules/security.md` のリソース枯渇観点を
     /// 参照）。`0` を指定した場合でも最低 1 リクエストは処理してから閉じる
     /// （[`handle_connection`] 側で `.max(1)` に切り上げる）。
     #[must_use]
@@ -263,7 +263,7 @@ impl Server {
 pub struct BoundServer {
     listener: TcpListener,
     server: Arc<Server>,
-    /// 同時接続数の上限を強制するセマフォ（[`DEFAULT_MAX_CONNECTIONS`] の doc を参照）。
+    /// 同時接続数の上限を強制するセマフォ（`DEFAULT_MAX_CONNECTIONS` の doc を参照）。
     /// permit は [`BoundServer::run`] が spawn するコネクションタスクへ move し、
     /// タスク終了（`handle_connection` の戻り）時に自動で解放される。
     connection_limit: Arc<Semaphore>,
@@ -283,7 +283,7 @@ impl BoundServer {
     /// 同時接続数は `connection_limit` セマフォで上限を強制する。上限に
     /// 達している間は `accept` 自体を呼ばずに待機するため、あふれた接続は
     /// カーネルの listen backlog に滞留し、backlog も尽きれば OS 側で
-    /// 拒否される（[`DEFAULT_MAX_CONNECTIONS`] の doc を参照）。
+    /// 拒否される（`DEFAULT_MAX_CONNECTIONS` の doc を参照）。
     ///
     /// # accept エラーの扱い（可用性）
     ///
@@ -293,7 +293,7 @@ impl BoundServer {
     /// （`TcpListener::accept`）も「多くの accept エラーはサーバ全体ではなく
     /// 個々の接続に紐づくものであり、ログに残してループを継続するのが
     /// 一般的な実践」と述べている。そのため本実装は accept エラーで `run()`
-    /// を終了させず、[`ACCEPT_ERROR_BACKOFF`] だけ待ってから次の accept を
+    /// を終了させず、`ACCEPT_ERROR_BACKOFF` だけ待ってから次の accept を
     /// 再試行する（`.claude/rules/security.md` の可用性・リソース枯渇観点。
     /// 1 件の一過性エラーでリスナー全体が永久停止するのを防ぐ）。戻り値が
     /// `io::Result` なのは将来の呼び出し側都合による API 安定性のためであり、
