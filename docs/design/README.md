@@ -22,3 +22,7 @@
   （TASK-12.2-2、#82、REQ-12(b)。ドキュメント追随（変更種別 → 追随ドキュメントの
   マッピング）と完遂判定（`ci-complete` + レビューゲート + ドキュメント追随の 3 条件）を
   改修フローの終端ゲートとして記述）
+- [`unsafe-deny-lints.md`](./unsafe-deny-lints.md): 危険な `unsafe` パターンの deny lint 設定
+  （TASK-14.2、#40、REQ-14。forbid/deny 2 層 lint テーブルの選定根拠とネガティブ検証）
+- [`review-gate.md`](./review-gate.md): レビューゲート運用定義・受け入れテスト
+  （TASK-14.3、#41、REQ-14。PR 必須化・force push/削除禁止の ruleset 拡張と受け入れテスト実施記録）
