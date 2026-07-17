@@ -45,15 +45,38 @@ else
         # 見出し行 "[section_name]" は awk -v 経由だと `\[`/`\]` が正規表現の
         # エスケープではなく文字クラスとして解釈され誤マッチしうるため、正規表現
         # ではなく文字列完全一致（target 変数との ==）でセクション開始を判定する。
-        # コメント行（先頭の空白除去後に `#` で始まる行）はコメントアウトされた
-        # 設定値・コメント内にのみ残った記述の誤 PASS を避けるため除外する。
+        # 各行は次を経てから比較・出力する:
+        #   1. 末尾の "\r"（CRLF 由来）を除去する。除去しないと見出し行が
+        #      "[section_name]\r" となり完全一致が常に失敗し、CRLF 保存された
+        #      deny.toml に対して criteria 1b〜1d が false-fail する
+        #      （feasibility-check.sh の extract_section と同一対策）
+        #   2. 見出し行末の trailing comment（`#` 以降）を除去してから比較する。
+        #      `[graph]  # コメント` のような見出しも正しく検出するため
+        #      （advisories 正規表現時代は同等ヘッダにもマッチしていた）
+        #   3. 本文行も行末インラインコメント（`#` 以降）を除去してから
+        #      出力する。行全体コメント（先頭 `#`）は除去後に空行となり
+        #      `line != ""` で自然に除外される。除去しないと
+        #      `all-features = false  # all-features = true` のような
+        #      インライン注記が生の行として後段の grep に渡り、コメント側の
+        #      文字列に誤って PASS 判定される（accept-task-11-5.sh の
+        #      `sub(/#.*/, "", line)` と同一対策）
         awk -v target="[${section_name}]" '
-            $0 == target { in_section = 1; next }
+            {
+                sub(/\r$/, "")
+            }
+            {
+                header = $0
+                sub(/[ \t]*#.*$/, "", header)
+                sub(/[ \t]+$/, "", header)
+            }
+            header == target { in_section = 1; next }
             /^\[/ { in_section = 0 }
             in_section {
                 line = $0
+                sub(/#.*/, "", line)
                 sub(/^[ \t]+/, "", line)
-                if (substr(line, 1, 1) != "#") print
+                sub(/[ \t]+$/, "", line)
+                if (line != "") print line
             }
         ' "${file}"
     }

@@ -44,16 +44,30 @@ fail() {
 extract_toml_section() {
     local section_name="$1"
     local file="$2"
-    # dep-audit-accept.sh の extract_toml_section と同一ロジック（文字列完全一致で
-    # セクション開始を判定。awk -v 経由の `\[`/`\]` 誤解釈を避け、コメント行は
-    # 誤 PASS を避けるため除外する）。
+    # dep-audit-accept.sh の extract_toml_section と同一ロジック。
+    #   1. 末尾 "\r"（CRLF 由来）除去 → 見出し行の完全一致失敗（false-fail）を防ぐ
+    #   2. 見出し行末の trailing comment を除去してから比較 → `[graph]  # 注記`
+    #      のような見出しも検出する
+    #   3. 本文行も行末インラインコメントを除去してから出力 → コメント側の
+    #      文字列で誤って PASS 判定されるのを防ぐ（行全体コメントは除去後に
+    #      空行となり自然に除外される）
     awk -v target="[${section_name}]" '
-        $0 == target { in_section = 1; next }
+        {
+            sub(/\r$/, "")
+        }
+        {
+            header = $0
+            sub(/[ \t]*#.*$/, "", header)
+            sub(/[ \t]+$/, "", header)
+        }
+        header == target { in_section = 1; next }
         /^\[/ { in_section = 0 }
         in_section {
             line = $0
+            sub(/#.*/, "", line)
             sub(/^[ \t]+/, "", line)
-            if (substr(line, 1, 1) != "#") print
+            sub(/[ \t]+$/, "", line)
+            if (line != "") print line
         }
     ' "${file}"
 }
@@ -98,6 +112,24 @@ else
     fail "[licenses] allow 外のコメント記述を誤って完備と判定した（無 scope grep への退行）"
 fi
 
+if licenses_complete "${FIXTURES_DIR}/deny-license-inline-comment.toml"; then
+    pass "allow エントリに行末インラインコメントが付いた fixture でも完備と判定される（正当なコメントを誤って除外しない）"
+else
+    fail "行末インラインコメント付きの正当な allow エントリを誤って欠落と判定した"
+fi
+
+if licenses_complete "${FIXTURES_DIR}/deny-crlf.toml"; then
+    pass "CRLF 改行の fixture でも 5 ライセンス完備と判定される（見出し行 \\r 除去の回帰検知）"
+else
+    fail "CRLF 改行の fixture でライセンス完備を検出できなかった（見出し行の完全一致失敗によるセクション未検出の疑い）"
+fi
+
+if licenses_complete "${FIXTURES_DIR}/deny-header-trailing-comment.toml"; then
+    pass "見出し行に trailing comment が付いた fixture（[licenses]  # 注記）でも完備と判定される"
+else
+    fail "見出し行の trailing comment によりセクションが検出できず欠落と誤判定した"
+fi
+
 echo ""
 echo "===== [graph] all-features 判定（節 1c）のロジック検証 ====="
 
@@ -122,6 +154,18 @@ if ! all_features_enabled "${FIXTURES_DIR}/deny-allfeatures-commented.toml"; the
     pass "all-features = true がコメントアウトされ実値が false の fixture は FAIL 相当と判定される（無 scope grep の誤 PASS 回帰検知）"
 else
     fail "コメントアウトされた all-features = true を誤って PASS 相当と判定した（無 scope grep への退行）"
+fi
+
+if ! all_features_enabled "${FIXTURES_DIR}/deny-allfeatures-inline-comment.toml"; then
+    pass "all-features = false の行末に '# all-features = true' が付いた fixture は FAIL 相当と判定される（インラインコメント false-pass 回帰検知）"
+else
+    fail "実値が false でも行末インラインコメントの文字列に釣られて PASS 相当と誤判定した（インラインコメント false-pass への退行）"
+fi
+
+if all_features_enabled "${FIXTURES_DIR}/deny-crlf.toml"; then
+    pass "CRLF 改行の fixture でも all-features = true が PASS 相当と判定される（見出し行 \\r 除去の回帰検知）"
+else
+    fail "CRLF 改行の fixture で [graph] セクションを検出できなかった"
 fi
 
 echo ""
@@ -159,6 +203,18 @@ if ! ignore_is_empty "${FIXTURES_DIR}/deny-missing-ignore-line.toml"; then
     pass "[advisories] セクションに ignore 行自体が無い fixture は非空維持相当（要確認）と判定される"
 else
     fail "ignore 行が無い fixture を誤って空維持と判定した"
+fi
+
+if ! ignore_is_empty "${FIXTURES_DIR}/deny-ignore-inline-comment.toml"; then
+    pass "ignore が非空でも行末に '# ignore = []' が付いた fixture は非空（WARN 相当）と判定される（インラインコメント false-pass 回帰検知）"
+else
+    fail "実値が非空でも行末インラインコメントの文字列に釣られて空維持と誤判定した（インラインコメント false-pass への退行）"
+fi
+
+if ignore_is_empty "${FIXTURES_DIR}/deny-crlf.toml"; then
+    pass "CRLF 改行の fixture でも ignore = [] が空維持と判定される（見出し行 \\r 除去の回帰検知）"
+else
+    fail "CRLF 改行の fixture で [advisories] セクションを検出できなかった"
 fi
 
 echo ""
