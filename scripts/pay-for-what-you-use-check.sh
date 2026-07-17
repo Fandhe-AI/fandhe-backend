@@ -1,0 +1,415 @@
+#!/usr/bin/env bash
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）を機械的に PASS/FAIL
+# 判定するゲートスクリプト（TASK-2.2、#19、docs/spec/05-tasks.md）。
+#
+# 前提タスク TASK-2.1（#18）で `webrtc-proxy` feature（`optional = true` + `dep:` 構文、
+# crates/core/Cargo.toml）によるプラグイン境界第 1 号が確立されたが、検証は
+# `docs/design/plugin-boundary.md` 6 節の手動コマンド表に留まっていた。本スクリプトは
+# 「プラグイン feature 無効時に当該プラグインの依存クレート・`unsafe`・コードが 0 件で
+# 載らないこと」を次の 5 段で機械検証する:
+#
+#   (a) `cargo metadata` から `backend-framework-core` の `[features]` を動的列挙し、
+#       `dep:bf-plugin-*` を含む feature を「プラグイン feature」として抽出する
+#       （feature 増加時にスクリプト変更不要。`dep-audit.sh`・`dep-direction-check.sh`
+#       と同方針）。0 件はスクリプト自体の腐敗を疑い FAIL（フェイルクローズ）
+#   (b) `cargo tree`: 無効構成（--no-default-features）に全プラグインクレートが
+#       出現しないこと（依存 0 件の直接検証）。各 feature 単独有効化（ポジティブ
+#       コントロール）で当該クレートが出現し、他プラグインは混入しないこと
+#       （配線切れ・列挙腐敗の検知）
+#   (c) `cargo geiger`: 無効構成の依存グラフにプラグインクレートが含まれないこと
+#       （依存グラフに載らなければ unsafe も載らない、unsafe 0 件の検証）
+#   (d) リリースバイナリサイズ: `crates/core/examples/minimal` を無効構成／
+#       `--all-features` の 2 構成でビルドし、無効構成 <= 有効構成であること。
+#       補強としてシンボル表（nm）に `bf_plugin` 由来シンボルが出現しないことを検証
+#       （コード 0 件の直接検証。nm 不在時はこの補強のみ SKIP、サイズ比較は維持）
+#   (e) 全構成ビルド: 無効構成・feature 単独構成ごと・`--all-features` がすべて成功すること
+#
+# 判定不能（前提ツール欠如・cargo 実行失敗・列挙 0 件等）はフェイルクローズで FAIL とし、
+# 「検証していないのに PASS 扱い」を防ぐ（.claude/rules/security.md）。
+#
+# 呼び出し元: `.github/workflows/ci.yml` の `pay-for-what-you-use` ジョブ、または人間が
+# `bash scripts/pay-for-what-you-use-check.sh` として直接実行する。
+#
+# 情報提示（ゲートではない）用途の `scripts/dep-impact.sh` とは役割を分けて併存させる
+# （dep-impact.sh は記録台帳向けの計測値出力、本スクリプトは PASS/FAIL 判定）。
+#
+# セルフテスト: `scripts/tests/run-pay-for-what-you-use-tests.sh`（ネットワーク・cargo
+# ビルド不要）。(a) は `--metadata-file`、(b) は `--tree-negative-file`・
+# `--tree-positive-dir`、(c) は `--geiger-packages-file`、(d) のサイズ比較・シンボル検査
+# ロジックは `--size-negative`/`--size-positive`/`--symbols-file` で実データ取得を
+# 差し替え、workspace の実状態・cargo ビルドに依存せず判定ロジックを検証する。
+# (e) は cargo ビルドそのものが検証対象のため fixture 化せず、本スクリプトの通常実行
+# （CI・人間によるローカル実行）でのみ検証される。
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${WORKSPACE_ROOT}"
+
+CORE_PACKAGE="backend-framework-core"
+CORE_MANIFEST="${WORKSPACE_ROOT}/crates/core/Cargo.toml"
+TARGET_DIR="target/pay-for-what-you-use-check"
+
+METADATA_FILE=""
+TREE_NEGATIVE_FILE=""
+TREE_POSITIVE_DIR=""
+GEIGER_PACKAGES_FILE=""
+SIZE_NEGATIVE=""
+SIZE_POSITIVE=""
+SYMBOLS_FILE=""
+SKIP_BUILD_STEPS=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --metadata-file)
+            METADATA_FILE="$2"
+            shift 2
+            ;;
+        --tree-negative-file)
+            TREE_NEGATIVE_FILE="$2"
+            shift 2
+            ;;
+        --tree-positive-dir)
+            TREE_POSITIVE_DIR="$2"
+            shift 2
+            ;;
+        --geiger-packages-file)
+            GEIGER_PACKAGES_FILE="$2"
+            shift 2
+            ;;
+        --size-negative)
+            SIZE_NEGATIVE="$2"
+            shift 2
+            ;;
+        --size-positive)
+            SIZE_POSITIVE="$2"
+            shift 2
+            ;;
+        --symbols-file)
+            SYMBOLS_FILE="$2"
+            shift 2
+            ;;
+        --skip-build-steps)
+            # (d)/(e) はいずれも cargo ビルドを要し、セルフテスト（ネットワーク・
+            # cargo ビルド不要方針）からは実行できない。--size-* / --symbols-file
+            # 注入時のみ判定ロジックを検証し、実ビルドを伴う工程はスキップする。
+            SKIP_BUILD_STEPS=1
+            shift
+            ;;
+        *)
+            echo "unknown argument: $1" >&2
+            exit 2
+            ;;
+    esac
+done
+
+HAS_FAIL=0
+
+fail() {
+    echo "[FAIL] $1" >&2
+    HAS_FAIL=1
+}
+
+pass() {
+    echo "[PASS] $1"
+}
+
+for cmd in jq cargo; do
+    if ! command -v "${cmd}" >/dev/null 2>&1; then
+        echo "エラー: ${cmd} が見つかりません。導入してから再実行してください。" >&2
+        exit 1
+    fi
+done
+
+# =============================================================================
+# (a) プラグイン feature の動的列挙
+# =============================================================================
+if [ -n "${METADATA_FILE}" ]; then
+    if [ ! -f "${METADATA_FILE}" ]; then
+        fail "a: プラグイン feature 列挙 — --metadata-file が指す ${METADATA_FILE} が存在しません"
+        metadata_json=""
+    else
+        metadata_json="$(cat "${METADATA_FILE}")"
+    fi
+else
+    metadata_json="$(cargo metadata --no-deps --format-version 1 2>/tmp/pfwu-check-metadata.log || true)"
+    if [ -z "${metadata_json}" ]; then
+        fail "a: プラグイン feature 列挙 — cargo metadata の実行に失敗しました（/tmp/pfwu-check-metadata.log 参照）"
+    fi
+fi
+
+plugin_entries=()
+if [ -n "${metadata_json}" ]; then
+    # feature 名 → `dep:bf-plugin-<name>` を持つ feature のみ抽出し、
+    # 「feature\tクレート名」の TSV を組み立てる（plugin-boundary.md 2 節の
+    # 命名規約: クレート名 bf-plugin-<name> から接頭辞を除いた <name> が feature 名）。
+    plugin_features_tsv="$(printf '%s' "${metadata_json}" | jq -r --arg pkg "${CORE_PACKAGE}" '
+        .packages[] | select(.name == $pkg) | .features
+        | to_entries[] as $e
+        | ($e.value[] | select(startswith("dep:"))) as $dep
+        | select($dep | startswith("dep:bf-plugin-"))
+        | "\($e.key)\t\($dep | sub("^dep:";""))"
+    ' 2>/tmp/pfwu-check-jq.log || true)"
+
+    if [ -s /tmp/pfwu-check-jq.log ]; then
+        fail "a: プラグイン feature 列挙 — jq による feature 抽出に失敗しました（/tmp/pfwu-check-jq.log 参照）"
+    elif [ -z "${plugin_features_tsv}" ]; then
+        # 現時点で webrtc-proxy が必ず 1 件存在する。0 件は列挙ロジックの腐敗を
+        # 疑い判定不能として FAIL 扱いにする（フェイルクローズ）。
+        fail "a: プラグイン feature 列挙 — ${CORE_PACKAGE} に dep:bf-plugin-* を含む feature が 1 件も見つかりませんでした（判定不能）"
+    else
+        naming_violation=""
+        while IFS=$'\t' read -r feature crate; do
+            [ -z "${feature}" ] && continue
+            expected_feature="${crate#bf-plugin-}"
+            if [ "${feature}" != "${expected_feature}" ]; then
+                naming_violation="${naming_violation}${feature} (期待: ${expected_feature}, クレート: ${crate}); "
+                continue
+            fi
+            plugin_entries+=("${feature}:${crate}")
+        done <<<"${plugin_features_tsv}"
+
+        if [ -n "${naming_violation}" ]; then
+            fail "a: プラグイン feature 列挙 — feature 命名規約（docs/design/plugin-boundary.md 2 節）違反: ${naming_violation}"
+        else
+            pass "a: プラグイン feature 列挙 — $(printf '%s ' "${plugin_entries[@]}")"
+        fi
+    fi
+fi
+
+# =============================================================================
+# (b) cargo tree 検証（依存 0 件）
+# =============================================================================
+if [ "${#plugin_entries[@]}" -eq 0 ]; then
+    fail "b: cargo tree 検証 — プラグイン feature が列挙できていないため実行できません（(a) 参照）"
+else
+    # --- 無効構成: いずれのプラグインクレートも出現しないこと ---
+    if [ -n "${TREE_NEGATIVE_FILE}" ]; then
+        if [ ! -f "${TREE_NEGATIVE_FILE}" ]; then
+            fail "b: cargo tree 検証（無効構成） — --tree-negative-file が指す ${TREE_NEGATIVE_FILE} が存在しません"
+            tree_negative=""
+        else
+            tree_negative="$(cat "${TREE_NEGATIVE_FILE}")"
+        fi
+    else
+        tree_negative="$(cargo tree -p "${CORE_PACKAGE}" -e normal --no-default-features --prefix none 2>/tmp/pfwu-check-tree-negative.log || true)"
+        if [ -z "${tree_negative}" ]; then
+            fail "b: cargo tree 検証（無効構成） — cargo tree の実行に失敗しました（/tmp/pfwu-check-tree-negative.log 参照）"
+        fi
+    fi
+
+    if [ -n "${tree_negative}" ]; then
+        leaked=()
+        for entry in "${plugin_entries[@]}"; do
+            crate="${entry#*:}"
+            if printf '%s' "${tree_negative}" | grep -qE "(^|[[:space:]])${crate} v"; then
+                leaked+=("${crate}")
+            fi
+        done
+        if [ "${#leaked[@]}" -gt 0 ]; then
+            fail "b: cargo tree 検証（無効構成） — 無効構成にもかかわらず出現したクレート: ${leaked[*]}"
+        else
+            pass "b: cargo tree 検証（無効構成） — 全プラグインクレートが依存グラフから 0 件"
+        fi
+    fi
+
+    # --- 有効構成（ポジティブコントロール）: 対象クレートが出現し、他プラグインは混入しないこと ---
+    for entry in "${plugin_entries[@]}"; do
+        feature="${entry%%:*}"
+        crate="${entry#*:}"
+
+        if [ -n "${TREE_POSITIVE_DIR}" ]; then
+            positive_file="${TREE_POSITIVE_DIR}/${feature}.txt"
+            if [ ! -f "${positive_file}" ]; then
+                fail "b: cargo tree 検証（有効構成 ${feature}） — ${positive_file} が存在しません"
+                continue
+            fi
+            tree_positive="$(cat "${positive_file}")"
+        else
+            tree_positive="$(cargo tree -p "${CORE_PACKAGE}" -e normal --no-default-features --features "${feature}" --prefix none 2>/tmp/pfwu-check-tree-positive.log || true)"
+            if [ -z "${tree_positive}" ]; then
+                fail "b: cargo tree 検証（有効構成 ${feature}） — cargo tree の実行に失敗しました（/tmp/pfwu-check-tree-positive.log 参照）"
+                continue
+            fi
+        fi
+
+        if ! printf '%s' "${tree_positive}" | grep -qE "(^|[[:space:]])${crate} v"; then
+            fail "b: cargo tree 検証（有効構成 ${feature}） — feature 有効時にも ${crate} が出現しません（配線切れの疑い）"
+            continue
+        fi
+
+        other_leaked=()
+        for other in "${plugin_entries[@]}"; do
+            other_crate="${other#*:}"
+            [ "${other_crate}" = "${crate}" ] && continue
+            if printf '%s' "${tree_positive}" | grep -qE "(^|[[:space:]])${other_crate} v"; then
+                other_leaked+=("${other_crate}")
+            fi
+        done
+        if [ "${#other_leaked[@]}" -gt 0 ]; then
+            fail "b: cargo tree 検証（有効構成 ${feature}） — 他プラグインクレートが混入: ${other_leaked[*]}"
+        else
+            pass "b: cargo tree 検証（有効構成 ${feature}） — ${crate} のみが出現し他プラグインの混入なし"
+        fi
+    done
+fi
+
+# =============================================================================
+# (c) cargo geiger 検証（unsafe 0 件。依存グラフに載らなければ unsafe も載らない）
+# =============================================================================
+if [ "${#plugin_entries[@]}" -eq 0 ]; then
+    fail "c: cargo geiger 検証 — プラグイン feature が列挙できていないため実行できません（(a) 参照）"
+else
+    if [ -n "${GEIGER_PACKAGES_FILE}" ]; then
+        if [ ! -f "${GEIGER_PACKAGES_FILE}" ]; then
+            fail "c: cargo geiger 検証 — --geiger-packages-file が指す ${GEIGER_PACKAGES_FILE} が存在しません"
+            geiger_packages=""
+        else
+            geiger_packages="$(cat "${GEIGER_PACKAGES_FILE}")"
+        fi
+    else
+        if ! command -v cargo-geiger >/dev/null 2>&1; then
+            fail "c: cargo geiger 検証 — cargo-geiger が見つかりません。導入: cargo install --locked cargo-geiger@0.13.0"
+            geiger_packages=""
+        else
+            geiger_json="$(cargo geiger --manifest-path "${CORE_MANIFEST}" --no-default-features --output-format Json -q 2>/tmp/pfwu-check-geiger.log || true)"
+            if [ -z "${geiger_json}" ]; then
+                fail "c: cargo geiger 検証 — cargo geiger の実行に失敗しました（/tmp/pfwu-check-geiger.log 参照）。cargo-geiger はビルドを伴い壊れやすい実績があるため FAIL として扱う"
+                geiger_packages=""
+            else
+                geiger_packages="$(printf '%s' "${geiger_json}" | jq -r '.packages[].package.id.name' 2>/tmp/pfwu-check-geiger-jq.log || true)"
+                if [ -s /tmp/pfwu-check-geiger-jq.log ]; then
+                    fail "c: cargo geiger 検証 — geiger JSON 出力の解析に失敗しました（/tmp/pfwu-check-geiger-jq.log 参照）"
+                    geiger_packages=""
+                fi
+            fi
+        fi
+    fi
+
+    if [ -n "${geiger_packages}" ]; then
+        leaked=()
+        for entry in "${plugin_entries[@]}"; do
+            crate="${entry#*:}"
+            if printf '%s\n' "${geiger_packages}" | grep -qxF "${crate}"; then
+                leaked+=("${crate}")
+            fi
+        done
+        if [ "${#leaked[@]}" -gt 0 ]; then
+            fail "c: cargo geiger 検証 — 無効構成の依存グラフに出現したプラグインクレート（unsafe 計上対象になり得る）: ${leaked[*]}"
+        else
+            pass "c: cargo geiger 検証 — 無効構成の依存グラフにプラグインクレートは 0 件（unsafe 計上対象なし）"
+        fi
+    fi
+fi
+
+# =============================================================================
+# (d) バイナリサイズ計測（コード 0 件）
+# =============================================================================
+size_negative="${SIZE_NEGATIVE}"
+size_positive="${SIZE_POSITIVE}"
+symbols_content=""
+
+if [ -n "${SYMBOLS_FILE}" ]; then
+    if [ ! -f "${SYMBOLS_FILE}" ]; then
+        fail "d: バイナリサイズ計測 — --symbols-file が指す ${SYMBOLS_FILE} が存在しません"
+    else
+        symbols_content="$(cat "${SYMBOLS_FILE}")"
+    fi
+fi
+
+if [ "${SKIP_BUILD_STEPS}" -eq 0 ] && [ -z "${SIZE_NEGATIVE}" ] && [ -z "${SIZE_POSITIVE}" ]; then
+    negative_bin="${TARGET_DIR}/release/examples/minimal"
+    positive_bin="${TARGET_DIR}-all/release/examples/minimal"
+
+    echo "==> cargo build --release --example minimal（無効構成）" >&2
+    if cargo build --release -p "${CORE_PACKAGE}" --example minimal --no-default-features --target-dir "${TARGET_DIR}" 2>/tmp/pfwu-check-build-negative.log; then
+        size_negative="$(stat -c '%s' "${negative_bin}" 2>/dev/null || stat -f '%z' "${negative_bin}")"
+    else
+        fail "d: バイナリサイズ計測（無効構成ビルド） — cargo build に失敗しました（/tmp/pfwu-check-build-negative.log 参照）"
+    fi
+
+    echo "==> cargo build --release --example minimal（--all-features）" >&2
+    if cargo build --release -p "${CORE_PACKAGE}" --example minimal --all-features --target-dir "${TARGET_DIR}-all" 2>/tmp/pfwu-check-build-positive.log; then
+        size_positive="$(stat -c '%s' "${positive_bin}" 2>/dev/null || stat -f '%z' "${positive_bin}")"
+    else
+        fail "d: バイナリサイズ計測（有効構成ビルド） — cargo build に失敗しました（/tmp/pfwu-check-build-positive.log 参照）"
+    fi
+
+    if [ -z "${SYMBOLS_FILE}" ]; then
+        if command -v nm >/dev/null 2>&1 && [ -f "${negative_bin}" ]; then
+            symbols_content="$(nm "${negative_bin}" 2>/dev/null || true)"
+        fi
+    fi
+fi
+
+if [ -n "${size_negative}" ] && [ -n "${size_positive}" ]; then
+    diff=$((size_positive - size_negative))
+    if [ "${size_negative}" -le "${size_positive}" ]; then
+        pass "d: バイナリサイズ計測 — 無効構成 ${size_negative} bytes <= 有効構成 ${size_positive} bytes（差分 ${diff} bytes）"
+    else
+        fail "d: バイナリサイズ計測 — 無効構成 ${size_negative} bytes が有効構成 ${size_positive} bytes を上回りました"
+    fi
+elif [ "${SKIP_BUILD_STEPS}" -eq 1 ]; then
+    : # セルフテストでビルドを意図的にスキップした場合はサイズ比較を評価しない
+else
+    fail "d: バイナリサイズ計測 — サイズを取得できませんでした（上記ビルド失敗の詳細を参照）"
+fi
+
+if [ -n "${symbols_content}" ]; then
+    symbol_leaked=()
+    for entry in "${plugin_entries[@]}"; do
+        crate="${entry#*:}"
+        crate_symbol_prefix="$(printf '%s' "${crate}" | tr '-' '_')"
+        if printf '%s' "${symbols_content}" | grep -qF "${crate_symbol_prefix}"; then
+            symbol_leaked+=("${crate}")
+        fi
+    done
+    if [ "${#symbol_leaked[@]}" -gt 0 ]; then
+        fail "d: シンボル表検証 — 無効構成バイナリにプラグイン由来シンボルが検出されました: ${symbol_leaked[*]}"
+    else
+        pass "d: シンボル表検証 — 無効構成バイナリにプラグイン由来シンボルなし"
+    fi
+elif [ "${SKIP_BUILD_STEPS}" -eq 0 ] && [ -z "${SYMBOLS_FILE}" ]; then
+    echo "[SKIP] d: シンボル表検証 — nm が利用できないか対象バイナリが存在しないため SKIP（サイズ比較ゲートは維持）" >&2
+fi
+
+# =============================================================================
+# (e) 全構成ビルド検証
+# =============================================================================
+if [ "${SKIP_BUILD_STEPS}" -eq 1 ]; then
+    : # セルフテストでは cargo ビルドを伴う工程を実行しない
+elif [ "${#plugin_entries[@]}" -eq 0 ]; then
+    fail "e: 全構成ビルド検証 — プラグイン feature が列挙できていないため実行できません（(a) 参照）"
+else
+    build_failed=()
+
+    if ! cargo build -p "${CORE_PACKAGE}" --no-default-features 2>/tmp/pfwu-check-build-e-negative.log; then
+        build_failed+=("--no-default-features")
+    fi
+
+    for entry in "${plugin_entries[@]}"; do
+        feature="${entry%%:*}"
+        if ! cargo build -p "${CORE_PACKAGE}" --no-default-features --features "${feature}" 2>"/tmp/pfwu-check-build-e-${feature}.log"; then
+            build_failed+=("--features ${feature}")
+        fi
+    done
+
+    if ! cargo build -p "${CORE_PACKAGE}" --all-features 2>/tmp/pfwu-check-build-e-all.log; then
+        build_failed+=("--all-features")
+    fi
+
+    if [ "${#build_failed[@]}" -gt 0 ]; then
+        fail "e: 全構成ビルド検証 — ビルド失敗構成: ${build_failed[*]}（/tmp/pfwu-check-build-e-*.log 参照）"
+    else
+        pass "e: 全構成ビルド検証 — 無効構成・feature 単独構成・--all-features すべて成功"
+    fi
+fi
+
+echo ""
+if [ "${HAS_FAIL}" -eq 1 ]; then
+    echo "=== pay-for-what-you-use 検証: FAIL ==="
+    exit 1
+else
+    echo "=== pay-for-what-you-use 検証: PASS ==="
+    exit 0
+fi

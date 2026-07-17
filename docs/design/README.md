@@ -47,3 +47,7 @@
   プラグイン境界パターン（TASK-2.1、#18、REQ-2。feature 命名規約・cfg-free な
   コアループ + 固定シグネチャシームの規約・パスインターセプト型（`webrtc-proxy`
   で確立）/ Upgrade 型の適用指針・検証コマンドを記述）
+- [`pay-for-what-you-use-check.md`](./pay-for-what-you-use-check.md): pay-for-what-
+  you-use 機械検証（TASK-2.2、#19、REQ-2。`scripts/pay-for-what-you-use-check.sh` に
+  よる cargo tree/geiger・バイナリサイズ・全構成ビルドの PASS/FAIL 判定設計、
+  `dep-impact.sh` との役割分担、セルフテスト・CI 組み込みを記述）

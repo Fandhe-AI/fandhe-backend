@@ -21,6 +21,10 @@ TASK-12.3-2（#84）で、対応可否自律判断ガードレール（TASK-12.3
 セルフテスト `tests/run-guardrail-tests.sh` を追加した。
 TASK-1.5（#14）で、`crates/routes`（`bf-routes`）新設に伴い `server → routes → http::*`
 の依存方向一方向性を CI 常設で機械検証する `dep-direction-check.sh` を追加した。
+TASK-2.2（#19）で、プラグイン feature 無効時の依存・`unsafe`・コード 0 件を
+cargo tree/geiger・バイナリサイズ・全構成ビルドで PASS/FAIL 判定する
+`pay-for-what-you-use-check.sh` を追加した（`docs/design/pay-for-what-you-use-check.md`
+参照）。
 
 ## スクリプト一覧
 
@@ -43,6 +47,8 @@ TASK-1.5（#14）で、`crates/routes`（`bf-routes`）新設に伴い `server �
 | `tests/run-guardrail-tests.sh` | `feasibility-check.sh` のセルフテスト（PoC-9 T-11〜T-15 判定例 fixture・正常系・異常系、ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `dep-direction-check.sh` | `server → routes → http::*` の依存方向一方向性を (1) `cargo metadata` 依存エッジのホワイトリスト照合・循環検出、(2) core/routes/http の `src/lib.rs` 依存方向宣言の存在確認、(3) routes・http のプラグイン固有シンボル非依存 grep の 3 段で機械検証する（TASK-1.5、#14）。`--metadata-file <path>` で `cargo metadata` の代わりに JSON を注入できる（セルフテスト用） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `tests/run-dep-direction-tests.sh` | `dep-direction-check.sh` のセルフテスト。`tests/fixtures/dep-direction/*.json` を注入し正常グラフ・逆方向エッジ（循環）・コア→プラグイン依存（ホワイトリスト違反）・dev-dependency 除外を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
+| `pay-for-what-you-use-check.sh` | プラグイン feature 無効時の依存・`unsafe`・コードが 0 件であることを (a) feature 動的列挙 (b) `cargo tree` (c) `cargo geiger` (d) バイナリサイズ・シンボル表 (e) 全構成ビルド の 5 段で PASS/FAIL 判定する（TASK-2.2、#19）。`--metadata-file`/`--tree-negative-file`/`--tree-positive-dir`/`--geiger-packages-file`/`--size-negative`/`--size-positive`/`--symbols-file`/`--skip-build-steps` でセルフテスト用の実データ注入・実ビルド回避ができる | `.github/workflows/ci.yml` の `pay-for-what-you-use` ジョブから呼ばれる |
+| `tests/run-pay-for-what-you-use-tests.sh` | `pay-for-what-you-use-check.sh` のセルフテスト。`tests/fixtures/pay-for-what-you-use/*` を注入し (a)〜(d) の判定ロジック（列挙 0 件・命名規約違反・依存漏れ・配線切れ・他プラグイン混入・geiger 漏れ・サイズ逆転・シンボル混入）を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `third-party-verify.sh` | TASK-12.4-1（#85）第三者検証ハーネス。被験 AI（別セッション・別モデル）が実装した使い捨て worktree に対し `fmt --check` / `clippy -D warnings` / `cargo nextest run --profile ci` + `cargo test --doc` を実行し PASS/FAIL/PENDING を判定する | CI からは呼ばれない。TASK-12.4-1 の完遂率再測定を実施する際にローカルで呼び出す運用（`docs/design/third-party-verification.md` 参照） |
 | `tests/run-third-party-verify-tests.sh` | `third-party-verify.sh` のセルフテスト。`--offline` は引数検証・PENDING 判定のみ（cargo ビルド不要）、既定モードは fixture worktree を作成して PASS/FAIL 検出まで確認するフル層 | CI からは呼ばれない（フル層は cargo ビルドを伴い時間を要するため） |
 | `third-party-feasibility-verify.sh` | 可否判定正解率の第三者再検証（TASK-12.4-2、#86）の機械採点ハーネス。タスク定義（正解ラベル）と被験 AI の判定記録を突き合わせ、正解率・誤判定による破壊・判断根拠提示割合を算出する | CI からは呼ばれない。人間が実測定時にローカル/手動実行する（`docs/design/third-party-feasibility-verification.md` 参照） |
@@ -60,6 +66,7 @@ TASK-1.5（#14）で、`crates/routes`（`bf-routes`）新設に伴い `server �
 | `cargo-audit` | RustSec advisory DB による既知脆弱性検知 | `cargo install --locked cargo-audit@0.22.2` |
 | `jq` | `cargo metadata`・`cargo audit --json` の JSON 解析（`audit-triage.sh`・`unsafe-triage.sh` も使用）・`setup-required-checks.sh` の ruleset ペイロード生成 | OS のパッケージマネージャ（例: `apt install jq`） |
 | `cargo-geiger`（`dep-impact.sh` のみ、任意） | `unsafe` 件数の計測 | `cargo install --locked cargo-geiger` |
+| `cargo-geiger@0.13.0`（`pay-for-what-you-use-check.sh` のみ、必須） | 無効構成の依存グラフに `unsafe` 計上対象のプラグインクレートが含まれないことを検証するゲート。`dep-impact.sh` と異なり未導入・実行失敗は FAIL（フェイルクローズ） | `cargo install --locked cargo-geiger@0.13.0` |
 | `cargo-llvm-cov`（`coverage.sh` のみ） | LLVM source-based coverage 計測 | `cargo install --locked cargo-llvm-cov@0.8.7` |
 | `llvm-tools-preview`（`coverage.sh` のみ、rustup component） | `cargo-llvm-cov` の instrumented coverage に必要 | `rustup component add llvm-tools-preview` |
 | `gh`（`setup-required-checks.sh`・`tests/run-review-gate-tests.sh` のフル層 ruleset 検証） | repository ruleset API 呼び出し（`gh auth login` 済みの認証を利用） | https://cli.github.com/ |
@@ -194,6 +201,28 @@ feature 構成（no-default / default / all-features）ごとの依存クレー�
 メンバー除外）、workspace 内 bin ターゲットのリリースビルドサイズ、（`cargo-geiger`
 導入時のみ）`unsafe` 件数を markdown 表で標準出力する。運用（記録先・比較手順）は
 `docs/dep-impact/README.md` を参照。
+
+## `pay-for-what-you-use-check.sh` — pay-for-what-you-use 機械検証（TASK-2.2、#19）
+
+```bash
+bash scripts/pay-for-what-you-use-check.sh
+```
+
+プラグイン feature（`crates/core/Cargo.toml` の `dep:bf-plugin-*`）を動的列挙し、
+無効時に当該プラグインの依存クレート・`unsafe`・コードが 0 件であることを (a) feature
+列挙 (b) `cargo tree` (c) `cargo geiger` (d) バイナリサイズ・シンボル表 (e) 全構成
+ビルド の 5 段で PASS/FAIL 判定する。設計判断・`dep-impact.sh` との役割分担の詳細は
+`docs/design/pay-for-what-you-use-check.md` を参照。
+
+- (a) の列挙が 0 件、または feature 命名規約（`docs/design/plugin-boundary.md` 2 節）
+  違反はフェイルクローズで FAIL とする。
+- (c) の `cargo-geiger` は本スクリプトでは必須ツール扱い（`dep-impact.sh` は任意）。
+  未導入・実行失敗はいずれも FAIL とし、握りつぶさない。
+- (d) のビルドは共有 `target/` を汚さないよう `target/pay-for-what-you-use-check*`
+  専用ディレクトリを使う。
+
+`tests/run-pay-for-what-you-use-tests.sh` はこのスクリプトのセルフテスト
+（ネットワーク・cargo ビルド不要、`unsafe-triage` ジョブから呼ばれる）。
 
 ## `coverage.sh` — コア行カバレッジ計測（TASK-11.5-2、#78）
 

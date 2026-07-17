@@ -4,6 +4,13 @@
 （`.claude/rules/pay-for-what-you-use.md`）を「機能無効時に依存・バイナリサイズ・
 `unsafe` が増えていない」という数値で検証できるようにするための運用ドキュメント。
 
+**ゲートとの関係**（TASK-2.2、#19）: 本ディレクトリ・`dep-impact.sh` は変更前後の
+計測値を人間が比較・記録する運用（下記手順）を担い、CI ゲートとしての PASS/FAIL
+判定は行わない。プラグイン feature 無効時の依存・`unsafe`・コード 0 件を機械的に
+PASS/FAIL 判定し CI に常設するのは `scripts/pay-for-what-you-use-check.sh`
+（`.github/workflows/ci.yml` の `pay-for-what-you-use` ジョブ）であり、責務は分離
+している。詳細は `docs/design/pay-for-what-you-use-check.md` を参照。
+
 ## 運用手順
 
 `crates/plugin-*` を新規追加・変更する PR では、次の手順で依存インパクトを計測・記録する。

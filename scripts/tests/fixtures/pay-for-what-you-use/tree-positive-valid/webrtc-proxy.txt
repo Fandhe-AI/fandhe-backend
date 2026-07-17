@@ -1,0 +1,9 @@
+backend-framework-core v0.1.0 (/repo/crates/core)
+bf-http v0.1.0 (/repo/crates/http)
+tokio v1.53.0
+bf-plugin-webrtc-proxy v0.1.0 (/repo/crates/plugin-webrtc-proxy)
+bf-http v0.1.0 (/repo/crates/http) (*)
+tokio v1.53.0 (*)
+bf-routes v0.1.0 (/repo/crates/routes)
+bf-http v0.1.0 (/repo/crates/http) (*)
+tokio v1.53.0 (*)

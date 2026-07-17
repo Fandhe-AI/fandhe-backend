@@ -89,9 +89,17 @@ jobs:
 
       # --all-features を指定しておくことで、TASK-2.1 以降で feature（plugin-*）が
       # 増えた際にも既定で全 feature を lint 対象にできる。feature 構成別の
-      # マトリクス化（無効化時の pay-for-what-you-use 検証）は TASK-2.2 のスコープ。
+      # マトリクス化（無効化時の pay-for-what-you-use 検証）は TASK-2.2（#19）で
+      # `pay-for-what-you-use` ジョブとして整備済み。本ステップは全 feature 構成、
+      # 次ステップは無効構成に限定した lint を担う。
       - name: cargo clippy --workspace --all-targets --all-features
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      # TASK-2.2（#19）: pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）の
+      # 検証表が求める「無効構成での lint」を CI 化する（docs/design/plugin-boundary.md
+      # 6 節の手動コマンド表を機械検証へ格上げ）。
+      - name: cargo clippy -p backend-framework-core --all-targets --no-default-features
+        run: cargo clippy -p backend-framework-core --all-targets --no-default-features -- -D warnings
 
   # --------------------------------------------------
   # cargo nextest run（テスト単位のタイムアウト付き） + cargo test --doc
@@ -311,6 +319,45 @@ jobs:
       - name: run-dep-direction-tests.sh（dep-direction-check.sh のセルフテスト）
         run: bash scripts/tests/run-dep-direction-tests.sh
 
+      # TASK-2.2（#19）: pay-for-what-you-use-check.sh（別途 pay-for-what-you-use ジョブで
+      # 実行、cargo ビルドを伴い重い）のセルフテストのみを、他の軽量セルフテストと同列で
+      # ここに相乗りさせる（ネットワーク・cargo ビルド不要）。
+      - name: run-pay-for-what-you-use-tests.sh（pay-for-what-you-use-check.sh のセルフテスト）
+        run: bash scripts/tests/run-pay-for-what-you-use-tests.sh
+
+  # --------------------------------------------------
+  # pay-for-what-you-use 検証（TASK-2.2、#19）: プラグイン feature 無効時に当該
+  # プラグインの依存クレート・unsafe・コードが 0 件であることを機械的に PASS/FAIL
+  # 判定する（.claude/rules/pay-for-what-you-use.md、docs/design/plugin-boundary.md
+  # 6 節の手動コマンド表を機械検証へ格上げ）。release ビルド ×2（無効構成／
+  # --all-features）と cargo-geiger 実行を伴い重いため独立ジョブとする。
+  # schedule（日次、dep-audit のみを走らせる方針）からは除外する。
+  # --------------------------------------------------
+  pay-for-what-you-use:
+    name: pay-for-what-you-use 検証（cargo tree/geiger・バイナリサイズ）
+    runs-on: self-hosted
+    if: github.event_name != 'schedule'
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      # self-hosted ランナー前提でバージョン固定インストールする（dep-audit / test ジョブと
+      # 同じ方針。サプライチェーン考慮: crates.io からバージョン固定で取得）。
+      # cargo-geiger はビルドを伴い壊れやすい実績のあるツールのため、本ジョブでは
+      # dep-impact.sh と異なり必須ツールとして扱う（未導入・実行失敗は FAIL）。
+      - name: Ensure cargo-geiger 0.13.0
+        run: |
+          if ! cargo geiger --version 2>/dev/null | grep -q ' 0\.13\.0$'; then
+            cargo install --locked cargo-geiger@0.13.0
+          fi
+
+      - name: pay-for-what-you-use-check.sh（cargo tree/geiger・バイナリサイズ・全構成ビルド）
+        run: bash scripts/pay-for-what-you-use-check.sh
+
   # --------------------------------------------------
   # fuzz smoke（TASK-15.3-1、#87）: crates/http/fuzz（root workspace から exclude 済み、
   # pay-for-what-you-use）の全 fuzz target を短時間（既定 60 秒/target）だけ実行し、
@@ -405,6 +452,7 @@ jobs:
   # doc（missing_docs・rustdoc lint、TASK-11.2-2）・dep-audit（TASK-15.2）・
   # coverage（コア行カバレッジ 80% ゲート、TASK-11.5-2）・
   # unsafe-triage（unsafe 追加のラチェット検知、TASK-12.1-1、#79）・
+  # pay-for-what-you-use（feature 無効時の依存・unsafe・コード 0 件検証、TASK-2.2、#19）・
   # fuzz-smoke（パーサのパニック・メモリ不正検知、TASK-15.3-1、#87）も含む
   # 全ジョブの success を単一ジョブの成否に集約する。
   # branch protection / ruleset（scripts/setup-required-checks.sh）はこのジョブ名のみを
@@ -421,7 +469,7 @@ jobs:
     # ci-complete 自体が schedule 時は丸ごとスキップされるため判定ロジックには影響しない）。
     # 完遂判定の対象外（required check としては pull_request/push イベントのみを想定する）。
     if: ${{ always() && github.event_name != 'schedule' }}
-    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, fuzz-smoke]
+    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, pay-for-what-you-use, fuzz-smoke]
     timeout-minutes: 5
     steps:
       - name: 完遂判定（全 needs ジョブが success であること）
@@ -436,6 +484,7 @@ jobs:
           RESULT_DEP_AUDIT: ${{ needs.dep-audit.result }}
           RESULT_COVERAGE: ${{ needs.coverage.result }}
           RESULT_UNSAFE_TRIAGE: ${{ needs.unsafe-triage.result }}
+          RESULT_PAY_FOR_WHAT_YOU_USE: ${{ needs.pay-for-what-you-use.result }}
           RESULT_FUZZ_SMOKE: ${{ needs.fuzz-smoke.result }}
         run: |
           set -euo pipefail
@@ -444,6 +493,7 @@ jobs:
                       "test:${RESULT_TEST}" "doc:${RESULT_DOC}" \
                       "dep-audit:${RESULT_DEP_AUDIT}" "coverage:${RESULT_COVERAGE}" \
                       "unsafe-triage:${RESULT_UNSAFE_TRIAGE}" \
+                      "pay-for-what-you-use:${RESULT_PAY_FOR_WHAT_YOU_USE}" \
                       "fuzz-smoke:${RESULT_FUZZ_SMOKE}"; do
             job="${pair%%:*}"; result="${pair#*:}"
             echo "${job}: ${result}"
