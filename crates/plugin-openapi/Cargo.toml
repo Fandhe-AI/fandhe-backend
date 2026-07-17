@@ -1,0 +1,29 @@
+[package]
+name = "bf-plugin-openapi"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "backend-framework の OpenAPI ドキュメント生成プラグイン（TASK-3.1）。実装本体（crates/routes 等）とは疎結合な「ドキュメント専用関数」に utoipa::path を付与し ApiDoc に集約する（docs/spec/03-poc/openapi-generation の PoC-4 で検証・採用した方式）。"
+publish = false
+
+# workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
+# （.claude/rules/coding-rust.md・.claude/rules/security.md）。
+[lints]
+workspace = true
+
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）: 本クレートは
+# 独立クレート = プラグイン境界として切り出す。core / http / routes / 他プラグインの
+# どこからも参照されない限り、utoipa 系依存は本クレートを明示的に依存に加えたときのみ
+# `cargo tree` に現れる。workspace 内クレートへの依存は持たない
+# （PoC-4 の統合方式をそのまま踏襲、docs/spec/03-poc/openapi-generation/README.md）。
+# サーバ側 feature（`openapi = ["dep:bf-plugin-openapi"]` 相当）による配線は
+# TASK-2.1（#18）に接続点を委ねる（本クレート単体では未接続）。
+[dependencies]
+utoipa = { version = "5", default-features = true }
+serde = { version = "1", features = ["derive"] }
+
+# ApiDoc::openapi() の JSON シリアライズ結果を検証するためのみ。本体ビルド
+# （lib.rs 以下、utoipa 経由の実行時コスト）には影響しない。
+[dev-dependencies]
+serde_json = "1"
