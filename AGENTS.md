@@ -202,8 +202,9 @@ PoC-9（`docs/spec/03-poc/ai-first-maintainability/README.md`）では、HTTP �
 - pay-for-what-you-use（feature 無効時の依存・コード・`unsafe`・バイナリ増ゼロ）は
   [pay-for-what-you-use.md](.claude/rules/pay-for-what-you-use.md) を正とする
 - WebRTC（`plugin-webrtc` / `plugin-webrtc-proxy`）の安全性方針の詳細（プロセス分離等）は
-  [webrtc-process-isolation.md](docs/design/webrtc-process-isolation.md) を参照。本書
-  への詳細な明記は TASK-8.4（#29、未了）のスコープであり、本節は参照導線のみを置く
+  [webrtc-process-isolation.md](docs/design/webrtc-process-isolation.md)、および攻撃表面と
+  「使う/使わない」サービスの安全性方針の詳細は本書「規約: WebRTC の攻撃表面と
+  「使う/使わない」サービスの安全性方針」節（TASK-8.4、#29）を参照
 
 ### エスカレーション基準
 
@@ -229,3 +230,73 @@ PoC-9（`docs/spec/03-poc/ai-first-maintainability/README.md`）では、HTTP �
 
 判断不能な場合は安全側に倒し、実装を進めずエスカレーションする（fail-closed 原則。
 判定記録の形式検証は `bash scripts/feasibility-check.sh --input <record>` で行う）。
+
+## 規約: WebRTC の攻撃表面と「使う/使わない」サービスの安全性方針
+
+TASK-8.4（`docs/spec/05-tasks.md`、Phase 2 / MS-2、#29）対応。`docs/spec/04-requirements.md`
+REQ-8（WebRTC）受け入れ基準・NFR-6（拡張の非侵襲性）を満たす運用規約文書。
+
+### 背景: 2 クレートの対照
+
+backend-framework は WebRTC を 2 つの独立クレートで提供し、**クレート境界で完全に
+分離**する（相互 path 依存なし。`docs/dep-impact/records.md` の TASK-8.4 エントリで
+機械検証済み）。
+
+| クレート | feature | 依存モデル | 攻撃表面 |
+|---------|---------|-----------|---------|
+| `crates/plugin-webrtc` | `webrtc` | `webrtc-rs`（0.17.1 系）を**プロセス内**に直接組み込む（in-process） | 大（`webrtc` feature 単体で `cargo tree -p backend-framework-core --features webrtc` に webrtc 系依存 23 件、release バイナリサイズ約 11 倍、TASK-8.4 実測。`docs/dep-impact/records.md`） |
+| `crates/plugin-webrtc-proxy` | `webrtc-proxy` | `webrtc-rs` に**一切依存しない**軽量シグナリングプロキシ。重い WebRTC サービスは別プロセスへ切り出す | 小（`webrtc-rs` 依存が本体プロセスに一切現れない） |
+
+`crates/core/src/plugin.rs` の `try_intercept` は両 feature が同時に有効な場合
+（`--all-features` CI 構成）、`webrtc-proxy` を先に評価する（REQ-8 の MVP 推奨方式を
+優先する運用判断。両方を `Server` に登録した場合は `webrtc-proxy` が優先され、
+`webrtc` 側の設定は評価されない）。
+
+### 安全性方針
+
+- **WebRTC を使わないサービス**: `webrtc`・`webrtc-proxy` のどちらの feature も有効化
+  しない。依存・`unsafe`・バイナリ増をゼロに保つ（pay-for-what-you-use、
+  [pay-for-what-you-use.md](.claude/rules/pay-for-what-you-use.md)）。`cargo tree -p
+  backend-framework-core` にいずれの feature 無効時も webrtc 系依存が一切現れないこと
+  を維持する。
+- **WebRTC を使うサービス**: 可能な限り `plugin-webrtc-proxy`（`webrtc-proxy` feature）
+  による**別プロセス切り出し**を第一選択とする。`webrtc-rs` の巨大な依存グラフ・
+  パーサ群をコアプロセスから隔離し、脆弱性発生時の影響範囲・監査対象を限定できる。
+- **in-process `plugin-webrtc`（`webrtc` feature）を選ぶ場合**: 別プロセス切り出しの
+  運用コスト（プロセス間通信・デプロイ構成の複雑化）が許容できない場合に限り検討する。
+  有効化すると `webrtc-rs` の巨大な依存グラフ・パーサ群がコアプロセスに直接組み込まれ、
+  ICE 接続性チェックはクライアント SDP 由来のアドレスへ UDP 送信を発生させ得る（WebRTC
+  の構造上不可避）。STUN/TURN は既定で設定しない（`RTCConfiguration::default()`）。
+  Offer サイズ上限・接続数上限（503 フェイルクローズ）・シグナリングタイムアウト
+  （504）は維持されている（`crates/plugin-webrtc/tests/attack_surface.rs` で受け入れ
+  観点から再アサート済み）が、依存グラフそのものの大きさは変わらない。
+
+### NFR-6（無関係パスへの性能影響）に関する留意事項
+
+NFR-6 は「パス一致時のみ介入する拡張点は、無関係なパスへの RPS・レイテンシ影響が
+誤差範囲内（100.3〜100.8%相当）である」ことを求める。この帯は GraphQL（PoC-3、依存
+インパクトが軽微なパスインターセプト型）由来の実測に基づく。TASK-8.4 の empirical
+計測（`benches/webrtc-nfr6-bench.sh`、`benches/reports/task-8.4-webrtc-nfr6.md`）では、
+`webrtc` feature 有効時の無関係パス（`GET /`）RPS が baseline 比おおむね 94〜95%、
+p95 レイテンシがおおむね 106〜108% となり、狭義の 100.3〜100.8% 帯には収まらなかった。
+`try_intercept` 自体は対象外パスに対して 1 回のパス比較のみでフォールスルーするため
+（`crates/core/src/plugin.rs`）、この差は拡張点の呼び出しコストではなく、バイナリ
+サイズが約 11 倍に達すること（icache/TLB 圧迫等）に起因すると考えられる。**WebRTC を
+使うサービスがこの性能影響を避けたい場合も、`plugin-webrtc-proxy` による別プロセス
+切り出しが有効な緩和策となる**（プロキシプロセスとコアプロセスが分離するため、コア
+プロセスのバイナリサイズ・性能特性は影響を受けない）。
+
+### 出典リンク
+
+- `docs/design/webrtc-process-isolation.md`（別プロセス切り出しの設計判断）
+- `docs/design/webrtc-rs-version-strategy.md`（`webrtc-rs` バージョン戦略、TASK-8.3）
+- `docs/acceptance/req8-webrtc-attack-surface.md`（TASK-8.4 攻撃表面評価・受け入れ判定）
+- `docs/dep-impact/records.md`（依存インパクト計測記録）
+- `docs/spec/04-requirements.md`（REQ-8・NFR-6）
+- `docs/spec/05-tasks.md`（TASK-8.1〜TASK-8.4）
+
+### 適用範囲と検証責務
+
+`webrtc`/`webrtc-proxy` 両 feature の依存完全除外・クレート境界分離の機械検証は
+`scripts/accept/webrtc-accept.sh`、NFR-6 の empirical 計測は `bench-builder` が担う
+（[delegation-impl.md](.claude/rules/delegation-impl.md)）。

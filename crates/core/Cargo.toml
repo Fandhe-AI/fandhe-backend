@@ -97,3 +97,11 @@ graphql = ["dep:bf-plugin-graphql"]
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
 async-graphql = { version = "7", default-features = false, features = ["dynamic-schema"] }
+
+# `examples/webrtc_nfr6.rs`（TASK-8.4 / #29）は `bf-plugin-webrtc`（optional dep）を
+# 直接使うため、`webrtc` feature 無効時に `cargo build --workspace --all-targets` 等が
+# コンパイル対象へ含めて失敗しないよう `required-features` で明示的にゲートする
+# （`examples/minimal.rs` は feature 非依存のため既定の自動検出のままでよい）。
+[[example]]
+name = "webrtc_nfr6"
+required-features = ["webrtc"]
