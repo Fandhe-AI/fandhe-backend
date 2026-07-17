@@ -20,6 +20,7 @@ OpenAPI 自動生成 / hub 配線 / 可観測性を段階的に拡張できる�
 ```
 backend-framework/
 ├── CLAUDE.md              # 本ファイル（Claude Code 運用ガイド）
+├── AGENTS.md              # 横断的設計規約（ミドルウェア非同期 I/O 必須化等、TASK-2.3）
 ├── README.md
 ├── skills-lock.json       # 導入スキルのロック
 ├── docs/

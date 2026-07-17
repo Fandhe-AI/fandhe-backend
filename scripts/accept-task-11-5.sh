@@ -97,9 +97,16 @@ fi
 # --------------------------------------------------
 # チェック 3: AGENTS.md 各節
 #
-# AGENTS.md 本体の作成は TASK-11.3（#35）のスコープ（本イシューの計画・
-# out-of-scope-tracking 参照）。ファイル不在時は FAIL ではなく PENDING として
-# #35 待ちであることを明示する。存在する場合は必須節の見出しを grep で検査する。
+# AGENTS.md の TASK-11.3（#35）必須節（モジュール境界・変更手順・変更完了の判定
+# 基準・エスカレーション基準・アサーション網羅性）の充足は TASK-11.3（#35）の
+# スコープ（本イシューの計画・out-of-scope-tracking 参照）。
+#
+# AGENTS.md ファイル自体は TASK-2.3（#20）でミドルウェア非同期 I/O 規約の記載
+# により先行作成されており、ファイルの存在有無だけでは TASK-11.3 の完了を判定
+# できない（`docs/design/feature-modification-flow.md` の「AGENTS.md 作成後の
+# 扱い」節も参照）。そのため「ファイル不在」と「ファイルは存在するが TASK-11.3
+# 必須節が未充足」のいずれも同じ PENDING（#35 待ち）として扱い、FAIL とは区別
+# する。必須節がすべて揃った場合のみ PASS とする。
 # --------------------------------------------------
 if [ ! -f "${AGENTS_FILE}" ]; then
     report "3（AGENTS.md 各節）" "PENDING" "AGENTS.md が未作成です（TASK-11.3 / #35 待ち）"
@@ -120,7 +127,7 @@ else
     if [ "${#missing_sections[@]}" -eq 0 ]; then
         report "3（AGENTS.md 各節）" "PASS" "必須節（${required_sections[*]}）をすべて確認しました"
     else
-        report "3（AGENTS.md 各節）" "FAIL" "AGENTS.md に不足節があります: ${missing_sections[*]}"
+        report "3（AGENTS.md 各節）" "PENDING" "AGENTS.md に TASK-11.3 必須節が未充足です（TASK-11.3 / #35 待ち）: ${missing_sections[*]}"
     fi
 fi
 
