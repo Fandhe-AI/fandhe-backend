@@ -150,9 +150,10 @@ check_audit_and_deny() {
         if [ "${audit_status}" -eq 0 ]; then
             record_pass "C: cargo audit 既知脆弱性 0件" "$(echo "${audit_out}" | tail -3 | tr '\n' ' ')"
         else
-            # axum-ref は比較専用の参照実装であり、そこ由来の advisory はコア
-            # （crates/core・crates/http）の受け入れ基準そのものを直ちに FAIL にはしない。
-            # ただし握りつぶさず、混入経路をレポートへ明記して報告する。
+            # cargo audit は workspace 全体（axum-ref 等の参照実装含む）に対して
+            # 実行され、発生元クレートを区別せず終了コード非 0 なら常に FAIL とする
+            # （フェイルクローズ）。axum-ref 由来か crates/core・crates/http 由来かは
+            # 下記の出力（advisory 詳細）から判別できるようレポートへそのまま記録する。
             record_fail "C: cargo audit 既知脆弱性 0件" "検出あり。出力: $(echo "${audit_out}" | tail -10 | tr '\n' ' ')"
         fi
     else
