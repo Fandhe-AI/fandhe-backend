@@ -91,6 +91,26 @@ nightly 限定のサニタイザ計装を要する `cargo-fuzz` を未実施の�
 実装時に一時的な `panic!` を仕込んだ target で本挙動を確認済み（確認後に破棄、
 コミットには含まれない）。
 
+## #88（TASK-15.3-2）fuzz 本実行結果
+
+TASK-15.3-2（#88）で `bash scripts/fuzz.sh --max-total-time 240` により両 target
+（`parse_request_head`・`head_semantics`）を実行した。
+
+- 実行結果: いずれも crash/hang を検出せず正常終了（`parse_request_head` 約 4,600 万
+  実行、`head_semantics` 約 4,700 万実行、各 240 秒）。パーサ自体（`crates/http/src/*.rs`）
+  に対する欠陥は検出されなかった
+- 検出・修正した欠陥（ビルド基盤側）: `crates/http/fuzz/Cargo.toml` に空 `[workspace]`
+  テーブルがなく、cargo がディレクトリツリーを上方に辿って祖先の `Cargo.toml` を
+  workspace root とみなそうとする挙動により、本体 workspace root から見て
+  `crates/http/fuzz` がさらに深い階層に置かれる環境（例: nested git worktree）で
+  `cargo +<nightly> fuzz run` がビルドエラーになっていた。空 `[workspace]` テーブルを
+  追加し、本クレートを独立 workspace root として固定することで解消した（本体
+  `cargo build` / `cargo tree` からの不可視性・`crates/http/fuzz` の exclude 設定には
+  影響しない）
+- corpus の肥大化防止: 実行のたびに libFuzzer が追記する `corpus/<target>/` の新規
+  入力は、キュレーションされたシードのみを残す既存方針（本書「corpus・artifacts の
+  取り扱い」節）に従い、コミット前に非追跡分を削除した
+
 ## TASK-15.3 / REQ 対応
 
 - 出典: `docs/spec/05-tasks.md` TASK-15.3【Conditional Go 条件(4)】
@@ -101,7 +121,6 @@ nightly 限定のサニタイザ計装を要する `cargo-fuzz` を未実施の�
 
 ## スコープ外（out-of-scope-tracking）
 
-- fuzz スクリーニングの本実行・検出欠陥の修正 → #88（TASK-15.3-2）
 - chunked Transfer-Encoding 対応後の fuzz target 追加（現状は一律拒否のため対象外）
 - corpus の永続化・自動最小化（`cargo fuzz cmin`）・カバレッジ計測の CI 化、
   OSS-Fuzz 等の外部基盤連携（必要になれば #88 レビュー時に Issue 化を検討）
