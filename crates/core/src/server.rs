@@ -196,14 +196,20 @@ pub struct Server {
     /// （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
     #[cfg(feature = "webrtc-proxy")]
     webrtc_proxy_config: Option<bf_plugin_webrtc_proxy::ProxyConfig>,
-    /// `websocket` feature（TASK-4.1 / #22）有効時のみ意味を持つ設定。
+    /// `websocket` feature（TASK-4.1 / #22）有効時のみ意味を持つ設定群。
     /// `crate::plugin::try_handle_upgrade` がこのフィールドを参照して
     /// `UpgradeHandler` 委譲成立後に `bf_plugin_websocket::handle_upgrade` へ
-    /// 渡す。feature 無効時はフィールド自体が構造体から消え、依存・コード
-    /// ともゼロコストになる（pay-for-what-you-use、
+    /// 渡す。`Server::websocket` を複数回呼ぶと複数パスを登録でき、
+    /// 登録順に `bf_plugin_websocket::matches` を評価して最初に一致した
+    /// 設定を使う（`upgrade_handlers` 側の `WebSocketUpgradeAdapter` も
+    /// 同じ登録順で `matches` するため、両者は常に整合する）。単一
+    /// `Option` だと 2 回目の呼び出しで 1 回目の設定が上書きされ、最初に
+    /// 登録したパスへのアップグレードが 501 になる不整合が生じるため
+    /// `Vec` として保持する。feature 無効時はフィールド自体が構造体から
+    /// 消え、依存・コードともゼロコストになる（pay-for-what-you-use、
     /// .claude/rules/pay-for-what-you-use.md）。
     #[cfg(feature = "websocket")]
-    websocket_config: Option<bf_plugin_websocket::WebSocketConfig>,
+    websocket_configs: Vec<bf_plugin_websocket::WebSocketConfig>,
 }
 
 impl Default for Server {
@@ -219,7 +225,7 @@ impl Default for Server {
             #[cfg(feature = "webrtc-proxy")]
             webrtc_proxy_config: None,
             #[cfg(feature = "websocket")]
-            websocket_config: None,
+            websocket_configs: Vec::new(),
         }
     }
 }
@@ -333,7 +339,8 @@ impl Server {
     /// `bf_plugin_websocket::handle_upgrade` へ完全委譲する
     /// （REQ-4「コア自身の HTTP パーサでアップグレードを検知し既存拡張点
     /// 経由で委譲する」という建て付けを維持する。`crates/plugin-websocket/src/lib.rs`
-    /// の doc を参照）。
+    /// の doc を参照）。異なる `path` で複数回呼び出すと複数パスを登録
+    /// できる（`websocket_configs()` の doc を参照）。
     #[cfg(feature = "websocket")]
     #[must_use]
     pub fn websocket(mut self, config: bf_plugin_websocket::WebSocketConfig) -> Self {
@@ -341,15 +348,21 @@ impl Server {
             .push(Box::new(WebSocketUpgradeAdapter {
                 config: config.clone(),
             }));
-        self.websocket_config = Some(config);
+        self.websocket_configs.push(config);
         self
     }
 
     /// `crate::plugin::try_handle_upgrade` が参照する、登録済み WebSocket
-    /// 設定（`websocket` feature 限定、TASK-4.1 / #22）。
+    /// 設定群（`websocket` feature 限定、TASK-4.1 / #22）。
+    ///
+    /// `Server::websocket` を呼んだ順に格納されており、`upgrade_handlers`
+    /// 内の `WebSocketUpgradeAdapter` の登録順と一致する。呼び出し元は
+    /// 登録順に `bf_plugin_websocket::matches` を評価し、最初に一致した
+    /// 設定を使うこと（複数パス登録時に先に登録したパスが後の登録で
+    /// 上書きされて失われないようにするための契約）。
     #[cfg(feature = "websocket")]
-    pub(crate) fn websocket_config(&self) -> Option<&bf_plugin_websocket::WebSocketConfig> {
-        self.websocket_config.as_ref()
+    pub(crate) fn websocket_configs(&self) -> &[bf_plugin_websocket::WebSocketConfig] {
+        &self.websocket_configs
     }
 
     /// `addr` に TCP リスナーをバインドし、[`BoundServer`] を返す。

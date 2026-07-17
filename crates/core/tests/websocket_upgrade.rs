@@ -219,6 +219,40 @@ async fn non_websocket_path_falls_through_to_default_handler() {
     assert!(response.ends_with("ok"));
 }
 
+/// `Server::websocket` を異なる `path` で複数回呼んだとき、両方のパスへの
+/// アップグレードが成立することを確認する回帰テスト（Bugbot 指摘: Duplicate
+/// websocket() breaks first path。単一 `websocket_config: Option<T>` だと
+/// 2 回目の呼び出しで 1 回目の設定が上書きされ、最初に登録したパスへの
+/// アップグレードが 501 になっていた）。
+#[tokio::test]
+async fn multiple_websocket_registrations_all_remain_reachable() {
+    let server = Server::new()
+        .websocket(WebSocketConfig::default().with_path("/ws-first"))
+        .websocket(WebSocketConfig::default().with_path("/ws-second"))
+        .handler(NotCalledHandler);
+    let addr = spawn_server(server).await;
+
+    for path in ["/ws-first", "/ws-second"] {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "GET {path} HTTP/1.1\r\n\
+             Host: example.com\r\n\
+             Upgrade: websocket\r\n\
+             Connection: Upgrade\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\
+             \r\n"
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+
+        let response_head = read_response_head(&mut stream).await;
+        assert!(
+            response_head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"),
+            "path {path} が 101 以外を返した: {response_head}"
+        );
+    }
+}
+
 /// 評価順 `RequestGate` → `UpgradeHandler` を維持することを固定する
 /// （将来の TenantGate が WS アップグレードも既定拒否できる構造の維持、
 /// `crates/core/src/server.rs` 冒頭 doc・REQ-9）。

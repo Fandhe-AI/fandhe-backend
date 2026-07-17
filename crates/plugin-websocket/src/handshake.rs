@@ -21,8 +21,16 @@ use crate::error::WsError;
 /// [`validate`] が担う）。
 #[must_use]
 pub fn matches(head: &RequestHead, config: &WebSocketConfig) -> bool {
+    // `RequestHead::target` はクエリ文字列を含む完全な request-target
+    // （例: `/ws?token=...`）。`config.path` はクエリを含まないパス成分の
+    // みを表すため、比較前に `?` 以降を切り落として path 成分だけを見る。
+    let path = head
+        .target
+        .split('?')
+        .next()
+        .unwrap_or(head.target.as_str());
     head.method == "GET"
-        && head.target == config.path
+        && path == config.path
         && head
             .header("upgrade")
             .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
@@ -172,6 +180,24 @@ mod tests {
     fn matches_ws_path_and_upgrade_header() {
         let config = WebSocketConfig::default();
         assert!(matches(&valid_handshake_head(), &config));
+    }
+
+    #[test]
+    fn matches_ignores_query_string_when_comparing_path() {
+        // `RequestHead::target` はクエリ文字列を含む完全な request-target。
+        // `/ws?token=...` のような正当なアップグレードでも `config.path`
+        // （クエリなし）と一致すべき回帰（Bugbot 指摘: Query strings break
+        // WebSocket matching）。
+        let config = WebSocketConfig::default();
+        let head = head_from(b"GET /ws?token=abc HTTP/1.1\r\nUpgrade: websocket\r\n\r\n");
+        assert!(matches(&head, &config));
+    }
+
+    #[test]
+    fn matches_rejects_other_path_with_query_string() {
+        let config = WebSocketConfig::default().with_path("/ws");
+        let head = head_from(b"GET /other?token=abc HTTP/1.1\r\nUpgrade: websocket\r\n\r\n");
+        assert!(!matches(&head, &config));
     }
 
     #[test]

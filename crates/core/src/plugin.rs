@@ -84,8 +84,9 @@ fn from_plugin_response(response: bf_plugin_webrtc_proxy::Response) -> Response 
 /// 解放（Conditional Go 条件(1)）・残余バイト列（`leftover`）退避の直後に
 /// 呼ばれる。戻り値 `Some(stream)` は「委譲されず、呼び出し元が後続処理
 /// （フォールバック応答）を続けるべき」ことを意味し、`websocket` feature
-/// 無効時・`server.websocket_config()` 未設定時・`bf_plugin_websocket::matches`
-/// 不一致時のいずれかで発生する（呼び出し元は 501 を返す、`server.rs` の
+/// 無効時・`server.websocket_configs()` が空、または登録済みいずれの設定にも
+/// `bf_plugin_websocket::matches` が一致しない時のいずれかで発生する
+/// （呼び出し元は 501 を返す、`server.rs` の
 /// doc を参照）。`None` は「完全に委譲済みで呼び出し元はこれ以上ストリームに
 /// 触れない」ことを意味する。
 ///
@@ -112,8 +113,10 @@ where
 {
     #[cfg(feature = "websocket")]
     {
-        if let Some(config) = server.websocket_config()
-            && bf_plugin_websocket::matches(head, config)
+        if let Some(config) = server
+            .websocket_configs()
+            .iter()
+            .find(|config| bf_plugin_websocket::matches(head, config))
         {
             let _ = bf_plugin_websocket::handle_upgrade(stream, head, leftover, config).await;
             return None;
