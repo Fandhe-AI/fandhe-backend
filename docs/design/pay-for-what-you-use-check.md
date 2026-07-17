@@ -65,6 +65,16 @@ TASK-2.1 までの検証は `docs/design/plugin-boundary.md` 6 節の**手動コ
 「virtual manifest」エラーになるため、`--manifest-path <crates/core/Cargo.toml の
 絶対パス>` を使う（実装時に実機確認済み）。
 
+CI ランナー環境限定で `cargo geiger` の実行自体が失敗する事例が確認されている
+（PR #134/#19、ローカルでは複数回実行しても再現せず安定して成功する）。判定を
+FAIL に倒す前に 1 回だけ再試行し（fail-closed の後退ではなく決定的な失敗と
+一過性の失敗を区別するための最小限のノイズ低減）、2 回とも失敗した場合は
+`/tmp/pfwu-check-geiger.log`（cargo geiger の stderr）の内容を stdout（CI ログに
+残る）へも出力してから FAIL 判定する。`/tmp` 配下のログはジョブ終了後に破棄され
+GitHub Actions のログにも残らないため、原因調査ができない状態を防ぐための対応
+である。2 回とも失敗する場合は出力されたログを見て、ランナー側のツールチェーン・
+レジストリ通信起因かどうかを個別に調査する（本設計では原因を断定しない）。
+
 ### 3.4 (d) バイナリサイズ計測（コード 0 件）
 
 `crates/core/examples/minimal` を無効構成／`--all-features` の 2 構成でリリース

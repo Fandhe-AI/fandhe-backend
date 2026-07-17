@@ -497,19 +497,7 @@ jobs:
     # schedule 時は丸ごとスキップされるため判定ロジックには影響しない）。
     # 完遂判定の対象外（required check としては pull_request/push イベントのみを想定する）。
     if: ${{ always() && github.event_name != 'schedule' }}
-    needs:
-      [
-        fmt,
-        clippy,
-        test,
-        doc,
-        dep-audit,
-        coverage,
-        unsafe-triage,
-        pay-for-what-you-use,
-        fuzz-smoke,
-        openapi-two-stage,
-      ]
+    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, pay-for-what-you-use, fuzz-smoke, openapi-two-stage]
     timeout-minutes: 5
     steps:
       - name: 完遂判定（全 needs ジョブが success であること）

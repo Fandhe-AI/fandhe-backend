@@ -272,14 +272,38 @@ else
             fail "c: cargo geiger 検証 — cargo-geiger が見つかりません。導入: cargo install --locked cargo-geiger@0.13.0"
             geiger_packages=""
         else
-            geiger_json="$(cargo geiger --manifest-path "${CORE_MANIFEST}" --no-default-features --output-format Json -q 2>/tmp/pfwu-check-geiger.log || true)"
+            # cargo-geiger はビルドを伴い CI ランナー環境（レジストリ通信・並行ジョブに
+            # よるキャッシュ競合等）に起因する一過性の失敗実績があるため、判定を FAIL に
+            # 倒す前に 1 回だけ再試行する（fail-closed の後退ではなく、決定的な失敗と
+            # 一過性の失敗を区別するための最小限のノイズ低減。2 回とも失敗した場合のみ
+            # 下記ログ出力を経て FAIL 判定する）。
+            geiger_json=""
+            for geiger_attempt in 1 2; do
+                geiger_json="$(cargo geiger --manifest-path "${CORE_MANIFEST}" --no-default-features --output-format Json -q 2>/tmp/pfwu-check-geiger.log || true)"
+                if [ -n "${geiger_json}" ]; then
+                    break
+                fi
+                echo "[geiger] 試行 ${geiger_attempt}/2 が失敗しました" >&2
+            done
             if [ -z "${geiger_json}" ]; then
                 fail "c: cargo geiger 検証 — cargo geiger の実行に失敗しました（/tmp/pfwu-check-geiger.log 参照）。cargo-geiger はビルドを伴い壊れやすい実績があるため FAIL として扱う"
+                # /tmp 配下のログは CI ランナー上でジョブ終了後に消え、GitHub Actions の
+                # ログにも残らない（アーティファクトとして保存していないため）。原因調査を
+                # 次回実行で即座に行えるよう、stdout（CI ログに残る）へも同内容を出力する
+                # （PR #134/#19 CI 失敗時に一次ログを参照できず原因特定が滞った反省）。
+                if [ -f /tmp/pfwu-check-geiger.log ]; then
+                    echo "----- cargo geiger stderr（/tmp/pfwu-check-geiger.log） -----"
+                    sed 's/^/[geiger] /' /tmp/pfwu-check-geiger.log || true
+                    echo "----- ここまで -----"
+                fi
                 geiger_packages=""
             else
                 geiger_packages="$(printf '%s' "${geiger_json}" | jq -r '.packages[].package.id.name' 2>/tmp/pfwu-check-geiger-jq.log || true)"
                 if [ -s /tmp/pfwu-check-geiger-jq.log ]; then
                     fail "c: cargo geiger 検証 — geiger JSON 出力の解析に失敗しました（/tmp/pfwu-check-geiger-jq.log 参照）"
+                    echo "----- jq stderr（/tmp/pfwu-check-geiger-jq.log） -----"
+                    sed 's/^/[geiger-jq] /' /tmp/pfwu-check-geiger-jq.log || true
+                    echo "----- ここまで -----"
                     geiger_packages=""
                 fi
             fi
