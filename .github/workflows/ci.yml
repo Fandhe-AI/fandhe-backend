@@ -326,7 +326,7 @@ jobs:
       # 同じ方針。サプライチェーン考慮: crates.io からバージョン固定で取得）。
       - name: Ensure cargo-fuzz 0.13.2
         run: |
-          if ! cargo fuzz --version 2>/dev/null | grep -q ' 0\.13\.2'; then
+          if ! cargo fuzz --version 2>/dev/null | grep -qE ' 0\.13\.2($| )'; then
             cargo install --locked cargo-fuzz@0.13.2
           fi
 
