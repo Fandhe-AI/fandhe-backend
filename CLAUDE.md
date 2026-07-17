@@ -113,6 +113,7 @@ main は判断・統合・ユーザー対話に集中する**。詳細は [rules
 | [conventional-commits.md](.claude/rules/conventional-commits.md) | Conventional Commits 詳細規約 |
 | [code-comment-style.md](.claude/rules/code-comment-style.md) | コメント・doc comment 規約 |
 | [out-of-scope-tracking.md](.claude/rules/out-of-scope-tracking.md) | 実装対象外の追跡（Issue 化）規約 |
+| [improvement-proposal.md](.claude/rules/improvement-proposal.md) | 改善提案フロー・起票・承認の運用規約 |
 
 ## Current Skills
 
