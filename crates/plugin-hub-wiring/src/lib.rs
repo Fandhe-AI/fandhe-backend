@@ -1,6 +1,8 @@
 //! `bf-plugin-hub-wiring`: hub 共通配線プラグイン（TASK-9.1 / #61）。
 //!
-//! 拡張点対応: `RequestGate`（[`gate::TenantGate`]）
+//! 拡張点対応: RequestGate
+//!
+//! 実装は [`gate::TenantGate`]。
 //!
 //! # 依存方向（依存逆転型プラグイン）
 //!
