@@ -390,9 +390,13 @@ jobs:
       # openapi-spec-validator はスキーマ妥当性のみを検証しベストプラクティス系ルールを
       # 含まないため要求に合致する（選定理由は docs/acceptance/req3-openapi-generation.md
       # を参照）。サプライチェーン考慮でバージョン pin する（.claude/rules/security.md）。
+      # `python3 -m openapi_spec_validator --version` は当該 CLI が `--version`
+      # フラグ自体を持たずエラー終了するため疎通確認に使えない（Bugbot 指摘、PR
+      # #141: 常に pip install が走ってしまう）。モジュールの `__version__` 属性で
+      # 導入済みバージョンを直接判定する。
       - name: Ensure openapi-spec-validator 0.7.1
         run: |
-          if ! python3 -m openapi_spec_validator --version 2>/dev/null | grep -q '0\.7\.1'; then
+          if ! python3 -c "import openapi_spec_validator; print(openapi_spec_validator.__version__)" 2>/dev/null | grep -qx '0\.7\.1'; then
             pip install --user --break-system-packages "openapi-spec-validator==0.7.1"
           fi
 
