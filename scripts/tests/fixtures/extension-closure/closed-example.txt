@@ -1,0 +1,13 @@
+crates/plugin-example/Cargo.toml
+crates/plugin-example/src/lib.rs
+crates/plugin-example/tests/example_e2e.rs
+crates/core/Cargo.toml
+crates/core/src/plugin.rs
+crates/core/src/server.rs
+crates/core/src/lib.rs
+crates/core/tests/example_boundary.rs
+docs/design/plugin-boundary.md
+docs/dep-impact/records.md
+scripts/dep-direction-check.sh
+CLAUDE.md
+deny.toml

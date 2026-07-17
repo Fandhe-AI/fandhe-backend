@@ -59,3 +59,8 @@
 - [`webrtc-rs-version-strategy.md`](./webrtc-rs-version-strategy.md): `webrtc-rs` バージョン戦略
   （TASK-8.3、#28、REQ-8。v0.17.x（保守モード）継続採用・Sans-I/O 系（v0.20 系/`rtc` クレート）の
   移行トリガー基準・スコープ外機能の実装フェーズでの扱いを記述。ドラフト、最終承認は人間レビュー）
+- [`extension-closure-verification.md`](./extension-closure-verification.md): 拡張点への
+  変更影響範囲閉包の実例検証（TASK-13.1、#49、REQ-13。WebSocket/WebRTC/GraphQL の実 merge
+  commit を `scripts/extension-closure-check.sh` で機械判定し、A〜D カテゴリへの閉包
+  可否・E 判定時の理由（`crates/http/src/response.rs` の共有 reason phrase テーブルへの
+  1 行追加）を記述。TASK-13.2/#50 への引き継ぎ事項も記載）
