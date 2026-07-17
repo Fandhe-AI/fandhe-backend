@@ -358,6 +358,16 @@ else
     fi
 fi
 
+# self-hosted ランナーのディスク容量枯渇対策（PR #146/#29 CI 実測: bf-plugin-webrtc の
+# 全構成ビルド (e) 中に `No space left on device` で FAIL）。(c) の geiger 用
+# target-dir（cargo-geiger 自体のビルド成果物）は判定に必要な geiger_packages を
+# 既に取得済みで以降の工程では不要になるため、後続の重いビルド工程（(d)(e)）が
+# 使う disk 容量を最小化する目的で直ちに削除する。他ジョブと共有しない専用ディレクトリ
+# （TARGET_DIR-geiger、上記コメント参照）のため、削除しても他ジョブの成果物には影響しない。
+rm -rf "${TARGET_DIR}-geiger"
+echo "[disk] (c) 後の空き容量:" >&2
+df -h "${WORKSPACE_ROOT}/target" >&2 2>/dev/null || df -h >&2 || true
+
 # =============================================================================
 # (d) バイナリサイズ計測（コード 0 件）
 # =============================================================================
@@ -442,6 +452,16 @@ elif [ "${SKIP_BUILD_STEPS}" -eq 0 ] && [ -z "${SYMBOLS_FILE}" ]; then
     echo "[SKIP] d: シンボル表検証 — nm が利用できないか対象バイナリが存在しないため SKIP（サイズ比較ゲートは維持）" >&2
 fi
 
+# (c) の geiger 用 target-dir と同じ理由（disk 容量枯渇対策、PR #146/#29 CI 実測）で、
+# (d) の release ビルド 2 本（無効構成／--all-features）に使った target-dir も
+# サイズ・シンボル計測を終えた時点で不要になる。最も重い (e)（feature 単独構成 ×N +
+# --all-features の debug ビルドを 1 つの target-dir に積み上げる）の直前に解放し、
+# ピーク時のディスク使用量を抑える。--skip-build-steps 時はこれらのディレクトリを
+# 作成していないため rm -rf は no-op（存在しないパスの削除は -f で無害）。
+rm -rf "${TARGET_DIR}" "${TARGET_DIR}-all"
+echo "[disk] (d) 後・(e) 開始前の空き容量:" >&2
+df -h "${WORKSPACE_ROOT}/target" >&2 2>/dev/null || df -h >&2 || true
+
 # =============================================================================
 # (e) 全構成ビルド検証
 # =============================================================================
@@ -479,6 +499,12 @@ else
 
     if [ "${#build_failed[@]}" -gt 0 ]; then
         fail "e: 全構成ビルド検証 — ビルド失敗構成: ${build_failed[*]}（/tmp/pfwu-check-build-e-*.log 参照）"
+        # ディスク容量枯渇（PR #146/#29 CI 実測: `No space left on device`）が疑われる
+        # 失敗かどうかを次回調査で即座に切り分けられるよう、失敗時点の空き容量を
+        # 出力する（(c)(d) 後の cleanup 実施済みでも枯渇する場合、(e) 単体のビルド量が
+        # 原因と判断できる。上記 cleanup コメント参照）。
+        echo "[disk] (e) 失敗時点の空き容量:" >&2
+        df -h "${WORKSPACE_ROOT}/target" >&2 2>/dev/null || df -h >&2 || true
         # /tmp 配下のログは CI ランナー上でジョブ終了後に消え、GitHub Actions の
         # ログにも残らない（(d) と同じ理由）。原因調査を次回実行で即座に行えるよう、
         # stdout（CI ログに残る）へも失敗構成それぞれのログ全文を出力する。今回失敗

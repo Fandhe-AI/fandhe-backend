@@ -139,3 +139,40 @@ PASS を偽らない）。手動計測手順・実行結果は
 `scripts/tests/run-dep-audit-accept-tests.sh`（ネットワーク・cargo ビルド・監査ツールに
 非依存。判定ロジックのみを `scripts/tests/fixtures/dep-audit-accept/` の fixture で
 検証する）。`.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる。
+
+## `webrtc-accept.sh` — REQ-8（WebRTC）受け入れ検証（TASK-8.4、#29）
+
+`docs/spec/04-requirements.md` REQ-8・NFR-6 の受け入れ基準のうち TASK-8.4 が担う
+「依存・バイナリ・unsafe を再評価し audit / deny を確認する」を検証する。
+`lib/common.sh`（PASS/FAIL/SKIP/WARN 集計）と `lib/nfr6-ratio.sh`（NFR-6 判定ロジック
+単体、オフラインテスト用に分離）を共有する。
+
+```bash
+./scripts/accept/webrtc-accept.sh
+```
+
+検証内容:
+
+1. `webrtc` feature 無効時、`backend-framework-core` の依存ツリーに webrtc 系依存が
+   一切現れない（`cargo tree`）
+2. `crates/plugin-webrtc` 自コードの unsafe が 0 件（grep。依存側 `webrtc-rs` の
+   unsafe 増分は PoC-5 実測値を参考記録として引用するのみ）
+3. 全 feature 構成で `cargo audit` / `cargo deny check` 違反 0 件（`scripts/dep-audit.sh`
+   呼び出し）
+4. `webrtc`・`webrtc-proxy` の 2 feature が `backend-framework-core` に存在し、
+   `crates/plugin-webrtc`・`crates/plugin-webrtc-proxy` がクレート境界で相互非依存
+   であること
+5. NFR-6（無関係パスへの RPS・レイテンシ影響）。計測用バイナリ
+   （`target/release/examples/minimal`・`target/release/examples/webrtc_nfr6`）と
+   `oha` が揃っていれば `benches/webrtc-nfr6-bench.sh` で empirical 計測し、
+   実務許容帯 [95%, 105%]（FAIL 境界）・狭義 NFR-6 帯 [100.3%, 100.8%]（PASS/WARN 境界）
+   と照合する。揃っていなければ SKIP + 実行手順を案内する
+
+前提: `cargo build --release -p backend-framework-core --example minimal
+--no-default-features` と `... --example webrtc_nfr6 --features webrtc` を事前実行
+（本スクリプトは自動ビルドしない）。
+
+判定ロジックのオフライン・セルフテスト（cargo・ネットワーク非依存）は
+`scripts/tests/run-webrtc-accept-tests.sh` を参照。実行結果レポートは
+`docs/acceptance/req8-webrtc-attack-surface.md`、NFR-6 の詳細計測結果は
+`benches/reports/task-8.4-webrtc-nfr6.md` に記録する。
