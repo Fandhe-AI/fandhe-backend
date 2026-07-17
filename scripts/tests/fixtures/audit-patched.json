@@ -1,0 +1,58 @@
+{
+  "database": {
+    "advisory-count": 1160,
+    "last-commit": "0000000000000000000000000000000000000",
+    "last-updated": "2026-07-16T00:00:00Z"
+  },
+  "lockfile": {
+    "dependency-count": 42
+  },
+  "settings": {
+    "target_arch": [],
+    "target_os": [],
+    "severity": null,
+    "ignore": [],
+    "informational_warnings": ["unmaintained", "unsound", "notice"]
+  },
+  "vulnerabilities": {
+    "found": true,
+    "count": 1,
+    "list": [
+      {
+        "advisory": {
+          "id": "RUSTSEC-2099-0001",
+          "package": "example-crate",
+          "title": "テスト用の修正済み脆弱性フィクスチャ",
+          "description": "audit-triage.sh の「自動更新提案」区分を検証するためのダミー advisory。",
+          "date": "2099-01-01",
+          "aliases": ["CVE-2099-00001"],
+          "related": [],
+          "collection": "crates",
+          "categories": ["memory-corruption"],
+          "keywords": [],
+          "cvss": null,
+          "informational": null,
+          "references": [],
+          "source": null,
+          "url": "https://rustsec.org/advisories/RUSTSEC-2099-0001",
+          "withdrawn": null,
+          "license": "CC0-1.0"
+        },
+        "versions": {
+          "patched": [">=1.2.3"],
+          "unaffected": []
+        },
+        "affected": null,
+        "package": {
+          "name": "example-crate",
+          "version": "1.2.0",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": null,
+          "dependencies": [],
+          "replace": null
+        }
+      }
+    ]
+  },
+  "warnings": {}
+}

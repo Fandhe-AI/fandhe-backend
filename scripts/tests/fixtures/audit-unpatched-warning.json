@@ -1,0 +1,93 @@
+{
+  "database": {
+    "advisory-count": 1160,
+    "last-commit": "0000000000000000000000000000000000000",
+    "last-updated": "2026-07-16T00:00:00Z"
+  },
+  "lockfile": {
+    "dependency-count": 42
+  },
+  "settings": {
+    "target_arch": [],
+    "target_os": [],
+    "severity": null,
+    "ignore": [],
+    "informational_warnings": ["unmaintained", "unsound", "notice"]
+  },
+  "vulnerabilities": {
+    "found": true,
+    "count": 1,
+    "list": [
+      {
+        "advisory": {
+          "id": "RUSTSEC-2099-0002",
+          "package": "vuln-crate",
+          "title": "テスト用の未修正脆弱性フィクスチャ",
+          "description": "audit-triage.sh の「要エスカレーション」区分を検証するためのダミー advisory。patched バージョンが存在しない。",
+          "date": "2099-02-01",
+          "aliases": [],
+          "related": [],
+          "collection": "crates",
+          "categories": ["denial-of-service"],
+          "keywords": [],
+          "cvss": null,
+          "informational": null,
+          "references": [],
+          "source": null,
+          "url": "https://rustsec.org/advisories/RUSTSEC-2099-0002",
+          "withdrawn": null,
+          "license": "CC0-1.0"
+        },
+        "versions": {
+          "patched": [],
+          "unaffected": []
+        },
+        "affected": null,
+        "package": {
+          "name": "vuln-crate",
+          "version": "0.9.0",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": null,
+          "dependencies": [],
+          "replace": null
+        }
+      }
+    ]
+  },
+  "warnings": {
+    "unmaintained": [
+      {
+        "kind": "unmaintained",
+        "package": {
+          "name": "stale-crate",
+          "version": "0.3.1",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": null,
+          "dependencies": [],
+          "replace": null
+        },
+        "advisory": {
+          "id": "RUSTSEC-2099-0003",
+          "package": "stale-crate",
+          "title": "テスト用の unmaintained 警告フィクスチャ",
+          "description": "audit-triage.sh の「情報（記録・監視）」区分を検証するためのダミー advisory。",
+          "date": "2099-03-01",
+          "aliases": [],
+          "related": [],
+          "collection": "crates",
+          "categories": [],
+          "keywords": [],
+          "cvss": null,
+          "informational": "unmaintained",
+          "references": [],
+          "source": null,
+          "url": "https://rustsec.org/advisories/RUSTSEC-2099-0003",
+          "withdrawn": null,
+          "license": "CC0-1.0"
+        },
+        "affected": null,
+        "versions": null
+      }
+    ]
+  }
+}
