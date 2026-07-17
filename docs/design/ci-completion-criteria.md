@@ -15,7 +15,7 @@ REQ-14 は AI による改修の完遂判定基準を次のように定義する
 | 要素 | 機械判定 | 本タスクでの担保方法 |
 |------|---------|----------------------|
 | CI（`cargo test` / `clippy -D warnings` / `fmt --check`）の全通過 | 可能 | `.github/workflows/ci.yml` の集約ゲートジョブ `ci-complete` + `scripts/setup-required-checks.sh` による required status check |
-| 追加機能が受け入れ基準を満たすこと | 不可能（人間の判断を要する） | レビューゲート（TASK-14.3、#41、担当: 人間）。本タスクのスコープ外 |
+| 追加機能が受け入れ基準を満たすこと | 不可能（人間の判断を要する） | レビューゲート（TASK-14.3、#41）。運用定義は `docs/design/review-gate.md` を参照。本タスクのスコープ外 |
 
 ## 実装: 集約ゲートジョブ `ci-complete`
 
@@ -66,9 +66,10 @@ individual ジョブ名を required status check として個別に登録する�
 `scripts/setup-required-checks.sh` が default branch（通常 `main`）の repository ruleset に
 `ci-complete` を required status check として設定する。詳細は `scripts/README.md` を参照。
 
-- 本タスクでは required_status_checks のみを設定する。
-- PR 必須化・人間承認必須・force push 禁止などの追加ルールは意図的に含めない
-  （TASK-14.3、#41、担当: 人間、のスコープ）。
+- 本タスク（TASK-14.1）時点では required_status_checks のみを設定した。
+- PR 必須化・force push 禁止・ブランチ削除禁止の追加ルールは TASK-14.3（#41）で
+  `scripts/setup-required-checks.sh` に追加済み。詳細・人間判断ダイヤル（承認数・
+  strict policy）は `docs/design/review-gate.md` を参照。
 - 実装時点（2026-07-16）で main ブランチは無保護（branch protection 404 / ruleset 0 件）
   だったため、本スクリプトの実行により初めて `ci-complete` が必須化される。
   管理者権限を持つトークンで `gh` にログインした状態でのみ成功する。403 になる場合は
@@ -92,8 +93,9 @@ forbid（`#[allow]` による抑制も不可）/ deny（局所例外可）の 2 
 - [x] 危険な `unsafe` パターンが `cargo clippy` の deny lint で機械的に検出される
       → TASK-14.2（#40）、ルート `Cargo.toml` の `[workspace.lints.clippy]` +
       `docs/design/unsafe-deny-lints.md`
-- [ ] 自律実装のマージには、CI 通過に加えてレビューゲート（人間承認または追加レビュー）を
-      経る運用が定義されている → TASK-14.3（#41）のスコープ
+- [x] 自律実装のマージには、CI 通過に加えてレビューゲート（人間承認または追加レビュー）を
+      経る運用が定義されている → TASK-14.3（#41）、`docs/design/review-gate.md`
 
 CI が実際に赤くなるケースでゲートが機能することを確認する受け入れテストは、
-TASK-14.3（#41）の受け入れテストの一部として実施する。
+TASK-14.3（#41）で `scripts/tests/run-review-gate-tests.sh` としてスクリプト化し、
+`docs/design/review-gate.md` の実施記録に結果を残した。

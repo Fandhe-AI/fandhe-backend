@@ -21,8 +21,10 @@ name: CI
 # required status check に指定すればよく、判定対象ジョブを増減する際は `ci-complete` の
 # `needs` を変更するだけで済む（ジョブ改名時に required check が暗黙に外れる設定腐敗を防ぐ）。
 # 「追加機能が受け入れ基準を満たすこと」は機械判定できないため対象外とし、
-# レビューゲート（TASK-14.3、#41、担当: 人間）で担保する
-# （docs/design/ci-completion-criteria.md 参照）。
+# レビューゲート（TASK-14.3、#41）で担保する（docs/design/ci-completion-criteria.md 参照）。
+# TASK-14.3（#41）: レビューゲート運用の受け入れテスト（scripts/tests/run-review-gate-tests.sh
+# --offline）を unsafe-triage ジョブに追加し、TASK-14.2 の deny lint 表・本ジョブ構成の
+# 退行を CI 常設で検知する（docs/design/review-gate.md 参照）。
 on:
   pull_request:
     branches: [main]
@@ -274,6 +276,9 @@ jobs:
 
       - name: run-triage-tests.sh（audit/unsafe トリアージロジックのセルフテスト）
         run: bash scripts/tests/run-triage-tests.sh
+
+      - name: run-review-gate-tests.sh --offline（レビューゲート運用のオフライン退行検知、TASK-14.3、#41）
+        run: bash scripts/tests/run-review-gate-tests.sh --offline
 
   # --------------------------------------------------
   # CI 完遂判定（TASK-14.1、#39、docs/spec/04-requirements.md REQ-14）:

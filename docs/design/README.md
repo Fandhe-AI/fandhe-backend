@@ -18,3 +18,7 @@
 - [`improvement-proposal-flow.md`](./improvement-proposal-flow.md): 改善提案フロー
   （TASK-12.1-2、#80、REQ-12(a)。検知 → トリアージ → 提案 → 承認 → 実装 → 検証ゲート →
   クローズの各段階と 4 分析軸の入力ソース対応を記述）
+- [`unsafe-deny-lints.md`](./unsafe-deny-lints.md): 危険な `unsafe` パターンの deny lint 設定
+  （TASK-14.2、#40、REQ-14。forbid/deny 2 層 lint テーブルの選定根拠とネガティブ検証）
+- [`review-gate.md`](./review-gate.md): レビューゲート運用定義・受け入れテスト
+  （TASK-14.3、#41、REQ-14。PR 必須化・force push/削除禁止の ruleset 拡張と受け入れテスト実施記録）

@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# レビューゲート運用の受け入れテスト（TASK-14.3、#41、docs/spec/04-requirements.md REQ-14）:
+# REQ-14 の受け入れ基準のうち機械的に確認できる 2 点を再実行可能なテストとして担保する。
+#
+#   1. AI が生成した変更が CI 全通過（ci-complete）を必須条件としてマージされること
+#      → --offline 層で .github/workflows/ci.yml の構成を静的確認
+#   2. 危険な unsafe パターンが cargo clippy の deny lint で機械的に検出されること
+#      → フル層で PoC-9 模擬パターンを一時複製へ注入し実際に clippy を実行して確認
+#
+# 設計判断・実施記録は docs/design/review-gate.md を参照。
+#
+# 2 層構成:
+#   --offline （既定は無指定時と異なりこちらを明示）: ネットワーク・cargo ビルド不要。
+#     lint 表・ci.yml 構成の静的確認のみ。ci.yml の unsafe-triage ジョブから常時呼ばれる。
+#   （オプションなし、既定）: フル層。上記に加えて cargo clippy 実行・gh api での
+#     ruleset 検証を行う。受け入れ実施時に手動/任意実行する（cargo ビルド・gh 認証が必要）。
+#
+# 各テストは独立した assert 関数で実行し、失敗があれば非 0 で終了する
+# （フェイルクローズ、.claude/rules/security.md）。
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPTS_DIR}/.." && pwd)"
+
+MODE="full"
+if [ "${1:-}" = "--offline" ]; then
+    MODE="offline"
+fi
+
+PASS_COUNT=0
+FAIL_COUNT=0
+
+fail() {
+    echo "FAIL: $1" >&2
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+}
+
+pass() {
+    echo "PASS: $1"
+    PASS_COUNT=$((PASS_COUNT + 1))
+}
+
+assert_file_contains() {
+    local desc="$1"
+    local file="$2"
+    local needle="$3"
+    if grep -qF -- "${needle}" "${file}"; then
+        pass "${desc}"
+    else
+        fail "${desc}（'${needle}' が ${file} に含まれません）"
+    fi
+}
+
+assert_exit_code() {
+    local desc="$1"
+    local expected="$2"
+    local actual="$3"
+    if [ "${expected}" -eq "${actual}" ]; then
+        pass "${desc}（exit code: ${actual}）"
+    else
+        fail "${desc}（期待 exit code: ${expected}, 実際: ${actual}）"
+    fi
+}
+
+assert_contains() {
+    local desc="$1"
+    local haystack="$2"
+    local needle="$3"
+    if printf '%s' "${haystack}" | grep -qF -- "${needle}"; then
+        pass "${desc}"
+    else
+        fail "${desc}（'${needle}' が出力に含まれません）"
+    fi
+}
+
+# ==================================================
+# オフライン層: lint 表・ci.yml 構成の退行検知（両モード共通）
+# ==================================================
+
+echo "===== オフライン層: Cargo.toml lint 表 ====="
+CARGO_TOML="${REPO_ROOT}/Cargo.toml"
+
+# TASK-14.2（#40）の forbid 層 11 lint。1 件でも欠けると deny lint 検出の多層防御が
+# 弱体化する退行のため、全件を個別に確認する（グループ指定への置換も検知できるよう
+# 個別 lint 名で assert する）。
+for lint in uninit_vec uninit_assumed_init mem_replace_with_uninit transmuting_null \
+    wrong_transmute unsound_collection_transmute eager_transmute \
+    cast_slice_different_sizes zst_offset out_of_bounds_indexing \
+    not_unsafe_ptr_arg_deref; do
+    assert_file_contains "forbid lint '${lint}' が Cargo.toml に存在する" "${CARGO_TOML}" "${lint} = \"forbid\""
+done
+
+# deny 層 3 lint
+for lint in undocumented_unsafe_blocks unnecessary_safety_comment multiple_unsafe_ops_per_block; do
+    assert_file_contains "deny lint '${lint}' が Cargo.toml に存在する" "${CARGO_TOML}" "${lint} = \"deny\""
+done
+
+assert_file_contains "unsafe_op_in_unsafe_fn = deny が Cargo.toml に存在する" "${CARGO_TOML}" 'unsafe_op_in_unsafe_fn = "deny"'
+
+echo "===== オフライン層: ci.yml の ci-complete 集約ゲート構成 ====="
+CI_YML="${REPO_ROOT}/.github/workflows/ci.yml"
+
+assert_file_contains "ci-complete ジョブが存在する" "${CI_YML}" "ci-complete:"
+# ci-complete の判定対象（needs）が黙って縮小される退行を検知する。
+# .claude/rules/coding-rust.md が要求する fmt/clippy/test に加え、リポジトリ運用上の
+# doc/dep-audit/unsafe-triage も対象に含める（docs/design/ci-completion-criteria.md）。
+for job in fmt clippy test doc dep-audit unsafe-triage; do
+    assert_file_contains "ci-complete の needs（または依存ジョブ定義）に '${job}' 関連の記述がある" "${CI_YML}" "${job}"
+done
+
+if [ "${MODE}" = "offline" ]; then
+    echo
+    echo "===== 結果（--offline）: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} ====="
+    if [ "${FAIL_COUNT}" -ne 0 ]; then
+        exit 1
+    fi
+    exit 0
+fi
+
+# ==================================================
+# フル層: deny lint 検出テスト
+# PoC-9 模擬パターンを一時複製（git archive HEAD）へ注入し、cargo clippy が
+# 実際に forbid 層で検出することを実証する。作業ツリーは一切変更しない。
+# ==================================================
+
+check_command() {
+    local cmd="$1"
+    local install_hint="$2"
+    if ! command -v "${cmd}" >/dev/null 2>&1; then
+        echo "エラー: ${cmd} が見つかりません。次のコマンドで導入してください:" >&2
+        echo "  ${install_hint}" >&2
+        exit 2
+    fi
+}
+
+check_command "cargo" "https://rustup.rs/ の手順に従い導入してください"
+check_command "gh" "https://cli.github.com/ の手順に従い GitHub CLI を導入してください"
+
+echo "===== フル層: deny lint 検出テスト（PoC-9 模擬パターン注入） ====="
+
+CLONE_DIR="$(mktemp -d)"
+cleanup_clone() {
+    rm -rf "${CLONE_DIR}"
+}
+trap cleanup_clone EXIT
+
+# git archive HEAD で「コミット済みの内容」のみを複製する。作業ツリーの未コミット差分は
+# 複製に含めない（コミット済み内容に対する検証、.claude/rules/security.md A08 整合性）。
+git -C "${REPO_ROOT}" archive HEAD | tar -x -C "${CLONE_DIR}"
+
+TARGET_LIB="${CLONE_DIR}/crates/http/src/lib.rs"
+if [ ! -f "${TARGET_LIB}" ]; then
+    echo "エラー: ${TARGET_LIB} が見つかりません（crates/http のレイアウト変更を確認してください）" >&2
+    exit 2
+fi
+
+# PoC-9（docs/spec/03-poc/ai-first-maintainability/README.md）が実測した代表パターン:
+# with_capacity の直後に reserve/set_len で未初期化領域を露出させる。
+cat >> "${TARGET_LIB}" <<'RUST_EOF'
+
+// TASK-14.3（#41）受け入れテストが一時的に注入する PoC-9 模擬パターン。
+// scripts/tests/run-review-gate-tests.sh の実行時のみ複製ファイルへ追記され、
+// 作業ツリー（コミット対象）には一切含まれない。
+#[allow(dead_code)]
+fn __review_gate_test_uninit_vec(n: usize) -> Vec<u8> {
+    let mut v: Vec<u8> = Vec::with_capacity(n);
+    unsafe {
+        v.reserve(n);
+        v.set_len(n);
+    }
+    v
+}
+RUST_EOF
+
+set +e
+clippy_out="$(cd "${CLONE_DIR}" && cargo clippy -p bf-http -- -D warnings 2>&1)"
+clippy_exit=$?
+set -e
+
+if [ "${clippy_exit}" -ne 0 ]; then
+    pass "uninit_vec 注入パターンで cargo clippy が非 0 終了する"
+else
+    fail "uninit_vec 注入パターンで cargo clippy が exit 0 のまま（forbid lint が機能していない）"
+fi
+assert_contains "clippy 出力に uninit_vec が含まれる" "${clippy_out}" "uninit_vec"
+
+# #[allow] による抑制の試行 → forbid 層は E0453（allow が forbid と非互換）で
+# 抑制自体を許さないことを確認する（PoC-9「#[allow] で黙らせるべきではない」への対応）。
+sed -i \
+    's/#\[allow(dead_code)\]/#[allow(dead_code, clippy::uninit_vec, clippy::undocumented_unsafe_blocks)]/' \
+    "${TARGET_LIB}"
+
+set +e
+clippy_allow_out="$(cd "${CLONE_DIR}" && cargo clippy -p bf-http -- -D warnings 2>&1)"
+clippy_allow_exit=$?
+set -e
+
+if [ "${clippy_allow_exit}" -ne 0 ]; then
+    pass "#[allow(clippy::uninit_vec)] 変種でも cargo clippy が非 0 終了する（抑制不可）"
+else
+    fail "#[allow(clippy::uninit_vec)] 変種で cargo clippy が exit 0 になった（forbid 抑制不可の保証が破られている）"
+fi
+assert_contains "clippy 出力に E0453（forbid への allow 禁止）が含まれる" "${clippy_allow_out}" "E0453"
+
+# 作業ツリーを変更していないことを最終確認する（フェイルセーフ、A08 整合性）。
+if git -C "${REPO_ROOT}" status --porcelain -- crates/http/src/lib.rs | grep -q .; then
+    fail "作業ツリーの crates/http/src/lib.rs が変更されている（一時複製への注入に失敗し実ファイルを汚した疑い）"
+else
+    pass "作業ツリー（crates/http/src/lib.rs）は変更されていない"
+fi
+
+# ==================================================
+# フル層: ruleset 検証テスト（gh api）
+# ==================================================
+
+echo "===== フル層: ruleset main-required-checks の検証 ====="
+
+REPO_NWO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)"
+if [ -z "${REPO_NWO}" ]; then
+    fail "gh repo view でリポジトリを特定できない（gh auth login 未実施の可能性）"
+else
+    RULESETS_JSON="$(gh api "repos/${REPO_NWO}/rulesets" 2>/dev/null || echo '[]')"
+    RULESET_OBJ="$(printf '%s' "${RULESETS_JSON}" | jq -c \
+        --arg name "main-required-checks" '.[] | select(.name == $name)' | head -1)"
+
+    if [ -z "${RULESET_OBJ}" ]; then
+        fail "ruleset 'main-required-checks' が見つからない（setup-required-checks.sh 未実行の可能性）"
+    else
+        RULESET_ID="$(printf '%s' "${RULESET_OBJ}" | jq -r '.id')"
+        ENFORCEMENT="$(printf '%s' "${RULESET_OBJ}" | jq -r '.enforcement')"
+        if [ "${ENFORCEMENT}" = "active" ]; then
+            pass "ruleset 'main-required-checks' が active"
+        else
+            fail "ruleset 'main-required-checks' が active でない（enforcement=${ENFORCEMENT}）"
+        fi
+
+        RULESET_DETAIL="$(gh api "repos/${REPO_NWO}/rulesets/${RULESET_ID}" 2>/dev/null || echo '{}')"
+
+        if printf '%s' "${RULESET_DETAIL}" | jq -e \
+            '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[] | select(.context == "ci-complete")' \
+            >/dev/null 2>&1; then
+            pass "required_status_checks に ci-complete が含まれる"
+        else
+            fail "required_status_checks に ci-complete が含まれない"
+        fi
+
+        if printf '%s' "${RULESET_DETAIL}" | jq -e '.rules[] | select(.type == "pull_request")' >/dev/null 2>&1; then
+            pass "pull_request ルールが有効"
+        else
+            fail "pull_request ルールが存在しない（PR 必須化が未設定）"
+        fi
+
+        if printf '%s' "${RULESET_DETAIL}" | jq -e '.rules[] | select(.type == "non_fast_forward")' >/dev/null 2>&1; then
+            pass "non_fast_forward ルールが有効"
+        else
+            fail "non_fast_forward ルールが存在しない（force push 禁止が未設定）"
+        fi
+
+        if printf '%s' "${RULESET_DETAIL}" | jq -e '.rules[] | select(.type == "deletion")' >/dev/null 2>&1; then
+            pass "deletion ルールが有効"
+        else
+            fail "deletion ルールが存在しない（ブランチ削除禁止が未設定）"
+        fi
+
+        BYPASS_LEN="$(printf '%s' "${RULESET_DETAIL}" | jq '.bypass_actors | length')"
+        if [ "${BYPASS_LEN}" = "0" ]; then
+            pass "bypass_actors が空（例外経路なし）"
+        else
+            fail "bypass_actors が空でない（例外経路が設定されている、fail-closed 違反の疑い: ${BYPASS_LEN} 件）"
+        fi
+    fi
+fi
+
+echo
+echo "===== 結果: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} ====="
+if [ "${FAIL_COUNT}" -ne 0 ]; then
+    exit 1
+fi
+exit 0

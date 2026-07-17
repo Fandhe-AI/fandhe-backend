@@ -8,7 +8,9 @@ TASK-12.1-1（#79）で、audit 指摘・`unsafe` 追加を検知したときの
 [`.claude/rules/improvement-proposal.md`](../.claude/rules/improvement-proposal.md) として
 整備済みである。本 README は各スクリプトの使い方・CI との対応関係を説明するに留める。
 TASK-14.1（#39）で、CI 完遂判定基準（REQ-14）を branch protection に反映する
-`setup-required-checks.sh` を追加した。
+`setup-required-checks.sh` を追加した。TASK-14.3（#41）で、同スクリプトへ PR 必須化・
+force push/削除禁止のルールを追加し、受け入れテスト `tests/run-review-gate-tests.sh` を
+新設した（`docs/design/review-gate.md` 参照）。
 
 ## スクリプト一覧
 
@@ -20,7 +22,8 @@ TASK-14.1（#39）で、CI 完遂判定基準（REQ-14）を branch protection �
 | `dep-impact.sh` | feature 構成ごとの依存クレート数・リリースバイナリサイズ・`unsafe` 件数を計測し markdown 表を出力する | CI からは呼ばれない。plugin 追加 PR でのローカル実行を想定（`docs/dep-impact/README.md` 参照） |
 | `unsafe-baseline.json` | `unsafe-triage.sh` のラチェット判定に使うクレート別ベースライン（コミット対象） | `unsafe-triage.sh --update-baseline` で再生成する |
 | `tests/run-triage-tests.sh` | `audit-triage.sh` / `unsafe-triage.sh` のセルフテスト（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
-| `setup-required-checks.sh` | default branch の repository ruleset に `.github/workflows/ci.yml` の集約ゲートジョブ `ci-complete` を required status check として設定する | CI からは呼ばれない。管理者権限を持つ人間・CI 管理者がローカルで 1 回実行する運用（`docs/design/ci-completion-criteria.md` 参照） |
+| `setup-required-checks.sh` | default branch の repository ruleset に `ci-complete` required status check・PR 必須化・force push/削除禁止を設定する | CI からは呼ばれない。管理者権限を持つ人間・CI 管理者がローカルで 1 回実行する運用（`docs/design/ci-completion-criteria.md`・`docs/design/review-gate.md` 参照） |
+| `tests/run-review-gate-tests.sh` | レビューゲート運用（TASK-14.3）の受け入れテスト。`--offline` は lint 表・ci.yml 構成の存在確認のみ（CI 常設）、既定モードは deny lint 検出・ruleset 検証を含むフル層（受け入れ実施時に手動/任意実行） | `--offline` は `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 
 ## 前提ツール
 
@@ -34,7 +37,7 @@ TASK-14.1（#39）で、CI 完遂判定基準（REQ-14）を branch protection �
 | `cargo-audit` | RustSec advisory DB による既知脆弱性検知 | `cargo install --locked cargo-audit@0.22.2` |
 | `jq` | `cargo metadata`・`cargo audit --json` の JSON 解析（`audit-triage.sh`・`unsafe-triage.sh` も使用）・`setup-required-checks.sh` の ruleset ペイロード生成 | OS のパッケージマネージャ（例: `apt install jq`） |
 | `cargo-geiger`（`dep-impact.sh` のみ、任意） | `unsafe` 件数の計測 | `cargo install --locked cargo-geiger` |
-| `gh`（`setup-required-checks.sh` のみ） | repository ruleset API 呼び出し（`gh auth login` 済みの認証を利用） | https://cli.github.com/ |
+| `gh`（`setup-required-checks.sh`・`tests/run-review-gate-tests.sh` のフル層 ruleset 検証のみ） | repository ruleset API 呼び出し（`gh auth login` 済みの認証を利用） | https://cli.github.com/ |
 
 ## `setup-required-checks.sh` — required status check の設定
 
@@ -46,10 +49,31 @@ bash scripts/setup-required-checks.sh
   ゲートジョブ）を required status check とする repository ruleset を作成・更新する。
 - 同名 ruleset（`main-required-checks`）が既にあれば更新、無ければ新規作成するため
   複数回実行しても安全（冪等）。
-- required_status_checks のみを設定する。PR 必須化・人間承認必須・force push 禁止などは
-  TASK-14.3（#41、担当: 人間）のスコープであり本スクリプトは変更しない。
+- TASK-14.3（#41）以降、required_status_checks に加えて `pull_request`
+  （`required_approving_review_count: 0`、main への直 push 禁止）・`non_fast_forward`
+  （force push 禁止）・`deletion`（ブランチ削除禁止）を設定する。承認数・strict policy を
+  含む運用定義は `docs/design/review-gate.md` を参照。
 - リポジトリ管理者権限が無いトークンで実行すると 403 で失敗する。その場合は本スクリプトを
   握りつぶさず、権限を持つ人間が手動実行する。
+
+## `tests/run-review-gate-tests.sh` — レビューゲート運用の受け入れテスト（TASK-14.3、#41）
+
+```bash
+bash scripts/tests/run-review-gate-tests.sh --offline  # CI 常設・軽量（ネットワーク/cargo 不要）
+bash scripts/tests/run-review-gate-tests.sh            # フル層（受け入れ実施時に手動/任意実行）
+```
+
+- `--offline`: `Cargo.toml` の `[workspace.lints.clippy]`/`[workspace.lints.rust]` の
+  lint 表と `.github/workflows/ci.yml` の `ci-complete` 集約構成が退行していないかを
+  静的に確認する。`unsafe-triage` ジョブから常時呼ばれる。
+- フル層（既定）: 上記に加えて (1) `git archive HEAD` による一時複製へ PoC-9 模擬パターンを
+  注入し `cargo clippy` が `uninit_vec` で失敗し `#[allow]` 変種が `E0453` で失敗することを
+  確認する deny lint 検出テスト、(2) `gh api` で ruleset `main-required-checks` の
+  `pull_request`/`non_fast_forward`/`deletion`/`required_status_checks` を確認する
+  ruleset 検証テストを実行する。いずれもリポジトリの作業ツリー・共有設定を変更しない
+  読み取り専用テストである。
+- 詳細（レビューゲートの定義・受け入れテストの設計判断・実施記録）は
+  `docs/design/review-gate.md` を参照。
 
 ## `dep-audit.sh` — 依存監査
 
