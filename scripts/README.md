@@ -3,9 +3,10 @@
 `docs/spec/05-tasks.md` TASK-15.2（#17）の成果物。依存監査（`cargo audit` / `cargo deny
 check`）と依存インパクト計測を、feature 構成の増減に追従できる形でまとめたスクリプト集。
 TASK-12.1-1（#79）で、audit 指摘・`unsafe` 追加を検知したときのトリアージ（分類・推奨
-アクション提示）ロジックを追加した。改善提案フロー・運用規約そのもののドキュメント化は
-TASK-12.1-2（#80）のスコープであり、本 README は各スクリプトの使い方・CI との対応関係を
-説明するに留める。
+アクション提示）ロジックを追加した。改善提案フロー・運用規約は TASK-12.1-2（#80）で
+[`docs/design/improvement-proposal-flow.md`](../docs/design/improvement-proposal-flow.md)・
+[`.claude/rules/improvement-proposal.md`](../.claude/rules/improvement-proposal.md) として
+整備済みである。本 README は各スクリプトの使い方・CI との対応関係を説明するに留める。
 TASK-14.1（#39）で、CI 完遂判定基準（REQ-14）を branch protection に反映する
 `setup-required-checks.sh` を追加した。
 

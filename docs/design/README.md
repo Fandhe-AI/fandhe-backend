@@ -15,3 +15,6 @@
   （TASK-8.2-1、REQ-8・Conditional Go 条件(2) 対応）
 - [`ci-completion-criteria.md`](./ci-completion-criteria.md): CI 完遂判定基準の実装
   （TASK-14.1、#39、REQ-14。機械判定とレビューゲートの責務分界を記述）
+- [`improvement-proposal-flow.md`](./improvement-proposal-flow.md): 改善提案フロー
+  （TASK-12.1-2、#80、REQ-12(a)。検知 → トリアージ → 提案 → 承認 → 実装 → 検証ゲート →
+  クローズの各段階と 4 分析軸の入力ソース対応を記述）
