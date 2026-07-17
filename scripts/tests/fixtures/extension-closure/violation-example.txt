@@ -1,0 +1,6 @@
+crates/plugin-example/Cargo.toml
+crates/plugin-example/src/lib.rs
+crates/core/src/plugin.rs
+crates/http/src/response.rs
+crates/routes/src/router.rs
+docs/design/plugin-boundary.md
