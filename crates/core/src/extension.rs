@@ -34,7 +34,7 @@
 //! [`Middleware::on_response`] の実装は同期ブロッキング I/O を行ってはならない
 //! （PoC-3 実測でスループットが最大 25% 劣化する）。ロギング等で I/O が必要な
 //! 実装は非同期チャネルへの送信に留め、実際の I/O は別タスクで行う契約とする
-//! （詳細規約は TASK-2.3 で AGENTS.md 等に整備予定）。
+//! （詳細規約は TASK-2.3 で `AGENTS.md` に整備済み）。
 
 use bf_http::request::RequestHead;
 use std::time::Duration;
