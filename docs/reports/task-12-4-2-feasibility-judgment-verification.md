@@ -11,7 +11,7 @@ TASK-12.4-2（#86、REQ-12）の再検証レポート。プロトコル・タス
 |------|-----|
 | 実装セッション着手時点の origin/main コミット | `840366a`（`feat(global): TASK-12.2-1 機能要求→実装→テストの一貫改修フロー整備 #119`） |
 | タスク定義ファイル固定コミット | 本レポートを含む実装コミット自身（`git log -- docs/reports/task-12-4-2-task-definitions.md` で確認できる直近のコミット）。実測定実施時は当該コミットハッシュをここに追記し、後出しでの正解ラベル変更がないことを示す |
-| TASK-12.3-2（#84、判定規約の機構組み込み・検証） | 本書執筆時点で未マージ（PR #121）。ハーネスは内蔵の最小チェック（`check_required_fields_builtin`）で判断根拠提示割合を代替算出している（`third-party-feasibility-verify.sh` 参照） |
+| TASK-12.3-2（#84、判定規約の機構組み込み・検証） | マージ済み（PR #121、`ac41b51`）。`scripts/feasibility-check.sh` が存在するため、ハーネスは判断根拠提示割合の判定を同スクリプトへ委譲する（`FIELDS_CHECK_SOURCE` に記録経路が出力される。`third-party-feasibility-verify.sh` 参照） |
 | TASK-12.4-1（#85、自律完遂率の第三者再検証） | 本書執筆時点で未マージ。`docs/design/third-party-verification.md` は存在しないため、本書はそれを参照せず自己完結で記述している |
 
 ## 2. 実測定が PENDING である理由
@@ -70,11 +70,11 @@ PoC-9 の可否判定正解率（5/5、100%）との対比は、本レポート�
 
 ## 6. 未了前提（本書執筆時点の状態）
 
-- **TASK-12.3-2（#84、PR #121）未マージ**: マージされ次第、`third-party-feasibility-verify.sh`
-  の判断根拠提示割合の判定を `scripts/feasibility-check.sh` へ置き換える想定
-  （`check_required_fields` 関数のみを更新すればよい設計）。置き換え後は本レポートへ
-  使用したロジックの種別（`feasibility-check.sh` 経由か内蔵チェックか、ハーネスの出力
-  「根拠提示割合の判定ロジック」欄に自動記載される）を記録する。
+- **TASK-12.3-2（#84、PR #121）マージ済み**: `scripts/feasibility-check.sh` が存在するため、
+  `third-party-feasibility-verify.sh` は判断根拠提示割合の判定を同スクリプトへ自動委譲する
+  （`check_required_fields` 関数がスクリプトの有無を検知して切り替える設計、追加のコード
+  変更は不要）。実測定実施時のハーネス出力「根拠提示割合の判定ロジック」欄には
+  `scripts/feasibility-check.sh（TASK-12.3-2、#84）へ委譲` と記載される。
 - **TASK-12.4-1（#85）未マージ**: `docs/design/third-party-verification.md` が存在しない
   ため、本書・[`third-party-feasibility-verification.md`](../design/third-party-feasibility-verification.md)
   はそれへの参照差し替えを行わず自己完結で記述している。#85 マージ後、両ドキュメントの
