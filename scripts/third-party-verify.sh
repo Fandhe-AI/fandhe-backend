@@ -42,15 +42,30 @@ BASELINE_TESTS=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --worktree)
-            WORKTREE="${2:-}"
+            if [ $# -lt 2 ]; then
+                echo "[PENDING] --worktree には値が必要です" >&2
+                usage
+                exit 2
+            fi
+            WORKTREE="$2"
             shift 2
             ;;
         --task-id)
-            TASK_ID="${2:-}"
+            if [ $# -lt 2 ]; then
+                echo "[PENDING] --task-id には値が必要です" >&2
+                usage
+                exit 2
+            fi
+            TASK_ID="$2"
             shift 2
             ;;
         --baseline-tests)
-            BASELINE_TESTS="${2:-}"
+            if [ $# -lt 2 ]; then
+                echo "[PENDING] --baseline-tests には値が必要です" >&2
+                usage
+                exit 2
+            fi
+            BASELINE_TESTS="$2"
             shift 2
             ;;
         -h|--help)
@@ -113,10 +128,20 @@ run_gate() {
 GATE_LOG="$(mktemp)"
 TEST_LOG="$(mktemp)"
 TEST_RC_FILE="$(mktemp)"
-trap 'rm -f "${GATE_LOG}" "${TEST_LOG}" "${TEST_RC_FILE}"' EXIT
 
 overall_fail=0
 pending_note=""
+
+# 失敗時（overall_fail=1）は GATE_LOG / TEST_LOG を残し、評価者が FAIL メッセージが
+# 指すログを事後に復元できるようにする（レビュー指摘、Issue #85）。TEST_RC_FILE は
+# 単なる内部の終了コード受け渡しでしかなく、失敗理由の復元には使わないため常に削除する。
+cleanup() {
+    rm -f "${TEST_RC_FILE}"
+    if [ "${overall_fail}" -eq 0 ]; then
+        rm -f "${GATE_LOG}" "${TEST_LOG}"
+    fi
+}
+trap cleanup EXIT
 
 echo "==================================================="
 echo "第三者検証ハーネス — タスク ${TASK_ID}（worktree: ${WORKTREE}）"
@@ -193,13 +218,23 @@ if [ "${overall_fail}" -eq 0 ]; then
             }
             baseline_failed="$(extract_failed_tests "${BASELINE_TESTS}" || true)"
             current_failed="$(extract_failed_tests "${TEST_LOG}" || true)"
-            new_failed="$(comm -13 <(printf '%s\n' "${baseline_failed}") <(printf '%s\n' "${current_failed}") 2>/dev/null | grep -v '^$' || true)"
-            if [ -n "${new_failed}" ]; then
-                echo "[FAIL] リグレッション検出: 起点コミットで PASS していたテストが失敗しています"
-                printf '%s\n' "${new_failed}"
+            # nextest が非 0 終了したにもかかわらず FAIL/TIMEOUT 行を 1 件も検出できない
+            # 場合、ビルド失敗や `#[cfg(test)]` コードの破損など FAIL/TIMEOUT 行を出さない
+            # 種類のエラーである可能性が高い。この場合 new_failed は空集合になり得るため、
+            # baseline 突合に判定を委ねず即座に FAIL とする（レビュー指摘、Issue #85。
+            # 完遂率判定を楽観方向に歪めないというプロトコルの方針に従う）。
+            if [ -n "${test_rc}" ] && [ "${test_rc}" -ne 0 ] && [ -z "${current_failed}" ]; then
+                echo "[FAIL] cargo nextest run --workspace --all-features --profile ci（終了コード ${test_rc}）だが FAIL/TIMEOUT 行を検出できませんでした。ビルド失敗等の非テスト起因のエラーの可能性があります。ログ: ${TEST_LOG}"
                 overall_fail=1
             else
-                echo "[PASS] リグレッションなし（起点コミットとの突合）"
+                new_failed="$(comm -13 <(printf '%s\n' "${baseline_failed}") <(printf '%s\n' "${current_failed}") 2>/dev/null | grep -v '^$' || true)"
+                if [ -n "${new_failed}" ]; then
+                    echo "[FAIL] リグレッション検出: 起点コミットで PASS していたテストが失敗しています"
+                    printf '%s\n' "${new_failed}"
+                    overall_fail=1
+                else
+                    echo "[PASS] リグレッションなし（起点コミットとの突合）"
+                fi
             fi
         fi
     else
