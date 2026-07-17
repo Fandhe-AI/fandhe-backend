@@ -44,10 +44,11 @@ backend-framework/
 │   ├── plugin-webrtc                  # in-process WebRTC プラグイン（`webrtc-rs` 直接依存、TASK-8.1、#26。
 │   │                                    # `crates/core` の `webrtc` feature 経由で配線。攻撃表面が大きいため
 │   │                                    # `plugin-webrtc-proxy` が MVP 推奨、クレート境界で完全分離）
-│   ├── plugin-graphql                 # GraphQL プラグイン境界の最小実装（`POST /graphql` 固定応答、
-│   │                                    # TASK-2.4、#21）。REQ-2 の「2 種のプラグイン着脱」受け入れ
-│   │                                    # 基準を webrtc-proxy と共に実証する第 2 インスタンス。
-│   │                                    # 実 GraphQL 実行（async-graphql 統合）は TASK-5.1、#38 のスコープ
+│   ├── plugin-graphql                 # GraphQL プラグイン（パスインターセプト型、TASK-2.4、#21 で境界確立。
+│   │                                    # REQ-2 の「2 種のプラグイン着脱」受け入れ基準を webrtc-proxy と共に
+│   │                                    # 実証する第 2 インスタンス。TASK-5.1、#38 で async-graphql による
+│   │                                    # 実クエリ実行へ実装。`Server::graphql` にスキーマ登録した場合のみ
+│   │                                    # `POST /graphql` を処理し、未登録時は feature 有効でもフォールスルー）
 │   ├── plugin-openapi                 # OpenAPI ドキュメント生成プラグイン（ApiDoc + utoipa::path 定義、TASK-3.1、#30。
 │   │                                   # gen-openapi CLI・openapi.json 静的埋め込み、TASK-3.2、#31）
 │   ├── plugin-websocket                # WebSocket プラグイン（RFC 6455 ハンドシェイク検証・101 応答・

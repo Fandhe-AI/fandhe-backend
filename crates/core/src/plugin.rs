@@ -41,7 +41,10 @@ use crate::server::Server;
 /// `bf-plugin-webrtc-proxy`・`bf-plugin-webrtc`・`bf-plugin-graphql` のいずれも
 /// 現れないことに加え、本関数自体もコード上ゼロコストであることの根拠）。
 /// `graphql` feature は TASK-2.4（#21）で追加した第 2 のプラグイン境界
-/// インスタンス（`crates/plugin-graphql` の doc を参照）。
+/// インスタンスであり、TASK-5.1（#38）で実 GraphQL 実行へ差し替えた
+/// （`crates/plugin-graphql` の doc を参照）。`webrtc-proxy`・`webrtc` と
+/// 同じ設定登録型パターンのため、スキーマ未登録時は feature が有効でも
+/// フォールスルーする。
 ///
 /// `webrtc-proxy`・`webrtc` が同時に有効な場合（`--all-features` CI 構成）は
 /// `webrtc-proxy`（別プロセス切り出し型、REQ-8 の MVP 推奨方式）を先に評価する。
@@ -74,12 +77,16 @@ pub(crate) async fn try_intercept(
         }
     }
 
-    // TASK-2.4（#21）: REQ-2 の「2 種のプラグイン着脱」受け入れ基準を実証する
-    // 第 2 のパスインターセプト型プラグイン（`crates/plugin-graphql` の doc を
-    // 参照）。webrtc-proxy と同型の cfg-gated 分岐パターンをそのまま踏襲する。
+    // TASK-5.1（#38）: REQ-2 の「2 種のプラグイン着脱」受け入れ基準を実証した
+    // TASK-2.4（#21）の固定応答スタブを実 GraphQL 実行へ差し替えた
+    // （`crates/plugin-graphql` の doc を参照）。webrtc-proxy と同型の
+    // 設定登録型パターン（`server.graphql_config()` が `Some` のときのみ実行）
+    // を踏襲し、未登録時は feature が有効でもフォールスルーする。
     #[cfg(feature = "graphql")]
     {
-        if let Some(response) = bf_plugin_graphql::try_handle_graphql(head) {
+        if let Some(config) = server.graphql_config()
+            && let Some(response) = bf_plugin_graphql::try_handle_graphql(head, body, config).await
+        {
             return Some(from_graphql_response(response));
         }
     }

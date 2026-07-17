@@ -4,18 +4,59 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "backend-framework の GraphQL プラグイン境界最小実装（TASK-2.4 / #21）。REQ-2 の「少なくとも2種のプラグインを feature flag で着脱できる」受け入れ基準向けに、パスインターセプト型のプラグイン境界パターンを webrtc-proxy とは独立した第 2 のインスタンスとして実証する。実 GraphQL 実行（async-graphql 等）は TASK-5.1（#38）のスコープであり、本クレートは POST /graphql への固定応答に限定する。"
+description = "backend-framework の GraphQL プラグイン実装（TASK-5.1 / #38）。パスインターセプト型のプラグイン境界パターン（TASK-2.4 / #21 で確立、webrtc-proxy と並ぶ第 2 インスタンス）を維持したまま、async-graphql による実クエリ実行へ内部実装を差し替える。"
 publish = false
 
-# workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
-# （.claude/rules/coding-rust.md・.claude/rules/security.md）。
-[lints]
-workspace = true
+# workspace lints をそのまま継承しない特例（`docs/design/unsafe-deny-lints.md`
+# 第 1 層の `forbid` クレート限定緩和）。`async_graphql::Object` 派生マクロは
+# 生成コードへ `#[allow(clippy::all, clippy::pedantic, ...)]` を無条件付与する
+# （`async-graphql-derive` の実装、`clippy::all` は `uninit_vec` 等の forbid 対象
+# lint を含むグループ）。workspace の forbid（`#[allow]` によるコード側抑制自体を
+# コンパイルエラーにする設計、`docs/design/unsafe-deny-lints.md`）下では
+# `E0453: allow(...) incompatible with previous forbid` として本クレートが
+# ビルド不能になるため、本クレートに限り第 1 層の対象 lint を `deny` へ
+# 局所ダウングレードする。`deny` は clippy 既定の重大度と同一であり
+# （`docs/design/unsafe-deny-lints.md` の「clippy デフォルトで既に deny」を参照）、
+# `#[allow]` による局所抑制は許容するようになるが、それは本クレート自身が
+# 書く `unsafe`（0 件、`.claude/rules/coding-rust.md`）や危険パターンへの
+# 検出力を弱めるものではない（本クレートの手書きコードに `#[allow(clippy::...)]`
+# を追加していないことは `git diff`・レビューで確認可能）。`rust` 側 lint
+# （`unsafe_code` / `missing_docs` / `unsafe_op_in_unsafe_fn`）・第 2 層
+# （`undocumented_unsafe_blocks` 等）は workspace と同一値を維持する。
+[lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
 
-# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）: 本クレートは
-# async-graphql 等の実行時依存を一切持たない（TASK-5.1 / #38 のスコープ）。
-# `bf-http` のみを workspace 内 path 依存として持ち、外部 crates.io 依存は
-# 0 件に保つ。`cargo tree -p bf-plugin-graphql` で `bf-http` 以外の依存が
-# 出ないことを継続的に確認する。
+[lints.clippy]
+uninit_vec = "deny"
+uninit_assumed_init = "deny"
+mem_replace_with_uninit = "deny"
+transmuting_null = "deny"
+wrong_transmute = "deny"
+unsound_collection_transmute = "deny"
+eager_transmute = "deny"
+cast_slice_different_sizes = "deny"
+zst_offset = "deny"
+out_of_bounds_indexing = "deny"
+not_unsafe_ptr_arg_deref = "deny"
+undocumented_unsafe_blocks = "deny"
+unnecessary_safety_comment = "deny"
+multiple_unsafe_ops_per_block = "deny"
+
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）: async-graphql の
+# 推移的依存（PoC 実測 +95 クレート、バイナリ +1.51MB）はコア・他プラグインへ
+# 波及させず、`graphql` feature（crates/core/Cargo.toml、`optional = true` +
+# `dep:` 構文）を通じてのみ本クレートごと依存グラフへ載る。playground /
+# graphiql 等の開発 UI 系 feature は使わないため `default-features = false` と
+# し、実行に必要な最小 feature のみ個別に有効化する。`cargo tree -p
+# bf-plugin-graphql` で不要依存が混入していないことを継続的に確認する。
 [dependencies]
 bf-http = { path = "../http" }
+async-graphql = { version = "7", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 単体テスト（`#[tokio::test]`）でのみ使用。本体ビルドには影響しない。
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
