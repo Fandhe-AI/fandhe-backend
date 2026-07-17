@@ -32,6 +32,10 @@
   （TASK-14.2、#40、REQ-14。forbid/deny 2 層 lint テーブルの選定根拠とネガティブ検証）
 - [`review-gate.md`](./review-gate.md): レビューゲート運用定義・受け入れテスト
   （TASK-14.3、#41、REQ-14。PR 必須化・force push/削除禁止の ruleset 拡張と受け入れテスト実施記録）
+- [`third-party-feasibility-verification.md`](./third-party-feasibility-verification.md):
+  可否判定正解率の第三者再検証プロトコル（TASK-12.4-2、#86、REQ-12。PoC-9 T-11〜T-15 の
+  セルフ実験バイアスを排除するための 3 役分離・タスクセット N=10・機械採点ハーネスの
+  設計を記述。自律完遂率の再検証は TASK-12.4-1／#85 のスコープ）
 - [`fuzzing.md`](./fuzzing.md): fuzz 実行環境（nightly / 代替 fuzzer）の整備
   （TASK-15.3-1、#87、Conditional Go 条件(4)。cargo-fuzz 選定根拠・nightly pin 方針・
   fuzz target 一覧・smoke（CI 常設）と本実行（#88）の 2 段構えを記述）

@@ -41,6 +41,8 @@ TASK-12.3-2（#84）で、対応可否自律判断ガードレール（TASK-12.3
 | `tests/run-guardrail-tests.sh` | `feasibility-check.sh` のセルフテスト（PoC-9 T-11〜T-15 判定例 fixture・正常系・異常系、ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `third-party-verify.sh` | TASK-12.4-1（#85）第三者検証ハーネス。被験 AI（別セッション・別モデル）が実装した使い捨て worktree に対し `fmt --check` / `clippy -D warnings` / `cargo nextest run --profile ci` + `cargo test --doc` を実行し PASS/FAIL/PENDING を判定する | CI からは呼ばれない。TASK-12.4-1 の完遂率再測定を実施する際にローカルで呼び出す運用（`docs/design/third-party-verification.md` 参照） |
 | `tests/run-third-party-verify-tests.sh` | `third-party-verify.sh` のセルフテスト。`--offline` は引数検証・PENDING 判定のみ（cargo ビルド不要）、既定モードは fixture worktree を作成して PASS/FAIL 検出まで確認するフル層 | CI からは呼ばれない（フル層は cargo ビルドを伴い時間を要するため） |
+| `third-party-feasibility-verify.sh` | 可否判定正解率の第三者再検証（TASK-12.4-2、#86）の機械採点ハーネス。タスク定義（正解ラベル）と被験 AI の判定記録を突き合わせ、正解率・誤判定による破壊・判断根拠提示割合を算出する | CI からは呼ばれない。人間が実測定時にローカル/手動実行する（`docs/design/third-party-feasibility-verification.md` 参照） |
+| `tests/run-third-party-feasibility-tests.sh` | `third-party-feasibility-verify.sh` のセルフテスト（ネットワーク・cargo ビルド不要、合成 fixture で採点ロジックのみを検証） | CI からは呼ばれない（Rust 非変更の範囲でローカル/任意実行を想定） |
 
 ## 前提ツール
 
@@ -271,3 +273,53 @@ warnings` / `cargo nextest run --workspace --all-features --profile ci`（テス
 `tests/run-third-party-verify-tests.sh` はこのハーネス自体のセルフテスト。`--offline`
 は引数検証・PENDING 判定のみ（高速）、既定モードは fixture worktree を作成し PASS/FAIL
 検出まで確認するフル層（cargo ビルドを伴うため時間を要する。CI からは呼ばれない）。
+
+## `third-party-feasibility-verify.sh` — 可否判定正解率の第三者再検証・機械採点（TASK-12.4-2、#86）
+
+```bash
+bash scripts/third-party-feasibility-verify.sh \
+  --task-definitions docs/reports/task-12-4-2-task-definitions.md \
+  --records-dir <被験 AI の判定記録ディレクトリ> \
+  [--worktrees-dir <被験 worktree ディレクトリ>] \
+  [--output <report.md>]
+```
+
+- PoC-9（`docs/spec/03-poc/ai-first-maintainability/README.md` T-11〜T-15）の可否判定
+  正解率 100% は検証者=被験 AI のセルフ実験による自己評価バイアスを排除できていない。
+  本スクリプトはタスク設計者・被験 AI・評価者の 3 役分離を機構面で支える評価者役として、
+  事前確定したタスクセット（`docs/reports/task-12-4-2-task-definitions.md` の正解ラベル）
+  と被験 AI の判定記録を突き合わせ、可否判定正解率・誤判定による破壊件数・判断根拠
+  提示割合を機械的に算出する。
+- 判定記録・被験 worktree は信頼できない入力として扱い、`## <見出し>` 単位の完全一致
+  セクション抽出（`awk`）のみで採点する（`eval`・コマンド置換への再解釈なし、
+  `audit-triage.sh`・`feasibility-check.sh` と同一方針）。判定記録は
+  `docs/design/feasibility-guardrail.md`・`scripts/feasibility-check.sh --template` と
+  同一の見出し形式を前提とする。判定記録の欠落・形式不備は常に不正解・根拠不足側へ
+  倒す（fail-closed）。
+- `scripts/feasibility-check.sh`（TASK-12.3-2、#84、マージ済み）が存在する場合は判断
+  根拠提示割合の形式検証をそれへ委譲し、存在しない構成でのみ内蔵の最小チェックで
+  代替する。
+- `--worktrees-dir` 未指定時、誤判定による破壊は PENDING として区別する（0 件と偽らない）。
+- 終了コードは `0`（採点完了・破壊なし）/ `1`（誤判定による破壊を検知、フェイルクローズ）/
+  `2`（引数・入力エラー）。正解率・根拠提示割合自体は情報提示に留め、CI ゲートとしては
+  組み込まない（閾値判定は人間レビュー・TASK-12.7 のスコープ）。
+- 詳細設計・3 役分離・タスクセット構成・実施手順は
+  [`docs/design/third-party-feasibility-verification.md`](../docs/design/third-party-feasibility-verification.md)
+  を参照。実測定は本 README 執筆時点で未実施（PENDING）であり、
+  [`docs/reports/task-12-4-2-feasibility-judgment-verification.md`](../docs/reports/task-12-4-2-feasibility-judgment-verification.md)
+  に引き継ぎ事項を記録している。
+
+## `tests/run-third-party-feasibility-tests.sh` — 採点ハーネスのセルフテスト（TASK-12.4-2、#86）
+
+```bash
+bash scripts/tests/run-third-party-feasibility-tests.sh
+```
+
+- ネットワーク・cargo ビルド不要。`scripts/tests/fixtures/feasibility-verify-correct`
+  （全件正解）・`feasibility-verify-mixed`（過剰エスカレーション・見落とし・記録欠落・
+  形式不備の混在）と、一時的に生成する git リポジトリ（誤判定による破壊の検知）で
+  `third-party-feasibility-verify.sh` の採点ロジックを検証する。
+- **注意**: 本セルフテストが green であることは「採点ハーネスの算出ロジックが正しく
+  動くこと」の確認に過ぎない。独立した被験 AI による実測定が REQ-12 の閾値（80% 以上）
+  を達成したことを意味しない。両者を混同しないこと
+  （`docs/design/third-party-feasibility-verification.md` 8 節）。
