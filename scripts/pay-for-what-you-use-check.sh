@@ -358,6 +358,14 @@ if [ "${SKIP_BUILD_STEPS}" -eq 0 ] && [ -z "${SIZE_NEGATIVE}" ] && [ -z "${SIZE_
         size_negative="$(stat -c '%s' "${negative_bin}" 2>/dev/null || stat -f '%z' "${negative_bin}")"
     else
         fail "d: バイナリサイズ計測（無効構成ビルド） — cargo build に失敗しました（/tmp/pfwu-check-build-negative.log 参照）"
+        # /tmp 配下のログは CI ランナー上でジョブ終了後に消え、GitHub Actions の
+        # ログにも残らない（geiger と同じ理由。Bugbot レビュー PR #134/#19 指摘対応）。
+        # 原因調査を次回実行で即座に行えるよう、stdout（CI ログに残る）へも出力する。
+        if [ -f /tmp/pfwu-check-build-negative.log ]; then
+            echo "----- cargo build stderr（無効構成, /tmp/pfwu-check-build-negative.log） -----"
+            sed 's/^/[build-negative] /' /tmp/pfwu-check-build-negative.log || true
+            echo "----- ここまで -----"
+        fi
     fi
 
     echo "==> cargo build --release --example minimal（--all-features）" >&2
@@ -365,6 +373,11 @@ if [ "${SKIP_BUILD_STEPS}" -eq 0 ] && [ -z "${SIZE_NEGATIVE}" ] && [ -z "${SIZE_
         size_positive="$(stat -c '%s' "${positive_bin}" 2>/dev/null || stat -f '%z' "${positive_bin}")"
     else
         fail "d: バイナリサイズ計測（有効構成ビルド） — cargo build に失敗しました（/tmp/pfwu-check-build-positive.log 参照）"
+        if [ -f /tmp/pfwu-check-build-positive.log ]; then
+            echo "----- cargo build stderr（--all-features, /tmp/pfwu-check-build-positive.log） -----"
+            sed 's/^/[build-positive] /' /tmp/pfwu-check-build-positive.log || true
+            echo "----- ここまで -----"
+        fi
     fi
 
     if [ -z "${SYMBOLS_FILE}" ]; then
@@ -414,24 +427,45 @@ elif [ "${#plugin_entries[@]}" -eq 0 ]; then
     fail "e: 全構成ビルド検証 — プラグイン feature が列挙できていないため実行できません（(a) 参照）"
 else
     build_failed=()
+    # (c)(d) と同じ理由で、self-hosted ランナー上の共有 target ディレクトリを
+    # そのまま使うとジョブ間の並行ビルドが成果物・増分メタデータを汚染し、この
+    # ステップだけがフレークする（Bugbot レビュー PR #134/#19 指摘対応）。
+    # --target-dir で専用ディレクトリに隔離し、他ジョブの状態に左右されない
+    # 決定的な実行にする。
+    build_target_dir_e="${TARGET_DIR}-e"
+    build_failed_logs=()
 
-    if ! cargo build -p "${CORE_PACKAGE}" --no-default-features 2>/tmp/pfwu-check-build-e-negative.log; then
+    if ! cargo build -p "${CORE_PACKAGE}" --no-default-features --target-dir "${build_target_dir_e}" 2>/tmp/pfwu-check-build-e-negative.log; then
         build_failed+=("--no-default-features")
+        build_failed_logs+=("/tmp/pfwu-check-build-e-negative.log")
     fi
 
     for entry in "${plugin_entries[@]}"; do
         feature="${entry%%:*}"
-        if ! cargo build -p "${CORE_PACKAGE}" --no-default-features --features "${feature}" 2>"/tmp/pfwu-check-build-e-${feature}.log"; then
+        if ! cargo build -p "${CORE_PACKAGE}" --no-default-features --features "${feature}" --target-dir "${build_target_dir_e}" 2>"/tmp/pfwu-check-build-e-${feature}.log"; then
             build_failed+=("--features ${feature}")
+            build_failed_logs+=("/tmp/pfwu-check-build-e-${feature}.log")
         fi
     done
 
-    if ! cargo build -p "${CORE_PACKAGE}" --all-features 2>/tmp/pfwu-check-build-e-all.log; then
+    if ! cargo build -p "${CORE_PACKAGE}" --all-features --target-dir "${build_target_dir_e}" 2>/tmp/pfwu-check-build-e-all.log; then
         build_failed+=("--all-features")
+        build_failed_logs+=("/tmp/pfwu-check-build-e-all.log")
     fi
 
     if [ "${#build_failed[@]}" -gt 0 ]; then
         fail "e: 全構成ビルド検証 — ビルド失敗構成: ${build_failed[*]}（/tmp/pfwu-check-build-e-*.log 参照）"
+        # /tmp 配下のログは CI ランナー上でジョブ終了後に消え、GitHub Actions の
+        # ログにも残らない（(d) と同じ理由）。原因調査を次回実行で即座に行えるよう、
+        # stdout（CI ログに残る）へも失敗構成それぞれのログ全文を出力する。今回失敗
+        # した構成のログのみを対象にする（glob だと成功構成や前回実行の残存ログまで
+        # 巻き込み、self-hosted ランナーで /tmp が永続する場合に誤解を招くため）。
+        for log_file in "${build_failed_logs[@]}"; do
+            [ -f "${log_file}" ] || continue
+            echo "----- cargo build stderr（${log_file}） -----"
+            sed "s/^/[build-e:$(basename "${log_file}")] /" "${log_file}" || true
+            echo "----- ここまで -----"
+        done
     else
         pass "e: 全構成ビルド検証 — 無効構成・feature 単独構成・--all-features すべて成功"
     fi
