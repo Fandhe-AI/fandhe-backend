@@ -34,6 +34,11 @@ name: CI
 # 2 段階ビルド順序を openapi-two-stage ジョブとして明示ステップ化した
 # （scripts/openapi-two-stage.sh を呼ぶだけの薄いジョブ）。ビルドを伴うため
 # schedule（日次 dep-audit のみを走らせる方針）からは除外する。
+# TASK-6.1（#54）: openapi-two-stage の後段として「openapi.json → openapi-typescript →
+# TS 型 → tsc --noEmit 型検査」の openapi-typescript 連携パイプラインを openapi-ts
+# ジョブとして追加した（scripts/openapi-ts.sh を呼ぶだけの薄いジョブ、
+# docs/design/openapi-typescript-pipeline.md 参照）。node/npm ビルドを伴うため
+# schedule からは除外する。
 on:
   pull_request:
     branches: [main]
@@ -363,6 +368,12 @@ jobs:
       - name: req13-change-impact-accept.sh（REQ-13 受け入れテスト、TASK-13.2/#50）
         run: bash scripts/accept/req13-change-impact-accept.sh
 
+      # TASK-6.1（#54）: openapi-ts.sh（openapi-typescript 連携パイプライン、
+      # ネットワーク・cargo ビルド・npm 実行を伴うため別途 openapi-ts ジョブで実行）の
+      # 判定ロジック（引数検証・diff 鮮度判定・ツール不在時 fail-closed）のセルフテスト。
+      - name: run-openapi-ts-tests.sh（openapi-ts.sh のセルフテスト）
+        run: bash scripts/tests/run-openapi-ts-tests.sh
+
   # --------------------------------------------------
   # pay-for-what-you-use 検証（TASK-2.2、#19）: プラグイン feature 無効時に当該
   # プラグインの依存クレート・unsafe・コードが 0 件であることを機械的に PASS/FAIL
@@ -417,6 +428,28 @@ jobs:
 
       - name: "openapi-two-stage.sh（stage 1: gen-openapi --check、stage 2: cargo build --all-features）"
         run: bash scripts/openapi-two-stage.sh
+
+  # --------------------------------------------------
+  # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）: 「gen-openapi --check →
+  # npm ci --ignore-scripts → openapi-typescript による schema.d.ts 鮮度検証 →
+  # tsc --noEmit」の一方向パイプラインを検証する。詳細は scripts/openapi-ts.sh・
+  # docs/design/openapi-typescript-pipeline.md を参照。node/npm ビルドを伴うため
+  # schedule（日次、dep-audit のみを走らせる方針）からは除外する。
+  # --------------------------------------------------
+  openapi-ts:
+    name: openapi-typescript 連携パイプライン（schema.d.ts 鮮度検証 → tsc --noEmit）
+    runs-on: self-hosted
+    if: github.event_name != 'schedule'
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      - name: "openapi-ts.sh（stage 1: gen-openapi --check、stage 2: schema.d.ts 鮮度検証、stage 3: tsc --noEmit）"
+        run: bash scripts/openapi-ts.sh
 
       # TASK-3.3（#32）REQ-3 受け入れ基準 1: 生成された openapi.json が OpenAPI 3.x の
       # 構文妥当性エラー 0 件であることを CI 常設で検証する（API 設計ベストプラクティス系
@@ -553,12 +586,12 @@ jobs:
     runs-on: self-hosted
     # 失敗・スキップ時にも必ず実行して fail-closed で判定する。
     # schedule（日次 dep-audit のみ）実行時は
-    # fmt/clippy/test/unsafe-triage/fuzz-smoke/openapi-two-stage が意図的に skipped になる
-    # （doc ジョブには schedule 除外の if がなく実行される既存挙動だが、ci-complete 自体が
-    # schedule 時は丸ごとスキップされるため判定ロジックには影響しない）。
+    # fmt/clippy/test/unsafe-triage/fuzz-smoke/openapi-two-stage/openapi-ts が意図的に
+    # skipped になる（doc ジョブには schedule 除外の if がなく実行される既存挙動だが、
+    # ci-complete 自体が schedule 時は丸ごとスキップされるため判定ロジックには影響しない）。
     # 完遂判定の対象外（required check としては pull_request/push イベントのみを想定する）。
     if: ${{ always() && github.event_name != 'schedule' }}
-    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, pay-for-what-you-use, fuzz-smoke, openapi-two-stage]
+    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, pay-for-what-you-use, fuzz-smoke, openapi-two-stage, openapi-ts]
     timeout-minutes: 5
     steps:
       - name: 完遂判定（全 needs ジョブが success であること）
@@ -576,6 +609,7 @@ jobs:
           RESULT_PAY_FOR_WHAT_YOU_USE: ${{ needs.pay-for-what-you-use.result }}
           RESULT_FUZZ_SMOKE: ${{ needs.fuzz-smoke.result }}
           RESULT_OPENAPI_TWO_STAGE: ${{ needs.openapi-two-stage.result }}
+          RESULT_OPENAPI_TS: ${{ needs.openapi-ts.result }}
         run: |
           set -euo pipefail
           ok=1
@@ -585,7 +619,8 @@ jobs:
                       "unsafe-triage:${RESULT_UNSAFE_TRIAGE}" \
                       "pay-for-what-you-use:${RESULT_PAY_FOR_WHAT_YOU_USE}" \
                       "fuzz-smoke:${RESULT_FUZZ_SMOKE}" \
-                      "openapi-two-stage:${RESULT_OPENAPI_TWO_STAGE}"; do
+                      "openapi-two-stage:${RESULT_OPENAPI_TWO_STAGE}" \
+                      "openapi-ts:${RESULT_OPENAPI_TS}"; do
             job="${pair%%:*}"; result="${pair#*:}"
             echo "${job}: ${result}"
             # skipped / cancelled / failure はすべて未完遂として扱う（fail-closed）
