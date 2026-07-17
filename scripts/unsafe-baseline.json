@@ -1,0 +1,18 @@
+{
+  "axum-ref": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
+  "core": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
+  "http": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
+  "plugin-webrtc-proxy": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  }
+}
