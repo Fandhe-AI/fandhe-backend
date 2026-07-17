@@ -77,9 +77,11 @@ individual ジョブ名を required status check として個別に登録する�
 ## 危険な `unsafe` パターンの機械的ブロックについて
 
 REQ-14 の「危険な `unsafe` パターンをビルド段階で機械的にブロックする多層防御」は
-TASK-14.2（#40）のスコープであり、本タスクには含まない。`clippy -- -D warnings` が
-`ci-complete` の判定対象に含まれるため、TASK-14.2 で deny lint が設定されれば
-`clippy` ジョブの失敗として自動的に本ゲートに反映される。
+TASK-14.2（#40）で実施済み。ルート `Cargo.toml` の `[workspace.lints.clippy]` に
+forbid（`#[allow]` による抑制も不可）/ deny（局所例外可）の 2 層で lint を設定した。
+選定根拠・ネガティブ検証の記録は `docs/design/unsafe-deny-lints.md` を参照。
+`clippy -- -D warnings` が `ci-complete` の判定対象に含まれるため、当該 lint の違反は
+`clippy` ジョブの失敗として自動的に本ゲートに反映される（CI ワークフロー自体の変更は不要）。
 
 ## 受け入れ基準との対応
 
@@ -87,8 +89,9 @@ TASK-14.2（#40）のスコープであり、本タスクには含まない。`c
 
 - [x] AI が生成した変更は、`cargo test` / `clippy -- -D warnings` / `fmt --check` の全通過を
       必須条件としてマージされる → `ci-complete` + `scripts/setup-required-checks.sh`
-- [ ] 危険な `unsafe` パターンが `cargo clippy` の deny lint で機械的に検出される
-      → TASK-14.2（#40）のスコープ
+- [x] 危険な `unsafe` パターンが `cargo clippy` の deny lint で機械的に検出される
+      → TASK-14.2（#40）、ルート `Cargo.toml` の `[workspace.lints.clippy]` +
+      `docs/design/unsafe-deny-lints.md`
 - [ ] 自律実装のマージには、CI 通過に加えてレビューゲート（人間承認または追加レビュー）を
       経る運用が定義されている → TASK-14.3（#41）のスコープ
 
