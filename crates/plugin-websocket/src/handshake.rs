@@ -85,12 +85,16 @@ pub(crate) fn validate(head: &RequestHead) -> Result<ValidatedHandshake, WsError
 
 /// `Connection` ヘッダのカンマ区切りトークンに `upgrade`（大小無視）が
 /// 含まれるかを判定する（例: `Connection: keep-alive, Upgrade`）。
+///
+/// `Connection` ヘッダは複数出現しうる（例: `keep-alive` と `Upgrade` が別々の
+/// ヘッダ行に分かれる正当なハンドシェイクが存在する）ため、`RequestHead::header`
+/// （最初の 1 件のみ返す）ではなく [`RequestHead::headers`] で全件を走査する。
+/// `bf_http::connection::should_keep_alive` と同じ理由・同じ走査方針。
 fn connection_contains_upgrade(head: &RequestHead) -> bool {
-    head.header("connection").is_some_and(|value| {
-        value
-            .split(',')
-            .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
-    })
+    head.headers()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("connection"))
+        .flat_map(|(_, value)| value.split(','))
+        .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
 }
 
 /// `Sec-WebSocket-Key` が RFC 6455 の想定形（base64 エンコードされた 16
@@ -197,6 +201,23 @@ mod tests {
             b"GET /ws HTTP/1.1\r\n\
               Upgrade: websocket\r\n\
               Connection: keep-alive, Upgrade\r\n\
+              Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+              Sec-WebSocket-Version: 13\r\n\
+              \r\n",
+        );
+        assert!(validate(&head).is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_upgrade_token_split_across_multiple_connection_headers() {
+        // `Connection` ヘッダが複数行に分かれ、`upgrade` トークンが最初の行に
+        // 含まれない正当なハンドシェイク（`RequestHead::header` は最初の 1 件
+        // しか返さないため、全件走査していないと誤って 400 を返す回帰）。
+        let head = head_from(
+            b"GET /ws HTTP/1.1\r\n\
+              Upgrade: websocket\r\n\
+              Connection: keep-alive\r\n\
+              Connection: Upgrade\r\n\
               Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
               Sec-WebSocket-Version: 13\r\n\
               \r\n",
