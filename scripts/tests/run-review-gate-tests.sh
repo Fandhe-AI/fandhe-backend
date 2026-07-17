@@ -125,8 +125,18 @@ CI_COMPLETE_BLOCK="$(awk '
 if [ -z "${CI_COMPLETE_BLOCK}" ]; then
     fail "ci-complete ジョブブロックを ${CI_YML} から抽出できない"
 else
-    NEEDS_LINE="$(printf '%s\n' "${CI_COMPLETE_BLOCK}" | grep -E '^\s*needs:' | head -1)"
-    NEEDS_LIST="$(printf '%s' "${NEEDS_LINE}" | sed -E 's/^\s*needs:\s*\[(.*)\]\s*$/\1/')"
+    # grep/sed の '\s' は GNU 拡張で BSD 実装（macOS 標準）では空白文字として解釈されない
+    # ため、POSIX 文字クラス '[[:space:]]' を使う。また「非マッチ時に pipefail で
+    # パイプライン全体が非 0 終了し set -e で即座に script が中断する」問題（PR #117
+    # レビュー指摘）を避けるため、grep 部分に '|| true' を付けて非マッチを正常系として扱い、
+    # 後続の空 NEEDS_LIST 判定に処理を委ねる。printf は sed 側の BSD 実装が末尾行を確実に
+    # 処理できるよう明示的に改行を付与する。
+    NEEDS_LINE="$(printf '%s\n' "${CI_COMPLETE_BLOCK}" | grep -E '^[[:space:]]*needs:' | head -1 || true)"
+    if [ -z "${NEEDS_LINE}" ]; then
+        NEEDS_LIST=""
+    else
+        NEEDS_LIST="$(printf '%s\n' "${NEEDS_LINE}" | sed -E 's/^[[:space:]]*needs:[[:space:]]*\[(.*)\][[:space:]]*$/\1/')"
+    fi
 
     if [ -z "${NEEDS_LIST}" ]; then
         for job in fmt clippy test doc dep-audit unsafe-triage; do
