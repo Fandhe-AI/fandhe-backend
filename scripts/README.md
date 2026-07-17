@@ -6,6 +6,8 @@ TASK-12.1-1（#79）で、audit 指摘・`unsafe` 追加を検知したときの
 アクション提示）ロジックを追加した。改善提案フロー・運用規約そのもののドキュメント化は
 TASK-12.1-2（#80）のスコープであり、本 README は各スクリプトの使い方・CI との対応関係を
 説明するに留める。
+TASK-14.1（#39）で、CI 完遂判定基準（REQ-14）を branch protection に反映する
+`setup-required-checks.sh` を追加した。
 
 ## スクリプト一覧
 
@@ -17,6 +19,7 @@ TASK-12.1-2（#80）のスコープであり、本 README は各スクリプト�
 | `dep-impact.sh` | feature 構成ごとの依存クレート数・リリースバイナリサイズ・`unsafe` 件数を計測し markdown 表を出力する | CI からは呼ばれない。plugin 追加 PR でのローカル実行を想定（`docs/dep-impact/README.md` 参照） |
 | `unsafe-baseline.json` | `unsafe-triage.sh` のラチェット判定に使うクレート別ベースライン（コミット対象） | `unsafe-triage.sh --update-baseline` で再生成する |
 | `tests/run-triage-tests.sh` | `audit-triage.sh` / `unsafe-triage.sh` のセルフテスト（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
+| `setup-required-checks.sh` | default branch の repository ruleset に `.github/workflows/ci.yml` の集約ゲートジョブ `ci-complete` を required status check として設定する | CI からは呼ばれない。管理者権限を持つ人間・CI 管理者がローカルで 1 回実行する運用（`docs/design/ci-completion-criteria.md` 参照） |
 
 ## 前提ツール
 
@@ -28,8 +31,24 @@ TASK-12.1-2（#80）のスコープであり、本 README は各スクリプト�
 |--------|------|-------------|
 | `cargo-deny` | ライセンス・出所・重複バージョン監査 | `cargo install --locked cargo-deny@0.19.8` |
 | `cargo-audit` | RustSec advisory DB による既知脆弱性検知 | `cargo install --locked cargo-audit@0.22.2` |
-| `jq` | `cargo metadata`・`cargo audit --json` の JSON 解析（`audit-triage.sh`・`unsafe-triage.sh` も使用） | OS のパッケージマネージャ（例: `apt install jq`） |
+| `jq` | `cargo metadata`・`cargo audit --json` の JSON 解析（`audit-triage.sh`・`unsafe-triage.sh` も使用）・`setup-required-checks.sh` の ruleset ペイロード生成 | OS のパッケージマネージャ（例: `apt install jq`） |
 | `cargo-geiger`（`dep-impact.sh` のみ、任意） | `unsafe` 件数の計測 | `cargo install --locked cargo-geiger` |
+| `gh`（`setup-required-checks.sh` のみ） | repository ruleset API 呼び出し（`gh auth login` 済みの認証を利用） | https://cli.github.com/ |
+
+## `setup-required-checks.sh` — required status check の設定
+
+```bash
+bash scripts/setup-required-checks.sh
+```
+
+- default branch（通常 `main`）を対象に、`ci-complete`（`.github/workflows/ci.yml` の集約
+  ゲートジョブ）を required status check とする repository ruleset を作成・更新する。
+- 同名 ruleset（`main-required-checks`）が既にあれば更新、無ければ新規作成するため
+  複数回実行しても安全（冪等）。
+- required_status_checks のみを設定する。PR 必須化・人間承認必須・force push 禁止などは
+  TASK-14.3（#41、担当: 人間）のスコープであり本スクリプトは変更しない。
+- リポジトリ管理者権限が無いトークンで実行すると 403 で失敗する。その場合は本スクリプトを
+  握りつぶさず、権限を持つ人間が手動実行する。
 
 ## `dep-audit.sh` — 依存監査
 
