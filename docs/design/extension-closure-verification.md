@@ -201,6 +201,20 @@ $ bash scripts/extension-closure-check.sh --commit 6a6fb9c
   提供に切り替える等）は、真の閉包違反の是正として別 Issue 化を検討する候補
   （8 節参照、本 PR では起票せず提案に留める）
 
+**TASK-13.2（#50）での消化状況**: 上記 2 項目はいずれも `docs/design/dependency-graph-contract.md`
+で消化した。
+
+- doc コメントでの機械可読化: `crates/plugin-{websocket,graphql,webrtc,webrtc-proxy,openapi}/src/lib.rs`
+  冒頭に `//! 拡張点対応: <値>` 統一形式の宣言を追加し、`scripts/accept/req13-change-impact-accept.sh`
+  基準 B が機械検査する（`dependency-graph-contract.md` 3 節）
+- CI 常設運用: `scripts/extension-closure-gate.sh` を新設し、`crates/plugin-*` /
+  `crates/core/src/plugin.rs` を変更する PR で自動実行する（`dependency-graph-contract.md`
+  4 節）。実コミット sha 検証（本書 2 節の 3 コミット）は `.github/workflows/ci.yml`
+  Checkout ステップへの `fetch-depth: 0` 追加により shallow clone 制約を解消し、
+  `req13-change-impact-accept.sh` 基準 D として CI 常設化した（3 行目の
+  「実コミット検証は shallow clone で誤 FAIL するため CI には組み込まない」という
+  制約は本タスクで解消済み）
+
 ## 8. スコープ外（別 Issue 化候補、本 PR では起票しない）
 
 - 3.2 節で述べた `crates/http/src/response.rs` の閉包逸脱の是正案（reason phrase

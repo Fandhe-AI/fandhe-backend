@@ -64,3 +64,11 @@
   commit を `scripts/extension-closure-check.sh` で機械判定し、A〜D カテゴリへの閉包
   可否・E 判定時の理由（`crates/http/src/response.rs` の共有 reason phrase テーブルへの
   1 行追加）を記述。TASK-13.2/#50 への引き継ぎ事項も記載）
+- [`dependency-graph-contract.md`](./dependency-graph-contract.md): 依存グラフ・契約
+  ドキュメント（TASK-13.2、#50、REQ-13。正準依存グラフ（`dep-direction-check.sh` の
+  `allowed_edge_patterns` からの転記）・3 拡張点 + `try_intercept` 固定シームの契約一覧・
+  `crates/plugin-*/src/lib.rs` 冒頭の機械可読宣言規約（`拡張点対応: <値>`）・拡張点への
+  非該当時の理由明記運用（`scripts/extension-closure-gate.sh` による PR ゲート）・
+  `bf-plugin-openapi` の非該当理由を記述。受け入れテストは
+  `scripts/accept/req13-change-impact-accept.sh`、実行結果は
+  `docs/acceptance/req13-change-impact.md`）

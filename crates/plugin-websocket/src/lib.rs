@@ -1,5 +1,9 @@
 //! `bf-plugin-websocket`: WebSocket プラグイン（TASK-4.1 / #22）。
 //!
+//! 拡張点対応: UpgradeHandler（try_handle_upgrade）
+//! （機械可読宣言の規約・許可語彙は `docs/design/dependency-graph-contract.md` 3 節、
+//! TASK-13.2 / #50）
+//!
 //! # 背景・REQ-4 との対応
 //!
 //! コアの `UpgradeHandler` 拡張点（`crates/core/src/extension.rs`）は

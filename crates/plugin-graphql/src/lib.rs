@@ -1,5 +1,10 @@
 //! `bf-plugin-graphql`: パスインターセプト型 GraphQL プラグイン実装（TASK-5.1 / #38）。
 //!
+//! 拡張点対応: パスインターセプト型（try_intercept）
+//! （3 拡張点 trait には非該当。固定シグネチャシームへの閉包根拠は
+//! `docs/design/extension-closure-verification.md` 3.4 節、機械可読宣言の規約は
+//! `docs/design/dependency-graph-contract.md` 3 節、TASK-13.2 / #50）
+//!
 //! # 位置づけ
 //!
 //! TASK-2.4（#21）は `POST /graphql` への固定 JSON 応答のみを提供するプラグイン
