@@ -12,7 +12,8 @@
   },
   "scripts": {
     "gen:types": "openapi-typescript ../crates/plugin-openapi/openapi.json -o src/generated/schema.d.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:negative": "tsc --noEmit -p tsconfig.negative.json"
   },
   "dependencies": {
     "openapi-fetch": "0.17.0"
