@@ -57,6 +57,12 @@ backend-framework/
 │   │                                    # 拡張点配線、Upgrade 型プラグイン境界パターンの第 1 号）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
+├── ts/                     # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）。
+│                            # crates/plugin-openapi/openapi.json → openapi-typescript →
+│                            # ts/src/generated/schema.d.ts（コミット対象）→ openapi-fetch
+│                            # ベースの型安全クライアント（src/client.ts）の一方向パイプライン。
+│                            # ビルド時専用で Rust バイナリ・依存ツリーに一切影響しない
+│                            # （docs/design/openapi-typescript-pipeline.md 参照）
 ├── benches/               # 負荷生成・計測ハーネス（TASK-1.2 で追加、bench-builder 管轄）
 │   ├── README.md                      # 再現手順・複数回計測/中央値評価の規約
 │   ├── lib/common.sh                  # 共通関数（サーバ起動/停止・中央値算出・依存ツール検査）
@@ -67,6 +73,7 @@ backend-framework/
 │   ├── dep-impact.sh                  # 依存クレート数・バイナリサイズ・unsafe 件数の計測（markdown 出力）
 │   ├── setup-required-checks.sh       # main の required status check（ci-complete）設定（TASK-14.1、#39）
 │   ├── openapi-two-stage.sh           # gen-openapi --check → cargo build --all-features の 2 段階ビルド検証（TASK-3.2、#31）
+│   ├── openapi-ts.sh                  # gen-openapi --check → ts/ の schema.d.ts 鮮度検証 → tsc --noEmit の openapi-typescript 連携パイプライン検証（TASK-6.1、#54）
 │   └── accept/            # REQ-1 受け入れ検証スクリプト（TASK-1.6-2 で追加）
 │       ├── README.md                  # 検証基準・前提ツール・実行方法
 │       ├── lib/common.sh              # PASS/FAIL/SKIP/WARN 集計の共通関数
