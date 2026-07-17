@@ -221,6 +221,91 @@ where
 6. feature 無効時はコード・依存・`unsafe` が完全に消えることを
    `cargo tree` で確認する
 
+### 5.4 委譲後の専用タスク再 spawn + permit 引き継ぎ（TASK-4.2 / #23【条件(1)】）
+
+PoC-7（`docs/spec/03-poc/high-concurrency-scale/README.md`）実測で、WebSocket
+長時間接続の接続あたり RSS が axum 比 155.2%（Conditional Go 条件(1) の成功
+基準 110% 未達）となった。原因は、`try_handle_upgrade` が
+`bf_plugin_websocket::handle_upgrade`（ハンドシェイク + エコーループ）を
+`handle_connection` タスクの future 内で**インラインに await** していたこと。
+`handle_connection` は `read_request`・応答直列化・keep-alive 制御などを含む
+大きな tokio タスクのステートマシンであり、インライン await のままだと WS
+接続の生存中ずっとこの大きなステートマシンがメモリ上に残ってしまう。
+
+是正として、マッチ確定時に WS セッション（ハンドシェイク + フレーミング）
+だけを載せた専用タスクを `tokio::spawn` し、元の `handle_connection` タスク
+は即座に `return` して大きな future を解放する構成へ変更した:
+
+```rust,ignore
+pub(crate) async fn try_handle_upgrade<S>(
+    stream: S,
+    head: &RequestHead,
+    leftover: Vec<u8>,
+    server: &Server,
+    permit: &mut Option<OwnedSemaphorePermit>,
+) -> Option<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    #[cfg(feature = "websocket")]
+    {
+        if let Some(config) = server.websocket_configs().iter()
+            .find(|config| bf_plugin_websocket::matches(head, config))
+        {
+            let config = config.clone();
+            let head = head.clone();
+            let permit = permit.take();          // permit をセッションタスクへ move
+            tokio::spawn(async move {
+                let _permit = permit;             // セッション終了まで保持
+                let _ = bf_plugin_websocket::handle_upgrade(stream, &head, leftover, &config).await;
+            });
+            return None;                          // 元タスクは即 return → 大きな future を解放
+        }
+    }
+    #[cfg(not(feature = "websocket"))]
+    { let _ = (head, &leftover, server, &permit); }
+    Some(stream)
+}
+```
+
+**permit 引き継ぎが必須の理由（DoS 対策の維持）**: 同時接続数上限は
+`BoundServer::run` が保持する `OwnedSemaphorePermit` で強制する
+（`.claude/rules/security.md` のリソース枯渇観点）。素朴に再 spawn すると、
+元の `handle_connection` タスクが即座に終了して permit を解放してしまい、
+長時間生存する WS セッションが `max_connections` のカウントから漏れる
+（リソース枯渇 DoS のリグレッション）。これを避けるため:
+
+- 呼び出し元（`crates/core/src/server.rs` の `handle_connection_with_permit`、
+  `pub(crate)`。公開 `handle_connection(server, stream)` はこれを `permit:
+  None` で呼ぶ薄いラッパー）は `permit: &mut Option<OwnedSemaphorePermit>`
+  を渡す
+- `try_handle_upgrade` はマッチ確定時に `permit.take()` で所有権を奪い、新
+  タスクへ move する。呼び出し元に残るのは `None`（drop しても no-op）
+- 新タスク側は `let _permit = permit;` でセッション終了までローカル変数と
+  して保持し、タスクの戻り（セッション終了）と同時に自動 drop される
+
+この結果、`S: AsyncRead + AsyncWrite + Unpin` に加えて `Send + 'static` 境界
+が新たに必要になる（`tokio::spawn` の要件）。`handle_connection`／
+`handle_connection_with_permit` の型パラメータ `S` にも同じ境界を追加した
+（`TcpStream`・`tokio::io::duplex` はいずれも充足する軽微な公開 API 変更）。
+
+観測可能な挙動の検証は `crates/core/tests/websocket_respawn.rs`
+（`handle_connection` タスクがハンドシェイク直後に完了すること・
+`max_connections(1)` 下で WS セッション生存中は 2 本目の接続が受理されない
+こと）を参照。
+
+### 5.5 後続 Upgrade 型プラグインへの適用指針（5.3 節の追補）
+
+5.3 節の手順に加え、コネクション単位の長時間委譲を行うプラグインは以下も
+踏襲する:
+
+- `try_handle_upgrade` 相当のシームで委譲確定時は `tokio::spawn` による
+  専用タスク再 spawn を検討する（インライン await のまま長時間 await する
+  と `handle_connection` の大きなステートマシンが解放されない、5.4 節）
+- 同時接続数上限を守るリソース（`OwnedSemaphorePermit` 等）を握っている
+  場合は、再 spawn 時に必ずその所有権をセッションタスクへ move する
+  （move し忘れは DoS リグレッションになる、5.4 節）
+
 ## 6. 検証コマンド
 
 | 検証 | コマンド | 期待結果 |
