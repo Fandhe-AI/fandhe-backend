@@ -160,9 +160,16 @@ fi
 echo ""
 echo "===== CI openapi-ts / unsafe-triage ジョブへのステップ組み込み確認のロジック検証 ====="
 
+#
+# コメントやステップ名（`name:`）に "openapi-ts-negative.sh" という文字列が出現する
+# だけでは配線済みとみなさない（Cursor Bugbot 指摘、PR #153 review 4724393762）。
+# 実際に該当スクリプトを起動する `run:` 行（`run: bash scripts/openapi-ts-negative.sh`
+# 等）が存在することを要求する。単なる文字列出現ではなく「実行行」を検証することで、
+# `run:` 句からステップが削除されコメント・無関係なステップ名だけが残った回帰を検知する。
 ci_negative_step_check() {
     local file="$1"
-    grep -q "openapi-ts-negative.sh" "${file}" && grep -q "run-openapi-ts-negative-tests.sh" "${file}"
+    grep -qE '^[[:space:]]*run:[[:space:]]*bash[[:space:]]+scripts/openapi-ts-negative\.sh([[:space:]]|$)' "${file}" \
+        && grep -qE '^[[:space:]]*run:[[:space:]]*bash[[:space:]]+scripts/tests/run-openapi-ts-negative-tests\.sh([[:space:]]|$)' "${file}"
 }
 
 if ci_negative_step_check "${FIXTURES_DIR}/ci-with-negative-step.yml"; then
@@ -175,6 +182,12 @@ if ! ci_negative_step_check "${FIXTURES_DIR}/ci-without-negative-step.yml"; then
     pass "陰性対照ステップを含まない fixture は FAIL 相当と判定される"
 else
     fail "陰性対照ステップを含まない fixture が誤って PASS 相当と判定された"
+fi
+
+if ! ci_negative_step_check "${FIXTURES_DIR}/ci-with-comment-only-negative.yml"; then
+    pass "コメント・ステップ名のみに文字列が出現し実行行（run:）が存在しない fixture は FAIL 相当と判定される（Bugbot 指摘の回帰防止）"
+else
+    fail "コメント・ステップ名のみの fixture が誤って PASS 相当と判定された（run: 句を見ずに文字列出現のみで誤判定）"
 fi
 
 echo ""
