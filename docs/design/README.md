@@ -13,3 +13,5 @@
 
 - [`webrtc-process-isolation.md`](./webrtc-process-isolation.md): WebRTC プラグインの別プロセス切り出し設計
   （TASK-8.2-1、REQ-8・Conditional Go 条件(2) 対応）
+- [`ci-completion-criteria.md`](./ci-completion-criteria.md): CI 完遂判定基準の実装
+  （TASK-14.1、#39、REQ-14。機械判定とレビューゲートの責務分界を記述）

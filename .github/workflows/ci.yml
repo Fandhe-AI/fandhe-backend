@@ -11,6 +11,15 @@ name: CI
 # 全ジョブに `timeout-minutes` を設定（多層防御・self-hosted runner の無期限占有防止）し、
 # test ジョブは cargo-nextest（.config/nextest.toml でテスト単位のタイムアウトを規定）に
 # 切り替えた。
+# TASK-14.1（#39）: REQ-14（docs/spec/04-requirements.md）が定める完遂判定基準
+# 「CI（cargo test/clippy -D warnings/fmt --check）が全て通過」を、個別ジョブの状態を
+# 都度確認する運用ではなく単一ジョブ `ci-complete` の成否として機械判定できるようにした。
+# branch protection / ruleset（scripts/setup-required-checks.sh）は `ci-complete` のみを
+# required status check に指定すればよく、判定対象ジョブを増減する際は `ci-complete` の
+# `needs` を変更するだけで済む（ジョブ改名時に required check が暗黙に外れる設定腐敗を防ぐ）。
+# 「追加機能が受け入れ基準を満たすこと」は機械判定できないため対象外とし、
+# レビューゲート（TASK-14.3、#41、担当: 人間）で担保する
+# （docs/design/ci-completion-criteria.md 参照）。
 on:
   pull_request:
     branches: [main]
@@ -174,3 +183,46 @@ jobs:
 
       - name: dep-audit.sh（全 feature 構成の cargo audit / cargo deny check）
         run: bash scripts/dep-audit.sh
+
+  # --------------------------------------------------
+  # CI 完遂判定（TASK-14.1、#39、docs/spec/04-requirements.md REQ-14）:
+  # fmt / clippy / test（spec が定める必須 3 条件）に加え、リポジトリ方針として
+  # doc（missing_docs・rustdoc lint、TASK-11.2-2）・dep-audit（TASK-15.2）も含む
+  # 全ジョブの success を単一ジョブの成否に集約する。
+  # branch protection / ruleset（scripts/setup-required-checks.sh）はこのジョブ名のみを
+  # required check にすればよく、ジョブ追加時は needs に足すだけで判定対象を拡張できる。
+  # 詳細な責務分界（機械判定できない「受け入れ基準充足」はレビューゲート TASK-14.3 が担う）は
+  # docs/design/ci-completion-criteria.md を参照。
+  # --------------------------------------------------
+  ci-complete:
+    name: ci-complete
+    runs-on: self-hosted
+    # 失敗・スキップ時にも必ず実行して fail-closed で判定する。
+    # schedule（日次 dep-audit のみ）実行時は fmt/clippy/test/doc が意図的に skipped になり
+    # 完遂判定の対象外（required check としては pull_request/push イベントのみを想定する）。
+    if: ${{ always() && github.event_name != 'schedule' }}
+    needs: [fmt, clippy, test, doc, dep-audit]
+    timeout-minutes: 5
+    steps:
+      - name: 完遂判定（全 needs ジョブが success であること）
+        # needs.*.result は式展開の対象だが、攻撃者制御値（github.event.* 等）ではなく
+        # ジョブ結果の enum（success/failure/cancelled/skipped）に限定されるため、
+        # env 経由での受け渡しはシェルインジェクション対策というより可読性のためである。
+        env:
+          RESULT_FMT: ${{ needs.fmt.result }}
+          RESULT_CLIPPY: ${{ needs.clippy.result }}
+          RESULT_TEST: ${{ needs.test.result }}
+          RESULT_DOC: ${{ needs.doc.result }}
+          RESULT_DEP_AUDIT: ${{ needs.dep-audit.result }}
+        run: |
+          set -euo pipefail
+          ok=1
+          for pair in "fmt:${RESULT_FMT}" "clippy:${RESULT_CLIPPY}" \
+                      "test:${RESULT_TEST}" "doc:${RESULT_DOC}" \
+                      "dep-audit:${RESULT_DEP_AUDIT}"; do
+            job="${pair%%:*}"; result="${pair#*:}"
+            echo "${job}: ${result}"
+            # skipped / cancelled / failure はすべて未完遂として扱う（fail-closed）
+            [ "${result}" = "success" ] || ok=0
+          done
+          [ "${ok}" = "1" ]
