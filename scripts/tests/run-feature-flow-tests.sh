@@ -314,6 +314,51 @@ assert_exit_code "テストマーカーから遠い無関係な変更は exit 1"
 assert_contains "エラーにクレート名 pseudo-crate を含む（ケース10）" "${out10}" "pseudo-crate"
 rm -rf "${REPO10}"
 
+echo "===== ケース11: ネストした src パス（crates/<name>/src/**/*.rs）の変更もテスト追加を要求する ====="
+# Bugbot 指摘（scripts/feature-flow-check.sh#L148-L176）の回帰テスト:
+# bash の case パターンマッチは `*` が `/` にもマッチする（パス名展開のグロブとは
+# 別物）ため、`crates/*/src/*.rs` は `crates/<name>/src/<sub>/<file>.rs` のような
+# ネストした src パスにも一致する。テストマーカーを伴わないネストした src 変更は
+# 通常の src 変更と同様に exit 1 になることを確認する（誤検知の否定）。
+REPO11="$(setup_repo)"
+BASE11="$(cd "${REPO11}" && git rev-parse HEAD)"
+(
+    cd "${REPO11}"
+    mkdir -p crates/pseudo-crate/src/nested
+    cat > crates/pseudo-crate/src/nested/mod.rs <<'EOF'
+pub fn nested_noop() {}
+EOF
+)
+commit_all "${REPO11}" "ネストした src パスへの変更（テスト追加なし）"
+set +e
+out11="$(run_check_in "${REPO11}" --base "${BASE11}" 2>&1)"
+exit11=$?
+set -e
+assert_exit_code "ネストした src 変更のみは exit 1" 1 "${exit11}"
+assert_contains "エラーにクレート名 pseudo-crate を含む（ケース11）" "${out11}" "pseudo-crate"
+rm -rf "${REPO11}"
+
+echo "===== ケース12: ネストした tests パス（crates/<name>/tests/**/*）の変更も検知する ====="
+REPO12="$(setup_repo)"
+(
+    cd "${REPO12}"
+    mkdir -p crates/pseudo-crate/src/nested crates/pseudo-crate/tests/common
+    cat > crates/pseudo-crate/src/nested/mod.rs <<'EOF'
+pub fn nested_noop2() {}
+EOF
+    cat > crates/pseudo-crate/tests/common/helper.rs <<'EOF'
+pub fn helper() -> i32 { 1 }
+EOF
+)
+commit_all "${REPO12}" "ネストした src + ネストした tests 変更"
+BASE12="$(cd "${REPO12}" && git rev-parse HEAD~1)"
+set +e
+out12="$(run_check_in "${REPO12}" --base "${BASE12}" 2>&1)"
+exit12=$?
+set -e
+assert_exit_code "ネストした src + ネストした tests 変更は exit 0" 0 "${exit12}"
+rm -rf "${REPO12}"
+
 echo
 echo "===== 結果: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} ====="
 if [ "${FAIL_COUNT}" -ne 0 ]; then
