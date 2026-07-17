@@ -37,6 +37,17 @@
 //! 本クレート自体が `backend-framework-core` の依存グラフから除外される
 //! （`optional = true` + `dep:` 構文）。
 //!
+//! # workspace 内での依存方向
+//!
+//! `docs/spec/04-requirements.md` REQ-1 / `docs/spec/05-tasks.md` TASK-11.1 の方針に従い、
+//! workspace 全体の依存方向は次の一方向を維持する（依存方向: server → routes → http::*）。
+//! 本クレートはプラグイン層（`bf-plugin-*`）に位置し、コアの拡張点を実装する側であり、
+//! コア（`backend-framework-core`）・`bf-routes` からプラグインへの逆依存は発生しない
+//! （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。本クレートの
+//! workspace 内 path 依存は `bf-http`（下位層の sans-IO パーサ）のみで、`webrtc-rs` は
+//! 上述のとおり依存に含めない。依存方向の機械検証は `scripts/dep-direction-check.sh`
+//! （TASK-1.5 / TASK-11.1）が担う。
+//!
 //! # Examples
 //!
 //! [`ProxyConfig`] を構築し、[`try_handle_rtc_offer`] へパスインターセプト

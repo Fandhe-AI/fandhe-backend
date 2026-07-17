@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# dep-direction-check.sh のセルフテスト（TASK-1.5、#14）。
+# dep-direction-check.sh のセルフテスト（TASK-1.5/#14 で新設、TASK-11.1/#33 で
+# --crates-dir 系ケースを追加）。
 #
 # `scripts/tests/fixtures/dep-direction/*.json`（cargo metadata --no-deps
 # --format-version 1 相当の最小 JSON）を `--metadata-file` で注入し、
 # workspace の実際の Cargo.toml 構成に依存せず判定ロジック（ホワイトリスト
-# 照合・循環検出・dev-dependency 除外）を固定化する。
+# 照合・循環検出・dev-dependency 除外）を固定化する。チェック 2（エントリポイント
+# 依存方向宣言）は `scripts/tests/fixtures/dep-direction/crates-valid/` ・
+# `crates-missing-declaration/` の最小クレートツリーを `--crates-dir` で注入し、
+# 宣言あり（`src/lib.rs`・`src/main.rs` フォールバック双方）の PASS と宣言欠落の
+# FAIL を実 workspace の状態に依存せず固定化する。
 #
 # run-feature-flow-tests.sh 等の既存セルフテストと同じく、ネットワーク・cargo
 # ビルドに依存せず完結させる（ci.yml の unsafe-triage ジョブから呼ばれる想定）。
@@ -57,6 +62,19 @@ run_check() {
     set -e
 }
 
+# チェック 2（エントリポイント依存方向宣言）を fixture クレートツリーで隔離検証する。
+# --metadata-file にはチェック 1 が確実に PASS する valid-graph.json を併用し、
+# チェック 2 の PASS/FAIL のみを fixture の差し替えで制御する。
+run_check_crates_dir() {
+    local crates_dir="$1"
+    set +e
+    output="$(bash "${SCRIPTS_DIR}/dep-direction-check.sh" \
+        --metadata-file "${FIXTURES_DIR}/valid-graph.json" \
+        --crates-dir "${crates_dir}" 2>&1)"
+    status=$?
+    set -e
+}
+
 echo "=== dep-direction-check.sh セルフテスト ==="
 
 # --- ケース 1: 正常グラフ（server → routes → http::* の一方向・循環なし） ---
@@ -95,12 +113,20 @@ run_check "${FIXTURES_DIR}/does-not-exist.json"
 assert_exit_code "存在しない metadata-file は exit 1（フェイルクローズ）" 1 "${status}"
 assert_contains "存在しない metadata-file は判定不能メッセージを含む" "${output}" "存在しません"
 
-# --- ケース 6: lib.rs 宣言検査単体（正常グラフ fixture を流用し全体 PASS を確認） ---
-# チェック2・3は workspace の実ファイルを直接検査するため、fixture では差し替えられない。
-# 本セルフテストのケース1で「チェック2・3も PASS していること」を合わせて確認する。
+# --- ケース 6: 実 workspace（既定 --crates-dir crates）で全チェック PASS ---
 run_check "${FIXTURES_DIR}/valid-graph.json"
-assert_contains "lib.rs 宣言検査（チェック2）が PASS" "${output}" "[PASS] 2:"
-assert_contains "プラグイン非依存検査（チェック3）が PASS" "${output}" "[PASS] 3:"
+assert_contains "実 workspace エントリポイント宣言検査（チェック2）が PASS" "${output}" "[PASS] 2:"
+assert_contains "実 workspace プラグイン非依存検査（チェック3）が PASS" "${output}" "[PASS] 3:"
+
+# --- ケース 7: --crates-dir crates-valid — 宣言あり（lib.rs・main.rs フォールバック双方）は PASS ---
+run_check_crates_dir "${FIXTURES_DIR}/crates-valid"
+assert_exit_code "crates-valid fixture は exit 0" 0 "${status}"
+assert_contains "crates-valid fixture はチェック2が PASS（2 クレート列挙）" "${output}" "[PASS] 2: エントリポイント依存方向宣言 — ${FIXTURES_DIR}/crates-valid 直下 2 クレート"
+
+# --- ケース 8: --crates-dir crates-missing-declaration — 宣言欠落クレートを含む場合は FAIL（フェイルクローズ） ---
+run_check_crates_dir "${FIXTURES_DIR}/crates-missing-declaration"
+assert_exit_code "crates-missing-declaration fixture は exit 1（フェイルクローズ）" 1 "${status}"
+assert_contains "crates-missing-declaration fixture はチェック2が欠落ファイル名を報告する" "${output}" "crate-b-bin/src/main.rs"
 
 echo ""
 echo "=== 結果: ${PASS_COUNT} passed, ${FAIL_COUNT} failed ==="

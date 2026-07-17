@@ -1,25 +1,30 @@
 #!/usr/bin/env bash
-# 依存方向一方向性の機械検証（TASK-1.5、#14、docs/spec/04-requirements.md REQ-1）。
+# 依存方向一方向性の機械検証（TASK-1.5/#14 で新設、TASK-11.1/#33 で workspace 全体へ展開、
+# docs/spec/04-requirements.md REQ-1・docs/spec/05-tasks.md TASK-11.1）。
 #
 # `server → routes → http::*` の一方向依存（循環なし）が workspace の実態と
 # 乖離していないことを 3 段で検証する:
 #   1. `cargo metadata` から抽出した workspace 内 path 依存エッジをホワイトリストと
 #      照合する（許可外のエッジ・循環を検出したら FAIL）
-#   2. core / routes / http の各 `src/lib.rs` に統一形式の依存方向宣言
-#      （`server → routes → http::*`）があることを確認する（doc とコードの乖離検知）
-#   3. `crates/http` / `crates/routes` の `src/**/*.rs` にプラグイン固有シンボル
-#      （`[Pp]lugin` を含む識別子）・`Cargo.toml` の `plugin-` 依存がないことを
-#      grep で確認する（`scripts/accept/core-deps-unsafe-audit.sh` 基準 F と同一手法）
+#   2. `${CRATES_DIR}`（既定 `crates`）直下の各クレートについて、エントリポイント
+#      （`src/lib.rs` を優先、なければ `src/main.rs`）に統一形式の依存方向宣言
+#      （`server → routes → http::*`）があることを確認する（doc とコードの乖離検知）。
+#      TASK-11.1 でハードコード 3 ファイルの列挙から動的列挙へ変更し、将来クレートの
+#      追加時にも宣言漏れが自動検出されるようにした（規約の継続的な機械保証）
+#   3. `crates/core` / `crates/http` / `crates/routes` の `src/**/*.rs` にプラグイン固有
+#      シンボル（`[Pp]lugin` を含む識別子）・`Cargo.toml` の `plugin-` 依存がないことを
+#      grep で確認する（`scripts/accept/core-deps-unsafe-audit.sh` 基準 F と同一手法。
+#      TASK-11.1 で `crates/core` を対象に追加）
 #
-# 判定不能（cargo metadata 失敗・jq 未導入等）はフェイルクローズで FAIL とし、
-# 「検証していないのに PASS 扱い」を防ぐ（`.claude/rules/security.md`）。
+# 判定不能（cargo metadata 失敗・jq 未導入・エントリポイント不在等）はフェイルクローズで
+# FAIL とし、「検証していないのに PASS 扱い」を防ぐ（`.claude/rules/security.md`）。
 #
 # 呼び出し元: `.github/workflows/ci.yml` の `unsafe-triage` ジョブ、または人間が
 # `bash scripts/dep-direction-check.sh` として直接実行する。
 #
 # セルフテスト: `scripts/tests/run-dep-direction-tests.sh`（fixture の正常/違反グラフで
-# PASS/FAIL を固定化する）。fixture は `--metadata-file` で `cargo metadata` 呼び出しを
-# 差し替えて workspace の実状態に依存せず検証する。
+# PASS/FAIL を固定化する）。チェック 1 は `--metadata-file`、チェック 2 は `--crates-dir`
+# で実データ取得を差し替え、workspace の実状態に依存せず検証する。
 
 set -euo pipefail
 
@@ -28,10 +33,15 @@ WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${WORKSPACE_ROOT}"
 
 METADATA_FILE=""
+CRATES_DIR="crates"
 while [ $# -gt 0 ]; do
     case "$1" in
         --metadata-file)
             METADATA_FILE="$2"
+            shift 2
+            ;;
+        --crates-dir)
+            CRATES_DIR="$2"
             shift 2
             ;;
         *)
@@ -189,32 +199,57 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2: lib.rs 依存方向宣言の存在検査
+# 2: エントリポイント（lib.rs／main.rs）依存方向宣言の存在検査
+#
+# `${CRATES_DIR}` 直下の各ディレクトリ（1 階層のみ。crates/http/fuzz のようなネスト
+# クレートは対象外＝ workspace Cargo.toml の exclude と整合）をクレートとみなし、
+# `src/lib.rs` を優先、無ければ `src/main.rs` をエントリポイントとして解決する。
+# 両方欠落・宣言欠落はいずれも FAIL（フェイルクローズ）。将来クレートを追加した際も
+# 本ループが自動的に対象へ含めるため、宣言の付け忘れが CI で機械検出される。
 # ---------------------------------------------------------------------------
 DECLARATION="server → routes → http::*"
 declaration_missing=()
-for lib in crates/core/src/lib.rs crates/routes/src/lib.rs crates/http/src/lib.rs; do
-    if [ ! -f "${lib}" ]; then
-        declaration_missing+=("${lib}（ファイル不在）")
-        continue
-    fi
-    if ! grep -qF "${DECLARATION}" "${lib}"; then
-        declaration_missing+=("${lib}")
-    fi
-done
+crate_count=0
 
-if [ ${#declaration_missing[@]} -eq 0 ]; then
-    pass "2: lib.rs 依存方向宣言 — core/routes/http すべての src/lib.rs に統一形式の宣言あり"
+if [ ! -d "${CRATES_DIR}" ]; then
+    fail "2: エントリポイント依存方向宣言 — ${CRATES_DIR} が存在しません（判定不能）"
 else
-    fail "2: lib.rs 依存方向宣言 — 欠落: ${declaration_missing[*]}"
+    for crate_dir in "${CRATES_DIR}"/*/; do
+        [ -d "${crate_dir}" ] || continue
+        crate_name="$(basename "${crate_dir}")"
+        crate_count=$((crate_count + 1))
+
+        if [ -f "${crate_dir}src/lib.rs" ]; then
+            entrypoint="${crate_dir}src/lib.rs"
+        elif [ -f "${crate_dir}src/main.rs" ]; then
+            entrypoint="${crate_dir}src/main.rs"
+        else
+            declaration_missing+=("${crate_name}（src/lib.rs・src/main.rs のいずれも不在）")
+            continue
+        fi
+
+        if ! grep -qF "${DECLARATION}" "${entrypoint}"; then
+            declaration_missing+=("${entrypoint}")
+        fi
+    done
+
+    if [ "${crate_count}" -eq 0 ]; then
+        fail "2: エントリポイント依存方向宣言 — ${CRATES_DIR} 直下にクレートが 1 件も見つかりませんでした（判定不能）"
+    elif [ ${#declaration_missing[@]} -eq 0 ]; then
+        pass "2: エントリポイント依存方向宣言 — ${CRATES_DIR} 直下 ${crate_count} クレート全てのエントリポイントに統一形式の宣言あり"
+    else
+        fail "2: エントリポイント依存方向宣言 — 欠落: ${declaration_missing[*]}"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
-# 3: routes・http のプラグイン固有シンボル非依存検査
-#    （scripts/accept/core-deps-unsafe-audit.sh 基準 F と同一手法）
+# 3: core・routes・http のプラグイン固有シンボル非依存検査
+#    （scripts/accept/core-deps-unsafe-audit.sh 基準 F と同一手法。TASK-11.1 で
+#    crates/core を対象に追加。bf-plugin-* 自体は「plugin」を正当に含むため
+#    検査対象にしない。依存方向はチェック 1 のホワイトリストが別途担保する）
 # ---------------------------------------------------------------------------
 plugin_hits_all=""
-for dir in crates/http crates/routes; do
+for dir in crates/core crates/http crates/routes; do
     if [ -d "${dir}/src" ]; then
         # 日本語 doc comment 中の「プラグイン」誤検出を避けるため // 行コメントは除外し、
         # 識別子パターン（Plugin/plugin を含む識別子）のみを検査する。除外パターンは
@@ -225,7 +260,7 @@ for dir in crates/http crates/routes; do
 "
         fi
     else
-        fail "3: プラグイン非依存（routes/http） — ${dir}/src が存在しません（検証対象なし。crates/routes 新設 PR 内で検出された場合は構成漏れ）"
+        fail "3: プラグイン非依存（core/routes/http） — ${dir}/src が存在しません（検証対象なし。crates/routes 新設 PR 内で検出された場合は構成漏れ）"
     fi
     if [ -f "${dir}/Cargo.toml" ] && grep -q 'plugin-' "${dir}/Cargo.toml"; then
         plugin_hits_all="${plugin_hits_all}${dir}/Cargo.toml に plugin- 依存あり
@@ -234,9 +269,9 @@ for dir in crates/http crates/routes; do
 done
 
 if [ -z "${plugin_hits_all}" ]; then
-    pass "3: プラグイン非依存（routes/http） — crates/http・crates/routes にプラグイン固有シンボル・依存を検出せず"
+    pass "3: プラグイン非依存（core/routes/http） — crates/core・crates/http・crates/routes にプラグイン固有シンボル・依存を検出せず"
 else
-    fail "3: プラグイン非依存（routes/http） — 検出: ${plugin_hits_all}"
+    fail "3: プラグイン非依存（core/routes/http） — 検出: ${plugin_hits_all}"
 fi
 
 echo ""
