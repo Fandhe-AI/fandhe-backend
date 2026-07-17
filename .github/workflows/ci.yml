@@ -392,12 +392,16 @@ jobs:
       # を参照）。サプライチェーン考慮でバージョン pin する（.claude/rules/security.md）。
       - name: Ensure openapi-spec-validator 0.7.1
         run: |
-          if ! openapi-spec-validator --version 2>/dev/null | grep -q '0\.7\.1'; then
+          if ! python3 -m openapi_spec_validator --version 2>/dev/null | grep -q '0\.7\.1'; then
             pip install --user --break-system-packages "openapi-spec-validator==0.7.1"
           fi
 
+      # pip --user 配置スクリプトは実行環境の PATH に含まれるとは限らない
+      # （self-hosted runner で /root/.local/bin が未設定のケースがある）ため、
+      # PATH 依存のコマンド解決を避けて `python3 -m` によるモジュール実行形式で
+      # 呼び出す（PR #141 CI failure 対応）。
       - name: openapi.json 構文妥当性検証（openapi-spec-validator）
-        run: openapi-spec-validator crates/plugin-openapi/openapi.json
+        run: python3 -m openapi_spec_validator crates/plugin-openapi/openapi.json
 
   # --------------------------------------------------
   # fuzz smoke（TASK-15.3-1、#87）: crates/http/fuzz（root workspace から exclude 済み、
