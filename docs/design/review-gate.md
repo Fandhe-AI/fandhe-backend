@@ -25,7 +25,7 @@ REQ-14 の受け入れ基準のうち、TASK-14.1（#39）・TASK-14.2（#40）�
 | # | 条件 | 機械強制 | 担保方法 |
 |---|------|---------|----------|
 | 1 | PR 経由必須（main への直 push 不可） | 可能 | ruleset `main-required-checks` の `pull_request` ルール（本タスクで追加） |
-| 2 | `ci-complete` 全通過（fmt / clippy / test / doc / dep-audit / unsafe-triage の集約） | 可能 | 既存 required status check（TASK-14.1、#39） |
+| 2 | `ci-complete` 全通過（fmt / clippy / test / doc / coverage / dep-audit / unsafe-triage の集約） | 可能 | 既存 required status check（TASK-14.1、#39） |
 | 3 | レビューゲート通過（人間承認 **または** 追加の AI レビュー） | 一部（証跡の存在は確認可能だが、レビュー内容の妥当性そのものは機械判定できない） | 下記 §1.1 の運用 |
 
 REQ-14 は「人間または追加の AI レビュー」を明示的に許容している（単独メンテナ体制でも
@@ -96,7 +96,7 @@ REQ-14 は「人間または追加の AI レビュー」を明示的に許容し
   として存在することを確認する（TASK-14.2 の lint 表が後から弱体化・削除される退行に加え、
   コメントアウトによる無効化も検知する）。
 - `.github/workflows/ci.yml` の `ci-complete` ジョブブロックを抽出し、その `needs` 配列の
-  要素として判定対象ジョブ（fmt / clippy / test / doc / dep-audit / unsafe-triage）が
+  要素として判定対象ジョブ（fmt / clippy / test / doc / coverage / dep-audit / unsafe-triage）が
   厳密一致で存在することを確認する（ファイル全体への単純な部分文字列検索ではなく、
   `needs` 配列内の要素照合とすることで、コメントや他ジョブ名への偶然の一致を除外し、
   集約ゲートの判定対象が黙って縮小される退行を確実に検知する）。

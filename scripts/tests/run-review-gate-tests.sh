@@ -139,11 +139,11 @@ else
     fi
 
     if [ -z "${NEEDS_LIST}" ]; then
-        for job in fmt clippy test doc dep-audit unsafe-triage; do
+        for job in fmt clippy test doc coverage dep-audit unsafe-triage; do
             fail "ci-complete の needs 配列を抽出できない（'${job}' を確認できません）"
         done
     else
-        for job in fmt clippy test doc dep-audit unsafe-triage; do
+        for job in fmt clippy test doc coverage dep-audit unsafe-triage; do
             found="no"
             IFS=',' read -ra needs_arr <<< "${NEEDS_LIST}"
             for item in "${needs_arr[@]}"; do
@@ -294,39 +294,83 @@ else
             fail "ruleset 'main-required-checks' が active でない（enforcement=${ENFORCEMENT}）"
         fi
 
-        RULESET_DETAIL="$(gh api "repos/${REPO_NWO}/rulesets/${RULESET_ID}" 2>/dev/null || echo '{}')"
-
-        if printf '%s' "${RULESET_DETAIL}" | jq -e \
-            '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[] | select(.context == "ci-complete")' \
-            >/dev/null 2>&1; then
-            pass "required_status_checks に ci-complete が含まれる"
+        # RULESET_DETAIL の取得失敗をフォールバック（空オブジェクト）で握りつぶすと、
+        # 後続の jq 抽出が軒並み「存在しない」判定になり、bypass_actors の
+        # 'length == 0' チェックだけが意図せず PASS してしまう（fail-open、PR #117
+        # レビュー指摘）。取得失敗はここで即座に FAIL とし、後続の内容検証はスキップする
+        # （フェイルクローズ、.claude/rules/security.md）。
+        if ! RULESET_DETAIL="$(gh api "repos/${REPO_NWO}/rulesets/${RULESET_ID}" 2>/dev/null)"; then
+            fail "ruleset 'main-required-checks'（id=${RULESET_ID}）の詳細取得に失敗した（gh api エラー、以降の内容検証をスキップ）"
         else
-            fail "required_status_checks に ci-complete が含まれない"
-        fi
+            if printf '%s' "${RULESET_DETAIL}" | jq -e \
+                '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[] | select(.context == "ci-complete")' \
+                >/dev/null 2>&1; then
+                pass "required_status_checks に ci-complete が含まれる"
+            else
+                fail "required_status_checks に ci-complete が含まれない"
+            fi
 
-        if printf '%s' "${RULESET_DETAIL}" | jq -e '.rules[] | select(.type == "pull_request")' >/dev/null 2>&1; then
-            pass "pull_request ルールが有効"
-        else
-            fail "pull_request ルールが存在しない（PR 必須化が未設定）"
-        fi
+            if printf '%s' "${RULESET_DETAIL}" | jq -e '.rules[] | select(.type == "pull_request")' >/dev/null 2>&1; then
+                pass "pull_request ルールが有効"
+            else
+                fail "pull_request ルールが存在しない（PR 必須化が未設定）"
+            fi
 
-        if printf '%s' "${RULESET_DETAIL}" | jq -e '.rules[] | select(.type == "non_fast_forward")' >/dev/null 2>&1; then
-            pass "non_fast_forward ルールが有効"
-        else
-            fail "non_fast_forward ルールが存在しない（force push 禁止が未設定）"
-        fi
+            if printf '%s' "${RULESET_DETAIL}" | jq -e '.rules[] | select(.type == "non_fast_forward")' >/dev/null 2>&1; then
+                pass "non_fast_forward ルールが有効"
+            else
+                fail "non_fast_forward ルールが存在しない（force push 禁止が未設定）"
+            fi
 
-        if printf '%s' "${RULESET_DETAIL}" | jq -e '.rules[] | select(.type == "deletion")' >/dev/null 2>&1; then
-            pass "deletion ルールが有効"
-        else
-            fail "deletion ルールが存在しない（ブランチ削除禁止が未設定）"
-        fi
+            if printf '%s' "${RULESET_DETAIL}" | jq -e '.rules[] | select(.type == "deletion")' >/dev/null 2>&1; then
+                pass "deletion ルールが有効"
+            else
+                fail "deletion ルールが存在しない（ブランチ削除禁止が未設定）"
+            fi
 
-        BYPASS_LEN="$(printf '%s' "${RULESET_DETAIL}" | jq '.bypass_actors | length')"
-        if [ "${BYPASS_LEN}" = "0" ]; then
-            pass "bypass_actors が空（例外経路なし）"
-        else
-            fail "bypass_actors が空でない（例外経路が設定されている、fail-closed 違反の疑い: ${BYPASS_LEN} 件）"
+            BYPASS_LEN="$(printf '%s' "${RULESET_DETAIL}" | jq '.bypass_actors | length')"
+            if [ "${BYPASS_LEN}" = "0" ]; then
+                pass "bypass_actors が空（例外経路なし）"
+            else
+                fail "bypass_actors が空でない（例外経路が設定されている、fail-closed 違反の疑い: ${BYPASS_LEN} 件）"
+            fi
+
+            # conditions.ref_name の静的確認だけでは「ルール内容は正しいが対象ブランチが
+            # 誤っている ruleset」を見逃す（PR #117 レビュー指摘）。GitHub がデフォルト
+            # ブランチに実際に適用しているルール集合を返す
+            # `repos/{nwo}/rules/branches/{branch}` を呼び、この ruleset_id が
+            # そこに含まれることまで確認する（docs/design/review-gate.md のブランチ
+            # エンドポイント検証要件）。
+            DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
+            if [ -z "${DEFAULT_BRANCH}" ]; then
+                fail "gh repo view でデフォルトブランチを特定できない（ruleset のブランチ適用確認をスキップ）"
+            else
+                BRANCH_RULES_JSON="$(gh api "repos/${REPO_NWO}/rules/branches/${DEFAULT_BRANCH}" 2>/dev/null || true)"
+                if [ -z "${BRANCH_RULES_JSON}" ]; then
+                    fail "repos/${REPO_NWO}/rules/branches/${DEFAULT_BRANCH} の取得に失敗した（ブランチ適用確認不可）"
+                else
+                    if printf '%s' "${BRANCH_RULES_JSON}" | jq -e \
+                        --argjson rid "${RULESET_ID}" \
+                        'any(.[]; .ruleset_id == $rid)' >/dev/null 2>&1; then
+                        pass "ruleset 'main-required-checks' がデフォルトブランチ '${DEFAULT_BRANCH}' に実際に適用されている"
+                    else
+                        fail "ruleset 'main-required-checks'（id=${RULESET_ID}）がデフォルトブランチ '${DEFAULT_BRANCH}' の適用ルールに含まれない（対象ブランチ誤設定の疑い）"
+                    fi
+                fi
+
+                # setup-required-checks.sh は conditions.ref_name.include に
+                # "refs/heads/${DEFAULT_BRANCH}" を厳密指定して ruleset を作成する
+                # （ワイルドカード '~DEFAULT_BRANCH' / 'refs/heads/*' は使わない）。
+                # テストも実装と同じ具体値で照合する。
+                if printf '%s' "${RULESET_DETAIL}" | jq -e \
+                    --arg ref "refs/heads/${DEFAULT_BRANCH}" \
+                    '.conditions.ref_name.include[]? | select(. == $ref)' \
+                    >/dev/null 2>&1; then
+                    pass "conditions.ref_name.include がデフォルトブランチ '${DEFAULT_BRANCH}' を対象にしている"
+                else
+                    fail "conditions.ref_name.include に 'refs/heads/${DEFAULT_BRANCH}' が含まれない（対象ブランチ誤設定の疑い）"
+                fi
+            fi
         fi
     fi
 fi
