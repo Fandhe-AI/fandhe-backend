@@ -35,9 +35,13 @@ evaluate_nfr6_ratio() {
     local strict_min="100.3"
     local strict_max="100.8"
 
+    # NOTE: awk はロケールのデフォルト小数点文字（カンマ小数点ロケール等）に影響され、
+    # "100.3" 等のリテラルを数値として正しく比較できない場合がある。LC_NUMERIC=C を
+    # 明示してロケール非依存の小数点判定にする（兄弟スクリプト
+    # `benches/webrtc-nfr6-bench.sh` の比率計算と同じ対策）。
     local rps_verdict
-    if awk -v v="${rps_ratio_pct}" -v lo="${practical_min}" -v hi="${practical_max}" 'BEGIN { exit !(v >= lo && v <= hi) }'; then
-        if awk -v v="${rps_ratio_pct}" -v lo="${strict_min}" -v hi="${strict_max}" 'BEGIN { exit !(v >= lo && v <= hi) }'; then
+    if LC_NUMERIC=C awk -v v="${rps_ratio_pct}" -v lo="${practical_min}" -v hi="${practical_max}" 'BEGIN { exit !(v >= lo && v <= hi) }'; then
+        if LC_NUMERIC=C awk -v v="${rps_ratio_pct}" -v lo="${strict_min}" -v hi="${strict_max}" 'BEGIN { exit !(v >= lo && v <= hi) }'; then
             rps_verdict="PASS"
         else
             rps_verdict="WARN"
@@ -48,8 +52,8 @@ evaluate_nfr6_ratio() {
 
     local p95_verdict="PASS"
     if [ -n "${p95_ratio_pct}" ]; then
-        if awk -v v="${p95_ratio_pct}" -v hi="${practical_max}" 'BEGIN { exit !(v <= hi) }'; then
-            if awk -v v="${p95_ratio_pct}" -v hi="${strict_max}" 'BEGIN { exit !(v <= hi) }'; then
+        if LC_NUMERIC=C awk -v v="${p95_ratio_pct}" -v hi="${practical_max}" 'BEGIN { exit !(v <= hi) }'; then
+            if LC_NUMERIC=C awk -v v="${p95_ratio_pct}" -v hi="${strict_max}" 'BEGIN { exit !(v <= hi) }'; then
                 p95_verdict="PASS"
             else
                 p95_verdict="WARN"
