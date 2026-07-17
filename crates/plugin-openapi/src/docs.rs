@@ -12,8 +12,8 @@
 //! # 呼び出し元・実行タイミング
 //! ここで定義する `*_doc` 関数はコンパイル時のメタデータ収集のみに使われ、
 //! 実行時には呼ばれない（本体は空関数）。[`ApiDoc::openapi`] の呼び出しは
-//! 開発用の生成 CLI（TASK-3.2、#31 で追加予定）またはテストからのみ行い、
-//! サーバーのリクエスト処理経路には載せない（実行時コストゼロ、PoC-4 成功基準 3）。
+//! 開発用の生成 CLI（`gen-openapi`、`gen-cli` feature、TASK-3.2、#31）またはテストからのみ
+//! 行い、サーバーのリクエスト処理経路には載せない（実行時コストゼロ、PoC-4 成功基準 3）。
 //!
 //! # 実装本体との契約
 //! 対象 5 エンドポイントの実サービングは `crates/routes` 側の責務であり、本
@@ -113,7 +113,8 @@ fn search_doc() {}
 ///
 /// `ApiDoc::openapi()` で `utoipa::openapi::OpenApi` を構築し、
 /// `to_pretty_json()` / `to_yaml()`（`yaml` feature 有効時）でシリアライズできる。
-/// 生成 CLI・`GET /openapi.json` の静的埋め込みは TASK-3.2（#31）のスコープ。
+/// 生成 CLI（`gen-openapi`）・`GET /openapi.json` 向けの静的埋め込み
+/// （[`crate::OPENAPI_JSON`]）は TASK-3.2（#31）で実装済み。
 ///
 /// # Examples
 /// ```

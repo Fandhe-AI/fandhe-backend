@@ -30,6 +30,10 @@ name: CI
 # のセルフテスト（scripts/tests/run-guardrail-tests.sh）を unsafe-triage ジョブに追加した。
 # 既存セルフテスト群と同列・軽量（ネットワーク・cargo ビルド不要）で、判定記録の形式・
 # 必須項目・fail-closed 原則の退行を CI 常設で検知する。
+# TASK-3.2（#31）: 「gen-openapi CLI 実行 → openapi.json 生成 → サーバー本体ビルド」の
+# 2 段階ビルド順序を openapi-two-stage ジョブとして明示ステップ化した
+# （scripts/openapi-two-stage.sh を呼ぶだけの薄いジョブ）。ビルドを伴うため
+# schedule（日次 dep-audit のみを走らせる方針）からは除外する。
 on:
   pull_request:
     branches: [main]
@@ -359,6 +363,28 @@ jobs:
         run: bash scripts/pay-for-what-you-use-check.sh
 
   # --------------------------------------------------
+  # openapi 2 段階ビルド（TASK-3.2、#31）: 「gen-openapi CLI 実行 → openapi.json 生成 →
+  # サーバー本体ビルド」の順序を明示ステップとして CI に組み込む。stage 1（--check）で
+  # コミット済み crates/plugin-openapi/openapi.json が ApiDoc の最新定義と乖離していないか
+  # を検知し（fail-closed、OWASP A08 対策）、stage 2 で --all-features ワークスペース
+  # ビルドを実行する。詳細は scripts/openapi-two-stage.sh を参照。
+  # --------------------------------------------------
+  openapi-two-stage:
+    name: openapi 2 段階ビルド（gen-openapi --check → cargo build）
+    runs-on: self-hosted
+    if: github.event_name != 'schedule'
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      - name: "openapi-two-stage.sh（stage 1: gen-openapi --check、stage 2: cargo build --all-features）"
+        run: bash scripts/openapi-two-stage.sh
+
+  # --------------------------------------------------
   # fuzz smoke（TASK-15.3-1、#87）: crates/http/fuzz（root workspace から exclude 済み、
   # pay-for-what-you-use）の全 fuzz target を短時間（既定 60 秒/target）だけ実行し、
   # パーサのパニック・メモリ不正への回帰を CI 常設で検知する。ビルドは pinned nightly +
@@ -453,7 +479,8 @@ jobs:
   # coverage（コア行カバレッジ 80% ゲート、TASK-11.5-2）・
   # unsafe-triage（unsafe 追加のラチェット検知、TASK-12.1-1、#79）・
   # pay-for-what-you-use（feature 無効時の依存・unsafe・コード 0 件検証、TASK-2.2、#19）・
-  # fuzz-smoke（パーサのパニック・メモリ不正検知、TASK-15.3-1、#87）も含む
+  # fuzz-smoke（パーサのパニック・メモリ不正検知、TASK-15.3-1、#87）・
+  # openapi-two-stage（openapi.json 鮮度検証 + 2 段階ビルド、TASK-3.2、#31）も含む
   # 全ジョブの success を単一ジョブの成否に集約する。
   # branch protection / ruleset（scripts/setup-required-checks.sh）はこのジョブ名のみを
   # required check にすればよく、ジョブ追加時は needs に足すだけで判定対象を拡張できる。
@@ -464,12 +491,25 @@ jobs:
     name: ci-complete
     runs-on: self-hosted
     # 失敗・スキップ時にも必ず実行して fail-closed で判定する。
-    # schedule（日次 dep-audit のみ）実行時は fmt/clippy/test/unsafe-triage/fuzz-smoke が
-    # 意図的に skipped になる（doc ジョブには schedule 除外の if がなく実行される既存挙動だが、
-    # ci-complete 自体が schedule 時は丸ごとスキップされるため判定ロジックには影響しない）。
+    # schedule（日次 dep-audit のみ）実行時は
+    # fmt/clippy/test/unsafe-triage/fuzz-smoke/openapi-two-stage が意図的に skipped になる
+    # （doc ジョブには schedule 除外の if がなく実行される既存挙動だが、ci-complete 自体が
+    # schedule 時は丸ごとスキップされるため判定ロジックには影響しない）。
     # 完遂判定の対象外（required check としては pull_request/push イベントのみを想定する）。
     if: ${{ always() && github.event_name != 'schedule' }}
-    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, pay-for-what-you-use, fuzz-smoke]
+    needs:
+      [
+        fmt,
+        clippy,
+        test,
+        doc,
+        dep-audit,
+        coverage,
+        unsafe-triage,
+        pay-for-what-you-use,
+        fuzz-smoke,
+        openapi-two-stage,
+      ]
     timeout-minutes: 5
     steps:
       - name: 完遂判定（全 needs ジョブが success であること）
@@ -486,6 +526,7 @@ jobs:
           RESULT_UNSAFE_TRIAGE: ${{ needs.unsafe-triage.result }}
           RESULT_PAY_FOR_WHAT_YOU_USE: ${{ needs.pay-for-what-you-use.result }}
           RESULT_FUZZ_SMOKE: ${{ needs.fuzz-smoke.result }}
+          RESULT_OPENAPI_TWO_STAGE: ${{ needs.openapi-two-stage.result }}
         run: |
           set -euo pipefail
           ok=1
@@ -494,7 +535,8 @@ jobs:
                       "dep-audit:${RESULT_DEP_AUDIT}" "coverage:${RESULT_COVERAGE}" \
                       "unsafe-triage:${RESULT_UNSAFE_TRIAGE}" \
                       "pay-for-what-you-use:${RESULT_PAY_FOR_WHAT_YOU_USE}" \
-                      "fuzz-smoke:${RESULT_FUZZ_SMOKE}"; do
+                      "fuzz-smoke:${RESULT_FUZZ_SMOKE}" \
+                      "openapi-two-stage:${RESULT_OPENAPI_TWO_STAGE}"; do
             job="${pair%%:*}"; result="${pair#*:}"
             echo "${job}: ${result}"
             # skipped / cancelled / failure はすべて未完遂として扱う（fail-closed）
