@@ -53,6 +53,14 @@ if ! command -v jq >/dev/null 2>&1; then
     echo "エラー: jq が見つかりません。導入してください（例: apt install jq）" >&2
     exit 1
 fi
+# wait_ready が health check に curl を使用する（他の bench スクリプトは
+# benches/lib/common.sh の check_dependencies で curl 不在を明示検出するが、
+# 本スクリプトは共通関数ではなく専用の wait_ready を持つため個別に検査する）。
+# 未検査のままだと curl 不在時に原因不明の 5 秒タイムアウト失敗として現れてしまう。
+if ! command -v curl >/dev/null 2>&1; then
+    echo "エラー: curl が見つかりません。導入してください（例: apt install curl）" >&2
+    exit 1
+fi
 if [ ! -x "${BASELINE_BIN}" ]; then
     echo "エラー: ${BASELINE_BIN} が見つかりません。先に" >&2
     echo "  cargo build --release -p backend-framework-core --example minimal --no-default-features" >&2
