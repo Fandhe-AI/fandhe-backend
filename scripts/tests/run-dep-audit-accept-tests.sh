@@ -171,21 +171,54 @@ fi
 echo ""
 echo "===== [advisories] ignore 判定（節 1d）のロジック検証 ====="
 
-ignore_is_empty() {
+# dep-audit-accept.sh 節 1d の判定ロジック（角括弧の対応を追跡して ignore 配列の
+# 実際の中身を取り出し、空白・カンマを除いた残りが空かどうかで判定）を同一ロジックで
+# 再現する。3 状態（empty/nonempty/missing）を返し、dep-audit-accept.sh の
+# PASS/WARN/FAIL の 3 区分にそのまま対応させる（Cursor Bugbot 指摘: 旧実装の単一
+# boolean ヘルパーは missing（FAIL 相当）と nonempty（WARN 相当）を区別せず両方
+# "false" にまとめてしまい、self-test がその区別を検証できていなかった）。
+ignore_classify() {
     local file="$1"
-    local advisories_section ignore_line
+    local advisories_section ignore_block ignore_inner ignore_inner_stripped
     advisories_section="$(extract_toml_section "advisories" "${file}")"
-    ignore_line="$(printf '%s\n' "${advisories_section}" | grep '^ignore' || true)"
-    [ -n "${ignore_line}" ] && printf '%s' "${ignore_line}" | grep -q '\[\]'
+    if ! printf '%s\n' "${advisories_section}" | grep -q '^ignore[ \t]*='; then
+        echo "missing"
+        return
+    fi
+    ignore_block="$(printf '%s\n' "${advisories_section}" | awk '
+        BEGIN { depth = 0; started = 0; done = 0 }
+        /^ignore[ \t]*=/ { started = 1 }
+        started && !done {
+            print
+            line = $0
+            n = length(line)
+            for (i = 1; i <= n; i++) {
+                c = substr(line, i, 1)
+                if (c == "[") depth++
+                else if (c == "]") {
+                    depth--
+                    if (depth == 0) { done = 1 }
+                }
+            }
+        }
+    ')"
+    ignore_inner="$(printf '%s' "${ignore_block}" | tr '\n' ' ')"
+    ignore_inner="$(printf '%s' "${ignore_inner}" | sed -e 's/^ignore[ \t]*=[ \t]*\[//' -e 's/\][ \t]*$//')"
+    ignore_inner_stripped="$(printf '%s' "${ignore_inner}" | tr -d '[:space:],')"
+    if [ -z "${ignore_inner_stripped}" ]; then
+        echo "empty"
+    else
+        echo "nonempty"
+    fi
 }
 
-if ignore_is_empty "${FIXTURES_DIR}/deny-full.toml"; then
-    pass "ignore = [] の fixture は空維持と判定される"
+if [ "$(ignore_classify "${FIXTURES_DIR}/deny-full.toml")" = "empty" ]; then
+    pass "ignore = [] の fixture は空維持（PASS 相当）と判定される"
 else
     fail "ignore = [] の fixture が誤って非空と判定された"
 fi
 
-if ! ignore_is_empty "${FIXTURES_DIR}/deny-nonempty-ignore.toml"; then
+if [ "$(ignore_classify "${FIXTURES_DIR}/deny-nonempty-ignore.toml")" = "nonempty" ]; then
     pass "ignore が非空の fixture は非空（WARN 相当）と判定される"
 else
     fail "ignore が非空の fixture が誤って空維持と判定された"
@@ -193,28 +226,53 @@ fi
 
 # 実リポジトリの deny.toml と同じく [advisories] 直後に説明コメント行が挟まる
 # レイアウト（-A1 固定行数指定では検知できない）でも正しく判定できることを確認する。
-if ignore_is_empty "${FIXTURES_DIR}/deny-commented-advisories.toml"; then
+if [ "$(ignore_classify "${FIXTURES_DIR}/deny-commented-advisories.toml")" = "empty" ]; then
     pass "[advisories] 直後にコメント行を挟む fixture でも ignore = [] を空維持と判定できる"
 else
     fail "[advisories] 直後にコメント行を挟む fixture で ignore = [] を検出できなかった"
 fi
 
-if ! ignore_is_empty "${FIXTURES_DIR}/deny-missing-ignore-line.toml"; then
-    pass "[advisories] セクションに ignore 行自体が無い fixture は非空維持相当（要確認）と判定される"
+if [ "$(ignore_classify "${FIXTURES_DIR}/deny-missing-ignore-line.toml")" = "missing" ]; then
+    pass "[advisories] セクションに ignore 行自体が無い fixture は missing（FAIL 相当）と、nonempty（WARN 相当）とは区別して判定される"
 else
-    fail "ignore 行が無い fixture を誤って空維持と判定した"
+    fail "ignore 行が無い fixture を missing（FAIL 相当）と判定できなかった（nonempty との混同の疑い）"
 fi
 
-if ! ignore_is_empty "${FIXTURES_DIR}/deny-ignore-inline-comment.toml"; then
+if [ "$(ignore_classify "${FIXTURES_DIR}/deny-ignore-inline-comment.toml")" = "nonempty" ]; then
     pass "ignore が非空でも行末に '# ignore = []' が付いた fixture は非空（WARN 相当）と判定される（インラインコメント false-pass 回帰検知）"
 else
     fail "実値が非空でも行末インラインコメントの文字列に釣られて空維持と誤判定した（インラインコメント false-pass への退行）"
 fi
 
-if ignore_is_empty "${FIXTURES_DIR}/deny-crlf.toml"; then
+if [ "$(ignore_classify "${FIXTURES_DIR}/deny-crlf.toml")" = "empty" ]; then
     pass "CRLF 改行の fixture でも ignore = [] が空維持と判定される（見出し行 \\r 除去の回帰検知）"
 else
     fail "CRLF 改行の fixture で [advisories] セクションを検出できなかった"
+fi
+
+# 複数行形式（`ignore = [` / `]` が別行）でも空判定できることを確認する
+# （Cursor Bugbot 指摘: 旧実装は単一行の '[]' 部分文字列一致のみで判定しており、
+# 複数行の空配列を誤って非空（WARN）と判定していた）。
+if [ "$(ignore_classify "${FIXTURES_DIR}/deny-multiline-empty-ignore.toml")" = "empty" ]; then
+    pass "複数行形式の空 ignore（\`ignore = [\` / \`]\`）は空維持（PASS 相当）と判定される（複数行見逃し回帰検知）"
+else
+    fail "複数行形式の空 ignore を誤って非空と判定した（複数行見逃しへの退行）"
+fi
+
+if [ "$(ignore_classify "${FIXTURES_DIR}/deny-multiline-nonempty-ignore.toml")" = "nonempty" ]; then
+    pass "複数行形式の非空 ignore は非空（WARN 相当）と判定される"
+else
+    fail "複数行形式の非空 ignore を誤って空維持と判定した"
+fi
+
+# オブジェクト形式（`{ id = "...", reason = "..." }`）の非空エントリで reason
+# フィールドに部分文字列 '[]' を含む場合でも非空と判定できることを確認する
+# （Cursor Bugbot 指摘: 旧実装は行に '[]' が含まれるかだけで判定しており、
+# reason 文字列中の '[]' に釣られて誤って PASS 判定していた）。
+if [ "$(ignore_classify "${FIXTURES_DIR}/deny-ignore-object-reason-brackets.toml")" = "nonempty" ]; then
+    pass "reason フィールドに '[]' を含むオブジェクト形式の非空 ignore は非空（WARN 相当）と判定される（'[]' 部分文字列誤 PASS 回帰検知）"
+else
+    fail "reason フィールド中の '[]' に釣られて非空 ignore を誤って空維持と判定した（'[]' 部分文字列誤 PASS への退行）"
 fi
 
 echo ""
@@ -272,7 +330,7 @@ else
     fail "実リポジトリの deny.toml から all-features = true が検出できない（退行の可能性）"
 fi
 
-if ignore_is_empty "${WORKSPACE_ROOT}/deny.toml"; then
+if [ "$(ignore_classify "${WORKSPACE_ROOT}/deny.toml")" = "empty" ]; then
     pass "実リポジトリの deny.toml は [advisories] ignore = [] を維持している（TASK-15.1 実装済みの回帰検知。[advisories] ignore 行削除等の退行を検知）"
 else
     fail "実リポジトリの deny.toml から [advisories] ignore = [] の空維持が検出できない（退行の可能性）"

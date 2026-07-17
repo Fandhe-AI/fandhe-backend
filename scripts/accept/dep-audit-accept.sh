@@ -117,14 +117,47 @@ else
     # advisories.ignore は空維持が既定方針。非空の場合は運用上の許容（理由コメント
     # 付き追加）がありうるため FAIL ではなく WARN として可視化する
     # （フェイルクローズを弱めず、かつ正当な運用を誤検知しない）。
+    #
+    # 単純に「ignore 行に部分文字列 '[]' を含むか」だけで空判定すると、次の 2 通りで
+    # 誤判定が起きる（Cursor Bugbot 指摘、#52 PR #145 レビュー）:
+    #   - 複数行形式（`ignore = [` / `]` が別行）は先頭行に '[]' が現れず誤って
+    #     非空（WARN）判定される
+    #   - `ignore = [{ id = "...", reason = "空リスト []" }]` のようにオブジェクト
+    #     形式の非空エントリでも reason 文字列に '[]' を含めば誤って PASS 判定される
+    # そのため角括弧の対応を追跡して ignore 配列の実際の中身（先頭 `[` 〜対応する
+    # `]` の間）を取り出し、空白・カンマを除いた残りが空かどうかで判定する
+    # （単一行・複数行のいずれの形式にも対応。extract_ignore_array_inner の詳細な
+    # 対応範囲は scripts/tests/run-dep-audit-accept-tests.sh の ignore_classify に
+    # 同一ロジックとして再現し fixture で検証する）。
     advisories_section="$(extract_toml_section "advisories" "${DENY_TOML}")"
-    ignore_line="$(printf '%s\n' "${advisories_section}" | grep '^ignore' || true)"
-    if [ -z "${ignore_line}" ]; then
+    if ! printf '%s\n' "${advisories_section}" | grep -q '^ignore[ \t]*='; then
         record_fail "1d: [advisories] ignore" "[advisories] セクション直後に ignore 行が見つかりません（想定形式との乖離、要確認）"
-    elif printf '%s' "${ignore_line}" | grep -q '\[\]'; then
-        record_pass "1d: [advisories] ignore" "ignore = [] が維持されている（無視リスト空）"
     else
-        record_warn "1d: [advisories] ignore" "ignore が空でない可能性があります（${ignore_line}）。理由コメントの有無を目視確認してください（フェイルクローズだが運用上の許容を可視化）"
+        ignore_block="$(printf '%s\n' "${advisories_section}" | awk '
+            BEGIN { depth = 0; started = 0; done = 0 }
+            /^ignore[ \t]*=/ { started = 1 }
+            started && !done {
+                print
+                line = $0
+                n = length(line)
+                for (i = 1; i <= n; i++) {
+                    c = substr(line, i, 1)
+                    if (c == "[") depth++
+                    else if (c == "]") {
+                        depth--
+                        if (depth == 0) { done = 1 }
+                    }
+                }
+            }
+        ')"
+        ignore_inner="$(printf '%s' "${ignore_block}" | tr '\n' ' ')"
+        ignore_inner="$(printf '%s' "${ignore_inner}" | sed -e 's/^ignore[ \t]*=[ \t]*\[//' -e 's/\][ \t]*$//')"
+        ignore_inner_stripped="$(printf '%s' "${ignore_inner}" | tr -d '[:space:],')"
+        if [ -z "${ignore_inner_stripped}" ]; then
+            record_pass "1d: [advisories] ignore" "ignore = [] が維持されている（無視リスト空、複数行形式にも対応）"
+        else
+            record_warn "1d: [advisories] ignore" "ignore が空でない可能性があります（内容: ${ignore_inner}）。理由コメントの有無を目視確認してください（フェイルクローズだが運用上の許容を可視化）"
+        fi
     fi
 fi
 
