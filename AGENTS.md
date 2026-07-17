@@ -2,11 +2,18 @@
 
 ## 文書の位置づけ
 
-本リポジトリで作業するすべての AI エージェント・開発者が従う設計規約集。
+本リポジトリで作業するすべての AI エージェント・開発者が従う設計規約集。二つの役割を持つ:
+
+1. 実装コード（`crates/**`）から直接参照される横断的な設計規約（例:
+   「規約: ミドルウェア非同期 I/O 必須化」節）。`CLAUDE.md` / `.claude/rules/` と
+   内容を重複させない
+2. AI エージェントが安全に改修するための変更ガイド（「AI エージェント向け変更ガイド」
+   節、TASK-11.3・#35）。REQ-11 が要求する機械可読性のため、モジュール境界・変更手順・
+   完了判定・エスカレーション基準等の要点を本書に集約するが、各項目の一次情報源
+   （`docs/design/*.md`・`.claude/rules/*.md`）を正とし、詳細はそちらを参照する
+
 全体の運用ガイドは `CLAUDE.md`、Rust コーディング規約の詳細は `.claude/rules/`
-（特に [coding-rust.md](.claude/rules/coding-rust.md)）を参照し、本書は
-`CLAUDE.md` / `.claude/rules/` と内容を重複させず、実装コード（`crates/**`）から
-直接参照される横断的な設計規約のみを記載する。
+（特に [coding-rust.md](.claude/rules/coding-rust.md)）を参照する。
 
 ## 規約: ミドルウェア非同期 I/O 必須化
 
@@ -78,6 +85,151 @@ trait 実装のまま I/O を停止し、アトミックカウンタの更新の
   欠落（drop）が起こりうる。セキュリティ監査イベント等、欠落を許容できないログの
   扱いは、標準ロギング／トレーシング実装（REQ-10・`plugin-tracing` 系タスク）側
   の設計事項として別途定める。本規約はこの論点を暗黙に決定しない。
+
+## AI エージェント向け変更ガイド
+
+TASK-11.3（#35、`docs/spec/05-tasks.md` Phase 3 / MS-3、`docs/spec/04-requirements.md`
+REQ-11）対応。AI がこのリポジトリを安全に改修するための、モジュール境界・変更手順・
+完了判定・アサーション規約・安全性方針・エスカレーション基準を機械可読な形でまとめる。
+運用・委譲の詳細は `CLAUDE.md`、Rust コーディング規約の詳細は
+[coding-rust.md](.claude/rules/coding-rust.md) を正とし、本節は重複させず要点と
+一次情報源への参照のみを記載する。
+
+### モジュール境界
+
+workspace 内クレート間の依存方向は次の一方向を維持する（`crates/core/src/lib.rs`
+モジュール doc・`scripts/dep-direction-check.sh` と同一の宣言）。
+
+```text
+server → routes → http::*
+```
+
+- `crates/core` はこの依存グラフの末端に位置し、`crates/plugin-*` の固有シンボルには
+  一切依存しない（pay-for-what-you-use、
+  [pay-for-what-you-use.md](.claude/rules/pay-for-what-you-use.md)）。
+  プラグインは feature 経由でコアの拡張点を実装する側であり、コアからプラグインへの
+  依存は発生しない設計とする
+- **既知の例外（是正中）**: `crates/core` → `bf-plugin-webrtc-proxy`
+  （`webrtc-proxy` feature 経由）は現状の依存グラフで許可リスト化された例外であり、
+  是正は Issue #136（`fix(core): crates/core が bf_plugin_webrtc_proxy に直接依存し
+  依存方向一方向性に違反`）で追跡する。新規変更でこの例外を拡大しない
+- 機械検証: `bash scripts/dep-direction-check.sh`（`cargo metadata` の依存エッジを
+  許可リストと照合、循環依存検出、コアへのプラグイン固有シンボル混入を grep 検出）
+
+crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
+
+| クレート | 責務 |
+|---------|------|
+| `core` | HTTP/1.1 パーサ・keep-alive・3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）を持つ最小コア |
+| `http` | sans-IO な HTTP プリミティブ（`bf-http`）。workspace 内で最下層 |
+| `routes` | ルーティング（`bf-routes`）。`server → routes → http::*` の中間層 |
+| `plugin-websocket` | WebSocket（RFC 6455 ハンドシェイク・`UpgradeHandler` 拡張点） |
+| `plugin-graphql` | GraphQL プラグイン境界 |
+| `plugin-openapi` | OpenAPI ドキュメント生成 |
+| `plugin-webrtc` | in-process WebRTC（`webrtc-rs` 直接依存） |
+| `plugin-webrtc-proxy` | WebRTC シグナリングプロキシ（別プロセス切り出し型） |
+| `axum-ref` | 性能比較用参照実装 |
+
+### 変更手順
+
+拡張点変更は、まず 3 種 trait（`Middleware` / `UpgradeHandler` / `RequestGate`、
+`crates/core/src/extension.rs`）のいずれかに載るか判定することから入る
+（[coding-rust.md](.claude/rules/coding-rust.md)）。feature の新規追加・変更は
+[pay-for-what-you-use.md](.claude/rules/pay-for-what-you-use.md) と
+[feature-modification-flow.md](docs/design/feature-modification-flow.md) に従う。
+
+#### 新規エンドポイント追加手順
+
+1. `bf_routes::Router::route()` へのルート登録
+2. ハンドラ実装（対象クレートは「モジュール境界」節の crates 一覧・
+   [delegation-impl.md](.claude/rules/delegation-impl.md) のパスベース委譲に従い判断する）
+3. doc コメント + doc test（`# Examples`）を付与する
+   （[code-comment-style.md](.claude/rules/code-comment-style.md)）
+4. 「アサーション網羅性」節に従う網羅的アサーション付きテストを追加する
+5. **本 AGENTS.md の更新をサブタスクとして必ず含める**。エンドポイント・拡張点追加時に
+   本書が古びていないかを確認し、必要な追随を行う（本節が確立する運用。
+   [feature-modification-flow.md](docs/design/feature-modification-flow.md) 8 節が
+   参照する追随先）
+
+### 変更完了の判定基準
+
+変更ごとに以下をすべて満たすことを確認する。コマンドの正確な集合・CI ジョブ構成は
+[ci-completion-criteria.md](docs/design/ci-completion-criteria.md) を正とし、本節では
+二重管理しない（ジョブ追加・改名時は同書側が更新される）。
+
+- `cargo fmt --check`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `cargo test --workspace --all-features`（`.config/nextest.toml` の
+  `slow-timeout` 設定によりテスト単位タイムアウト付き。`cargo nextest run` でも可）
+  + `cargo test --doc`
+- `cargo doc`（`RUSTDOCFLAGS="-D warnings"`）
+- CI 集約ゲート `ci-complete` が green
+- ドキュメント追随が完了していること
+  （[feature-modification-flow.md](docs/design/feature-modification-flow.md) 8 節の
+  変更種別 → 追随ドキュメントのマッピングに従う）
+- 受け入れ基準を充足していること（人間判断によるレビューゲート。
+  [feature-modification-flow.md](docs/design/feature-modification-flow.md) 9 節）
+
+上記のいずれかが未充足のまま「変更完了」とみなさない（fail-closed）。
+
+### アサーション網羅性
+
+PoC-9（`docs/spec/03-poc/ai-first-maintainability/README.md`）では、HTTP レスポンスの
+ボディ内容のみを検証しステータス行・`Content-Type` を検証しないテストがバグを見逃す
+事例が確認された。この教訓に基づき、HTTP レスポンスを検証するテストは次を**すべて**
+検証する:
+
+- ステータス行（ステータスコード）
+- ヘッダ（少なくとも `Content-Type` / `Content-Length`）
+- ボディ
+
+ボディ内容の一致のみで「テストが通った」と判断しない。新規エンドポイント追加・既存
+エンドポイント変更のテストはこの規約に従う（「変更手順」節・
+[feature-modification.md](.claude/rules/feature-modification.md) の「実装にはテスト
+追加を伴う」と併せて適用する）。
+
+### 安全性方針
+
+- `unsafe` は最小限に留め、使う場合は `// SAFETY:` コメントで不変条件と安全性の根拠を
+  必ず書く（[coding-rust.md](.claude/rules/coding-rust.md)）
+- workspace lints は 2 層防御を敷く（詳細は
+  [unsafe-deny-lints.md](docs/design/unsafe-deny-lints.md)）: 第 1 層は `forbid`
+  （`#[allow]` による抑制自体を禁止）、第 2 層は `deny`（正当理由があれば局所
+  `#[allow]` + レビューで例外化可能）
+- OWASP Top 10 観点（入力検証・認証認可・インジェクション・リソース枯渇・
+  暗号/シークレット管理・可観測性）は
+  [security.md](.claude/rules/security.md) を正とする
+- pay-for-what-you-use（feature 無効時の依存・コード・`unsafe`・バイナリ増ゼロ）は
+  [pay-for-what-you-use.md](.claude/rules/pay-for-what-you-use.md) を正とする
+- WebRTC（`plugin-webrtc` / `plugin-webrtc-proxy`）の安全性方針の詳細（プロセス分離等）は
+  [webrtc-process-isolation.md](docs/design/webrtc-process-isolation.md)、および攻撃表面と
+  「使う/使わない」サービスの安全性方針の詳細は本書「規約: WebRTC の攻撃表面と
+  「使う/使わない」サービスの安全性方針」節（TASK-8.4、#29）を参照
+
+### エスカレーション基準
+
+対応可否の自律判断は「可 / 条件付き可 / 不可・要エスカレーション / 不可（明確な拒否）」
+の 4 値で判定する（詳細は
+[feasibility-guardrail.md](docs/design/feasibility-guardrail.md)、運用規約は
+[feasibility-guardrail.md（rules）](.claude/rules/feasibility-guardrail.md)）。
+
+判定の 3 軸（いずれか 1 つでも不充足なら「可」と判定しない、fail-closed）:
+
+1. 実施可能か（検証可能な受け入れ基準に落ちるか）
+2. 安全か（[security.md](.claude/rules/security.md)・OWASP Top 10 と整合するか）
+3. 影響範囲が許容内か（クレート・feature・利用者への影響が特定・限定できるか）
+
+不可判定 4 カテゴリ（代表例、網羅列挙ではない）:
+
+| カテゴリ | 判定条件 | 判定区分 |
+|---------|---------|---------|
+| 曖昧要求 | 受け入れ基準がなく曖昧語のみで完遂を測定不能 | 不可・要エスカレーション |
+| 未定義依存 | 依存・接続情報・方式が未定義 | 不可・要エスカレーション |
+| 安全性方針との衝突 | 既存安全性方針（DoS 耐性・境界検証等）を後退させる | 不可・要エスカレーション |
+| 明確な脆弱性を招く要求 | OWASP Top 10 に直結する脆弱性（RCE・インジェクション等）が明白 | 不可（明確な拒否） |
+
+判断不能な場合は安全側に倒し、実装を進めずエスカレーションする（fail-closed 原則。
+判定記録の形式検証は `bash scripts/feasibility-check.sh --input <record>` で行う）。
 
 ## 規約: WebRTC の攻撃表面と「使う/使わない」サービスの安全性方針
 
