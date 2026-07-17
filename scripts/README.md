@@ -12,6 +12,9 @@ TASK-14.1（#39）で、CI 完遂判定基準（REQ-14）を branch protection �
 `setup-required-checks.sh` を追加した。TASK-14.3（#41）で、同スクリプトへ PR 必須化・
 force push/削除禁止のルールを追加し、受け入れテスト `tests/run-review-gate-tests.sh` を
 新設した（`docs/design/review-gate.md` 参照）。
+TASK-12.3-2（#84）で、対応可否自律判断ガードレール（TASK-12.3-1、#83、
+`docs/design/feasibility-guardrail.md`）の判定記録バリデータ `feasibility-check.sh` と
+セルフテスト `tests/run-guardrail-tests.sh` を追加した。
 
 ## スクリプト一覧
 
@@ -27,6 +30,8 @@ force push/削除禁止のルールを追加し、受け入れテスト `tests/r
 | `tests/run-triage-tests.sh` | `audit-triage.sh` / `unsafe-triage.sh` のセルフテスト（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `setup-required-checks.sh` | default branch の repository ruleset に `ci-complete` required status check・PR 必須化・force push/削除禁止を設定する | CI からは呼ばれない。管理者権限を持つ人間・CI 管理者がローカルで 1 回実行する運用（`docs/design/ci-completion-criteria.md`・`docs/design/review-gate.md` 参照） |
 | `tests/run-review-gate-tests.sh` | レビューゲート運用（TASK-14.3）の受け入れテスト。`--offline` は lint 表・ci.yml 構成の存在確認のみ（CI 常設）、既定モードは deny lint 検出・ruleset 検証を含むフル層（受け入れ実施時に手動/任意実行） | `--offline` は `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
+| `feasibility-check.sh` | 対応可否自律判断ガードレール（`docs/design/feasibility-guardrail.md`）の判定記録（markdown）を検証する。`--template` は規約準拠のテンプレートを標準出力、`--input <record.md>` は形式・必須項目・fail-closed 原則を検証する | CI からは呼ばれない。判定記録の作成・着手前確認をエージェント・人間がローカルで実行する運用（`.claude/rules/feasibility-guardrail.md` 参照） |
+| `tests/run-guardrail-tests.sh` | `feasibility-check.sh` のセルフテスト（PoC-9 T-11〜T-15 判定例 fixture・正常系・異常系、ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 
 ## 前提ツール
 
