@@ -1,5 +1,10 @@
 //! `bf-plugin-webrtc-proxy`: WebRTC シグナリングプロキシプラグイン（TASK-8.2-2 / #74）。
 //!
+//! 拡張点対応: パスインターセプト型（try_intercept）
+//! （3 拡張点 trait には非該当。固定シグネチャシームへの閉包根拠は
+//! `docs/design/extension-closure-verification.md` 3.4 節、機械可読宣言の規約は
+//! `docs/design/dependency-graph-contract.md` 3 節、TASK-13.2 / #50）
+//!
 //! # 背景・別プロセス切り出し文脈
 //!
 //! `webrtc-rs`（0.17.1 系）は依存クレート +189・バイナリサイズ約 10.4 倍・

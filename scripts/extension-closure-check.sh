@@ -35,9 +35,13 @@
 # （`.claude/rules/security.md` A03 インジェクション対策）。
 #
 # 呼び出し元: 人間が実例 3 件（WebSocket/GraphQL/WebRTC 追加コミット）に対して直接実行する
-# （`docs/design/extension-closure-verification.md` 参照）。実コミット sha の検証自体は
-# shallow clone 環境で履歴が無いと誤 FAIL するため CI には組み込まない
-# （常設受け入れテスト化は TASK-13.2/#50 のスコープ）。
+# （`docs/design/extension-closure-verification.md` 参照）。TASK-13.2/#50 で
+# `.github/workflows/ci.yml` の Checkout に `fetch-depth: 0` を追加し、
+# `scripts/accept/req13-change-impact-accept.sh`（基準 D）から実コミット sha 検証を
+# CI 常設化した（shallow clone による誤 FAIL 制約を解消）。加えて
+# `scripts/extension-closure-gate.sh`（TASK-13.2/#50 新設）が `--files-from` 経由で
+# 新規プラグイン追加 PR の差分に対し本スクリプトを自動実行する
+# （`docs/design/dependency-graph-contract.md` 4 節）。
 #
 # セルフテスト: `scripts/tests/run-extension-closure-tests.sh`
 #   （fixture のファイルリストで PASS/FAIL/フェイルクローズ挙動を固定化する）。
