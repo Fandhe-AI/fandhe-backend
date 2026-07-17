@@ -32,8 +32,9 @@ backend-framework/
 ├── rust-toolchain.toml    # stable + rustfmt/clippy
 ├── crates/                # cargo workspace
 │   ├── core                           # 最小コア。`webrtc-proxy`（TASK-2.1、#18）・`webrtc`
-│   │                                    # （TASK-8.1、#26）feature で各プラグインを `dep:` 構文
-│   │                                    # により着脱可能に配線済み（`webrtc-proxy` 優先評価）
+│   │                                    # （TASK-8.1、#26）・`websocket`（TASK-4.1、#22）feature で
+│   │                                    # 各プラグインを `dep:` 構文により着脱可能に配線済み
+│   │                                    # （`webrtc-proxy` 優先評価）
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
@@ -43,6 +44,10 @@ backend-framework/
 │   │                                    # `plugin-webrtc-proxy` が MVP 推奨、クレート境界で完全分離）
 │   ├── plugin-openapi                 # OpenAPI ドキュメント生成プラグイン（ApiDoc + utoipa::path 定義、TASK-3.1、#30。
 │   │                                   # gen-openapi CLI・openapi.json 静的埋め込み、TASK-3.2、#31）
+│   ├── plugin-websocket                # WebSocket プラグイン（RFC 6455 ハンドシェイク検証・101 応答・
+│   │                                    # tokio-tungstenite へのフレーミング委譲、TASK-4.1、#22。
+│   │                                    # `crates/core` の `websocket` feature 経由で `UpgradeHandler`
+│   │                                    # 拡張点配線、Upgrade 型プラグイン境界パターンの第 1 号）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
 ├── benches/               # 負荷生成・計測ハーネス（TASK-1.2 で追加、bench-builder 管轄）

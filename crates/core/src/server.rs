@@ -14,9 +14,10 @@
 //! `handle_connection` 内に `#[cfg(feature = "...")]` を一切持たない
 //! （`docs/spec/03-poc` PoC-3 の設計規約）。プラグインの介入余地は一定
 //! シグネチャの 2 種のヘルパーに閉じる:
-//! - `try_handle_upgrade`（本モジュール内の非公開関数）: 長時間接続
-//!   （WebSocket 等）への委譲。実 WebSocket プラグイン（TASK-4.1）配線までは
-//!   常に `Some(stream)` を返すスタブのまま
+//! - `plugin::try_handle_upgrade`（非公開 `plugin` モジュール、TASK-4.1 / #22）:
+//!   長時間接続（WebSocket 等）への委譲。`websocket` feature 有効時は
+//!   `bf_plugin_websocket` へ完全委譲し、無効時は常に `Some(stream)` を返す
+//!   スタブ挙動を維持する
 //! - `plugin::try_intercept`（非公開 `plugin` モジュール）: リクエスト/
 //!   レスポンス完結型プラグイン（WebRTC シグナリングプロキシ等）へのパス
 //!   インターセプト。TASK-2.1（#18）で確立した feature flag + `dep:` 構文の
@@ -24,6 +25,18 @@
 //!
 //! いずれも feature 分岐はヘルパー内部に閉じ、`handle_connection` 側は
 //! ヘルパーのシグネチャを変えずに済む。
+//!
+//! `try_handle_upgrade`（本モジュール内の非公開シーム）は TASK-4.1（#22）で
+//! `crate::plugin` モジュールへ移設し、`websocket` feature 有効時は
+//! `bf_plugin_websocket` へ実委譲する実装に差し替えた（feature 無効時は
+//! 従来どおり常に `Some(stream)` を返すスタブ挙動を維持し、
+//! `handle_connection` 側は 501 応答を返す）。移設に伴いシグネチャを
+//! `&[Box<dyn UpgradeHandler>]` から `Vec<u8>`（残余バイト列）+ `&Server`
+//! （設定取得用）へ変更した。これは「シームのシグネチャを変えない」という
+//! 本モジュールの設計規約からの意図的な逸脱であり、複数 Upgrade 型プラグイン
+//! が設定を必要とする将来を見据え、`&Server` 経由で任意の cfg-gated 設定へ
+//! アクセスできるようにするため（`crate::plugin::try_handle_upgrade` の doc・
+//! `docs/design/plugin-boundary.md` 5 節を参照）。
 //!
 //! # 1 接続あたりの処理フロー
 //!
@@ -190,6 +203,20 @@ pub struct Server {
     /// ゼロコストになる（pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
     #[cfg(feature = "webrtc")]
     webrtc_config: Option<bf_plugin_webrtc::WebRtcConfig>,
+    /// `websocket` feature（TASK-4.1 / #22）有効時のみ意味を持つ設定群。
+    /// `crate::plugin::try_handle_upgrade` がこのフィールドを参照して
+    /// `UpgradeHandler` 委譲成立後に `bf_plugin_websocket::handle_upgrade` へ
+    /// 渡す。`Server::websocket` を複数回呼ぶと複数パスを登録でき、
+    /// 登録順に `bf_plugin_websocket::matches` を評価して最初に一致した
+    /// 設定を使う（`upgrade_handlers` 側の `WebSocketUpgradeAdapter` も
+    /// 同じ登録順で `matches` するため、両者は常に整合する）。単一
+    /// `Option` だと 2 回目の呼び出しで 1 回目の設定が上書きされ、最初に
+    /// 登録したパスへのアップグレードが 501 になる不整合が生じるため
+    /// `Vec` として保持する。feature 無効時はフィールド自体が構造体から
+    /// 消え、依存・コードともゼロコストになる（pay-for-what-you-use、
+    /// .claude/rules/pay-for-what-you-use.md）。
+    #[cfg(feature = "websocket")]
+    websocket_configs: Vec<bf_plugin_websocket::WebSocketConfig>,
 }
 
 impl Default for Server {
@@ -206,6 +233,8 @@ impl Default for Server {
             webrtc_proxy_config: None,
             #[cfg(feature = "webrtc")]
             webrtc_config: None,
+            #[cfg(feature = "websocket")]
+            websocket_configs: Vec::new(),
         }
     }
 }
@@ -331,6 +360,43 @@ impl Server {
         self.webrtc_config.as_ref()
     }
 
+    /// WebSocket プラグイン（`crates/plugin-websocket`）を有効化する
+    /// （`websocket` feature 限定 API、TASK-4.1 / #22）。
+    ///
+    /// 登録すると `config.path`（既定 `/ws`）への `GET` + `Upgrade: websocket`
+    /// リクエストが `RequestGate` の評価を通過した後、
+    /// [`UpgradeHandler`] 拡張点経由で検知
+    /// され（`WebSocketUpgradeAdapter` を内部で自動登録する）、
+    /// `crate::plugin::try_handle_upgrade` が
+    /// `bf_plugin_websocket::handle_upgrade` へ完全委譲する
+    /// （REQ-4「コア自身の HTTP パーサでアップグレードを検知し既存拡張点
+    /// 経由で委譲する」という建て付けを維持する。`crates/plugin-websocket/src/lib.rs`
+    /// の doc を参照）。異なる `path` で複数回呼び出すと複数パスを登録
+    /// できる（`websocket_configs()` の doc を参照）。
+    #[cfg(feature = "websocket")]
+    #[must_use]
+    pub fn websocket(mut self, config: bf_plugin_websocket::WebSocketConfig) -> Self {
+        self.upgrade_handlers
+            .push(Box::new(WebSocketUpgradeAdapter {
+                config: config.clone(),
+            }));
+        self.websocket_configs.push(config);
+        self
+    }
+
+    /// `crate::plugin::try_handle_upgrade` が参照する、登録済み WebSocket
+    /// 設定群（`websocket` feature 限定、TASK-4.1 / #22）。
+    ///
+    /// `Server::websocket` を呼んだ順に格納されており、`upgrade_handlers`
+    /// 内の `WebSocketUpgradeAdapter` の登録順と一致する。呼び出し元は
+    /// 登録順に `bf_plugin_websocket::matches` を評価し、最初に一致した
+    /// 設定を使うこと（複数パス登録時に先に登録したパスが後の登録で
+    /// 上書きされて失われないようにするための契約）。
+    #[cfg(feature = "websocket")]
+    pub(crate) fn websocket_configs(&self) -> &[bf_plugin_websocket::WebSocketConfig] {
+        &self.websocket_configs
+    }
+
     /// `addr` に TCP リスナーをバインドし、[`BoundServer`] を返す。
     ///
     /// 以降 `self` は `Arc` で包まれ、accept したコネクションタスク間で
@@ -346,6 +412,33 @@ impl Server {
             server: Arc::new(self),
             connection_limit,
         })
+    }
+}
+
+/// [`Server::websocket`] が内部登録する [`UpgradeHandler`] アダプタ
+/// （`websocket` feature 限定、TASK-4.1 / #22）。
+///
+/// `UpgradeHandler::matches` は「委譲判定のみ」の契約（同期 API、
+/// `crates/core/src/extension.rs` の doc）のため、本アダプタは
+/// `bf_plugin_websocket::matches`（純関数）を呼ぶだけの薄い委譲先とし、
+/// 実際のハンドシェイク検証・フレーミング委譲（非同期処理）は
+/// `crate::plugin::try_handle_upgrade` → `bf_plugin_websocket::handle_upgrade`
+/// が担う。`config` は `Server::websocket` 呼び出し時にクローンして保持する
+/// （`upgrade_handlers: Vec<Box<dyn UpgradeHandler>>` は `Server` 本体と
+/// ライフタイムを共有しないため、参照ではなく所有値として持つ）。
+#[cfg(feature = "websocket")]
+struct WebSocketUpgradeAdapter {
+    config: bf_plugin_websocket::WebSocketConfig,
+}
+
+#[cfg(feature = "websocket")]
+impl UpgradeHandler for WebSocketUpgradeAdapter {
+    fn name(&self) -> &'static str {
+        "websocket"
+    }
+
+    fn matches(&self, head: &RequestHead) -> bool {
+        bf_plugin_websocket::matches(head, &self.config)
     }
 }
 
@@ -529,25 +622,32 @@ where
             .iter()
             .any(|handler| handler.matches(&request.head))
         {
-            // 長時間接続へ委譲する前にコア側の読み取りバッファを明示的に
-            // 解放する（Conditional Go 条件 (1)）。`RecvBuffer` は縮小 API を
+            // 長時間接続へ委譲する前に、パイプライン済みの可能性がある残余
+            // バイト列（次リクエストの先頭・WebSocket の先行フレーム等）を
+            // 退避してからコア側の読み取りバッファを明示的に解放する
+            // （Conditional Go 条件 (1)）。`RecvBuffer` は縮小 API を
             // `pub(crate)` にしか公開しない（TASK-1.3-3 / #68）ため、`drop`
             // で旧バッファ（確保済み容量ごと）を丸ごと解放する。以降このループ
             // 反復では `buf` を読まない（両分岐とも `return` する）ため、
-            // 代入ではなく明示的な `drop` で意図を示す。
+            // 代入ではなく明示的な `drop` で意図を示す。`leftover` は
+            // `bf_plugin_websocket::handle_upgrade` が
+            // `WebSocketStream::from_partially_read` へそのまま渡す
+            // （TASK-4.1 / #22、先行到着フレームを取りこぼさないため）。
+            let leftover = buf.unread().to_vec();
             drop(buf);
-            match try_handle_upgrade(stream, &request.head, &server.upgrade_handlers).await {
+            match crate::plugin::try_handle_upgrade(stream, &request.head, leftover, server).await {
                 Some(mut stream) => {
-                    // #70 時点では実処理者（プラグイン）が存在しないため、
-                    // マッチしたのに委譲先がない状態を黙って落とさず 501 で
-                    // 明示的に拒否する（本モジュール冒頭の doc・try_handle_upgrade
-                    // の doc を参照）。on_response は「委譲時は呼ばない」契約
-                    // のため呼ばない（この 501 応答は委譲失敗のフォール
-                    // バックであり実処理の完了ではないため）。結果として
-                    // on_request は呼ばれるが対になる on_response が呼ばれない
-                    // 非対称が生じる点は意図的な仕様であり、Middleware 実装側は
-                    // 「on_request が必ず on_response を伴う」と仮定しないこと
-                    // （実プラグイン接続後は TASK-2.1 でこの非対称は解消される想定）。
+                    // websocket feature 無効時、または `UpgradeHandler` が
+                    // マッチしたのに対応する Upgrade 型プラグインが未登録の
+                    // 場合、委譲先がない状態を黙って落とさず 501 で明示的に
+                    // 拒否する（本モジュール冒頭の doc・
+                    // `crate::plugin::try_handle_upgrade` の doc を参照）。
+                    // on_response は「委譲時は呼ばない」契約のため呼ばない
+                    // （この 501 応答は委譲失敗のフォールバックであり実処理の
+                    // 完了ではないため）。結果として on_request は呼ばれるが
+                    // 対になる on_response が呼ばれない非対称が生じる点は
+                    // 意図的な仕様であり、Middleware 実装側は「on_request が
+                    // 必ず on_response を伴う」と仮定しないこと。
                     let _ = stream
                         .write_all(&Response::empty(501).serialize(false))
                         .await;
@@ -608,30 +708,6 @@ fn first_rejection(gates: &[Box<dyn RequestGate>], head: &RequestHead) -> Option
         GateOutcome::Allow => None,
         reject @ GateOutcome::Reject { .. } => Some(reject),
     })
-}
-
-/// [`UpgradeHandler::matches`] が `true` を返した接続をプラグイン側へ委譲する
-/// ための、一定シグネチャの委譲シーム。
-///
-/// TASK-2.1（#18）で `#[cfg(feature = "...")]` 付きの実装（実プラグインへの
-/// 接続奪取）に差し替わる想定であり、`handle_connection` 側はこの関数の
-/// シグネチャを変えずに済むよう設計している（コアループ本体を feature で
-/// 分岐させないための設計上の要）。
-///
-/// 戻り値 `Some(stream)` は「委譲されず、呼び出し元が後続処理（フォール
-/// バック応答）を続けるべき」ことを意味する。`None` は「完全に委譲済みで
-/// 呼び出し元はこれ以上ストリームに触れない」ことを意味する。#70 時点では
-/// 実プラグインが存在しないため常に `Some(stream)` を返し、呼び出し元
-/// （`handle_connection`）が 501 Not Implemented を返して接続を閉じる。
-async fn try_handle_upgrade<S>(
-    stream: S,
-    _head: &RequestHead,
-    _handlers: &[Box<dyn UpgradeHandler>],
-) -> Option<S>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    Some(stream)
 }
 
 /// [`RequestError`] を応答すべき HTTP ステータスへマッピングする。

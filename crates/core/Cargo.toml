@@ -48,6 +48,13 @@ bf-plugin-webrtc-proxy = { path = "../plugin-webrtc-proxy", optional = true }
 # .claude/rules/pay-for-what-you-use.md）。
 bf-plugin-webrtc = { path = "../plugin-webrtc", optional = true }
 
+# TASK-4.1（#22）: `websocket` feature 有効時のみ依存として解決される
+# Upgrade 型プラグインの第 1 号。`bf-plugin-websocket` は循環依存を避けるため
+# `backend-framework-core` に依存しない（`crates/plugin-websocket/src/lib.rs`
+# の doc・`docs/design/plugin-boundary.md` 6.1 節を参照）。`UpgradeHandler`
+# trait を実装するアダプタはコア側（`crates/core/src/server.rs`）に置く。
+bf-plugin-websocket = { path = "../plugin-websocket", optional = true }
+
 # feature 命名規約（`docs/design/plugin-boundary.md`）: プラグインクレート名
 # （`bf-plugin-<name>`）から `bf-plugin-` 接頭辞を除いた `<name>` を feature 名
 # とする。`default = []` によりビルド時に何も選択しなければプラグインは
@@ -59,6 +66,7 @@ webrtc-proxy = ["dep:bf-plugin-webrtc-proxy"]
 # 依存グラフ上は独立（`crate::plugin::try_intercept` の doc・
 # `docs/design/plugin-boundary.md` の優先順位の記述を参照）。
 webrtc = ["dep:bf-plugin-webrtc"]
+websocket = ["dep:bf-plugin-websocket"]
 
 # テスト専用（`#[tokio::test]` / `tokio::io::duplex` / マルチスレッドランタイム）。
 # 本体ビルドの feature 集合には影響しない。

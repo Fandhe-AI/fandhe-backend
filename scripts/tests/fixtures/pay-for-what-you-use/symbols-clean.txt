@@ -1,0 +1,4 @@
+0000000000005d10 r GCC_except_table10
+0000000000009ffd8 d DW.ref.rust_eh_personality
+0000000000037a70 t _ZN4core3ptr17drop_in_placeE
+0000000000030080 T main

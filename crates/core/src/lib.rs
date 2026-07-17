@@ -45,16 +45,22 @@
 //!   基づき `POST /rtc/offer` をパスインターセプトする。`webrtc-proxy` と
 //!   同時有効時は `webrtc-proxy` が優先される（`plugin::try_intercept` の
 //!   doc）。無効時（既定）は依存・コード・`unsafe` を一切含まない。
+//! - `websocket`（TASK-4.1 / #22）: `crates/plugin-websocket` を
+//!   `optional = true` + `dep:` 構文で組み込み、[`server::Server::websocket`]
+//!   で登録した `bf_plugin_websocket::WebSocketConfig` の指すパス（既定
+//!   `/ws`）への `GET` + `Upgrade: websocket` を `UpgradeHandler` 拡張点経由で
+//!   検知し、`bf_plugin_websocket::handle_upgrade` へ完全委譲する（RFC 6455
+//!   ハンドシェイク・フレーミングは `crates/plugin-websocket` 側の責務）。
+//!   無効時（既定）は依存・コード・`unsafe` を一切含まない。
 //!
 //! # 今後のタスクとの対応
 //!
-//! - `server` モジュール内の `try_handle_upgrade` ヘルパーは、実 WebSocket
-//!   プラグイン（TASK-4.1）配線までは常に委譲なしのスタブのまま残る。
-//!   TASK-2.1（#18）で確立したプラグイン境界パターン（feature flag + `dep:`
+//! - TASK-2.1（#18）で確立したプラグイン境界パターン（feature flag + `dep:`
 //!   構文、cfg-free なコアループ + 固定シグネチャシーム）は非公開 `plugin`
-//!   モジュールの `try_intercept` によるパスインターセプト型として実証済みで
-//!   あり、Upgrade 型（`try_handle_upgrade`）を含む後続プラグインは
-//!   `docs/design/plugin-boundary.md` の適用手順に従って同パターンを踏襲する
+//!   モジュールの `try_intercept`（パスインターセプト型）・
+//!   `try_handle_upgrade`（Upgrade 型、TASK-4.1 / #22 で実装）の 2 種として
+//!   実証済みであり、後続プラグインは `docs/design/plugin-boundary.md` の
+//!   適用手順に従って同パターンを踏襲する
 
 pub mod extension;
 pub(crate) mod plugin;

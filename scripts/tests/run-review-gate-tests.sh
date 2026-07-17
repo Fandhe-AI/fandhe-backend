@@ -109,8 +109,8 @@ assert_file_contains "ci-complete ジョブが存在する" "${CI_YML}" "ci-comp
 
 # ci-complete の判定対象（needs）が黙って縮小される退行を検知する。
 # .claude/rules/coding-rust.md が要求する fmt/clippy/test に加え、リポジトリ運用上の
-# doc/dep-audit/unsafe-triage・openapi-two-stage（TASK-3.2、#31）も対象に含める
-# （docs/design/ci-completion-criteria.md）。
+# doc/dep-audit/unsafe-triage・pay-for-what-you-use（TASK-2.2、#19）・
+# openapi-two-stage（TASK-3.2、#31）も対象に含める（docs/design/ci-completion-criteria.md）。
 #
 # 単純なジョブ名の部分文字列検索（grep -qF "${job}" 全体）は、コメントや他ジョブの
 # ジョブ ID・ステップ名にジョブ名が偶然出現するだけで PASS してしまい、実際に
@@ -140,11 +140,11 @@ else
     fi
 
     if [ -z "${NEEDS_LIST}" ]; then
-        for job in fmt clippy test doc coverage dep-audit unsafe-triage fuzz-smoke openapi-two-stage; do
+        for job in fmt clippy test doc coverage dep-audit unsafe-triage pay-for-what-you-use fuzz-smoke openapi-two-stage; do
             fail "ci-complete の needs 配列を抽出できない（'${job}' を確認できません）"
         done
     else
-        for job in fmt clippy test doc coverage dep-audit unsafe-triage fuzz-smoke openapi-two-stage; do
+        for job in fmt clippy test doc coverage dep-audit unsafe-triage pay-for-what-you-use fuzz-smoke openapi-two-stage; do
             found="no"
             IFS=',' read -ra needs_arr <<< "${NEEDS_LIST}"
             for item in "${needs_arr[@]}"; do
