@@ -119,7 +119,17 @@ else
     changed_files="$(cat "${FILES_FROM}")"
 fi
 
-if [ -z "${changed_files}" ]; then
+# 対象ファイル 0 件判定は、行 155 で報告する「対象ファイル総数」と同じ
+# `grep -c .`（空行を除いた実ファイル数）を判定根拠にする（PR #147 Bugbot 指摘対応）。
+# 元々の `[ -z "${changed_files}" ]` 単独判定は、`--commit` / `--files-from` のいずれも
+# `$(...)` コマンド置換経由で `changed_files` を組み立てており、コマンド置換が末尾の
+# 改行をすべて剥がすため、空行のみの入力は必ず空文字列に潰れて実質的に等価だった
+# （空行のみの入力が「空でない文字列」として `-z` 判定をすり抜ける経路は確認できていない）。
+# とはいえ判定根拠を「報告する総数」と一致させ、将来の呼び出し経路追加（`changed_files`
+# の組み立て方が変わる等）でも空白行のみの入力を確実にフェイルクローズさせるための
+# 防御的多重化として、総数ベースの判定に統一する。
+changed_files_count="$(printf '%s\n' "${changed_files}" | grep -c . || true)"
+if [ "${changed_files_count}" -eq 0 ]; then
     fail "対象 — 変更ファイルが 0 件でした（測定不能）"
     echo "[RESULT] FAIL"
     exit 1

@@ -79,6 +79,16 @@ run_check_files "${FIXTURES_DIR}/empty.txt"
 assert_exit_code "空ファイルリストは exit 1（フェイルクローズ）" 1 "${status}"
 assert_contains "空ファイルリストは測定不能メッセージを含む" "${output}" "変更ファイルが 0 件"
 
+# --- ケース 3b: 空白行のみのファイルリストは判定不能として FAIL（フェイルクローズ）
+# PR #147 Bugbot 指摘対応: 対象ファイル 0 件判定を「対象ファイル総数」と同じ
+# `grep -c .` ベースに統一し、空白行のみの入力を確実にフェイルクローズさせることを
+# 固定化する（`--files-from` は `$(cat ...)` コマンド置換経由のため、本 fixture
+# 自体は既存の `-z` 判定のみでも FAIL していたが、判定根拠の一致という修正意図を
+# 回帰テストとして残す） ---
+run_check_files "${FIXTURES_DIR}/blank-lines-only.txt"
+assert_exit_code "空白行のみのファイルリストは exit 1（フェイルクローズ）" 1 "${status}"
+assert_contains "空白行のみのファイルリストは測定不能メッセージを含む" "${output}" "変更ファイルが 0 件"
+
 # --- ケース 4: --files-from に存在しないパスを渡すと判定不能として FAIL ---
 set +e
 output="$(bash "${SCRIPTS_DIR}/extension-closure-check.sh" --files-from "${FIXTURES_DIR}/does-not-exist.txt" 2>&1)"
