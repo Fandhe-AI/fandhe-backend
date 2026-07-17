@@ -13,8 +13,15 @@
 //! body は生バイト列として `Content-Length` 付きで送出する。これにより CRLF を
 //! 含む文字列がヘッダとして書き出される経路が構造的に存在せず、レスポンス分割・
 //! ヘッダインジェクションを型レベルで排除する（`.claude/rules/security.md`）。
-//! 任意ヘッダの追加が必要になった場合は、検証（CRLF 禁止等）付きの API を
-//! 別途設計すること。
+//!
+//! 唯一の例外が [`Response::with_content_type`] であり、値を `&'static str` に
+//! 限定することで「呼び出し元（このクレート・上位クレートのソースコード）が
+//! 静的に書いた文字列以外は絶対に渡せない」という型レベルの制約を維持したまま
+//! `Content-Type` ヘッダの付与を可能にする（TASK-2.1 / #18、
+//! `crates/plugin-webrtc-proxy` のようにレスポンス種別ごとに固定の
+//! `Content-Type` を返すプラグインの配線で必要になった）。外部入力（リクエスト
+//! ヘッダ・body 等）に由来する動的な値をヘッダとして送出する API は今後も
+//! 追加しない方針を維持する。
 
 /// 直列化対象の 1 レスポンス。
 ///
@@ -28,10 +35,15 @@ pub struct Response {
     pub status: u16,
     /// レスポンスボディの生バイト列。
     pub body: Vec<u8>,
+    /// `Content-Type` ヘッダ値。`None` の場合はヘッダ自体を出力しない
+    /// （TASK-1.4-2 / #70 時点の既定挙動を保つ）。[`Response::with_content_type`]
+    /// の doc を参照。
+    content_type: Option<&'static str>,
 }
 
 impl Response {
-    /// `status` と `body` から [`Response`] を組み立てる。
+    /// `status` と `body` から [`Response`] を組み立てる。`Content-Type` は
+    /// 未設定（ヘッダを出力しない）。
     ///
     /// ```
     /// use bf_http::response::Response;
@@ -41,7 +53,11 @@ impl Response {
     /// ```
     #[must_use]
     pub fn new(status: u16, body: Vec<u8>) -> Self {
-        Self { status, body }
+        Self {
+            status,
+            body,
+            content_type: None,
+        }
     }
 
     /// body なしの `status` レスポンスを組み立てる。
@@ -55,6 +71,36 @@ impl Response {
     #[must_use]
     pub fn empty(status: u16) -> Self {
         Self::new(status, Vec::new())
+    }
+
+    /// `Content-Type` ヘッダ値を設定する。
+    ///
+    /// 値を `&'static str` に限定することで、外部入力（リクエストヘッダ・body
+    /// 等）に由来する動的な文字列を渡す経路を型レベルで排除する（本モジュール
+    /// 冒頭の doc・`.claude/rules/security.md` のレスポンス分割対策を参照）。
+    /// 呼び出し元はソースコード上の文字列リテラルのみを渡せるため、値は常に
+    /// このクレート・上位クレートの開発者が静的に書いたものに限られる。
+    ///
+    /// それでも CRLF を含む値が渡された場合（開発者の誤り）は、レスポンス
+    /// 分割を未然に防ぐため `debug_assert!` でパニックさせ、デバッグビルドで
+    /// 早期に検知する（リリースビルドでは呼び出し元が `&'static str` リテラル
+    /// のみを渡す契約を信頼し、コストのかかる実行時チェックを省く）。
+    ///
+    /// ```
+    /// use bf_http::response::Response;
+    ///
+    /// let res = Response::new(200, b"{}".to_vec()).with_content_type("application/json");
+    /// let text = String::from_utf8(res.serialize(true)).unwrap();
+    /// assert!(text.contains("Content-Type: application/json\r\n"));
+    /// ```
+    #[must_use]
+    pub fn with_content_type(mut self, content_type: &'static str) -> Self {
+        debug_assert!(
+            !content_type.contains(['\r', '\n']),
+            "Content-Type に CRLF を含む値を渡そうとした（レスポンス分割の危険、呼び出し元の実装ミス）"
+        );
+        self.content_type = Some(content_type);
+        self
     }
 
     /// HTTP/1.1 ワイヤフォーマットへ直列化する。
@@ -101,6 +147,11 @@ impl Response {
         out.push(b' ');
         out.extend_from_slice(reason.as_bytes());
         out.extend_from_slice(b"\r\n");
+        if let Some(content_type) = self.content_type {
+            out.extend_from_slice(b"Content-Type: ");
+            out.extend_from_slice(content_type.as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
         out.extend_from_slice(b"Content-Length: ");
         out.extend_from_slice(self.body.len().to_string().as_bytes());
         out.extend_from_slice(b"\r\n");
@@ -119,7 +170,9 @@ impl Response {
 /// phrase 省略として出力される。RFC 7230 上 reason phrase は省略可能）。
 /// テーブルはコアループ（`crates/core/src/server.rs`）・`crates/routes`
 /// （`bf_routes::Router::dispatch`、TASK-1.5 / #14 でメソッド不一致時に 405 を
-/// 払い出す）が実際に払い出すステータスコードに合わせて選定している。
+/// 払い出す）・`crates/plugin-webrtc-proxy`（TASK-2.1 / #18 の配線経由で
+/// 502/504 を払い出す。上流中継失敗時のフォールバックステータス）が実際に
+/// 払い出すステータスコードに合わせて選定している。
 fn reason_phrase(status: u16) -> &'static str {
     match status {
         200 => "OK",
@@ -133,6 +186,8 @@ fn reason_phrase(status: u16) -> &'static str {
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
         501 => "Not Implemented",
+        502 => "Bad Gateway",
+        504 => "Gateway Timeout",
         505 => "HTTP Version Not Supported",
         _ => "",
     }
@@ -176,6 +231,31 @@ mod tests {
         let res = Response::empty(200);
         let text = String::from_utf8(res.serialize(true)).unwrap();
         assert!(!text.contains("Connection:"));
+    }
+
+    #[test]
+    fn serialize_omits_content_type_by_default() {
+        let res = Response::new(200, b"hi".to_vec());
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert!(!text.contains("Content-Type:"));
+    }
+
+    #[test]
+    fn serialize_includes_content_type_when_set() {
+        let res = Response::new(200, b"{}".to_vec()).with_content_type("application/json");
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert!(text.contains("Content-Type: application/json\r\n"));
+    }
+
+    #[test]
+    fn serialize_bad_gateway_and_gateway_timeout_have_reason_phrase() {
+        // TASK-2.1 / #18: crates/plugin-webrtc-proxy が上流中継失敗時に払い出す
+        // 502/504 が空 reason phrase に劣化しないことを確認する（PoC-9 教訓）。
+        let bad_gateway = String::from_utf8(Response::empty(502).serialize(false)).unwrap();
+        assert!(bad_gateway.starts_with("HTTP/1.1 502 Bad Gateway\r\n"));
+
+        let gateway_timeout = String::from_utf8(Response::empty(504).serialize(false)).unwrap();
+        assert!(gateway_timeout.starts_with("HTTP/1.1 504 Gateway Timeout\r\n"));
     }
 
     #[test]

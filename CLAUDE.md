@@ -30,10 +30,12 @@ backend-framework/
 ├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）
 ├── rust-toolchain.toml    # stable + rustfmt/clippy
 ├── crates/                # cargo workspace
-│   ├── core                           # 最小コア（TASK-1.1 で作成、実体は TASK-1.3 以降）
-│   ├── http / routes                  # HTTP プリミティブ・ルーティング（TASK-1.3〜1.4 以降で追加予定）
+│   ├── core                           # 最小コア。`webrtc-proxy` feature（TASK-2.1、#18）で
+│   │                                    # `plugin-webrtc-proxy` を `dep:` 構文により着脱可能に配線済み
+│   ├── http / routes                  # HTTP プリミティブ・ルーティング
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
-│   ├── plugin-*                       # feature 着脱プラグイン（TASK-2.1 以降で追加予定）
+│   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（TASK-8.2-2、#74。
+│   │                                    # `crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
 ├── benches/               # 負荷生成・計測ハーネス（TASK-1.2 で追加、bench-builder 管轄）
 │   ├── README.md                      # 再現手順・複数回計測/中央値評価の規約
