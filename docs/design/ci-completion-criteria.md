@@ -45,8 +45,10 @@ individual ジョブ名を required status check として個別に登録する�
   対象にする必要があると判断した。
 - **依存ゼロ**: `ci-complete` ジョブ自体は checkout も外部 action も使わず、シェル組み込みの
   みで判定する（サプライチェーン表面ゼロ、pay-for-what-you-use と整合）。
-- **schedule 除外**: `schedule` イベント（日次 dep-audit のみ実行）では `fmt`/`clippy`/`test`/
-  `doc` が意図的に `skipped` になるため、`ci-complete` 自体も schedule 時は実行しない
+- **schedule 除外**: `schedule` イベント（日次 dep-audit のみ実行）では `fmt`/`clippy`/`test`
+  が意図的に `skipped` になる（`doc` ジョブには schedule 除外の `if` がなく実際には実行される
+  既存挙動だが、`ci-complete` 自体が schedule 時は丸ごとスキップされるため fail-closed 判定の
+  ロジックには影響しない）ため、`ci-complete` 自体も schedule 時は実行しない
   （`if: github.event_name != 'schedule'`）。required status check は `pull_request`/`push`
   イベントのみを対象にすればよい。
 

@@ -198,7 +198,9 @@ jobs:
     name: ci-complete
     runs-on: self-hosted
     # 失敗・スキップ時にも必ず実行して fail-closed で判定する。
-    # schedule（日次 dep-audit のみ）実行時は fmt/clippy/test/doc が意図的に skipped になり
+    # schedule（日次 dep-audit のみ）実行時は fmt/clippy/test が意図的に skipped になる
+    # （doc ジョブには schedule 除外の if がなく実行される既存挙動だが、ci-complete 自体が
+    # schedule 時は丸ごとスキップされるため判定ロジックには影響しない）。
     # 完遂判定の対象外（required check としては pull_request/push イベントのみを想定する）。
     if: ${{ always() && github.event_name != 'schedule' }}
     needs: [fmt, clippy, test, doc, dep-audit]
