@@ -18,3 +18,7 @@
 - [`improvement-proposal-flow.md`](./improvement-proposal-flow.md): 改善提案フロー
   （TASK-12.1-2、#80、REQ-12(a)。検知 → トリアージ → 提案 → 承認 → 実装 → 検証ゲート →
   クローズの各段階と 4 分析軸の入力ソース対応を記述）
+- [`feature-modification-flow.md`](./feature-modification-flow.md): 機能要求→実装→
+  テストの一貫改修フロー（TASK-12.2-1、#81、REQ-12(b)。改善提案フローと対になる、
+  外部からの機能要求を起点とするフロー。受付形式・要求解釈・影響範囲判定・実装・
+  テスト追加・検証ゲートの各段階と #82・TASK-12.3 との境界を記述）

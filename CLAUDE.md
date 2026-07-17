@@ -114,6 +114,7 @@ main は判断・統合・ユーザー対話に集中する**。詳細は [rules
 | [code-comment-style.md](.claude/rules/code-comment-style.md) | コメント・doc comment 規約 |
 | [out-of-scope-tracking.md](.claude/rules/out-of-scope-tracking.md) | 実装対象外の追跡（Issue 化）規約 |
 | [improvement-proposal.md](.claude/rules/improvement-proposal.md) | 改善提案フロー・起票・承認の運用規約 |
+| [feature-modification.md](.claude/rules/feature-modification.md) | 機能要求→実装→テストの一貫改修フロー運用規約 |
 
 ## Current Skills
 
