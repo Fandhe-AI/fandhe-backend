@@ -105,3 +105,11 @@ async-graphql = { version = "7", default-features = false, features = ["dynamic-
 [[example]]
 name = "webrtc_nfr6"
 required-features = ["webrtc"]
+
+# `examples/graphql_nfr6.rs`（TASK-5.2 / #53）は `bf-plugin-graphql`（optional dep）を
+# 直接使うため、`graphql` feature 無効時に `cargo build --workspace --all-targets` 等が
+# コンパイル対象へ含めて失敗しないよう `required-features` で明示的にゲートする
+# （`webrtc_nfr6` と同一パターン）。
+[[example]]
+name = "graphql_nfr6"
+required-features = ["graphql"]
