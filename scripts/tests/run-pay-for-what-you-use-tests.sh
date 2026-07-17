@@ -97,10 +97,16 @@ assert_exit_code "存在しない metadata-file は exit 1（フェイルクロ�
 assert_contains "存在しない metadata-file は判定不能メッセージを含む" "${output}" "存在しません"
 
 # --- ケース 5: cargo tree（無効構成）にプラグインクレートが漏れている ---
+# --geiger-packages-file を明示しないと (c) が --skip-build-steps の対象外のまま
+# 実 cargo-geiger 実行へフォールスルーし、「ネットワーク・cargo ビルド不要」の
+# 前提（本ファイル冒頭のセルフテスト方針）が崩れる（cargo-geiger 導入済み環境で
+# ビルドを伴う実行が発生し、unsafe-triage ジョブのタイムアウトリスクを招く）。
+# (b) の判定を確認するケースのため (c) は clean fixture で無関係に固定する。
 run_check --skip-build-steps \
     --metadata-file "${FIXTURES_DIR}/metadata-valid.json" \
     --tree-negative-file "${FIXTURES_DIR}/tree-negative-leaked.txt" \
-    --tree-positive-dir "${FIXTURES_DIR}/tree-positive-valid"
+    --tree-positive-dir "${FIXTURES_DIR}/tree-positive-valid" \
+    --geiger-packages-file "${FIXTURES_DIR}/geiger-packages-clean.txt"
 assert_exit_code "無効構成への依存漏れは exit 1" 1 "${status}"
 assert_contains "無効構成への依存漏れは漏れクレートを報告する" "${output}" "無効構成にもかかわらず出現したクレート: bf-plugin-webrtc-proxy"
 
@@ -108,7 +114,8 @@ assert_contains "無効構成への依存漏れは漏れクレートを報告す
 run_check --skip-build-steps \
     --metadata-file "${FIXTURES_DIR}/metadata-valid.json" \
     --tree-negative-file "${FIXTURES_DIR}/tree-negative-clean.txt" \
-    --tree-positive-dir "${FIXTURES_DIR}/tree-positive-missing"
+    --tree-positive-dir "${FIXTURES_DIR}/tree-positive-missing" \
+    --geiger-packages-file "${FIXTURES_DIR}/geiger-packages-clean.txt"
 assert_exit_code "配線切れ（有効構成に出現しない）は exit 1" 1 "${status}"
 assert_contains "配線切れは配線切れの疑いメッセージを含む" "${output}" "配線切れの疑い"
 
@@ -116,7 +123,8 @@ assert_contains "配線切れは配線切れの疑いメッセージを含む" "
 run_check --skip-build-steps \
     --metadata-file "${FIXTURES_DIR}/metadata-two-plugins.json" \
     --tree-negative-file "${FIXTURES_DIR}/tree-negative-clean.txt" \
-    --tree-positive-dir "${FIXTURES_DIR}/tree-positive-crosscontam"
+    --tree-positive-dir "${FIXTURES_DIR}/tree-positive-crosscontam" \
+    --geiger-packages-file "${FIXTURES_DIR}/geiger-packages-clean.txt"
 assert_exit_code "他プラグイン混入は exit 1" 1 "${status}"
 assert_contains "他プラグイン混入は混入クレートを報告する" "${output}" "他プラグインクレートが混入: bf-plugin-example-other"
 
