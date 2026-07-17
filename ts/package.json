@@ -1,0 +1,24 @@
+{
+  "name": "backend-framework-openapi-ts",
+  "private": true,
+  "version": "0.1.0",
+  "description": "TASK-6.1（#54、REQ-6）: crates/plugin-openapi/openapi.json（utoipa 属性から生成された OpenAPI 定義）を起点に openapi-typescript で TypeScript 型を生成し、openapi-fetch ベースの型安全クライアントを提供する一方向パイプライン。docs/design/openapi-typescript-pipeline.md 参照。",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "volta": {
+    "node": "24.13.0",
+    "npm": "11.6.2"
+  },
+  "scripts": {
+    "gen:types": "openapi-typescript ../crates/plugin-openapi/openapi.json -o src/generated/schema.d.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "openapi-fetch": "0.17.0"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}
