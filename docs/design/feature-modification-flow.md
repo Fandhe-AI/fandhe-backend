@@ -161,7 +161,7 @@ REQ-12(b) の「実装・テスト追加まで一貫」を機械的に担保す�
 | 変更種別 | 追随すべきドキュメント | 強制手段 |
 |---------|----------------------|---------|
 | 公開 API 追加・変更 | doc comment + doc test（`# Examples`。[`coding-rust.md`](../../.claude/rules/coding-rust.md)・[`code-comment-style.md`](../../.claude/rules/code-comment-style.md) 準拠） | **機械**: `missing_docs` + rustdoc lint（CI `doc` ジョブ）・doc test（CI `test` ジョブ）。TASK-11.2（#75/#76）で実装済み |
-| エンドポイント・拡張点追加 | AGENTS.md（TASK-11.3、#35、**未作成**）。未作成の間は CLAUDE.md（Repository Structure・Rules 表）または該当する `docs/design/*.md` に記録する代替運用とする | 運用: セルフレビュー（`reviewer`）のチェック項目 |
+| エンドポイント・拡張点追加 | AGENTS.md（TASK-11.3、#35、作成済み） | 運用: セルフレビュー（`reviewer`）のチェック項目 |
 | クレート・feature 構成変更 | CLAUDE.md の Repository Structure 節・ルート README・該当する `docs/design/*.md` | 運用: セルフレビューのチェック項目 |
 | 依存の追加・更新 | `docs/dep-impact/records.md`（`scripts/dep-impact.sh` による計測） | 機械補助（計測スクリプト）+ 運用（記録の要否判断） |
 | 運用フロー・規約変更 | `.claude/rules/` 該当規約 + CLAUDE.md の Rules 表 | 運用: セルフレビューのチェック項目 |
@@ -174,10 +174,9 @@ REQ-12(b) の「実装・テスト追加まで一貫」を機械的に担保す�
   不明な状態で実装を完遂とみなさない。判断がつかない場合は安全側に倒し、少なくとも
   CLAUDE.md か対応する `docs/design/*.md` への記録を検討したうえで、要判断事項として
   レビューで提示する。
-- **AGENTS.md 未作成期間の扱い**: TASK-11.3（#35）は本書のスコープ外であり、本書は
-  AGENTS.md の作成そのものを要求しない。AGENTS.md が存在しない間、エンドポイント・拡張点
-  追加の追随先は上表の代替運用（CLAUDE.md / `docs/design/`）とし、AGENTS.md 作成後は
-  当該項目をそちらへ移行する。
+- **AGENTS.md 作成後の扱い**: TASK-11.3（#35）で AGENTS.md は作成済みであり、エンドポイント・
+  拡張点追加の追随先は上表のとおり AGENTS.md とする。AGENTS.md 作成以前に代替運用として
+  CLAUDE.md / `docs/design/` へ記録した既存項目の移行そのものは本書のスコープ外とする。
 - ドキュメント追随が漏れた変更は完遂と扱わない（9 節へ接続）。
 
 ## 9. 完遂判定のフロー組み込み
