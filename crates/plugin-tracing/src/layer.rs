@@ -51,6 +51,13 @@ impl TracingLayer {
     /// `Debug` を経由せず、`tracing` の構造化フィールドとして値を直接渡すため、
     /// 制御文字混入によるログフォーマット崩壊のリスクがない。
     ///
+    /// `bf_http::request::RequestHead::target` は HTTP リクエストラインの
+    /// request-target をそのまま保持しており、クエリ文字列（`?` 以降）を含みうる
+    /// （例: `/login?token=SECRET`）。クエリ文字列にはトークン・API キー等の機密情報
+    /// が乗ることが多いため、`path` フィールドとして記録する前に `?` 以降を必ず
+    /// 除去する（レビュー指摘対応。「クエリ文字列は一切記録しない」という本 doc
+    /// comment・`crate` doc の契約を実コードで担保する）。
+    ///
     /// 記録は 1 つの span 内で受理・応答の 2 イベントとして残す（PoC-10 代表構成と
     /// 同粒度）。1 イベントへの統合は TASK-10.2（#57）のスコープ。
     pub fn record_response(&self, head: &RequestHead, elapsed: Duration) {
@@ -58,10 +65,16 @@ impl TracingLayer {
             return;
         }
 
+        // クエリ文字列（機密情報を含みうる）を除いた path 部分のみを記録する。
+        let path = head
+            .target
+            .split_once('?')
+            .map_or(head.target.as_str(), |(path, _query)| path);
+
         let span = tracing::info_span!(
             "http_request",
             method = %head.method,
-            path = %head.target,
+            path = %path,
         );
         let _guard = span.enter();
         tracing::info!(parent: &span, "request accepted");
@@ -76,13 +89,13 @@ impl TracingLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bf_http::request::{ParseOutcome, parse_request_head};
+    use bf_http::request::{parse_request_head, ParseOutcome};
     use std::num::NonZeroU64;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use tracing::subscriber::{self, Subscriber};
-    use tracing_subscriber::Registry;
     use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+    use tracing_subscriber::Registry;
 
     fn sample_head() -> RequestHead {
         let buf = b"GET /health HTTP/1.1\r\nHost: example.com\r\n\r\n";
@@ -122,5 +135,60 @@ mod tests {
 
         // interval = 3 → 9 回中 3 回採択、1 採択あたり 2 イベント（受理・応答）。
         assert_eq!(count.load(Ordering::Relaxed), 6);
+    }
+
+    /// span に記録された `path` フィールドの文字列表現を収集するテスト用レイヤー。
+    struct PathCapturingLayer(Arc<std::sync::Mutex<Vec<String>>>);
+
+    struct PathVisitor<'a>(&'a mut Vec<String>);
+
+    impl tracing::field::Visit for PathVisitor<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "path" {
+                self.0.push(format!("{value:?}"));
+            }
+        }
+    }
+
+    impl<S: Subscriber> Layer<S> for PathCapturingLayer {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _id: &tracing::span::Id,
+            _ctx: Context<'_, S>,
+        ) {
+            let mut paths = self.0.lock().unwrap();
+            attrs.record(&mut PathVisitor(&mut paths));
+        }
+    }
+
+    /// レビュー指摘（High）対応の回帰テスト: クエリ文字列（機密情報を含みうる）が
+    /// `path` フィールドに記録されないことを検証する。`?` 以降が確実に除去され、
+    /// `lib.rs` / 本ファイルの「クエリ文字列は一切記録しない」契約が実コードで
+    /// 担保されていることを保証する。
+    #[test]
+    fn record_response_strips_query_string_from_path() {
+        let paths = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = Registry::default().with(PathCapturingLayer(Arc::clone(&paths)));
+
+        let config = TracingConfig::new(NonZeroU64::new(1).unwrap());
+        let layer = TracingLayer::new(&config);
+
+        let buf = b"GET /login?token=SECRET123&user=alice HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let head = match parse_request_head(buf).unwrap() {
+            ParseOutcome::Complete { head, .. } => head,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        assert_eq!(head.target, "/login?token=SECRET123&user=alice");
+
+        subscriber::with_default(subscriber, || {
+            layer.record_response(&head, Duration::from_millis(1));
+        });
+
+        let recorded = paths.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0], "/login");
+        assert!(!recorded[0].contains("token"));
+        assert!(!recorded[0].contains("SECRET123"));
     }
 }
