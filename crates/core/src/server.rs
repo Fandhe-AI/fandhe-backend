@@ -63,18 +63,31 @@ use crate::extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
 /// とどめ、チューニング可能化はサーバビルダー拡張の後続スコープとする
 /// （`.claude/rules/security.md` のリソース枯渇対策）。
 ///
-/// # 既知の限界（接続の総生存期間・総リクエスト数は無制限）
-///
-/// `READ_TIMEOUT` は「1 回の read 待ち」しか制限しないため、正当なクライアント
-/// が本タイムアウトより短い間隔でリクエストを送り続ける限り、1 接続が
-/// [`DEFAULT_MAX_CONNECTIONS`] の permit を無期限に保持できる
-/// （`.claude/rules/security.md` のリソース枯渇観点）。[`Server::max_connections`]
-/// による総量規制はあるが、多数のそうした長寿命接続で枯渇し得るため恒久対応
-/// ではない。接続の総生存期間・keep-alive 中の最大リクエスト数上限は
-/// `.claude/rules/out-of-scope-tracking.md` に従い別スコープの Issue として
-/// 起票すべき事項であり、本 PR ではユーザー承認前提のため起票していない
-/// （#70 レビュー指摘、TASK-1.4-2 のスコープ外）。
+/// `READ_TIMEOUT` は「1 回の read 待ち」しか制限しないため、正当なタイムアウト
+/// 間隔より短い間隔で送信し続けるクライアントに対しては単体で無力である。
+/// この隙間は [`Server::max_connection_lifetime`]（接続の総生存期間上限）と
+/// [`Server::max_requests_per_connection`]（keep-alive 中の最大リクエスト数）
+/// で埋める（#70 レビュー指摘、`.claude/rules/security.md` のリソース枯渇観点）。
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 1 接続あたりの総生存期間の既定上限（リソース枯渇 DoS 対策）。
+///
+/// [`READ_TIMEOUT`] は「1 回の read 待ち」しか制限しないため、これより短い
+/// 間隔で（例えば 1 バイトずつ）送信し続けるクライアントは、本上限がなければ
+/// [`DEFAULT_MAX_CONNECTIONS`] の permit を無期限に占有できてしまう。
+/// [`handle_connection`] はコネクション開始時刻からの経過時間がこの値に達した
+/// 時点で（読み取り待ちに入る前に）接続を閉じ、permit を解放する。
+/// 値のチューニングは [`Server::max_connection_lifetime`] で行う。
+const DEFAULT_MAX_CONNECTION_LIFETIME: Duration = Duration::from_secs(300);
+
+/// keep-alive 接続 1 本あたりに処理を許すリクエスト数の既定上限（リソース枯渇 DoS 対策）。
+///
+/// [`DEFAULT_MAX_CONNECTION_LIFETIME`] とは独立に、短時間に大量の軽量リクエストを
+/// 送り続けて 1 接続でハンドラ処理を占有し続ける経路を塞ぐ。上限に達した
+/// リクエストへの応答は `Connection: close` を伴い、以後 [`handle_connection`] は
+/// 同じ接続で次のリクエストを待たない。値のチューニングは
+/// [`Server::max_requests_per_connection`] で行う。
+const DEFAULT_MAX_REQUESTS_PER_CONNECTION: usize = 1_000;
 
 /// 同時接続数の既定上限（リソース枯渇 DoS 対策）。
 ///
@@ -127,6 +140,8 @@ pub struct Server {
     upgrade_handlers: Vec<Box<dyn UpgradeHandler>>,
     handler: Option<Box<dyn Handler>>,
     max_connections: usize,
+    max_connection_lifetime: Duration,
+    max_requests_per_connection: usize,
 }
 
 impl Default for Server {
@@ -137,6 +152,8 @@ impl Default for Server {
             upgrade_handlers: Vec::new(),
             handler: None,
             max_connections: DEFAULT_MAX_CONNECTIONS,
+            max_connection_lifetime: DEFAULT_MAX_CONNECTION_LIFETIME,
+            max_requests_per_connection: DEFAULT_MAX_REQUESTS_PER_CONNECTION,
         }
     }
 }
@@ -159,6 +176,33 @@ impl Server {
     #[must_use]
     pub fn max_connections(mut self, max: usize) -> Self {
         self.max_connections = max;
+        self
+    }
+
+    /// 1 接続あたりの総生存期間の上限を設定する（既定 [`DEFAULT_MAX_CONNECTION_LIFETIME`]）。
+    ///
+    /// [`handle_connection`] はコネクション開始からの経過時間がこの値に達すると、
+    /// 次のリクエストの読み取り待ちに入る前に接続を閉じる（[`READ_TIMEOUT`] の
+    /// doc・`.claude/rules/security.md` のリソース枯渇観点を参照）。`Duration::ZERO`
+    /// を指定すると最初のリクエストを読む前に接続を閉じてしまうため、実運用では
+    /// 避けること。
+    #[must_use]
+    pub fn max_connection_lifetime(mut self, max: Duration) -> Self {
+        self.max_connection_lifetime = max;
+        self
+    }
+
+    /// keep-alive 接続 1 本あたりに処理を許すリクエスト数の上限を設定する
+    /// （既定 [`DEFAULT_MAX_REQUESTS_PER_CONNECTION`]）。
+    ///
+    /// 上限に達したリクエストへの応答は `Connection: close` を伴い、以後
+    /// [`handle_connection`] は同じ接続で次のリクエストを待たない
+    /// （[`READ_TIMEOUT`] の doc・`.claude/rules/security.md` のリソース枯渇観点を
+    /// 参照）。`0` を指定した場合でも最低 1 リクエストは処理してから閉じる
+    /// （[`handle_connection`] 側で `.max(1)` に切り上げる）。
+    #[must_use]
+    pub fn max_requests_per_connection(mut self, max: usize) -> Self {
+        self.max_requests_per_connection = max;
         self
     }
 
@@ -294,8 +338,24 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut buf = Vec::new();
+    // 接続の総生存期間・keep-alive 中の総リクエスト数を計測する（#70 レビュー
+    // 指摘、`.claude/rules/security.md` のリソース枯渇観点。READ_TIMEOUT の
+    // doc・Server::max_connection_lifetime / max_requests_per_connection の
+    // doc を参照）。
+    let connection_started_at = Instant::now();
+    let mut requests_served: usize = 0;
+    // 0 を指定しても最低 1 リクエストは処理してから閉じる
+    // （Server::max_requests_per_connection の doc を参照）。
+    let max_requests = server.max_requests_per_connection.max(1);
 
     loop {
+        // 次のリクエストを読みに行く前に総生存期間の上限を確認する。これにより
+        // READ_TIMEOUT より短い間隔で送信し続けるクライアントであっても、
+        // 接続が上限を超えて permit を占有し続けることはない。
+        if connection_started_at.elapsed() >= server.max_connection_lifetime {
+            return;
+        }
+
         let read_result =
             tokio::time::timeout(READ_TIMEOUT, read_request(&mut stream, &mut buf)).await;
 
@@ -315,12 +375,21 @@ where
             Ok(Ok(Some(request))) => request,
         };
 
+        requests_served += 1;
+
         let started_at = Instant::now();
         for middleware in &server.middlewares {
             middleware.on_request(&request.head);
         }
 
-        let keep_alive = should_keep_alive(&request.head);
+        // クライアントが keep-alive を要求していても、総リクエスト数上限に
+        // 達した場合・総生存期間上限に達した場合は `Connection: close` で
+        // 応答し、この接続では次のリクエストを待たない（#70 レビュー指摘、
+        // Server::max_requests_per_connection / max_connection_lifetime の
+        // doc を参照）。
+        let keep_alive = should_keep_alive(&request.head)
+            && requests_served < max_requests
+            && connection_started_at.elapsed() < server.max_connection_lifetime;
 
         // RequestGate はルーティング・アップグレードより先に評価する
         // （フェイルクローズ、モジュール冒頭の doc を参照）。
@@ -717,6 +786,81 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
 
         assert_eq!(text.matches("HTTP/1.1 200 OK").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn max_requests_per_connection_forces_close_after_limit() {
+        // keep-alive を要求し続けるクライアントでも、
+        // max_requests_per_connection に達した時点で `Connection: close` に
+        // 切り替わり、以後は同じ接続で次のリクエストを待たないことを確認する
+        // （#70 レビュー指摘: keep-alive 中の総リクエスト数の上限）。
+        let handler = FixedHandler {
+            status: 200,
+            body: b"ok",
+            calls: AtomicUsize::new(0),
+        };
+        let server = Server::new()
+            .max_requests_per_connection(2)
+            .handler(handler);
+        let (mut client, server_stream) = tokio::io::duplex(8192);
+        use tokio::io::AsyncWriteExt as _;
+
+        let write_task = tokio::spawn(async move {
+            // 3 リクエストとも keep-alive を要求するが、上限は 2 件。
+            client
+                .write_all(
+                    b"GET /a HTTP/1.1\r\n\r\n\
+GET /b HTTP/1.1\r\n\r\n\
+GET /c HTTP/1.1\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            let mut out = Vec::new();
+            client.read_to_end(&mut out).await.unwrap();
+            out
+        });
+
+        handle_connection(&server, server_stream).await;
+        let out = write_task.await.unwrap();
+        let text = String::from_utf8(out).unwrap();
+
+        // 2 件のみ応答され、3 件目は送られる前に接続が閉じられる。
+        assert_eq!(text.matches("HTTP/1.1 200 OK").count(), 2);
+        // 上限に達した最後の応答は Connection: close を伴う。
+        assert!(text.contains("Connection: close"));
+    }
+
+    #[tokio::test]
+    async fn max_connection_lifetime_closes_before_next_read() {
+        // 総生存期間の上限に達した接続は、次のリクエストの読み取り待ちに
+        // 入る前に閉じられることを確認する（#70 レビュー指摘: 接続の総生存
+        // 期間の上限。READ_TIMEOUT では防げない、短い間隔で送信し続ける
+        // クライアントによる permit 占有を防ぐ）。
+        let handler = FixedHandler {
+            status: 200,
+            body: b"ok",
+            calls: AtomicUsize::new(0),
+        };
+        let server = Server::new()
+            .max_connection_lifetime(Duration::from_millis(0))
+            .handler(handler);
+        let (mut client, server_stream) = tokio::io::duplex(8192);
+        use tokio::io::AsyncWriteExt as _;
+
+        let write_task = tokio::spawn(async move {
+            // 生存期間 0 のため handle_connection 側が読み取り前に接続を
+            // 閉じている可能性があり、write が失敗しても構わない（無視する）。
+            let _ = client.write_all(b"GET / HTTP/1.1\r\n\r\n").await;
+            let mut out = Vec::new();
+            let _ = client.read_to_end(&mut out).await;
+            out
+        });
+
+        handle_connection(&server, server_stream).await;
+        let out = write_task.await.unwrap();
+
+        // 生存期間 0 のため、最初のリクエストすら読まれずに接続が閉じられる。
+        assert!(out.is_empty());
     }
 
     #[tokio::test]
