@@ -429,12 +429,47 @@ jobs:
       - name: "openapi-two-stage.sh（stage 1: gen-openapi --check、stage 2: cargo build --all-features）"
         run: bash scripts/openapi-two-stage.sh
 
+      # TASK-3.3（#32）REQ-3 受け入れ基準 1: 生成された openapi.json が OpenAPI 3.x の
+      # 構文妥当性エラー 0 件であることを CI 常設で検証する（API 設計ベストプラクティス系
+      # ルール、例: Spectral/Redocly が検出する命名規約・説明文有無等とは区別する）。
+      # openapi-spec-validator はスキーマ妥当性のみを検証しベストプラクティス系ルールを
+      # 含まないため要求に合致する（選定理由は docs/acceptance/req3-openapi-generation.md
+      # を参照）。サプライチェーン考慮でバージョン pin する（.claude/rules/security.md）。
+      # `python3 -m openapi_spec_validator --version` は当該 CLI が `--version`
+      # フラグ自体を持たずエラー終了するため疎通確認に使えない（Bugbot 指摘、PR
+      # #141: 常に pip install が走ってしまう）。モジュールの `__version__` 属性で
+      # 導入済みバージョンを直接判定する。インストールも `pip` コマンドではなく
+      # `python3 -m pip` で実行する（Bugbot 指摘、PR #141 review 3603198341: 素の
+      # `pip` は self-hosted runner 上で `python3` と異なるインタプリタを指す
+      # ことがあり、インストールしたパッケージが後続の `python3 -m
+      # openapi_spec_validator` から見えず CI が不安定または恒常的に失敗しうる）。
+      # このステップは openapi-two-stage ジョブ内で実行する（Bugbot 指摘、PR #150 review
+      # 4724126384: openapi-ts ジョブを新設した際にバリデータステップを誤って openapi-ts
+      # 側にのみ残していたため、TS パイプラインが先に失敗すると openapi-two-stage が成功
+      # していてもスキーマ検証が実行されない問題があった。REQ-3 の受け入れ条件・
+      # docs/acceptance/req3-openapi-generation.md が openapi-two-stage ジョブでの実行を
+      # 期待しているため本ジョブに戻す）。
+      - name: Ensure openapi-spec-validator 0.7.1
+        run: |
+          if ! python3 -c "import openapi_spec_validator; print(openapi_spec_validator.__version__)" 2>/dev/null | grep -qx '0\.7\.1'; then
+            python3 -m pip install --user --break-system-packages "openapi-spec-validator==0.7.1"
+          fi
+
+      # pip --user 配置スクリプトは実行環境の PATH に含まれるとは限らない
+      # （self-hosted runner で /root/.local/bin が未設定のケースがある）ため、
+      # PATH 依存のコマンド解決を避けて `python3 -m` によるモジュール実行形式で
+      # 呼び出す（PR #141 CI failure 対応）。
+      - name: openapi.json 構文妥当性検証（openapi-spec-validator）
+        run: python3 -m openapi_spec_validator crates/plugin-openapi/openapi.json
+
   # --------------------------------------------------
   # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）: 「gen-openapi --check →
   # npm ci --ignore-scripts → openapi-typescript による schema.d.ts 鮮度検証 →
   # tsc --noEmit」の一方向パイプラインを検証する。詳細は scripts/openapi-ts.sh・
   # docs/design/openapi-typescript-pipeline.md を参照。node/npm ビルドを伴うため
-  # schedule（日次、dep-audit のみを走らせる方針）からは除外する。
+  # schedule（日次、dep-audit のみを走らせる方針）からは除外する。openapi.json の構文
+  # 妥当性検証（openapi-spec-validator）は openapi-two-stage ジョブ側で実行する
+  # （REQ-3 受け入れ条件・Bugbot 指摘 PR #150 review 4724126384）。
   # --------------------------------------------------
   openapi-ts:
     name: openapi-typescript 連携パイプライン（schema.d.ts 鮮度検証 → tsc --noEmit）
@@ -450,33 +485,6 @@ jobs:
 
       - name: "openapi-ts.sh（stage 1: gen-openapi --check、stage 2: schema.d.ts 鮮度検証、stage 3: tsc --noEmit）"
         run: bash scripts/openapi-ts.sh
-
-      # TASK-3.3（#32）REQ-3 受け入れ基準 1: 生成された openapi.json が OpenAPI 3.x の
-      # 構文妥当性エラー 0 件であることを CI 常設で検証する（API 設計ベストプラクティス系
-      # ルール、例: Spectral/Redocly が検出する命名規約・説明文有無等とは区別する）。
-      # openapi-spec-validator はスキーマ妥当性のみを検証しベストプラクティス系ルールを
-      # 含まないため要求に合致する（選定理由は docs/acceptance/req3-openapi-generation.md
-      # を参照）。サプライチェーン考慮でバージョン pin する（.claude/rules/security.md）。
-      # `python3 -m openapi_spec_validator --version` は当該 CLI が `--version`
-      # フラグ自体を持たずエラー終了するため疎通確認に使えない（Bugbot 指摘、PR
-      # #141: 常に pip install が走ってしまう）。モジュールの `__version__` 属性で
-      # 導入済みバージョンを直接判定する。インストールも `pip` コマンドではなく
-      # `python3 -m pip` で実行する（Bugbot 指摘、PR #141 review 3603198341: 素の
-      # `pip` は self-hosted runner 上で `python3` と異なるインタプリタを指す
-      # ことがあり、インストールしたパッケージが後続の `python3 -m
-      # openapi_spec_validator` から見えず CI が不安定または恒常的に失敗しうる）。
-      - name: Ensure openapi-spec-validator 0.7.1
-        run: |
-          if ! python3 -c "import openapi_spec_validator; print(openapi_spec_validator.__version__)" 2>/dev/null | grep -qx '0\.7\.1'; then
-            python3 -m pip install --user --break-system-packages "openapi-spec-validator==0.7.1"
-          fi
-
-      # pip --user 配置スクリプトは実行環境の PATH に含まれるとは限らない
-      # （self-hosted runner で /root/.local/bin が未設定のケースがある）ため、
-      # PATH 依存のコマンド解決を避けて `python3 -m` によるモジュール実行形式で
-      # 呼び出す（PR #141 CI failure 対応）。
-      - name: openapi.json 構文妥当性検証（openapi-spec-validator）
-        run: python3 -m openapi_spec_validator crates/plugin-openapi/openapi.json
 
   # --------------------------------------------------
   # fuzz smoke（TASK-15.3-1、#87）: crates/http/fuzz（root workspace から exclude 済み、
