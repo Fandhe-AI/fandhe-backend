@@ -178,6 +178,52 @@ E（閉包違反候補）と判定された。
    （`.claude/rules/out-of-scope-tracking.md` 対象として、`extension-closure-check.sh`
    の D カテゴリに `benches/*` を追加する是正は別 Issue で扱う）
 
+### 4.4 記載例（TASK-10.4 / #59 / PR #159）
+
+`crates/plugin-tracing` の `tracing` feature 有効時における `GET /health` の
+NFR（RPS 比・p95 比、REQ-10）再検証で、サンプリング（TASK-10.2）・イベント統合
+（TASK-10.2）・高頻度パス除外（TASK-10.3）を全適用した構成が受け入れ帯に収まることを
+計測するハーネス・計測対象サーバ実装・実測レポートを追加した変更で、4.3 節と同様の
+理由（`extension-closure-check.sh` の分類規則が D として許可するのは `docs/*`・
+`scripts/*` 等の glob のみで `benches/*` や `crates/core/examples/*` は対象外）により、
+以下 4 件が E（閉包違反候補）と判定された。
+
+1. **対象コミット/PR**: PR #159（#59、HEAD sha `c5330e4ee4f15b833d3211532baf5ad834c76b7c`）
+2. **E ファイルパス**:
+   - `benches/reports/task-10.4-tracing-performance.md`
+   - `benches/tracing-nfr-bench.sh`
+   - `crates/core/examples/minimal.rs`
+   - `crates/core/examples/tracing_nfr.rs`
+3. **閉じない理由**:
+   - `benches/tracing-nfr-bench.sh`・`benches/reports/task-10.4-tracing-performance.md` は
+     4.3 節と同一の運用上のギャップ（`benches/*` が D 未対応）により E 判定となる、
+     計測ハーネスと実測結果レポートである
+   - `crates/core/examples/minimal.rs`・`crates/core/examples/tracing_nfr.rs` は
+     `crates/core` 配下だが `examples/*` であり `extension-closure-check.sh` の
+     A（プラグインクレート内）は `crates/plugin-*` を対象、B（コア側許容シーム）は
+     `crates/core/src/plugin.rs` 等の拡張点シーム本体を対象とするため、いずれにも
+     一致せず E 判定となる
+4. **正当性根拠**:
+   - `benches/tracing-nfr-bench.sh`・`benches/reports/task-10.4-tracing-performance.md`
+     は `bf-plugin-tracing` の実装ロジック（拡張点 `Middleware`、2 節契約一覧の
+     `Middleware` 行）そのものを変更せず、既存構成の NFR を計測・記録するのみで、
+     計測対象の拡張点契約・依存方向（`server → routes → http::*`、1 節）には影響しない
+   - `crates/core/examples/minimal.rs` は既存の負荷計測対象サンプルに `GET /health`
+     ルートを追加したのみで、コアの拡張点（`Middleware` / `UpgradeHandler` /
+     `RequestGate`）や `crates/core` の公開 API 契約を変更しない（既存 `GET /` は無変更、
+     他 NFR ベンチへの影響なしを実測確認済み、PR #159 本文参照）
+   - `crates/core/examples/tracing_nfr.rs` は新規追加だが、`tracing` feature 経由で
+     `Server::tracing` を呼び出すだけの計測対象サーバであり、`Middleware` 拡張点の
+     契約自体（`crates/plugin-tracing` 側の実装）は変更しない。`crates/core/Cargo.toml`
+     の `required-features = ["tracing"]` によって `tracing` feature 無効時にはビルド
+     対象外となり、pay-for-what-you-use 原則（`.claude/rules/pay-for-what-you-use.md`）
+     にも抵触しない
+   - 4 件とも `crates/plugin-tracing` の実装ロジックの漏出ではなく、既存拡張点契約を
+     計測・実証する周辺資産に留まる。`benches/*` を D カテゴリに追加する是正は 4.3 節と
+     同一の別 Issue 対象とし、`crates/core/examples/*` の扱いについても
+     `extension-closure-check.sh` の分類規則見直しの要否を含め
+     `.claude/rules/out-of-scope-tracking.md` 対象として同一の是正検討に含める
+
 ## 5. `bf-plugin-openapi` の非該当理由
 
 `bf-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも

@@ -15,7 +15,14 @@
 //! $ curl -v -X POST http://127.0.0.1:3000/    # 405 応答（/ は GET のみ登録）
 //! $ curl -v http://127.0.0.1:3000/missing     # 404 応答（未登録パス）
 //! $ curl -v -H 'Connection: close' http://127.0.0.1:3000/  # 応答後に接続クローズ
+//! $ curl -v http://127.0.0.1:3000/health      # 200 応答（TASK-10.4 / #59 計測対象パス）
 //! ```
+//!
+//! `GET /health` は TASK-10.4（#59）で追加した計測対象ルート。
+//! `examples/tracing_nfr.rs`（`tracing` feature 有効の比較対象サーバ）と同一パスを
+//! 本ベースラインにも持たせることで、`benches/tracing-nfr-bench.sh` が両サーバの
+//! `/health` へ同一負荷をかけて RPS・p95 の比を計測できるようにする（既存の
+//! `GET /`＝graphql/webrtc NFR bench のベースラインには影響しない、追加のみ）。
 
 use backend_framework_core::Server;
 use bf_http::response::Response;
@@ -23,9 +30,13 @@ use bf_routes::Router;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
-    let router = Router::new().route("GET", "/", |_head, _body| {
-        Response::new(200, b"backend-framework: minimal example\n".to_vec())
-    });
+    let router = Router::new()
+        .route("GET", "/", |_head, _body| {
+            Response::new(200, b"backend-framework: minimal example\n".to_vec())
+        })
+        .route("GET", "/health", |_head, _body| {
+            Response::new(200, b"ok\n".to_vec())
+        });
 
     let server = Server::new().handler(router);
     let bound = server.bind("127.0.0.1:3000").await?;

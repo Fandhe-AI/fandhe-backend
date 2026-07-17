@@ -2,8 +2,9 @@
 
 `core-deps-unsafe-audit.sh`（REQ-1）・`plugin-mechanism-accept.sh`（REQ-2、TASK-2.4）・
 `webrtc-accept.sh`（REQ-8、TASK-8.4）・`graphql-accept.sh`（REQ-5、TASK-5.2）・
-`req13-change-impact-accept.sh`（REQ-13、TASK-13.2）・`openapi-ts-accept.sh`（REQ-6、TASK-6.2）
-の 6 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
+`req13-change-impact-accept.sh`（REQ-13、TASK-13.2）・`openapi-ts-accept.sh`（REQ-6、TASK-6.2）・
+`tracing-accept.sh`（REQ-10、TASK-10.4）
+の 7 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
 
 `docs/spec/04-requirements.md` REQ-1（最小コア）の受け入れ基準のうち、**性能計測を除く**
 非性能系の受け入れ基準（依存クレート数比・unsafe 根拠・audit / deny・実質コード行数・
@@ -204,6 +205,38 @@ PASS を偽らない）。手動計測手順・実行結果は
 `scripts/tests/run-graphql-accept-tests.sh` を参照。実行結果レポートは
 `docs/acceptance/req5-graphql.md`、NFR の詳細計測結果は
 `benches/reports/task-5.2-graphql-performance.md` に記録する。
+
+## `tracing-accept.sh` — REQ-10（可観測性）サンプリング適用後性能再検証（TASK-10.4、#59）
+
+`docs/spec/05-tasks.md` TASK-10.4「サンプリング適用後性能再検証」の受け入れ基準を
+検証する `lib/common.sh` 利用の `graphql-accept.sh` 同型オーケストレータ。
+
+```bash
+./scripts/accept/tracing-accept.sh
+```
+
+検証内容:
+
+1. **A: `tracing` feature 無効時の依存完全除外** — `cargo tree -p
+   backend-framework-core -e normal --no-default-features` に `bf-plugin-tracing` /
+   `tracing-appender` / `tracing-subscriber` が一切現れないこと（pay-for-what-you-use）
+2. **B: テスト回帰** — `cargo test -p backend-framework-core`（feature 無効/`tracing`
+   有効の両方）・`cargo test -p bf-plugin-tracing` が成功すること
+3. **C: NFR** — TASK-10.1〜10.3 の全緩和策適用後、`GET /health` への RPS 劣化 5% 以内
+   （RPS 比 ≥95%）・p95 悪化 110% 以内（p95 比 ≤110%）を `benches/tracing-nfr-bench.sh`
+   の実測（シナリオ A）で確認する。`webrtc-accept.sh` / `graphql-accept.sh` の NFR-6
+   判定帯（狭義 100.3〜100.8%）とは別の帯（REQ-10 の成功基準そのもの）。ビルド済み
+   バイナリ・`oha` が揃っていなければ SKIP + 実行手順を案内する
+
+前提: `cargo build --release -p backend-framework-core --example minimal
+--no-default-features` と `... --example tracing_nfr --features tracing` を事前実行
+（本スクリプトは自動ビルドしない）。
+
+基準未達（FAIL）でも `docs/spec/06-roadmap.md` の分岐どおり「デフォルト無効・
+明示的 opt-in feature」を維持する結論自体は成立する（現状 `default = []`）。本
+スクリプトは実測を PASS/WARN/FAIL として機械記録するのみで、分岐判断そのものは
+実行結果レポート側の役割とする。実行結果レポートは
+`benches/reports/task-10.4-tracing-performance.md` に記録する。
 
 ## `openapi-ts-accept.sh` — REQ-6（openapi-typescript 連携）受け入れ検証（TASK-6.2、#55）
 

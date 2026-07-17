@@ -129,3 +129,11 @@ required-features = ["webrtc"]
 [[example]]
 name = "graphql_nfr6"
 required-features = ["graphql"]
+
+# `examples/tracing_nfr.rs`（TASK-10.4 / #59）は `bf-plugin-tracing`（optional dep）を
+# 直接使うため、`tracing` feature 無効時に `cargo build --workspace --all-targets` 等が
+# コンパイル対象へ含めて失敗しないよう `required-features` で明示的にゲートする
+# （`webrtc_nfr6` / `graphql_nfr6` と同一パターン）。
+[[example]]
+name = "tracing_nfr"
+required-features = ["tracing"]
