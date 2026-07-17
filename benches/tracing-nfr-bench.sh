@@ -89,10 +89,23 @@ CURRENT_PID=""
 # 一時ファイルへリダイレクトし、trap で確実に削除する（一時生成物をリポジトリに
 # 残さない、.claude/rules/security.md「一時生成物」節）。
 TMP_LOG_DIR="$(mktemp -d)"
+# measure() はコマンド置換 `$(measure ...)` のサブシェル内で実行されるため、
+# サブシェル内で更新した CURRENT_PID はサブシェル終了時に破棄され、親シェルの
+# `trap cleanup EXIT` からは見えない（bash のサブシェル変数スコープ）。
+# そこで起動中サーバの PID をファイル（PID_FILE）へ書き出し、親・子どちらの
+# プロセスからも同じファイルを介して現在の起動状態を共有する。これにより
+# `set -euo pipefail` 下で oha 実行失敗や wait_ready のタイムアウト等の異常系が
+# measure() 内で発生しても、cleanup() が PID_FILE を読んで起動済みサーバを
+# 確実に kill できる（残留プロセス対策）。
+PID_FILE="${TMP_LOG_DIR}/current.pid"
 cleanup() {
-    if [ -n "${CURRENT_PID}" ] && kill -0 "${CURRENT_PID}" 2>/dev/null; then
-        kill "${CURRENT_PID}" 2>/dev/null || true
-        wait "${CURRENT_PID}" 2>/dev/null || true
+    if [ -f "${PID_FILE}" ]; then
+        local pid
+        pid="$(cat "${PID_FILE}" 2>/dev/null || true)"
+        if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}" 2>/dev/null || true
+            wait "${pid}" 2>/dev/null || true
+        fi
     fi
     rm -rf "${TMP_LOG_DIR}"
 }
@@ -126,6 +139,10 @@ measure() {
         "${bin}" >"${log_file}" 2>&1 &
     fi
     CURRENT_PID="$!"
+    # このサーバ PID を PID_FILE に記録する（measure() 自体はコマンド置換の
+    # サブシェル内で動くため、親シェルの cleanup() が異常系で kill できるよう
+    # ファイル経由で共有する。上記 PID_FILE 定義部のコメント参照）。
+    echo "${CURRENT_PID}" >"${PID_FILE}"
     wait_ready "${url}"
 
     # ウォームアップ（JIT・キャッシュ安定化、benches/bench-http.sh と同条件）。
@@ -145,6 +162,7 @@ measure() {
     kill "${CURRENT_PID}" 2>/dev/null || true
     wait "${CURRENT_PID}" 2>/dev/null || true
     CURRENT_PID=""
+    : >"${PID_FILE}"
 
     local rps_median p95_median
     rps_median="$(printf '%s\n' "${rps_values[@]}" | median)"
