@@ -13,6 +13,7 @@
 //! 網羅的にアサートする（部分一致で済ませない）。
 
 use bf_http::body::{BodyLength, body_length};
+use bf_http::buffer::RecvBuffer;
 use bf_http::connection::{read_request, should_keep_alive};
 use bf_http::request::HttpVersion;
 
@@ -29,7 +30,7 @@ Connection: keep-alive\r\n\
 {\"a\":1,\"b\":2}";
 
     let mut socket: &[u8] = raw;
-    let mut buf = Vec::new();
+    let mut buf = RecvBuffer::new();
 
     let req = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -70,7 +71,7 @@ Connection: keep-alive\r\n\
     assert!(should_keep_alive(&req.head));
 
     // パイプライン残余がないことも確認する。
-    assert!(buf.is_empty());
+    assert!(buf.unread().is_empty());
 }
 
 /// `Connection: close` を伴う body なしリクエストで、keep-alive 判定が
@@ -79,7 +80,7 @@ Connection: keep-alive\r\n\
 async fn request_without_body_and_explicit_close() {
     let raw = b"GET /health HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
     let mut socket: &[u8] = raw;
-    let mut buf = Vec::new();
+    let mut buf = RecvBuffer::new();
 
     let req = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -122,7 +123,7 @@ async fn pipelined_requests_over_split_writes_preserve_field_integrity() {
         }
     });
 
-    let mut buf = Vec::new();
+    let mut buf = RecvBuffer::new();
 
     let req1 = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -152,7 +153,7 @@ async fn pipelined_requests_over_split_writes_preserve_field_integrity() {
     assert!(req2.body.is_empty());
     assert!(!should_keep_alive(&req2.head));
 
-    assert!(buf.is_empty());
+    assert!(buf.unread().is_empty());
     write_task.await.unwrap();
 }
 
@@ -164,7 +165,7 @@ async fn transfer_encoding_is_rejected_end_to_end() {
     let raw =
         b"POST /items HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\nabcd";
     let mut socket: &[u8] = raw;
-    let mut buf = Vec::new();
+    let mut buf = RecvBuffer::new();
 
     let err = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -178,4 +179,142 @@ async fn transfer_encoding_is_rejected_end_to_end() {
         err.to_string(),
         "request body error: Transfer-Encoding is not supported"
     );
+}
+
+/// keep-alive 接続で複数リクエストを読み取っても `RecvBuffer` の容量が
+/// 再確保されない（再利用される）ことを検証する（TASK-1.3-3 / #68）。
+#[tokio::test]
+async fn keep_alive_requests_reuse_buffer_capacity() {
+    let (mut client, mut server) = tokio::io::duplex(4096);
+    let write_task = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        for _ in 0..5 {
+            client
+                .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+                .await
+                .unwrap();
+            client.flush().await.unwrap();
+        }
+    });
+
+    let mut buf = RecvBuffer::new();
+    let mut capacity_after_first = 0;
+    for i in 0..5 {
+        let req = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_request(&mut server, &mut buf),
+        )
+        .await
+        .expect("test-internal timeout")
+        .expect("I/O エラーなし")
+        .expect("リクエストが読めること");
+        assert_eq!(req.head.method, "GET");
+        assert!(req.body.is_empty());
+
+        if i == 0 {
+            capacity_after_first = buf.capacity();
+            assert!(capacity_after_first > 0);
+        } else {
+            // 2 回目以降は既存容量内に収まり、再確保が起きないこと。
+            assert_eq!(
+                buf.capacity(),
+                capacity_after_first,
+                "keep-alive 接続の容量は既存バッファを再利用し再確保しないこと"
+            );
+        }
+    }
+
+    write_task.await.unwrap();
+}
+
+/// 大きい body（`MAX_RETAINED_CAPACITY` 超）を処理した後、`RecvBuffer` の容量が
+/// `MAX_RETAINED_CAPACITY` 以下へ縮むことを検証する（リソース枯渇対策、
+/// .claude/rules/security.md、TASK-1.3-3 / #68）。
+#[tokio::test]
+async fn large_body_shrinks_buffer_capacity_after_completion() {
+    // MAX_RETAINED_CAPACITY（64 KiB）を上回る 100 KiB の body。
+    let body_len = 100 * 1024;
+    let body = vec![b'x'; body_len];
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(
+        format!("POST /upload HTTP/1.1\r\nContent-Length: {body_len}\r\n\r\n").as_bytes(),
+    );
+    payload.extend_from_slice(&body);
+    // 縮小後も次リクエストが正しく読めることを確認するため、次のリクエストを
+    // パイプラインで続ける。
+    payload.extend_from_slice(b"GET /after HTTP/1.1\r\nConnection: close\r\n\r\n");
+
+    let (mut client, mut server) = tokio::io::duplex(8192);
+    let write_task = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        client.write_all(&payload).await.unwrap();
+        client.flush().await.unwrap();
+        drop(client);
+    });
+
+    let mut buf = RecvBuffer::new();
+    let req1 = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        read_request(&mut server, &mut buf),
+    )
+    .await
+    .expect("test-internal timeout (1st)")
+    .expect("I/O エラーなし")
+    .expect("大 body リクエストが読めること");
+    assert_eq!(req1.head.method, "POST");
+    assert_eq!(req1.body.len(), body_len);
+    assert!(req1.body.iter().all(|&b| b == b'x'));
+
+    // 大 body を読み取った直後は容量が上限を超えて有界化されていること。
+    const MAX_RETAINED_CAPACITY: usize = 64 * 1024;
+    assert!(
+        buf.capacity() <= MAX_RETAINED_CAPACITY.max(buf.unread().len()),
+        "大 body 処理後は容量が MAX_RETAINED_CAPACITY 以下へ縮むこと（capacity={}）",
+        buf.capacity()
+    );
+
+    // 縮小後も次リクエストが正しく読み取れることを固定する。
+    let req2 = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        read_request(&mut server, &mut buf),
+    )
+    .await
+    .expect("test-internal timeout (2nd)")
+    .expect("I/O エラーなし")
+    .expect("2 件目が読めること");
+    assert_eq!(req2.head.method, "GET");
+    assert_eq!(req2.head.target, "/after");
+    assert!(req2.body.is_empty());
+    assert!(!should_keep_alive(&req2.head));
+
+    write_task.await.unwrap();
+}
+
+/// パイプライン済みの前リクエストの残骸バイトが、次リクエストの body に
+/// 混入しないことを固定する（バッファ再利用時のデータ境界保証、
+/// TASK-1.3-3 / #68）。
+#[tokio::test]
+async fn previous_request_bytes_do_not_leak_into_next_body() {
+    // 1 件目の body に、2 件目の body と誤認しうる紛らわしいバイト列を混ぜる。
+    let raw = b"POST /a HTTP/1.1\r\nContent-Length: 5\r\n\r\nAAAAA\
+POST /b HTTP/1.1\r\nContent-Length: 5\r\n\r\nBBBBB";
+    let mut socket: &[u8] = raw;
+    let mut buf = RecvBuffer::new();
+
+    let req1 = read_request(&mut socket, &mut buf)
+        .await
+        .unwrap()
+        .expect("1 件目が読めること");
+    assert_eq!(req1.body, b"AAAAA");
+
+    let req2 = read_request(&mut socket, &mut buf)
+        .await
+        .unwrap()
+        .expect("2 件目が読めること");
+    assert_eq!(
+        req2.body, b"BBBBB",
+        "1 件目の残骸バイトが 2 件目の body に混入しないこと"
+    );
+    assert!(buf.unread().is_empty());
 }
