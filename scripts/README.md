@@ -33,6 +33,11 @@ TASK-13.1（#49）で、新規プロトコル追加コミットの変更ファ�
 閉包しているかを機械判定する `extension-closure-check.sh` を追加した
 （`docs/design/extension-closure-verification.md` に WebSocket/WebRTC/GraphQL 実例の
 検証結果を記録）。
+TASK-6.1（#54）で、`openapi-two-stage.sh` の後段として「`openapi.json` →
+`openapi-typescript` → TS 型 → `tsc --noEmit`」の openapi-typescript 連携パイプラインを
+ローカル・CI 双方から同一コマンドで再現する `openapi-ts.sh` を追加した
+（`docs/design/openapi-typescript-pipeline.md` 参照。生成物・クライアントライブラリ本体は
+`ts/` 配下、Rust 側依存には一切影響しない）。
 
 ## スクリプト一覧
 
@@ -66,6 +71,8 @@ TASK-13.1（#49）で、新規プロトコル追加コミットの変更ファ�
 | `tests/run-extension-closure-tests.sh` | `extension-closure-check.sh` のセルフテスト。`tests/fixtures/extension-closure/*.txt` を注入し閉包（PASS）・`crates/http`/`crates/routes` 混入（FAIL）・空リスト/不正入力（フェイルクローズ）を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `extension-closure-gate.sh` | 拡張点への変更影響範囲閉包 PR ゲート（TASK-13.2、#50、`docs/design/dependency-graph-contract.md` 4 節）。`crates/plugin-*` / `crates/core/src/plugin.rs` を含まない差分は SKIP、含む差分は `extension-closure-check.sh` で閉包判定し、E ファイルがあれば `docs/design/*.md` への理由記載の有無を照合する（記載済みなら WARN 付き PASS、未記載なら FAIL）。`--base <ref>`（CI）または `--files-from <file>`（セルフテスト用注入口） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから `pull_request` イベント時のみ呼ばれる |
 | `tests/run-extension-closure-gate-tests.sh` | `extension-closure-gate.sh` のセルフテスト。`tests/fixtures/extension-closure-gate/*.txt` を注入し SKIP/PASS/理由明記済み WARN-PASS/FAIL・フェイルクローズ挙動（不正 ref・引数欠落等）を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
+| `openapi-ts.sh` | `gen-openapi --check`（stage 1）→ `npm ci --ignore-scripts` + `openapi-typescript` による `ts/src/generated/schema.d.ts` 鮮度検証（stage 2）→ `tsc --noEmit`（stage 3）の openapi-typescript 連携パイプラインを検証する（TASK-6.1、#54）。`--update` で `openapi.json`・`schema.d.ts` を in-place 再生成できる。node/npm 未導入時は自動ダウンロードせず導入コマンドを案内して非 0 終了する | `.github/workflows/ci.yml` の `openapi-ts` ジョブから呼ばれる |
+| `tests/run-openapi-ts-tests.sh` | `openapi-ts.sh` のセルフテスト。`tests/fixtures/openapi-ts/*` を注入し引数検証・`schema.d.ts` diff 鮮度判定・node/npm 不在時の fail-closed 挙動・CI ジョブ存在確認を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 
 ## 前提ツール
 
@@ -86,6 +93,8 @@ TASK-13.1（#49）で、新規プロトコル追加コミットの変更ファ�
 | `cargo-fuzz`（`fuzz.sh` のみ） | libFuzzer ベースの fuzz 実行 | `cargo install --locked cargo-fuzz@0.13.2` |
 | nightly ツールチェーン（`fuzz.sh` のみ。`fuzz.sh` の `PINNED_NIGHTLY` が単一真実源） | サニタイザ計装ビルドに必要（`rust-toolchain.toml` の既定 stable は変更しない） | `rustup toolchain install <PINNED_NIGHTLY> --profile minimal` |
 | C コンパイラ（`fuzz.sh` のみ） | `libfuzzer-sys` の C++ ランタイムビルドに必要 | OS のパッケージマネージャ（例: `apt install build-essential`） |
+| Node.js（`openapi-ts.sh` のみ、`ts/package.json` の `volta`/`engines` フィールドが単一真実源。動作確認済み: 24.13.0） | `openapi-typescript`・`tsc` の実行に必要 | `curl https://get.volta.sh \| bash && volta install node@24.13.0 npm@11.6.2` |
+| npm（`openapi-ts.sh` のみ、動作確認済み: 11.6.2） | `ts/` の依存インストール（`npm ci --ignore-scripts`）・スクリプト実行 | Node.js（volta）に同梱 |
 
 ## `setup-required-checks.sh` — required status check の設定
 

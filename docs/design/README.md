@@ -72,3 +72,8 @@
   `bf-plugin-openapi` の非該当理由を記述。受け入れテストは
   `scripts/accept/req13-change-impact-accept.sh`、実行結果は
   `docs/acceptance/req13-change-impact.md`）
+- [`openapi-typescript-pipeline.md`](./openapi-typescript-pipeline.md): openapi-typescript
+  連携パイプライン（TASK-6.1、#54、REQ-6。「utoipa → openapi.json → openapi-typescript →
+  TS 型 → openapi-fetch クライアント」の一方向パイプライン設計・クライアントライブラリ
+  選定結果（`openapi-fetch` 採用理由と比較表）・`--check`/`--update` 運用・
+  サプライチェーン対策・TASK-6.2（#55）への接続点を記述）
