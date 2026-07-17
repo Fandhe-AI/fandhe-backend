@@ -173,24 +173,21 @@ extract_verdict() {
 }
 
 # --------------------------------------------------
-# 判断根拠提示割合の判定（TASK-12.3-2／#84 の scripts/feasibility-check.sh がマージ済み
-# なら委譲する。未マージ時は内蔵の最小チェックで代替する。いずれの経路を使ったかを
-# 呼び出し元で報告する。
+# 判断根拠提示割合の判定（TASK-12.3-2／#84 の scripts/feasibility-check.sh への委譲は
+# 未実施。以下、経緯と判断根拠を記録する）。
 #
-# 注意（#84 マージ後の置き換え手順）: #84 の実際の CLI インタフェースは本ハーネス執筆
-# 時点（#84 未マージ）で確定していない。ここでは「判定記録ファイルパスを 1 引数で渡し、
-# 必須項目充足なら exit 0・不足なら非 0」という最小契約を仮定している。#84 マージ後は
-# 実際のインタフェースに合わせて本関数（check_required_fields）のみを更新すればよい設計
-# にしてある（呼び出し元・採点ロジックには波及しない）。
+# #84 の実際の CLI（`feasibility-check.sh --input <record.md>`）は「## 判定区分」等の
+# 見出し形式の判定記録を要求する。一方、本ハーネス（`extract_verdict`・
+# `check_required_fields_builtin`・全 fixture）は「判定区分: X」形式の平文行を前提に
+# 一貫して設計されている。委譲へ切り替えるには fixture・`extract_verdict` を含む
+# ハーネス全体を見出し形式へ移行する必要があり、正解率算出ロジックにも波及するため、
+# 本 PR（TASK-12.4-2、#86）のスコープを超える（README の「実測定は未実施（PENDING）」
+# と同じ枠で、見出し形式移行としてスコープ外追跡する。[[out-of-scope-tracking]]）。
+# 常に内蔵の最小チェックを使う。
 # --------------------------------------------------
 check_required_fields() {
     local record_file="$1"
-    if [ -x "${REPO_ROOT}/scripts/feasibility-check.sh" ]; then
-        FIELDS_CHECK_SOURCE="feasibility-check.sh（#84）"
-        "${REPO_ROOT}/scripts/feasibility-check.sh" "${record_file}"
-        return $?
-    fi
-    FIELDS_CHECK_SOURCE="内蔵最小チェック（#84 未マージ時の代替）"
+    FIELDS_CHECK_SOURCE="内蔵最小チェック（feasibility-check.sh への委譲は見出し形式移行待ち、スコープ外追跡）"
     check_required_fields_builtin "${record_file}"
 }
 
