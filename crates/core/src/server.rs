@@ -442,8 +442,9 @@ impl Server {
     /// が使う「設定登録型」パターンとは異なる）。登録すると全リクエストの
     /// `on_response` フックで [`bf_plugin_tracing::TracingLayer::record_response`]
     /// が呼ばれ、`config.sample_interval` に従いサンプリングされたリクエストの
-    /// span/event のみが記録される（`crates/plugin-tracing/src/layer.rs` の
-    /// doc を参照）。記録先（非同期・バッファ済み I/O）は別途
+    /// 応答時 1 イベント（TASK-10.2 / #57 で span+2 イベントから統合）のみが
+    /// 記録される（`crates/plugin-tracing/src/layer.rs` の doc を参照）。
+    /// 記録先（非同期・バッファ済み I/O）は別途
     /// `bf_plugin_tracing::init_tracing` で初期化する契約とし、本メソッドは
     /// グローバルサブスクライバの初期化には関与しない。
     #[cfg(feature = "tracing")]

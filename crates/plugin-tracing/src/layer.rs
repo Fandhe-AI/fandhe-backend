@@ -1,4 +1,4 @@
-//! サンプリング判定と span/event 記録本体（TASK-10.1）。
+//! サンプリング判定と event 記録本体（TASK-10.1・TASK-10.2 / #57）。
 //!
 //! [`TracingLayer`] はコア側の `Middleware` アダプタ（`crates/core/src/server.rs`
 //! の `TracingMiddleware`、`tracing` feature 限定）から `on_response` フック内で
@@ -58,8 +58,15 @@ impl TracingLayer {
     /// 除去する（レビュー指摘対応。「クエリ文字列は一切記録しない」という本 doc
     /// comment・`crate` doc の契約を実コードで担保する）。
     ///
-    /// 記録は 1 つの span 内で受理・応答の 2 イベントとして残す（PoC-10 代表構成と
-    /// 同粒度）。1 イベントへの統合は TASK-10.2（#57）のスコープ。
+    /// 記録は応答時の 1 イベントに統合する（TASK-10.2 / #57）。
+    ///
+    /// PoC-10 代表構成と同粒度だった旧実装（span 1 つ + 受理・応答の 2 イベント）
+    /// は、採択 1 件あたり subscriber コールバックが 4 回（`on_new_span` +
+    /// enter/exit + イベント 2 件）発生していた。span 自体を廃止し単一イベントへ
+    /// 落とすことで 1 コールバックに削減し、TASK-10.4（性能再検証）の前提となる
+    /// 記録コスト削減を図る。旧 span に載せていた method・path はイベントの
+    /// 構造化フィールドへ移すため、統合による情報欠落はない（"request accepted"
+    /// イベントは固有フィールドを持たず、統合による情報損失は実質ゼロ）。
     pub fn record_response(&self, head: &RequestHead, elapsed: Duration) {
         if !self.sampler.should_sample() {
             return;
@@ -71,17 +78,11 @@ impl TracingLayer {
             .split_once('?')
             .map_or(head.target.as_str(), |(path, _query)| path);
 
-        let span = tracing::info_span!(
-            "http_request",
+        tracing::info!(
             method = %head.method,
             path = %path,
-        );
-        let _guard = span.enter();
-        tracing::info!(parent: &span, "request accepted");
-        tracing::info!(
-            parent: &span,
             elapsed_ms = elapsed.as_secs_f64() * 1000.0,
-            "response sent"
+            "request completed"
         );
     }
 }
@@ -133,11 +134,14 @@ mod tests {
             }
         });
 
-        // interval = 3 → 9 回中 3 回採択、1 採択あたり 2 イベント（受理・応答）。
-        assert_eq!(count.load(Ordering::Relaxed), 6);
+        // interval = 3 → 9 回中 3 回採択、1 採択あたりイベントちょうど 1 件
+        // （TASK-10.2 / #57 で応答時 1 イベントへ統合、span は生成しない）。
+        assert_eq!(count.load(Ordering::Relaxed), 3);
     }
 
-    /// span に記録された `path` フィールドの文字列表現を収集するテスト用レイヤー。
+    /// `record_response` が発行するイベントの `path` フィールドの文字列表現を
+    /// 収集するテスト用レイヤー（TASK-10.2 / #57 で span 廃止に伴い、
+    /// `on_new_span` ベースから `on_event` + `Visit` ベースへ書き換え）。
     struct PathCapturingLayer(Arc<std::sync::Mutex<Vec<String>>>);
 
     struct PathVisitor<'a>(&'a mut Vec<String>);
@@ -151,15 +155,48 @@ mod tests {
     }
 
     impl<S: Subscriber> Layer<S> for PathCapturingLayer {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut paths = self.0.lock().unwrap();
+            event.record(&mut PathVisitor(&mut paths));
+        }
+    }
+
+    /// span 生成回数だけを数えるテスト用レイヤー（`on_new_span` フック）。
+    /// TASK-10.2 / #57 で `record_response` から `info_span!` を除去した契約を
+    /// 検証する（span が 1 件も生成されないことの回帰テスト）。
+    struct SpanCountingLayer(Arc<AtomicUsize>);
+
+    impl<S: Subscriber> Layer<S> for SpanCountingLayer {
         fn on_new_span(
             &self,
-            attrs: &tracing::span::Attributes<'_>,
+            _attrs: &tracing::span::Attributes<'_>,
             _id: &tracing::span::Id,
             _ctx: Context<'_, S>,
         ) {
-            let mut paths = self.0.lock().unwrap();
-            attrs.record(&mut PathVisitor(&mut paths));
+            self.0.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// 採択 1 件あたり span は生成されずイベントちょうど 1 件のみ記録されること
+    /// を検証する（TASK-10.2 / #57 の受け入れ条件: 応答時 1 イベントへの統合）。
+    #[test]
+    fn record_response_emits_no_span_and_exactly_one_event_per_sample() {
+        let event_count = Arc::new(AtomicUsize::new(0));
+        let span_count = Arc::new(AtomicUsize::new(0));
+        let subscriber = Registry::default()
+            .with(CountingLayer(Arc::clone(&event_count)))
+            .with(SpanCountingLayer(Arc::clone(&span_count)));
+
+        let config = TracingConfig::new(NonZeroU64::new(1).unwrap());
+        let layer = TracingLayer::new(&config);
+        let head = sample_head();
+
+        subscriber::with_default(subscriber, || {
+            layer.record_response(&head, Duration::from_millis(1));
+        });
+
+        assert_eq!(event_count.load(Ordering::Relaxed), 1);
+        assert_eq!(span_count.load(Ordering::Relaxed), 0);
     }
 
     /// レビュー指摘（High）対応の回帰テスト: クエリ文字列（機密情報を含みうる）が
