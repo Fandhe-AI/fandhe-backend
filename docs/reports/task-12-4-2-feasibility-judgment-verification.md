@@ -32,7 +32,7 @@ TASK-12.4-2（#86、REQ-12）の再検証レポート。プロトコル・タス
 - [x] プロトコル策定: [`docs/design/third-party-feasibility-verification.md`](../design/third-party-feasibility-verification.md)
 - [x] タスクセット事前確定（N=10、J-01〜J-10）: [`docs/reports/task-12-4-2-task-definitions.md`](./task-12-4-2-task-definitions.md)
 - [x] 機械採点ハーネス: `scripts/third-party-feasibility-verify.sh`
-- [x] ハーネスのセルフテスト（オフライン、19 アサーション、全件 PASS）: `scripts/tests/run-third-party-feasibility-tests.sh`
+- [x] ハーネスのセルフテスト（オフライン、28 アサーション、全件 PASS）: `scripts/tests/run-third-party-feasibility-tests.sh`
 - [ ] **実測定（被験 AI の判定記録取得・採点・結果確定）: 未実施（PENDING、4 節）**
 
 セルフテストの green は「採点ハーネスの算出ロジックが正しく動作すること」の確認である。
