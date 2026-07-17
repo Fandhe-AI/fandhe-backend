@@ -11,6 +11,9 @@ name: CI
 # 全ジョブに `timeout-minutes` を設定（多層防御・self-hosted runner の無期限占有防止）し、
 # test ジョブは cargo-nextest（.config/nextest.toml でテスト単位のタイムアウトを規定）に
 # 切り替えた。
+# TASK-12.1-1（#79）: `unsafe` の増加検知（scripts/unsafe-triage.sh）を独立ジョブとして
+# 追加し、dep-audit ジョブに限り schedule/workflow_dispatch 実行時の Issue 起票ステップ
+# （AI が能動的に改善案を提示する機構の一部）を追加した。
 on:
   pull_request:
     branches: [main]
@@ -143,10 +146,18 @@ jobs:
   # --------------------------------------------------
   # 依存監査（cargo audit / cargo deny check）を全 feature 構成で実行（TASK-15.2、#17）。
   # deny.toml 冒頭コメントで宣言している CI 組み込み先。
+  # TASK-12.1-1（#79）: cargo audit 呼び出しは scripts/audit-triage.sh 経由になり
+  # トリアージレポートを生成する（scripts/dep-audit.sh 参照）。schedule /
+  # workflow_dispatch 実行時に限り、vulnerability 検知を Issue として能動的に提示する
+  # ステップを追加するため、本ジョブにのみ job 単位で `issues: write` を付与する
+  # （workflow 全体は `contents: read` を維持、最小権限）。
   # --------------------------------------------------
   dep-audit:
     name: cargo audit / cargo deny (all feature configs)
     runs-on: self-hosted
+    permissions:
+      contents: read
+      issues: write
     # TASK-11.4（#36）: 本ジョブ自体は「CI テスト」のタイムアウト対応（本イシューの主目的）
     # のスコープ外だが、多層防御を一貫させるため他ジョブと同様に上限を設定する。
     timeout-minutes: 30
@@ -173,4 +184,84 @@ jobs:
           fi
 
       - name: dep-audit.sh（全 feature 構成の cargo audit / cargo deny check）
+        id: dep_audit
+        # audit-triage.sh 経由の cargo audit が vulnerability を検知すると非 0 で
+        # 終了する（フェイルクローズ）。ジョブは失敗させたまま、次のステップで
+        # トリアージレポートを再生成して Issue 起票に使う（`if: always()` で
+        # 本ステップの成否に関わらず後続ステップを実行する）。
         run: bash scripts/dep-audit.sh
+
+      - name: audit-triage.sh の Issue 起票（schedule / workflow_dispatch 限定）
+        # 本ステップは「フレームワーク自身の自動監査機構」による能動的な提示であり、
+        # 開発エージェントが Issue 起票前にユーザー承認を得る規約
+        # （.claude/rules/out-of-scope-tracking.md）とは別レイヤの自動化として扱う。
+        #
+        # PR/push 実行時は開発者が CI ログで直接確認できるためスキップし、
+        # コード変更のない期間に新規公開される advisory を拾う schedule と、
+        # 手動確認用の workflow_dispatch のみ対象にする。
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # audit-triage.sh の失敗（vulnerability 検知）自体は前ステップで既に
+          # ジョブを失敗させている。ここでは Issue 起票のために再度レポートを
+          # 生成するだけで、監査結果（ジョブ失敗）そのものは変えない。
+          #
+          # --vuln-ids-output は vulnerabilities.list[]（自動更新提案・要エスカレー
+          # ション区分）の advisory ID のみを書き出す。markdown レポート全体を正規
+          # 表現で走査すると「情報（記録・監視）」区分（unmaintained 等の warnings）
+          # の advisory ID まで拾ってしまい、CI が green（warnings のみで exit 0）
+          # にもかかわらず Issue が起票される不整合が生じるため、この専用出力で
+          # vulnerability のみに厳密に絞り込む。
+          REPORT_FILE="$(mktemp)"
+          VULN_IDS_FILE="$(mktemp)"
+          bash scripts/audit-triage.sh --output "${REPORT_FILE}" --vuln-ids-output "${VULN_IDS_FILE}" > /dev/null 2>&1 || true
+
+          if [ ! -s "${REPORT_FILE}" ] || [ ! -s "${VULN_IDS_FILE}" ]; then
+            echo "vulnerability が検知されなかったため Issue 起票をスキップします"
+            exit 0
+          fi
+
+          # ラベルは冪等に作成する（既存でも失敗させない）。
+          gh label create audit-triage --color B60205 \
+            --description "cargo audit 指摘の自動トリアージ Issue（TASK-12.1-1, #79）" \
+            --force || echo "警告: audit-triage ラベルの作成に失敗しました（gh 障害でも監査結果は変えない）" >&2
+
+          # advisory ID ごとに重複起票を防ぐ（gh issue list の検索クエリはデータとして
+          # 渡し、シェル再解釈やコマンド置換に埋め込まない。OWASP A03 対策）。
+          mapfile -t advisory_ids < "${VULN_IDS_FILE}"
+
+          for advisory_id in "${advisory_ids[@]}"; do
+            existing="$(gh issue list --search "${advisory_id}" --state open --label audit-triage --json number --jq 'length' || echo "0")"
+            if [ "${existing}" != "0" ]; then
+              echo "既存 Issue あり（スキップ）: ${advisory_id}"
+              continue
+            fi
+
+            gh issue create \
+              --title "audit-triage: ${advisory_id} の対応要否を確認" \
+              --label audit-triage \
+              --body-file "${REPORT_FILE}" \
+              || echo "警告: ${advisory_id} の Issue 起票に失敗しました（gh 障害でも監査結果は変えない）" >&2
+          done
+
+  # --------------------------------------------------
+  # unsafe 追加のラチェット検知（TASK-12.1-1、#79）。ビルド不要で軽量なため
+  # schedule（日次、dep-audit のみを走らせる方針）からは除外する。
+  # --------------------------------------------------
+  unsafe-triage:
+    name: unsafe 追加の検知トリアージ
+    runs-on: self-hosted
+    if: github.event_name != 'schedule'
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: unsafe-triage.sh（baseline 比較・SAFETY コメント検査）
+        run: bash scripts/unsafe-triage.sh
+
+      - name: run-triage-tests.sh（audit/unsafe トリアージロジックのセルフテスト）
+        run: bash scripts/tests/run-triage-tests.sh

@@ -6,6 +6,12 @@
 # crates/plugin-* に feature が増えても、本スクリプトはそれを動的に列挙して監査対象に
 # 加えるため、CI 定義（ci.yml）・本スクリプト自体の変更は不要になる設計にしている。
 #
+# TASK-12.1-1（#79）: cargo audit の直接呼び出しは指摘があっても「CI が赤くなる」以上の
+# 情報を出さない。scripts/audit-triage.sh へ置き換え、指摘を「自動更新提案」
+# 「要エスカレーション」「情報（記録・監視）」に分類したトリアージレポートを
+# 生成させることで、AI が能動的に次のアクションを提示できるようにする
+# （フェイルクローズ動作・全 feature 構成の deny check は変更しない）。
+#
 # 実装メモ（cargo-deny 0.19 時点の仕様確認結果）:
 # `cargo deny check` には `--features` / `--no-default-features` / `--all-features` の
 # ような CLI フラグが存在しない（`cargo deny check --help` で確認済み）。feature 構成の
@@ -39,20 +45,22 @@ check_command "cargo-audit" "cargo install --locked cargo-audit@0.22.2"
 check_command "jq" "OS のパッケージマネージャで jq を導入してください（例: apt install jq）"
 
 # --------------------------------------------------
-# cargo audit（RustSec advisory DB による既知脆弱性検知、OWASP A06）
+# cargo audit（RustSec advisory DB による既知脆弱性検知、OWASP A06）を
+# audit-triage.sh 経由で実行する（TASK-12.1-1、#79）。
 #
 # Cargo.lock は全 optional 依存を含む feature 非依存の依存解決結果であり
 # （`cargo generate-lockfile` は feature 構成に関わらず workspace 全クレートの
 # 依存を解決する）、1 回の cargo audit 実行で全 feature 構成の依存をカバーできる。
-# Cargo.lock は .gitignore 対象（コミットしない運用）のため、監査直前に生成する。
+# Cargo.lock は .gitignore 対象（コミットしない運用）のため、監査直前に生成する
+# （生成ロジックは audit-triage.sh 側にもあるため、ここでの生成は二重ガード）。
 # --------------------------------------------------
 echo "==> Cargo.lock を生成（既存があれば最新化せず利用）"
 if [ ! -f Cargo.lock ]; then
     cargo generate-lockfile
 fi
 
-echo "==> cargo audit"
-cargo audit
+echo "==> scripts/audit-triage.sh（cargo audit 指摘のトリアージ）"
+bash "${SCRIPT_DIR}/audit-triage.sh"
 
 # --------------------------------------------------
 # cargo deny check（ライセンス・出所・重複）を feature 構成ごとに実行
