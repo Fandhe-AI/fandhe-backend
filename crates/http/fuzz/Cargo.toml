@@ -1,0 +1,46 @@
+[package]
+# cargo-fuzz（libFuzzer）でパーサをファジングする専用クレート（TASK-15.3-1、#87）。
+#
+# root `Cargo.toml` の `[workspace] exclude` に本パスを追加しているため、本体
+# workspace の `cargo build` / `cargo tree` からは一切見えない（`libfuzzer-sys` 等の
+# fuzz 専用依存が本体依存グラフ・バイナリに混入しない。pay-for-what-you-use、
+# .claude/rules/pay-for-what-you-use.md）。ビルド・実行は `scripts/fuzz.sh` 経由で
+# 本ディレクトリを独立 workspace として扱う（`cargo +<pinned-nightly> fuzz ...`）。
+name = "bf-http-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# libFuzzer ハーネスマクロ（`fuzz_target!`）。nightly のサニタイザ計装
+# （`-Z sanitizer=address` 相当）を前提とし、stable ではビルドできない。
+libfuzzer-sys = "0.4"
+
+[dependencies.bf-http]
+# fuzz 対象クレート本体。本 fuzz クレートは workspace 外（exclude 済み）のため
+# path 依存として直接参照する。
+path = ".."
+
+# fuzz target ごとの release プロファイル（cargo-fuzz の既定慣習）。
+# `debug = 1`（行番号情報付与）はクラッシュ時のスタックトレースを読みやすくする
+# ためのデバッグ情報設定であり、integer overflow 等の検出は cargo-fuzz が既定で
+# 有効化する debug-assertions / overflow-checks（本ファイルでは明示不要）に依る。
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "parse_request_head"
+path = "fuzz_targets/parse_request_head.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "head_semantics"
+path = "fuzz_targets/head_semantics.rs"
+test = false
+doc = false
+bench = false
