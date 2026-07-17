@@ -374,6 +374,11 @@ jobs:
       - name: run-openapi-ts-tests.sh（openapi-ts.sh のセルフテスト）
         run: bash scripts/tests/run-openapi-ts-tests.sh
 
+      # TASK-6.2（#55）: openapi-ts-negative.sh（陰性対照、別途 openapi-ts ジョブで実行）の
+      # 判定ロジック（引数検証・fail-closed・discrimination・CI ステップ存在確認）のセルフテスト。
+      - name: run-openapi-ts-negative-tests.sh（openapi-ts-negative.sh のセルフテスト）
+        run: bash scripts/tests/run-openapi-ts-negative-tests.sh
+
   # --------------------------------------------------
   # pay-for-what-you-use 検証（TASK-2.2、#19）: プラグイン feature 無効時に当該
   # プラグインの依存クレート・unsafe・コードが 0 件であることを機械的に PASS/FAIL
@@ -485,6 +490,13 @@ jobs:
 
       - name: "openapi-ts.sh（stage 1: gen-openapi --check、stage 2: schema.d.ts 鮮度検証、stage 3: tsc --noEmit）"
         run: bash scripts/openapi-ts.sh
+
+      # TASK-6.2（#55）: openapi-ts.sh の「tsc --noEmit が成功すること」だけでは
+      # 生成型が実質的な制約として機能しているかを検証できないため、意図的な型
+      # 不一致が確実にエラー検出されることを陰性対照として常設検証する
+      # （docs/design/openapi-typescript-pipeline.md 参照）。
+      - name: "openapi-ts-negative.sh（陰性対照: 意図的な型不一致の検出を検証）"
+        run: bash scripts/openapi-ts-negative.sh
 
   # --------------------------------------------------
   # fuzz smoke（TASK-15.3-1、#87）: crates/http/fuzz（root workspace から exclude 済み、

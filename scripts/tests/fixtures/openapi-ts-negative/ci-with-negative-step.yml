@@ -1,0 +1,15 @@
+jobs:
+  openapi-ts:
+    name: openapi-typescript 連携パイプライン
+    runs-on: self-hosted
+    steps:
+      - name: openapi-ts.sh
+        run: bash scripts/openapi-ts.sh
+      - name: openapi-ts-negative.sh
+        run: bash scripts/openapi-ts-negative.sh
+  unsafe-triage:
+    name: unsafe 追加の検知トリアージ
+    runs-on: self-hosted
+    steps:
+      - name: run-openapi-ts-negative-tests.sh
+        run: bash scripts/tests/run-openapi-ts-negative-tests.sh

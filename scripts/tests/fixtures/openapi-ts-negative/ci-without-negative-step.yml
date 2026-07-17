@@ -1,0 +1,7 @@
+jobs:
+  openapi-ts:
+    name: openapi-typescript 連携パイプライン
+    runs-on: self-hosted
+    steps:
+      - name: openapi-ts.sh
+        run: bash scripts/openapi-ts.sh

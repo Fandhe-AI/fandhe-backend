@@ -38,6 +38,11 @@ TASK-6.1（#54）で、`openapi-two-stage.sh` の後段として「`openapi.json
 ローカル・CI 双方から同一コマンドで再現する `openapi-ts.sh` を追加した
 （`docs/design/openapi-typescript-pipeline.md` 参照。生成物・クライアントライブラリ本体は
 `ts/` 配下、Rust 側依存には一切影響しない）。
+TASK-6.2（#55）で、`openapi-ts.sh` の「`tsc --noEmit` が成功すること」だけでは検証
+できない「生成型が実質的な制約として機能していること」を陰性対照として CI 常設化する
+`openapi-ts-negative.sh`・受け入れテスト `accept/openapi-ts-accept.sh` を追加した
+（`docs/design/openapi-typescript-pipeline.md` TASK-6.2 節・`docs/acceptance/
+req6-typescript-types.md` 参照）。
 
 ## スクリプト一覧
 
@@ -73,6 +78,8 @@ TASK-6.1（#54）で、`openapi-two-stage.sh` の後段として「`openapi.json
 | `tests/run-extension-closure-gate-tests.sh` | `extension-closure-gate.sh` のセルフテスト。`tests/fixtures/extension-closure-gate/*.txt` を注入し SKIP/PASS/理由明記済み WARN-PASS/FAIL・フェイルクローズ挙動（不正 ref・引数欠落等）を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `openapi-ts.sh` | `gen-openapi --check`（stage 1）→ `npm ci --ignore-scripts` + `openapi-typescript` による `ts/src/generated/schema.d.ts` 鮮度検証（stage 2）→ `tsc --noEmit`（stage 3）の openapi-typescript 連携パイプラインを検証する（TASK-6.1、#54）。`--update` で `openapi.json`・`schema.d.ts` を in-place 再生成できる。node/npm 未導入時は自動ダウンロードせず導入コマンドを案内して非 0 終了する | `.github/workflows/ci.yml` の `openapi-ts` ジョブから呼ばれる |
 | `tests/run-openapi-ts-tests.sh` | `openapi-ts.sh` のセルフテスト。`tests/fixtures/openapi-ts/*` を注入し引数検証・`schema.d.ts` diff 鮮度判定・node/npm 不在時の fail-closed 挙動・CI ジョブ存在確認を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
+| `openapi-ts-negative.sh` | `openapi-ts.sh` の陰性対照（意図的な型不一致が `tsc --noEmit` のエラーとして検出されること）を検証する（TASK-6.2、#55）。N1: `ts/src/negative/type-mismatch.ts`（4 類型）を `tsc --noEmit -p tsconfig.negative.json` にかけ期待 TS エラーコードを確認、N2: `openapi.json` の一時コピーへ型不一致を注入し一時ディレクトリで `schema.d.ts` を再生成して既存 `usage.ts` の型検査失敗を確認する。同一実行内の陽性対照成功も前提条件とする fail-closed 判定（`docs/design/openapi-typescript-pipeline.md` 参照） | `.github/workflows/ci.yml` の `openapi-ts` ジョブから呼ばれる |
+| `tests/run-openapi-ts-negative-tests.sh` | `openapi-ts-negative.sh` のセルフテスト。`tests/fixtures/openapi-ts-negative/*` を注入し引数検証・node/npm 不在時の fail-closed 挙動・N1/N2 の期待エラーコード判定ロジック・discrimination（誤った理由での失敗を PASS と誤認しないこと）・CI ステップ存在確認を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 
 ## 前提ツール
 

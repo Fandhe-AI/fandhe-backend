@@ -387,6 +387,56 @@ PoC-6）であり、JWT 検証で抽出した `org_id` 等のクレームはコ�
 検討すること。非同期処理・上流中継・コネクション奪取が必要になった時点で
 初めて 4・5 節のコア→プラグインパターンへ切り替える。
 
+## 5.7 Middleware 型パターン（TASK-10.1 / #56 で確立）
+
+`crates/plugin-tracing`（可観測性・サンプリング付きトレーシング）は
+`Middleware` 拡張点（`crates/core/src/extension.rs`）上に実装した最初の
+プラグインである。パスインターセプト型（4 節）・Upgrade 型（5 節）に続く
+第 3 の配線パターンとして記録する。
+
+### 5.7.1 パスインターセプト型・Upgrade 型との違い
+
+`Middleware` trait（`on_request` / `on_response`）は元々 dyn 互換の同期 API
+として設計されており、`Server` は既に汎用の `middlewares: Vec<Box<dyn
+Middleware>>` を保持している。そのためパスインターセプト型・Upgrade 型が
+必要とした「専用の非公開シーム（`crate::plugin::try_intercept` /
+`try_handle_upgrade`）」は不要で、`Server::tracing(config)` は
+`TracingMiddleware`（`crates/core/src/server.rs`）を組み立てて既存の
+`middlewares` へ push するだけの薄いビルダーメソッドとして実装できる
+（コアループ `handle_connection` 側の変更はゼロ）。
+
+### 5.7.2 依存方向・循環回避
+
+`bf-plugin-tracing` は `bf-plugin-websocket`（5.2 節）と同一の非循環パターンを
+踏襲し、`backend-framework-core` に依存しない。`Middleware` trait を実装する
+アダプタ（`TracingMiddleware`）はコア側（`crates/core/src/server.rs`、
+`tracing` feature 限定）に置く。`Middleware` は dyn 互換のため、原理的には
+プラグイン側が core に依存して順方向に `impl Middleware` する設計も選べたが、
+`crates/plugin-tracing` を `crates/core` から独立にビルド・テストできる状態を
+維持するため、あえて非循環パターンを踏襲した（`crates/plugin-tracing/src/lib.rs`
+の doc・6.1 節の許可リスト例外コメントを参照）。
+
+### 5.7.3 サンプリングと記録タイミングの一本化
+
+`Middleware` には request/response を跨いで per-request 状態を運ぶ経路が
+ないため、`on_request` と `on_response` で独立にサンプリング判定すると
+同一リクエストの記録が対にならない。`TracingMiddleware::on_request` は
+no-op とし、判定・記録は `on_response`（`bf_plugin_tracing::TracingLayer::
+record_response` への委譲）の 1 点に集約する
+（`crates/plugin-tracing/src/layer.rs` の doc を参照）。
+
+### 5.7.4 AGENTS.md「ミドルウェア非同期 I/O 必須化」規約との関係
+
+`TracingLayer::record_response` 内の `tracing` マクロ呼び出し自体は同期だが、
+`tracing-subscriber` に登録するレイヤーが `tracing-appender::non_blocking`
+writer を使う限り、実際のディスク/ネットワーク I/O は非同期・バッファ済みに
+なる（`bf_plugin_tracing::init_tracing` が既定でこの構成を組み立てる）。
+サンプリング（`bf_plugin_tracing::Sampler`、決定的カウンタ方式）は
+PoC-10 の知見（非同期 I/O 化だけでは RPS 劣化 31.6% を解消できない）に
+対応する追加対策であり、`Sampler::should_sample` が `false` の場合は
+`tracing` マクロ呼び出し自体を避けることで有効化コストをサンプリング間隔に
+応じて按分する。
+
 ## 6. 検証コマンド
 
 | 検証 | コマンド | 期待結果 |
@@ -441,6 +491,14 @@ TASK-4.1（#22）で `backend-framework-core:bf-plugin-websocket` を同一方�
 `backend-framework-core` に依存しないため循環にはならない）。あわせて
 チェック 3（プラグイン固有シンボル非依存検査）の例外シンボルパターンにも
 `bf_plugin_websocket`/`websocket` を追加している。
+
+TASK-10.1（#56）で `backend-framework-core:bf-plugin-tracing` を 4 件目の
+例外として追加した。`Middleware` trait は dyn 互換の同期 API のため、
+webrtc-proxy/webrtc（非同期パスインターセプト）とは異なる理由（5.6.2 節）で
+非循環パターンを選んだが、生じる workspace 内 path 依存エッジ自体は
+websocket と同型（`bf-plugin-tracing` → `backend-framework-core` の逆依存は
+発生しない）。チェック 3 の例外シンボルパターンにも `bf_plugin_tracing`/
+`TracingMiddleware` を追加している。
 
 ## 7. スコープ外（別タスクで対応）
 

@@ -2,8 +2,8 @@
 
 `core-deps-unsafe-audit.sh`（REQ-1）・`plugin-mechanism-accept.sh`（REQ-2、TASK-2.4）・
 `webrtc-accept.sh`（REQ-8、TASK-8.4）・`graphql-accept.sh`（REQ-5、TASK-5.2）・
-`req13-change-impact-accept.sh`（REQ-13、TASK-13.2）の 5 スクリプトを収録する。
-以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
+`req13-change-impact-accept.sh`（REQ-13、TASK-13.2）・`openapi-ts-accept.sh`（REQ-6、TASK-6.2）
+の 6 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
 
 `docs/spec/04-requirements.md` REQ-1（最小コア）の受け入れ基準のうち、**性能計測を除く**
 非性能系の受け入れ基準（依存クレート数比・unsafe 根拠・audit / deny・実質コード行数・
@@ -204,3 +204,38 @@ PASS を偽らない）。手動計測手順・実行結果は
 `scripts/tests/run-graphql-accept-tests.sh` を参照。実行結果レポートは
 `docs/acceptance/req5-graphql.md`、NFR の詳細計測結果は
 `benches/reports/task-5.2-graphql-performance.md` に記録する。
+
+## `openapi-ts-accept.sh` — REQ-6（openapi-typescript 連携）受け入れ検証（TASK-6.2、#55）
+
+`docs/spec/05-tasks.md` TASK-6.2「陰性対照 CI 型検査整備・受け入れテスト」の受け入れ
+基準を検証する `lib/common.sh` 利用の `graphql-accept.sh` 同型オーケストレータ。
+
+```bash
+./scripts/accept/openapi-ts-accept.sh
+```
+
+検証内容:
+
+1. **A: 陽性対照** — 最低 1 つのエンドポイント呼び出し（`ts/src/usage.ts` の 5
+   エンドポイント一巡）が `tsc --noEmit` を通ること。`scripts/openapi-ts.sh`
+   （TASK-6.1、#54）の成功で検証する
+2. **B: 陰性対照** — 意図的な型不一致が `tsc --noEmit` のエラーとして確実に検出
+   されること。`scripts/openapi-ts-negative.sh`（N1: `ts/src/negative/type-mismatch.ts`
+   の 4 類型・N2: openapi.json 境界からの型不一致伝搬）の成功で検証する
+3. **C: Rust 定義変更の伝搬** — `crates/plugin-openapi/src/docs.rs` の
+   `/users/{id}` の `id` を `u64`→`String` へ一時的に変更 →
+   `gen-openapi --update` → `npm run gen:types` のみで `ts/src/generated/schema.d.ts`
+   に差分が現れ、既存 `usage.ts` の型検査が `TS2322` で失敗することを確認する。
+   `trap` で必ず元の状態へ復元する。対象パス（`docs.rs` / `openapi.json` /
+   `schema.d.ts`）に未コミット変更がある場合は SKIP し、勝手に破棄しない
+   （`.claude/rules/security.md` 作業ツリー整合性）
+
+前提: `node`（>=24）・`npm`・`cargo`。いずれか未導入の場合は該当基準を SKIP する
+（自動ダウンロードしない既存規約）。
+
+判定ロジックのオフライン・セルフテスト（cargo・ネットワーク非依存）は
+`scripts/tests/run-openapi-ts-negative-tests.sh` を参照（`openapi-ts-negative.sh`
+本体の判定ロジックを fixture で検証。`openapi-ts-accept.sh` 自体の A/B/C 判定分岐は
+軽量なため専用セルフテストは設けず、本スクリプトの実行結果と
+`docs/acceptance/req6-typescript-types.md` の記録で確認する）。実行結果レポートは
+`docs/acceptance/req6-typescript-types.md` に記録する。
