@@ -1,0 +1,21 @@
+[package]
+name = "bf-plugin-graphql"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "backend-framework の GraphQL プラグイン境界最小実装（TASK-2.4 / #21）。REQ-2 の「少なくとも2種のプラグインを feature flag で着脱できる」受け入れ基準向けに、パスインターセプト型のプラグイン境界パターンを webrtc-proxy とは独立した第 2 のインスタンスとして実証する。実 GraphQL 実行（async-graphql 等）は TASK-5.1（#38）のスコープであり、本クレートは POST /graphql への固定応答に限定する。"
+publish = false
+
+# workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
+# （.claude/rules/coding-rust.md・.claude/rules/security.md）。
+[lints]
+workspace = true
+
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）: 本クレートは
+# async-graphql 等の実行時依存を一切持たない（TASK-5.1 / #38 のスコープ）。
+# `bf-http` のみを workspace 内 path 依存として持ち、外部 crates.io 依存は
+# 0 件に保つ。`cargo tree -p bf-plugin-graphql` で `bf-http` 以外の依存が
+# 出ないことを継続的に確認する。
+[dependencies]
+bf-http = { path = "../http" }

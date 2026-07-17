@@ -137,6 +137,15 @@ else
                 "backend-framework-core:bf-routes"
                 "backend-framework-core:bf-plugin-webrtc-proxy"
                 "backend-framework-core:bf-plugin-websocket"
+                # TASK-2.4（#21）: REQ-2「少なくとも 2 種のプラグインを feature
+                # flag で着脱できる」受け入れ基準の第 2 インスタンス（パス
+                # インターセプト型）。根拠は上記
+                # backend-framework-core:bf-plugin-webrtc-proxy の例外コメントと
+                # 同一（3 拡張点はいずれも dyn 互換性のため同期 API 限定であり、
+                # パスインターセプト型プラグインの依存を既存拡張点経由の依存逆転
+                # で表現できない）。`crates/plugin-graphql` の doc・
+                # `docs/design/plugin-loading-tradeoffs.md` を参照。
+                "backend-framework-core:bf-plugin-graphql"
                 "bf-routes:bf-http"
                 "bf-plugin-*:bf-http"
                 "bf-plugin-*:bf-routes"
@@ -281,7 +290,11 @@ fi
 #    webrtc-proxy と同一方針で例外対象に加える。
 # ---------------------------------------------------------------------------
 webrtc_proxy_exception_file="crates/core/src/plugin.rs"
-webrtc_proxy_exception_symbol_pattern='bf_plugin_webrtc_proxy|webrtc_proxy|bf_plugin_websocket|websocket|crate::plugin::|pub\(crate\) mod plugin;'
+# TASK-2.4（#21）で graphql feature（bf-plugin-graphql、backend-framework-core:
+# bf-plugin-graphql の許可リスト例外に対応）を同一ファイルへ追加したため、
+# 例外シンボルパターンにも graphql 系識別子を含める（webrtc-proxy・websocket・
+# graphql の 3 件に限定したまま維持し、一般化はしない）。
+webrtc_proxy_exception_symbol_pattern='bf_plugin_webrtc_proxy|webrtc_proxy|bf_plugin_websocket|websocket|bf_plugin_graphql|crate::plugin::|pub\(crate\) mod plugin;'
 
 plugin_hits_all=""
 for dir in crates/core crates/http crates/routes; do
@@ -307,7 +320,7 @@ for dir in crates/core crates/http crates/routes; do
         # （.rs 側のコメント除外と同一方針）。
         cargo_toml_hits="$(grep -n 'plugin-' "${dir}/Cargo.toml" | grep -v -E '^[0-9]+:[[:space:]]*#' || true)"
         if [ "${dir}" = "crates/core" ] && [ -n "${cargo_toml_hits}" ]; then
-            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v -E 'bf-plugin-webrtc-proxy|bf-plugin-websocket' || true)"
+            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v -E 'bf-plugin-webrtc-proxy|bf-plugin-websocket|bf-plugin-graphql' || true)"
         fi
         if [ -n "${cargo_toml_hits}" ]; then
             plugin_hits_all="${plugin_hits_all}${dir}/Cargo.toml に plugin- 依存あり: ${cargo_toml_hits}
