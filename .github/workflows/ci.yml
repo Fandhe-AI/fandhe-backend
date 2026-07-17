@@ -337,6 +337,13 @@ jobs:
       - name: run-dep-audit-accept-tests.sh（dep-audit-accept.sh のセルフテスト）
         run: bash scripts/tests/run-dep-audit-accept-tests.sh
 
+      # TASK-13.1（#49）: extension-closure-check.sh（拡張点への変更影響範囲閉包の機械判定）
+      # のセルフテストのみを CI 化する。実コミット（3ae6d11 等）への適用検証は shallow
+      # clone で履歴が無いと誤 FAIL するため CI には組み込まない（docs/design/
+      # extension-closure-verification.md 参照。常設受け入れテスト化は TASK-13.2/#50）。
+      - name: run-extension-closure-tests.sh（extension-closure-check.sh のセルフテスト）
+        run: bash scripts/tests/run-extension-closure-tests.sh
+
   # --------------------------------------------------
   # pay-for-what-you-use 検証（TASK-2.2、#19）: プラグイン feature 無効時に当該
   # プラグインの依存クレート・unsafe・コードが 0 件であることを機械的に PASS/FAIL

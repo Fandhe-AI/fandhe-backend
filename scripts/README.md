@@ -28,6 +28,11 @@ cargo tree/geiger・バイナリサイズ・全構成ビルドで PASS/FAIL 判�
 TASK-3.2（#31）で、「`gen-openapi` CLI 実行 → `openapi.json` 生成 → サーバー本体ビルド」の
 2 段階ビルド順序をローカル・CI 双方から同一コマンドで再現する `openapi-two-stage.sh` を
 追加した。
+TASK-13.1（#49）で、新規プロトコル追加コミットの変更ファイルが拡張点（`Middleware` /
+`UpgradeHandler` / `RequestGate`。実体は `crates/core/src/plugin.rs` の固定シーム）へ
+閉包しているかを機械判定する `extension-closure-check.sh` を追加した
+（`docs/design/extension-closure-verification.md` に WebSocket/WebRTC/GraphQL 実例の
+検証結果を記録）。
 
 ## スクリプト一覧
 
@@ -57,6 +62,8 @@ TASK-3.2（#31）で、「`gen-openapi` CLI 実行 → `openapi.json` 生成 →
 | `tests/run-third-party-verify-tests.sh` | `third-party-verify.sh` のセルフテスト。`--offline` は引数検証・PENDING 判定のみ（cargo ビルド不要）、既定モードは fixture worktree を作成して PASS/FAIL 検出まで確認するフル層 | CI からは呼ばれない（フル層は cargo ビルドを伴い時間を要するため） |
 | `third-party-feasibility-verify.sh` | 可否判定正解率の第三者再検証（TASK-12.4-2、#86）の機械採点ハーネス。タスク定義（正解ラベル）と被験 AI の判定記録を突き合わせ、正解率・誤判定による破壊・判断根拠提示割合を算出する | CI からは呼ばれない。人間が実測定時にローカル/手動実行する（`docs/design/third-party-feasibility-verification.md` 参照） |
 | `tests/run-third-party-feasibility-tests.sh` | `third-party-feasibility-verify.sh` のセルフテスト（ネットワーク・cargo ビルド不要、合成 fixture で採点ロジックのみを検証） | CI からは呼ばれない（Rust 非変更の範囲でローカル/任意実行を想定） |
+| `extension-closure-check.sh` | 変更ファイル一覧を A（プラグインクレート内）/ B（コア側許容シーム）/ C（テスト）/ D（ドキュメント・運用）/ E（違反）の 4+1 カテゴリに分類し、E が 1 件でもあれば FAIL（拡張点への閉包違反）とする。`--commit <sha>`（`git diff-tree` で変更ファイル取得）または `--files-from <file>`（セルフテスト用注入口）を指定する（TASK-13.1、#49） | CI からは呼ばれない（実コミット検証は shallow clone で誤 FAIL しうるため）。セルフテストのみ CI 化 |
+| `tests/run-extension-closure-tests.sh` | `extension-closure-check.sh` のセルフテスト。`tests/fixtures/extension-closure/*.txt` を注入し閉包（PASS）・`crates/http`/`crates/routes` 混入（FAIL）・空リスト/不正入力（フェイルクローズ）を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 
 ## 前提ツール
 
