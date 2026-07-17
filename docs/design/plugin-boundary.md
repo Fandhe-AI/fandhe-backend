@@ -159,6 +159,29 @@ reason, content_type, body }`）はコアが送出する `bf_http::response::Res
 | doc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps` | 警告 0 件 |
 | 依存監査 | `scripts/dep-audit.sh` | `webrtc-proxy` を含む動的列挙構成で違反 0 件 |
 
+## 6.1 `scripts/dep-direction-check.sh` ホワイトリストの例外（TASK-1.5 との整合）
+
+`crates/core/Cargo.toml` の `bf-plugin-webrtc-proxy` optional 依存
+（2 節）は `backend-framework-core → bf-plugin-webrtc-proxy` という workspace
+内 path 依存エッジを生む。`scripts/dep-direction-check.sh`（TASK-1.5、#14）は
+本来「コアからのプラグイン依存は禁止」を既定とするホワイトリスト方式だが、
+本タスク（TASK-2.1）着手時点でこの前提と `docs/spec/04-requirements.md`
+REQ-2 が要求する「feature flag + `dep:` 構文によるコンパイル時プラグイン
+機構」が衝突することが判明した（PR #129、Cursor Bugbot 指摘）。
+
+3 拡張点（`Middleware`/`UpgradeHandler`/`RequestGate`）はいずれも dyn
+互換性のため同期 API に限定されており（`crates/core/src/extension.rs`
+冒頭 doc）、上流への非同期中継を伴うパスインターセプト型プラグイン
+（`try_handle_rtc_offer` は `async fn`）を既存拡張点経由の依存逆転
+（プラグイン側のみが core に依存する形）で表現できない。このため
+`scripts/dep-direction-check.sh` の許可リストへ
+`backend-framework-core:bf-plugin-webrtc-proxy` を明示的な例外として
+1 件のみ追加した（`bf-plugin-*` への一般化はしない。新規プラグインが
+同パターンを踏襲する場合は許可リストへの個別追加とレビューを要求する）。
+feature 無効時は本エッジ自体が未解決のまま消えるため pay-for-what-you-use
+は維持される（6 節の検証コマンドで確認済み）。詳細な例外根拠・DFS 循環
+検出との関係は `scripts/dep-direction-check.sh` の当該コメントを正とする。
+
 ## 7. スコープ外（別タスクで対応）
 
 - `cargo tree`/`cargo geiger`/バイナリサイズ比較の機械的検証スクリプト整備 → TASK-2.2（#19）

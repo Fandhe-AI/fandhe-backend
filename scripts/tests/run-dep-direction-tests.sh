@@ -69,11 +69,21 @@ run_check "${FIXTURES_DIR}/reverse-edge.json"
 assert_exit_code "逆方向エッジグラフは exit 1" 1 "${status}"
 assert_contains "逆方向エッジグラフは循環検出で FAIL" "${output}" "循環が検出されました"
 
-# --- ケース 3: コアからプラグインへの依存（ホワイトリスト違反、循環なし） ---
-run_check "${FIXTURES_DIR}/core-depends-on-plugin.json"
-assert_exit_code "コア→プラグイン依存グラフは exit 1" 1 "${status}"
-assert_contains "コア→プラグイン依存グラフは許可リスト外エッジで FAIL" "${output}" "許可リスト外のエッジ"
-assert_contains "違反エッジの内容を報告する" "${output}" "backend-framework-core -> bf-plugin-webrtc-proxy"
+# --- ケース 3: コアから未許可プラグインへの依存（ホワイトリスト違反、循環なし） ---
+# ホワイトリスト方式の意図（本体の該当コメント参照）「未知のエッジはすべて拒否」を
+# 固定するケース。`bf-plugin-webrtc-proxy` は TASK-2.1（#18）の例外として許可済みに
+# なったため、まだ許可されていない架空プラグイン名でこの fail-closed 挙動を検証する
+# （ケース 3-2 で許可済みエッジ自体は PASS することを別途固定する）。
+run_check "${FIXTURES_DIR}/core-depends-on-unlisted-plugin.json"
+assert_exit_code "コア→未許可プラグイン依存グラフは exit 1" 1 "${status}"
+assert_contains "コア→未許可プラグイン依存グラフは許可リスト外エッジで FAIL" "${output}" "許可リスト外のエッジ"
+assert_contains "違反エッジの内容を報告する" "${output}" "backend-framework-core -> bf-plugin-example-unlisted"
+
+# --- ケース 3-2: コアから許可済みプラグイン（bf-plugin-webrtc-proxy）への依存は PASS ---
+# TASK-2.1（#18）で確立した唯一の例外エッジ（本体の該当コメント参照）。
+run_check "${FIXTURES_DIR}/core-depends-on-whitelisted-plugin.json"
+assert_exit_code "コア→許可済みプラグイン依存グラフは exit 0" 0 "${status}"
+assert_contains "コア→許可済みプラグイン依存グラフはチェック1が PASS" "${output}" "[PASS] 1:"
 
 # --- ケース 4: dev-dependency は判定対象外（http --dev--> routes があっても正常扱い） ---
 run_check "${FIXTURES_DIR}/dev-dependency-excluded.json"

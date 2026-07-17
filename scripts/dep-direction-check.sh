@@ -89,13 +89,30 @@ else
             fail "1: 依存エッジホワイトリスト照合 — jq によるエッジ抽出に失敗しました（/tmp/dep-direction-check-jq.log 参照）"
         else
             # 許可リスト（from パターン:to パターン）。fnmatch 相当の shell パターンで判定する。
-            # server → routes → http::* の一方向のみを許可し、逆方向（http/routes → 上位層）・
-            # コアからのプラグイン依存（プラグインは拡張点を実装する側であり逆方向は禁止）を
-            # 機械的に排除する。将来クレートを追加する際は本リストの明示更新を要求する
-            # （ホワイトリスト方式の意図: 未知のエッジはすべて拒否）。
+            # server → routes → http::* の一方向を基本とし、逆方向（http/routes → 上位層）・
+            # コアからのプラグイン依存を原則禁止として機械的に排除する。将来クレートを
+            # 追加する際は本リストの明示更新を要求する（ホワイトリスト方式の意図:
+            # 未知のエッジはすべて拒否）。
+            #
+            # 例外: `backend-framework-core:bf-plugin-webrtc-proxy`（TASK-2.1、#18）。
+            # `docs/spec/04-requirements.md` REQ-2 は「プラグインは `[features]` の
+            # `dep:` 構文で feature 無効時に依存自体を未解決のまま除外する」
+            # コンパイル時プラグイン機構を明示的に要求しており、パスインターセプト型
+            # プラグイン（非同期の上流中継を伴う WebRTC シグナリングプロキシ等）は
+            # 3 拡張点（`Middleware`/`UpgradeHandler`/`RequestGate`、いずれも dyn
+            # 互換性のため同期 API に限定、`crates/core/src/extension.rs` 冒頭 doc）
+            # に非同期呼び出しを持ち込めないため、既存拡張点経由の依存逆転（プラグイン
+            # 側のみが core に依存する形）では表現できない。`crates/core/Cargo.toml`
+            # の `optional = true` + `dep:` 構文により feature 無効時は本エッジ自体が
+            # 未解決のまま消え、依存・コード・`unsafe` を一切バイナリに含まない
+            # （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）ことを
+            # `docs/design/plugin-boundary.md` で検証済み。本エッジは他プラグインへ
+            # 一般化せず（`bf-plugin-*` ワイルドカードにしない）、新規プラグインが
+            # 同パターンを踏襲する際は本リストへの明示追加とレビューを要求する。
             allowed_edge_patterns=(
                 "backend-framework-core:bf-http"
                 "backend-framework-core:bf-routes"
+                "backend-framework-core:bf-plugin-webrtc-proxy"
                 "bf-routes:bf-http"
                 "bf-plugin-*:bf-http"
                 "bf-plugin-*:bf-routes"
