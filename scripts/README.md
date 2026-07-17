@@ -221,7 +221,11 @@ bash scripts/pay-for-what-you-use-check.sh
 - (a) の列挙が 0 件、または feature 命名規約（`docs/design/plugin-boundary.md` 2 節）
   違反はフェイルクローズで FAIL とする。
 - (c) の `cargo-geiger` は本スクリプトでは必須ツール扱い（`dep-impact.sh` は任意）。
-  未導入・実行失敗はいずれも FAIL とし、握りつぶさない。
+  未導入・実行失敗はいずれも FAIL とし、握りつぶさない。self-hosted ランナーの
+  共有 `CARGO_TARGET_DIR` に起因する並行ジョブ間の状態汚染を避けるため、
+  `CARGO_TARGET_DIR=target/pay-for-what-you-use-check-geiger` で専用隔離した上で
+  最大 2 回まで再試行し、2 回とも失敗した場合は捕捉した stderr を CI ログへ出力する
+  （`docs/design/pay-for-what-you-use-check.md` 3.3 節参照）。
 - (d) のビルドは共有 `target/` を汚さないよう `target/pay-for-what-you-use-check*`
   専用ディレクトリを使う。
 

@@ -72,8 +72,18 @@ FAIL に倒す前に 1 回だけ再試行し（fail-closed の後退ではなく
 `/tmp/pfwu-check-geiger.log`（cargo geiger の stderr）の内容を stdout（CI ログに
 残る）へも出力してから FAIL 判定する。`/tmp` 配下のログはジョブ終了後に破棄され
 GitHub Actions のログにも残らないため、原因調査ができない状態を防ぐための対応
-である。2 回とも失敗する場合は出力されたログを見て、ランナー側のツールチェーン・
-レジストリ通信起因かどうかを個別に調査する（本設計では原因を断定しない）。
+である。
+
+上記診断出力により、実機で発生した失敗の実体は
+`Io(Os { code: 2, kind: NotFound, ... }, ".../crates/observer/src/lib.rs")` で
+あることが判明した（本 workspace に `crates/observer` は存在しない）。self-hosted
+ランナーの `CARGO_TARGET_DIR` がジョブ間で共有される構成になっており、並行実行中の
+他ブランチ（本 PR には存在しない crate を含む構成）のビルド成果物・増分メタデータを
+cargo-geiger が誤って再利用しようとして失敗したものと判断できる。`cargo geiger` は
+`--target-dir` オプションを持たないため、(d) の release ビルド（専用
+`--target-dir`）と同様に `CARGO_TARGET_DIR=target/pay-for-what-you-use-check-geiger`
+環境変数で専用ディレクトリへ隔離し、他の並行ジョブの状態に左右されない決定的な
+実行にする。
 
 ### 3.4 (d) バイナリサイズ計測（コード 0 件）
 

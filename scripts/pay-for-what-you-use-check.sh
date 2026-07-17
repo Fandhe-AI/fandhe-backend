@@ -277,9 +277,17 @@ else
             # 倒す前に 1 回だけ再試行する（fail-closed の後退ではなく、決定的な失敗と
             # 一過性の失敗を区別するための最小限のノイズ低減。2 回とも失敗した場合のみ
             # 下記ログ出力を経て FAIL 判定する）。
+            # cargo-geiger は --target-dir オプションを持たないため、(d) の release
+            # ビルド同様の隔離は CARGO_TARGET_DIR 環境変数で行う。self-hosted ランナー
+            # では CARGO_TARGET_DIR がジョブ間で共有される構成になっており、並行実行中の
+            # 他ブランチ（本 PR には存在しない crate を含む）のビルド成果物・増分メタ
+            # データを cargo-geiger が誤って再利用しようとして
+            # `Io(Os { code: 2, kind: NotFound, ... })` で失敗する事例を実機で確認した
+            # （PR #134/#19 CI、診断ログ出力により特定）。専用ディレクトリに隔離することで
+            # 他ジョブの状態に左右されない決定的な実行にする。
             geiger_json=""
             for geiger_attempt in 1 2; do
-                geiger_json="$(cargo geiger --manifest-path "${CORE_MANIFEST}" --no-default-features --output-format Json -q 2>/tmp/pfwu-check-geiger.log || true)"
+                geiger_json="$(CARGO_TARGET_DIR="${TARGET_DIR}-geiger" cargo geiger --manifest-path "${CORE_MANIFEST}" --no-default-features --output-format Json -q 2>/tmp/pfwu-check-geiger.log || true)"
                 if [ -n "${geiger_json}" ]; then
                     break
                 fi
