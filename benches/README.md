@@ -235,3 +235,26 @@ cargo build --release -p backend-framework-core --example graphql_nfr6 --feature
 `scripts/accept/webrtc-accept.sh` / `scripts/accept/graphql-accept.sh` が担う（実務
 許容帯 [95%, 105%]・狭義帯 [100.3%, 100.8%]）。実行結果レポートは
 `reports/task-8.4-webrtc-nfr6.md` / `reports/task-5.2-graphql-performance.md` を参照。
+
+## tracing-backpressure-bench.sh — 非同期 writer バックプレッシャー・ログ欠落率計測
+
+TASK-10.6（#90）: `tracing_appender::non_blocking`（既定 lossy=true）の高負荷時
+ログ欠落率を負荷段階（イベント総数 × 送出スレッド数）別に計測するハーネス。
+`crates/plugin-tracing/examples/backpressure_probe.rs`（既定構成のまま高負荷送出し
+`{emitted, written, dropped_lines, drop_rate_pct, events_per_sec}` を JSON 1 行で
+出力する計測プローブ）を負荷段階ごとに `RUNS` 回実行し、欠落率・実効イベントレートの
+中央値を算出する。
+
+```bash
+cargo build --release -p bf-plugin-tracing --example backpressure_probe
+RUNS=5 bash benches/tracing-backpressure-bench.sh
+
+# 動作確認用に短縮パラメータ・負荷段階で素早く回す
+RUNS=3 STAGES="10000:1 10000:4" bash benches/tracing-backpressure-bench.sh
+```
+
+負荷段階は `STAGES`（`"イベント総数:送出スレッド数"` の空白区切りリスト）・1 イベント
+あたりの目標バイト長は `LINE_BYTES` で上書き可能。標準出力（stdout）へ負荷段階別の
+結果を JSON 配列で出す（`RESULT_JSON` 指定時はファイルにも書き出す、
+`benches/lib/common.sh` の規約に準拠）。実測結果・許容基準は
+`reports/task-10.6-tracing-backpressure.md` を参照。
