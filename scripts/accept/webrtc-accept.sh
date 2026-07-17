@@ -209,7 +209,7 @@ check_nfr6() {
     p95_ratio_pct="$(echo "${out}" | grep '^p95_ratio_pct=' | cut -d= -f2)"
 
     local verdict
-    verdict="$(evaluate_nfr6_ratio "${rps_ratio_pct}")"
+    verdict="$(evaluate_nfr6_ratio "${rps_ratio_pct}" "${p95_ratio_pct}")"
     local detail="RPS 比 ${rps_ratio_pct}% / p95 比 ${p95_ratio_pct}%（webrtc 有効 / ベースライン、GET / への負荷計測。狭義の NFR-6 帯 100.3〜100.8% との照合は benches/reports/task-8.4-webrtc-nfr6.md 参照）"
     case "${verdict}" in
     PASS)

@@ -62,6 +62,21 @@ assert_eq "105.01 は FAIL" "FAIL" "$(evaluate_nfr6_ratio "105.01")"
 assert_eq "大幅劣化 60 は FAIL" "FAIL" "$(evaluate_nfr6_ratio "60")"
 assert_eq "異常値 200 は FAIL" "FAIL" "$(evaluate_nfr6_ratio "200")"
 
+echo "===== evaluate_nfr6_ratio: p95 比が判定に寄与すること（レビュー指摘 #29 是正） ====="
+# RPS 比が帯内でも p95 比が実務許容帯（105%）を超えれば総合判定は FAIL とする。
+assert_eq "RPS 100.5（狭義帯内）・p95 106.57（実務帯外）は FAIL" "FAIL" "$(evaluate_nfr6_ratio "100.5" "106.57")"
+# RPS・p95 とも狭義帯内なら PASS。
+assert_eq "RPS 100.5・p95 100.5（双方狭義帯内）は PASS" "PASS" "$(evaluate_nfr6_ratio "100.5" "100.5")"
+# RPS は狭義帯内でも p95 が実務帯内・狭義帯外なら WARN に格上げされる。
+assert_eq "RPS 100.5・p95 101.0（実務帯内・狭義帯外）は WARN" "WARN" "$(evaluate_nfr6_ratio "100.5" "101.0")"
+# 本タスクの実測値（TASK-8.4、1 回目: RPS 95.23% / p95 106.57%）は RPS 単独では WARN
+# 相当だが、p95 が実務帯を超えるため総合判定は FAIL となる。
+assert_eq "実測相当（RPS 95.23・p95 106.57）は FAIL" "FAIL" "$(evaluate_nfr6_ratio "95.23" "106.57")"
+# p95 が低い（レイテンシが改善している）方向への乖離は問題にしない（下限なし）。
+assert_eq "RPS 100.5・p95 50（低レイテンシ方向）は PASS" "PASS" "$(evaluate_nfr6_ratio "100.5" "50")"
+# 第 2 引数省略時は従来どおり RPS 比のみで判定する（後方互換）。
+assert_eq "p95 省略時は RPS 比のみで判定" "PASS" "$(evaluate_nfr6_ratio "100.5")"
+
 echo "===== 基準B: unsafe grep ロジック（webrtc-accept.sh と同一パターン） ====="
 # webrtc-accept.sh の check_unsafe と同一の grep パイプラインをフィクスチャへ適用し、
 # SAFETY コメント誤検出・複数行検出のリグレッションを防ぐ。

@@ -34,9 +34,10 @@ cargo build --release -p backend-framework-core --example webrtc_nfr6 --features
 ## 実行コマンド
 
 ```bash
-bash benches/webrtc-nfr6-bench.sh
-# 環境変数で調整可能（既定は benches/lib/common.sh の既定を継承）:
-#   RUNS（既定 5）DURATION（既定 15s）CONNECTIONS（既定 128）
+RUNS=5 DURATION=15s CONNECTIONS=128 bash benches/webrtc-nfr6-bench.sh
+# 環境変数で調整可能（benches/webrtc-nfr6-bench.sh 自体の既定値は RUNS=5
+# DURATION=5s CONNECTIONS=32。本レポートの計測は下記のとおり明示的に
+# DURATION=15s・CONNECTIONS=128 へ上書きして実行した）
 ```
 
 ## 計測結果
@@ -52,8 +53,9 @@ bash benches/webrtc-nfr6-bench.sh
 
 ### RPS・p95 レイテンシ（`GET /` への負荷、中央値、複数回実行）
 
-1 回目の実行（`RUNS=5 DURATION=15s CONNECTIONS=128`、`benches/webrtc-nfr6-bench.sh`
-既定パラメータ）:
+1 回目の実行（`RUNS=5 DURATION=15s CONNECTIONS=128` を環境変数で明示的に指定。
+`benches/webrtc-nfr6-bench.sh` 自体の既定値は `RUNS=5 DURATION=5s CONNECTIONS=32`
+であり、上記は既定値ではなく上書き値）:
 
 ```
 [baseline] run 1: rps=142683.33080126406 p95=0.000928796
