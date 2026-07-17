@@ -146,6 +146,15 @@ TASK_IDS="J-01 J-02 J-03 J-04 J-05 J-06 J-07 J-08 J-09 J-10"
 # "- **正解ラベル**: <値>" 行を持つ（task-12-4-2-task-definitions.md の記法）。
 # grep -F で見出し行を固定文字列検索し、次の "### " 見出しまでの範囲に限定してから
 # 正解ラベル行を取り出す（他タスクの値を誤って拾わないため）。
+#
+# 注意（#122 レビュー指摘 1 対応）: タスクブロックに "- **正解ラベル**:" 行が無い
+# 場合（定義破損・見出し不一致）、`grep -F` は exit 1 を返す。`set -o pipefail` 下で
+# これを素通しすると、パイプライン全体の終了コードが 1 となり、呼び出し元
+# `expected="$(extract_expected_label ...)"` の代入が `set -e` により即座にスクリプト
+# を中断させ、L334-336 で意図している「正解ラベル抽出不能 → 明確なエラーメッセージ
+# 付き exit 2」に到達できないままハーネス全体が突然終了する。パイプライン全体に
+# `|| true` を付け終了コードを常に 0 に固定し、抽出できなかった場合は空文字を返す
+# ことで、呼び出し元の空文字チェック（fail-closed の exit 2）へ必ず到達させる。
 # --------------------------------------------------
 extract_expected_label() {
     local task_id="$1"
@@ -158,7 +167,8 @@ extract_expected_label() {
     ' "${defs_file}" \
         | grep -F -- '- **正解ラベル**:' \
         | head -n 1 \
-        | sed 's/^- \*\*正解ラベル\*\*: *//'
+        | sed 's/^- \*\*正解ラベル\*\*: *//' \
+        || true
 }
 
 # --------------------------------------------------
@@ -220,8 +230,32 @@ extract_verdict() {
 # --------------------------------------------------
 FEASIBILITY_CHECK_SCRIPT="${SCRIPT_DIR}/feasibility-check.sh"
 
+# 判定区分が「不可・要エスカレーション」または「不可（明確な拒否）」であることを
+# 検証する（#122 レビュー指摘 2 対応）。`scripts/feasibility-check.sh` は判定記録の
+# 形式（3・5・6・7 節）のみを検証し、判定区分が「可」であることまでは拒否しない。
+# 本チェックを委譲経路の手前で必ず通すことで、「## 3 軸判定結果」が完全な「可」判定
+# レコードが #84 の形式検証をパスして判断根拠提示割合の分子に誤カウントされる
+# （正解ラベルが不可系のタスクで、記録上の判定区分が「可」のまま書かれているケース）
+# のを防ぐ。内蔵チェック（check_required_fields_builtin）でも同一検証を独立に行って
+# いるが、委譲経路はこの関数の検証を経ないと呼び出されないため二重にはならない。
+verify_infeasible_verdict() {
+    local record_file="$1"
+    case "$(extract_verdict "${record_file}")" in
+        "不可・要エスカレーション"|"不可（明確な拒否）")
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 check_required_fields() {
     local record_file="$1"
+    if ! verify_infeasible_verdict "${record_file}"; then
+        FIELDS_CHECK_SOURCE="判定区分が不可系ではないため不足と判定（#122 レビュー指摘 2 対応）"
+        return 1
+    fi
     if [ -f "${FEASIBILITY_CHECK_SCRIPT}" ]; then
         FIELDS_CHECK_SOURCE="scripts/feasibility-check.sh（TASK-12.3-2、#84）へ委譲"
         if bash "${FEASIBILITY_CHECK_SCRIPT}" --input "${record_file}" >/dev/null 2>&1; then
@@ -235,20 +269,14 @@ check_required_fields() {
 
 # feasibility-check.sh 不在時の代替チェック。同スクリプトの検証ロジック（11.2 節）の
 # うち、本ハーネスが必要とする範囲（不可 2 区分の必須フィールド充足）のみを最小限
-# 再実装する。
+# 再実装する。判定区分の検証自体は呼び出し元 check_required_fields の
+# verify_infeasible_verdict で先に行われているが、本関数単体でも fail-closed を保つ
+# ため独立して検証する。
 check_required_fields_builtin() {
     local record_file="$1"
-    # 判定区分が「不可・要エスカレーション」または「不可（明確な拒否）」であることを
-    # 先に検証する。この検証を欠くと、判定区分が「可」のまま（あるいは見出し自体が
-    # 無い・値が不正）でもフィラーフィールド 3 つさえ埋まっていれば判断根拠提示割合に
-    # 「充足」としてカウントされてしまう（実行不可タスクの誤スコア防止、fail-closed）。
-    case "$(extract_verdict "${record_file}")" in
-        "不可・要エスカレーション"|"不可（明確な拒否）")
-            ;;
-        *)
-            return 1
-            ;;
-    esac
+    if ! verify_infeasible_verdict "${record_file}"; then
+        return 1
+    fi
     local ok=1
     local heading
     for heading in '該当カテゴリと判断根拠' '要人間判断事項' '代替案'; do
