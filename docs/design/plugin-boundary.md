@@ -332,7 +332,8 @@ where
   場合は、再 spawn 時に必ずその所有権をセッションタスクへ move する
   （move し忘れは DoS リグレッションになる、5.4 節）
 
-## 5.6 Gate 型パターン（依存逆転型、TASK-9.1 / #61 で確立）
+## 5.6 Gate 型パターン（依存逆転型、TASK-9.1 / #61 で確立、TASK-9.2 / #62 で
+RS256 + JWKS へ差し替え）
 
 `bf-plugin-hub-wiring`（`TenantGate`、JWT 検証 → `org_id` 抽出 →
 フェイルクローズ）は、4・5 節の 2 パターン（コア → プラグインの optional
@@ -349,13 +350,18 @@ where
 出しを持ち込めないことにあった（6.1 節）。
 
 `RequestGate` はヘッダ検査のみで完結する既存拡張点であり、`TenantGate` の
-判定（`Authorization` ヘッダ抽出 → HMAC-SHA256 検証、I/O なし）はこの同期
-API 制約に抵触しない。したがって:
+判定（`Authorization` ヘッダ抽出 → RS256 署名検証、`kid` による JWKS 内
+鍵選択、I/O なし）はこの同期 API 制約に抵触しない。JWKS の取得（HTTP
+フェッチ・自動リフレッシュ）自体は非同期 I/O を要するため `check()` 内では
+行わず、利用側サービスが取得済み JWKS JSON を注入し
+`SharedJwks::set()` で再起動なしローテーションする設計とすることで、
+同期 API 制約の中に収めている（TASK-9.2、`crates/plugin-hub-wiring/src/jwks.rs`）。
+したがって:
 
 - `crates/core` の `Cargo.toml`・`server.rs`・`plugin.rs` は一切変更しない
   （`optional = true` + `dep:` 構文も、非公開シームへの分岐追加も不要）
 - 利用側サービスが `bf-plugin-hub-wiring` を依存に加え、
-  `Server::gate(TenantGate::new(TenantGateConfig::new(secret)))`
+  `Server::gate(TenantGate::new(TenantGateConfig::from_jwks_json(jwks_json)?))`
   （既存の公開 API `Server::gate`、TASK-1.4）で登録するだけで配線が完結する
 - `scripts/dep-direction-check.sh` の許可リストには汎用パターン
   `bf-plugin-*:backend-framework-core`・`bf-plugin-*:bf-http` が既に存在する
@@ -367,9 +373,20 @@ API 制約に抵触しない。したがって:
 コア側に `dep:` ゲートを持たないため、feature フラグではなく
 「利用側が依存グラフに `bf-plugin-hub-wiring` を加えるか否か」で
 pay-for-what-you-use が成立する。`cargo tree -p backend-framework-core` に
-本クレート・その依存（`hmac`/`sha2`/`base64`/`serde`/`serde_json`）が
-一切現れないことで機械検証できる（コアが本クレートを依存に持たないため、
-そもそも現れようがない設計）。
+本クレート・その依存（`ring`/`base64`/`serde`/`serde_json`）が一切現れない
+ことで機械検証できる（コアが本クレートを依存に持たないため、そもそも現れ
+ようがない設計）。
+
+JWT 検証は TASK-9.1（#61）の HS256（HMAC-SHA256、`hmac`/`sha2`）共有秘密鍵
+スパイクから、TASK-9.2（#62）で RS256（非対称鍵）+ JWKS へ差し替えた
+（HMAC 実装は本番実装に流用せず削除、`docs/spec/05-tasks.md` TASK-9.2）。
+署名検証ライブラリは `rsa`（RustCrypto）ではなく `ring` 0.17 を採用する:
+`rsa` crate は RUSTSEC-2023-0071（Marvin attack、fix なし）を抱えており
+`scripts/dep-audit.sh`（`deny.toml` advisories.ignore = [] のフェイルクローズ
+運用）で確実に FAIL する。`ring` は `crates/plugin-webrtc`（`webrtc`
+feature 経由）が既に依存グラフへ引き込んでいる実績依存（`deny.toml` の
+ライセンス許可リストに ISC 等が既存）であり、`bf-plugin-hub-wiring` 追加
+による新規のライセンス・advisory 面のリスク増はない。
 
 ### 5.6.3 責務境界（`GateOutcome` はクレームを運ばない）
 
@@ -377,8 +394,8 @@ pay-for-what-you-use が成立する。`cargo tree -p backend-framework-core` �
 契約（`crates/core/src/extension.rs` doc、`docs/spec/03-poc/hub-wiring-middleware`
 PoC-6）であり、JWT 検証で抽出した `org_id` 等のクレームはコアへ一切渡らない
 （`bf-plugin-hub-wiring` 内の `jwt::Claims` に閉じる）。この境界により、
-コアは hub 固有シンボル（JWT・`org_id`）へ一切依存しないまま、依存逆転型
-プラグインからの利用を受け付けられる。
+コアは hub 固有シンボル（JWT・`org_id`・JWKS）へ一切依存しないまま、
+依存逆転型プラグインからの利用を受け付けられる。
 
 ### 5.6.4 後続 Gate 型プラグインへの適用指針
 
