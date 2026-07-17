@@ -443,11 +443,11 @@ impl Server {
     /// `on_response` フックで [`bf_plugin_tracing::TracingLayer::record_response`]
     /// が呼ばれ、`config.exclude_paths`（TASK-10.3 / #58）に完全一致するパス
     /// は記録・サンプリング周期の消費のいずれも行わずスキップされ、それ以外は
-    /// `config.sample_interval` に従いサンプリングされたリクエストの span/event
-    /// のみが記録される（`crates/plugin-tracing/src/layer.rs` の doc を参照）。
-    /// ヘルスチェック等の高頻度パスを `exclude_paths` に登録することで、
-    /// TASK-10.4 の性能再検証（RPS 劣化 5% 以内）の前提を満たせる。記録先
-    /// （非同期・バッファ済み I/O）は別途
+    /// `config.sample_interval` に従いサンプリングされたリクエストの応答時
+    /// 1 イベント（TASK-10.2 / #57 で span+2 イベントから統合）のみが記録される
+    /// （`crates/plugin-tracing/src/layer.rs` の doc を参照）。ヘルスチェック等の
+    /// 高頻度パスを `exclude_paths` に登録することで、TASK-10.4 の性能再検証
+    /// （RPS 劣化 5% 以内）の前提を満たせる。記録先（非同期・バッファ済み I/O）は別途
     /// `bf_plugin_tracing::init_tracing` で初期化する契約とし、本メソッドは
     /// グローバルサブスクライバの初期化には関与しない。
     #[cfg(feature = "tracing")]

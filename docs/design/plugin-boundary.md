@@ -425,6 +425,12 @@ no-op とし、判定・記録は `on_response`（`bf_plugin_tracing::TracingLay
 record_response` への委譲）の 1 点に集約する
 （`crates/plugin-tracing/src/layer.rs` の doc を参照）。
 
+採択されたリクエストの記録粒度は当初 span 1 つ + 受理・応答の 2 イベント
+（PoC-10 代表構成と同粒度）だったが、TASK-10.2（#57）で応答時 1 イベントへ
+統合した。span 廃止により採択 1 件あたりの subscriber コールバックが 4 回
+（`on_new_span` + enter/exit + イベント 2 件）から 1 回へ減り、TASK-10.4
+（性能再検証）の前提となる記録コスト削減を実現する。
+
 ### 5.7.4 AGENTS.md「ミドルウェア非同期 I/O 必須化」規約との関係
 
 `TracingLayer::record_response` 内の `tracing` マクロ呼び出し自体は同期だが、
