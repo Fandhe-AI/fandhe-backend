@@ -158,6 +158,20 @@ run_check --skip-build-steps \
 assert_exit_code "シンボル混入は exit 1" 1 "${status}"
 assert_contains "シンボル混入は混入クレートを報告する" "${output}" "プラグイン由来シンボルが検出されました: bf-plugin-webrtc-proxy"
 
+# --- ケース 11: cargo geiger のパッケージリストが空（fail-closed。PASS/SKIP にしない） ---
+# Bugbot 指摘（PR #134/#19）: geiger_packages が空のまま (c) をフォールスルーさせると
+# leaked=0 件の判定に落ちて黙って未検証のまま終了してしまう。空リストは明示的に FAIL
+# として扱われることを検証する。
+run_check --skip-build-steps \
+    --metadata-file "${FIXTURES_DIR}/metadata-valid.json" \
+    --tree-negative-file "${FIXTURES_DIR}/tree-negative-clean.txt" \
+    --tree-positive-dir "${FIXTURES_DIR}/tree-positive-valid" \
+    --geiger-packages-file "${FIXTURES_DIR}/geiger-packages-empty.txt" \
+    --size-negative 1000 --size-positive 1200 \
+    --symbols-file "${FIXTURES_DIR}/symbols-clean.txt"
+assert_exit_code "geiger パッケージリスト空は exit 1（フェイルクローズ）" 1 "${status}"
+assert_contains "geiger パッケージリスト空は判定不能メッセージを含む" "${output}" "geiger_packages が空のため判定不能です"
+
 echo ""
 echo "=== 結果: ${PASS_COUNT} passed, ${FAIL_COUNT} failed ==="
 if [ "${FAIL_COUNT}" -gt 0 ]; then

@@ -260,9 +260,23 @@ fi
 if [ "${#plugin_entries[@]}" -eq 0 ]; then
     fail "c: cargo geiger 検証 — プラグイン feature が列挙できていないため実行できません（(a) 参照）"
 else
+    # geiger_packages が「取得できず空」のまま (c) の判定（leaked チェック）へ
+    # フォールスルーすると、空リストに対する走査は必ず leaked=0 件となり黙って
+    # PASS 相当（未実行のまま無検証で終了）してしまう。取得経路のどこかで既に
+    # fail() 済みかどうかを geiger_step_failed で追跡し、未報告のまま空になった
+    # 場合は下（*）で明示的にフェイルクローズする（Bugbot 指摘、PR #134/#19）。
+    geiger_step_failed=0
+    # /tmp 配下の一時ログは固定パスだと、共有 self-hosted ランナー上で同時実行中の
+    # 別ジョブが同じファイルを truncate し、jq/geiger の失敗内容が握り潰されて
+    # geiger_packages が意図せず空になる恐れがある（Bugbot 指摘）。job/PID ごとに
+    # 一意なパスにして競合を防ぐ。
+    geiger_log="/tmp/pfwu-check-geiger.${GITHUB_RUN_ID:-local}.$$.log"
+    geiger_jq_log="/tmp/pfwu-check-geiger-jq.${GITHUB_RUN_ID:-local}.$$.log"
+
     if [ -n "${GEIGER_PACKAGES_FILE}" ]; then
         if [ ! -f "${GEIGER_PACKAGES_FILE}" ]; then
             fail "c: cargo geiger 検証 — --geiger-packages-file が指す ${GEIGER_PACKAGES_FILE} が存在しません"
+            geiger_step_failed=1
             geiger_packages=""
         else
             geiger_packages="$(cat "${GEIGER_PACKAGES_FILE}")"
@@ -270,6 +284,7 @@ else
     else
         if ! command -v cargo-geiger >/dev/null 2>&1; then
             fail "c: cargo geiger 検証 — cargo-geiger が見つかりません。導入: cargo install --locked cargo-geiger@0.13.0"
+            geiger_step_failed=1
             geiger_packages=""
         else
             # cargo-geiger はビルドを伴い CI ランナー環境（レジストリ通信・並行ジョブに
@@ -287,30 +302,32 @@ else
             # 他ジョブの状態に左右されない決定的な実行にする。
             geiger_json=""
             for geiger_attempt in 1 2; do
-                geiger_json="$(CARGO_TARGET_DIR="${TARGET_DIR}-geiger" cargo geiger --manifest-path "${CORE_MANIFEST}" --no-default-features --output-format Json -q 2>/tmp/pfwu-check-geiger.log || true)"
+                geiger_json="$(CARGO_TARGET_DIR="${TARGET_DIR}-geiger" cargo geiger --manifest-path "${CORE_MANIFEST}" --no-default-features --output-format Json -q 2>"${geiger_log}" || true)"
                 if [ -n "${geiger_json}" ]; then
                     break
                 fi
                 echo "[geiger] 試行 ${geiger_attempt}/2 が失敗しました" >&2
             done
             if [ -z "${geiger_json}" ]; then
-                fail "c: cargo geiger 検証 — cargo geiger の実行に失敗しました（/tmp/pfwu-check-geiger.log 参照）。cargo-geiger はビルドを伴い壊れやすい実績があるため FAIL として扱う"
+                fail "c: cargo geiger 検証 — cargo geiger の実行に失敗しました（${geiger_log} 参照）。cargo-geiger はビルドを伴い壊れやすい実績があるため FAIL として扱う"
+                geiger_step_failed=1
                 # /tmp 配下のログは CI ランナー上でジョブ終了後に消え、GitHub Actions の
                 # ログにも残らない（アーティファクトとして保存していないため）。原因調査を
                 # 次回実行で即座に行えるよう、stdout（CI ログに残る）へも同内容を出力する
                 # （PR #134/#19 CI 失敗時に一次ログを参照できず原因特定が滞った反省）。
-                if [ -f /tmp/pfwu-check-geiger.log ]; then
-                    echo "----- cargo geiger stderr（/tmp/pfwu-check-geiger.log） -----"
-                    sed 's/^/[geiger] /' /tmp/pfwu-check-geiger.log || true
+                if [ -f "${geiger_log}" ]; then
+                    echo "----- cargo geiger stderr（${geiger_log}） -----"
+                    sed 's/^/[geiger] /' "${geiger_log}" || true
                     echo "----- ここまで -----"
                 fi
                 geiger_packages=""
             else
-                geiger_packages="$(printf '%s' "${geiger_json}" | jq -r '.packages[].package.id.name' 2>/tmp/pfwu-check-geiger-jq.log || true)"
-                if [ -s /tmp/pfwu-check-geiger-jq.log ]; then
-                    fail "c: cargo geiger 検証 — geiger JSON 出力の解析に失敗しました（/tmp/pfwu-check-geiger-jq.log 参照）"
-                    echo "----- jq stderr（/tmp/pfwu-check-geiger-jq.log） -----"
-                    sed 's/^/[geiger-jq] /' /tmp/pfwu-check-geiger-jq.log || true
+                geiger_packages="$(printf '%s' "${geiger_json}" | jq -r '.packages[].package.id.name' 2>"${geiger_jq_log}" || true)"
+                if [ -s "${geiger_jq_log}" ]; then
+                    fail "c: cargo geiger 検証 — geiger JSON 出力の解析に失敗しました（${geiger_jq_log} 参照）"
+                    geiger_step_failed=1
+                    echo "----- jq stderr（${geiger_jq_log}） -----"
+                    sed 's/^/[geiger-jq] /' "${geiger_jq_log}" || true
                     echo "----- ここまで -----"
                     geiger_packages=""
                 fi
@@ -331,6 +348,13 @@ else
         else
             pass "c: cargo geiger 検証 — 無効構成の依存グラフにプラグインクレートは 0 件（unsafe 計上対象なし）"
         fi
+    elif [ "${geiger_step_failed}" -eq 0 ]; then
+        # (*) 取得経路のどこでも fail() が呼ばれていないのに geiger_packages が空
+        # （cargo-geiger/jq が「成功」しつつ空文字列を返した、または
+        # --geiger-packages-file の指すファイルが空だった等）。unsafe グラフを
+        # 実際には検証していないため、PASS/SKIP ではなく明示的に FAIL とする
+        # （fail-closed、.claude/rules/security.md）。
+        fail "c: cargo geiger 検証 — geiger_packages が空のため判定不能です（cargo-geiger/jq が空リストを返したか --geiger-packages-file の内容が空。unsafe グラフを検証できていないため PASS/SKIP とせず FAIL とする）"
     fi
 fi
 
