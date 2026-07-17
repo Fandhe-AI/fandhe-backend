@@ -48,6 +48,12 @@ bf-plugin-webrtc-proxy = { path = "../plugin-webrtc-proxy", optional = true }
 # trait を実装するアダプタはコア側（`crates/core/src/server.rs`）に置く。
 bf-plugin-websocket = { path = "../plugin-websocket", optional = true }
 
+# TASK-2.4（#21）: REQ-2 受け入れ基準「少なくとも 2 種のプラグインを feature
+# flag で着脱できる」を実証する第 2 のパスインターセプト型プラグイン境界
+# インスタンス（`crates/plugin-graphql` の doc を参照）。webrtc-proxy と同じく
+# `dep:` 構文で feature 無効時は依存グラフから完全除外される。
+bf-plugin-graphql = { path = "../plugin-graphql", optional = true }
+
 # feature 命名規約（`docs/design/plugin-boundary.md`）: プラグインクレート名
 # （`bf-plugin-<name>`）から `bf-plugin-` 接頭辞を除いた `<name>` を feature 名
 # とする。`default = []` によりビルド時に何も選択しなければプラグインは
@@ -56,6 +62,7 @@ bf-plugin-websocket = { path = "../plugin-websocket", optional = true }
 default = []
 webrtc-proxy = ["dep:bf-plugin-webrtc-proxy"]
 websocket = ["dep:bf-plugin-websocket"]
+graphql = ["dep:bf-plugin-graphql"]
 
 # テスト専用（`#[tokio::test]` / `tokio::io::duplex` / マルチスレッドランタイム）。
 # 本体ビルドの feature 集合には影響しない。

@@ -35,9 +35,11 @@ use crate::server::Server;
 /// 無効」であり、呼び出し元は既定 `Handler::handle`（未登録時 404）へ
 /// フォールスルーする。
 ///
-/// `webrtc-proxy` feature 無効時は `server`/`head`/`body` を一切参照せず
-/// 即座に `None` を返す（`cargo tree` で `bf-plugin-webrtc-proxy` が現れない
-/// ことに加え、本関数自体もコード上ゼロコストであることの根拠）。
+/// `webrtc-proxy`・`graphql` の両 feature が無効時は `server`/`head`/`body` を
+/// 一切参照せず即座に `None` を返す（`cargo tree` で `bf-plugin-webrtc-proxy`・
+/// `bf-plugin-graphql` が現れないことに加え、本関数自体もコード上ゼロコストで
+/// あることの根拠）。`graphql` feature は TASK-2.4（#21）で追加した第 2 の
+/// プラグイン境界インスタンス（`crates/plugin-graphql` の doc を参照）。
 pub(crate) async fn try_intercept(
     server: &Server,
     head: &RequestHead,
@@ -53,13 +55,21 @@ pub(crate) async fn try_intercept(
         }
     }
 
-    // feature 無効時は上の cfg ブロックが丸ごと消え、引数が未使用になる。
-    // 警告を出さないための明示的な no-op（feature 有効時は上のブロックが
-    // 全引数を使用するため、このブロック自体も cfg で排他する）。
-    #[cfg(not(feature = "webrtc-proxy"))]
+    // TASK-2.4（#21）: REQ-2 の「2 種のプラグイン着脱」受け入れ基準を実証する
+    // 第 2 のパスインターセプト型プラグイン（`crates/plugin-graphql` の doc を
+    // 参照）。webrtc-proxy と同型の cfg-gated 分岐パターンをそのまま踏襲する。
+    #[cfg(feature = "graphql")]
     {
-        let _ = (server, head, body);
+        if let Some(response) = bf_plugin_graphql::try_handle_graphql(head) {
+            return Some(from_graphql_response(response));
+        }
     }
+
+    // feature 構成によっては上の cfg ブロックの一部・全部が消え、引数が未使用
+    // になりうる（webrtc-proxy 無効時は `server`・`body`、両方無効時は
+    // `head` も未使用）。参照型（`Copy`）の再読み込みは各分岐での使用有無に
+    // 関わらず安全なため、無条件の no-op で一括して警告を防ぐ。
+    let _ = (server, head, body);
 
     None
 }
@@ -129,4 +139,12 @@ where
     }
 
     Some(stream)
+}
+
+/// `bf_plugin_graphql::Response`（プラグイン側の中間表現）を
+/// [`bf_http::response::Response`] へ変換する。[`from_plugin_response`] と
+/// 同一の変換原則（`content_type` は `&'static str` 限定）に従う。
+#[cfg(feature = "graphql")]
+fn from_graphql_response(response: bf_plugin_graphql::Response) -> Response {
+    Response::new(response.status, response.body).with_content_type(response.content_type)
 }

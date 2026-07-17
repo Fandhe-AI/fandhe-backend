@@ -1,4 +1,7 @@
-# scripts/accept — REQ-1 受け入れ検証スクリプト
+# scripts/accept — 受け入れ検証スクリプト
+
+`core-deps-unsafe-audit.sh`（REQ-1）・`plugin-mechanism-accept.sh`（REQ-2、TASK-2.4）の
+2 スクリプトを収録する。以下はまず REQ-1 側の詳細、REQ-2 側は本ファイル末尾を参照。
 
 `docs/spec/04-requirements.md` REQ-1（最小コア）の受け入れ基準のうち、**性能計測を除く**
 非性能系の受け入れ基準（依存クレート数比・unsafe 根拠・audit / deny・実質コード行数・
@@ -65,3 +68,30 @@ FAIL ではなく SKIP として記録され、終了コードには影響しな
 - `WARN`: 参考情報・暫定運用の記録（判定には影響しない）
 
 実行結果レポートは `docs/acceptance/req1-deps-unsafe-audit.md` に記録する。
+
+## `plugin-mechanism-accept.sh` — REQ-2（プラグイン機構）受け入れ検証（TASK-2.4、#21）
+
+`docs/spec/04-requirements.md` REQ-2 の受け入れ基準のうち TASK-2.4 が担う 3 点
+（2 種以上のプラグインの feature flag 着脱・コンパイル時 vs 動的ロードのトレードオフ
+設計文書・受け入れテストスクリプトと結果）を検証する。`core-deps-unsafe-audit.sh`
+と同じ `lib/common.sh`（PASS/FAIL/SKIP/WARN 集計）を共有する。
+
+```bash
+./scripts/accept/plugin-mechanism-accept.sh
+```
+
+検証内容:
+
+1. `webrtc-proxy`・`graphql` の 2 feature が `backend-framework-core` に存在すること
+   （`cargo metadata` + `jq`）
+2. `scripts/pay-for-what-you-use-check.sh`（TASK-2.2）を呼び出し、feature 無効時の
+   依存・unsafe・バイナリサイズ完全除外を確認（動的列挙のため graphql 追加時も
+   同スクリプトの変更は不要）
+3. 4 通りの feature 構成（無効・graphql 単独・webrtc-proxy 単独・全 feature）で
+   `cargo build` / `cargo test` が成功すること
+4. `docs/design/plugin-loading-tradeoffs.md`（安全性トレードオフ設計文書）の存在
+
+両 feature 無効時のコア性能（REQ-1 基準維持）は axum-ref 等価計測用バイナリが
+TASK-1.6-1（#71）BLOCKED のため自動検証対象外（SKIP として記録、フェイルクローズで
+PASS を偽らない）。手動計測手順・実行結果は
+`docs/acceptance/req2-plugin-mechanism.md` を参照。
