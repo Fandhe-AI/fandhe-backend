@@ -14,6 +14,16 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+# 本クレート自身を独立 workspace のルートとして明示する（空 [workspace] テーブル）。
+# 未指定だと cargo はディレクトリツリーを上方に辿って最初に見つかった [workspace] を
+# 持つ Cargo.toml を「所属先」とみなそうとし、そこに本クレートが members/exclude の
+# どちらにも一致しない場合はビルドエラーになる（root `Cargo.toml` の
+# `[workspace] exclude` は本クレートの直上の workspace root にのみ有効で、
+# nested worktree 等でディレクトリ階層がさらに上にある場合は届かない）。
+# 空 [workspace] テーブルで探索を本ディレクトリ止まりにし、独立ビルド単位として
+# 常に成立させる（TASK-15.3-2、#88 の fuzz 本実行で顕在化した欠陥への対応）。
+[workspace]
+
 [dependencies]
 # libFuzzer ハーネスマクロ（`fuzz_target!`）。nightly のサニタイザ計装
 # （`-Z sanitizer=address` 相当）を前提とし、stable ではビルドできない。
