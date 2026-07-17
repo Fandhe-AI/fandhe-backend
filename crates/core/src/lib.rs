@@ -4,9 +4,9 @@
 //!
 //! `crates/core` は HTTP/1.1 パーサ・keep-alive・3 種拡張点
 //! （`Middleware` / `UpgradeHandler` / `RequestGate`、[`extension`] モジュール）を
-//! 実装する最小コアの置き場所。TASK-1.4-1（#69）時点では 3 拡張点の trait 定義
-//! （+ doc test・単体テスト）のみを提供し、コアループ（接続受理・リクエストループ）
-//! による実接続は姉妹イシュー TASK-1.4-2（#70）で追加される。
+//! 実装する最小コアの置き場所。TASK-1.4-1（#69）で 3 拡張点の trait 定義を、
+//! TASK-1.4-2（#70）でコアループ（接続受理・リクエストループ、[`server`]
+//! モジュール）による実接続を提供する。
 //!
 //! # workspace 内での依存方向
 //!
@@ -26,17 +26,22 @@
 //!
 //! # 今後のタスクとの対応
 //!
-//! - TASK-1.4-2（#70）: コアループ（接続受理・リクエストループ）と
-//!   `#[cfg(feature)]` 付き `try_handle_*` ヘルパーによる拡張点の実接続
-//! - TASK-1.5（#14）: 依存方向一方向性の機械的検証
-//! - TASK-2.1（#18）: feature flag + `dep:` 構文によるプラグイン境界の確立
+//! - TASK-1.5（#14）: 依存方向一方向性の機械的検証・`crates/routes` 新設
+//!   （現状 [`server::Handler`] が暫定的に既定レスポンダを担う）
+//! - TASK-2.1（#18）: feature flag + `dep:` 構文によるプラグイン境界の確立。
+//!   `server` モジュール内の `try_handle_upgrade` ヘルパーは本タスクで
+//!   実プラグインへの委譲実装に差し替わるシーム
 
 pub mod extension;
+pub mod server;
 
 // 3 拡張点はクレート直下からも参照できるよう re-export する。プラグイン側
 // （`crates/plugin-*`）はこの再エクスポート経由で `backend_framework_core::Middleware`
 // のように参照でき、`extension` モジュールの存在を意識せずに実装できる。
 pub use extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
+
+// コアループの主要 API もクレート直下から参照できるよう re-export する。
+pub use server::{BoundServer, Handler, Server, handle_connection};
 
 /// このクレートのバージョン文字列を返す。
 ///
