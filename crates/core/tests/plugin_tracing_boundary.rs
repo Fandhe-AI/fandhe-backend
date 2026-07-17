@@ -115,3 +115,60 @@ async fn interval_one_samples_every_request() {
     // 4 リクエスト全件採択 × 2 イベント = 8。
     assert_eq!(count.load(Ordering::Relaxed), 8);
 }
+
+/// `/health` と `/` を交互にパイプライン化したリクエストバイト列を組み立てる。
+/// 最後の 1 件だけ `Connection: close` を付け、`handle_connection` のループを
+/// 終端させる（`pipelined_get_requests` の変種、TASK-10.3 / #58 統合テスト用）。
+fn pipelined_health_and_root_requests(pairs: usize) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let total = pairs * 2;
+    let mut i = 0;
+    for _ in 0..pairs {
+        for target in ["/health", "/"] {
+            i += 1;
+            let connection_header = if i == total {
+                "Connection: close\r\n"
+            } else {
+                ""
+            };
+            buf.extend_from_slice(
+                format!("GET {target} HTTP/1.1\r\nHost: example.com\r\n{connection_header}\r\n")
+                    .as_bytes(),
+            );
+        }
+    }
+    buf
+}
+
+/// TASK-10.3（#58）: `Server::tracing` に `exclude_path("/health")` を渡すと、
+/// `handle_connection` 経由の実接続でも `/health` 分の記録が一切発生せず、
+/// `/` 分のみが記録されることを検証する（`crates/plugin-tracing/src/layer.rs`
+/// の unit test と同型の判定を、コアの `Middleware` 配線を通して確認する）。
+#[tokio::test]
+async fn excluded_path_emits_no_events_through_middleware_pipeline() {
+    // interval = 1（全件採択）でも `/health` は除外により記録 0、`/` のみ記録される。
+    let config = TracingConfig::new(NonZeroU64::new(1).unwrap()).exclude_path("/health");
+    let server = Server::new().handler(FixedOkHandler).tracing(config);
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let subscriber = Registry::default().with(CountingLayer(Arc::clone(&count)));
+
+    let (mut client, server_stream) = tokio::io::duplex(65536);
+    // "/health" × 3、"/" × 3 を交互送信。
+    let request = pipelined_health_and_root_requests(3);
+    client.write_all(&request).await.unwrap();
+    client.shutdown().await.unwrap();
+
+    let _guard = tracing::subscriber::set_default(subscriber);
+    handle_connection(&server, server_stream).await;
+    drop(_guard);
+
+    let mut out = Vec::new();
+    client.read_to_end(&mut out).await.unwrap();
+    let response = String::from_utf8(out).unwrap();
+    // 除外対象であってもリクエスト処理自体は成功する（6 リクエスト全件 200）。
+    assert_eq!(response.matches("HTTP/1.1 200 OK\r\n").count(), 6);
+
+    // "/" の 3 件のみ採択（1 採択あたり 2 イベント）= 6。"/health" は 0 件。
+    assert_eq!(count.load(Ordering::Relaxed), 6);
+}
