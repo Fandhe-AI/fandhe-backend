@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# dep-audit-accept.sh のセルフテスト（TASK-15.4、#52）。
+#
+# `scripts/accept/dep-audit-accept.sh` はネットワーク・cargo ビルド・cargo-audit /
+# cargo-deny の有無に依存するため、本スクリプトは判定ロジックの部分（deny.toml の
+# 許可ライセンス・all-features・ignore 判定、ci.yml の fuzz-smoke ジョブ存在確認の
+# grep パターン、docs/design/fuzzing.md の本実行結果記録確認、lib/common.sh の
+# PASS/FAIL/SKIP/WARN 集計と終了コードの対応）を fixture・直接呼び出しで切り出して
+# 検証する。`run-openapi-accept-tests.sh` と同じくネットワーク・cargo ビルドに
+# 依存せず完結させる。
+#
+# 検証範囲外（本スクリプトが担わないもの）:
+#   - dep-audit-accept.sh 全体の実行結果そのもの（cargo audit / cargo deny check
+#     実行を含むため、CI・人間によるローカル実行で確認する）
+#   - scripts/dep-audit.sh 自体の判定精度（同スクリプトの責務）
+#
+# 呼び出し元: `.github/workflows/ci.yml` の unsafe-triage ジョブから既存セルフテスト群と
+# 同列で呼ばれる（本イシューで追加）。
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FIXTURES_DIR="${SCRIPT_DIR}/fixtures/dep-audit-accept"
+WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+PASS_COUNT=0
+FAIL_COUNT=0
+
+pass() {
+    echo "PASS: $1"
+    PASS_COUNT=$((PASS_COUNT + 1))
+}
+
+fail() {
+    echo "FAIL: $1" >&2
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+}
+
+# dep-audit-accept.sh 節 1b が使う判定ロジック（必須 5 ライセンスすべてが
+# [licenses] allow に含まれるか）を fixture に対して適用する。
+required_licenses=(
+    "MIT"
+    "Apache-2.0"
+    "Apache-2.0 WITH LLVM-exception"
+    "Unicode-3.0"
+    "BSD-3-Clause"
+)
+
+licenses_complete() {
+    local file="$1"
+    local lic
+    for lic in "${required_licenses[@]}"; do
+        grep -qF "\"${lic}\"" "${file}" || return 1
+    done
+    return 0
+}
+
+echo "===== 許可ライセンスリスト判定（節 1b）のロジック検証 ====="
+
+if licenses_complete "${FIXTURES_DIR}/deny-full.toml"; then
+    pass "5 ライセンス完備の fixture は完備と判定される"
+else
+    fail "5 ライセンス完備の fixture が完備と判定されなかった"
+fi
+
+if ! licenses_complete "${FIXTURES_DIR}/deny-missing-license.toml"; then
+    pass "ライセンス欠落（Apache-2.0 WITH LLVM-exception 欠如）の fixture は欠落と判定される"
+else
+    fail "ライセンス欠落の fixture が誤って完備と判定された"
+fi
+
+echo ""
+echo "===== [graph] all-features 判定（節 1c）のロジック検証 ====="
+
+if grep -q "all-features = true" "${FIXTURES_DIR}/deny-full.toml"; then
+    pass "all-features = true を含む fixture は PASS 相当と判定される"
+else
+    fail "all-features = true を含む fixture が PASS 相当と判定されなかった"
+fi
+
+if ! grep -q "all-features = true" "${FIXTURES_DIR}/deny-missing-allfeatures.toml"; then
+    pass "all-features = false の fixture は FAIL 相当と判定される"
+else
+    fail "all-features = false の fixture が誤って PASS 相当と判定された"
+fi
+
+echo ""
+echo "===== [advisories] ignore 判定（節 1d）のロジック検証 ====="
+
+ignore_is_empty() {
+    local file="$1"
+    local advisories_section ignore_line
+    advisories_section="$(awk '
+        /^\[advisories\]/ { in_section = 1; next }
+        /^\[/ { in_section = 0 }
+        in_section { print }
+    ' "${file}")"
+    ignore_line="$(printf '%s\n' "${advisories_section}" | grep '^ignore' || true)"
+    [ -n "${ignore_line}" ] && printf '%s' "${ignore_line}" | grep -q '\[\]'
+}
+
+if ignore_is_empty "${FIXTURES_DIR}/deny-full.toml"; then
+    pass "ignore = [] の fixture は空維持と判定される"
+else
+    fail "ignore = [] の fixture が誤って非空と判定された"
+fi
+
+if ! ignore_is_empty "${FIXTURES_DIR}/deny-nonempty-ignore.toml"; then
+    pass "ignore が非空の fixture は非空（WARN 相当）と判定される"
+else
+    fail "ignore が非空の fixture が誤って空維持と判定された"
+fi
+
+# 実リポジトリの deny.toml と同じく [advisories] 直後に説明コメント行が挟まる
+# レイアウト（-A1 固定行数指定では検知できない）でも正しく判定できることを確認する。
+if ignore_is_empty "${FIXTURES_DIR}/deny-commented-advisories.toml"; then
+    pass "[advisories] 直後にコメント行を挟む fixture でも ignore = [] を空維持と判定できる"
+else
+    fail "[advisories] 直後にコメント行を挟む fixture で ignore = [] を検出できなかった"
+fi
+
+echo ""
+echo "===== CI fuzz-smoke ジョブ存在確認（節 3b）のロジック検証 ====="
+
+fuzz_job_check() {
+    local file="$1"
+    grep -q "fuzz-smoke:" "${file}" && grep -q "scripts/fuzz.sh" "${file}"
+}
+
+if fuzz_job_check "${FIXTURES_DIR}/ci-with-fuzz-job.yml"; then
+    pass "fuzz-smoke ジョブ + スクリプト呼び出しを含む fixture は PASS 相当と判定される"
+else
+    fail "fuzz-smoke ジョブ + スクリプト呼び出しを含む fixture が PASS 相当と判定されなかった"
+fi
+
+if ! fuzz_job_check "${FIXTURES_DIR}/ci-without-fuzz-job.yml"; then
+    pass "fuzz-smoke ジョブを含まない fixture は FAIL 相当と判定される"
+else
+    fail "fuzz-smoke ジョブを含まない fixture が誤って PASS 相当と判定された"
+fi
+
+echo ""
+echo "===== fuzz 本実行結果記録確認（節 3c）のロジック検証 ====="
+
+fuzz_result_recorded() {
+    local file="$1"
+    grep -q "fuzz 本実行結果" "${file}" && grep -q "crash/hang を検出せず" "${file}"
+}
+
+if fuzz_result_recorded "${FIXTURES_DIR}/fuzzing-with-result.md"; then
+    pass "本実行結果の記録を含む fixture は PASS 相当と判定される"
+else
+    fail "本実行結果の記録を含む fixture が PASS 相当と判定されなかった"
+fi
+
+if ! fuzz_result_recorded "${FIXTURES_DIR}/fuzzing-without-result.md"; then
+    pass "本実行結果の記録を含まない fixture は FAIL 相当と判定される"
+else
+    fail "本実行結果の記録を含まない fixture が誤って PASS 相当と判定された"
+fi
+
+echo ""
+echo "===== 実リポジトリの deny.toml・ci.yml・docs/design/fuzzing.md に対する疎通確認 ====="
+
+if licenses_complete "${WORKSPACE_ROOT}/deny.toml"; then
+    pass "実リポジトリの deny.toml は 5 ライセンスすべてを含む（TASK-15.1 実装済みの回帰検知）"
+else
+    fail "実リポジトリの deny.toml から必須ライセンスの欠落が検出された（退行の可能性）"
+fi
+
+if grep -q "all-features = true" "${WORKSPACE_ROOT}/deny.toml"; then
+    pass "実リポジトリの deny.toml は [graph] all-features = true を含む"
+else
+    fail "実リポジトリの deny.toml から all-features = true が検出できない（退行の可能性）"
+fi
+
+if fuzz_job_check "${WORKSPACE_ROOT}/.github/workflows/ci.yml"; then
+    pass "実リポジトリの ci.yml は fuzz-smoke ジョブを含む（TASK-15.3-1 実装済みの回帰検知）"
+else
+    fail "実リポジトリの ci.yml から fuzz-smoke ジョブが検出できない（退行の可能性）"
+fi
+
+if fuzz_result_recorded "${WORKSPACE_ROOT}/docs/design/fuzzing.md"; then
+    pass "実リポジトリの docs/design/fuzzing.md は本実行結果を記録している（#88 実装済みの回帰検知）"
+else
+    fail "実リポジトリの docs/design/fuzzing.md から本実行結果の記録が検出できない（退行の可能性）"
+fi
+
+echo ""
+echo "===== lib/common.sh の PASS/FAIL/SKIP/WARN 集計と終了コードの対応検証 ====="
+
+# サブシェルで lib/common.sh を source し、record_* の組み合わせごとに
+# summary_exit_code() が正しい終了コードを返すことを検証する（dep-audit-accept.sh の
+# 「SKIP・WARN は判定不能・運用上の許容の安全側記録であり非 0 終了させない」という
+# 設計方針そのものを固定化する）。
+check_exit_code() {
+    local desc="$1"
+    local expected="$2"
+    shift 2
+    local actual
+    actual="$(
+        # shellcheck source=../accept/lib/common.sh
+        source "${WORKSPACE_ROOT}/scripts/accept/lib/common.sh" >/dev/null
+        for entry in "$@"; do
+            "record_${entry%%:*}" "criterion" "${entry#*:}" >/dev/null
+        done
+        summary_exit_code
+    )"
+    if [ "${actual}" -eq "${expected}" ]; then
+        pass "${desc}（exit code: ${actual}）"
+    else
+        fail "${desc}（期待 exit code: ${expected}, 実際: ${actual}）"
+    fi
+}
+
+check_exit_code "PASS のみ → exit 0" 0 "pass:ok"
+check_exit_code "SKIP のみ → exit 0（ツール未導入等の判定不能を非 0 にしない）" 0 "skip:tool-missing"
+check_exit_code "WARN のみ → exit 0（運用上の許容を非 0 にしない）" 0 "warn:ignore-nonempty"
+check_exit_code "PASS + SKIP + WARN 混在 → exit 0" 0 "pass:ok" "skip:tool-missing" "warn:ignore-nonempty"
+check_exit_code "FAIL を含む → exit 1" 1 "pass:ok" "skip:tool-missing" "warn:ignore-nonempty" "fail:ng"
+
+echo ""
+echo "===== 結果: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} ====="
+if [ "${FAIL_COUNT}" -gt 0 ]; then
+    exit 1
+fi

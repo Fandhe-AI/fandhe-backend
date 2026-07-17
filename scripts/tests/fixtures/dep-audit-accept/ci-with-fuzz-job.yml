@@ -1,0 +1,6 @@
+jobs:
+  fuzz-smoke:
+    runs-on: self-hosted
+    steps:
+      - name: scripts/fuzz.sh（smoke、60 秒/target）
+        run: bash scripts/fuzz.sh --max-total-time 60

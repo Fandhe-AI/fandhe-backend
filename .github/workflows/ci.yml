@@ -329,6 +329,14 @@ jobs:
       - name: run-pay-for-what-you-use-tests.sh（pay-for-what-you-use-check.sh のセルフテスト）
         run: bash scripts/tests/run-pay-for-what-you-use-tests.sh
 
+      # TASK-15.4（#52）: 依存監査基盤（TASK-15.1〜15.3）の受け入れ検証スクリプト
+      # scripts/accept/dep-audit-accept.sh 自体は基準 2・3 の実体（cargo audit/deny・
+      # fuzz）を既設の dep-audit / fuzz-smoke ジョブが PR ごと・日次で二重実行を避けつつ
+      # 継続検証するため CI 直接実行しない。判定ロジックのみを検証するセルフテストを
+      # 他の軽量セルフテストと同列でここに相乗りさせる（ネットワーク・cargo ビルド不要）。
+      - name: run-dep-audit-accept-tests.sh（dep-audit-accept.sh のセルフテスト）
+        run: bash scripts/tests/run-dep-audit-accept-tests.sh
+
   # --------------------------------------------------
   # pay-for-what-you-use 検証（TASK-2.2、#19）: プラグイン feature 無効時に当該
   # プラグインの依存クレート・unsafe・コードが 0 件であることを機械的に PASS/FAIL
