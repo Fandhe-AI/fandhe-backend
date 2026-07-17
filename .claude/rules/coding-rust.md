@@ -25,6 +25,9 @@ backend-framework は「最小コア + Cargo feature 駆動プラグイン」を
 
 - Tokio 上でブロッキング処理を await スレッドで実行しない（`spawn_blocking` を使う）
 - 共有状態は `Arc` + 適切な同期プリミティブ。ロック保持中の `.await` を避ける
+- `Middleware` 実装は同期ブロッキング I/O を行わない（非同期チャネルへの送信・別
+  タスクでの I/O 実行に留める）。PoC-3 実測根拠・実装パターンの詳細は `AGENTS.md`
+  を参照
 
 ## テスト・ドキュメント
 

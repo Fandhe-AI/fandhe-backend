@@ -40,7 +40,7 @@ TASK-12.2-1（#81、REQ-12(b)）+ TASK-12.2-2（#82、REQ-12(b)）対応。外�
 | 変更種別 | 追随先 | 強制手段 |
 |---------|--------|---------|
 | 公開 API 追加・変更 | doc comment + doc test | 機械（CI `doc` / `test` ジョブ） |
-| エンドポイント・拡張点追加 | AGENTS.md（未作成の間は CLAUDE.md / `docs/design/`） | 運用（セルフレビュー） |
+| エンドポイント・拡張点追加 | AGENTS.md（TASK-2.3 でミドルウェア非同期 I/O 規約を先行記載。変更手順・判定基準・エスカレーション基準の明文化は TASK-11.3・#35 が別途担当、未クローズ） | 運用（セルフレビュー） |
 | クレート・feature 構成変更 | CLAUDE.md Repository Structure・README・`docs/design/` | 運用（セルフレビュー） |
 | 依存の追加・更新 | `docs/dep-impact/records.md` | 機械補助（`scripts/dep-impact.sh`）+ 運用 |
 | 運用フロー・規約変更 | `.claude/rules/` 該当規約 + CLAUDE.md Rules 表 | 運用（セルフレビュー） |
