@@ -281,6 +281,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
+      # dep-direction-check.sh（下記）が `cargo metadata` を要するため toolchain を
+      # 同期する。既存ステップ（grep ベース）は cargo 非依存のため影響しない。
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
       - name: unsafe-triage.sh（baseline 比較・SAFETY コメント検査）
         run: bash scripts/unsafe-triage.sh
 
@@ -298,6 +303,13 @@ jobs:
 
       - name: run-guardrail-tests.sh（対応可否判定記録バリデータのセルフテスト、TASK-12.3-2、#84）
         run: bash scripts/tests/run-guardrail-tests.sh
+
+      # TASK-1.5（#14）: server → routes → http::* の依存方向一方向性を機械検証する。
+      - name: dep-direction-check.sh（依存方向一方向性の機械検証）
+        run: bash scripts/dep-direction-check.sh
+
+      - name: run-dep-direction-tests.sh（dep-direction-check.sh のセルフテスト）
+        run: bash scripts/tests/run-dep-direction-tests.sh
 
   # --------------------------------------------------
   # fuzz smoke（TASK-15.3-1、#87）: crates/http/fuzz（root workspace から exclude 済み、

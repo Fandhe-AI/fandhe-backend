@@ -1,7 +1,17 @@
 //! `bf-http`: backend-framework の最小 HTTP コア。
 //!
-//! 依存方向は `server` → `routes` → `http::*` の末端であり、本クレートは上位層
-//! （ルーティング・プラグイン）のシンボルに依存しない。TASK-1.3（#12）の分解:
+//! # workspace 内での依存方向
+//!
+//! `docs/spec/04-requirements.md` REQ-1 / `docs/spec/05-tasks.md` TASK-1.5 の方針に従い、
+//! workspace 全体の依存方向は次の一方向を維持する:
+//!
+//! ```text
+//! server → routes → http::*
+//! ```
+//!
+//! 本クレートはこのグラフの末端であり、上位層（ルーティング・プラグイン）の
+//! シンボルには一切依存しない（`scripts/dep-direction-check.sh` が機械検証する）。
+//! TASK-1.3（#12）の分解:
 //! 1. sans-IO なリクエストヘッドパーサ（[`request`]、TASK-1.3-1 / #66）
 //! 2. body フレーミング解釈（[`body`]）・keep-alive 判定・ソケット読み取り
 //!    ループ（[`connection`]、TASK-1.3-2 / #67）

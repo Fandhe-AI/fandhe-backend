@@ -24,10 +24,15 @@
 //! `bf-http`（sans-IO な HTTP/1.1 パーサ、TASK-1.3）は workspace 内の下位層クレート
 //! であり、外部 crates.io 依存はここでも増やさない。
 //!
+//! `crates/routes`（`bf-routes`）は TASK-1.5（#14）で新設し、`server → routes`
+//! エッジを `Cargo.toml` の依存宣言として実体化した。`bf_routes::Router` は
+//! `impl` [`server::Handler`] `for` `bf_routes::Router` により本クレートの
+//! 既定ハンドラとしてそのまま登録できる（`crates/core/examples/minimal.rs`
+//! 参照）。依存方向の機械検証は `scripts/dep-direction-check.sh`（TASK-1.5）が
+//! `cargo metadata` の依存エッジホワイトリスト照合で行う。
+//!
 //! # 今後のタスクとの対応
 //!
-//! - TASK-1.5（#14）: 依存方向一方向性の機械的検証・`crates/routes` 新設
-//!   （現状 [`server::Handler`] が暫定的に既定レスポンダを担う）
 //! - TASK-2.1（#18）: feature flag + `dep:` 構文によるプラグイン境界の確立。
 //!   `server` モジュール内の `try_handle_upgrade` ヘルパーは本タスクで
 //!   実プラグインへの委譲実装に差し替わるシーム

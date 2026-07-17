@@ -117,14 +117,27 @@ const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(10);
 
 /// リクエストに対する最終応答を生成する、コアが公開する既定ハンドラ拡張点。
 ///
-/// `docs/spec/05-tasks.md` TASK-1.5（#14）で `crates/routes` にルーティングが
-/// 切り出されるまでの間、コアが直接保持する単一ハンドラとして機能する。
 /// 3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）とは異なり
-/// 「拡張点は 3 種に集約」の対象ではなく、あくまでルーティング機能が
-/// 実装されるまでの暫定的な既定レスポンダである。
+/// 「拡張点は 3 種に集約」の対象ではなく、ルーティング結果を最終応答へ
+/// 変換する既定レスポンダの差し込み口という位置づけ。`bf_routes::Router`
+/// （TASK-1.5 / #14、下記 `impl Handler for bf_routes::Router` 参照）を
+/// 直接登録できるほか、トイハンドラ・テスト用の固定レスポンダ等の任意実装も
+/// 引き続き受け付ける。
 pub trait Handler: Send + Sync {
     /// リクエストヘッドと body からレスポンスを組み立てる。
     fn handle(&self, head: &RequestHead, body: &[u8]) -> Response;
+}
+
+/// `bf_routes::Router`（依存方向 `server → routes → http::*` の実体化、
+/// TASK-1.5 / #14）をそのままコアの既定ハンドラとして登録できるようにする。
+///
+/// [`Router::dispatch`][bf_routes::Router::dispatch] へ委譲するだけの薄い
+/// アダプタであり、ルーティングの意味論（method + target 完全一致・
+/// 404/405 のフェイルクローズ）は `crates/routes` 側の責務のまま変わらない。
+impl Handler for bf_routes::Router {
+    fn handle(&self, head: &RequestHead, body: &[u8]) -> Response {
+        self.dispatch(head, body)
+    }
 }
 
 /// 3 拡張点・既定ハンドラを登録するビルダー。
@@ -691,6 +704,36 @@ mod tests {
         let response = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(response.ends_with("hi"));
+    }
+
+    /// TASK-1.5（#14）: `bf_routes::Router` を `Server::handler` にそのまま登録できる
+    /// （`impl Handler for bf_routes::Router` の統合確認）。200・404・405 それぞれで
+    /// ステータス行・`Content-Length`・body・`Connection: close` まで網羅的に検証する。
+    #[tokio::test]
+    async fn router_registered_as_handler_dispatches_by_method_and_target() {
+        let router = bf_routes::Router::new().route("GET", "/", |_head, _body| {
+            Response::new(200, b"root".to_vec())
+        });
+        let server = Server::new().handler(router);
+
+        let ok = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+        assert!(ok.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(ok.contains("Content-Length: 4\r\n"));
+        assert!(ok.contains("Connection: close\r\n"));
+        assert!(ok.ends_with("root"));
+
+        let missing = roundtrip(
+            &server,
+            b"GET /missing HTTP/1.1\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(missing.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(missing.contains("Content-Length: 0\r\n"));
+
+        let wrong_method =
+            roundtrip(&server, b"POST / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+        assert!(wrong_method.starts_with("HTTP/1.1 405 Method Not Allowed\r\n"));
+        assert!(wrong_method.contains("Content-Length: 0\r\n"));
     }
 
     #[tokio::test]

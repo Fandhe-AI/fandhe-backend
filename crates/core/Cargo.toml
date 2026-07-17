@@ -23,8 +23,13 @@ workspace = true
 # - `time`: 読み取りタイムアウト（スロークライアント対策、.claude/rules/security.md）
 # - `sync`: accept ループの同時接続数上限（`tokio::sync::Semaphore`、
 #   リソース枯渇 DoS 対策、.claude/rules/security.md）
+#
+# bf-routes（crates/routes、TASK-1.5 / #14）は依存方向グラフ上のエッジ
+# `server → routes` を実体化する唯一の workspace 内依存追加。外部 crates.io
+# 依存はここでも増えない（bf-routes 自体が bf-http のみに依存する中間層）。
 [dependencies]
 bf-http = { path = "../http" }
+bf-routes = { path = "../routes" }
 tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time", "sync"] }
 
 # テスト専用（`#[tokio::test]` / `tokio::io::duplex` / マルチスレッドランタイム）。
