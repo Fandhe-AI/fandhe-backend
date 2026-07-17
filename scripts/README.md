@@ -2,6 +2,7 @@
 
 `docs/spec/05-tasks.md` TASK-15.2（#17）の成果物。依存監査（`cargo audit` / `cargo deny
 check`）と依存インパクト計測を、feature 構成の増減に追従できる形でまとめたスクリプト集。
+TASK-11.5-2（#78）でカバレッジ計測・受け入れテストスクリプトを追加した。
 
 ## スクリプト一覧
 
@@ -9,6 +10,8 @@ check`）と依存インパクト計測を、feature 構成の増減に追従で
 |-----------|------|-------------|
 | `dep-audit.sh` | 全 feature 構成で `cargo audit`・`cargo deny check` を実行する依存監査 | `.github/workflows/ci.yml` の `dep-audit` ジョブから呼ばれる |
 | `dep-impact.sh` | feature 構成ごとの依存クレート数・リリースバイナリサイズ・`unsafe` 件数を計測し markdown 表を出力する | CI からは呼ばれない。plugin 追加 PR でのローカル実行を想定（`docs/dep-impact/README.md` 参照） |
+| `coverage.sh` | コア（`backend-framework-core`・`bf-http`。`axum-ref`・`bf-plugin-*` は除外）の行カバレッジを計測し `--fail-under-lines 80` でゲートする | `.github/workflows/ci.yml` の `coverage` ジョブから呼ばれる |
+| `accept-task-11-5.sh` | TASK-11.5（#37）受け入れテスト一式（カバレッジ・doc 網羅率・AGENTS.md 各節・CI タイムアウト・依存方向一方向性）を PASS/FAIL/PENDING で判定する | CI からは呼ばれない。TASK-11.5 系イシューのローカル受け入れ確認を想定 |
 
 ## 前提ツール
 
@@ -22,6 +25,8 @@ check`）と依存インパクト計測を、feature 構成の増減に追従で
 | `cargo-audit` | RustSec advisory DB による既知脆弱性検知 | `cargo install --locked cargo-audit@0.22.2` |
 | `jq` | `cargo metadata` の JSON 解析 | OS のパッケージマネージャ（例: `apt install jq`） |
 | `cargo-geiger`（`dep-impact.sh` のみ、任意） | `unsafe` 件数の計測 | `cargo install --locked cargo-geiger` |
+| `cargo-llvm-cov`（`coverage.sh` のみ） | LLVM source-based coverage 計測 | `cargo install --locked cargo-llvm-cov@0.8.7` |
+| `llvm-tools-preview`（`coverage.sh` のみ、rustup component） | `cargo-llvm-cov` の instrumented coverage に必要 | `rustup component add llvm-tools-preview` |
 
 ## `dep-audit.sh` — 依存監査
 
@@ -55,3 +60,35 @@ feature 構成（no-default / default / all-features）ごとの依存クレー�
 メンバー除外）、workspace 内 bin ターゲットのリリースビルドサイズ、（`cargo-geiger`
 導入時のみ）`unsafe` 件数を markdown 表で標準出力する。運用（記録先・比較手順）は
 `docs/dep-impact/README.md` を参照。
+
+## `coverage.sh` — コア行カバレッジ計測（TASK-11.5-2、#78）
+
+```bash
+bash scripts/coverage.sh
+# 閾値を一時的に変更する場合（動作確認・陰性対照用）
+FAIL_UNDER_LINES=99 bash scripts/coverage.sh
+```
+
+- `cargo-llvm-cov nextest --workspace --all-features`（`.config/nextest.toml` の
+  `profile ci`）で 1 回計測し、`cargo llvm-cov report` のパッケージフィルタ（再計測なし）
+  で「コア」（`cargo metadata` から動的決定。`axum-ref`・`bf-plugin-*` を除外した残り。
+  現状は `backend-framework-core`・`bf-http`）とワークスペース全体（プラグイン含む、
+  参考情報）の両方のサマリを出し分ける。
+- コア対象の行カバレッジが既定 80%（`FAIL_UNDER_LINES` で変更可能）未満の場合は
+  非 0 で終了する（退行ゲート）。lcov は `target/llvm-cov/lcov.info`（`.gitignore`
+  対象の `target/` 配下、リポジトリへは混入しない）に出力する。
+- doc test（`cargo test --doc`）は stable ツールチェーンでは instrumented coverage の
+  対象にできない（`cargo-llvm-cov` の `--doctests` は nightly 専用）ため、本スクリプトの
+  計測対象は単体・統合テスト（nextest 経由）のみ。
+
+## `accept-task-11-5.sh` — TASK-11.5 受け入れテスト（#78）
+
+```bash
+bash scripts/accept-task-11-5.sh
+```
+
+TASK-11.5（#37）が要求する 5 項目（カバレッジ 80% 以上・doc コメント網羅率 100%・
+AGENTS.md 各節・CI テストタイムアウト設定・依存方向の一方向性）をチェックごとに
+PASS / FAIL / PENDING で出力する。AGENTS.md 本体は TASK-11.3（#35）のスコープのため、
+未作成時は FAIL ではなく PENDING（#35 待ち）として区別する。FAIL が 1 件でもあれば
+非 0 で終了し、PENDING のみなら 0 で終了する。
