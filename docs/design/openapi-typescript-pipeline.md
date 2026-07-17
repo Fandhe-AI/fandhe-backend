@@ -90,41 +90,89 @@ ts/
 - CI（`.github/workflows/ci.yml` の `openapi-ts` ジョブ）はスクリプト実行のみで
   新規サードパーティ Action を導入しない。
 
-## TASK-6.2（#55）への接続点
+## TASK-6.2（#55）: 陰性対照の CI 常設化・受け入れテスト（実装済み）
 
-本タスク（TASK-6.1）はパイプライン構築とローカルスモークまでを対象とし、次を
-スコープ外とする（`.claude/rules/out-of-scope-tracking.md` 準拠）。
+TASK-6.1（本ドキュメント上部）はパイプライン構築とローカルスモーク（コメントアウト
+した陰性対照例の手動確認）までを対象とし、CI 常設化・受け入れテストスクリプト化は
+TASK-6.2（#55）で実装した。
 
-- **陰性対照の CI タスク常設化・受け入れテストスクリプト**: `ts/src/usage.ts` に
-  意図的な型不一致を注入して `tsc --noEmit` がエラーを報告することはローカルで
-  確認済み（本ドキュメント作成時点の検証記録は Issue #54 の実装コミットに含まれる）
-  が、この確認を CI 常設ジョブ・専用受け入れテストスクリプトとして固定化するのは
-  TASK-6.2（#55）のスコープ。
+### 陰性対照の 2 段構成
+
+`tsc --noEmit` が**成功するだけ**では、生成型が `any` 混入等で実質的な制約を失って
+いても見かけ上は通ってしまう可能性が残る（PoC-8、`docs/spec/03-poc/trpc-contract/
+README.md` で有効性が実証された「陰性対照」の考え方）。TASK-6.2 では次の 2 段で
+「意図的な型不一致が確実にエラー検出されること」を CI 常設で検証する
+（`scripts/openapi-ts-negative.sh`）。
+
+- **N1: TS 側陰性対照** — `ts/src/negative/type-mismatch.ts` に 4 類型
+  （パスパラメータ型不一致・レスポンス型誤代入・存在しないエンドポイント呼び出し・
+  リクエスト body 型不一致）の意図的に誤った呼び出しを集約し、専用の
+  `ts/tsconfig.negative.json`（通常の `tsconfig.json` は `exclude` で本ディレクトリを
+  除外）経由で `tsc --noEmit`（`npm run typecheck:negative`）にかける。
+- **N2: スキーマ側陰性対照** — `crates/plugin-openapi/openapi.json` の一時コピーへ
+  `/users/{id}` の `id` を `integer`→`string` に変える node ワンライナーで型不一致を
+  注入し、一時ディレクトリへ `schema.d.ts` を再生成した上で、既存（無改変）の
+  `ts/src/usage.ts` の型検査が失敗することを確認する（openapi.json 境界からの
+  伝搬確認）。
+
+### fail-closed 判定
+
+「非 0 終了」だけでは tsconfig 不備・ファイル欠落等の環境破損による失敗を陰性対照
+PASS と誤認しうる（`.claude/rules/security.md` A08）。`scripts/openapi-ts-negative.sh`
+は次の 3 条件すべてを満たした場合のみ PASS とする。
+
+1. 同一実行内で陽性対照（`npm run typecheck`）が成功する
+2. N1 が非 0 終了し、4 類型すべての期待 TS エラーコード（TS2322/TS2554）が出力に
+   含まれる
+3. N2 が非 0 終了し、期待 TS エラーコード（TS2322）が出力に含まれる
+
+### Rust 定義変更の伝搬（受け入れテスト）
+
+N2 はスキーマ（`openapi.json`）境界からの伝搬確認に留まる。「Rust 側の utoipa 属性
+変更が型再生成のみで TypeScript 側に反映される」ことのフル確認は、`crates/
+plugin-openapi/src/docs.rs` を一時変更して `gen-openapi --update` → `npm run
+gen:types` を実際に実行する `scripts/accept/openapi-ts-accept.sh` 基準 C が受け持つ
+（`trap` による復元・未コミット変更時 SKIP を含む詳細は `scripts/accept/README.md`
+参照）。Rust→openapi.json 方向の一致は既存の `gen-openapi --check`（stage 1、
+fail-closed）が CI 常設で検証しているため、CI 常設対象は N1・N2 に限定し、C は
+人間/ローカル実行の受け入れテストとして位置付ける。
+
+### スコープ外（変更なし）
+
 - **TS クライアントから Rust サーバーへの実 HTTP 疎通テスト**: PoC-4/PoC-8 の
   切り分けどおり型契約面のみを対象とする。ネットワーク層の疎通確認は
   `docs/spec/03-poc/openapi-generation/` で実施済み。
-- **`openapi.json` のエンドポイント追加・変更**: 本タスクは既存 5 エンドポイントを
-  そのまま入力とし、Rust 側定義（`crates/plugin-openapi/src/docs.rs`）には触れない。
+- **`openapi.json` への恒久的なエンドポイント追加・変更**: 受け入れテスト基準 C の
+  変更は一時注入 + 復元のみで、既存 5 エンドポイントの恒久変更は行わない。
 
 ## 検証コマンド
 
 ```bash
-# パイプライン全体（--check、CI 既定と同一）
+# パイプライン全体（--check、CI 既定と同一、TASK-6.1）
 bash scripts/openapi-ts.sh
 
 # schema.d.ts・openapi.json を再生成（開発者向け）
 bash scripts/openapi-ts.sh --update
 
-# 判定ロジックのセルフテスト（ネットワーク・cargo・npm 不要）
+# 判定ロジックのセルフテスト（ネットワーク・cargo・npm 不要、TASK-6.1）
 bash scripts/tests/run-openapi-ts-tests.sh
+
+# 陰性対照（N1: TS 側 + N2: openapi.json 境界、TASK-6.2）
+bash scripts/openapi-ts-negative.sh
+
+# 陰性対照の判定ロジックのセルフテスト（ネットワーク・cargo 不要、TASK-6.2）
+bash scripts/tests/run-openapi-ts-negative-tests.sh
+
+# REQ-6 受け入れテスト一式（基準 A/B/C、TASK-6.2）
+bash scripts/accept/openapi-ts-accept.sh
 ```
 
 ## 参照
 
-- タスク定義: `docs/spec/05-tasks.md` TASK-6.1
+- タスク定義: `docs/spec/05-tasks.md` TASK-6.1・TASK-6.2
 - 要件定義: `docs/spec/04-requirements.md` REQ-6
 - PoC: `docs/spec/03-poc/trpc-contract/README.md`（PoC-8）
 - 前提タスク: TASK-3.2（#31）、`scripts/openapi-two-stage.sh`
-- スコープ外の接続先: TASK-6.2（#55）
+- 受け入れテスト: `scripts/accept/openapi-ts-accept.sh`・`docs/acceptance/req6-typescript-types.md`
 - セキュリティ規約: `.claude/rules/security.md`
 - pay-for-what-you-use: `.claude/rules/pay-for-what-you-use.md`

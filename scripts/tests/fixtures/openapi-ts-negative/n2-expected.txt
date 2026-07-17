@@ -1,0 +1,1 @@
+../../../../../../../../tmp/tmp.example/src/usage.ts(35,23): error TS2322: Type 'number' is not assignable to type 'string'.

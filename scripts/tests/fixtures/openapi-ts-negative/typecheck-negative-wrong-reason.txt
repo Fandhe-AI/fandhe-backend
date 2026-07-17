@@ -1,0 +1,1 @@
+src/negative/type-mismatch.ts(9,1): error TS2307: Cannot find module '../client.js' or its corresponding type declarations.

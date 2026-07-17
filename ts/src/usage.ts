@@ -56,9 +56,6 @@ async function callAllEndpoints(): Promise<void> {
 
 void callAllEndpoints;
 
-// --- 型検査で失敗すべき呼び出し例（コメントアウト、意図的な型不一致の確認用）。 ---
-// 以下のコメントを外すと `tsc --noEmit` がエラーを報告することを確認できる
-// （TASK-6.1 検証手順「陰性対照のローカルスモーク」、docs/design/
-// openapi-typescript-pipeline.md 参照。CI 常設化は TASK-6.2 #55 のスコープ）。
-// client.GET("/users/{id}", { params: { path: { id: "not-a-number" } } }); // 型エラー: id は number
-// const wrongType: number = health.data; // 型エラー: health.data は string | undefined
+// 陰性対照（意図的な型不一致が `tsc --noEmit` の失敗として検出されること）は
+// `src/negative/type-mismatch.ts` へ CI 常設化した（TASK-6.2、#55）。
+// `npm run typecheck:negative`（`scripts/openapi-ts-negative.sh`）を参照。
