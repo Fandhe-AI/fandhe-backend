@@ -78,3 +78,18 @@ echo "# bench-rss.sh 結果（RUNS=${RUNS} DURATION=${DURATION} CONNECTIONS=${CO
 echo "アイドル RSS: ${idle_rss_kb}KB"
 echo "試行別中央値: ${trial_medians[*]}"
 echo "負荷時 RSS（試行間中央値）: ${overall_median}KB"
+
+# 機械可読出力（RESULT_JSON 指定時のみ）。負荷時 RSS は REQ-1 の必須判定基準ではないが
+# bench-accept.sh のレポートに参考値として記録するために利用する。
+if [ -n "${RESULT_JSON:-}" ]; then
+    trial_medians_json="$(printf '%s\n' "${trial_medians[@]}" | to_json_array)"
+    result_json="$(jq -n \
+        --argjson runs "${RUNS}" --arg duration "${DURATION}" --argjson connections "${CONNECTIONS}" \
+        --argjson idle_rss_kb "${idle_rss_kb}" \
+        --argjson trial_medians_kb "${trial_medians_json}" \
+        --argjson load_rss_kb_median "${overall_median}" \
+        '{runs: $runs, duration: $duration, connections: $connections,
+          idle_rss_kb: $idle_rss_kb, trial_medians_kb: $trial_medians_kb,
+          load_rss_kb_median: $load_rss_kb_median}')"
+    write_result_json "${result_json}"
+fi

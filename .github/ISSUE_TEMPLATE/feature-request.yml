@@ -1,0 +1,71 @@
+name: 機能要求（feature request）
+description: >-
+  REQ-12(b)（docs/spec/04-requirements.md）が定める「機能要求→実装→テスト」の
+  一貫改修フローの入口。受け入れ基準の記載を必須とし、曖昧な要求のまま実装着手
+  されることを防ぐ（フロー詳細は docs/design/feature-modification-flow.md）。
+title: "feat: <概要を簡潔に>"
+labels:
+  - feature-request
+body:
+  - type: markdown
+    attributes:
+      value: |
+        機能要求を受け付けます。**受け入れ基準は必須項目**です。受け入れ基準の
+        ないまま実装に着手すると「完了したかどうか機械的に判定できない」ため、
+        本フォームでは省略できません（`.claude/rules/feature-modification.md`）。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 概要
+      description: 何を実現したいか（背景・課題を含む）
+      placeholder: 例）〇〇プラグインに △△ という設定項目を追加したい。現状は…
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: 受け入れ基準（必須）
+      description: >-
+        実装が完了したとみなせる具体的な条件を箇条書きで記載してください。
+        受け入れ基準がない要求は差し戻し対象です（TASK-12.3 の可否判断ガード
+        レール、docs/design/feature-modification-flow.md 参照）。
+      placeholder: |
+        - 〇〇 API が △△ を返すこと
+        - 既存の □□ の挙動を変えないこと（回帰なし）
+        - feature 無効時に依存・コードが増えないこと（pay-for-what-you-use）
+    validations:
+      required: true
+  - type: textarea
+    id: impact-scope
+    attributes:
+      label: 影響範囲の想定
+      description: >-
+        どのクレート・プラグイン・feature 構成・拡張点（Middleware /
+        UpgradeHandler / RequestGate）に影響するかの想定。不明な場合はその旨を
+        記載してください（実装時に影響範囲判定ステップで確定します）。
+      placeholder: 例）crates/plugin-websocket、feature "websocket" のみに閉じる想定
+    validations:
+      required: true
+  - type: input
+    id: target-crate
+    attributes:
+      label: 対象クレート / feature（任意）
+      description: "判明していれば記載（例: bf-plugin-graphql、feature \"graphql\"）"
+    validations:
+      required: false
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: 依存・前提（任意）
+      description: 他の Issue・マイルストーン（MS-*）・外部仕様への依存があれば記載
+    validations:
+      required: false
+  - type: textarea
+    id: safety-considerations
+    attributes:
+      label: 安全性方針との関係（任意）
+      description: >-
+        unsafe の要否、OWASP Top 10 の観点で懸念があれば記載
+        （.claude/rules/security.md 参照）
+    validations:
+      required: false

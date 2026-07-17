@@ -23,18 +23,26 @@ backend-framework/
 ├── README.md
 ├── skills-lock.json       # 導入スキルのロック
 ├── docs/
-│   └── spec/              # 仕様書 submodule（要件・タスク・ロードマップ）
+│   ├── spec/               # 仕様書 submodule（要件・タスク・ロードマップ）
+│   ├── design/             # リポジトリ側設計ドキュメント（実装フェーズの設計判断を記録）
+│   └── dep-impact/         # 依存インパクト（依存数・バイナリサイズ・unsafe 件数）記録台帳（TASK-15.2）
 ├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）
 ├── rust-toolchain.toml    # stable + rustfmt/clippy
 ├── crates/                # cargo workspace
 │   ├── core                           # 最小コア（TASK-1.1 で作成、実体は TASK-1.3 以降）
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（TASK-1.3〜1.4 以降で追加予定）
+│   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-*                       # feature 着脱プラグイン（TASK-2.1 以降で追加予定）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
 ├── benches/               # 負荷生成・計測ハーネス（TASK-1.2 で追加、bench-builder 管轄）
 │   ├── README.md                      # 再現手順・複数回計測/中央値評価の規約
 │   ├── lib/common.sh                  # 共通関数（サーバ起動/停止・中央値算出・依存ツール検査）
 │   └── bench-http.sh / bench-rss.sh / bench-footprint.sh  # RPS・負荷時 RSS・起動時間/バイナリサイズ計測
+├── scripts/               # CI・運用スクリプト（TASK-15.2 で追加）
+│   ├── README.md                      # 使い方・前提ツール・CI との対応
+│   ├── dep-audit.sh                   # 全 feature 構成の cargo audit / cargo deny check（ci.yml dep-audit ジョブ）
+│   ├── dep-impact.sh                  # 依存クレート数・バイナリサイズ・unsafe 件数の計測（markdown 出力）
+│   └── setup-required-checks.sh       # main の required status check（ci-complete）設定（TASK-14.1、#39）
 └── .claude/
     ├── agents/            # 目的別 sub-agent（research/implement/testing/quality/docs）
     ├── rules/             # 運用ルール（委譲・Rust 規約・セキュリティ 等）
@@ -106,6 +114,9 @@ main は判断・統合・ユーザー対話に集中する**。詳細は [rules
 | [conventional-commits.md](.claude/rules/conventional-commits.md) | Conventional Commits 詳細規約 |
 | [code-comment-style.md](.claude/rules/code-comment-style.md) | コメント・doc comment 規約 |
 | [out-of-scope-tracking.md](.claude/rules/out-of-scope-tracking.md) | 実装対象外の追跡（Issue 化）規約 |
+| [improvement-proposal.md](.claude/rules/improvement-proposal.md) | 改善提案フロー・起票・承認の運用規約 |
+| [feature-modification.md](.claude/rules/feature-modification.md) | 機能要求→実装→テスト→ドキュメント追随→完遂判定の一貫改修フロー運用規約 |
+| [feasibility-guardrail.md](.claude/rules/feasibility-guardrail.md) | 対応可否自律判断ガードレール（曖昧要求・危険要求の不可判定規約） |
 
 ## Current Skills
 

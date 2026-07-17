@@ -1,6 +1,6 @@
 //! body フレーミングの意味解釈（sans-IO）。
 //!
-//! [`request::parse_request_head`] が構文的に正しいと判定したヘッダ列から、
+//! [`crate::request::parse_request_head`] が構文的に正しいと判定したヘッダ列から、
 //! 「body を何バイト読むべきか」を決定する純関数を提供する。ソケット読み取り
 //! （[`crate::connection::read_request`]、TASK-1.3-2 / #67）はここで決まった
 //! バイト数だけ読み取る責務を持ち、本モジュール自体は I/O を一切行わない。
@@ -68,6 +68,8 @@ impl std::error::Error for BodyError {}
 ///
 /// `Transfer-Encoding` が 1 つでも存在すれば拒否し、`Content-Length` は
 /// [`RequestHead::headers`] で全件走査して重複・構文・上限を検証する。
+///
+/// # Examples
 ///
 /// ```
 /// use bf_http::body::{body_length, BodyLength};
@@ -224,5 +226,53 @@ mod tests {
             body_length(&head),
             Err(BodyError::TransferEncodingUnsupported)
         );
+    }
+
+    #[test]
+    fn leading_whitespace_content_length_is_rejected() {
+        // OWS trim 後の値のみを検証する request.rs の契約により " 4" のような
+        // 生の先頭空白は本モジュールに渡る前に trim 済みだが、値自体に空白が
+        // 残るケース（trim では除去されない内部空白）を明示的に固定する。
+        let head = head_of(b"POST / HTTP/1.1\r\nContent-Length: 4 4\r\n\r\n");
+        assert_eq!(body_length(&head), Err(BodyError::InvalidContentLength));
+    }
+
+    #[test]
+    fn body_too_large_boundary_plus_one_is_rejected_at_exact_plus_one() {
+        // body_at_exact_limit_is_accepted（ちょうど MAX_BODY_BYTES）との対で
+        // +1 の境界を固定する。
+        let value = (MAX_BODY_BYTES + 1).to_string();
+        let buf = format!("POST / HTTP/1.1\r\nContent-Length: {value}\r\n\r\n");
+        let head = head_of(buf.as_bytes());
+        assert_eq!(body_length(&head), Err(BodyError::BodyTooLarge));
+    }
+
+    #[test]
+    fn body_error_display_messages_are_stable() {
+        // Display 文言の固定（PoC-9 教訓）。RequestError::Body 経由で上位に
+        // そのまま連結されるため、文言変化は呼び出し元のエラーメッセージにも
+        // 波及する。
+        assert_eq!(
+            BodyError::TransferEncodingUnsupported.to_string(),
+            "Transfer-Encoding is not supported"
+        );
+        assert_eq!(
+            BodyError::DuplicateContentLength.to_string(),
+            "duplicate Content-Length header"
+        );
+        assert_eq!(
+            BodyError::InvalidContentLength.to_string(),
+            "invalid Content-Length value"
+        );
+        assert_eq!(
+            BodyError::BodyTooLarge.to_string(),
+            "Content-Length exceeds MAX_BODY_BYTES"
+        );
+    }
+
+    #[test]
+    fn body_error_implements_std_error() {
+        fn assert_error<E: std::error::Error>() {}
+        assert_error::<BodyError>();
     }
 }

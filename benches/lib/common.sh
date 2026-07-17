@@ -142,4 +142,39 @@ median() {
     '
 }
 
+# 改行区切りの数値列（bash 配列を `printf '%s\n' "${arr[@]}"` で渡す想定）を
+# JSON 数値配列に変換する。RESULT_JSON 出力（機械可読）を組み立てる際の共通変換。
+#
+# 呼び出し元: bench-http.sh / bench-rss.sh / bench-footprint.sh。
+# 空行は除外するため、末尾に改行が付いていても壊れない。
+to_json_array() {
+    jq -R -s 'split("\n") | map(select(length > 0) | tonumber)'
+}
+
+# `RESULT_JSON=<path>` が指定されている場合のみ、渡された JSON 文字列をそのまま
+# ファイルへ書き出す（機械可読出力）。人間可読な既存 stdout 形式は変更しない
+# —— bench-accept.sh（TASK-1.6-1）が比較・閾値判定のために stdout テキストを
+# パースせずに済むよう、機械可読出力を RESULT_JSON 経由に分離する契約。
+# 未指定時は no-op のため、既存呼び出し元（RESULT_JSON を渡さない従来利用）の
+# 後方互換性を保つ。
+write_result_json() {
+    local json="$1"
+    if [ -n "${RESULT_JSON:-}" ]; then
+        printf '%s\n' "${json}" | jq '.' >"${RESULT_JSON}"
+    fi
+}
+
+# 数値形式（整数または小数）であることを検証する。bench-accept.sh が env 経由で
+# 受け取る閾値パラメータを awk の算術式・比較に渡す前段で使用し、想定外の文字列が
+# シェル展開・awk プログラムに混入するのを防ぐ（インジェクション対策、
+# .claude/rules/security.md）。
+validate_numeric() {
+    local value="$1"
+    local name="$2"
+    if ! [[ "${value}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        echo "エラー: ${name} は数値である必要があります（現在: ${value}）" >&2
+        exit 1
+    fi
+}
+
 export RUNS DURATION CONNECTIONS TARGET_BIN TARGET_HOST TARGET_PORT TARGET_URL WORKSPACE_ROOT

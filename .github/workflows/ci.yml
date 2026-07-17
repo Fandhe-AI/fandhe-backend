@@ -2,11 +2,43 @@ name: CI
 
 # TASK-1.1（docs/spec/05-tasks.md）: cargo workspace 全体の品質ゲート。
 # 以降の全実装タスク（TASK-1.2〜）はこの CI を前提に進める。
+# TASK-15.2（#17）: 依存監査（dep-audit ジョブ）を追加し、schedule（日次）で
+# コード変更のない期間に新規公開される RustSec advisory も検知できるようにした
+# （OWASP A06、.claude/rules/security.md）。schedule 実行時は fmt/clippy/test を
+# 省略し dep-audit のみ走らせ、self-hosted ランナーの負荷を抑える。
+# TASK-11.4（#36）: PoC-9 で確認された「オフバイワンのバグがテスト失敗ではなく
+# `cargo test` のハングとして現れる」事例（docs/spec/04-requirements.md NFR-10）を受け、
+# 全ジョブに `timeout-minutes` を設定（多層防御・self-hosted runner の無期限占有防止）し、
+# test ジョブは cargo-nextest（.config/nextest.toml でテスト単位のタイムアウトを規定）に
+# 切り替えた。
+# TASK-12.1-1（#79）: `unsafe` の増加検知（scripts/unsafe-triage.sh）を独立ジョブとして
+# 追加し、dep-audit ジョブに限り schedule/workflow_dispatch 実行時の Issue 起票ステップ
+# （AI が能動的に改善案を提示する機構の一部）を追加した。
+# TASK-14.1（#39）: REQ-14（docs/spec/04-requirements.md）が定める完遂判定基準
+# 「CI（cargo test/clippy -D warnings/fmt --check）が全て通過」を、個別ジョブの状態を
+# 都度確認する運用ではなく単一ジョブ `ci-complete` の成否として機械判定できるようにした。
+# branch protection / ruleset（scripts/setup-required-checks.sh）は `ci-complete` のみを
+# required status check に指定すればよく、判定対象ジョブを増減する際は `ci-complete` の
+# `needs` を変更するだけで済む（ジョブ改名時に required check が暗黙に外れる設定腐敗を防ぐ）。
+# 「追加機能が受け入れ基準を満たすこと」は機械判定できないため対象外とし、
+# レビューゲート（TASK-14.3、#41）で担保する（docs/design/ci-completion-criteria.md 参照）。
+# TASK-14.3（#41）: レビューゲート運用の受け入れテスト（scripts/tests/run-review-gate-tests.sh
+# --offline）を unsafe-triage ジョブに追加し、TASK-14.2 の deny lint 表・本ジョブ構成の
+# 退行を CI 常設で検知する（docs/design/review-gate.md 参照）。
+# TASK-12.3-2（#84）: 対応可否自律判断ガードレール（TASK-12.3-1、#83、
+# docs/design/feasibility-guardrail.md）の判定記録バリデータ（scripts/feasibility-check.sh）
+# のセルフテスト（scripts/tests/run-guardrail-tests.sh）を unsafe-triage ジョブに追加した。
+# 既存セルフテスト群と同列・軽量（ネットワーク・cargo ビルド不要）で、判定記録の形式・
+# 必須項目・fail-closed 原則の退行を CI 常設で検知する。
 on:
   pull_request:
     branches: [main]
   push:
     branches: [main]
+  schedule:
+    # update-external.yml（00:00 UTC）と 30 分ずらして負荷を分散する
+    - cron: "30 0 * * *"
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -22,6 +54,11 @@ jobs:
   fmt:
     name: cargo fmt --check
     runs-on: self-hosted
+    # schedule（日次）実行時は依存監査（dep-audit）のみを走らせる
+    if: github.event_name != 'schedule'
+    # TASK-11.4（#36）: ハングしたジョブが self-hosted runner を無期限に占有しないための
+    # 上限（多層防御の一段目）。fmt --check は通常数秒〜数十秒で完了する。
+    timeout-minutes: 10
     steps:
       - name: Checkout
         # actions/checkout v6.0.3。update-external.yml と同一 SHA で固定する。
@@ -40,6 +77,9 @@ jobs:
   clippy:
     name: cargo clippy
     runs-on: self-hosted
+    if: github.event_name != 'schedule'
+    # TASK-11.4（#36）: 多層防御の一段目。clippy はビルドを伴うため fmt より長めに確保する。
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -54,11 +94,21 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   # --------------------------------------------------
-  # cargo test（doc test を含む）
+  # cargo nextest run（テスト単位のタイムアウト付き） + cargo test --doc
+  # TASK-11.4（#36）: stable ツールチェーンでは `cargo test` 単体にテスト単位の
+  # タイムアウトを持たせられないため、cargo-nextest をテストランナーに採用する。
+  # ハング型退行は .config/nextest.toml（profile: ci）の slow-timeout により
+  # 個別テストの TIMEOUT 失敗として検知される（PoC-9 事例対応）。
+  # nextest は doc test を実行しないため、doc test 必須方針
+  # （.claude/rules/coding-rust.md）を守るべく `cargo test --doc` を別ステップで維持する。
   # --------------------------------------------------
   test:
     name: cargo test
     runs-on: self-hosted
+    if: github.event_name != 'schedule'
+    # TASK-11.4（#36）: テスト単位のタイムアウト（nextest 側、最大 120 秒/テスト）に
+    # 加えたジョブ全体の上限。多層防御。
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -66,5 +116,326 @@ jobs:
       - name: Sync toolchain (rust-toolchain.toml)
         run: rustup show
 
-      - name: cargo test --workspace --all-features
-        run: cargo test --workspace --all-features
+      # self-hosted ランナー前提でバージョン固定インストールする（dep-audit ジョブと同じ方針）。
+      # 既に同一バージョンが入っていれば `cargo install` はスキップされ高速に完了する
+      # （サプライチェーン考慮: crates.io からバージョン固定で取得。.claude/rules/security.md）。
+      - name: Ensure cargo-nextest 0.9.137
+        run: |
+          if ! cargo nextest --version 2>/dev/null | grep -q ' 0\.9\.137 '; then
+            cargo install --locked cargo-nextest@0.9.137
+          fi
+
+      - name: cargo nextest run --workspace --all-features --profile ci
+        # テスト単位のタイムアウトは .config/nextest.toml（profile: ci）で規定。
+        # ハングしたテストは TIMEOUT として失敗扱いになりジョブ全体を止めずに検知できる。
+        run: cargo nextest run --workspace --all-features --profile ci
+
+      - name: cargo test --doc --workspace --all-features
+        # nextest は doc test を実行しないため別ステップで補う。
+        # テスト単位のタイムアウトは適用できないためステップ単位でガードする。
+        timeout-minutes: 15
+        run: cargo test --doc --workspace --all-features
+
+  # --------------------------------------------------
+  # cargo doc（rustdoc lint・missing_docs の機械強制ゲート）
+  # TASK-11.2-2（docs/spec/05-tasks.md、#76）: workspace ルート `[workspace.lints.rust]`
+  # の `missing_docs = "warn"` は clippy の `-D warnings` で実質 deny に昇格するが、
+  # rustdoc 固有 lint（intra-doc リンク切れ等）は clippy では検査されない。
+  # `RUSTDOCFLAGS=-D warnings` での `cargo doc` を独立ジョブとして追加し、
+  # doc コメント網羅率・整合性の両方を CI で機械強制する。
+  # --------------------------------------------------
+  doc:
+    name: cargo doc
+    runs-on: self-hosted
+    # TASK-11.5-2（#78）: TASK-11.4（#36）で他ジョブに設定した多層防御の
+    # `timeout-minutes` が本ジョブに漏れていたため追補する（受け入れチェック
+    # `scripts/accept-task-11-5.sh` のチェック 4「CI テストタイムアウト設定」で検知）。
+    # cargo doc はビルドを伴うため clippy と同程度の上限を設定する。
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      - name: cargo doc --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --all-features --no-deps
+
+  # --------------------------------------------------
+  # 依存監査（cargo audit / cargo deny check）を全 feature 構成で実行（TASK-15.2、#17）。
+  # deny.toml 冒頭コメントで宣言している CI 組み込み先。
+  # TASK-12.1-1（#79）: cargo audit 呼び出しは scripts/audit-triage.sh 経由になり
+  # トリアージレポートを生成する（scripts/dep-audit.sh 参照）。schedule /
+  # workflow_dispatch 実行時に限り、vulnerability 検知を Issue として能動的に提示する
+  # ステップを追加するため、本ジョブにのみ job 単位で `issues: write` を付与する
+  # （workflow 全体は `contents: read` を維持、最小権限）。
+  # --------------------------------------------------
+  dep-audit:
+    name: cargo audit / cargo deny (all feature configs)
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      issues: write
+    # TASK-11.4（#36）: 本ジョブ自体は「CI テスト」のタイムアウト対応（本イシューの主目的）
+    # のスコープ外だが、多層防御を一貫させるため他ジョブと同様に上限を設定する。
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      # self-hosted ランナー前提でツールをバージョン固定インストールする。
+      # 既に同一バージョンが入っていれば `cargo install` はスキップされ高速に完了する
+      # （サプライチェーン考慮: crates.io からバージョン固定で取得。.claude/rules/security.md）。
+      - name: Ensure cargo-deny 0.19.8
+        run: |
+          if ! cargo deny --version 2>/dev/null | grep -q ' 0\.19\.8$'; then
+            cargo install --locked cargo-deny@0.19.8
+          fi
+
+      - name: Ensure cargo-audit 0.22.2
+        run: |
+          if ! cargo audit --version 2>/dev/null | grep -q ' 0\.22\.2$'; then
+            cargo install --locked cargo-audit@0.22.2
+          fi
+
+      - name: dep-audit.sh（全 feature 構成の cargo audit / cargo deny check）
+        id: dep_audit
+        # audit-triage.sh 経由の cargo audit が vulnerability を検知すると非 0 で
+        # 終了する（フェイルクローズ）。ジョブは失敗させたまま、次のステップで
+        # トリアージレポートを再生成して Issue 起票に使う（`if: always()` で
+        # 本ステップの成否に関わらず後続ステップを実行する）。
+        run: bash scripts/dep-audit.sh
+
+      - name: audit-triage.sh の Issue 起票（schedule / workflow_dispatch 限定）
+        # 本ステップは「フレームワーク自身の自動監査機構」による能動的な提示であり、
+        # 開発エージェントが Issue 起票前にユーザー承認を得る規約
+        # （.claude/rules/out-of-scope-tracking.md）とは別レイヤの自動化として扱う。
+        #
+        # PR/push 実行時は開発者が CI ログで直接確認できるためスキップし、
+        # コード変更のない期間に新規公開される advisory を拾う schedule と、
+        # 手動確認用の workflow_dispatch のみ対象にする。
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # audit-triage.sh の失敗（vulnerability 検知）自体は前ステップで既に
+          # ジョブを失敗させている。ここでは Issue 起票のために再度レポートを
+          # 生成するだけで、監査結果（ジョブ失敗）そのものは変えない。
+          #
+          # --vuln-ids-output は vulnerabilities.list[]（自動更新提案・要エスカレー
+          # ション区分）の advisory ID のみを書き出す。markdown レポート全体を正規
+          # 表現で走査すると「情報（記録・監視）」区分（unmaintained 等の warnings）
+          # の advisory ID まで拾ってしまい、CI が green（warnings のみで exit 0）
+          # にもかかわらず Issue が起票される不整合が生じるため、この専用出力で
+          # vulnerability のみに厳密に絞り込む。
+          REPORT_FILE="$(mktemp)"
+          VULN_IDS_FILE="$(mktemp)"
+          bash scripts/audit-triage.sh --output "${REPORT_FILE}" --vuln-ids-output "${VULN_IDS_FILE}" > /dev/null 2>&1 || true
+
+          if [ ! -s "${REPORT_FILE}" ] || [ ! -s "${VULN_IDS_FILE}" ]; then
+            echo "vulnerability が検知されなかったため Issue 起票をスキップします"
+            exit 0
+          fi
+
+          # ラベルは冪等に作成する（既存でも失敗させない）。
+          gh label create audit-triage --color B60205 \
+            --description "cargo audit 指摘の自動トリアージ Issue（TASK-12.1-1, #79）" \
+            --force || echo "警告: audit-triage ラベルの作成に失敗しました（gh 障害でも監査結果は変えない）" >&2
+
+          # advisory ID ごとに重複起票を防ぐ（gh issue list の検索クエリはデータとして
+          # 渡し、シェル再解釈やコマンド置換に埋め込まない。OWASP A03 対策）。
+          mapfile -t advisory_ids < "${VULN_IDS_FILE}"
+
+          for advisory_id in "${advisory_ids[@]}"; do
+            existing="$(gh issue list --search "${advisory_id}" --state open --label audit-triage --json number --jq 'length' || echo "0")"
+            if [ "${existing}" != "0" ]; then
+              echo "既存 Issue あり（スキップ）: ${advisory_id}"
+              continue
+            fi
+
+            gh issue create \
+              --title "audit-triage: ${advisory_id} の対応要否を確認" \
+              --label audit-triage \
+              --body-file "${REPORT_FILE}" \
+              || echo "警告: ${advisory_id} の Issue 起票に失敗しました（gh 障害でも監査結果は変えない）" >&2
+          done
+
+  # --------------------------------------------------
+  # unsafe 追加のラチェット検知（TASK-12.1-1、#79）。ビルド不要で軽量なため
+  # schedule（日次、dep-audit のみを走らせる方針）からは除外する。
+  # --------------------------------------------------
+  unsafe-triage:
+    name: unsafe 追加の検知トリアージ
+    runs-on: self-hosted
+    if: github.event_name != 'schedule'
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: unsafe-triage.sh（baseline 比較・SAFETY コメント検査）
+        run: bash scripts/unsafe-triage.sh
+
+      - name: run-triage-tests.sh（audit/unsafe トリアージロジックのセルフテスト）
+        run: bash scripts/tests/run-triage-tests.sh
+
+      # TASK-12.2-1（#81）: feature-flow-check.sh（機能要求→実装→テスト一貫改修フローの
+      # 実装/テスト同時性チェック）のセルフテストのみを CI 化する。feature-flow-check.sh
+      # 本体を PR の必須ゲートとして組み込む対応（完遂判定への接続）は #82 のスコープ。
+      - name: run-feature-flow-tests.sh（feature-flow-check.sh のセルフテスト）
+        run: bash scripts/tests/run-feature-flow-tests.sh
+
+      - name: run-review-gate-tests.sh --offline（レビューゲート運用のオフライン退行検知、TASK-14.3、#41）
+        run: bash scripts/tests/run-review-gate-tests.sh --offline
+
+      - name: run-guardrail-tests.sh（対応可否判定記録バリデータのセルフテスト、TASK-12.3-2、#84）
+        run: bash scripts/tests/run-guardrail-tests.sh
+
+  # --------------------------------------------------
+  # fuzz smoke（TASK-15.3-1、#87）: crates/http/fuzz（root workspace から exclude 済み、
+  # pay-for-what-you-use）の全 fuzz target を短時間（既定 60 秒/target）だけ実行し、
+  # パーサのパニック・メモリ不正への回帰を CI 常設で検知する。ビルドは pinned nightly +
+  # ASan 計装で通常ビルドより重いため timeout を厚めに確保する。
+  # 長時間スクリーニング・検出欠陥の修正は #88（TASK-15.3-2）のスコープ。schedule（日次
+  # dep-audit のみを走らせる方針）からは除外し self-hosted runner の負荷を抑える。
+  # --------------------------------------------------
+  fuzz-smoke:
+    name: fuzz smoke（cargo-fuzz、nightly pinned）
+    runs-on: self-hosted
+    if: github.event_name != 'schedule'
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      # nightly バージョンは scripts/fuzz.sh の PINNED_NIGHTLY 定数を単一真実源とする。
+      # リポジトリ既定（rust-toolchain.toml）は stable のまま変更しない
+      # （.claude/rules/coding-rust.md）。
+      - name: Ensure pinned nightly (scripts/fuzz.sh)
+        run: |
+          set -euo pipefail
+          pinned="$(grep -oP '(?<=^PINNED_NIGHTLY=")[^"]+' scripts/fuzz.sh)"
+          if ! rustup toolchain list | grep -qF "${pinned}"; then
+            rustup toolchain install "${pinned}" --profile minimal
+          fi
+
+      # self-hosted ランナー前提でバージョン固定インストールする（dep-audit / test ジョブと
+      # 同じ方針。サプライチェーン考慮: crates.io からバージョン固定で取得）。
+      - name: Ensure cargo-fuzz 0.13.2
+        run: |
+          if ! cargo fuzz --version 2>/dev/null | grep -qE ' 0\.13\.2($| )'; then
+            cargo install --locked cargo-fuzz@0.13.2
+          fi
+
+      - name: scripts/fuzz.sh（smoke、60 秒/target）
+        run: bash scripts/fuzz.sh --max-total-time 60
+
+  # --------------------------------------------------
+  # コア全体の行カバレッジ計測（TASK-11.5-2、#78）。
+  # 親タスク TASK-11.5（#37、docs/spec/05-tasks.md）が要求する「コア全体の自動テスト行
+  # カバレッジ 80% 以上」の受け入れ確認を CI に組み込む退行ゲート。80% 未満でジョブが
+  # 失敗する（scripts/coverage.sh --fail-under-lines 80）。対象クレート（コア =
+  # backend-framework-core・bf-http、axum-ref・bf-plugin-* を除外）は scripts/coverage.sh
+  # 側で cargo metadata から動的に決定するため、本ジョブ・スクリプト自体は
+  # crates/plugin-* の増加に追従不要。
+  # --------------------------------------------------
+  coverage:
+    name: cargo llvm-cov（コア行カバレッジ 80% ゲート）
+    runs-on: self-hosted
+    if: github.event_name != 'schedule'
+    # TASK-11.4（#36）の多層防御方針を踏襲。instrumented coverage ビルドは通常ビルドより
+    # 遅いため test ジョブと同程度の上限を確保する。
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      - name: Ensure llvm-tools-preview component
+        run: |
+          if ! rustup component list --installed | grep -q '^llvm-tools'; then
+            rustup component add llvm-tools-preview
+          fi
+
+      # self-hosted ランナー前提でバージョン固定インストールする（dep-audit / test ジョブと
+      # 同じ方針。サプライチェーン考慮: crates.io からバージョン固定で取得）。
+      - name: Ensure cargo-llvm-cov 0.8.7
+        run: |
+          if ! cargo llvm-cov --version 2>/dev/null | grep -q ' 0\.8\.7$'; then
+            cargo install --locked cargo-llvm-cov@0.8.7
+          fi
+
+      - name: Ensure cargo-nextest 0.9.137
+        run: |
+          if ! cargo nextest --version 2>/dev/null | grep -q ' 0\.9\.137 '; then
+            cargo install --locked cargo-nextest@0.9.137
+          fi
+
+      - name: coverage.sh（コア対象、80% 未満で失敗）
+        run: bash scripts/coverage.sh
+
+  # --------------------------------------------------
+  # CI 完遂判定（TASK-14.1、#39、docs/spec/04-requirements.md REQ-14）:
+  # fmt / clippy / test（spec が定める必須 3 条件）に加え、リポジトリ方針として
+  # doc（missing_docs・rustdoc lint、TASK-11.2-2）・dep-audit（TASK-15.2）・
+  # coverage（コア行カバレッジ 80% ゲート、TASK-11.5-2）・
+  # unsafe-triage（unsafe 追加のラチェット検知、TASK-12.1-1、#79）・
+  # fuzz-smoke（パーサのパニック・メモリ不正検知、TASK-15.3-1、#87）も含む
+  # 全ジョブの success を単一ジョブの成否に集約する。
+  # branch protection / ruleset（scripts/setup-required-checks.sh）はこのジョブ名のみを
+  # required check にすればよく、ジョブ追加時は needs に足すだけで判定対象を拡張できる。
+  # 詳細な責務分界（機械判定できない「受け入れ基準充足」はレビューゲート TASK-14.3 が担う）は
+  # docs/design/ci-completion-criteria.md を参照。
+  # --------------------------------------------------
+  ci-complete:
+    name: ci-complete
+    runs-on: self-hosted
+    # 失敗・スキップ時にも必ず実行して fail-closed で判定する。
+    # schedule（日次 dep-audit のみ）実行時は fmt/clippy/test/unsafe-triage/fuzz-smoke が
+    # 意図的に skipped になる（doc ジョブには schedule 除外の if がなく実行される既存挙動だが、
+    # ci-complete 自体が schedule 時は丸ごとスキップされるため判定ロジックには影響しない）。
+    # 完遂判定の対象外（required check としては pull_request/push イベントのみを想定する）。
+    if: ${{ always() && github.event_name != 'schedule' }}
+    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, fuzz-smoke]
+    timeout-minutes: 5
+    steps:
+      - name: 完遂判定（全 needs ジョブが success であること）
+        # needs.*.result は式展開の対象だが、攻撃者制御値（github.event.* 等）ではなく
+        # ジョブ結果の enum（success/failure/cancelled/skipped）に限定されるため、
+        # env 経由での受け渡しはシェルインジェクション対策というより可読性のためである。
+        env:
+          RESULT_FMT: ${{ needs.fmt.result }}
+          RESULT_CLIPPY: ${{ needs.clippy.result }}
+          RESULT_TEST: ${{ needs.test.result }}
+          RESULT_DOC: ${{ needs.doc.result }}
+          RESULT_DEP_AUDIT: ${{ needs.dep-audit.result }}
+          RESULT_COVERAGE: ${{ needs.coverage.result }}
+          RESULT_UNSAFE_TRIAGE: ${{ needs.unsafe-triage.result }}
+          RESULT_FUZZ_SMOKE: ${{ needs.fuzz-smoke.result }}
+        run: |
+          set -euo pipefail
+          ok=1
+          for pair in "fmt:${RESULT_FMT}" "clippy:${RESULT_CLIPPY}" \
+                      "test:${RESULT_TEST}" "doc:${RESULT_DOC}" \
+                      "dep-audit:${RESULT_DEP_AUDIT}" "coverage:${RESULT_COVERAGE}" \
+                      "unsafe-triage:${RESULT_UNSAFE_TRIAGE}" \
+                      "fuzz-smoke:${RESULT_FUZZ_SMOKE}"; do
+            job="${pair%%:*}"; result="${pair#*:}"
+            echo "${job}: ${result}"
+            # skipped / cancelled / failure はすべて未完遂として扱う（fail-closed）
+            [ "${result}" = "success" ] || ok=0
+          done
+          [ "${ok}" = "1" ]

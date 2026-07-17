@@ -50,6 +50,7 @@ use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio::sync::Semaphore;
 
 use bf_http::body::BodyError;
+use bf_http::buffer::RecvBuffer;
 use bf_http::connection::{RequestError, read_request, should_keep_alive};
 use bf_http::request::{ParseError, RequestHead};
 use bf_http::response::Response;
@@ -343,7 +344,7 @@ pub async fn handle_connection<S>(server: &Server, mut stream: S)
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut buf = Vec::new();
+    let mut buf = RecvBuffer::new();
     // 接続の総生存期間・keep-alive 中の総リクエスト数を計測する（#70 レビュー
     // 指摘、`.claude/rules/security.md` のリソース枯渇観点。READ_TIMEOUT の
     // doc・Server::max_connection_lifetime / max_requests_per_connection の
@@ -439,10 +440,12 @@ where
             .any(|handler| handler.matches(&request.head))
         {
             // 長時間接続へ委譲する前にコア側の読み取りバッファを明示的に
-            // 解放する（Conditional Go 条件 (1)）。確保済み容量ごと解放する
-            // ため `clear()` だけでなく `shrink_to_fit()` まで行う。
-            buf.clear();
-            buf.shrink_to_fit();
+            // 解放する（Conditional Go 条件 (1)）。`RecvBuffer` は縮小 API を
+            // `pub(crate)` にしか公開しない（TASK-1.3-3 / #68）ため、`drop`
+            // で旧バッファ（確保済み容量ごと）を丸ごと解放する。以降このループ
+            // 反復では `buf` を読まない（両分岐とも `return` する）ため、
+            // 代入ではなく明示的な `drop` で意図を示す。
+            drop(buf);
             match try_handle_upgrade(stream, &request.head, &server.upgrade_handlers).await {
                 Some(mut stream) => {
                     // #70 時点では実処理者（プラグイン）が存在しないため、

@@ -1,0 +1,24 @@
+# TASK-11.4（#36）: CI テストタイムアウト設定。
+#
+# 背景（PoC-9 事例、docs/spec/05-tasks.md TASK-11.4・docs/spec/04-requirements.md NFR-10）:
+# オフバイワンのバグがテスト失敗ではなく `cargo test` の「ハング」として現れる事例が
+# 確認されている。stable ツールチェーン（rust-toolchain.toml で固定）では
+# `cargo test` 単体にテスト単位のタイムアウトを持たせられないため、CI のテストランナーを
+# cargo-nextest に切り替え、本ファイルでテスト単位のハング検知を規定する。
+# ローカルでも `cargo nextest run` を使えば CI と同一のタイムアウト条件で再現できる。
+#
+# nextest は doc test を実行しないため、doc test（.claude/rules/coding-rust.md で必須化）は
+# `.github/workflows/ci.yml` 側で `cargo test --doc` として別ステップで維持する。
+
+[profile.default]
+# 60 秒経過で「slow」警告を出し、以後 60 秒ごとに追加の period を消費する。
+# 2 period（= 120 秒）経過したテストは強制終了（SIGTERM）して失敗（TIMEOUT）扱いにする。
+# self-hosted runner の負荷変動による誤検知を避けるため、PoC-9 で観測された 60 秒より
+# 安全側（2 倍）に設定している。
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+# CI 実行用プロファイル（[profile.default] を継承）。
+# 本設定の目的はハング型退行の検知であり、1 件のテスト失敗で残りのテスト結果が
+# 得られなくなるのを避けるため、CI では fail-fast を無効化して全テストの結果を収集する。
+[profile.ci]
+fail-fast = false

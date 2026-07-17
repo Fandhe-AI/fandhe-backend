@@ -1,3 +1,10 @@
 /target
 Cargo.lock
 **/*.rs.bk
+
+# cargo-fuzz の実行成果物（TASK-15.3-1、#87）。クラッシュ再現入力（artifacts）・
+# カバレッジ生成物（coverage）は実行のたびに変わり機密を含まないため対象外だが、
+# シード corpus（crates/http/fuzz/corpus/**）はコミット対象とする。
+crates/http/fuzz/artifacts/
+crates/http/fuzz/coverage/
+crates/http/fuzz/target/

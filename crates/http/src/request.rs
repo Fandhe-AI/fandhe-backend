@@ -60,6 +60,8 @@ impl RequestHead {
     /// 呼び出し元（重複 `Content-Length` 検査等、#67 が担う）は
     /// [`RequestHead::headers`] を使うこと。
     ///
+    /// # Examples
+    ///
     /// ```
     /// use bf_http::request::parse_request_head;
     ///
@@ -84,6 +86,21 @@ impl RequestHead {
     ///
     /// 同名ヘッダの重複検査（例: `Content-Length` の重複拒否）は呼び出し元
     /// （#67）が本イテレータを使って行う契約とする。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bf_http::request::parse_request_head;
+    ///
+    /// let buf = b"GET / HTTP/1.1\r\nX-A: 1\r\nX-B: 2\r\nX-A: 3\r\n\r\n";
+    /// let outcome = parse_request_head(buf).unwrap();
+    /// let head = match outcome {
+    ///     bf_http::request::ParseOutcome::Complete { head, .. } => head,
+    ///     _ => unreachable!(),
+    /// };
+    /// let all: Vec<_> = head.headers().collect();
+    /// assert_eq!(all, vec![("X-A", "1"), ("X-B", "2"), ("X-A", "3")]);
+    /// ```
     pub fn headers(&self) -> impl Iterator<Item = (&str, &str)> {
         self.headers.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
@@ -152,6 +169,8 @@ impl std::error::Error for ParseError {}
 /// - ヘッダ名は tchar のみ（コロン前の空白は tchar 違反として拒否）、値は
 ///   前後の OWS を trim し、trim 後の値に HTAB 以外の制御文字を含まない
 /// - 継続行（obs-fold）は拒否する
+///
+/// # Examples
 ///
 /// ```
 /// use bf_http::request::{parse_request_head, HttpVersion, ParseOutcome};
@@ -615,6 +634,53 @@ mod tests {
     fn lone_obs_text_byte_in_header_value_is_rejected() {
         // 単独の 0xE9 は有効な UTF-8 マルチバイト列を構成しないため拒否する。
         let buf = b"GET / HTTP/1.1\r\nX-Bad: a\xE9b\r\n\r\n";
+        assert_eq!(parse_request_head(buf), Err(ParseError::InvalidHeader));
+    }
+
+    #[test]
+    fn parse_error_display_messages_are_stable() {
+        // エラーメッセージが上位層（RequestError::Display 等）で連結される契約
+        // であり、文言が意図せず変わっていないことを固定する（PoC-9 教訓:
+        // Display 文言はステータス行同様に検証すべき出力の一部）。
+        assert_eq!(
+            ParseError::HeaderSectionTooLarge.to_string(),
+            "header section exceeds MAX_HEADER_BYTES"
+        );
+        assert_eq!(
+            ParseError::TooManyHeaders.to_string(),
+            "header count exceeds MAX_HEADER_COUNT"
+        );
+        assert_eq!(
+            ParseError::InvalidRequestLine.to_string(),
+            "invalid request line"
+        );
+        assert_eq!(
+            ParseError::UnsupportedVersion.to_string(),
+            "unsupported HTTP version"
+        );
+        assert_eq!(ParseError::InvalidHeader.to_string(), "invalid header");
+    }
+
+    #[test]
+    fn parse_error_implements_std_error() {
+        // `RequestError::source()`（connection.rs）が `&dyn std::error::Error` として
+        // 返せることをコンパイル時に固定する。
+        fn assert_error<E: std::error::Error>() {}
+        assert_error::<ParseError>();
+    }
+
+    #[test]
+    fn http_version_variants_are_distinct() {
+        assert_ne!(HttpVersion::Http10, HttpVersion::Http11);
+        assert_eq!(HttpVersion::Http11, HttpVersion::Http11);
+    }
+
+    #[test]
+    fn crlf_only_terminator_with_bare_lf_body_boundary_is_rejected() {
+        // ヘッダ終端は必ず `\r\n\r\n` のみで判定する。ヘッダ部内に bare LF が
+        // 混入した場合、行分割が崩れて tchar 違反として拒否されることを固定する
+        // （リクエストスマグリング対策の一環）。
+        let buf = b"GET / HTTP/1.1\r\nHost: example.com\nX-A: 1\r\n\r\n";
         assert_eq!(parse_request_head(buf), Err(ParseError::InvalidHeader));
     }
 }
