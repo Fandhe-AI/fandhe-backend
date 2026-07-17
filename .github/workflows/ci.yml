@@ -393,11 +393,15 @@ jobs:
       # `python3 -m openapi_spec_validator --version` は当該 CLI が `--version`
       # フラグ自体を持たずエラー終了するため疎通確認に使えない（Bugbot 指摘、PR
       # #141: 常に pip install が走ってしまう）。モジュールの `__version__` 属性で
-      # 導入済みバージョンを直接判定する。
+      # 導入済みバージョンを直接判定する。インストールも `pip` コマンドではなく
+      # `python3 -m pip` で実行する（Bugbot 指摘、PR #141 review 3603198341: 素の
+      # `pip` は self-hosted runner 上で `python3` と異なるインタプリタを指す
+      # ことがあり、インストールしたパッケージが後続の `python3 -m
+      # openapi_spec_validator` から見えず CI が不安定または恒常的に失敗しうる）。
       - name: Ensure openapi-spec-validator 0.7.1
         run: |
           if ! python3 -c "import openapi_spec_validator; print(openapi_spec_validator.__version__)" 2>/dev/null | grep -qx '0\.7\.1'; then
-            pip install --user --break-system-packages "openapi-spec-validator==0.7.1"
+            python3 -m pip install --user --break-system-packages "openapi-spec-validator==0.7.1"
           fi
 
       # pip --user 配置スクリプトは実行環境の PATH に含まれるとは限らない
