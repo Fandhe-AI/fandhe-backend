@@ -91,8 +91,8 @@ const UNAUTHORIZED_BODY: &[u8] = br#"{"error":"invalid_token"}"#;
 /// `403` 応答の固定 body。
 const FORBIDDEN_BODY: &[u8] = br#"{"error":"tenant_scope_required"}"#;
 
-/// RFC 6750 の `Bearer` スキームプレフィックス（大文字小文字を区別しない）。
-const BEARER_PREFIX: &str = "bearer ";
+/// RFC 6750 の `Bearer` スキーム名（大文字小文字を区別しない）。
+const BEARER_SCHEME: &str = "bearer";
 
 impl RequestGate for TenantGate {
     fn name(&self) -> &'static str {
@@ -107,27 +107,51 @@ impl RequestGate for TenantGate {
             };
         };
 
-        // RFC 6750: スキーム名 `Bearer` は大文字小文字を区別しない。
-        let token = if authorization.len() >= BEARER_PREFIX.len()
-            && authorization.is_char_boundary(BEARER_PREFIX.len())
-            && authorization[..BEARER_PREFIX.len()].eq_ignore_ascii_case(BEARER_PREFIX)
-        {
-            &authorization[BEARER_PREFIX.len()..]
-        } else {
+        // RFC 6750 (`credentials = auth-scheme 1*SP token68`):
+        // スキーム名 `Bearer` は大文字小文字を区別せず、スキーム名とトークンの
+        // 間には 1 個以上の SP が許容される。固定長プレフィックス一致だと
+        // 「Bearer」の後にスペースが 2 個以上並ぶ正当なヘッダを誤って
+        // 拒否してしまう（先頭スペースが token68 側に混入し検証失敗する）ため、
+        // スキーム名部分とスペース列を明示的に分離して剥がす。
+        let Some(scheme_end) = authorization.find(' ') else {
             return GateOutcome::Reject {
                 status: 401,
                 body: UNAUTHORIZED_BODY.to_vec(),
             };
         };
+        // `find(' ')` は ASCII 空白（1 バイト固定）の位置を返す。ASCII バイトは
+        // UTF-8 マルチバイト列の継続バイトとして現れ得ないため、この位置での
+        // スライスは常に char 境界であり安全。
+        let scheme = &authorization[..scheme_end];
+        if !scheme.eq_ignore_ascii_case(BEARER_SCHEME) {
+            return GateOutcome::Reject {
+                status: 401,
+                body: UNAUTHORIZED_BODY.to_vec(),
+            };
+        }
+        let token = authorization[scheme_end..].trim_start_matches(' ');
+        if token.is_empty() {
+            return GateOutcome::Reject {
+                status: 401,
+                body: UNAUTHORIZED_BODY.to_vec(),
+            };
+        }
 
         // `check()` は同期・非ブロッキング（I/O なし）で Tokio ワーカーを
         // 塞がない契約を維持する（`crates/core/src/extension.rs` doc）。
         // 現在時刻の取得のみで、検証ロジック本体（`verify_token`）は
         // 時刻注入可能な純粋関数としてテスト容易性を確保している。
+        //
+        // フェイルクローズ: `SystemTime::now()` が UNIX epoch 秒への変換に
+        // 失敗した場合（クロック異常）に `0` を渡すと `exp <= now_unix` の
+        // 期限切れ判定が常に false になり、あらゆる `exp` を「期限内」として
+        // 誤許可してしまう（.claude/rules/security.md フェイルクローズ原則）。
+        // `u64::MAX` を渡すことで、正の `exp` を持つトークンは無条件に
+        // `TokenError::Expired`（401）として拒否される側へ倒す。
         let now_unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .unwrap_or(u64::MAX);
 
         match verify_token(token, &self.config.secret, now_unix) {
             Ok(_claims) => GateOutcome::Allow,
@@ -225,6 +249,30 @@ mod tests {
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: bEaReR {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
         assert_eq!(gate().check(&head), GateOutcome::Allow);
+    }
+
+    #[test]
+    fn bearer_scheme_allows_extra_spaces_before_token() {
+        // RFC 6750 は auth-scheme と token68 の間に 1*SP を許容する。
+        // 固定 7 バイトプレフィックス剥がしだと 2 個以上のスペースで
+        // 誤って 401 を返していた回帰を防ぐ。
+        let token = make_token(Some("org-1"), 9_999_999_999, "HS256", TEST_SECRET);
+        let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer   {token}\r\n\r\n").into_bytes();
+        let head = head_from(&raw);
+        assert_eq!(gate().check(&head), GateOutcome::Allow);
+    }
+
+    #[test]
+    fn bearer_scheme_without_token_is_401() {
+        let raw = b"GET / HTTP/1.1\r\nAuthorization: Bearer \r\n\r\n".to_vec();
+        let head = head_from(&raw);
+        assert_eq!(
+            gate().check(&head),
+            GateOutcome::Reject {
+                status: 401,
+                body: UNAUTHORIZED_BODY.to_vec()
+            }
+        );
     }
 
     #[test]
