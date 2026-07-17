@@ -36,6 +36,8 @@ backend-framework/
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（TASK-8.2-2、#74。
 │   │                                    # `crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
+│   ├── plugin-openapi                 # OpenAPI ドキュメント生成プラグイン（ApiDoc + utoipa::path 定義、TASK-3.1、#30）
+│   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
 ├── benches/               # 負荷生成・計測ハーネス（TASK-1.2 で追加、bench-builder 管轄）
 │   ├── README.md                      # 再現手順・複数回計測/中央値評価の規約
