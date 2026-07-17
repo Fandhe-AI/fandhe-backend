@@ -107,6 +107,37 @@ else
     fail "comment-only フィクスチャで誤検出（コメント中の unsafe 字句を実コードと誤認）: ${comment_only_hits}"
 fi
 
+echo "===== 基準A: cargo tree 失敗時のフェイルクローズ（Bugbot 指摘是正） ====="
+# webrtc-accept.sh check_dep_exclusion と同一の判定パターン（cargo tree の終了コードを
+# 明示確認し、失敗時は測定不能として FAIL/WARN を返す）を検証する。実 cargo は使わず、
+# 成功/失敗をシミュレートするダミー関数の出力をパイプラインへ渡す。
+evaluate_dep_exclusion() {
+    # $1: cargo tree 相当の標準出力
+    # $2: cargo tree 相当の終了コード（0=成功、非 0=失敗）
+    local tree_output="$1" exit_code="$2" disabled_count
+    if [ "${exit_code}" -ne 0 ]; then
+        echo "FAIL"
+        return
+    fi
+    disabled_count="$(printf '%s\n' "${tree_output}" | grep -c webrtc || true)"
+    if [ "${disabled_count}" -eq 0 ]; then
+        echo "PASS"
+    else
+        echo "FAIL"
+    fi
+}
+
+# cargo tree 自体が失敗（stdout 空・非 0 終了）した場合は、webrtc 系依存 0 件との
+# 区別がつかず誤って PASS してしまう旧実装のリグレッションを防ぐ（Bugbot review
+# id 4723597731 指摘 1: PR #146）。
+assert_eq "cargo tree 失敗時（stdout 空・非 0 終了）は FAIL" "FAIL" "$(evaluate_dep_exclusion "" 1)"
+# cargo tree が成功し webrtc 系依存が真に 0 件の場合は PASS。
+assert_eq "cargo tree 成功・webrtc 依存 0 件は PASS" "PASS" "$(evaluate_dep_exclusion "backend-framework-core v0.1.0
+tokio v1.40.0" 0)"
+# cargo tree が成功し webrtc 系依存が残留している場合は FAIL。
+assert_eq "cargo tree 成功・webrtc 依存残留は FAIL" "FAIL" "$(evaluate_dep_exclusion "backend-framework-core v0.1.0
+webrtc v0.11.0" 0)"
+
 echo ""
 echo "===== 結果: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} ====="
 if [ "${FAIL_COUNT}" -gt 0 ]; then

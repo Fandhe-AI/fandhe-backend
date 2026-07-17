@@ -52,10 +52,20 @@ check_dep_exclusion() {
         return
     fi
 
-    local disabled_count
-    if ! disabled_count="$(cargo tree -p backend-framework-core 2>/dev/null | grep -c webrtc || true)"; then
-        disabled_count=0
+    # `cargo tree` 自体が失敗（対象クレート未存在・ビルドエラー等）した場合も、
+    # stdout が空になり後続の `grep -c` が 0 を返してしまう。`|| true` は
+    # パイプライン全体の失敗を吸収するために必要だが、それだけでは
+    # 「webrtc 依存が真に 0 件」と「cargo tree 呼び出し自体が壊れている」を
+    # 区別できず、後者でも誤って PASS してしまう
+    # （`core-deps-unsafe-audit.sh` の基準 A と同種のフェイルクローズ漏れ）。
+    # `cargo tree` の終了コードを明示的に確認し、失敗時は測定不能として FAIL
+    # 扱いにする（`core-deps-unsafe-audit.sh` と同一のフェイルクローズ実装）。
+    local tree_output disabled_count
+    if ! tree_output="$(cargo tree -p backend-framework-core 2>/dev/null)"; then
+        record_fail "A: webrtc 無効時の依存完全除外" "cargo tree -p backend-framework-core 自体が失敗し測定不能（cargo 呼び出しが壊れている可能性）"
+        return
     fi
+    disabled_count="$(printf '%s\n' "${tree_output}" | grep -c webrtc || true)"
 
     if [ "${disabled_count}" -eq 0 ]; then
         record_pass "A: webrtc 無効時の依存完全除外" "cargo tree -p backend-framework-core | grep -c webrtc = 0"
@@ -64,8 +74,14 @@ check_dep_exclusion() {
     fi
 
     # 有効時のインパクトも参考値として記録する（docs/dep-impact/records.md に転記済みの値と突合）。
-    local enabled_count
-    enabled_count="$(cargo tree -p backend-framework-core --features webrtc 2>/dev/null | grep -c webrtc || true)"
+    # PASS/FAIL 判定には使わない参考値だが、同一の cargo tree 失敗を握りつぶす
+    # 構文を残さないよう上記 A と同じフェイルクローズパターンで測定不能を明示する。
+    local enabled_tree_output enabled_count
+    if ! enabled_tree_output="$(cargo tree -p backend-framework-core --features webrtc 2>/dev/null)"; then
+        record_warn "A補足: webrtc 有効時の依存インパクト" "cargo tree -p backend-framework-core --features webrtc 自体が失敗し測定不能"
+        return
+    fi
+    enabled_count="$(printf '%s\n' "${enabled_tree_output}" | grep -c webrtc || true)"
     record_warn "A補足: webrtc 有効時の依存インパクト" "cargo tree -p backend-framework-core --features webrtc | grep -c webrtc = ${enabled_count}（docs/dep-impact/records.md 参照）"
 }
 
