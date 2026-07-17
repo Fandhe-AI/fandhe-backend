@@ -18,6 +18,13 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# `crates/http/fuzz` は cargo-fuzz 専用クレート（TASK-15.3-1、#87）。libFuzzer
+# ハーネス（`libfuzzer-sys`）は nightly のサニタイザ計装が前提で stable ビルドに
+# 参加できず、ここへ含めると本体の `cargo build` / `cargo tree` / バイナリに
+# fuzz 専用依存が混入してしまう（pay-for-what-you-use 違反、
+# .claude/rules/pay-for-what-you-use.md）。`scripts/fuzz.sh` が独立
+# workspace として `cargo +<pinned-nightly> fuzz` 経由でのみビルド・実行する。
+exclude = ["crates/http/fuzz"]
 
 [workspace.package]
 edition = "2024"

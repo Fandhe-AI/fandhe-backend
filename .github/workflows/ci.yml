@@ -292,6 +292,48 @@ jobs:
         run: bash scripts/tests/run-review-gate-tests.sh --offline
 
   # --------------------------------------------------
+  # fuzz smoke（TASK-15.3-1、#87）: crates/http/fuzz（root workspace から exclude 済み、
+  # pay-for-what-you-use）の全 fuzz target を短時間（既定 60 秒/target）だけ実行し、
+  # パーサのパニック・メモリ不正への回帰を CI 常設で検知する。ビルドは pinned nightly +
+  # ASan 計装で通常ビルドより重いため timeout を厚めに確保する。
+  # 長時間スクリーニング・検出欠陥の修正は #88（TASK-15.3-2）のスコープ。schedule（日次
+  # dep-audit のみを走らせる方針）からは除外し self-hosted runner の負荷を抑える。
+  # --------------------------------------------------
+  fuzz-smoke:
+    name: fuzz smoke（cargo-fuzz、nightly pinned）
+    runs-on: self-hosted
+    if: github.event_name != 'schedule'
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      # nightly バージョンは scripts/fuzz.sh の PINNED_NIGHTLY 定数を単一真実源とする。
+      # リポジトリ既定（rust-toolchain.toml）は stable のまま変更しない
+      # （.claude/rules/coding-rust.md）。
+      - name: Ensure pinned nightly (scripts/fuzz.sh)
+        run: |
+          set -euo pipefail
+          pinned="$(grep -oP '(?<=^PINNED_NIGHTLY=")[^"]+' scripts/fuzz.sh)"
+          if ! rustup toolchain list | grep -qF "${pinned}"; then
+            rustup toolchain install "${pinned}" --profile minimal
+          fi
+
+      # self-hosted ランナー前提でバージョン固定インストールする（dep-audit / test ジョブと
+      # 同じ方針。サプライチェーン考慮: crates.io からバージョン固定で取得）。
+      - name: Ensure cargo-fuzz 0.13.2
+        run: |
+          if ! cargo fuzz --version 2>/dev/null | grep -q ' 0\.13\.2'; then
+            cargo install --locked cargo-fuzz@0.13.2
+          fi
+
+      - name: scripts/fuzz.sh（smoke、60 秒/target）
+        run: bash scripts/fuzz.sh --max-total-time 60
+
+  # --------------------------------------------------
   # コア全体の行カバレッジ計測（TASK-11.5-2、#78）。
   # 親タスク TASK-11.5（#37、docs/spec/05-tasks.md）が要求する「コア全体の自動テスト行
   # カバレッジ 80% 以上」の受け入れ確認を CI に組み込む退行ゲート。80% 未満でジョブが
@@ -342,7 +384,8 @@ jobs:
   # fmt / clippy / test（spec が定める必須 3 条件）に加え、リポジトリ方針として
   # doc（missing_docs・rustdoc lint、TASK-11.2-2）・dep-audit（TASK-15.2）・
   # coverage（コア行カバレッジ 80% ゲート、TASK-11.5-2）・
-  # unsafe-triage（unsafe 追加のラチェット検知、TASK-12.1-1、#79）も含む
+  # unsafe-triage（unsafe 追加のラチェット検知、TASK-12.1-1、#79）・
+  # fuzz-smoke（パーサのパニック・メモリ不正検知、TASK-15.3-1、#87）も含む
   # 全ジョブの success を単一ジョブの成否に集約する。
   # branch protection / ruleset（scripts/setup-required-checks.sh）はこのジョブ名のみを
   # required check にすればよく、ジョブ追加時は needs に足すだけで判定対象を拡張できる。
@@ -353,12 +396,12 @@ jobs:
     name: ci-complete
     runs-on: self-hosted
     # 失敗・スキップ時にも必ず実行して fail-closed で判定する。
-    # schedule（日次 dep-audit のみ）実行時は fmt/clippy/test/unsafe-triage が意図的に
-    # skipped になる（doc ジョブには schedule 除外の if がなく実行される既存挙動だが、
+    # schedule（日次 dep-audit のみ）実行時は fmt/clippy/test/unsafe-triage/fuzz-smoke が
+    # 意図的に skipped になる（doc ジョブには schedule 除外の if がなく実行される既存挙動だが、
     # ci-complete 自体が schedule 時は丸ごとスキップされるため判定ロジックには影響しない）。
     # 完遂判定の対象外（required check としては pull_request/push イベントのみを想定する）。
     if: ${{ always() && github.event_name != 'schedule' }}
-    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage]
+    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, fuzz-smoke]
     timeout-minutes: 5
     steps:
       - name: 完遂判定（全 needs ジョブが success であること）
@@ -373,13 +416,15 @@ jobs:
           RESULT_DEP_AUDIT: ${{ needs.dep-audit.result }}
           RESULT_COVERAGE: ${{ needs.coverage.result }}
           RESULT_UNSAFE_TRIAGE: ${{ needs.unsafe-triage.result }}
+          RESULT_FUZZ_SMOKE: ${{ needs.fuzz-smoke.result }}
         run: |
           set -euo pipefail
           ok=1
           for pair in "fmt:${RESULT_FMT}" "clippy:${RESULT_CLIPPY}" \
                       "test:${RESULT_TEST}" "doc:${RESULT_DOC}" \
                       "dep-audit:${RESULT_DEP_AUDIT}" "coverage:${RESULT_COVERAGE}" \
-                      "unsafe-triage:${RESULT_UNSAFE_TRIAGE}"; do
+                      "unsafe-triage:${RESULT_UNSAFE_TRIAGE}" \
+                      "fuzz-smoke:${RESULT_FUZZ_SMOKE}"; do
             job="${pair%%:*}"; result="${pair#*:}"
             echo "${job}: ${result}"
             # skipped / cancelled / failure はすべて未完遂として扱う（fail-closed）

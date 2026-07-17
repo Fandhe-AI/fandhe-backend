@@ -33,6 +33,7 @@ TASK-12.2-1（#81）で、機能要求の実装にテスト追加が伴うこと
 | `tests/run-feature-flow-tests.sh` | `feature-flow-check.sh` のセルフテスト（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `setup-required-checks.sh` | default branch の repository ruleset に `ci-complete` required status check・PR 必須化・force push/削除禁止を設定する | CI からは呼ばれない。管理者権限を持つ人間・CI 管理者がローカルで 1 回実行する運用（`docs/design/ci-completion-criteria.md`・`docs/design/review-gate.md` 参照） |
 | `tests/run-review-gate-tests.sh` | レビューゲート運用（TASK-14.3）の受け入れテスト。`--offline` は lint 表・ci.yml 構成の存在確認のみ（CI 常設）、既定モードは deny lint 検出・ruleset 検証を含むフル層（受け入れ実施時に手動/任意実行） | `--offline` は `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
+| `fuzz.sh` | `crates/http/fuzz`（cargo-fuzz、pinned nightly）の全 fuzz target を実行する。`--max-total-time` で 1 target あたりの実行秒数を切り替え、`--list` で target 名のみ列挙する（TASK-15.3-1、#87） | `.github/workflows/ci.yml` の `fuzz-smoke` ジョブから `--max-total-time 60` で呼ばれる |
 
 ## 前提ツール
 
@@ -49,6 +50,9 @@ TASK-12.2-1（#81）で、機能要求の実装にテスト追加が伴うこと
 | `cargo-llvm-cov`（`coverage.sh` のみ） | LLVM source-based coverage 計測 | `cargo install --locked cargo-llvm-cov@0.8.7` |
 | `llvm-tools-preview`（`coverage.sh` のみ、rustup component） | `cargo-llvm-cov` の instrumented coverage に必要 | `rustup component add llvm-tools-preview` |
 | `gh`（`setup-required-checks.sh`・`tests/run-review-gate-tests.sh` のフル層 ruleset 検証） | repository ruleset API 呼び出し（`gh auth login` 済みの認証を利用） | https://cli.github.com/ |
+| `cargo-fuzz`（`fuzz.sh` のみ） | libFuzzer ベースの fuzz 実行 | `cargo install --locked cargo-fuzz@0.13.2` |
+| nightly ツールチェーン（`fuzz.sh` のみ。`fuzz.sh` の `PINNED_NIGHTLY` が単一真実源） | サニタイザ計装ビルドに必要（`rust-toolchain.toml` の既定 stable は変更しない） | `rustup toolchain install <PINNED_NIGHTLY> --profile minimal` |
+| C コンパイラ（`fuzz.sh` のみ） | `libfuzzer-sys` の C++ ランタイムビルドに必要 | OS のパッケージマネージャ（例: `apt install build-essential`） |
 
 ## `setup-required-checks.sh` — required status check の設定
 

@@ -139,11 +139,11 @@ else
     fi
 
     if [ -z "${NEEDS_LIST}" ]; then
-        for job in fmt clippy test doc coverage dep-audit unsafe-triage; do
+        for job in fmt clippy test doc coverage dep-audit unsafe-triage fuzz-smoke; do
             fail "ci-complete の needs 配列を抽出できない（'${job}' を確認できません）"
         done
     else
-        for job in fmt clippy test doc coverage dep-audit unsafe-triage; do
+        for job in fmt clippy test doc coverage dep-audit unsafe-triage fuzz-smoke; do
             found="no"
             IFS=',' read -ra needs_arr <<< "${NEEDS_LIST}"
             for item in "${needs_arr[@]}"; do
