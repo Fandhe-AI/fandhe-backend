@@ -244,6 +244,55 @@ assert_exit_code "ユーザー承認が『未承認』のままは exit 1" 1 "${
 assert_contains "未承認のまま着手可と読める記録を拒否する" "${out_cond_unapproved}" "承認済み"
 
 # ==================================================
+# 回帰: is_unfilled の fail-closed 検知（PR #121 Bugbot 指摘 #1）
+# ==================================================
+
+echo "===== 判定区分が『<...>』プレースホルダの末尾に余分な文字を含む場合も未記入扱い: exit 1 ====="
+TRAILING_PLACEHOLDER="${WORKDIR}/trailing-placeholder.md"
+cat > "${TRAILING_PLACEHOLDER}" <<'EOF'
+## 判定区分
+
+<可 / 条件付き可 / 不可・要エスカレーション / 不可（明確な拒否） のいずれか一語のみを記入> 追記
+EOF
+set +e
+out_trailing="$(bash "${CHECK}" --input "${TRAILING_PLACEHOLDER}" 2>&1)"
+exit_trailing=$?
+set -e
+assert_exit_code "『<...>』の後に余分な文字が続くプレースホルダも未記入として拒否する" 1 "${exit_trailing}"
+
+# ==================================================
+# 回帰: extract_subsection は親セクション『## 3 軸判定結果』配下に限定する（PR #121 Bugbot 指摘 #2）
+# ==================================================
+
+echo "===== 可判定で『## 3 軸判定結果』自体が欠落しているが、無関係な場所に同名『###』見出しがある場合: exit 1 ====="
+MISSING_PARENT_SECTION="${WORKDIR}/missing-parent-section.md"
+cat > "${MISSING_PARENT_SECTION}" <<'EOF'
+## 判定区分
+
+可
+
+## 無関係な節
+
+### 実施可能か
+
+本来のセクション外にある見出し。これで通過してはならない。
+
+### 安全か
+
+同上。
+
+### 影響範囲が許容内か
+
+同上。
+EOF
+set +e
+out_missing_parent="$(bash "${CHECK}" --input "${MISSING_PARENT_SECTION}" 2>&1)"
+exit_missing_parent=$?
+set -e
+assert_exit_code "『## 3 軸判定結果』欠落時は無関係な場所の同名『###』見出しを誤検知しない" 1 "${exit_missing_parent}"
+assert_contains "3 軸判定結果の欠落を報告する" "${out_missing_parent}" "3 軸判定結果"
+
+# ==================================================
 # 引数エラー
 # ==================================================
 
