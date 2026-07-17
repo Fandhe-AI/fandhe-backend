@@ -131,8 +131,10 @@ edition 2024 では既定で deny だが、意図を明示するため workspace
 
 本タスク（TASK-14.2）は「危険パターンの機械的検出」までを担う。次を含まない。
 
-- 受け入れテストのスクリプト化・自動実行記録（TASK-14.3、#41、担当: 人間）
-- 自律実装のマージ条件としてのレビューゲート運用定義（TASK-14.3、#41）
+- 受け入れテストのスクリプト化・自動実行記録 → TASK-14.3（#41）で
+  `scripts/tests/run-review-gate-tests.sh` として実装済み（`docs/design/review-gate.md`）
+- 自律実装のマージ条件としてのレビューゲート運用定義 → TASK-14.3（#41）、
+  `docs/design/review-gate.md` で定義済み
 - `cargo geiger` による unsafe 件数計測の CI 常設化（TASK-15 系、`docs/dep-impact/` 運用）
 
 ## lint 追加・改名時の運用
