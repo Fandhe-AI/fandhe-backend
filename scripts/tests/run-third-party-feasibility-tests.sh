@@ -74,6 +74,18 @@ exit_nodir=$?
 set -e
 assert_exit_code "存在しない records-dir は exit 2" 2 "${exit_nodir}"
 
+echo "===== 引数エラー: 存在しない worktrees-dir ====="
+# 回帰テスト（#122 Bugbot 指摘「Invalid worktrees dir reports zero」）: --worktrees-dir に
+# 存在しないパスを指定した場合、
+# --records-dir と同様に事前検証で exit 2 にする。検証を欠くと各タスクが一律
+# PENDING になり、集計行が「0 件（計測対象 0 件）」のまま exit 0 で完走してしまい
+# 「破壊測定を実際に行っていない」ことが「破壊なし」と誤読されうる。
+set +e
+out_nowt="$(bash "${HARNESS}" --task-definitions "${TASK_DEFS}" --records-dir "${FIXTURES_DIR}/feasibility-verify-correct" --worktrees-dir "${FIXTURES_DIR}/does-not-exist" 2>&1)"
+exit_nowt=$?
+set -e
+assert_exit_code "存在しない worktrees-dir は exit 2（0 件計測対象での見かけ上の成功を防ぐ）" 2 "${exit_nowt}"
+
 # ==================================================
 # feasibility-verify-correct: 全件正解・全件根拠充足
 # ==================================================
@@ -111,6 +123,23 @@ assert_contains "判定区分の形式不備を不一致（形式不備）とし
 # 不足側に倒れる（#122 レビュー指摘 2 の修正: 判定区分が「可」や不正値のままフィラー
 # フィールドだけで充足カウントされる抜け道を塞いだ）。
 assert_contains "記録欠落タスクは根拠提示の分母にも算入し不足側に倒す（fail-closed）" "${out_mixed}" "| 判断根拠提示割合 | 2/6（33%） |"
+
+# ==================================================
+# feasibility-verify-label-substring: フィラーフィールドのラベル文字列が
+# 他フィールドの本文中に部分一致で出現するだけのケース（#122 Bugbot 指摘
+# 「Embedded labels satisfy basis check」の回帰テスト）: grep -F の単純部分一致だと、
+# 行頭ラベルでない箇所の "要人間判断事項: "
+# や "代替案: " という文字列だけで誤って「充足」と判定してしまう。行頭一致
+# （bash case パターンマッチ）に修正済みであることを確認する。
+# ==================================================
+echo "===== feasibility-verify-label-substring: ラベル文字列の部分一致を誤って充足としない ====="
+set +e
+out_substr="$(bash "${HARNESS}" --task-definitions "${TASK_DEFS}" --records-dir "${FIXTURES_DIR}/feasibility-verify-label-substring" 2>&1)"
+exit_substr=$?
+set -e
+assert_exit_code "label-substring フィクスチャは exit 0（判定区分自体は一致するため正解率には影響しない）" 0 "${exit_substr}"
+assert_contains "J-05 は行頭ラベルでないフィールドは不足として扱う（誤って充足にしない）" "${out_substr}" "| J-05 | 不可・要エスカレーション | 不可・要エスカレーション | 一致 | 不足 |"
+assert_contains "根拠提示割合は J-05 分が不足側に倒れ 5/6 になる" "${out_substr}" "| 判断根拠提示割合 | 5/6（83%） |"
 
 # ==================================================
 # 誤判定による破壊の検知（--worktrees-dir）

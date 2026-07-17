@@ -111,6 +111,17 @@ if [ ! -d "${RECORDS_DIR}" ]; then
     exit 2
 fi
 
+# --worktrees-dir は任意だが、指定された場合はディレクトリの存在を --records-dir と
+# 同様に検証する。検証を欠くと、誤ったパスを指定した際に check_destruction が
+# 各タスクを一律 PENDING として返し、集計行が「0 件（計測対象 0 件）」のまま
+# exit code 0 で完走してしまう（REQ-12 の「破壊測定を実際に行っていない場合は
+# 明示的に PENDING とすべき」規定に反し、「破壊なし」と誤読されうる）。fail-closed
+# のため、存在しないパスの指定は誤操作として exit 2 で早期に止める。
+if [ -n "${WORKTREES_DIR}" ] && [ ! -d "${WORKTREES_DIR}" ]; then
+    echo "エラー: worktrees ディレクトリが見つかりません: ${WORKTREES_DIR}" >&2
+    exit 2
+fi
+
 # タスク ID は本ハーネス・タスク定義ファイル双方で固定の J-01〜J-10 とする
 # （docs/reports/task-12-4-2-task-definitions.md 参照）。新規タスクセットを追加する場合は
 # このリストを更新する（タスク定義ファイル自体から動的抽出しないのは、タスク定義
@@ -204,10 +215,24 @@ check_required_fields_builtin() {
             return 1
             ;;
     esac
+    # 各ラベルは行頭一致でのみ「充足」と扱う（`extract_verdict` と同一方針）。
+    # `grep -F` の単純部分一致だと、他フィールドの根拠テキスト中に
+    # 「代替案: 」等の文字列がたまたま含まれるだけで誤って充足判定されてしまい
+    # （fail-closed 意図に反し判断根拠提示割合を水増ししうる）、bash の `case` に
+    # よる行頭一致パターンマッチに置き換える。
     local ok=1
+    local label
     for label in '該当カテゴリと判断根拠: ' '要人間判断事項: ' '代替案: '; do
-        local value
-        value="$(grep -F -- "${label}" "${record_file}" 2>/dev/null | head -n 1 | sed "s/^${label}//")"
+        local value=""
+        local line
+        while IFS= read -r line || [ -n "${line}" ]; do
+            case "${line}" in
+                "${label}"*)
+                    value="${line#"${label}"}"
+                    break
+                    ;;
+            esac
+        done < "${record_file}"
         if [ -z "${value}" ]; then
             ok=0
         fi
