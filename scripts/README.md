@@ -255,12 +255,15 @@ bash scripts/third-party-feasibility-verify.sh \
   事前確定したタスクセット（`docs/reports/task-12-4-2-task-definitions.md` の正解ラベル）
   と被験 AI の判定記録を突き合わせ、可否判定正解率・誤判定による破壊件数・判断根拠
   提示割合を機械的に算出する。
-- 判定記録・被験 worktree は信頼できない入力として扱い、`grep -F`（固定文字列）による
-  完全一致のみで採点する（`eval`・コマンド置換への再解釈なし、`audit-triage.sh` と同一
-  方針）。判定記録の欠落・形式不備は常に不正解・根拠不足側へ倒す（fail-closed）。
-- `scripts/feasibility-check.sh`（TASK-12.3-2、#84）がマージ済みであれば判断根拠提示
-  割合の形式検証をそれへ委譲し、未マージなら内蔵の最小チェックで代替する（本 README 執筆
-  時点で #84 は未マージのため常に内蔵チェックが使われる）。
+- 判定記録・被験 worktree は信頼できない入力として扱い、`## <見出し>` 単位の完全一致
+  セクション抽出（`awk`）のみで採点する（`eval`・コマンド置換への再解釈なし、
+  `audit-triage.sh`・`feasibility-check.sh` と同一方針）。判定記録は
+  `docs/design/feasibility-guardrail.md`・`scripts/feasibility-check.sh --template` と
+  同一の見出し形式を前提とする。判定記録の欠落・形式不備は常に不正解・根拠不足側へ
+  倒す（fail-closed）。
+- `scripts/feasibility-check.sh`（TASK-12.3-2、#84、マージ済み）が存在する場合は判断
+  根拠提示割合の形式検証をそれへ委譲し、存在しない構成でのみ内蔵の最小チェックで
+  代替する。
 - `--worktrees-dir` 未指定時、誤判定による破壊は PENDING として区別する（0 件と偽らない）。
 - 終了コードは `0`（採点完了・破壊なし）/ `1`（誤判定による破壊を検知、フェイルクローズ）/
   `2`（引数・入力エラー）。正解率・根拠提示割合自体は情報提示に留め、CI ゲートとしては
