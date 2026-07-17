@@ -1,0 +1,11 @@
+{
+  "packages": [
+    {
+      "name": "backend-framework-core",
+      "features": {
+        "default": [],
+        "rtc-proxy": ["dep:bf-plugin-webrtc-proxy"]
+      }
+    }
+  ]
+}
