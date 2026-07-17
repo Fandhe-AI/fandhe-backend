@@ -66,8 +66,23 @@ fi
 # workspace ルートの missing_docs = "warn" が clippy -D warnings で実質 deny になる
 # 前提（.claude/rules/coding-rust.md）が保たれているかをまず確認し、その上で
 # clippy を実行して doc コメント欠落・その他 lint 違反がないことを検査する。
+#
+# 単純な `grep 'missing_docs = "warn"' Cargo.toml` は、同じ文字列がコメント行
+# （lint 値の説明コメント）にも出現するため、実体の [workspace.lints.rust] エントリを
+# 削除してコメントだけが残っていても誤って PASS してしまう。[workspace.lints.rust]
+# セクション内の、コメントを除去した非空行のみを対象に判定する。
 # --------------------------------------------------
-if grep -q 'missing_docs = "warn"' Cargo.toml; then
+if awk '
+    /^\[workspace\.lints\.rust\]/ { in_section=1; next }
+    /^\[/ { in_section=0 }
+    in_section {
+        line=$0
+        sub(/#.*/, "", line)
+        gsub(/[ \t]+/, "", line)
+        if (line == "missing_docs=\"warn\"") { found=1 }
+    }
+    END { exit(found ? 0 : 1) }
+' Cargo.toml; then
     if cargo clippy --workspace --all-targets --all-features -- -D warnings \
         >/tmp/accept-task-11-5-clippy.log 2>&1; then
         report "2（doc コメント網羅率 100%）" "PASS" "missing_docs = \"warn\" 設定済み・clippy -D warnings 通過"
