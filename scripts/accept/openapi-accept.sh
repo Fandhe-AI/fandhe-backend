@@ -39,12 +39,29 @@ OPENAPI_JSON_PATH="${WORKSPACE_ROOT}/crates/plugin-openapi/openapi.json"
 # ---------------------------------------------------------------------------
 # 1: openapi.json の構文妥当性（OpenAPI 3.x バリデータ）
 # ---------------------------------------------------------------------------
-if ! check_tool openapi-spec-validator 'pip install --user --break-system-packages "openapi-spec-validator==0.7.1"'; then
-    record_fail "1: openapi.json 構文妥当性" "openapi-spec-validator が見つかりません（判定不能、フェイルクローズ）"
-elif openapi-spec-validator "${OPENAPI_JSON_PATH}" >/tmp/openapi-accept-validator.log 2>&1; then
-    record_pass "1: openapi.json 構文妥当性" "openapi-spec-validator でエラー 0 件（詳細: /tmp/openapi-accept-validator.log）"
+# `pip install --user` は CLI 実行ファイルを PATH に配置しない環境がある一方、
+# モジュールとしては `python3 -m openapi_spec_validator` で確実に呼び出せる
+# （.github/workflows/ci.yml の openapi.json 構文妥当性検証ステップと同一の
+# 呼び出し方式に揃える）。CLI 実行ファイルが PATH にある環境ではそちらを優先し、
+# 無ければ python3 -m 実行形式にフォールバックする。両方見つからない場合のみ
+# 判定不能としてフェイルクローズする。
+if check_tool openapi-spec-validator 'pip install --user --break-system-packages "openapi-spec-validator==0.7.1"'; then
+    VALIDATOR_CMD=(openapi-spec-validator)
+elif command -v python3 >/dev/null 2>&1 && python3 -c 'import openapi_spec_validator' >/dev/null 2>&1; then
+    # `python3 -m openapi_spec_validator --version` はこのモジュールの CLI が
+    # `--version` フラグ自体を持たず常にエラー終了するため疎通確認に使えない
+    # （ローカル検証で確認済み）。モジュールの import 可否で存在確認する。
+    VALIDATOR_CMD=(python3 -m openapi_spec_validator)
 else
-    record_fail "1: openapi.json 構文妥当性" "openapi-spec-validator がエラーを検出（詳細: /tmp/openapi-accept-validator.log）"
+    VALIDATOR_CMD=()
+fi
+
+if [ "${#VALIDATOR_CMD[@]}" -eq 0 ]; then
+    record_fail "1: openapi.json 構文妥当性" "openapi-spec-validator（CLI・python3 -m openapi_spec_validator のいずれも）が見つかりません（判定不能、フェイルクローズ）"
+elif "${VALIDATOR_CMD[@]}" "${OPENAPI_JSON_PATH}" >/tmp/openapi-accept-validator.log 2>&1; then
+    record_pass "1: openapi.json 構文妥当性" "${VALIDATOR_CMD[*]} でエラー 0 件（詳細: /tmp/openapi-accept-validator.log）"
+else
+    record_fail "1: openapi.json 構文妥当性" "${VALIDATOR_CMD[*]} がエラーを検出（詳細: /tmp/openapi-accept-validator.log）"
 fi
 
 # ---------------------------------------------------------------------------
@@ -65,7 +82,16 @@ if metadata="$(cargo metadata --format-version 1 --no-deps 2>/tmp/openapi-accept
         .packages[] | select(.name == "backend-framework-core") | .features | keys[]
     ' 2>/dev/null || true)"
     if printf '%s\n' "${core_features}" | grep -qx "openapi"; then
-        record_pass "3: openapi feature 存在・依存除外検証" "openapi feature が存在。scripts/pay-for-what-you-use-check.sh の動的列挙で検証済み"
+        # openapi feature が存在する場合のみ、その存在を根拠に PASS を詐称せず
+        # 実際に scripts/pay-for-what-you-use-check.sh（動的列挙により openapi
+        # feature も自動的に検証対象へ含まれる）を実行して依存除外を検証する
+        # （Bugbot 指摘、PR #141: cargo metadata/jq のみでは feature の存在確認に
+        # とどまり依存除外の検証にならない）。
+        if bash "${WORKSPACE_ROOT}/scripts/pay-for-what-you-use-check.sh" >/tmp/openapi-accept-pfwu.log 2>&1; then
+            record_pass "3: openapi feature 存在・依存除外検証" "openapi feature が存在し、scripts/pay-for-what-you-use-check.sh の実行で依存除外を検証済み（詳細: /tmp/openapi-accept-pfwu.log）"
+        else
+            record_fail "3: openapi feature 存在・依存除外検証" "openapi feature は存在するが scripts/pay-for-what-you-use-check.sh が FAIL（詳細: /tmp/openapi-accept-pfwu.log）"
+        fi
     else
         record_skip "3: openapi feature 存在・依存除外検証" "backend-framework-core に openapi feature が存在しない（TASK-2.1、#18 のスコープとして接続契約に明記されたが未配線・後継 Issue 未起票）。配線後は scripts/pay-for-what-you-use-check.sh が動的列挙により自動的に検証対象へ含める（本スクリプトの変更不要）"
     fi
