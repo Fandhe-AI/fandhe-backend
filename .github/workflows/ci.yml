@@ -384,6 +384,21 @@ jobs:
       - name: "openapi-two-stage.sh（stage 1: gen-openapi --check、stage 2: cargo build --all-features）"
         run: bash scripts/openapi-two-stage.sh
 
+      # TASK-3.3（#32）REQ-3 受け入れ基準 1: 生成された openapi.json が OpenAPI 3.x の
+      # 構文妥当性エラー 0 件であることを CI 常設で検証する（API 設計ベストプラクティス系
+      # ルール、例: Spectral/Redocly が検出する命名規約・説明文有無等とは区別する）。
+      # openapi-spec-validator はスキーマ妥当性のみを検証しベストプラクティス系ルールを
+      # 含まないため要求に合致する（選定理由は docs/acceptance/req3-openapi-generation.md
+      # を参照）。サプライチェーン考慮でバージョン pin する（.claude/rules/security.md）。
+      - name: Ensure openapi-spec-validator 0.7.1
+        run: |
+          if ! openapi-spec-validator --version 2>/dev/null | grep -q '0\.7\.1'; then
+            pip install --user --break-system-packages "openapi-spec-validator==0.7.1"
+          fi
+
+      - name: openapi.json 構文妥当性検証（openapi-spec-validator）
+        run: openapi-spec-validator crates/plugin-openapi/openapi.json
+
   # --------------------------------------------------
   # fuzz smoke（TASK-15.3-1、#87）: crates/http/fuzz（root workspace から exclude 済み、
   # pay-for-what-you-use）の全 fuzz target を短時間（既定 60 秒/target）だけ実行し、

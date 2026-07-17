@@ -1,0 +1,5 @@
+jobs:
+  fmt:
+    name: cargo fmt --check
+    steps:
+      - run: cargo fmt --all --check

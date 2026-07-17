@@ -1,0 +1,6 @@
+jobs:
+  openapi-two-stage:
+    name: openapi 2 段階ビルド
+    steps:
+      - name: openapi-two-stage.sh
+        run: bash scripts/openapi-two-stage.sh
