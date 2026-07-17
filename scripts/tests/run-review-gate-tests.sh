@@ -52,14 +52,18 @@ assert_file_contains() {
     fi
 }
 
-assert_exit_code() {
+# lint 表の各行はコメントアウト（行頭 '#'）されていると Cargo.toml 上は無効になる。
+# assert_file_contains の単純な部分文字列検索はコメントアウトされた行にもマッチしてしまい、
+# 「コメントアウトで deny/forbid を無効化する」退行を見逃す（PR #117 レビュー指摘）。
+# 行頭に非空白文字（'#' を含まない）から始まる、有効な設定行のみを対象にする。
+assert_active_config_line() {
     local desc="$1"
-    local expected="$2"
-    local actual="$3"
-    if [ "${expected}" -eq "${actual}" ]; then
-        pass "${desc}（exit code: ${actual}）"
+    local file="$2"
+    local pattern="$3"
+    if grep -qE "^${pattern}$" "${file}"; then
+        pass "${desc}"
     else
-        fail "${desc}（期待 exit code: ${expected}, 実際: ${actual}）"
+        fail "${desc}（有効な設定行 '${pattern}' が ${file} に見つかりません。コメントアウトされていないか確認してください）"
     fi
 }
 
@@ -88,26 +92,66 @@ for lint in uninit_vec uninit_assumed_init mem_replace_with_uninit transmuting_n
     wrong_transmute unsound_collection_transmute eager_transmute \
     cast_slice_different_sizes zst_offset out_of_bounds_indexing \
     not_unsafe_ptr_arg_deref; do
-    assert_file_contains "forbid lint '${lint}' が Cargo.toml に存在する" "${CARGO_TOML}" "${lint} = \"forbid\""
+    assert_active_config_line "forbid lint '${lint}' が Cargo.toml に有効な状態で存在する" "${CARGO_TOML}" "${lint} = \"forbid\""
 done
 
 # deny 層 3 lint
 for lint in undocumented_unsafe_blocks unnecessary_safety_comment multiple_unsafe_ops_per_block; do
-    assert_file_contains "deny lint '${lint}' が Cargo.toml に存在する" "${CARGO_TOML}" "${lint} = \"deny\""
+    assert_active_config_line "deny lint '${lint}' が Cargo.toml に有効な状態で存在する" "${CARGO_TOML}" "${lint} = \"deny\""
 done
 
-assert_file_contains "unsafe_op_in_unsafe_fn = deny が Cargo.toml に存在する" "${CARGO_TOML}" 'unsafe_op_in_unsafe_fn = "deny"'
+assert_active_config_line "unsafe_op_in_unsafe_fn = deny が Cargo.toml に有効な状態で存在する" "${CARGO_TOML}" 'unsafe_op_in_unsafe_fn = "deny"'
 
 echo "===== オフライン層: ci.yml の ci-complete 集約ゲート構成 ====="
 CI_YML="${REPO_ROOT}/.github/workflows/ci.yml"
 
 assert_file_contains "ci-complete ジョブが存在する" "${CI_YML}" "ci-complete:"
+
 # ci-complete の判定対象（needs）が黙って縮小される退行を検知する。
 # .claude/rules/coding-rust.md が要求する fmt/clippy/test に加え、リポジトリ運用上の
 # doc/dep-audit/unsafe-triage も対象に含める（docs/design/ci-completion-criteria.md）。
-for job in fmt clippy test doc dep-audit unsafe-triage; do
-    assert_file_contains "ci-complete の needs（または依存ジョブ定義）に '${job}' 関連の記述がある" "${CI_YML}" "${job}"
-done
+#
+# 単純なジョブ名の部分文字列検索（grep -qF "${job}" 全体）は、コメントや他ジョブの
+# ジョブ ID・ステップ名にジョブ名が偶然出現するだけで PASS してしまい、実際に
+# needs から削除された退行を検知できない（PR #117 レビュー指摘）。
+# そのため ci-complete ジョブブロックを抽出し、その中の needs 配列の要素として
+# 厳密一致で確認する。
+CI_COMPLETE_BLOCK="$(awk '
+    /^  ci-complete:/ { inblock = 1; print; next }
+    inblock && /^  [A-Za-z0-9_-]+:/ { exit }
+    inblock { print }
+' "${CI_YML}")"
+
+if [ -z "${CI_COMPLETE_BLOCK}" ]; then
+    fail "ci-complete ジョブブロックを ${CI_YML} から抽出できない"
+else
+    NEEDS_LINE="$(printf '%s\n' "${CI_COMPLETE_BLOCK}" | grep -E '^\s*needs:' | head -1)"
+    NEEDS_LIST="$(printf '%s' "${NEEDS_LINE}" | sed -E 's/^\s*needs:\s*\[(.*)\]\s*$/\1/')"
+
+    if [ -z "${NEEDS_LIST}" ]; then
+        for job in fmt clippy test doc dep-audit unsafe-triage; do
+            fail "ci-complete の needs 配列を抽出できない（'${job}' を確認できません）"
+        done
+    else
+        for job in fmt clippy test doc dep-audit unsafe-triage; do
+            found="no"
+            IFS=',' read -ra needs_arr <<< "${NEEDS_LIST}"
+            for item in "${needs_arr[@]}"; do
+                # xargs でトリム（needs: [fmt, clippy, ...] のカンマ区切り前後の空白を除去）
+                item="$(printf '%s' "${item}" | xargs)"
+                if [ "${item}" = "${job}" ]; then
+                    found="yes"
+                    break
+                fi
+            done
+            if [ "${found}" = "yes" ]; then
+                pass "ci-complete の needs 配列に '${job}' が要素として含まれる"
+            else
+                fail "ci-complete の needs 配列に '${job}' が含まれない（needs: [${NEEDS_LIST}]）"
+            fi
+        done
+    fi
+fi
 
 if [ "${MODE}" = "offline" ]; then
     echo
@@ -187,9 +231,14 @@ assert_contains "clippy 出力に uninit_vec が含まれる" "${clippy_out}" "u
 
 # #[allow] による抑制の試行 → forbid 層は E0453（allow が forbid と非互換）で
 # 抑制自体を許さないことを確認する（PoC-9「#[allow] で黙らせるべきではない」への対応）。
-sed -i \
+# `sed -i` はバックアップ拡張子の扱いが GNU sed と BSD sed（macOS）で異なり、
+# 拡張子省略の GNU 形式（`-i ''` 相当を暗黙に許す）は BSD sed ではスクリプト自体を
+# バックアップ拡張子として誤解釈しエラーになる。両方で動く「拡張子を明示して
+# バックアップを作り、直後に削除する」形式に統一する（PR #117 レビュー指摘）。
+sed -i.bak \
     's/#\[allow(dead_code)\]/#[allow(dead_code, clippy::uninit_vec, clippy::undocumented_unsafe_blocks)]/' \
     "${TARGET_LIB}"
+rm -f "${TARGET_LIB}.bak"
 
 set +e
 clippy_allow_out="$(cd "${CLONE_DIR}" && cargo clippy -p bf-http -- -D warnings 2>&1)"

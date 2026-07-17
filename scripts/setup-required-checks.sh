@@ -67,7 +67,11 @@ echo "==> default branch: ${DEFAULT_BRANCH}"
 # - pull_request.required_approving_review_count: 0 は「PR 経由を必須化しつつ、
 #   単独メンテナ + AI レビュー運用（push 前 review）を壊さない」安全側の値。
 #   1 以上への引き上げも同様に人間管理者のダイヤルとする。
-# - bypass_actors は指定しない（= 空。例外なし、fail-closed）。
+# - bypass_actors は明示的に空配列を送る（= 例外なし、fail-closed）。
+#   GitHub の ruleset update（PUT）API はフィールド省略時に既存の bypass_actors を
+#   クリアする保証がない（省略 = 変更なし、と解釈されうる）。冪等なスクリプトの
+#   再実行で既存 bypass 例外が残留するのを防ぐため、必ずフィールドを明示する
+#   （PR #117 レビュー指摘）。
 # --------------------------------------------------
 RULESET_PAYLOAD="$(jq -n \
     --arg name "${RULESET_NAME}" \
@@ -77,6 +81,7 @@ RULESET_PAYLOAD="$(jq -n \
         name: $name,
         target: "branch",
         enforcement: "active",
+        bypass_actors: [],
         conditions: {
             ref_name: {
                 include: ["refs/heads/" + $branch],

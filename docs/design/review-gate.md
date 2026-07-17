@@ -62,7 +62,9 @@ REQ-14 は「人間または追加の AI レビュー」を明示的に許容し
 | `deletion` | 有効 | main ブランチの削除を禁止する |
 | `required_status_checks` | 既存維持（`ci-complete` のみ、`strict_required_status_checks_policy: false`） | TASK-14.1 で確立済み。変更しない |
 
-`bypass_actors` は空のまま維持する（例外経路を作らない、fail-closed）。
+`bypass_actors` は空のまま維持する（例外経路を作らない、fail-closed）。PUT ペイロードでは
+`bypass_actors: []` を明示的に送る（フィールド省略では既存の bypass_actors がクリアされる
+保証がなく、冪等な再実行で例外が残留しうるため）。
 
 ### 人間判断ダイヤル（本タスクでは実施判断を行わない項目）
 
@@ -90,11 +92,14 @@ REQ-14 は「人間または追加の AI レビュー」を明示的に許容し
 （既存 `run-triage-tests.sh` と同じ位置づけ）。
 
 - `Cargo.toml` の `[workspace.lints.clippy]` に forbid 11 lint・deny 3 lint、
-  `[workspace.lints.rust]` に `unsafe_op_in_unsafe_fn = "deny"` が存在することを確認する
-  （TASK-14.2 の lint 表が後から弱体化・削除される退行を検知する）。
-- `.github/workflows/ci.yml` に `ci-complete` ジョブと、判定対象ジョブ（fmt / clippy /
-  test / doc / dep-audit / unsafe-triage）への `needs` が存在することを確認する
-  （集約ゲートの判定対象が黙って縮小される退行を検知する）。
+  `[workspace.lints.rust]` に `unsafe_op_in_unsafe_fn = "deny"` が**行頭からの有効な設定行**
+  として存在することを確認する（TASK-14.2 の lint 表が後から弱体化・削除される退行に加え、
+  コメントアウトによる無効化も検知する）。
+- `.github/workflows/ci.yml` の `ci-complete` ジョブブロックを抽出し、その `needs` 配列の
+  要素として判定対象ジョブ（fmt / clippy / test / doc / dep-audit / unsafe-triage）が
+  厳密一致で存在することを確認する（ファイル全体への単純な部分文字列検索ではなく、
+  `needs` 配列内の要素照合とすることで、コメントや他ジョブ名への偶然の一致を除外し、
+  集約ゲートの判定対象が黙って縮小される退行を確実に検知する）。
 
 ### 3.2 フル層（既定モード、受け入れ実施時に手動/任意実行）
 
