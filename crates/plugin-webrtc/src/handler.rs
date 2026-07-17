@@ -11,7 +11,7 @@
 //! [`bf_http::response::Response`] を直接組み立てて返す（変換層を省く。
 //! `docs/design/plugin-boundary.md` 4.3 節）。
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use bf_http::request::RequestHead;
 use bf_http::response::Response;
@@ -123,9 +123,18 @@ pub async fn try_handle_rtc_offer(
         }
     };
 
+    // complete_signaling が生成した RTCPeerConnection をキャンセル安全に追跡する
+    // 共有セル。tokio::time::timeout がタイムアウトで complete_signaling の
+    // Future を drop（キャンセル）すると、関数内の以降の処理（明示 close・
+    // release_slot 呼び出し）は一切実行されない。生成済みの pc を drop するだけ
+    // では webrtc-rs 内部のタスク・ICE エージェント等のリソース解放が保証
+    // されないため（PR #138 レビュー指摘）、pc 生成直後にこのセルへ公開させ、
+    // タイムアウト時は呼び出し元（本関数）がセルを見て明示的に close する。
+    let pc_cell: Arc<Mutex<Option<Arc<RTCPeerConnection>>>> = Arc::new(Mutex::new(None));
+
     match tokio::time::timeout(
         config.signaling_timeout(),
-        complete_signaling(body, config, slot_id),
+        complete_signaling(body, config, slot_id, Arc::clone(&pc_cell)),
     )
     .await
     {
@@ -136,9 +145,39 @@ pub async fn try_handle_rtc_offer(
             // 予約枠を明示的に解放する（release_slot は多重解放を許容する冪等な
             // 操作なので、complete_signaling が既に解放済みでも安全）。
             config.release_slot(slot_id);
+            if let Some(pc) = pc_cell.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                // キャンセルされた complete_signaling が既に RTCPeerConnection を
+                // 生成していた場合、明示的に close して webrtc-rs 内部のリソースを
+                // 解放する。close() はネットワーク I/O を伴いうるため、504 応答の
+                // 返却をこの完了待ちでブロックしないようバックグラウンドタスクで
+                // 実行する（PR #138 レビュー指摘: タイムアウト時にスロットは解放
+                // されても peer が残り max_peer_connections の実効性が弱まる問題
+                // への対策）。
+                tokio::spawn(async move {
+                    let _ = pc.close().await;
+                });
+            }
             Some(error_response(504, br#"{"error":"signaling_timeout"}"#))
         }
     }
+}
+
+/// pc（生成済みなら）を明示的に `close()` してからレジストリの枠を解放する。
+///
+/// `RTCPeerConnection` を単に `Drop` するだけでは webrtc-rs 内部の ICE エージェント・
+/// タスク等のリソースが解放される保証がないため（PR #138 レビュー指摘）、
+/// [`complete_signaling`] の失敗経路はすべて本関数を経由して明示的に close する
+/// 契約とする。`close()` の失敗（既に close 済み等）は無視してよい
+/// （呼び出し元の目的は「枠の解放」であり、close 失敗はそれを妨げない）。
+async fn close_and_release(
+    pc: Option<Arc<RTCPeerConnection>>,
+    config: &WebRtcConfig,
+    slot_id: u64,
+) {
+    if let Some(pc) = pc {
+        let _ = pc.close().await;
+    }
+    config.release_slot(slot_id);
 }
 
 /// SDP Offer の JSON パースから Answer 生成までのシグナリング本体。
@@ -147,14 +186,27 @@ pub async fn try_handle_rtc_offer(
 /// （シグナリング全体のタイムアウト適用範囲を本関数の呼び出し全体に一致させるため、
 /// 早期 return を含む全経路がこの関数内で完結する設計）。`slot_id` は呼び出し元が
 /// [`WebRtcConfig::reserve_slot`] で予約済みの枠 ID。**すべての失敗経路で
-/// `config.release_slot(slot_id)` を呼び、予約枠をリークさせない契約**とする
-/// （呼び出し元の `try_handle_rtc_offer` はタイムアウト時のみ独自に解放するため、
-/// この関数内の経路と合わせて二重解放になりうるが `release_slot` は冪等）。
-async fn complete_signaling(body: &[u8], config: &WebRtcConfig, slot_id: u64) -> Response {
+/// [`close_and_release`] を呼び、予約枠をリークさせない契約**とする（呼び出し元の
+/// `try_handle_rtc_offer` はタイムアウト時のみ独自に `release_slot` するため、この
+/// 関数内の経路と合わせて二重解放になりうるが `release_slot` は冪等）。
+///
+/// `pc_cell` は `try_handle_rtc_offer` と共有するキャンセル安全な追跡セル。
+/// `RTCPeerConnection` 生成直後にこのセルへ公開し、以降の失敗経路で `take()` して
+/// クリアする契約とする（`take()` し忘れると、正常完了後に呼び出し元が誤って
+/// 二重 close を試みる可能性があるため、`close_and_release`・`activate_slot` の
+/// 直前に必ずクリアする）。`tokio::time::timeout` が本関数の Future を drop
+/// （キャンセル）した場合はここから先のコードが一切実行されないため、セルに
+/// 公開済みの `pc` を呼び出し元がタイムアウト分岐で明示的に close する。
+async fn complete_signaling(
+    body: &[u8],
+    config: &WebRtcConfig,
+    slot_id: u64,
+    pc_cell: Arc<Mutex<Option<Arc<RTCPeerConnection>>>>,
+) -> Response {
     let offer: RTCSessionDescription = match serde_json::from_slice(body) {
         Ok(offer) => offer,
         Err(_) => {
-            config.release_slot(slot_id);
+            close_and_release(None, config, slot_id).await;
             return error_response(400, br#"{"error":"invalid_offer_json"}"#);
         }
     };
@@ -162,22 +214,28 @@ async fn complete_signaling(body: &[u8], config: &WebRtcConfig, slot_id: u64) ->
     let pc = match build_peer_connection().await {
         Ok(pc) => pc,
         Err(_) => {
-            config.release_slot(slot_id);
+            close_and_release(None, config, slot_id).await;
             return error_response(500, br#"{"error":"peer_connection_init_failed"}"#);
         }
     };
 
+    // 以降の await 点でタイムアウトによりキャンセルされる可能性があるため、pc を
+    // 共有セルへ公開する（本関数 doc の契約を参照）。
+    *pc_cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&pc));
+
     register_echo_handler(&pc);
 
     if pc.set_remote_description(offer).await.is_err() {
-        config.release_slot(slot_id);
+        pc_cell.lock().unwrap_or_else(|e| e.into_inner()).take();
+        close_and_release(Some(pc), config, slot_id).await;
         return error_response(400, br#"{"error":"invalid_remote_description"}"#);
     }
 
     let answer = match pc.create_answer(None).await {
         Ok(answer) => answer,
         Err(_) => {
-            config.release_slot(slot_id);
+            pc_cell.lock().unwrap_or_else(|e| e.into_inner()).take();
+            close_and_release(Some(pc), config, slot_id).await;
             return error_response(500, br#"{"error":"create_answer_failed"}"#);
         }
     };
@@ -186,7 +244,8 @@ async fn complete_signaling(body: &[u8], config: &WebRtcConfig, slot_id: u64) ->
     // 完結させる（PoC-5 の簡易実装を踏襲。トリクル ICE は REQ-8 でスコープ外）。
     let mut gather_complete = pc.gathering_complete_promise().await;
     if pc.set_local_description(answer).await.is_err() {
-        config.release_slot(slot_id);
+        pc_cell.lock().unwrap_or_else(|e| e.into_inner()).take();
+        close_and_release(Some(pc), config, slot_id).await;
         return error_response(500, br#"{"error":"set_local_description_failed"}"#);
     }
     let _ = gather_complete.recv().await;
@@ -194,7 +253,8 @@ async fn complete_signaling(body: &[u8], config: &WebRtcConfig, slot_id: u64) ->
     let local_desc = match pc.local_description().await {
         Some(desc) => desc,
         None => {
-            config.release_slot(slot_id);
+            pc_cell.lock().unwrap_or_else(|e| e.into_inner()).take();
+            close_and_release(Some(pc), config, slot_id).await;
             return error_response(500, br#"{"error":"local_description_missing"}"#);
         }
     };
@@ -202,14 +262,17 @@ async fn complete_signaling(body: &[u8], config: &WebRtcConfig, slot_id: u64) ->
     let answer_bytes = match serde_json::to_vec(&local_desc) {
         Ok(bytes) => bytes,
         Err(_) => {
-            config.release_slot(slot_id);
+            pc_cell.lock().unwrap_or_else(|e| e.into_inner()).take();
+            close_and_release(Some(pc), config, slot_id).await;
             return error_response(500, br#"{"error":"serialization_failed"}"#);
         }
     };
 
-    // シグナリング成功。予約枠をアクティブな接続へ遷移させ、以降このプロセス内で
+    // シグナリング成功。もはやタイムアウト分岐の明示 close は不要なのでセルを
+    // クリアしてから、予約枠をアクティブな接続へ遷移させ、以降このプロセス内で
     // `RTCPeerConnection` を保持し続ける。クローズ・失敗検知時の枠除去は
     // register_close_handler が担う（レジストリの単調増加を防ぐ）。
+    pc_cell.lock().unwrap_or_else(|e| e.into_inner()).take();
     register_close_handler(&pc, config, slot_id);
     config.activate_slot(slot_id, pc);
 
@@ -426,5 +489,72 @@ mod tests {
         // タイムアウト（504）・不正 SDP による早期の 400 のどちらも許容する
         // （PoC-9 教訓: 環境依存のタイミングで parse が先に終わる場合がある）。
         assert!(response.status == 504 || response.status == 400);
+    }
+
+    #[tokio::test]
+    async fn close_and_release_closes_provided_peer_connection_and_frees_slot() {
+        // PR #138 レビュー指摘の再発防止テスト: close_and_release（timeout 分岐・
+        // complete_signaling の失敗経路が共通で使う後始末関数）が pc を明示的に
+        // close し、レジストリの枠も解放することを直接検証する。
+        let config = WebRtcConfig::new().with_max_peer_connections(1);
+        let slot_id = config.reserve_slot().expect("1 件目は予約できる");
+        let pc = build_peer_connection()
+            .await
+            .expect("RTCPeerConnection の生成に失敗した");
+
+        assert!(
+            config.reserve_slot().is_none(),
+            "上限到達時（1/1 使用中）は新規予約できないはず"
+        );
+
+        close_and_release(Some(Arc::clone(&pc)), &config, slot_id).await;
+
+        assert_eq!(
+            pc.connection_state(),
+            RTCPeerConnectionState::Closed,
+            "close_and_release は pc を明示的に close するはず"
+        );
+        assert!(
+            config.reserve_slot().is_some(),
+            "close_and_release はレジストリの枠も解放するはず"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_complete_signaling_leaves_pc_in_cell_for_caller_to_close() {
+        // PR #138 レビュー指摘の再発防止テスト: complete_signaling の Future が
+        // pc 生成後・シグナリング完了前にキャンセル（drop）された場合でも、pc_cell に
+        // 公開済みの pc を呼び出し元が検知できることを、tokio::time::timeout と同じ
+        // キャンセル機構（Future の drop）で直接検証する。
+        let body = br#"{"type":"offer","sdp":"not a valid sdp"}"#;
+        let config = WebRtcConfig::new();
+        let slot_id = config.reserve_slot().expect("予約できる");
+        let pc_cell: Arc<Mutex<Option<Arc<RTCPeerConnection>>>> = Arc::new(Mutex::new(None));
+
+        // 即時に elapsed する timeout で complete_signaling を包み、pc 生成後の
+        // 最初の await 点（set_remote_description）でキャンセルされることを狙う
+        // （tokio::time::timeout は deadline 経過時に inner Future を drop する）。
+        let result = tokio::time::timeout(
+            Duration::from_nanos(1),
+            complete_signaling(body, &config, slot_id, Arc::clone(&pc_cell)),
+        )
+        .await;
+
+        if result.is_err() {
+            // キャンセルされた場合のみ、pc_cell に pc が残っていることを確認できる
+            // （環境依存のタイミングで pc 生成前にタイムアウトする可能性も許容する）。
+            let maybe_pc = pc_cell.lock().unwrap().take();
+            if let Some(pc) = maybe_pc {
+                assert_ne!(
+                    pc.connection_state(),
+                    RTCPeerConnectionState::Closed,
+                    "drop だけでは pc は close 状態にならない（本テストの前提）"
+                );
+                // 呼び出し元（try_handle_rtc_offer）が行う後始末と同じ処理を実行し、
+                // 明示的に close できることを確認する。
+                let _ = pc.close().await;
+                assert_eq!(pc.connection_state(), RTCPeerConnectionState::Closed);
+            }
+        }
     }
 }
