@@ -18,3 +18,7 @@
 - [`improvement-proposal-flow.md`](./improvement-proposal-flow.md): 改善提案フロー
   （TASK-12.1-2、#80、REQ-12(a)。検知 → トリアージ → 提案 → 承認 → 実装 → 検証ゲート →
   クローズの各段階と 4 分析軸の入力ソース対応を記述）
+- [`feature-modification-flow.md`](./feature-modification-flow.md): 追加機能改修フロー
+  （TASK-12.2-2、#82、REQ-12(b)。ドキュメント追随（変更種別 → 追随ドキュメントの
+  マッピング）と完遂判定（`ci-complete` + レビューゲート + ドキュメント追随の 3 条件）を
+  改修フローの終端ゲートとして記述）
