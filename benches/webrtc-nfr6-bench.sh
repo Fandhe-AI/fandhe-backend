@@ -23,14 +23,22 @@
 
 set -euo pipefail
 
+# lib/common.sh は DURATION=15s / CONNECTIONS=128 を既定値としてソース時に確定
+# させてしまうため、`${DURATION:-5s}` のような事後デフォルト指定は常に無効化される
+# （bash はソース済み変数がある限り `:-` フォールバックを発火しない）。
+# 呼び出し元が env で明示指定したかどうかを source 前に退避し、未指定時のみ
+# 本スクリプト固有の既定値（5s/32、NFR-6 計測の軽量デフォルト）を後段で復元する。
+_CALLER_DURATION="${DURATION-}"
+_CALLER_CONNECTIONS="${CONNECTIONS-}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
 RUNS="${RUNS:-5}"
-DURATION="${DURATION:-5s}"
-CONNECTIONS="${CONNECTIONS:-32}"
+DURATION="${_CALLER_DURATION:-5s}"
+CONNECTIONS="${_CALLER_CONNECTIONS:-32}"
 
 BASELINE_BIN="${WORKSPACE_ROOT}/target/release/examples/minimal"
 WEBRTC_BIN="${WORKSPACE_ROOT}/target/release/examples/webrtc_nfr6"

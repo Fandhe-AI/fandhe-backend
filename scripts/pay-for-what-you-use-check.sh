@@ -366,7 +366,7 @@ fi
 # （TARGET_DIR-geiger、上記コメント参照）のため、削除しても他ジョブの成果物には影響しない。
 rm -rf "${TARGET_DIR}-geiger"
 echo "[disk] (c) 後の空き容量:" >&2
-df -h "${WORKSPACE_ROOT}/target" 2>/dev/null >&2 || df -h >&2 || true
+df -h "${WORKSPACE_ROOT}/target" >&2 2>/dev/null || df -h >&2 || true
 
 # =============================================================================
 # (d) バイナリサイズ計測（コード 0 件）
@@ -460,7 +460,7 @@ fi
 # 作成していないため rm -rf は no-op（存在しないパスの削除は -f で無害）。
 rm -rf "${TARGET_DIR}" "${TARGET_DIR}-all"
 echo "[disk] (d) 後・(e) 開始前の空き容量:" >&2
-df -h "${WORKSPACE_ROOT}/target" 2>/dev/null >&2 || df -h >&2 || true
+df -h "${WORKSPACE_ROOT}/target" >&2 2>/dev/null || df -h >&2 || true
 
 # =============================================================================
 # (e) 全構成ビルド検証
@@ -504,7 +504,7 @@ else
         # 出力する（(c)(d) 後の cleanup 実施済みでも枯渇する場合、(e) 単体のビルド量が
         # 原因と判断できる。上記 cleanup コメント参照）。
         echo "[disk] (e) 失敗時点の空き容量:" >&2
-        df -h "${WORKSPACE_ROOT}/target" 2>/dev/null >&2 || df -h >&2 || true
+        df -h "${WORKSPACE_ROOT}/target" >&2 2>/dev/null || df -h >&2 || true
         # /tmp 配下のログは CI ランナー上でジョブ終了後に消え、GitHub Actions の
         # ログにも残らない（(d) と同じ理由）。原因調査を次回実行で即座に行えるよう、
         # stdout（CI ログに残る）へも失敗構成それぞれのログ全文を出力する。今回失敗
