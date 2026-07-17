@@ -28,9 +28,18 @@ use crate::server::Server;
 /// 無効」であり、呼び出し元は既定 `Handler::handle`（未登録時 404）へ
 /// フォールスルーする。
 ///
-/// `webrtc-proxy` feature 無効時は `server`/`head`/`body` を一切参照せず
-/// 即座に `None` を返す（`cargo tree` で `bf-plugin-webrtc-proxy` が現れない
-/// ことに加え、本関数自体もコード上ゼロコストであることの根拠）。
+/// `webrtc-proxy`・`webrtc` の両 feature が無効時は `server`/`head`/`body` を一切
+/// 参照せず即座に `None` を返す（`cargo tree` で `bf-plugin-webrtc-proxy`・
+/// `bf-plugin-webrtc` のいずれも現れないことに加え、本関数自体もコード上
+/// ゼロコストであることの根拠）。
+///
+/// 両 feature が同時に有効な場合（`--all-features` CI 構成）は `webrtc-proxy`
+/// （別プロセス切り出し型、REQ-8 の MVP 推奨方式）を先に評価する。両方を
+/// `Server` に登録していても `webrtc-proxy` 側が `Some` を返した時点で `webrtc`
+/// 側（in-process 型、TASK-8.1 / #26）は評価しない（実運用では通常どちらか
+/// 片方のみ登録するため、この優先順位が問題になるのは意図的に両方登録した
+/// 場合に限る。`crates/core/src/server.rs` の `Server::webrtc_proxy` /
+/// `Server::webrtc` の doc を参照）。
 pub(crate) async fn try_intercept(
     server: &Server,
     head: &RequestHead,
@@ -46,10 +55,20 @@ pub(crate) async fn try_intercept(
         }
     }
 
-    // feature 無効時は上の cfg ブロックが丸ごと消え、引数が未使用になる。
-    // 警告を出さないための明示的な no-op（feature 有効時は上のブロックが
-    // 全引数を使用するため、このブロック自体も cfg で排他する）。
-    #[cfg(not(feature = "webrtc-proxy"))]
+    #[cfg(feature = "webrtc")]
+    {
+        if let Some(config) = server.webrtc_config()
+            && let Some(response) = bf_plugin_webrtc::try_handle_rtc_offer(head, body, config).await
+        {
+            return Some(response);
+        }
+    }
+
+    // feature が 1 つも有効でない場合は上の cfg ブロックが丸ごと消え、引数が
+    // 未使用になる。警告を出さないための明示的な no-op（いずれかの feature が
+    // 有効な場合は上のブロックが全引数を使用するため、このブロック自体も cfg で
+    // 排他する）。
+    #[cfg(not(any(feature = "webrtc-proxy", feature = "webrtc")))]
     {
         let _ = (server, head, body);
     }

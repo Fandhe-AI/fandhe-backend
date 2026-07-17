@@ -52,9 +52,9 @@ feature 分岐が必要になった場合も、コアループ側はヘルパー
 | シーム | 対象パターン | 状態 |
 |--------|-------------|------|
 | `try_handle_upgrade`（`server.rs` 内非公開関数） | 長時間接続（WebSocket 等）への委譲 | 実 WebSocket プラグイン（TASK-4.1）配線まではスタブ（常に `Some(stream)`） |
-| `plugin::try_intercept`（`crates/core/src/plugin.rs`） | リクエスト/レスポンス完結型プラグインへのパスインターセプト | `webrtc-proxy` で配線済み（本タスク） |
+| `plugin::try_intercept`（`crates/core/src/plugin.rs`） | リクエスト/レスポンス完結型プラグインへのパスインターセプト | `webrtc-proxy`（TASK-2.1）・`webrtc`（TASK-8.1 / #26、in-process 型）で配線済み |
 
-## 4. パスインターセプト型パターン（本タスクで確立）
+## 4. パスインターセプト型パターン（本タスクで確立、TASK-8.1 / #26 で 2 例目を追加）
 
 `plugin::try_intercept(server: &Server, head: &RequestHead, body: &[u8]) ->
 Option<bf_http::response::Response>` が固定シグネチャのシーム。
@@ -75,7 +75,16 @@ pub(crate) async fn try_intercept(
         }
     }
 
-    #[cfg(not(feature = "webrtc-proxy"))]
+    #[cfg(feature = "webrtc")]
+    {
+        if let Some(config) = server.webrtc_config()
+            && let Some(response) = bf_plugin_webrtc::try_handle_rtc_offer(head, body, config).await
+        {
+            return Some(response);
+        }
+    }
+
+    #[cfg(not(any(feature = "webrtc-proxy", feature = "webrtc")))]
     {
         let _ = (server, head, body);
     }
@@ -83,6 +92,14 @@ pub(crate) async fn try_intercept(
     None
 }
 ```
+
+TASK-8.1（#26）で `webrtc` feature（in-process 型、`crates/plugin-webrtc`）を
+2 例目として追加した。両 feature が `--all-features` で同時有効な場合、
+`webrtc-proxy`（別プロセス切り出し型、REQ-8 の MVP 推奨方式）を先に評価する
+運用判断とした（実運用では通常どちらか片方のみ `Server` へ登録するため、この
+優先順位が問題になるのは意図的に両方登録した場合に限る）。`webrtc` feature
+無効時は追加した cfg ブロックが丸ごと消え、`webrtc-proxy` 側の既存挙動には
+影響しない。
 
 - `Some(response)`: プラグインが処理を完結させた。呼び出し元（`handle_connection`）
   は既定 `Handler::handle` を呼ばずにこの応答をそのまま送出する
@@ -135,6 +152,15 @@ reason, content_type, body }`）はコアが送出する `bf_http::response::Res
 劣化する。PoC-9 教訓: ステータスコードのみの検証はこの劣化を見逃す。統合
 テストは必ず reason/Content-Type/body まで含めて検証すること）。
 
+**TASK-8.1（#26）での簡素化**: `bf-plugin-webrtc-proxy` が独自の中間 `Response`
+型（`status`/`reason`/`content_type`/`body`）を持つのは、本パターン確立前
+（配線が未確立だった TASK-8.2-2 時点）の歴史的経緯である。`bf-plugin-webrtc`
+（TASK-8.1）は配線パターンが既に存在する状態で新設したため、この変換層を
+省き [`bf_http::response::Response`] を直接組み立てて返す（`try_intercept` は
+`Some(response)` をそのまま返し、`from_plugin_response` 相当の変換関数を経由
+しない）。後続プラグインも、配線パターン確立後に新設する場合はこの簡素化版
+（`bf_http::response::Response` を直接返す）を優先すること。
+
 ## 5. Upgrade 型パターンへの適用指針（後続タスク向け）
 
 本タスクでは `try_handle_upgrade` の実差し替えは行わない（実 WebSocket
@@ -157,7 +183,7 @@ reason, content_type, body }`）はコアが送出する `bf_http::response::Res
 | テスト | `cargo test -p backend-framework-core`（無効）／`--features webrtc-proxy`／`cargo test --workspace --all-features` | すべて green（`crates/core/tests/plugin_boundary.rs`・`plugin_boundary_disabled.rs`） |
 | lint | `cargo clippy -p backend-framework-core --all-targets --no-default-features -- -D warnings`／`--features webrtc-proxy`／`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 警告 0 件 |
 | doc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps` | 警告 0 件 |
-| 依存監査 | `scripts/dep-audit.sh` | `webrtc-proxy` を含む動的列挙構成で違反 0 件 |
+| 依存監査 | `scripts/dep-audit.sh` | `webrtc-proxy`・`webrtc` を含む動的列挙構成で違反 0 件（`webrtc` feature 有効化に伴い `deny.toml` の許可ライセンスへ `ISC` を追加済み） |
 
 ## 6.1 `scripts/dep-direction-check.sh` ホワイトリストの例外（TASK-1.5 との整合）
 
@@ -181,6 +207,13 @@ REQ-2 が要求する「feature flag + `dep:` 構文によるコンパイル時�
 feature 無効時は本エッジ自体が未解決のまま消えるため pay-for-what-you-use
 は維持される（6 節の検証コマンドで確認済み）。詳細な例外根拠・DFS 循環
 検出との関係は `scripts/dep-direction-check.sh` の当該コメントを正とする。
+
+TASK-8.1（#26）は同一理由（3 拡張点の同期 API 限定に非同期呼び出しを持ち込め
+ない）で `backend-framework-core:bf-plugin-webrtc` を 2 件目の個別例外として
+許可リストへ追加した。チェック 3（プラグイン非依存検査）の除外パターンも
+`bf_plugin_webrtc\b`（`bf_plugin_webrtc_proxy` の部分文字列にならないよう
+単語境界付き）・`webrtc_config` を追加して対応済み（`scripts/dep-direction-check.sh`
+本体コメント参照）。
 
 ## 7. スコープ外（別タスクで対応）
 

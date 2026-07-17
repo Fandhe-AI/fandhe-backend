@@ -31,12 +31,16 @@ backend-framework/
 ├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）
 ├── rust-toolchain.toml    # stable + rustfmt/clippy
 ├── crates/                # cargo workspace
-│   ├── core                           # 最小コア。`webrtc-proxy` feature（TASK-2.1、#18）で
-│   │                                    # `plugin-webrtc-proxy` を `dep:` 構文により着脱可能に配線済み
+│   ├── core                           # 最小コア。`webrtc-proxy`（TASK-2.1、#18）・`webrtc`
+│   │                                    # （TASK-8.1、#26）feature で各プラグインを `dep:` 構文
+│   │                                    # により着脱可能に配線済み（`webrtc-proxy` 優先評価）
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
-│   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（TASK-8.2-2、#74。
-│   │                                    # `crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
+│   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
+│   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
+│   ├── plugin-webrtc                  # in-process WebRTC プラグイン（`webrtc-rs` 直接依存、TASK-8.1、#26。
+│   │                                    # `crates/core` の `webrtc` feature 経由で配線。攻撃表面が大きいため
+│   │                                    # `plugin-webrtc-proxy` が MVP 推奨、クレート境界で完全分離）
 │   ├── plugin-openapi                 # OpenAPI ドキュメント生成プラグイン（ApiDoc + utoipa::path 定義、TASK-3.1、#30。
 │   │                                   # gen-openapi CLI・openapi.json 静的埋め込み、TASK-3.2、#31）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
