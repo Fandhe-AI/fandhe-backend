@@ -74,7 +74,7 @@ use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use bf_http::body::BodyError;
 use bf_http::buffer::RecvBuffer;
@@ -503,8 +503,12 @@ impl BoundServer {
             };
             let server = Arc::clone(&self.server);
             tokio::spawn(async move {
-                handle_connection(&server, stream).await;
-                drop(permit);
+                // permit は WebSocket 委譲時に `handle_connection_with_permit`
+                // 内部で専用タスクへ move されうる（TASK-4.2 / #23、
+                // `crate::plugin::try_handle_upgrade` の doc「permit の契約」
+                // を参照）。move された場合ここでの `drop` は無 op（`None`）
+                // であり、二重解放や早期解放は起きない。
+                handle_connection_with_permit(&server, stream, Some(permit)).await;
             });
         }
     }
@@ -523,9 +527,36 @@ impl BoundServer {
 ///
 /// 本関数の中に `#[cfg(feature = "...")]` を一切持たない（本モジュール冒頭の
 /// doc を参照）。
-pub async fn handle_connection<S>(server: &Server, mut stream: S)
+///
+/// 公開 API としては `permit` を持たない薄いラッパー
+/// （`handle_connection_with_permit`（`pub(crate)`）に `None` を渡すだけ）を
+/// 維持し、既存の呼び出し元・テスト（`tokio::io::duplex` を使う統合テスト等）
+/// との互換性を保つ。実接続（[`BoundServer::run`]）は `permit` を伴う内部版を
+/// 直接呼ぶ（本モジュール内の該当関数 doc を参照）。
+pub async fn handle_connection<S>(server: &Server, stream: S)
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    handle_connection_with_permit(server, stream, None).await;
+}
+
+/// [`handle_connection`] の内部実装（`pub(crate)`、TASK-4.2 / #23）。
+///
+/// `permit` は [`BoundServer::run`] が保持する同時接続数上限の
+/// `OwnedSemaphorePermit`（`.claude/rules/security.md` のリソース枯渇 DoS
+/// 対策）。関数が戻る時点で `permit`（ローカル所有の `Option`）はスコープを
+/// 抜けて自動的に drop され、`Some` なら通常どおり解放される。WebSocket
+/// への委譲が確定した場合は `crate::plugin::try_handle_upgrade` が
+/// `permit.take()` で所有権をセッション専用タスクへ move し、この関数側の
+/// `permit` は `None` のまま戻る（drop は no-op）。これにより、長時間生存
+/// する WS セッションも `max_connections` のカウントから漏れない
+/// （`crate::plugin::try_handle_upgrade` の doc「permit の契約」を参照）。
+pub(crate) async fn handle_connection_with_permit<S>(
+    server: &Server,
+    mut stream: S,
+    mut permit: Option<OwnedSemaphorePermit>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let mut buf = RecvBuffer::new();
     // 接続の総生存期間・keep-alive 中の総リクエスト数を計測する（#70 レビュー
@@ -635,7 +666,15 @@ where
             // （TASK-4.1 / #22、先行到着フレームを取りこぼさないため）。
             let leftover = buf.unread().to_vec();
             drop(buf);
-            match crate::plugin::try_handle_upgrade(stream, &request.head, leftover, server).await {
+            match crate::plugin::try_handle_upgrade(
+                stream,
+                &request.head,
+                leftover,
+                server,
+                &mut permit,
+            )
+            .await
+            {
                 Some(mut stream) => {
                     // websocket feature 無効時、または `UpgradeHandler` が
                     // マッチしたのに対応する Upgrade 型プラグインが未登録の
