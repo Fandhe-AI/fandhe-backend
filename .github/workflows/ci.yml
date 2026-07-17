@@ -282,6 +282,12 @@ jobs:
       - name: run-triage-tests.sh（audit/unsafe トリアージロジックのセルフテスト）
         run: bash scripts/tests/run-triage-tests.sh
 
+      # TASK-12.2-1（#81）: feature-flow-check.sh（機能要求→実装→テスト一貫改修フローの
+      # 実装/テスト同時性チェック）のセルフテストのみを CI 化する。feature-flow-check.sh
+      # 本体を PR の必須ゲートとして組み込む対応（完遂判定への接続）は #82 のスコープ。
+      - name: run-feature-flow-tests.sh（feature-flow-check.sh のセルフテスト）
+        run: bash scripts/tests/run-feature-flow-tests.sh
+
       - name: run-review-gate-tests.sh --offline（レビューゲート運用のオフライン退行検知、TASK-14.3、#41）
         run: bash scripts/tests/run-review-gate-tests.sh --offline
 

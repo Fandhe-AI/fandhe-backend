@@ -18,10 +18,11 @@
 - [`improvement-proposal-flow.md`](./improvement-proposal-flow.md): 改善提案フロー
   （TASK-12.1-2、#80、REQ-12(a)。検知 → トリアージ → 提案 → 承認 → 実装 → 検証ゲート →
   クローズの各段階と 4 分析軸の入力ソース対応を記述）
-- [`feature-modification-flow.md`](./feature-modification-flow.md): 追加機能改修フロー
-  （TASK-12.2-2、#82、REQ-12(b)。ドキュメント追随（変更種別 → 追随ドキュメントの
-  マッピング）と完遂判定（`ci-complete` + レビューゲート + ドキュメント追随の 3 条件）を
-  改修フローの終端ゲートとして記述）
+- [`feature-modification-flow.md`](./feature-modification-flow.md): 機能要求→実装→
+  テスト→ドキュメント追随→完遂判定の一貫改修フロー（TASK-12.2-1/#81 + TASK-12.2-2/#82、
+  REQ-12(b)。改善提案フローと対になる、外部からの機能要求を起点とするフロー。受付形式・
+  要求解釈・影響範囲判定・実装・テスト追加・検証ゲート・ドキュメント追随・完遂判定の
+  各段階と TASK-12.3 との境界を記述）
 - [`feasibility-guardrail.md`](./feasibility-guardrail.md): 対応可否自律判断ガードレール
   （TASK-12.3-1、#83、REQ-12(c)。判定の 3 軸・判定区分 4 値・曖昧要求/未定義依存/安全性
   方針衝突/明確な脆弱性を招く要求の不可判定 4 カテゴリの基準を PoC-9 T-11〜T-15 と
