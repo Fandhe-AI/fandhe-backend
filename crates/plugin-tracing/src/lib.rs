@@ -20,6 +20,13 @@
 //! （[`TracingLayer::record_response`] の doc を参照）。TASK-10.4 の性能
 //! 再検証（RPS 劣化 5% 以内）の前提となる。
 //!
+//! TASK-10.4（#59）で 3 緩和策適用後の性能再検証を実施した結果、`GET /health`
+//! 相当の高頻度パスで RPS 劣化 3.34%・p95 悪化 2.77%（PoC-10 実測: 劣化
+//! 31.6%・悪化 61.7%）となり、REQ-10 の成功基準（RPS 劣化 5% 以内・p95 悪化
+//! 110% 以内）を満たすことを確認した。計測ハーネス・生ログ・判定は
+//! `benches/tracing-nfr-bench.sh` / `scripts/accept/tracing-accept.sh` /
+//! `benches/reports/task-10.4-tracing-performance.md` を参照。
+//!
 //! # 責務境界
 //!
 //! - [`Sampler`][]: 一定割合のみ記録を許可する決定的カウンタ判定
