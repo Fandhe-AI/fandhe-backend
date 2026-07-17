@@ -1,8 +1,9 @@
 # scripts/accept — 受け入れ検証スクリプト
 
 `core-deps-unsafe-audit.sh`（REQ-1）・`plugin-mechanism-accept.sh`（REQ-2、TASK-2.4）・
-`dep-audit-accept.sh`（REQ-15、TASK-15.4）の 3 スクリプトを収録する。以下はまず REQ-1
-側の詳細、REQ-2・REQ-15 側は本ファイル末尾を参照。
+`dep-audit-accept.sh`（REQ-15、TASK-15.4）・`req13-change-impact-accept.sh`（REQ-13、TASK-13.2）
+の 4 スクリプトを収録する。以下はまず REQ-1 側の詳細、REQ-2・REQ-15・REQ-13 側は
+本ファイル末尾を参照。
 
 `docs/spec/04-requirements.md` REQ-1（最小コア）の受け入れ基準のうち、**性能計測を除く**
 非性能系の受け入れ基準（依存クレート数比・unsafe 根拠・audit / deny・実質コード行数・
@@ -139,6 +140,34 @@ PASS を偽らない）。手動計測手順・実行結果は
 `scripts/tests/run-dep-audit-accept-tests.sh`（ネットワーク・cargo ビルド・監査ツールに
 非依存。判定ロジックのみを `scripts/tests/fixtures/dep-audit-accept/` の fixture で
 検証する）。`.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる。
+
+## `req13-change-impact-accept.sh` — REQ-13（変更影響範囲の機械判定構造）受け入れ検証（TASK-13.2、#50）
+
+`docs/spec/04-requirements.md` REQ-13 の受け入れ基準（拡張点への閉包可否・閉じない場合の
+理由明記、依存方向の機械可読明示）を基準 A〜F で検証する
+（`docs/design/dependency-graph-contract.md` 対応）。`core-deps-unsafe-audit.sh` と同じ
+`lib/common.sh`（PASS/FAIL/SKIP/WARN 集計）を共有する。
+
+```bash
+./scripts/accept/req13-change-impact-accept.sh
+```
+
+検証内容（基準 A〜F）:
+
+- A. 依存方向一方向性の機械検証（`scripts/dep-direction-check.sh` の呼び出し）
+- B. プラグイン全クレートの拡張点対応宣言（`crates/plugin-*/src/lib.rs` の
+  `//! 拡張点対応: <値>` 統一形式・許可語彙・参照先設計文書の存在）
+- C. 契約ドキュメント（`docs/design/dependency-graph-contract.md`）の存在・必須セクション
+- D. 実例 3 コミット（WebSocket/GraphQL/WebRTC）の閉包判定再現
+- E. 閉包違反（WebRTC の E ファイル `crates/http/src/response.rs`）の理由明記照合
+- F. `scripts/extension-closure-check.sh` / `scripts/extension-closure-gate.sh` の
+  セルフテスト
+
+`--crates-dir <dir>` / `--contract-doc <file>` でそれぞれ基準 B・基準 C の検証対象を
+差し替え可能（`scripts/tests/run-req13-accept-tests.sh` のセルフテスト用注入口、
+`dep-direction-check.sh` の `--crates-dir` 慣例を踏襲）。
+
+実行結果レポートは `docs/acceptance/req13-change-impact.md` に記録する。
 
 ## `webrtc-accept.sh` — REQ-8（WebRTC）受け入れ検証（TASK-8.4、#29）
 

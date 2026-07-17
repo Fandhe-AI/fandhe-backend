@@ -292,6 +292,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # TASK-13.2（#50）: extension-closure-check.sh --commit / gate の merge-base
+          # 解決・req13-change-impact-accept.sh 基準 D（実コミット 3ae6d11 等の再現）が
+          # フル履歴を要するため、本ジョブに限り shallow clone（既定 depth=1）を解除する。
+          # TASK-13.1（#49）時点で「shallow clone で誤 FAIL するため CI に組み込まない」と
+          # されていた制約はこれで解消する（docs/design/extension-closure-verification.md
+          # 7 節参照）。他ジョブ（fmt/clippy/test 等）は履歴を要さないため既定のまま。
+          fetch-depth: 0
 
       # dep-direction-check.sh（下記）が `cargo metadata` を要するため toolchain を
       # 同期する。既存ステップ（grep ベース）は cargo 非依存のため影響しない。
@@ -338,11 +346,30 @@ jobs:
         run: bash scripts/tests/run-dep-audit-accept-tests.sh
 
       # TASK-13.1（#49）: extension-closure-check.sh（拡張点への変更影響範囲閉包の機械判定）
-      # のセルフテストのみを CI 化する。実コミット（3ae6d11 等）への適用検証は shallow
-      # clone で履歴が無いと誤 FAIL するため CI には組み込まない（docs/design/
-      # extension-closure-verification.md 参照。常設受け入れテスト化は TASK-13.2/#50）。
+      # のセルフテスト。
       - name: run-extension-closure-tests.sh（extension-closure-check.sh のセルフテスト）
         run: bash scripts/tests/run-extension-closure-tests.sh
+
+      # TASK-13.2（#50）: extension-closure-gate.sh（新規プラグイン追加 PR への拡張点閉包
+      # ゲートの自動実行、docs/design/dependency-graph-contract.md 4 節）のセルフテスト。
+      - name: run-extension-closure-gate-tests.sh（extension-closure-gate.sh のセルフテスト）
+        run: bash scripts/tests/run-extension-closure-gate-tests.sh
+
+      # TASK-13.2（#50）: PR 差分に対する拡張点閉包ゲートの実行。crates/plugin-* /
+      # crates/core/src/plugin.rs を含まない PR は SKIP（exit 0）、含む PR は
+      # 閉包判定 + E ファイルの理由明記照合を行う（docs/design/dependency-graph-contract.md
+      # 4 節）。push/schedule/workflow_dispatch では base_ref が定義されないため
+      # pull_request イベントのみで実行する。
+      - name: extension-closure-gate.sh（拡張点閉包 PR ゲート）
+        if: github.event_name == 'pull_request'
+        run: bash scripts/extension-closure-gate.sh --base "origin/${{ github.base_ref }}"
+
+      # TASK-13.2（#50）: REQ-13 受け入れテスト一式（基準 A〜F、
+      # docs/design/dependency-graph-contract.md・docs/acceptance/req13-change-impact.md）。
+      # 上の Checkout で fetch-depth: 0 にしたことで基準 D（実コミット 3 件の閉包判定再現）が
+      # shallow clone 制約なしに実行できる。
+      - name: req13-change-impact-accept.sh（REQ-13 受け入れテスト、TASK-13.2/#50）
+        run: bash scripts/accept/req13-change-impact-accept.sh
 
   # --------------------------------------------------
   # pay-for-what-you-use 検証（TASK-2.2、#19）: プラグイン feature 無効時に当該

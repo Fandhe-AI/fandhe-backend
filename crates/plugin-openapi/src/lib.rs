@@ -1,5 +1,10 @@
 //! backend-framework の OpenAPI ドキュメント生成プラグイン（TASK-3.1、REQ-3【Must】）。
 //!
+//! 拡張点対応: 非該当（理由の参照: docs/design/dependency-graph-contract.md）
+//! （ビルド時生成でランタイム拡張点を使わない。理由の実体は
+//! `docs/design/dependency-graph-contract.md` 5 節、機械可読宣言の規約は同書 3 節、
+//! TASK-13.2 / #50）
+//!
 //! # 役割・責務境界
 //! 本クレートは実装本体（`crates/routes` 等）から独立した「OpenAPI ドキュメント
 //! 定義」のみを持つ。`bf-routes::Router` は method + target 完全一致の関数ベース
