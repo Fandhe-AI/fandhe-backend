@@ -124,10 +124,6 @@ impl JwksKeySet {
 
         let doc: JwksDoc = serde_json::from_str(json).map_err(|_| JwksError::InvalidJson)?;
 
-        if doc.keys.len() > MAX_KEYS {
-            return Err(JwksError::TooManyKeys);
-        }
-
         let mut keys: Vec<RsaJwkPublic> = Vec::with_capacity(doc.keys.len());
         for raw in &doc.keys {
             // RSA 以外・署名用途以外・RS256 以外の鍵は採用しない
@@ -158,6 +154,14 @@ impl JwksKeySet {
                 n,
                 e,
             });
+        }
+
+        // 件数上限は「採用済み（RSA/sig/RS256 でフィルタ後）」の鍵集合に対して
+        // 適用する（doc comment・Bugbot 指摘対応）。非 RSA・非 sig 等のエントリを
+        // 大量に含む JWKS ドキュメントでも、実際に採用される RS256 鍵が
+        // MAX_KEYS 未満であれば TooManyKeys を誤って返さない。
+        if keys.len() > MAX_KEYS {
+            return Err(JwksError::TooManyKeys);
         }
 
         // 重複 kid はここで検出する（`find_by_kid` が先頭一致を返すだけだと
@@ -431,6 +435,31 @@ mod tests {
         }
         let json = format!(r#"{{"keys":[{}]}}"#, entries.join(","));
         assert_eq!(JwksKeySet::from_json(&json), Err(JwksError::TooManyKeys));
+    }
+
+    /// 件数上限はフィルタ後（採用済み RS256 鍵集合）に適用される
+    /// （Bugbot 指摘対応、PR #158）。生の `keys` 配列が `MAX_KEYS` を超えても、
+    /// 非 RSA・非 `sig` エントリで大半が除外され採用鍵が上限未満なら
+    /// `TooManyKeys` を誤って返さない。
+    #[test]
+    fn many_non_rsa_entries_do_not_trigger_too_many_keys() {
+        let n = URL_SAFE_NO_PAD.encode([1u8, 2, 3]);
+        let e = URL_SAFE_NO_PAD.encode([1u8, 0, 1]);
+        let mut entries = Vec::new();
+        // 非 RSA（EC）エントリを MAX_KEYS を超える件数だけ生の keys 配列に積む。
+        // これらはフィルタで除外されるため採用鍵数には数えない。
+        for i in 0..(MAX_KEYS + 8) {
+            entries.push(format!(r#"{{"kty":"EC","kid":"ec-{i}"}}"#));
+        }
+        // 採用対象の RS256 鍵は MAX_KEYS 未満の件数のみ混在させる。
+        for i in 0..3 {
+            entries.push(format!(
+                r#"{{"kty":"RSA","kid":"rsa-{i}","n":"{n}","e":"{e}","use":"sig","alg":"RS256"}}"#
+            ));
+        }
+        let json = format!(r#"{{"keys":[{}]}}"#, entries.join(","));
+        let keys = JwksKeySet::from_json(&json).expect("adopted key count is under MAX_KEYS");
+        assert_eq!(keys.len(), 3);
     }
 
     #[test]
