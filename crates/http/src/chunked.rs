@@ -1,7 +1,7 @@
 //! chunked transfer-coding のデコーダ（RFC 9112 §7.1、sans-IO、イシュー #181）。
 //!
 //! [`crate::body::body_length`] が `BodyLength::Chunked` と判定したリクエストの
-//! body 部分を、ソケット I/O を持つ [`crate::connection::read_body_chunked`]
+//! body 部分を、ソケット I/O を持つ `read_body_chunked`
 //! （呼び出し元）がインクリメンタルに読み進めるための純粋な状態機械を提供する。
 //! [`crate::request::parse_request_head`] と同じ「入力不足は `Incomplete` を返し、
 //! 呼び出し元が追い読みして同じデコーダへ再入力する」パターンに従う。
@@ -109,7 +109,7 @@ enum State {
 
 /// chunked transfer-coding のインクリメンタルデコーダ（sans-IO）。
 ///
-/// [`crate::connection::read_body_chunked`] から、ソケットから読み取った
+/// `read_body_chunked` から、ソケットから読み取った
 /// バイト列を繰り返し [`Self::decode`] へ渡される契約。`decode` は
 /// [`DecodeOutcome::Incomplete`] を返した場合、呼び出し元が追い読みして
 /// 再入力するまで内部状態（chunk-size 行の途中バイト列・残りチャンク長・
@@ -162,7 +162,7 @@ impl ChunkedDecoder {
     /// 呼び出し元は [`DecodeOutcome::Incomplete`] を受け取った場合、`input`
     /// から `consumed` 分を読み取り済みとしてバッファを前進させたうえで
     /// 追い読みし、拡張された未読領域全体を次回の `decode` 呼び出しの
-    /// `input` として渡す（[`crate::connection::read_body_chunked`] の契約）。
+    /// `input` として渡す（`read_body_chunked` の契約）。
     pub fn decode(
         &mut self,
         input: &[u8],
