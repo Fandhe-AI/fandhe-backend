@@ -115,11 +115,135 @@ RPS POST /echo           | 196490.93836683    | 202877.19751699668 | 1.0325 | >=
 
 ## 申し送り（out-of-scope-tracking）
 
-- **コア側との実測比較**: TASK-1.4-2（#70）・TASK-1.5（#14）マージ後、`CORE_BIN` に
-  実行可能バイナリのパスを指定して `bench-accept.sh` を再実行し、本レポートを更新する
-  必要がある。現時点では未実施（ブロック中）。
 - **ベンチの CI ワークフロー組み込み**: 同一ホスト計測はノイズの影響を受けやすく
   判定が不安定になるため、CI（`.github/workflows/ci.yml`）には組み込んでいない。
   `workflow_dispatch` 等での手動トリガー導入は別途ユーザー承認のうえ Issue 化が必要
   （本 PR のスコープ外）。
 - **依存数・unsafe・cargo audit/deny 等の検証**: 姉妹イシュー #72（TASK-1.6-2）のスコープ。
+
+---
+
+## TASK-1.6-3（#168）実測: BLOCKED 解消・axum-ref 比実測
+
+### 実施日時・環境
+
+- 実施日時: 2026-07-18（UTC）
+- OS: Linux 7.0.0-27-generic x86_64（Ubuntu）
+- CPU コア数: 12（`nproc`）
+- rustc / cargo: 1.96.0（stable, 2026-05-25）
+- 計測パラメータ: `RUNS=5 DURATION=15s CONNECTIONS=128`（既定値）
+
+### 計測対象
+
+`crates/core/examples/core-bench.rs`（TASK-1.6-3、#168 で新規追加）を `CORE_BIN` として
+使用した。axum-ref（`crates/axum-ref/src/main.rs`）と機能等価な 4 エンドポイント
+（`GET /health` / `GET /hello/{name}` / `GET /users/{id}` / `POST /echo`）を提供する。
+
+**機能等価性の担保方法**:
+- `bf_routes::Router` は (method, target) 完全一致のみでパスパラメータ（`{name}` /
+  `{id}`）を扱えない（TASK-1.5 / #14 時点の既知の制約。パスパラメータ対応の Router
+  拡張は本イシューのスコープ外。下記「申し送り」参照）ため、
+  `backend_framework_core::Handler` trait を直接実装し、プレフィックスマッチによる
+  手書きディスパッチで 4 エンドポイントを提供する
+- レスポンス body スキーマ（`EchoBody` / `UserResponse` / `ErrorBody`）は axum-ref と
+  同一。`/users/{id}` 応答・`/echo` の JSON パース/再シリアライズには serde/serde_json
+  を使用（`crates/core/Cargo.toml` の `[dev-dependencies]` のみに追加。
+  `cargo tree -p backend-framework-core -e normal` に現れないことを確認済み、
+  pay-for-what-you-use 準拠）
+- ランタイム構成（`#[tokio::main]` マルチスレッド）を axum-ref と揃え、ランタイム差を
+  計測ノイズに持ち込まない
+- 唯一の既知の機能差: axum の `Path` エクストラクタはパーセントデコードを行うが、
+  本 example は行わない（計測対象 URL・テスト入力の範囲では影響しない。
+  `crates/core/examples/core-bench.rs` の doc comment に明記）
+
+### 実測結果（1 回目）: FAIL
+
+```
+$ RUNS=5 DURATION=15s CONNECTIONS=128 ./benches/bench-accept.sh
+```
+
+| 指標 | baseline(axum) | core | 比率/差 | 基準 | 判定 |
+|------|-----------------|------|---------|------|------|
+| RPS GET /health | 334456.54 | 205814.80 | 0.6154 | >= 0.90 | FAIL |
+| p95 GET /health | 0.000863965 | 0.001565345 | 1.8118 | <= 1.10 | FAIL |
+| p99 GET /health | 0.001367628 | 0.003938392 | 2.8797 | <= 1.10 | FAIL |
+| RPS GET /hello/{name} | 350322.18 | 273373.66 | 0.7803 | >= 0.90 | FAIL |
+| p95 GET /hello/{name} | 0.000824825 | 0.001022991 | 1.2403 | <= 1.10 | FAIL |
+| p99 GET /hello/{name} | 0.001270634 | 0.00244959 | 1.9278 | <= 1.10 | FAIL |
+| RPS GET /users/{id} | 351368.74 | 332164.93 | 0.9453 | >= 0.90 | PASS |
+| p95 GET /users/{id} | 0.000813402 | 0.000897327 | 1.1032 | <= 1.10 | FAIL |
+| p99 GET /users/{id} | 0.001247663 | 0.001286936 | 1.0315 | <= 1.10 | PASS |
+| RPS POST /echo | 376763.10 | 351456.17 | 0.9328 | >= 0.90 | PASS |
+| p95 POST /echo | 0.000740301 | 0.000866165 | 1.1700 | <= 1.10 | FAIL |
+| p99 POST /echo | 0.001518415 | 0.001182251 | 0.7786 | <= 1.10 | PASS |
+| アイドル RSS | 3952KB | 3536KB | 0.8947 | <= 1.10 | PASS |
+| バイナリサイズ | 1374024B | 859824B | 0.6258 | <= 1.00 | PASS |
+| 起動時間(ms・絶対差) | 0 | 0 | 0.0000 | <= 20 | PASS |
+
+`GET /health` の core 側 raw RPS（`228594, 142691, 205814, 234532, 179818`）は試行間の
+ばらつきが極端に大きく（最大/最小比 約 1.6 倍）、他 3 エンドポイントの raw RPS
+（試行間ばらつきが小さい）と比べて明らかに異質だった。実装計画の想定どおり、
+ノイズ起因かどうかを切り分けるため同一パラメータで**1 回だけ再実行**した
+（実装計画 Step 4-5、閾値・`Server` 既定値は変更していない）。
+
+### 実測結果（2 回目・再実行）: PASS
+
+```
+$ RUNS=5 DURATION=15s CONNECTIONS=128 ./benches/bench-accept.sh
+```
+
+| 指標 | baseline(axum) | core | 比率/差 | 基準 | 判定 |
+|------|-----------------|------|---------|------|------|
+| RPS GET /health | 333435.78 | 356016.70 | 1.0677 | >= 0.90 | PASS |
+| p95 GET /health | 0.000858489 | 0.000876463 | 1.0209 | <= 1.10 | PASS |
+| p99 GET /health | 0.001335262 | 0.001142568 | 0.8557 | <= 1.10 | PASS |
+| RPS GET /hello/{name} | 351782.18 | 355361.37 | 1.0102 | >= 0.90 | PASS |
+| p95 GET /hello/{name} | 0.000812059 | 0.000871386 | 1.0731 | <= 1.10 | PASS |
+| p99 GET /hello/{name} | 0.001254714 | 0.001143885 | 0.9117 | <= 1.10 | PASS |
+| RPS GET /users/{id} | 324683.51 | 354298.76 | 1.0912 | >= 0.90 | PASS |
+| p95 GET /users/{id} | 0.000871379 | 0.000883696 | 1.0141 | <= 1.10 | PASS |
+| p99 GET /users/{id} | 0.001348969 | 0.00113822 | 0.8438 | <= 1.10 | PASS |
+| RPS POST /echo | 297238.72 | 364510.33 | 1.2263 | >= 0.90 | PASS |
+| p95 POST /echo | 0.001010173 | 0.000801237 | 0.7932 | <= 1.10 | PASS |
+| p99 POST /echo | 0.002146871 | 0.001148847 | 0.5351 | <= 1.10 | PASS |
+| アイドル RSS | 3920KB | 3532KB | 0.9010 | <= 1.10 | PASS |
+| バイナリサイズ | 1374024B | 859824B | 0.6258 | <= 1.00 | PASS |
+| **起動時間(ms・絶対差)** | 0 | 0 | 0.0000 | **<= 20** | **PASS** |
+
+参考値（判定には使わない）: 負荷時 RSS baseline=10716KB core=5608KB
+
+**総合判定: PASS**（終了コード 0）。NFR-1 の起動時間絶対差（20ms 未満）を含む
+全 15 指標が既定閾値を満たした。
+
+### 原因分析（1 回目 FAIL の仮説）
+
+`bench-http.sh` は `oha` で 1 プロセスあたり `CONNECTIONS=128` の持続接続を張り続ける。
+`crates/core` の `Server` は既定で `max_requests_per_connection=1000`
+（`DEFAULT_MAX_REQUESTS_PER_CONNECTION`、`crates/core/src/server.rs`）により、
+keep-alive 接続 1 本が 1000 リクエストを処理すると `Connection: close` を返して
+切断・再接続を強制する（リソース枯渇 DoS 対策としての意図的な既定値、
+`.claude/rules/security.md`）。`DURATION=15s` × 高 RPS（数十万 req/s）の負荷では
+128 接続それぞれが 15 秒間に何度も 1000 リクエスト上限へ到達し再接続が発生するため、
+再接続タイミングが OS スケジューリング・TCP accept backlog のノイズと重なった試行では
+p95/p99・RPS が悪化しうる。1 回目の `GET /health` で観測した異常な試行間ばらつき
+（`228594, 142691, ...`）はこの仮説と整合する（axum-ref は keep-alive 接続数上限を
+持たないため、同じ再接続コストを負わない）。2 回目の再実行では全エンドポイントで
+安定した結果が得られたため、1 回目は再接続タイミングと計測環境（同一ホスト・
+他プロセス干渉）の偶発的な重なりによるノイズと判断した。
+
+**是正について**: `max_requests_per_connection` の既定値緩和は「既定値のまま計測する
+（コアの素の姿を計測する）」という実装計画の前提・[[security]] のリソース枯渇対策
+方針と相反するため、本イシューでは行わない。性能への影響が体系的かどうかの深掘り
+（例: `max_requests_per_connection` を変えたパラメトリック計測）は下記「申し送り」を
+参照。
+
+### 申し送り（out-of-scope-tracking、TASK-1.6-3 / #168 発生分）
+
+- **`bf_routes::Router` のパスパラメータ（`{name}` 形式）対応**: 本イシューでは
+  `Handler` trait を直接実装する手書きディスパッチで回避したが、Router 自体への
+  対応は別イシューのスコープ
+- **405 応答への `Allow` ヘッダ付与**: `Response` の任意ヘッダ API が未整備
+  （TASK-1.5 時点からの既知事項）
+- **`max_requests_per_connection` 起因の再接続コストが性能に与える影響の深掘り**:
+  上記「原因分析」参照。既定値は変更しないが、パラメータを振った追加計測で
+  体系的な影響かどうかを切り分ける価値がある

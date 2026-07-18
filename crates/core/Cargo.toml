@@ -113,6 +113,13 @@ async-graphql = { version = "7", default-features = false, features = ["dynamic-
 # 間隔どおりに検証するためだけに使うテスト専用サブスクライバ層の実装に必要。
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
+# TASK-1.6-3（#168）: `examples/core-bench.rs`（axum-ref 機能等価の性能計測用
+# サーバ）専用。`/users/{id}` 応答・`/echo` の JSON パース/再シリアライズに使う。
+# dev-dependencies は release ビルド・下流クレートに一切波及しないため
+# pay-for-what-you-use の対象外（`cargo tree -p backend-framework-core -e normal`
+# に現れないことで検証可能。上の async-graphql 追加時の既存コメントと同根）。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # `examples/webrtc_nfr6.rs`（TASK-8.4 / #29）は `bf-plugin-webrtc`（optional dep）を
 # 直接使うため、`webrtc` feature 無効時に `cargo build --workspace --all-targets` 等が
@@ -160,3 +167,13 @@ required-features = ["websocket"]
 [[example]]
 name = "ws_nfr6"
 required-features = ["websocket"]
+
+# TASK-1.6-3（#168）: `examples/core-bench.rs`（axum-ref 機能等価の性能計測用
+# サーバ）。`test = true` により `cargo test` / nextest が本 example 内の
+# `#[cfg(test)] mod tests`（axum-ref との等価性テスト）を実行対象に含める
+# （既定では `[[example]]` 配下のテストは `cargo test` の対象に自動で含まれない）。
+# feature 非依存（`required-features` 不要。`webrtc_nfr6` 等とは異なりオプション
+# 依存プラグインを使わない）。
+[[example]]
+name = "core-bench"
+test = true
