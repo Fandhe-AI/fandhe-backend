@@ -278,6 +278,38 @@ RPS・p95 レイテンシに与える影響（NFR-6、`docs/spec/04-requirements
    （`crates/core/src/extension.rs` doc）も変更していない。`benches/*` を D
    カテゴリに追加する是正は 4.3 節〜4.5 節と同一の別 Issue 対象とする
 
+### 4.7 記載例（TASK-4.4 / #179 / PR #194）
+
+`crates/plugin-websocket` にユーザー定義 WebSocket メッセージハンドラ API
+（`WsMessageHandler`・`WebSocketConfig::with_handler`、既定は `EchoHandler` で
+後方互換維持）を追加した変更で、TASK-4.3（#24、PR #164）で追加済みの計測専用
+example（`crates/core/examples/ws_echo.rs`）の doc comment を、新 API の関数名
+（`run_session`）・既定ハンドラ（`EchoHandler`）に追随させて更新した。この 1 行の
+doc comment 更新のみが同一 PR の差分に含まれたため、4.4 節と同一の理由
+（`extension-closure-check.sh` の A（プラグインクレート内）は `crates/plugin-*` を
+対象、B（コア側許容シーム）は `crates/core/src/plugin.rs` 等の拡張点シーム本体を
+対象とし、`crates/core/examples/*` はいずれにも一致しない）により、以下 1 件が
+E（閉包違反候補）と判定された。
+
+1. **対象コミット/PR**: PR #194（#179、fmt/clippy 是正コミットにて本節を追記）
+2. **E ファイルパス**:
+   - `crates/core/examples/ws_echo.rs`
+3. **閉じない理由**: 4.4 節と同一の運用上のギャップ（`crates/core/examples/*` が
+   A・B いずれにも該当しない）により E 判定となる。当該ファイルは TASK-4.3（#24）で
+   既に E 判定・4.4 節の記載対象として運用上受理済みの計測専用サーバであり、本 PR
+   では `crates/plugin-websocket/src/session.rs` の関数リネーム（`run_echo_session`
+   → `run_session`）・既定ハンドラ導入（`EchoHandler`）に追随して doc comment の
+   参照名を更新したのみである
+4. **正当性根拠**: 変更は doc comment（コメント文字列）のみであり、
+   `crates/core/examples/ws_echo.rs` が呼び出す `bf_plugin_websocket::WebSocketConfig`
+   の公開 API・`Server::websocket` の配線・拡張点契約（`UpgradeHandler`、2 節契約
+   一覧）を一切変更しない。参照先の実装（`run_session` への改名・`WsMessageHandler`
+   拡張、既定は `EchoHandler` で従来の `run_echo_session` と同一の観測可能な挙動を
+   維持）は `crates/plugin-websocket` 側のみで完結しており、コアの依存方向
+   （`server → routes → http::*`、1 節）には影響しない。4.4 節で既に受理済みの
+   `crates/core/examples/*` の扱い見直し（分類規則の是正）は同節と同一の別 Issue
+   対象のまま据え置く
+
 ## 5. `bf-plugin-openapi` の非該当理由
 
 `bf-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも

@@ -318,15 +318,12 @@ async fn oversized_message_is_rejected_before_reaching_handler() {
     // エコーは届かない（エラーまたは接続終了を観測する）。
     let next = client.next().await;
     let reversed: String = oversized.chars().rev().collect();
-    match next {
-        Some(Ok(Message::Text(text))) => {
-            assert_ne!(
-                text.as_str(),
-                reversed,
-                "oversized message must not reach the handler"
-            );
-        }
-        _ => {}
+    if let Some(Ok(Message::Text(text))) = next {
+        assert_ne!(
+            text.as_str(),
+            reversed,
+            "oversized message must not reach the handler"
+        );
     }
 
     let result = server_task.await.unwrap();
