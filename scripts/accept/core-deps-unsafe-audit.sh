@@ -260,20 +260,83 @@ check_extension_points() {
         record_fail "E: 3拡張点 trait 定義" "未定義:${missing}"
     fi
 
-    # コアループ本体（接続受理・リクエストループ）は TASK-1.4-2（#70）で追加される。
-    # 現時点で lib.rs 以外に実装ファイルが増えていない場合は SKIP とし、
-    # #70 マージ後の再実行で本チェックを完了させる。
-    local loop_files
-    loop_files="$(find crates/core/src -name '*.rs' ! -name 'lib.rs' ! -name 'extension.rs' 2>/dev/null || true)"
-    if [ -z "${loop_files}" ]; then
-        record_skip "E: コアループの feature 非分岐" "コアループ実装（TASK-1.4-2 #70）が本 worktree 未マージのため検証対象なし。マージ後に再実行すること"
+    # コアループ本体は TASK-1.4-2（#70）で `crates/core/src/server.rs` に固定配置
+    # された（`docs/design/plugin-boundary.md` §3）。ファイル自体が本 worktree に
+    # 存在しない場合のみ「未マージ」として SKIP する（#169 是正前は「lib.rs/
+    # extension.rs 以外のファイル増加有無」で判定していたが、TASK-2.1（#129）・
+    # TASK-4.1（#137）・TASK-8.1（#138）マージ後の現行 main では `server.rs` 自体に
+    # `Server` の cfg-gated 設定フィールド・ビルダーメソッド等、spec/design が明示
+    # 許容するコアループ「外」の cfg 分岐が多数存在し、ファイル単位の grep -l では
+    # 誤検出（FAIL）を招くため、判定粒度をコアループ関数本体に絞る）。
+    local loop_file="crates/core/src/server.rs"
+    if [ ! -f "${loop_file}" ]; then
+        record_skip "E: コアループの feature 非分岐" "コアループ実装（TASK-1.4-2 #70、${loop_file}）が本 worktree 未マージのため検証対象なし。マージ後に再実行すること"
     else
-        local cfg_hits
-        cfg_hits="$(echo "${loop_files}" | xargs grep -l '#\[cfg(feature' 2>/dev/null || true)"
-        if [ -z "${cfg_hits}" ]; then
-            record_pass "E: コアループの feature 非分岐" "コアループ実装ファイルに #[cfg(feature ...)] 分岐なし"
+        # コアループ本体は `BoundServer::run`（accept ループ）・`handle_connection`
+        # （公開ラッパー）・`handle_connection_with_permit`（実体、#23）の 3 関数に
+        # 限定する（`docs/design/plugin-boundary.md` §3 の「接続受理・リクエスト
+        # ループ本体」定義）。`Server` のビルダーメソッド・cfg-gated 設定フィールド・
+        # `WebSocketUpgradeAdapter` 等は同ファイル内にあっても対象外（§4-5 が
+        # 許容するプラグイン境界のシーム呼び出し側であり、ループ本体ではない）。
+        #
+        # 抽出は awk（POSIX 構文のみ、gawk 拡張は使わない）でトップレベル関数の
+        # 開始行〜同一インデントの `}` のみの行までを関数範囲とみなす。CI が
+        # `cargo fmt --check` を強制するため、対象ファイルは常に rustfmt 整形済み
+        # （開始行・終了 `}` が同一インデント）という前提を置ける（README に明記）。
+        # 除外: 行頭 `//`（`///`・`//!` を含む）で始まる行はコメントとして除外する
+        # （基準 F の #72 レビュー是正と同一手法。`#[cfg(feature = "...")]` を
+        # 「使っていないこと」を説明する doc comment 内の引用を誤検出しないため）。
+        #
+        # 抽出できた関数数が 0 件（正規表現の陳腐化・リファクタによる関数名変更等）
+        # の場合は誤 PASS を避け、計測不能として明示的に FAIL する
+        # （基準 A の core_deps==0 ガードと同じフェイルクローズ方針）。
+        local awk_out awk_status
+        set +e
+        awk_out="$(awk '
+            BEGIN { in_fn = 0; fn_count = 0 }
+            {
+                if (!in_fn) {
+                    if ($0 ~ /^[[:space:]]*(pub(\(crate\))?[[:space:]]+)?async[[:space:]]+fn[[:space:]]+(handle_connection_with_permit|handle_connection|run)[[:space:]]*[(<]/) {
+                        match($0, /^[[:space:]]*/)
+                        indent = RLENGTH
+                        in_fn = 1
+                        fn_count++
+                        next
+                    }
+                } else {
+                    close_pat = "^"
+                    for (i = 0; i < indent; i++) close_pat = close_pat " "
+                    close_pat = close_pat "\\}[[:space:]]*$"
+                    if ($0 ~ close_pat) {
+                        in_fn = 0
+                        next
+                    }
+                    if ($0 !~ /^[[:space:]]*\/\//) {
+                        if ($0 ~ /#\[cfg\(feature/) {
+                            print FILENAME ":" FNR ": " $0
+                        }
+                    }
+                }
+            }
+            END { print "FN_COUNT=" fn_count }
+        ' "${loop_file}" 2>/dev/null)"
+        awk_status=$?
+        set -e
+
+        local fn_count cfg_hits
+        # awk の END ブロックは常に FN_COUNT= 行を出力するため grep が該当 0 件になる
+        # ことは通常想定しないが、`set -o pipefail` 下で万一空振り（grep 終了コード 1）
+        # した場合でもスクリプトを中断させず、下記の fn_count 空文字チェック（フェイル
+        # クローズ）へ必ず到達させるため `|| true` を付与する。
+        fn_count="$(echo "${awk_out}" | grep -o '^FN_COUNT=[0-9]*$' | cut -d= -f2 || true)"
+        cfg_hits="$(echo "${awk_out}" | grep -v '^FN_COUNT=' || true)"
+
+        if [ "${awk_status}" -ne 0 ] || [ -z "${fn_count}" ] || [ "${fn_count}" -eq 0 ]; then
+            record_fail "E: コアループの feature 非分岐" "コアループ関数（run/handle_connection/handle_connection_with_permit）を ${loop_file} から検出できず計測不能（関数名変更・リファクタの可能性。awk 抽出ロジックの見直しが必要）"
+        elif [ -z "${cfg_hits}" ]; then
+            record_pass "E: コアループの feature 非分岐" "コアループ関数 ${fn_count} 件（run/handle_connection/handle_connection_with_permit）の非コメント行に #[cfg(feature ...)] なし。Server ビルダーの cfg-gated 設定・plugin.rs シームは docs/design/plugin-boundary.md §3-5 の許容領域のため対象外"
         else
-            record_fail "E: コアループの feature 非分岐" "feature 分岐を検出: ${cfg_hits}"
+            record_fail "E: コアループの feature 非分岐" "コアループ関数内で feature 分岐を検出: ${cfg_hits}"
         fi
     fi
 }

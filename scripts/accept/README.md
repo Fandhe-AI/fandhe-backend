@@ -22,7 +22,7 @@
 | B | 自コード `unsafe` 0 件、または各箇所に `// SAFETY:` 根拠 100% 記述 | grep + workspace lint 確認 + `cargo geiger`（導入済みなら参考値） |
 | C | `cargo audit` 既知脆弱性 0 件・`cargo deny check` ライセンス/出所違反 0 件 | cargo-audit / cargo-deny 実行 |
 | D | コア実質コード行数 5,000 行以内 | 空行・コメント行を除いた行数集計 |
-| E | 3 種拡張点（`Middleware`/`UpgradeHandler`/`RequestGate`）が trait 定義され、コアループ本体が feature 有無で分岐しない | trait 存在の grep + ループ本体への `#[cfg(feature` 不在 grep |
+| E | 3 種拡張点（`Middleware`/`UpgradeHandler`/`RequestGate`）が trait 定義され、コアループ本体が feature 有無で分岐しない | trait 存在の grep + `crates/core/src/server.rs` のコアループ 3 関数（`BoundServer::run`・`handle_connection`・`handle_connection_with_permit`）を awk で範囲抽出し、コメント除外付きで `#[cfg(feature` 不在を grep（#169 是正） |
 | F | `routes`・`http/` がプラグイン固有シンボルへ依存しない | 識別子パターン grep + `Cargo.toml` 依存確認 |
 
 ## 前提ツール
@@ -57,12 +57,32 @@ crates.io index 更新）を伴う。
 FAIL ではなく SKIP として記録され、終了コードには影響しない。
 
 - **TASK-1.4-2（#70、コアループ）未マージ**: 基準 E の「ループ本体が feature 分岐しない」
-  部分のみ SKIP（trait 定義の存在確認は独立して実行される）
+  部分のみ SKIP（`crates/core/src/server.rs` 自体が存在しない場合。trait 定義の存在
+  確認は独立して実行される）。TASK-1.4-2（#70）は既にマージ済みで現行 main では
+  SKIP は発生しない
 - **TASK-1.5（#14、`crates/routes`）未作成**: 基準 F の routes 部分のみ SKIP
-  （`crates/http` の検証は独立して実行される）
+  （`crates/http` の検証は独立して実行される）。TASK-1.5（#14）は既にマージ済みで
+  現行 main では SKIP は発生しない
 - **TASK-15.1（#16、`deny.toml` 整備）未完**: `deny.toml` 不在時は
   `cargo deny check advisories bans sources` を既定設定で実行し、licenses チェックは
   WARN として保留を記録する
+
+## 基準 E・基準 B/D の grep/awk 検証の制約事項
+
+- **基準 E（コアループの feature 非分岐、#169 是正）**: 検査対象は
+  `crates/core/src/server.rs` の `BoundServer::run`・`handle_connection`・
+  `handle_connection_with_permit` の 3 関数本体に限定する
+  （`docs/design/plugin-boundary.md` §3「コアループは cfg-free を維持する」の定義）。
+  同ファイル内でも `Server` のビルダーメソッド・cfg-gated 設定フィールド・
+  `plugin.rs` の cfg 集約シームは §4-5 が明示許容する領域であり検査対象外。
+  awk による関数範囲抽出は **rustfmt 整形済み**（開始行と終端 `}` が同一インデント）
+  であることを前提にする。CI が `cargo fmt --check` を強制するため通常は成立するが、
+  手元で未整形のまま本スクリプトを実行すると関数範囲を誤検出しうる。抽出できた
+  関数数が 0 件（関数名変更等）の場合は誤 PASS を避け明示的に FAIL とする
+  （フェイルクローズ）
+- **基準 B/D（既存、#72 由来）と同様の限界**: 行頭 `//`（`///`・`//!` 含む）の除外
+  のみ対応し、`/* ... */` ブロックコメント内の記述は除外できない。基準 E も同一の
+  行頭 `//` 除外手法のため同じ限界を持つ
 
 ## 出力の読み方
 
