@@ -88,6 +88,22 @@ for pkg in "${core_packages[@]}"; do
 done
 
 # --------------------------------------------------
+# 計測前クリーンアップ（CI #162/#89 の障害切り分けで発覚、self-hosted runner 特有）:
+# self-hosted ランナーは `target/` が実行間で永続化されるため、直前の実行が残した
+# instrumented coverage 成果物（profraw・カバレッジマップ）が残存しうる。特に
+# 直近で変更されたファイルのソースが再ビルドで置き換わった場合、古いカバレッジ
+# マップの行数と新しいソースの行数が食い違い、`cargo llvm-cov report` が両者を
+# 誤って合算して「実際には存在しない未カバー行」を計上することがある
+# （観測事例: CI run 29626701284 で `core/src/server.rs` のみ行数が実ソースの
+# 約 1.8 倍に膨れ、被覆行数自体は新鮮な計測と完全一致していた＝ゴースト分すべてが
+# missed 側に計上されていた）。`cargo llvm-cov clean --workspace` で計測前に
+# 既存の instrumented 成果物を明示的に破棄し、常に当該コミットのソースのみを
+# 反映した計測にする（`cargo llvm-cov clean --help` 参照）。
+# --------------------------------------------------
+echo "==> cargo llvm-cov clean --workspace（stale coverage 成果物の除去）"
+cargo llvm-cov clean --workspace
+
+# --------------------------------------------------
 # 計測本体: workspace 全体（プラグイン含む、--all-features）を 1 回だけ計測し、
 # lcov/summary はコア対象・workspace 全体の双方を `cargo llvm-cov report` の
 # パッケージフィルタ（再計測なし）で出し分ける。プラグインを含めて計測すること自体は
