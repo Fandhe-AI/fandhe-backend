@@ -1,0 +1,75 @@
+diff --git a/crates/http/src/request.rs b/crates/http/src/request.rs
+index 16e5518..180d80b 100644
+--- a/crates/http/src/request.rs
++++ b/crates/http/src/request.rs
+@@ -104,6 +104,35 @@ impl RequestHead {
+     pub fn headers(&self) -> impl Iterator<Item = (&str, &str)> {
+         self.headers.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+     }
++
++    /// 複数のヘッダ名候補を優先順位付きで順に走査し、大文字小文字を無視して
++    /// 最初に見つかった値を返す。
++    ///
++    /// 各候補は内部で [`RequestHead::header`] に委譲するため、大文字小文字を
++    /// 無視した先頭一致という既存の挙動をそのまま踏襲する。`X-Forwarded-For`
++    /// と `Forwarded` のように別名を持つヘッダを優先順位付きで探索したい
++    /// 呼び出し元（プラグイン層等）向けのヘルパー。
++    ///
++    /// # Examples
++    ///
++    /// ```
++    /// use bf_http::request::parse_request_head;
++    ///
++    /// let buf = b"GET / HTTP/1.1\r\nX-Forwarded-For: 1.2.3.4\r\n\r\n";
++    /// let outcome = parse_request_head(buf).unwrap();
++    /// let head = match outcome {
++    ///     bf_http::request::ParseOutcome::Complete { head, .. } => head,
++    ///     _ => unreachable!(),
++    /// };
++    /// assert_eq!(
++    ///     head.header_any(&["forwarded", "x-forwarded-for"]),
++    ///     Some("1.2.3.4")
++    /// );
++    /// assert_eq!(head.header_any(&["missing-a", "missing-b"]), None);
++    /// ```
++    pub fn header_any(&self, names: &[&str]) -> Option<&str> {
++        names.iter().find_map(|name| self.header(name))
++    }
+ }
+ 
+ /// [`parse_request_head`] の成功時の結果。
+@@ -481,6 +510,34 @@ mod tests {
+         assert_eq!(all, vec![("X-A", "1"), ("X-B", "2"), ("X-A", "3")]);
+     }
+ 
++    #[test]
++    fn header_any_returns_first_matching_candidate_case_insensitively() {
++        let buf = b"GET / HTTP/1.1\r\nX-A: 1\r\nX-B: 2\r\n\r\n";
++        let (head, _) = complete(buf);
++        // 実ヘッダ名は大文字（"X-A"）、検索候補は小文字（"x-a"）で渡しても一致する。
++        assert_eq!(head.header_any(&["x-a", "x-b"]), Some("1"));
++        // 優先順位: 先に見つかった候補（"x-b"）の値を返す。
++        assert_eq!(head.header_any(&["x-b", "x-a"]), Some("2"));
++    }
++
++    #[test]
++    fn header_any_falls_through_to_next_candidate_when_missing() {
++        let buf = b"GET / HTTP/1.1\r\nForwarded: for=1.2.3.4\r\n\r\n";
++        let (head, _) = complete(buf);
++        // 先頭候補が存在しない場合は次の候補にフォールスルーする。
++        assert_eq!(
++            head.header_any(&["X-Forwarded-For", "forwarded"]),
++            Some("for=1.2.3.4")
++        );
++    }
++
++    #[test]
++    fn header_any_returns_none_when_no_candidate_matches() {
++        let buf = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
++        let (head, _) = complete(buf);
++        assert_eq!(head.header_any(&["X-Missing-A", "x-missing-b"]), None);
++    }
++
+     #[test]
+     fn incomplete_on_empty_input() {
+         assert_eq!(parse_request_head(b""), Ok(ParseOutcome::Incomplete));

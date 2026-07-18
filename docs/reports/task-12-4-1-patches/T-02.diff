@@ -1,0 +1,53 @@
+diff --git a/crates/core/src/extension.rs b/crates/core/src/extension.rs
+index 95c8002..a6f75fd 100644
+--- a/crates/core/src/extension.rs
++++ b/crates/core/src/extension.rs
+@@ -162,6 +162,29 @@ pub enum GateOutcome {
+     },
+ }
+ 
++impl GateOutcome {
++    /// このアウトカムが「許可」であるかを判定するヘルパー。
++    ///
++    /// `matches!` の呼び出し箇所を各プラグイン・コア実装に散らさず、
++    /// `GateOutcome` 側に判定ロジックを一箇所に集約する。バリアント数・
++    /// シリアライズ形式（`#[derive(Debug, Clone, PartialEq, Eq)]`）は
++    /// 変更しない。
++    ///
++    /// # Examples
++    ///
++    /// ```
++    /// use backend_framework_core::extension::GateOutcome;
++    ///
++    /// assert!(GateOutcome::Allow.is_allowed());
++    ///
++    /// let rejected = GateOutcome::Reject { status: 401, body: Vec::new() };
++    /// assert!(!rejected.is_allowed());
++    /// ```
++    pub fn is_allowed(&self) -> bool {
++        matches!(self, GateOutcome::Allow)
++    }
++}
++
+ /// 早期拒否可能な拡張点。認証・認可・同意ゲート等、ルーティング前に
+ /// リクエストを弾く判断をコアに提供する。
+ ///
+@@ -417,4 +440,18 @@ mod tests {
+         };
+         assert_ne!(a, b);
+     }
++
++    #[test]
++    fn gate_outcome_is_allowed_true_for_allow() {
++        assert!(GateOutcome::Allow.is_allowed());
++    }
++
++    #[test]
++    fn gate_outcome_is_allowed_false_for_reject() {
++        let reject = GateOutcome::Reject {
++            status: 401,
++            body: Vec::new(),
++        };
++        assert!(!reject.is_allowed());
++    }
+ }

@@ -34,4 +34,5 @@
 
 | ID | 判定 | 備考 |
 |----|------|------|
-| T-01〜T-10 | （未実施） | 実施状況は `task-12-4-1-completion-rate-verification.md` を参照 |
+| T-01〜T-05, T-07, T-09, T-10 | PASS | 2026-07-18 実測。詳細は `task-12-4-1-completion-rate-verification.md` のタスク別結果表を参照 |
+| T-06, T-08 | FAIL | 機械ゲートは全通過・worktree 無変更。対象が起点コミットで実装済みという設計前提の誤りにより「新規テスト／doc test の追加」基準を fail-closed で不充足と判定（同レポート考察参照） |

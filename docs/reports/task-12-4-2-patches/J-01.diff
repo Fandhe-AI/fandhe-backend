@@ -1,0 +1,251 @@
+diff --git a/crates/core/examples/minimal.rs b/crates/core/examples/minimal.rs
+index 79104ee..c57752b 100644
+--- a/crates/core/examples/minimal.rs
++++ b/crates/core/examples/minimal.rs
+@@ -35,7 +35,7 @@ async fn main() -> std::io::Result<()> {
+             Response::new(200, b"backend-framework: minimal example\n".to_vec())
+         })
+         .route("GET", "/health", |_head, _body| {
+-            Response::new(200, b"ok\n".to_vec())
++            Response::new(200, br#"{"status":"ok"}"#.to_vec()).with_content_type("application/json")
+         });
+ 
+     let server = Server::new().handler(router);
+diff --git a/crates/core/examples/tracing_nfr.rs b/crates/core/examples/tracing_nfr.rs
+index 91f3d51..61752ca 100644
+--- a/crates/core/examples/tracing_nfr.rs
++++ b/crates/core/examples/tracing_nfr.rs
+@@ -72,7 +72,7 @@ async fn main() -> std::io::Result<()> {
+             Response::new(200, b"backend-framework: tracing nfr example\n".to_vec())
+         })
+         .route("GET", "/health", |_head, _body| {
+-            Response::new(200, b"ok\n".to_vec())
++            Response::new(200, br#"{"status":"ok"}"#.to_vec()).with_content_type("application/json")
+         });
+ 
+     let server = Server::new().handler(router).tracing(config);
+diff --git a/crates/core/examples/ws_echo.rs b/crates/core/examples/ws_echo.rs
+index 7ef123f..bd1b945 100644
+--- a/crates/core/examples/ws_echo.rs
++++ b/crates/core/examples/ws_echo.rs
+@@ -52,7 +52,7 @@ async fn main() -> std::io::Result<()> {
+     let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3007".to_string());
+ 
+     let router = Router::new().route("GET", "/health", |_head, _body| {
+-        Response::new(200, b"ok\n".to_vec())
++        Response::new(200, br#"{"status":"ok"}"#.to_vec()).with_content_type("application/json")
+     });
+ 
+     let server = Server::new()
+diff --git a/crates/core/examples/ws_nfr6.rs b/crates/core/examples/ws_nfr6.rs
+index 831622d..c4cb061 100644
+--- a/crates/core/examples/ws_nfr6.rs
++++ b/crates/core/examples/ws_nfr6.rs
+@@ -42,7 +42,7 @@ use bf_routes::Router;
+ #[tokio::main(flavor = "current_thread")]
+ async fn main() -> std::io::Result<()> {
+     let router = Router::new().route("GET", "/health", |_head, _body| {
+-        Response::new(200, b"ok\n".to_vec())
++        Response::new(200, br#"{"status":"ok"}"#.to_vec()).with_content_type("application/json")
+     });
+ 
+     let server = Server::new()
+diff --git a/crates/plugin-openapi/openapi.json b/crates/plugin-openapi/openapi.json
+index 9f15815..ac35d16 100644
+--- a/crates/plugin-openapi/openapi.json
++++ b/crates/plugin-openapi/openapi.json
+@@ -56,11 +56,11 @@
+         "operationId": "health_doc",
+         "responses": {
+           "200": {
+-            "description": "サーバーが正常に稼働している（本文は固定文字列 `OK`）",
++            "description": "サーバーが正常に稼働している（本文は固定 JSON `{\"status\":\"ok\"}`）",
+             "content": {
+-              "text/plain": {
++              "application/json": {
+                 "schema": {
+-                  "type": "string"
++                  "$ref": "#/components/schemas/HealthBody"
+                 }
+               }
+             }
+@@ -220,6 +220,19 @@
+           }
+         }
+       },
++      "HealthBody": {
++        "type": "object",
++        "description": "`GET /health` のレスポンスボディ。\n\n# Examples\n```\nuse bf_plugin_openapi::HealthBody;\n\nlet body = HealthBody { status: \"ok\".to_string() };\nlet json = serde_json::to_string(&body).unwrap();\nassert_eq!(json, r#\"{\"status\":\"ok\"}\"#);\n```",
++        "required": [
++          "status"
++        ],
++        "properties": {
++          "status": {
++            "type": "string",
++            "description": "サーバーの稼働状態を表す固定文字列（常に `\"ok\"`）。"
++          }
++        }
++      },
+       "SearchResponse": {
+         "type": "object",
+         "description": "`GET /search` のレスポンスボディ（クエリパラメータを受け取るエンドポイントの例）。\n\n# Examples\n```\nuse bf_plugin_openapi::SearchResponse;\n\nlet body = SearchResponse {\n    query: \"rust\".to_string(),\n    limit: 10,\n    results: vec![\"rust-result-0\".to_string()],\n};\nassert_eq!(body.limit, 10);\n```",
+diff --git a/crates/plugin-openapi/src/docs.rs b/crates/plugin-openapi/src/docs.rs
+index 705deb6..744fc22 100644
+--- a/crates/plugin-openapi/src/docs.rs
++++ b/crates/plugin-openapi/src/docs.rs
+@@ -22,7 +22,7 @@
+ //! `/hello/{name}`）と実装側のルーティング定義が一致することは、実装時の
+ //! レビューで担保する運用とする（実装との齟齬照合は TASK-3.3、#32 のスコープ）。
+ 
+-use crate::schemas::{EchoBody, ErrorBody, SearchResponse, UserResponse};
++use crate::schemas::{EchoBody, ErrorBody, HealthBody, SearchResponse, UserResponse};
+ use utoipa::OpenApi;
+ 
+ /// `GET /health`（ドキュメント専用の宣言。パラメータなし）。
+@@ -30,7 +30,7 @@ use utoipa::OpenApi;
+     get,
+     path = "/health",
+     responses(
+-        (status = 200, description = "サーバーが正常に稼働している（本文は固定文字列 `OK`）", body = String)
++        (status = 200, description = "サーバーが正常に稼働している（本文は固定 JSON `{\"status\":\"ok\"}`）", body = HealthBody)
+     )
+ )]
+ #[allow(
+@@ -132,7 +132,7 @@ fn search_doc() {}
+         description = "TASK-3.1（REQ-3）: ドキュメント専用関数 + utoipa 統合による OpenAPI 自動生成の最小エンドポイント定義"
+     ),
+     paths(health_doc, hello_doc, users_doc, echo_doc, search_doc),
+-    components(schemas(EchoBody, UserResponse, SearchResponse, ErrorBody))
++    components(schemas(HealthBody, EchoBody, UserResponse, SearchResponse, ErrorBody))
+ )]
+ pub struct ApiDoc;
+ 
+@@ -166,16 +166,22 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn api_doc_registers_four_component_schemas() {
++    fn api_doc_registers_five_component_schemas() {
+         let doc = ApiDoc::openapi();
+         let components = doc.components.expect("components が生成されていない");
+-        for expected in ["EchoBody", "UserResponse", "SearchResponse", "ErrorBody"] {
++        for expected in [
++            "HealthBody",
++            "EchoBody",
++            "UserResponse",
++            "SearchResponse",
++            "ErrorBody",
++        ] {
+             assert!(
+                 components.schemas.contains_key(expected),
+                 "schema {expected} が登録されていない"
+             );
+         }
+-        assert_eq!(components.schemas.len(), 4);
++        assert_eq!(components.schemas.len(), 5);
+     }
+ 
+     #[test]
+diff --git a/crates/plugin-openapi/src/lib.rs b/crates/plugin-openapi/src/lib.rs
+index 2004583..c43d505 100644
+--- a/crates/plugin-openapi/src/lib.rs
++++ b/crates/plugin-openapi/src/lib.rs
+@@ -45,7 +45,7 @@ mod schemas;
+ 
+ pub use docs::ApiDoc;
+ pub use embed::OPENAPI_JSON;
+-pub use schemas::{EchoBody, ErrorBody, SearchResponse, UserResponse};
++pub use schemas::{EchoBody, ErrorBody, HealthBody, SearchResponse, UserResponse};
+ 
+ // doc test 内で `utoipa::OpenApi` トレイトの `openapi()` を呼べるようにするため、
+ // 公開 API 利用側の便宜として re-export しておく（利用側で `utoipa` を直接
+diff --git a/crates/plugin-openapi/src/schemas.rs b/crates/plugin-openapi/src/schemas.rs
+index 44068f5..6cd31e6 100644
+--- a/crates/plugin-openapi/src/schemas.rs
++++ b/crates/plugin-openapi/src/schemas.rs
+@@ -14,6 +14,22 @@
+ 
+ use serde::{Deserialize, Serialize};
+ 
++/// `GET /health` のレスポンスボディ。
++///
++/// # Examples
++/// ```
++/// use bf_plugin_openapi::HealthBody;
++///
++/// let body = HealthBody { status: "ok".to_string() };
++/// let json = serde_json::to_string(&body).unwrap();
++/// assert_eq!(json, r#"{"status":"ok"}"#);
++/// ```
++#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
++pub struct HealthBody {
++    /// サーバーの稼働状態を表す固定文字列（常に `"ok"`）。
++    pub status: String,
++}
++
+ /// `POST /echo` のリクエスト/レスポンスボディ。
+ ///
+ /// # Examples
+diff --git a/ts/src/generated/schema.d.ts b/ts/src/generated/schema.d.ts
+index b84b166..563ad51 100644
+--- a/ts/src/generated/schema.d.ts
++++ b/ts/src/generated/schema.d.ts
+@@ -124,6 +124,22 @@ export interface components {
+             /** @description エラー内容を表す人間可読な短い文字列。 */
+             error: string;
+         };
++        /**
++         * @description `GET /health` のレスポンスボディ。
++         *
++         *     # Examples
++         *     ```
++         *     use bf_plugin_openapi::HealthBody;
++         *
++         *     let body = HealthBody { status: "ok".to_string() };
++         *     let json = serde_json::to_string(&body).unwrap();
++         *     assert_eq!(json, r#"{"status":"ok"}"#);
++         *     ```
++         */
++        HealthBody: {
++            /** @description サーバーの稼働状態を表す固定文字列（常に `"ok"`）。 */
++            status: string;
++        };
+         /**
+          * @description `GET /search` のレスポンスボディ（クエリパラメータを受け取るエンドポイントの例）。
+          *
+@@ -221,13 +237,13 @@ export interface operations {
+         };
+         requestBody?: never;
+         responses: {
+-            /** @description サーバーが正常に稼働している（本文は固定文字列 `OK`） */
++            /** @description サーバーが正常に稼働している（本文は固定 JSON `{"status":"ok"}`） */
+             200: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "text/plain": string;
++                    "application/json": components["schemas"]["HealthBody"];
+                 };
+             };
+         };
+diff --git a/ts/src/usage.ts b/ts/src/usage.ts
+index 64f2727..868dc36 100644
+--- a/ts/src/usage.ts
++++ b/ts/src/usage.ts
+@@ -18,10 +18,12 @@ const client = createBackendFrameworkClient("http://127.0.0.1:8080");
+  * 制約していることを型検査で確認する呼び出しサイト。
+  */
+ async function callAllEndpoints(): Promise<void> {
+-  // GET /health（パラメータなし）: レスポンスは text/plain の string。
++  // GET /health（パラメータなし）: レスポンスは application/json の { status: string }。
+   const health = await client.GET("/health");
+-  const healthBody: string | undefined = health.data;
+-  void healthBody;
++  if (health.data) {
++    const status: string = health.data.status;
++    void status;
++  }
+ 
+   // GET /hello/{name}（パスパラメータ 1 件）。
+   const hello = await client.GET("/hello/{name}", {

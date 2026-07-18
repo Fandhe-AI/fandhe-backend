@@ -1,0 +1,46 @@
+diff --git a/crates/http/src/request.rs b/crates/http/src/request.rs
+index 16e5518..e91840a 100644
+--- a/crates/http/src/request.rs
++++ b/crates/http/src/request.rs
+@@ -683,4 +683,41 @@ mod tests {
+         let buf = b"GET / HTTP/1.1\r\nHost: example.com\nX-A: 1\r\n\r\n";
+         assert_eq!(parse_request_head(buf), Err(ParseError::InvalidHeader));
+     }
++
++    #[test]
++    fn header_count_exactly_at_limit_is_accepted() {
++        // MAX_HEADER_COUNT 本ちょうどは許容境界内であり、成功することを固定する
++        // （`too_many_headers` は上限+1本での失敗のみを検証しているため、
++        // 反対側の境界（上限ちょうどでは失敗しないこと）を補完する）。
++        let mut buf = b"GET / HTTP/1.1\r\n".to_vec();
++        for i in 0..MAX_HEADER_COUNT {
++            buf.extend_from_slice(format!("X-{i}: v\r\n").as_bytes());
++        }
++        buf.extend_from_slice(b"\r\n");
++        let (head, consumed) = complete(&buf);
++        assert_eq!(head.headers().count(), MAX_HEADER_COUNT);
++        assert_eq!(consumed, buf.len());
++    }
++
++    #[test]
++    fn header_count_one_over_limit_is_rejected() {
++        // MAX_HEADER_COUNT を 1 本超えた境界ちょうどでの失敗を固定する
++        // （`too_many_headers` の `<=` ではなく `==` での最小超過ケース）。
++        let mut buf = b"GET / HTTP/1.1\r\n".to_vec();
++        for i in 0..(MAX_HEADER_COUNT + 1) {
++            buf.extend_from_slice(format!("X-{i}: v\r\n").as_bytes());
++        }
++        buf.extend_from_slice(b"\r\n");
++        assert_eq!(parse_request_head(&buf), Err(ParseError::TooManyHeaders));
++    }
++
++    #[test]
++    fn blank_line_only_buffer_has_no_request_line() {
++        // 空行のみのバッファ（`\r\n\r\n`）はヘッダ終端が直後に見つかるため
++        // ヘッダ部が空文字列になり、リクエストラインが空行として解釈される。
++        // 結果、method/target/version の 3 要素が揃わず InvalidRequestLine となる
++        // （リクエストラインが実質存在しないケースの境界確認）。
++        let buf = b"\r\n\r\n";
++        assert_eq!(parse_request_head(buf), Err(ParseError::InvalidRequestLine));
++    }
+ }

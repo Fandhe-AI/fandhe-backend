@@ -1,0 +1,32 @@
+diff --git a/crates/http/src/request.rs b/crates/http/src/request.rs
+index 16e5518..148ea01 100644
+--- a/crates/http/src/request.rs
++++ b/crates/http/src/request.rs
+@@ -36,6 +36,27 @@ pub enum HttpVersion {
+     Http11,
+ }
+ 
++impl std::fmt::Display for HttpVersion {
++    /// リクエストライン表記（`"HTTP/1.0"` / `"HTTP/1.1"`）としてフォーマットする。
++    ///
++    /// ログ出力・エラーメッセージ組み立て等、`HttpVersion` を人間可読な文字列として
++    /// 表示したい呼び出し元向けの契約。
++    ///
++    /// ```
++    /// use bf_http::request::HttpVersion;
++    ///
++    /// assert_eq!(HttpVersion::Http10.to_string(), "HTTP/1.0");
++    /// assert_eq!(HttpVersion::Http11.to_string(), "HTTP/1.1");
++    /// ```
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        let s = match self {
++            HttpVersion::Http10 => "HTTP/1.0",
++            HttpVersion::Http11 => "HTTP/1.1",
++        };
++        f.write_str(s)
++    }
++}
++
+ /// パース済みリクエストヘッド（body は含まない）。
+ ///
+ /// body の読み取りは呼び出し元（ソケット I/O 層、TASK-1.3-2 / #67）の責務。

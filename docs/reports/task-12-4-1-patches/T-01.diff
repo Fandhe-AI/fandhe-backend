@@ -1,0 +1,53 @@
+diff --git a/crates/core/src/extension.rs b/crates/core/src/extension.rs
+index 95c8002..a27ade9 100644
+--- a/crates/core/src/extension.rs
++++ b/crates/core/src/extension.rs
+@@ -94,6 +94,48 @@ pub trait Middleware: Send + Sync {
+     fn on_response(&self, head: &RequestHead, elapsed: Duration);
+ }
+ 
++/// 何も観測しない [`Middleware`] を返すファクトリ関数。
++///
++/// `on_request` / `on_response` はいずれも何も行わない no-op であり、
++/// [`Middleware`] の契約（観測専用・同期ブロッキング I/O 禁止）を自明に
++/// 満たす。デフォルト構成のプレースホルダやテストのダミー実装として使う。
++///
++/// # Examples
++///
++/// ```
++/// use backend_framework_core::extension::{noop_middleware, Middleware};
++/// use bf_http::request::{parse_request_head, ParseOutcome};
++/// use std::time::Duration;
++///
++/// let mw = noop_middleware();
++/// assert_eq!(mw.name(), "noop-middleware");
++///
++/// let buf = b"GET / HTTP/1.1\r\n\r\n";
++/// let head = match parse_request_head(buf).unwrap() {
++///     ParseOutcome::Complete { head, .. } => head,
++///     ParseOutcome::Incomplete => unreachable!(),
++/// };
++/// // 呼び出しても panic せず、状態も変化しないことを確認する。
++/// mw.on_request(&head);
++/// mw.on_response(&head, Duration::from_millis(1));
++/// ```
++pub fn noop_middleware() -> impl Middleware {
++    /// [`noop_middleware`] が返す何もしないトイ実装。
++    struct NoopMiddleware;
++
++    impl Middleware for NoopMiddleware {
++        fn name(&self) -> &'static str {
++            "noop-middleware"
++        }
++
++        fn on_request(&self, _head: &RequestHead) {}
++
++        fn on_response(&self, _head: &RequestHead, _elapsed: Duration) {}
++    }
++
++    NoopMiddleware
++}
++
+ /// 長時間接続（WebSocket・WebRTC シグナリング等）への**委譲判定のみ**を
+ /// コアに公開する拡張点。
+ ///

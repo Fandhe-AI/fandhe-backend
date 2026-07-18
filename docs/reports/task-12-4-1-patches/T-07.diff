@@ -1,0 +1,81 @@
+diff --git a/crates/http/src/connection.rs b/crates/http/src/connection.rs
+index f24ba88..c5cd713 100644
+--- a/crates/http/src/connection.rs
++++ b/crates/http/src/connection.rs
+@@ -299,6 +299,76 @@ mod tests {
+         assert!(!should_keep_alive(&head));
+     }
+ 
++    // `should_keep_alive` の HTTP バージョン別境界値テスト（HTTP/1.0・HTTP/1.1 ×
++    // `Connection` ヘッダ有無・値の組み合わせを網羅する）。実装（本ファイル冒頭の
++    // `should_keep_alive`）は変更せず、既存の振る舞いを固定するテスト追加のみ。
++
++    #[test]
++    fn http11_connection_header_absent_defaults_to_keep_alive() {
++        // HTTP/1.1 で `Connection` ヘッダそのものが存在しない境界。
++        let head = head_of(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n");
++        assert!(should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http11_explicit_connection_keep_alive_stays_keep_alive() {
++        // HTTP/1.1 で冗長だが明示的な `keep-alive` トークンを指定した場合。
++        let head = head_of(b"GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n");
++        assert!(should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http11_connection_header_with_unrelated_token_stays_keep_alive() {
++        // HTTP/1.1 で `close`/`keep-alive` いずれでもない token（`upgrade` 等）の場合、
++        // 既定の keep-alive が維持される。
++        let head = head_of(b"GET / HTTP/1.1\r\nConnection: upgrade\r\n\r\n");
++        assert!(should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http10_connection_header_absent_defaults_to_close() {
++        // HTTP/1.0 で `Connection` ヘッダそのものが存在しない境界。
++        let head = head_of(b"GET / HTTP/1.0\r\nHost: example.com\r\n\r\n");
++        assert!(!should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http10_explicit_connection_close_stays_close() {
++        // HTTP/1.0 で冗長だが明示的な `close` トークンを指定した場合。
++        let head = head_of(b"GET / HTTP/1.0\r\nConnection: close\r\n\r\n");
++        assert!(!should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http10_connection_header_with_unrelated_token_stays_close() {
++        // HTTP/1.0 で `close`/`keep-alive` いずれでもない token（`upgrade` 等）の場合、
++        // 既定の close が維持される（`keep-alive` token がないため）。
++        let head = head_of(b"GET / HTTP/1.0\r\nConnection: upgrade\r\n\r\n");
++        assert!(!should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http10_connection_keep_alive_case_insensitive() {
++        // HTTP/1.0 の `keep-alive` トークン判定も ASCII 大小文字を無視する境界。
++        let head = head_of(b"GET / HTTP/1.0\r\nConnection: KEEP-ALIVE\r\n\r\n");
++        assert!(should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http10_connection_close_case_insensitive() {
++        // HTTP/1.0 の `close` トークン判定（keep-alive と併記時の優先）も
++        // ASCII 大小文字を無視する境界。
++        let head = head_of(b"GET / HTTP/1.0\r\nConnection: Keep-Alive, CLOSE\r\n\r\n");
++        assert!(!should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http10_connection_keep_alive_token_trims_surrounding_whitespace() {
++        // カンマ区切り token 前後の OWS（optional whitespace）を trim する境界。
++        let head = head_of(b"GET / HTTP/1.0\r\nConnection:   keep-alive  \r\n\r\n");
++        assert!(should_keep_alive(&head));
++    }
++
+     #[tokio::test]
+     async fn reads_request_without_body() {
+         let mut socket: &[u8] = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
