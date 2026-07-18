@@ -1,0 +1,17 @@
+diff --git a/README.md b/README.md
+index ea1ce33..4e3faf1 100644
+--- a/README.md
++++ b/README.md
+@@ -14,6 +14,12 @@ git clone --recurse-submodules git@github.com:Fandhe-AI/backend-framework.git
+ git submodule update --init
+ ```
+ 
++リリースビルドの実行例:
++
++```bash
++cargo build --release
++```
++
+ | ドキュメント | 内容 |
+ |-------------|------|
+ | [`docs/spec/04-requirements.md`](./docs/spec/04-requirements.md) | MoSCoW 優先度付き要件（REQ-1〜15）・受け入れ基準 |

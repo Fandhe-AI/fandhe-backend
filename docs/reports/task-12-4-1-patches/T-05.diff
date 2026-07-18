@@ -1,0 +1,44 @@
+diff --git a/crates/http/src/body.rs b/crates/http/src/body.rs
+index 026b491..f446f2f 100644
+--- a/crates/http/src/body.rs
++++ b/crates/http/src/body.rs
+@@ -29,6 +29,27 @@ pub enum BodyLength {
+     Fixed(u64),
+ }
+ 
++impl BodyLength {
++    /// body の長さが既知（`Fixed`）かどうかを返す。
++    ///
++    /// `None`（body なし）も長さは 0 バイトとして確定しているが、ここでいう
++    /// 「既知」は「読み取るべきバイト数が明示されているか」を指すため
++    /// `Fixed` のみを既知として扱う。呼び出し元（[`crate::connection::read_request`]
++    /// 等）が「読み取りループが必要か」を判定する用途を想定する。
++    ///
++    /// # Examples
++    ///
++    /// ```
++    /// use bf_http::body::BodyLength;
++    ///
++    /// assert!(!BodyLength::None.is_known());
++    /// assert!(BodyLength::Fixed(4).is_known());
++    /// ```
++    pub fn is_known(&self) -> bool {
++        matches!(self, BodyLength::Fixed(_))
++    }
++}
++
+ /// [`body_length`] が返しうるエラー。
+ #[derive(Debug, PartialEq, Eq)]
+ pub enum BodyError {
+@@ -275,4 +296,11 @@ mod tests {
+         fn assert_error<E: std::error::Error>() {}
+         assert_error::<BodyError>();
+     }
++
++    #[test]
++    fn is_known_distinguishes_none_and_fixed() {
++        assert!(!BodyLength::None.is_known());
++        assert!(BodyLength::Fixed(0).is_known());
++        assert!(BodyLength::Fixed(MAX_BODY_BYTES).is_known());
++    }
+ }
