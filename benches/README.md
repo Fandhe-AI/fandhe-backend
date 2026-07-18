@@ -236,6 +236,28 @@ cargo build --release -p backend-framework-core --example graphql_nfr6 --feature
 許容帯 [95%, 105%]・狭義帯 [100.3%, 100.8%]）。実行結果レポートは
 `reports/task-8.4-webrtc-nfr6.md` / `reports/task-5.2-graphql-performance.md` を参照。
 
+## hub-nfr6-bench.sh — hub 共通配線プラグインの NFR-6 計測（TASK-9.5、#65）
+
+`bf-plugin-hub-wiring`（依存逆転型プラグイン）をリンクした hub サービスが、無関係
+パス（`GET /`）への RPS・p95 レイテンシに与える影響を検証する。`webrtc-nfr6-bench.sh` /
+`graphql-nfr6-bench.sh` と同型だが、比較対象は feature 有効化ではなく **クレートの
+リンク**（`Server::gate` 未登録＝`BF_HUB_GATE=off`）である点が異なる（依存逆転型
+プラグインは Cargo feature ではなく利用側の依存追加で着脱するため）。
+
+```bash
+cargo build --release -p backend-framework-core --example minimal --no-default-features
+cargo build --release -p bf-plugin-hub-wiring --example hub_service_demo
+
+./benches/hub-nfr6-bench.sh
+```
+
+`RUNS` / `DURATION` / `CONNECTIONS` を env で上書き可能（既定 `RUNS=5 DURATION=5s
+CONNECTIONS=32`）。判定は `scripts/accept/lib/nfr6-ratio.sh`（`evaluate_nfr6_ratio`）を
+呼ぶ `scripts/accept/hub-wiring-accept.sh` が担う（実務許容帯 [95%, 105%]・狭義帯
+[100.3%, 100.8%]）。実行結果レポートは `reports/task-9.5-hub-wiring-performance.md` を
+参照（本環境は専有環境ではなく、実測値が実務許容帯を外れて FAIL 記録されている点・
+環境注記を含む）。
+
 ## tracing-nfr-bench.sh — サンプリング適用後の可観測性 NFR 再計測
 
 TASK-10.4（#59）: `tracing` feature（TASK-10.1〜10.3 の決定的サンプリング・イベント
