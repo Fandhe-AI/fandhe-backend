@@ -77,6 +77,11 @@
   TS 型 → openapi-fetch クライアント」の一方向パイプライン設計・クライアントライブラリ
   選定結果（`openapi-fetch` 採用理由と比較表）・`--check`/`--update` 運用・
   サプライチェーン対策・TASK-6.2（#55）への接続点を記述）
+- [`tracing-integration.md`](./tracing-integration.md): `tracing` エコシステム連携方式
+  設計（TASK-10.5、#60、REQ-10。`init_tracing`/`TracingOutput`/`WorkerGuard` 保持契約・
+  non_blocking の lossy 特性、`TracingConfig` によるサンプリング設定・`exclude_path` に
+  よる高頻度パス除外・記録粒度を上げる場合の拡張指針（method/path/elapsed_ms 限定の
+  不変条件を維持）、依存インパクト要約（`docs/dep-impact/records.md` 参照）を記述）
 - [`outbox-consent-integration.md`](./outbox-consent-integration.md): Outbox・同意ゲート
   実データモデル統合設計（TASK-9.4、#64、REQ-9。PoC-6 インメモリ実装（`Mutex<Vec<...>>`）
   から `micro-service-hub` の Outbox Relay・同意管理サービス（PostgreSQL）への統合方針。

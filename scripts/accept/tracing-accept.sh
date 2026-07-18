@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# REQ-10（可観測性）TASK-10.4（#59）サンプリング適用後性能再検証の受け入れ検証
-# オーケストレータ。
+# REQ-10（可観測性）TASK-10.4（#59）サンプリング適用後性能再検証 +
+# TASK-10.5（#60）依存インパクト記録・文書化の受け入れ検証オーケストレータ。
 #
-# `docs/spec/05-tasks.md` TASK-10.4 の受け入れ基準を機械検証する:
+# `docs/spec/05-tasks.md` TASK-10.4 / TASK-10.5 の受け入れ基準を機械検証する:
 #   A: `tracing` feature 無効時、`backend-framework-core` の依存ツリーに
 #      `bf-plugin-tracing` / `tracing*` 系依存が一切現れない
 #      （pay-for-what-you-use の完全除外、`.claude/rules/pay-for-what-you-use.md`）
@@ -14,6 +14,13 @@
 #      `benches/tracing-nfr-bench.sh` で empirical 計測する。揃っていなければ
 #      判定不能として SKIP + 実行手順を案内する（フェイルクローズ、自動ビルド・
 #      自動ダウンロードは行わない）
+#   D（TASK-10.5）: 依存インパクト記録・連携方式設計文書の存在検証
+#      （`docs/dep-impact/records.md` の plugin-tracing エントリ・
+#      `docs/design/tracing-integration.md` の存在を grep）
+#   E（TASK-10.5）: 依存クレート数増分の機械検証（`cargo tree -p
+#      backend-framework-core --features tracing` の union 展開差分件数を算出し、
+#      `docs/dep-impact/records.md` 記録値（+24）と突合）。バイナリサイズ・RSS は
+#      A/C チェックと同じくビルド済みバイナリが無ければフェイルクローズで SKIP
 #
 # 基準未達（FAIL）でも `docs/spec/06-roadmap.md` の分岐どおり「デフォルト無効・
 # 明示的 opt-in feature」を維持する結論自体は成立する（現状 `default = []`）。
@@ -165,9 +172,71 @@ check_nfr() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# D: 依存インパクト記録・連携方式設計文書の存在検証（TASK-10.5、#60）
+# ---------------------------------------------------------------------------
+check_dep_impact_docs() {
+    if grep -q "crates/plugin-tracing.*依存インパクト記録" docs/dep-impact/records.md 2>/dev/null; then
+        record_pass "D: 依存インパクト記録の存在（docs/dep-impact/records.md）" "plugin-tracing エントリを検出"
+    else
+        record_fail "D: 依存インパクト記録の存在（docs/dep-impact/records.md）" "plugin-tracing 依存インパクトエントリが見つからない"
+    fi
+
+    if [ -f "docs/design/tracing-integration.md" ]; then
+        record_pass "D: 連携方式設計文書の存在（docs/design/tracing-integration.md）" "ファイル存在を確認"
+    else
+        record_fail "D: 連携方式設計文書の存在（docs/design/tracing-integration.md）" "ファイルが見つからない"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# E: 依存クレート数増分の機械検証（TASK-10.5、#60）
+# ---------------------------------------------------------------------------
+check_dep_count_increment() {
+    if [ ! -d "crates/plugin-tracing" ]; then
+        record_skip "E: 依存クレート数増分の機械検証" "crates/plugin-tracing が本 worktree 未存在のため検証対象なし"
+        return
+    fi
+
+    # `name vX.Y.Z` 形式のユニークパッケージ行を union 展開して集合差分を取る
+    # （records.md の既存手法、A チェックの grep -c は行出現数のみで実クレート数
+    # とは一致しないため別集計とする）。
+    local disabled_pkgs enabled_pkgs disabled_count enabled_count new_count
+    disabled_pkgs="$(cargo tree -p backend-framework-core -e normal --no-default-features 2>/dev/null \
+        | sed -E 's/^[│├└─ ]*//; s/ \(\*\)$//' \
+        | grep -E '^[a-zA-Z0-9_-]+ v[0-9]' | sort -u)"
+    enabled_pkgs="$(cargo tree -p backend-framework-core -e normal --no-default-features --features tracing 2>/dev/null \
+        | sed -E 's/^[│├└─ ]*//; s/ \(\*\)$//' \
+        | grep -E '^[a-zA-Z0-9_-]+ v[0-9]' | sort -u)"
+
+    if [ -z "${enabled_pkgs}" ]; then
+        record_fail "E: 依存クレート数増分の機械検証" "cargo tree -p backend-framework-core -e normal --no-default-features --features tracing が空・失敗"
+        return
+    fi
+
+    disabled_count="$(printf '%s\n' "${disabled_pkgs}" | grep -c . || true)"
+    enabled_count="$(printf '%s\n' "${enabled_pkgs}" | grep -c . || true)"
+    new_count="$(comm -13 <(printf '%s\n' "${disabled_pkgs}") <(printf '%s\n' "${enabled_pkgs}") | grep -c . || true)"
+
+    # records.md 記録値（+24、2026-07-18 エントリ）との突合。`Cargo.lock` 更新等で
+    # 若干変動しうるため許容帯を持たせる（webrtc-accept.sh の帯判定と同様の方針）。
+    local expected=24
+    local tolerance=5
+    local diff_abs
+    diff_abs="$(( new_count > expected ? new_count - expected : expected - new_count ))"
+
+    if [ "${diff_abs}" -le "${tolerance}" ]; then
+        record_pass "E: 依存クレート数増分の機械検証" "無効時 ${disabled_count} 件 → 有効時 ${enabled_count} 件（union 展開、新規 +${new_count} 件）。records.md 記録値 +${expected} 件と許容帯（±${tolerance}）内で一致"
+    else
+        record_warn "E: 依存クレート数増分の機械検証" "無効時 ${disabled_count} 件 → 有効時 ${enabled_count} 件（union 展開、新規 +${new_count} 件）。records.md 記録値 +${expected} 件と乖離（許容帯 ±${tolerance} 超過、Cargo.lock 更新等の環境差の可能性。records.md 再計測・更新を検討）"
+    fi
+}
+
 check_dep_exclusion
 check_regression
 check_nfr
+check_dep_impact_docs
+check_dep_count_increment
 
-print_summary "REQ-10、TASK-10.4 / #59"
+print_summary "REQ-10、TASK-10.4 / #59、TASK-10.5 / #60"
 exit "$(summary_exit_code)"
