@@ -606,6 +606,51 @@ jobs:
         run: bash scripts/openapi-ts-negative.sh
 
   # --------------------------------------------------
+  # ワークフロー静的検証（TASK-15、#180）: `.github/workflows/*.yml` を actionlint で
+  # 検証し、式インジェクション（OWASP A03）・構文誤り・needs 参照切れ等のワークフロー
+  # 変更退行を機械検知するゲート。PR #98 以降「環境未導入のため未実施」と記録され続けて
+  # いた検証を CI 常設化する。Go 製単一バイナリで cargo 非依存のため rustup 同期は不要。
+  # バージョン + SHA256 pin は scripts/actionlint.sh の定数を単一真実源とする
+  # （scripts/fuzz.sh の PINNED_NIGHTLY と同じパターン）。schedule（日次 dep-audit のみを
+  # 走らせる方針）からは除外し self-hosted runner の負荷を抑える。
+  # --------------------------------------------------
+  actionlint:
+    name: actionlint（ワークフロー静的検証）
+    runs-on: self-hosted
+    if: github.event_name != 'schedule'
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      # サプライチェーン考慮（OWASP A08）: バージョン + SHA256 の二重 pin で取得し、
+      # checksum 不一致は即失敗（fail-closed）。pin 値は scripts/actionlint.sh の定数を
+      # 単一真実源として読み取るため、バージョン更新時は同スクリプトの修正のみで追随する。
+      - name: Ensure actionlint (pinned, SHA256 verified)
+        run: |
+          set -euo pipefail
+          version="$(grep -oP '(?<=^ACTIONLINT_VERSION=")[^"]+' scripts/actionlint.sh)"
+          sha256="$(grep -oP '(?<=^ACTIONLINT_SHA256_LINUX_AMD64=")[^"]+' scripts/actionlint.sh)"
+          if command -v actionlint >/dev/null 2>&1 && [ "$(actionlint -version | head -n1)" = "${version}" ]; then
+            exit 0
+          fi
+          workdir="$(mktemp -d)"
+          trap 'rm -rf "${workdir}"' EXIT
+          curl --proto '=https' --tlsv1.2 -fsSL -o "${workdir}/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz"
+          echo "${sha256}  ${workdir}/actionlint.tar.gz" | sha256sum -c -
+          tar xzf "${workdir}/actionlint.tar.gz" -C "${workdir}" actionlint
+          mkdir -p "${HOME}/.local/bin"
+          install -m 755 "${workdir}/actionlint" "${HOME}/.local/bin/actionlint"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: scripts/actionlint.sh（.github/workflows/*.yml 検証）
+        run: bash scripts/actionlint.sh
+
+      - name: scripts/tests/run-actionlint-tests.sh（セルフテスト・陰性対照）
+        run: bash scripts/tests/run-actionlint-tests.sh
+
+  # --------------------------------------------------
   # fuzz smoke（TASK-15.3-1、#87）: crates/http/fuzz（root workspace から exclude 済み、
   # pay-for-what-you-use）の全 fuzz target を短時間（既定 60 秒/target）だけ実行し、
   # パーサのパニック・メモリ不正への回帰を CI 常設で検知する。ビルドは pinned nightly +
@@ -723,7 +768,8 @@ jobs:
   # unsafe-triage（unsafe 追加のラチェット検知、TASK-12.1-1、#79）・
   # pay-for-what-you-use（feature 無効時の依存・unsafe・コード 0 件検証、TASK-2.2、#19）・
   # fuzz-smoke（パーサのパニック・メモリ不正検知、TASK-15.3-1、#87）・
-  # openapi-two-stage（openapi.json 鮮度検証 + 2 段階ビルド、TASK-3.2、#31）も含む
+  # openapi-two-stage（openapi.json 鮮度検証 + 2 段階ビルド、TASK-3.2、#31）・
+  # actionlint（ワークフロー静的検証、TASK-15、#180）も含む
   # 全ジョブの success を単一ジョブの成否に集約する。
   # branch protection / ruleset（scripts/setup-required-checks.sh）はこのジョブ名のみを
   # required check にすればよく、ジョブ追加時は needs に足すだけで判定対象を拡張できる。
@@ -740,7 +786,7 @@ jobs:
     # ci-complete 自体が schedule 時は丸ごとスキップされるため判定ロジックには影響しない）。
     # 完遂判定の対象外（required check としては pull_request/push イベントのみを想定する）。
     if: ${{ always() && github.event_name != 'schedule' }}
-    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, pay-for-what-you-use, fuzz-smoke, openapi-two-stage, openapi-ts]
+    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, pay-for-what-you-use, fuzz-smoke, openapi-two-stage, openapi-ts, actionlint]
     timeout-minutes: 5
     steps:
       - name: 完遂判定（全 needs ジョブが success であること）
@@ -759,6 +805,7 @@ jobs:
           RESULT_FUZZ_SMOKE: ${{ needs.fuzz-smoke.result }}
           RESULT_OPENAPI_TWO_STAGE: ${{ needs.openapi-two-stage.result }}
           RESULT_OPENAPI_TS: ${{ needs.openapi-ts.result }}
+          RESULT_ACTIONLINT: ${{ needs.actionlint.result }}
         run: |
           set -euo pipefail
           ok=1
@@ -769,7 +816,8 @@ jobs:
                       "pay-for-what-you-use:${RESULT_PAY_FOR_WHAT_YOU_USE}" \
                       "fuzz-smoke:${RESULT_FUZZ_SMOKE}" \
                       "openapi-two-stage:${RESULT_OPENAPI_TWO_STAGE}" \
-                      "openapi-ts:${RESULT_OPENAPI_TS}"; do
+                      "openapi-ts:${RESULT_OPENAPI_TS}" \
+                      "actionlint:${RESULT_ACTIONLINT}"; do
             job="${pair%%:*}"; result="${pair#*:}"
             echo "${job}: ${result}"
             # skipped / cancelled / failure はすべて未完遂として扱う（fail-closed）

@@ -1,0 +1,15 @@
+# scripts/tests/run-actionlint-tests.sh の陰性対照（discrimination）専用 fixture。
+# 意図的に 2 種類のエラーを仕込む:
+#   1. `runs-on` の欠落（actionlint が必須プロパティ欠落として検出）
+#   2. 存在しないジョブへの `needs` 参照切れ（actionlint が undefined job として検出）
+# 実運用の .github/workflows/*.yml とは無関係で、actionlint 本体が非 0 終了することを
+# 確認する目的のみに使う（scripts/actionlint.sh がファイル引数を受け取れることの検証）。
+name: broken-workflow-fixture
+on:
+  push:
+
+jobs:
+  broken:
+    needs: [does-not-exist]
+    steps:
+      - run: echo "missing runs-on"
