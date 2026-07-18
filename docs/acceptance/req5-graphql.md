@@ -89,6 +89,11 @@ worktree であり、他エージェントの並行実行によるホスト負�
   可能性が高いため、`webrtc-nfr6-bench.sh`（TASK-8.4）の狭義帯未達（安定した FAIL）
   とは性質が異なる。out-of-scope-tracking 候補としてユーザーへ報告する
   （`.claude/rules/out-of-scope-tracking.md`）。
+- **専有計測環境（#178）**: `benches/nfr6-exclusive.sh`（flock 相互排他 + 静穏確認、
+  `docs/design/nfr6-exclusive-measurement.md`）を整備した。しかし本イシュー実装時点も
+  並列 issue 実装ワークフロー実行中であり、静穏確認が成立せず GraphQL 対象の専有環境
+  確定再計測はできなかった（`benches/reports/task-5.2-graphql-performance.md` 追補節）。
+  上記 FAIL 記録は維持し、host が真に静穏な期間の再計測をフォローアップとする。
 
 ## 検証コマンド一覧（再現手順）
 

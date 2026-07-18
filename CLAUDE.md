@@ -46,7 +46,8 @@ backend-framework/
 │   │                                    # `graphql`（TASK-2.4、#21）の 4 feature で `dep:` 構文
 │   │                                    # により各プラグインを着脱可能に配線済み
 │   │                                    # （`webrtc-proxy` 優先評価）
-│   ├── http / routes                  # HTTP プリミティブ・ルーティング
+│   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
+│   │                                    # `{name}` パスパラメータ対応、TASK-176、#176）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
@@ -84,6 +85,12 @@ backend-framework/
 ├── benches/               # 負荷生成・計測ハーネス（TASK-1.2 で追加、bench-builder 管轄）
 │   ├── README.md                      # 再現手順・複数回計測/中央値評価の規約
 │   ├── lib/common.sh                  # 共通関数（サーバ起動/停止・中央値算出・依存ツール検査）
+│   ├── lib/exclusive.sh               # NFR-6 専有計測用の相互排他（flock）・静穏確認・環境
+│   │                                    # スナップショット（#178。並列 issue 実装ワークフロー下の
+│   │                                    # host contention による NFR-6 判定不確定への対処）
+│   ├── nfr6-exclusive.sh               # 専有実行枠で webrtc/graphql/hub の NFR-6 を順次計測・
+│   │                                    # 判定確定する wrapper（#178、docs/design/
+│   │                                    # nfr6-exclusive-measurement.md 参照）
 │   └── bench-http.sh / bench-rss.sh / bench-footprint.sh  # RPS・負荷時 RSS・起動時間/バイナリサイズ計測
 ├── scripts/               # CI・運用スクリプト（TASK-15.2 で追加）
 │   ├── README.md                      # 使い方・前提ツール・CI との対応

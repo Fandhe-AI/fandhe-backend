@@ -120,3 +120,19 @@ baseline run 1・2 の出力が端末バッファの都合で欠落している�
 （`crates/core/src/plugin.rs`・`crates/plugin-graphql/src/lib.rs`）は本タスクで変更して
 いない。専有環境での再計測が望ましい（`docs/acceptance/req5-graphql.md` の
 BLOCKED / フォローアップ節を参照）。
+
+## 追補（#178）: 専有計測環境での再計測試行
+
+`benches/nfr6-exclusive.sh`（`docs/design/nfr6-exclusive-measurement.md` 参照）で
+専有環境での確定再計測を試行した。本イシュー実装時点は複数 issue の並列実装
+ワークフロー実行中であり、静穏確認（既定 `LOAD1_MAX=1.0`）は一度も成立しなかった。
+
+wrapper を `LOAD1_MAX=2.0`（緩和・参考値）で実行したところ、webrtc 対象の計測完了後、
+graphql 対象の計測直前の静穏再確認で loadavg 5.96・`cargo`/`rustc` 稼働中を検知し
+**BLOCKED** で正しく停止した（graphql の再計測は実施できず）。これは専有実行枠が
+host contention を検知して計測を進めない設計どおりに機能した実例である
+（判定を丸めていない）。
+
+したがって本レポートの GraphQL FAIL 記録は変更しない。既定閾値での確定再計測は
+host が真に静穏な期間に改めて実施する必要があり、フォローアップとして別途実施する
+（`.claude/rules/out-of-scope-tracking.md`）。

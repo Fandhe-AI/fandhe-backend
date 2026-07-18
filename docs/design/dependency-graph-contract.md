@@ -278,7 +278,54 @@ RPS・p95 レイテンシに与える影響（NFR-6、`docs/spec/04-requirements
    （`crates/core/src/extension.rs` doc）も変更していない。`benches/*` を D
    カテゴリに追加する是正は 4.3 節〜4.5 節と同一の別 Issue 対象とする
 
-### 4.7 記載例（TASK-4.4 / #179 / PR #194）
+### 4.7 記載例（TASK-176 / #176 / PR #191）
+
+`bf-routes`（`crates/routes`）の `Router` に `{name}` パスパラメータ対応
+（`route_param` / `dispatch` の優先順位付き解決、`PathParams` によるゼロコピー
+値抽出）を追加した変更で、`extension-closure-check.sh` の分類規則（A はプラグイン
+クレート内 `crates/plugin-*/**`、B はコア側許容シームのうち `crates/core/Cargo.toml`・
+`crates/core/src/plugin.rs`・`crates/core/src/server.rs`・`crates/core/src/lib.rs`
+のみ、C はテストのうち `crates/core/tests/**` と `crates/plugin-*/tests/**` のみ）が
+`crates/routes/**` を A〜D いずれにも含めていないため、以下 3 件が E（閉包違反候補）
+と判定された。
+
+1. **対象コミット/PR**: PR #191（#176、コンテンツ確定コミット sha
+   `5381b85bf75e68d49aac8cb5b3be1e88b8812e26`）
+2. **E ファイルパス**:
+   - `crates/routes/src/lib.rs`
+   - `crates/routes/src/pattern.rs`
+   - `crates/routes/tests/path_params.rs`
+3. **閉じない理由**: `extension-closure-check.sh` の分類規則は「プラグインクレート内
+   （A）」「コア側許容シーム（B、`crates/core` の 4 ファイルのみ）」「テスト（C、
+   `crates/core/tests/**`・`crates/plugin-*/tests/**` のみ）」「ドキュメント・運用
+   （D、`docs/*`・`scripts/*` 等）」の 4 カテゴリしか許可しておらず、`bf-routes`
+   （1 節の正準依存グラフにおける中間層クレート、`server → routes → http::*`）を
+   走査対象に含めていない。今回の変更は 3 拡張点 trait（`Middleware` /
+   `UpgradeHandler` / `RequestGate`）にも `try_intercept` 固定シームにも一切触れて
+   おらず、いずれのプラグインクレート（`crates/plugin-*`）でもない `bf-routes` 自体の
+   ルーティング機能拡張であるため、分類規則の対象漏れにより機械的に A〜D いずれにも
+   一致せず E 判定となる
+4. **正当性根拠**: 3 ファイルはいずれも `bf-routes` の既存責務（method + `target` の
+   完全一致解決）に `{name}` パラメータ照合を追加するのみで、2 節契約一覧の 4 拡張点
+   （`Middleware`・`UpgradeHandler`・`RequestGate`・`try_intercept`）のいずれの実装
+   クレート（`bf-plugin-websocket`・`bf-plugin-graphql`・`bf-plugin-webrtc`・
+   `bf-plugin-webrtc-proxy`）にも属さず、それらの契約・シグネチャを変更しない。
+   依存方向（`server → routes → http::*`、1 節）も維持したまま
+   （`crates/routes/src/pattern.rs` は `bf-http` の型に依存しない旨を冒頭 doc に明記、
+   `crates/routes/src/lib.rs` 冒頭 doc の依存方向宣言も無変更）であり、
+   `crates/plugin-*` 固有シンボルへの依存も追加していない
+   （`scripts/dep-direction-check.sh` で検証可能）。既存の静的ルート（完全一致）の
+   ヒット経路・ハッシュマップルックアップは無変更で後方互換を維持し
+   （`crates/routes/src/lib.rs` 冒頭 doc「マッチング方針」節）、`crates/routes/tests/
+   path_params.rs` は追加した `route_param` / `dispatch` の振る舞いを検証するテスト
+   に過ぎない。したがって本件は拡張点設計の閉包漏れ（プラグイン実装ロジックの拡張点
+   外への漏出）ではなく、`extension-closure-check.sh` の分類規則が中間層クレート
+   `bf-routes` を A〜D のいずれにも割り当てていない運用上のギャップに起因する。
+   `bf-routes`（コア一方向依存の中間層、B 相当の許容シームへの追加）を分類規則に
+   含める是正は 4.3 節〜4.6 節と同一の別 Issue 対象とする
+   （`.claude/rules/out-of-scope-tracking.md`）
+
+### 4.8 記載例（TASK-4.4 / #179 / PR #194）
 
 `crates/plugin-websocket` にユーザー定義 WebSocket メッセージハンドラ API
 （`WsMessageHandler`・`WebSocketConfig::with_handler`、既定は `EchoHandler` で
