@@ -454,8 +454,14 @@ else
         # third-party-feasibility-verify.sh の出力表から実測パーセンテージを直接
         # 読み取り、REQ-12 閾値（正解率・根拠提示割合とも 80% 以上）を本ハーネス側で
         # 判定する（当該スクリプトは exit code では閾値判定を表現しないため）。
-        accuracy_pct="$(grep -oP '可否判定正解率（4 値厳密一致） \| [0-9]+/[0-9]+（\K[0-9]+(?=%）)' /tmp/ai-autonomy-accept-gray.log || true)"
-        basis_pct="$(grep -oP '判断根拠提示割合 \| [0-9]+/[0-9]+（\K[0-9]+(?=%）)' /tmp/ai-autonomy-accept-gray.log || true)"
+        # `grep -oP` の可変長後読み（lookbehind）は GNU grep 拡張であり BSD grep
+        # （macOS 標準）では非対応でエラー終了する。`|| true` で握りつぶされるため
+        # 失敗時に accuracy_pct/basis_pct が空のままとなり、閾値を満たしていても
+        # gray_ok が強制的に 0 になり F が誤って FAIL 判定されていた（Cursor Bugbot
+        # 指摘、PR #174 review 4728544552）。dep-audit-accept.sh と同様に `sed` の
+        # 後方参照（BRE、POSIX 標準）に置き換えて GNU/BSD 両対応にする。
+        accuracy_pct="$(sed -n 's/.*可否判定正解率（4 値厳密一致） | [0-9]*\/[0-9]*（\([0-9]*\)%）.*/\1/p' /tmp/ai-autonomy-accept-gray.log | head -n1)"
+        basis_pct="$(sed -n 's/.*判断根拠提示割合 | [0-9]*\/[0-9]*（\([0-9]*\)%）.*/\1/p' /tmp/ai-autonomy-accept-gray.log | head -n1)"
         if [ -z "${accuracy_pct}" ] || [ -z "${basis_pct}" ]; then
             gray_ok=0
         else
