@@ -1,0 +1,32 @@
+# TASK-12.7（#48、REQ-12）確定値台帳（機械可読）。
+#
+# `scripts/accept/ai-autonomy-accept.sh` が本ファイルを allowlist パースして基準 A〜C・E
+# の判定に使う（third-party-stability-aggregate.sh の `metric=<name> pass=.. fail=..
+# pending=.. total=..` / `metric=<name> count=..` 形式を踏襲。eval・コマンド置換への
+# 値展開は行わない）。各行の直前コメントに出典レポート・実測日・起点コミットを明記し、
+# 後出し改変を検出可能にする（`.claude/rules/security.md` A08 データ整合性）。
+#
+# 実測定時の起点コミット（origin/main）: ddc348e
+# （docs/reports/task-12-4-1-completion-rate-verification.md・
+#   docs/reports/task-12-4-2-feasibility-judgment-verification.md の実測定時起点コミットと同一）
+
+# 出典: docs/reports/task-12-4-1-completion-rate-verification.md
+#       実測日 2026-07-18、起点コミット ddc348e、PR #167
+#       自律完遂率 8/10（80%）・リグレッション 0 件（一次機械ゲート PASS 10/10）
+metric=completion_rate pass=8 fail=2 pending=0 total=10
+metric=regression count=0
+
+# 出典: docs/reports/task-12-4-2-feasibility-judgment-verification.md
+#       実測日 2026-07-18、起点コミット ddc348e、判定記録 docs/reports/task-12-4-2-records/
+#       可否判定正解率 8/10（80%）・誤判定破壊 0 件（計測対象 6 件）
+metric=feasibility_accuracy pass=8 fail=2 pending=0 total=10
+metric=destruction count=0
+
+# 出典: docs/reports/task-12-4-2-feasibility-judgment-verification.md 5 節
+#       エスカレーション時の判断根拠提示 6/6（100%）
+metric=evidence_rate pass=6 fail=0 pending=0 total=6
+
+# 出典: NFR-8（docs/spec/04-requirements.md）。TASK-12.4-1 の最終判定（二次判定含む）を
+#       保守的に採用する（一次機械ゲートのみの 10/10=100% は参考値。T-06/T-08 は
+#       無変更提出のため「修正を得られた」とみなさない fail-closed 側の集計）。
+metric=auto_fix_rate pass=8 fail=2 pending=0 total=10
