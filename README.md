@@ -29,3 +29,18 @@ git submodule update --init
 - **MS-5〜MS-6**: Should 要件（GraphQL / tRPC・WebRTC / WebSocket プラグイン・micro-service-hub 共通配線）
 
 実装着手の最初のタスクは TASK-1.1（`cargo workspace`・CI 基盤整備）です。
+
+## コントリビュート
+
+開発フロー・コミット規約・設計原則は [`CONTRIBUTING.md`](./CONTRIBUTING.md) を参照してください。
+
+## ライセンス
+
+本プロジェクトは [MIT ライセンス](./LICENSE-MIT) と [Apache License 2.0](./LICENSE-APACHE) の
+デュアルライセンスで提供されます。あなたが本プロジェクトへ提出する Contribution は、明示的な
+別段の定めがない限り、上記デュアルライセンスの下で提供されるものとみなされます
+（詳細は [`CONTRIBUTING.md`](./CONTRIBUTING.md) を参照）。
+
+crates.io への公開手順（名前確保・所有権・リリース CI）は
+[`docs/design/crates-io-release.md`](./docs/design/crates-io-release.md) で定めています
+（現時点では実際の公開は行っていません）。

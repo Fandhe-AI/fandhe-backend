@@ -23,10 +23,14 @@ backend-framework/
 ├── AGENTS.md              # 横断的設計規約（TASK-2.3）+ AI エージェント向け変更ガイド
 │                            # （モジュール境界・変更手順・判定基準・エスカレーション基準、TASK-11.3）
 ├── README.md
+├── LICENSE-MIT            # MIT ライセンス（デュアルライセンスの一方、イシュー #94）
+├── LICENSE-APACHE         # Apache License 2.0（デュアルライセンスの一方、イシュー #94）
+├── CONTRIBUTING.md        # 貢献ガイド（開発フロー・コミット規約・設計原則・ライセンス同意、イシュー #94）
 ├── skills-lock.json       # 導入スキルのロック
 ├── docs/
 │   ├── spec/               # 仕様書 submodule（要件・タスク・ロードマップ）
 │   ├── design/             # リポジトリ側設計ドキュメント（実装フェーズの設計判断を記録）
+│   │   └── crates-io-release.md  # crates.io 公開手順（名前確保・所有権・リリース CI、イシュー #94）
 │   ├── dep-impact/         # 依存インパクト（依存数・バイナリサイズ・unsafe 件数）記録台帳（TASK-15.2）
 │   └── acceptance/         # REQ-1 等の受け入れ検証結果レポート（TASK-1.6-2 で追加）
 ├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）
