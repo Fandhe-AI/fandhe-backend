@@ -13,7 +13,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bf_http::request::RequestHead;
 use bf_http::response::Response;
 use bf_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
-use bf_plugin_hub_wiring::{TenantGate, TenantGateConfig};
+use bf_plugin_hub_wiring::{Authenticator, TenantGate, TenantGateConfig};
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -308,4 +308,52 @@ async fn key_rotation_via_shared_jwks_is_reflected_without_restart() {
         response_new.starts_with("HTTP/1.1 200"),
         "ローテーション後は新鍵のトークンが許可されるはず: {response_new}"
     );
+}
+
+/// `TenantGateConfig::authenticator()` で取り出した `Authenticator` をハンドラが
+/// 保持し、ゲート通過後に `org_id` を再取得するハンドラ（TASK-9.3 / #63 の
+/// 主目的: ゲートとハンドラが同一キャッシュを共有し、ハンドラ側の呼び出しは
+/// 署名検証を再実行しない = キャッシュヒットになることを固定する）。
+struct CachedAuthHandler {
+    authenticator: Authenticator,
+}
+
+impl Handler for CachedAuthHandler {
+    fn handle(&self, head: &RequestHead, _body: &[u8]) -> Response {
+        // `check()`（RequestGate）が既に検証を済ませ `Allow` を返した後にのみ
+        // ハンドラへ到達するため、ここでの `authenticate` は必ず成功する
+        // （フェイルクローズ経路を通過済みのリクエストのみが到達する契約）。
+        let claims = self
+            .authenticator
+            .authenticate(head)
+            .expect("gate already allowed this request");
+        Response::new(200, claims.org_id.into_bytes())
+    }
+}
+
+#[tokio::test]
+async fn handler_reuses_gate_verification_via_shared_authenticator() {
+    let keypair = test_keypair();
+    let config = TenantGateConfig::from_jwks_json(&jwks_json_for(&keypair, TEST_KID)).unwrap();
+    // `config` を `TenantGate::new` へ渡す（消費する）前に `Authenticator` を
+    // 取り出しておく（計画 2.3 節の利用手順）。
+    let authenticator = config.authenticator();
+    let server = Server::new()
+        .gate(TenantGate::new(config))
+        .handler(CachedAuthHandler {
+            authenticator: authenticator.clone(),
+        });
+
+    let token = make_token(&keypair, TEST_KID, Some("org-42"), 9_999_999_999, "RS256");
+    let request = format!(
+        "GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+    );
+    let response = roundtrip(&server, request.as_bytes()).await;
+
+    assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+    assert!(response.ends_with("org-42"), "response: {response}");
+    // ゲート（1 ミス: 実署名検証）→ ハンドラ（1 ヒット: キャッシュ再利用）の
+    // 順で呼ばれたことを直接検証する（重複解消の直接証跡）。
+    assert_eq!(authenticator.cache_misses(), 1);
+    assert_eq!(authenticator.cache_hits(), 1);
 }
