@@ -1,0 +1,6 @@
+jobs:
+  fmt:
+    runs-on: self-hosted
+    steps:
+      - name: cargo fmt --check
+        run: cargo fmt --check

@@ -1,10 +1,10 @@
 # scripts/accept — 受け入れ検証スクリプト
 
 `core-deps-unsafe-audit.sh`（REQ-1）・`plugin-mechanism-accept.sh`（REQ-2、TASK-2.4）・
+`dep-audit-accept.sh`（REQ-15、TASK-15.4）・`req13-change-impact-accept.sh`（REQ-13、TASK-13.2）・
 `webrtc-accept.sh`（REQ-8、TASK-8.4）・`graphql-accept.sh`（REQ-5、TASK-5.2）・
-`req13-change-impact-accept.sh`（REQ-13、TASK-13.2）・`openapi-ts-accept.sh`（REQ-6、TASK-6.2）・
-`tracing-accept.sh`（REQ-10、TASK-10.4 / TASK-10.5）
-の 7 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
+`openapi-ts-accept.sh`（REQ-6、TASK-6.2）・`tracing-accept.sh`（REQ-10、TASK-10.4 / TASK-10.5）
+の 8 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
 
 `docs/spec/04-requirements.md` REQ-1（最小コア）の受け入れ基準のうち、**性能計測を除く**
 非性能系の受け入れ基準（依存クレート数比・unsafe 根拠・audit / deny・実質コード行数・
@@ -98,6 +98,49 @@ FAIL ではなく SKIP として記録され、終了コードには影響しな
 TASK-1.6-1（#71）BLOCKED のため自動検証対象外（SKIP として記録、フェイルクローズで
 PASS を偽らない）。手動計測手順・実行結果は
 `docs/acceptance/req2-plugin-mechanism.md` を参照。
+
+## `dep-audit-accept.sh` — REQ-15（依存監査基盤）受け入れ検証（TASK-15.4、#52）
+
+`docs/spec/04-requirements.md` REQ-15 の受け入れ基準を、依存監査基盤系列
+（TASK-15.1〜15.3）の最終受け入れテストとして検証する。`core-deps-unsafe-audit.sh` と
+同じ `lib/common.sh`（PASS/FAIL/SKIP/WARN 集計）を共有する。
+
+```bash
+./scripts/accept/dep-audit-accept.sh
+```
+
+### 検証する受け入れ基準
+
+| # | 基準 | 検証手段 |
+|---|------|---------|
+| 1 | `deny.toml` ベースライン設定（許可ライセンスリスト・`[graph] all-features = true`・`[advisories] ignore = []`）がリポジトリに存在する（TASK-15.1） | `deny.toml` の静的検査（grep/awk、ツール不要） |
+| 2 | 全 feature 構成（no-default / default / 各 feature / all-features）で `cargo audit` 既知脆弱性 0 件・`cargo deny check` 違反 0 件（TASK-15.2） | 既存 `scripts/dep-audit.sh` を再利用（重複実装しない。feature 動的列挙のためプラグイン追加時も本スクリプトの変更は不要） |
+| 3 | コアパーサ（`crates/http/src`）への fuzz スクリーニング実施（TASK-15.3、Conditional Go 条件(4)） | fuzz target・CI `fuzz-smoke` ジョブ配線・`docs/design/fuzzing.md` の本実行結果記録の存在確認。pinned nightly + cargo-fuzz 導入済み環境では任意で 60 秒 smoke 実測も行う |
+
+### 前提ツール
+
+| ツール | 用途 | 導入コマンド |
+|--------|------|-------------|
+| `cargo-deny` | 基準 2（ライセンス・出所） | `cargo install --locked cargo-deny@0.19.8` |
+| `cargo-audit` | 基準 2（既知脆弱性） | `cargo install --locked cargo-audit@0.22.2` |
+| `jq` | 基準 2（feature 動的列挙） | OS のパッケージマネージャで導入（例: `apt install jq`） |
+| `cargo-fuzz`（任意） | 基準 3d（fuzz smoke 実測） | `cargo install --locked cargo-fuzz@0.13.2` |
+
+基準 1・3a〜3c はツール不要（静的検査のみ）。基準 2・3d はネットワークアクセス
+（advisory DB 取得・crates.io index 更新）を伴う。前提ツール未導入時は SKIP として記録し、
+終了コードには影響しない（フェイルクローズだが判定不能を FAIL と混同しない、
+`.claude/rules/security.md` のサプライチェーン方針を踏襲）。
+
+### 出力の読み方
+
+`core-deps-unsafe-audit.sh` と同一（PASS/FAIL/SKIP/WARN、終了コードは FAIL 1 件以上で
+非 0）。実行結果レポートは `docs/acceptance/req15-dep-audit.md` に記録する。
+
+### セルフテスト
+
+`scripts/tests/run-dep-audit-accept-tests.sh`（ネットワーク・cargo ビルド・監査ツールに
+非依存。判定ロジックのみを `scripts/tests/fixtures/dep-audit-accept/` の fixture で
+検証する）。`.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる。
 
 ## `req13-change-impact-accept.sh` — REQ-13（変更影響範囲の機械判定構造）受け入れ検証（TASK-13.2、#50）
 

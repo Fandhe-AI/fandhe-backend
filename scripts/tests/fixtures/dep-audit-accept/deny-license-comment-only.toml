@@ -1,0 +1,16 @@
+[graph]
+# 許可ライセンス候補として "Apache-2.0 WITH LLVM-exception" の追加を検討中
+# （コメントのみで [licenses] allow には未反映）。
+all-features = true
+
+[advisories]
+ignore = []
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+    "BSD-3-Clause",
+]
+confidence-threshold = 0.8
