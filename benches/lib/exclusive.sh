@@ -127,17 +127,29 @@ check_quiescence_once() {
 # 戻り値: 0 = 静穏取得済み、1 = BLOCKED（呼び出し元は
 # `BF_NFR6_BLOCKED_EXIT_CODE` で終了し、試行記録を正直に残すこと。
 # 待機を無限にしない・強制バイパスのフラグは設けない）。
+#
+# `QUIESCE_POLL_INTERVAL_SECS` が `0`（または不正な非数値）だと `sleep 0` を
+# 繰り返して `waited` が進まず、`QUIESCE_WAIT_SECS` に到達できずループが無限に
+# BLOCKED を返せなくなる（有界待機の契約に反する）。ポーリング間隔は 1 秒に
+# クランプし、経過時間ではなくループ回数（`QUIESCE_WAIT_SECS` を実効間隔で
+# 割った上限回数）で終了条件を判定することで、間隔の値によらず必ず有界にする。
 wait_for_quiescence() {
-    local waited=0
+    local effective_interval="${QUIESCE_POLL_INTERVAL_SECS}"
+    if ! [[ "${effective_interval}" =~ ^[0-9]+$ ]] || [ "${effective_interval}" -lt 1 ]; then
+        effective_interval=1
+    fi
+    local max_iterations=$(((QUIESCE_WAIT_SECS + effective_interval - 1) / effective_interval))
+    [ "${max_iterations}" -lt 1 ] && max_iterations=1
+    local iteration=0
     while true; do
         if [ "$(check_quiescence_once)" = "QUIESCENT" ]; then
             return 0
         fi
-        if [ "${waited}" -ge "${QUIESCE_WAIT_SECS}" ]; then
+        iteration=$((iteration + 1))
+        if [ "${iteration}" -ge "${max_iterations}" ]; then
             return 1
         fi
-        sleep "${QUIESCE_POLL_INTERVAL_SECS}"
-        waited=$((waited + QUIESCE_POLL_INTERVAL_SECS))
+        sleep "${effective_interval}"
     done
 }
 

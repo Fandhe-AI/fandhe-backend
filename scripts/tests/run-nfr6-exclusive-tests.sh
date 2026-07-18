@@ -88,6 +88,25 @@ else
     pass "常時 BUSY 時は待機超過で return 1（BLOCKED 相当、PASS へ丸めない）"
 fi
 
+echo "===== wait_for_quiescence: QUIESCE_POLL_INTERVAL_SECS=0 でも有界待機で return 1 する（PR #193 Bugbot 指摘の回帰テスト） ====="
+get_loadavg1() { echo "5.0"; }
+list_busy_process_names() { :; }
+QUIESCE_WAIT_SECS=2
+QUIESCE_POLL_INTERVAL_SECS=0
+# 同一プロセス内呼び出しだと万一の無限ループでテストごとハングするため、外側の
+# `timeout` コマンドで打ち切れるようサブシェル（別プロセス）に切り出して呼ぶ。
+# 戻り値 124（timeout による強制終了）なら「無限ループ化した」= 回帰と判定する。
+if timeout 10 bash -c "$(declare -f wait_for_quiescence check_quiescence_once get_loadavg1 list_busy_process_names _nfr6_validate_numeric); QUIESCE_WAIT_SECS=${QUIESCE_WAIT_SECS} QUIESCE_POLL_INTERVAL_SECS=${QUIESCE_POLL_INTERVAL_SECS} LOAD1_MAX=${LOAD1_MAX} wait_for_quiescence"; then
+    fail "poll_interval=0 で常時 BUSY のはずが return 0 になった"
+else
+    status=$?
+    if [ "${status}" -eq 124 ]; then
+        fail "poll_interval=0 で wait_for_quiescence が有界時間内に終了しなかった（無限ループ回帰）"
+    else
+        pass "poll_interval=0 でも有界待機のうえで return 1（BLOCKED 相当）"
+    fi
+fi
+
 echo "===== acquire_exclusive_lock: symlink ロックパスは拒否する ====="
 TMP_TEST_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_TEST_DIR}"' EXIT
