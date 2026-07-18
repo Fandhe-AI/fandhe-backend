@@ -138,18 +138,45 @@ pub struct ParamRoute {
     pub(crate) handler: super::ParamRouteHandler,
 }
 
-/// `target` を `/` 区切りでセグメント分割する。
+/// `pattern`（先頭 `/` を持つことが呼び出し元 [`parse_pattern`] で保証済み）を
+/// `/` 区切りでセグメント分割する。
 ///
 /// 先頭の `/` は空セグメントを生まないよう取り除く（`"/a/b"` → `["a", "b"]`）。
 /// `bf-http` は target の % デコード・正規化を行わないため、ここでの分割も
 /// バイト列（UTF-8 として妥当な範囲の `str`）をそのまま `/` で割るのみに留める。
-pub(crate) fn split_segments(target: &str) -> Vec<&str> {
-    let trimmed = target.strip_prefix('/').unwrap_or(target);
+///
+/// 本関数はパターン文字列専用であり、リクエストの `target` 分割には使わない
+/// （先頭 `/` の有無を検証しないため、origin-form 以外の `target`（`*`・
+/// authority-form・absolute-URI form 等）を無検証で受理してしまう）。
+/// `target` 分割には [`request_target_segments`] を使うこと。
+pub(crate) fn split_segments(pattern: &str) -> Vec<&str> {
+    let trimmed = pattern.strip_prefix('/').unwrap_or(pattern);
     if trimmed.is_empty() {
         Vec::new()
     } else {
         trimmed.split('/').collect()
     }
+}
+
+/// リクエストの `target` を、パラメータルート照合用にセグメント分割する。
+///
+/// `target` が先頭 `/` で始まる origin-form の場合のみ `Some` を返す。
+/// `bf-http` の `RequestHead::target` は request-target の形式（origin-form /
+/// absolute-form / authority-form / asterisk-form、RFC 9112 3.2 節）を区別せず
+/// 生文字列のまま保持するため、ここで origin-form を明示的に要求しないと
+/// `*`（asterisk-form）や `hello/alice`（先頭 `/` を欠く不正形式）のような
+/// 文字列がセグメント数の偶然の一致だけでパラメータパターン
+/// （例: `/{name}`・`/hello/{name}`）に一致してしまう
+/// （fail-closed・無正規化契約からの逸脱、モジュール doc「マッチング方針」節）。
+/// origin-form でない `target` は `None` を返し、呼び出し元はパラメータルート
+/// 照合を行わない（静的ルートの完全一致判定のみに委ねる）。
+pub(crate) fn request_target_segments(target: &str) -> Option<Vec<&str>> {
+    let stripped = target.strip_prefix('/')?;
+    Some(if stripped.is_empty() {
+        Vec::new()
+    } else {
+        stripped.split('/').collect()
+    })
 }
 
 /// `pattern` をパースし [`Segment`] 列に変換する。登録時検証（fail-closed）。

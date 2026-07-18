@@ -273,16 +273,20 @@ impl Router {
         // 2. 静的ルートが miss した場合のみ、パラメータルートを登録順に線形走査する。
         //    method 不一致でも target 形状が一致していれば 405 判定に使うため、
         //    まず method を問わずセグメント一致を確認する。
-        let target_segments: Vec<&str> = pattern::split_segments(&head.target);
+        //    `target` が origin-form（先頭 `/`）でない場合（`*` の asterisk-form 等）は
+        //    `request_target_segments` が `None` を返し、パラメータルート照合を
+        //    一切行わない（fail-closed、`pattern` モジュール doc参照）。
         let mut shape_matches_any_method = false;
-        for param_route in &self.param_routes {
-            let Some(params) = pattern::match_segments(&param_route.segments, &target_segments)
-            else {
-                continue;
-            };
-            shape_matches_any_method = true;
-            if param_route.method == head.method {
-                return (param_route.handler)(head, &params, body);
+        if let Some(target_segments) = pattern::request_target_segments(&head.target) {
+            for param_route in &self.param_routes {
+                let Some(params) = pattern::match_segments(&param_route.segments, &target_segments)
+                else {
+                    continue;
+                };
+                shape_matches_any_method = true;
+                if param_route.method == head.method {
+                    return (param_route.handler)(head, &params, body);
+                }
             }
         }
 
@@ -299,7 +303,7 @@ impl Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bf_http::request::{ParseOutcome, parse_request_head};
+    use bf_http::request::{parse_request_head, ParseOutcome};
 
     // `RequestHead` は非公開フィールドを持ち構造体リテラルで直接組み立てられない
     // ため、パーサ（`parse_request_head`）経由で生成する。他クレートのテスト

@@ -4,7 +4,7 @@
 //! 本ファイルは `Router` 経由の end-to-end 挙動（後方互換・優先順位・
 //! フェイルクローズ）を検証する。
 
-use bf_http::request::{ParseOutcome, RequestHead, parse_request_head};
+use bf_http::request::{parse_request_head, ParseOutcome, RequestHead};
 use bf_http::response::Response;
 use bf_routes::Router;
 
@@ -201,4 +201,43 @@ fn literal_braces_in_route_target_remain_exact_match_only() {
     // 実際のパスセグメント値としての "actual" には一致しない（パターン扱いされていない証跡）。
     let miss = router.dispatch(&head("GET", "/literal/actual"), &[]);
     assert_eq!(miss.status, 404);
+}
+
+#[test]
+fn non_origin_form_target_does_not_match_param_route() {
+    // Cursor Bugbot 指摘（PR #191）: `target` が origin-form（先頭 `/`）でない場合、
+    // セグメント数の偶然の一致だけでパラメータルートに一致してはならない
+    // （fail-closed・無正規化契約、`pattern` モジュール doc「request_target_segments」参照）。
+    let router = Router::new()
+        .route_param("GET", "/{name}", |_h, params, _b| {
+            Response::new(200, params.get("name").unwrap_or("?").as_bytes().to_vec())
+        })
+        .unwrap();
+
+    // asterisk-form（OPTIONS * 相当）。1 セグメント相当に見えるが origin-form ではない。
+    let asterisk = router.dispatch(&head("GET", "*"), &[]);
+    assert_eq!(asterisk.status, 404);
+
+    // 先頭 `/` を欠く不正な request-target。`/{name}` と偶然セグメント数が一致するが
+    // origin-form ではないため一致してはならない。
+    let no_leading_slash = router.dispatch(&head("GET", "hello"), &[]);
+    assert_eq!(no_leading_slash.status, 404);
+}
+
+#[test]
+fn non_origin_form_target_does_not_match_multi_segment_param_route() {
+    let router = Router::new()
+        .route_param("GET", "/hello/{name}", |_h, params, _b| {
+            Response::new(200, params.get("name").unwrap_or("?").as_bytes().to_vec())
+        })
+        .unwrap();
+
+    // 先頭 `/` を欠くが `split('/')` すると偶然 2 セグメントになる不正 target。
+    let no_leading_slash = router.dispatch(&head("GET", "hello/alice"), &[]);
+    assert_eq!(no_leading_slash.status, 404);
+
+    // 正規の origin-form は引き続き一致する（回帰確認）。
+    let ok = router.dispatch(&head("GET", "/hello/alice"), &[]);
+    assert_eq!(ok.status, 200);
+    assert_eq!(ok.body, b"alice".to_vec());
 }
