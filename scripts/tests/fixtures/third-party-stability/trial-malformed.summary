@@ -1,0 +1,2 @@
+# 不正入力フィクスチャ: pass+fail+pending が total と不一致（fail-closed で PENDING）
+metric=completion_rate pass=8 fail=2 pending=0 total=99
