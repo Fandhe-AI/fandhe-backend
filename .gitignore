@@ -8,3 +8,8 @@ Cargo.lock
 crates/http/fuzz/artifacts/
 crates/http/fuzz/coverage/
 crates/http/fuzz/target/
+
+# TASK-6.1（#54）: ts/ の openapi-typescript 連携パイプライン。node_modules は
+# package-lock.json から npm ci で再現可能なため対象外（生成物の schema.d.ts は
+# コミット対象、docs/design/openapi-typescript-pipeline.md 参照）。
+node_modules/

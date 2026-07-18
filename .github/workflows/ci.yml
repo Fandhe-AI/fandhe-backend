@@ -34,6 +34,11 @@ name: CI
 # 2 段階ビルド順序を openapi-two-stage ジョブとして明示ステップ化した
 # （scripts/openapi-two-stage.sh を呼ぶだけの薄いジョブ）。ビルドを伴うため
 # schedule（日次 dep-audit のみを走らせる方針）からは除外する。
+# TASK-6.1（#54）: openapi-two-stage の後段として「openapi.json → openapi-typescript →
+# TS 型 → tsc --noEmit 型検査」の openapi-typescript 連携パイプラインを openapi-ts
+# ジョブとして追加した（scripts/openapi-ts.sh を呼ぶだけの薄いジョブ、
+# docs/design/openapi-typescript-pipeline.md 参照）。node/npm ビルドを伴うため
+# schedule からは除外する。
 on:
   pull_request:
     branches: [main]
@@ -371,6 +376,17 @@ jobs:
       - name: req13-change-impact-accept.sh（REQ-13 受け入れテスト、TASK-13.2/#50）
         run: bash scripts/accept/req13-change-impact-accept.sh
 
+      # TASK-6.1（#54）: openapi-ts.sh（openapi-typescript 連携パイプライン、
+      # ネットワーク・cargo ビルド・npm 実行を伴うため別途 openapi-ts ジョブで実行）の
+      # 判定ロジック（引数検証・diff 鮮度判定・ツール不在時 fail-closed）のセルフテスト。
+      - name: run-openapi-ts-tests.sh（openapi-ts.sh のセルフテスト）
+        run: bash scripts/tests/run-openapi-ts-tests.sh
+
+      # TASK-6.2（#55）: openapi-ts-negative.sh（陰性対照、別途 openapi-ts ジョブで実行）の
+      # 判定ロジック（引数検証・fail-closed・discrimination・CI ステップ存在確認）のセルフテスト。
+      - name: run-openapi-ts-negative-tests.sh（openapi-ts-negative.sh のセルフテスト）
+        run: bash scripts/tests/run-openapi-ts-negative-tests.sh
+
   # --------------------------------------------------
   # pay-for-what-you-use 検証（TASK-2.2、#19）: プラグイン feature 無効時に当該
   # プラグインの依存クレート・unsafe・コードが 0 件であることを機械的に PASS/FAIL
@@ -440,6 +456,12 @@ jobs:
       # `pip` は self-hosted runner 上で `python3` と異なるインタプリタを指す
       # ことがあり、インストールしたパッケージが後続の `python3 -m
       # openapi_spec_validator` から見えず CI が不安定または恒常的に失敗しうる）。
+      # このステップは openapi-two-stage ジョブ内で実行する（Bugbot 指摘、PR #150 review
+      # 4724126384: openapi-ts ジョブを新設した際にバリデータステップを誤って openapi-ts
+      # 側にのみ残していたため、TS パイプラインが先に失敗すると openapi-two-stage が成功
+      # していてもスキーマ検証が実行されない問題があった。REQ-3 の受け入れ条件・
+      # docs/acceptance/req3-openapi-generation.md が openapi-two-stage ジョブでの実行を
+      # 期待しているため本ジョブに戻す）。
       - name: Ensure openapi-spec-validator 0.7.1
         run: |
           if ! python3 -c "import openapi_spec_validator; print(openapi_spec_validator.__version__)" 2>/dev/null | grep -qx '0\.7\.1'; then
@@ -452,6 +474,37 @@ jobs:
       # 呼び出す（PR #141 CI failure 対応）。
       - name: openapi.json 構文妥当性検証（openapi-spec-validator）
         run: python3 -m openapi_spec_validator crates/plugin-openapi/openapi.json
+
+  # --------------------------------------------------
+  # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）: 「gen-openapi --check →
+  # npm ci --ignore-scripts → openapi-typescript による schema.d.ts 鮮度検証 →
+  # tsc --noEmit」の一方向パイプラインを検証する。詳細は scripts/openapi-ts.sh・
+  # docs/design/openapi-typescript-pipeline.md を参照。node/npm ビルドを伴うため
+  # schedule（日次、dep-audit のみを走らせる方針）からは除外する。openapi.json の構文
+  # 妥当性検証（openapi-spec-validator）は openapi-two-stage ジョブ側で実行する
+  # （REQ-3 受け入れ条件・Bugbot 指摘 PR #150 review 4724126384）。
+  # --------------------------------------------------
+  openapi-ts:
+    name: openapi-typescript 連携パイプライン（schema.d.ts 鮮度検証 → tsc --noEmit）
+    runs-on: self-hosted
+    if: github.event_name != 'schedule'
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      - name: "openapi-ts.sh（stage 1: gen-openapi --check、stage 2: schema.d.ts 鮮度検証、stage 3: tsc --noEmit）"
+        run: bash scripts/openapi-ts.sh
+
+      # TASK-6.2（#55）: openapi-ts.sh の「tsc --noEmit が成功すること」だけでは
+      # 生成型が実質的な制約として機能しているかを検証できないため、意図的な型
+      # 不一致が確実にエラー検出されることを陰性対照として常設検証する
+      # （docs/design/openapi-typescript-pipeline.md 参照）。
+      - name: "openapi-ts-negative.sh（陰性対照: 意図的な型不一致の検出を検証）"
+        run: bash scripts/openapi-ts-negative.sh
 
   # --------------------------------------------------
   # fuzz smoke（TASK-15.3-1、#87）: crates/http/fuzz（root workspace から exclude 済み、
@@ -561,12 +614,12 @@ jobs:
     runs-on: self-hosted
     # 失敗・スキップ時にも必ず実行して fail-closed で判定する。
     # schedule（日次 dep-audit のみ）実行時は
-    # fmt/clippy/test/unsafe-triage/fuzz-smoke/openapi-two-stage が意図的に skipped になる
-    # （doc ジョブには schedule 除外の if がなく実行される既存挙動だが、ci-complete 自体が
-    # schedule 時は丸ごとスキップされるため判定ロジックには影響しない）。
+    # fmt/clippy/test/unsafe-triage/fuzz-smoke/openapi-two-stage/openapi-ts が意図的に
+    # skipped になる（doc ジョブには schedule 除外の if がなく実行される既存挙動だが、
+    # ci-complete 自体が schedule 時は丸ごとスキップされるため判定ロジックには影響しない）。
     # 完遂判定の対象外（required check としては pull_request/push イベントのみを想定する）。
     if: ${{ always() && github.event_name != 'schedule' }}
-    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, pay-for-what-you-use, fuzz-smoke, openapi-two-stage]
+    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, pay-for-what-you-use, fuzz-smoke, openapi-two-stage, openapi-ts]
     timeout-minutes: 5
     steps:
       - name: 完遂判定（全 needs ジョブが success であること）
@@ -584,6 +637,7 @@ jobs:
           RESULT_PAY_FOR_WHAT_YOU_USE: ${{ needs.pay-for-what-you-use.result }}
           RESULT_FUZZ_SMOKE: ${{ needs.fuzz-smoke.result }}
           RESULT_OPENAPI_TWO_STAGE: ${{ needs.openapi-two-stage.result }}
+          RESULT_OPENAPI_TS: ${{ needs.openapi-ts.result }}
         run: |
           set -euo pipefail
           ok=1
@@ -593,7 +647,8 @@ jobs:
                       "unsafe-triage:${RESULT_UNSAFE_TRIAGE}" \
                       "pay-for-what-you-use:${RESULT_PAY_FOR_WHAT_YOU_USE}" \
                       "fuzz-smoke:${RESULT_FUZZ_SMOKE}" \
-                      "openapi-two-stage:${RESULT_OPENAPI_TWO_STAGE}"; do
+                      "openapi-two-stage:${RESULT_OPENAPI_TWO_STAGE}" \
+                      "openapi-ts:${RESULT_OPENAPI_TS}"; do
             job="${pair%%:*}"; result="${pair#*:}"
             echo "${job}: ${result}"
             # skipped / cancelled / failure はすべて未完遂として扱う（fail-closed）

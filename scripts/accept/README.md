@@ -1,9 +1,10 @@
 # scripts/accept — 受け入れ検証スクリプト
 
 `core-deps-unsafe-audit.sh`（REQ-1）・`plugin-mechanism-accept.sh`（REQ-2、TASK-2.4）・
-`dep-audit-accept.sh`（REQ-15、TASK-15.4）・`req13-change-impact-accept.sh`（REQ-13、TASK-13.2）
-の 4 スクリプトを収録する。以下はまず REQ-1 側の詳細、REQ-2・REQ-15・REQ-13 側は
-本ファイル末尾を参照。
+`dep-audit-accept.sh`（REQ-15、TASK-15.4）・`req13-change-impact-accept.sh`（REQ-13、TASK-13.2）・
+`webrtc-accept.sh`（REQ-8、TASK-8.4）・`graphql-accept.sh`（REQ-5、TASK-5.2）・
+`openapi-ts-accept.sh`（REQ-6、TASK-6.2）・`tracing-accept.sh`（REQ-10、TASK-10.4）
+の 8 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
 
 `docs/spec/04-requirements.md` REQ-1（最小コア）の受け入れ基準のうち、**性能計測を除く**
 非性能系の受け入れ基準（依存クレート数比・unsafe 根拠・audit / deny・実質コード行数・
@@ -205,3 +206,112 @@ PASS を偽らない）。手動計測手順・実行結果は
 `scripts/tests/run-webrtc-accept-tests.sh` を参照。実行結果レポートは
 `docs/acceptance/req8-webrtc-attack-surface.md`、NFR-6 の詳細計測結果は
 `benches/reports/task-8.4-webrtc-nfr6.md` に記録する。
+
+## `graphql-accept.sh` — REQ-5（GraphQL）受け入れ検証（TASK-5.2、#53）
+
+`docs/spec/04-requirements.md` REQ-5 の受け入れ基準のうち TASK-5.2「GraphQL 受け入れ
+テスト」が担う 3 点を検証する。`lib/common.sh`（PASS/FAIL/SKIP/WARN 集計）と
+`lib/nfr6-ratio.sh`（NFR 判定ロジック単体、`webrtc-accept.sh` と共有）を使う
+`webrtc-accept.sh` と同型のオーケストレータ。
+
+```bash
+./scripts/accept/graphql-accept.sh
+```
+
+検証内容:
+
+1. `graphql` feature 無効時、`backend-framework-core` の依存ツリーに
+   `async-graphql` / `bf-plugin-graphql` 系依存が一切現れない
+   （`cargo tree -p backend-framework-core -e normal --no-default-features`。
+   `-e normal --no-default-features` は `crates/core` がテスト専用に持つ
+   `async-graphql` dev-dependency を除外するために必須）。
+   `scripts/pay-for-what-you-use-check.sh`（動的列挙のため graphql feature も自動
+   検証対象）も併走し、依存・unsafe・バイナリサイズ完全除外を二重に確認する
+2. `crates/plugin-graphql` 自コードの unsafe が 0 件（grep）
+3. 最小疎通（クエリ実行と結果 JSON の返却）。`cargo test -p backend-framework-core
+   --features graphql`（境界テスト `plugin_graphql_boundary.rs`）・
+   `cargo test -p bf-plugin-graphql`（契約テスト）に加え、ビルド済み
+   `graphql_nfr6` バイナリがあれば curl で `POST /graphql` に実際にクエリを送り
+   `data.hello == "world"` を live 検証する
+4. NFR（無関係パスへの RPS・レイテンシ影響）。計測用バイナリ
+   （`target/release/examples/minimal`・`target/release/examples/graphql_nfr6`）と
+   `oha` が揃っていれば `benches/graphql-nfr6-bench.sh` で empirical 計測し、
+   `webrtc-accept.sh` と同じ実務許容帯 [95%, 105%]（FAIL 境界）・狭義帯
+   [100.3%, 100.8%]（PASS/WARN 境界）と照合する。揃っていなければ SKIP + 実行手順を
+   案内する
+
+前提: `cargo build --release -p backend-framework-core --example minimal
+--no-default-features` と `... --example graphql_nfr6 --features graphql` を事前実行
+（本スクリプトは自動ビルドしない）。
+
+判定ロジックのオフライン・セルフテスト（cargo・ネットワーク非依存）は
+`scripts/tests/run-graphql-accept-tests.sh` を参照。実行結果レポートは
+`docs/acceptance/req5-graphql.md`、NFR の詳細計測結果は
+`benches/reports/task-5.2-graphql-performance.md` に記録する。
+
+## `tracing-accept.sh` — REQ-10（可観測性）サンプリング適用後性能再検証（TASK-10.4、#59）
+
+`docs/spec/05-tasks.md` TASK-10.4「サンプリング適用後性能再検証」の受け入れ基準を
+検証する `lib/common.sh` 利用の `graphql-accept.sh` 同型オーケストレータ。
+
+```bash
+./scripts/accept/tracing-accept.sh
+```
+
+検証内容:
+
+1. **A: `tracing` feature 無効時の依存完全除外** — `cargo tree -p
+   backend-framework-core -e normal --no-default-features` に `bf-plugin-tracing` /
+   `tracing-appender` / `tracing-subscriber` が一切現れないこと（pay-for-what-you-use）
+2. **B: テスト回帰** — `cargo test -p backend-framework-core`（feature 無効/`tracing`
+   有効の両方）・`cargo test -p bf-plugin-tracing` が成功すること
+3. **C: NFR** — TASK-10.1〜10.3 の全緩和策適用後、`GET /health` への RPS 劣化 5% 以内
+   （RPS 比 ≥95%）・p95 悪化 110% 以内（p95 比 ≤110%）を `benches/tracing-nfr-bench.sh`
+   の実測（シナリオ A）で確認する。`webrtc-accept.sh` / `graphql-accept.sh` の NFR-6
+   判定帯（狭義 100.3〜100.8%）とは別の帯（REQ-10 の成功基準そのもの）。ビルド済み
+   バイナリ・`oha` が揃っていなければ SKIP + 実行手順を案内する
+
+前提: `cargo build --release -p backend-framework-core --example minimal
+--no-default-features` と `... --example tracing_nfr --features tracing` を事前実行
+（本スクリプトは自動ビルドしない）。
+
+基準未達（FAIL）でも `docs/spec/06-roadmap.md` の分岐どおり「デフォルト無効・
+明示的 opt-in feature」を維持する結論自体は成立する（現状 `default = []`）。本
+スクリプトは実測を PASS/WARN/FAIL として機械記録するのみで、分岐判断そのものは
+実行結果レポート側の役割とする。実行結果レポートは
+`benches/reports/task-10.4-tracing-performance.md` に記録する。
+
+## `openapi-ts-accept.sh` — REQ-6（openapi-typescript 連携）受け入れ検証（TASK-6.2、#55）
+
+`docs/spec/05-tasks.md` TASK-6.2「陰性対照 CI 型検査整備・受け入れテスト」の受け入れ
+基準を検証する `lib/common.sh` 利用の `graphql-accept.sh` 同型オーケストレータ。
+
+```bash
+./scripts/accept/openapi-ts-accept.sh
+```
+
+検証内容:
+
+1. **A: 陽性対照** — 最低 1 つのエンドポイント呼び出し（`ts/src/usage.ts` の 5
+   エンドポイント一巡）が `tsc --noEmit` を通ること。`scripts/openapi-ts.sh`
+   （TASK-6.1、#54）の成功で検証する
+2. **B: 陰性対照** — 意図的な型不一致が `tsc --noEmit` のエラーとして確実に検出
+   されること。`scripts/openapi-ts-negative.sh`（N1: `ts/src/negative/type-mismatch.ts`
+   の 4 類型・N2: openapi.json 境界からの型不一致伝搬）の成功で検証する
+3. **C: Rust 定義変更の伝搬** — `crates/plugin-openapi/src/docs.rs` の
+   `/users/{id}` の `id` を `u64`→`String` へ一時的に変更 →
+   `gen-openapi --update` → `npm run gen:types` のみで `ts/src/generated/schema.d.ts`
+   に差分が現れ、既存 `usage.ts` の型検査が `TS2322` で失敗することを確認する。
+   `trap` で必ず元の状態へ復元する。対象パス（`docs.rs` / `openapi.json` /
+   `schema.d.ts`）に未コミット変更がある場合は SKIP し、勝手に破棄しない
+   （`.claude/rules/security.md` 作業ツリー整合性）
+
+前提: `node`（>=24）・`npm`・`cargo`。いずれか未導入の場合は該当基準を SKIP する
+（自動ダウンロードしない既存規約）。
+
+判定ロジックのオフライン・セルフテスト（cargo・ネットワーク非依存）は
+`scripts/tests/run-openapi-ts-negative-tests.sh` を参照（`openapi-ts-negative.sh`
+本体の判定ロジックを fixture で検証。`openapi-ts-accept.sh` 自体の A/B/C 判定分岐は
+軽量なため専用セルフテストは設けず、本スクリプトの実行結果と
+`docs/acceptance/req6-typescript-types.md` の記録で確認する）。実行結果レポートは
+`docs/acceptance/req6-typescript-types.md` に記録する。

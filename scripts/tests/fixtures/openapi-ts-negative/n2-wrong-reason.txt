@@ -1,0 +1,1 @@
+../../../../../../../../tmp/tmp.example/src/usage.ts(1,1): error TS2307: Cannot find module './client.js' or its corresponding type declarations.

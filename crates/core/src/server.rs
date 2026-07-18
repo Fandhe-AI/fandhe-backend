@@ -432,6 +432,32 @@ impl Server {
         self.graphql_config.as_ref()
     }
 
+    /// トレーシングプラグイン（`crates/plugin-tracing`）を有効化する
+    /// （`tracing` feature 限定 API、TASK-10.1 / #56）。
+    ///
+    /// 内部で `TracingMiddleware` を組み立てて既存の `middlewares` へ登録する
+    /// （`webrtc-proxy` / `websocket` のような専用フィールドを `Server` に追加
+    /// する必要はない。汎用 [`Server::middleware`] の薄いラッパーとして実装
+    /// できる点が本プラグインの拡張点である `Middleware` の特徴。他プラグイン
+    /// が使う「設定登録型」パターンとは異なる）。登録すると全リクエストの
+    /// `on_response` フックで [`bf_plugin_tracing::TracingLayer::record_response`]
+    /// が呼ばれ、`config.exclude_paths`（TASK-10.3 / #58）に完全一致するパス
+    /// は記録・サンプリング周期の消費のいずれも行わずスキップされ、それ以外は
+    /// `config.sample_interval` に従いサンプリングされたリクエストの応答時
+    /// 1 イベント（TASK-10.2 / #57 で span+2 イベントから統合）のみが記録される
+    /// （`crates/plugin-tracing/src/layer.rs` の doc を参照）。ヘルスチェック等の
+    /// 高頻度パスを `exclude_paths` に登録することで、TASK-10.4 の性能再検証
+    /// （RPS 劣化 5% 以内）の前提を満たせる。記録先（非同期・バッファ済み I/O）は別途
+    /// `bf_plugin_tracing::init_tracing` で初期化する契約とし、本メソッドは
+    /// グローバルサブスクライバの初期化には関与しない。
+    #[cfg(feature = "tracing")]
+    #[must_use]
+    pub fn tracing(mut self, config: bf_plugin_tracing::TracingConfig) -> Self {
+        self.middlewares
+            .push(Box::new(TracingMiddleware::new(&config)));
+        self
+    }
+
     /// `addr` に TCP リスナーをバインドし、[`BoundServer`] を返す。
     ///
     /// 以降 `self` は `Arc` で包まれ、accept したコネクションタスク間で
@@ -474,6 +500,48 @@ impl UpgradeHandler for WebSocketUpgradeAdapter {
 
     fn matches(&self, head: &RequestHead) -> bool {
         bf_plugin_websocket::matches(head, &self.config)
+    }
+}
+
+/// [`Server::tracing`] が内部登録する [`Middleware`] アダプタ
+/// （`tracing` feature 限定、TASK-10.1 / #56）。
+///
+/// `Middleware` は同期 API（dyn 互換性維持、`crates/core/src/extension.rs` の
+/// doc）のため、本アダプタは `on_request` を no-op とし、`on_response` でのみ
+/// `bf_plugin_tracing::TracingLayer::record_response` へ委譲する（`crates/
+/// plugin-tracing/src/layer.rs` の doc「記録は on_response の 1 点に集約する」
+/// を参照。`Middleware` trait には request/response を跨いで per-request 状態を
+/// 運ぶ経路がなく、`on_request` と `on_response` で独立にサンプリング判定すると
+/// 同一リクエストの記録が対にならないため）。`TracingLayer` 自体が
+/// `Sampler`（`AtomicU64`）を保持し内部可変性で判定するため、本アダプタは
+/// `&self` の不変参照のみで足りる（AGENTS.md「規約: ミドルウェア非同期 I/O
+/// 必須化」が要求する非ブロッキング操作の要件を満たす）。
+#[cfg(feature = "tracing")]
+struct TracingMiddleware {
+    layer: bf_plugin_tracing::TracingLayer,
+}
+
+#[cfg(feature = "tracing")]
+impl TracingMiddleware {
+    fn new(config: &bf_plugin_tracing::TracingConfig) -> Self {
+        Self {
+            layer: bf_plugin_tracing::TracingLayer::new(config),
+        }
+    }
+}
+
+#[cfg(feature = "tracing")]
+impl Middleware for TracingMiddleware {
+    fn name(&self) -> &'static str {
+        "tracing"
+    }
+
+    fn on_request(&self, _head: &RequestHead) {
+        // 記録は on_response に一本化する（本 struct の doc を参照）。
+    }
+
+    fn on_response(&self, head: &RequestHead, elapsed: Duration) {
+        self.layer.record_response(head, elapsed);
     }
 }
 

@@ -64,6 +64,16 @@ bf-plugin-websocket = { path = "../plugin-websocket", optional = true }
 # から完全除外される。
 bf-plugin-graphql = { path = "../plugin-graphql", optional = true }
 
+# TASK-10.1（#56）: `tracing` feature 有効時のみ依存として解決される可観測性
+# プラグイン。`bf-plugin-websocket` と同一の非循環パターンで
+# `backend-framework-core` に依存しない（`crates/plugin-tracing/src/lib.rs`
+# の doc・`docs/design/plugin-boundary.md` 6.1 節を参照）。`Middleware` trait を
+# 実装するアダプタ（`TracingMiddleware`）はコア側（`crates/core/src/server.rs`）
+# に置く。`tracing` feature 無効時は `cargo tree -p backend-framework-core` に
+# 本行の依存（および推移的な `tracing` / `tracing-subscriber` / `tracing-appender`）
+# が一切現れない。
+bf-plugin-tracing = { path = "../plugin-tracing", optional = true }
+
 # feature 命名規約（`docs/design/plugin-boundary.md`）: プラグインクレート名
 # （`bf-plugin-<name>`）から `bf-plugin-` 接頭辞を除いた `<name>` を feature 名
 # とする。`default = []` によりビルド時に何も選択しなければプラグインは
@@ -77,6 +87,7 @@ webrtc-proxy = ["dep:bf-plugin-webrtc-proxy"]
 webrtc = ["dep:bf-plugin-webrtc"]
 websocket = ["dep:bf-plugin-websocket"]
 graphql = ["dep:bf-plugin-graphql"]
+tracing = ["dep:bf-plugin-tracing"]
 
 # テスト専用（`#[tokio::test]` / `tokio::io::duplex` / マルチスレッドランタイム）。
 # 本体ビルドの feature 集合には影響しない。`async-graphql` は
@@ -97,6 +108,11 @@ graphql = ["dep:bf-plugin-graphql"]
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
 async-graphql = { version = "7", default-features = false, features = ["dynamic-schema"] }
+# `crates/core/tests/plugin_tracing_boundary.rs`（`#![cfg(feature = "tracing")]`
+# でコンパイル自体を feature ゲート）が、記録された span/event 件数をサンプリング
+# 間隔どおりに検証するためだけに使うテスト専用サブスクライバ層の実装に必要。
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
 
 # `examples/webrtc_nfr6.rs`（TASK-8.4 / #29）は `bf-plugin-webrtc`（optional dep）を
 # 直接使うため、`webrtc` feature 無効時に `cargo build --workspace --all-targets` 等が
@@ -105,3 +121,19 @@ async-graphql = { version = "7", default-features = false, features = ["dynamic-
 [[example]]
 name = "webrtc_nfr6"
 required-features = ["webrtc"]
+
+# `examples/graphql_nfr6.rs`（TASK-5.2 / #53）は `bf-plugin-graphql`（optional dep）を
+# 直接使うため、`graphql` feature 無効時に `cargo build --workspace --all-targets` 等が
+# コンパイル対象へ含めて失敗しないよう `required-features` で明示的にゲートする
+# （`webrtc_nfr6` と同一パターン）。
+[[example]]
+name = "graphql_nfr6"
+required-features = ["graphql"]
+
+# `examples/tracing_nfr.rs`（TASK-10.4 / #59）は `bf-plugin-tracing`（optional dep）を
+# 直接使うため、`tracing` feature 無効時に `cargo build --workspace --all-targets` 等が
+# コンパイル対象へ含めて失敗しないよう `required-features` で明示的にゲートする
+# （`webrtc_nfr6` / `graphql_nfr6` と同一パターン）。
+[[example]]
+name = "tracing_nfr"
+required-features = ["tracing"]

@@ -1,0 +1,53 @@
+[package]
+name = "bf-plugin-hub-wiring"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "backend-framework の hub 共通配線プラグイン（TASK-9.1 / TASK-9.2）。コアの RequestGate 拡張点上に TenantGate を実装し、RS256 + JWKS による JWT 検証 → org_id 抽出 → フェイルクローズの配線を集約する。"
+publish = false
+
+# workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
+# （.claude/rules/coding-rust.md・.claude/rules/security.md）。
+[lints]
+workspace = true
+
+# 依存逆転型プラグイン（.claude/rules/pay-for-what-you-use.md・
+# docs/design/plugin-boundary.md「Gate 型パターン」節）: 既存 4 プラグイン
+# （コア → プラグインの optional 依存 + feature ゲート）とは逆に、本クレートは
+# コア（backend-framework-core）へ一方向に依存し、コア側の Cargo.toml・
+# server.rs・plugin.rs は一切変更しない。利用側サービスが本クレートを依存に
+# 加え `Server::gate(TenantGate::new(config))` で登録する。
+#
+# JWT (RS256) 検証は ring（定数時間比較の RSA PKCS#1 v1.5 検証を内蔵）、
+# base64url デコードは base64、JWKS / クレーム JSON の厳密パースは serde +
+# serde_json を用いる（手書き RSA 演算・JSON パースによるタイミング攻撃・
+# 堅牢性リスクを回避、.claude/rules/security.md）。
+#
+# `rsa`（RustCrypto）ではなく `ring` を採用する理由: `rsa` crate は
+# RUSTSEC-2023-0071（Marvin attack、fix なし）を抱えており `scripts/dep-audit.sh`
+# （`deny.toml` advisories.ignore = [] のフェイルクローズ運用）で確実に FAIL
+# する。`ring` は `crates/plugin-webrtc`（`webrtc` feature 経由）が既に
+# 依存グラフへ引き込んでいる実績依存（`deny.toml` のライセンス許可リストに
+# ISC 等が既存）であり、新規のライセンス・advisory 面の追加リスクがない。
+# 使わないサービスはこれらの依存を一切引き込まない（`cargo tree
+# -p backend-framework-core` に本クレート・本依存が現れないことで
+# pay-for-what-you-use を機械検証できる）。
+[dependencies]
+backend-framework-core = { path = "../core" }
+bf-http = { path = "../http" }
+ring = "0.17"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 統合テスト（tests/tenant_gate.rs）で `handle_connection` を `tokio::io::duplex`
+# 越しに駆動する E2E 確認のためのみ。本体ビルド（src/**）には影響しない
+# （`crates/core/Cargo.toml`・`crates/plugin-graphql/Cargo.toml` の
+# dev-dependencies と同型のパターン）。
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = [
+  "macros",
+  "rt-multi-thread",
+  "io-util",
+] }

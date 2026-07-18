@@ -332,6 +332,134 @@ where
   場合は、再 spawn 時に必ずその所有権をセッションタスクへ move する
   （move し忘れは DoS リグレッションになる、5.4 節）
 
+## 5.6 Gate 型パターン（依存逆転型、TASK-9.1 / #61 で確立、TASK-9.2 / #62 で
+RS256 + JWKS へ差し替え）
+
+`bf-plugin-hub-wiring`（`TenantGate`、JWT 検証 → `org_id` 抽出 →
+フェイルクローズ）は、4・5 節の 2 パターン（コア → プラグインの optional
+依存 + feature ゲート）とは逆に、**プラグイン → コアの一方向依存**（依存
+逆転型）を取る第 3 のプラグイン様式である。
+
+### 5.6.1 依存逆転を選べる条件
+
+4・5 節のパターンが依存逆転を採れなかった理由は、パスインターセプト型
+（`try_handle_rtc_offer` 等、上流への非同期中継を伴う）・Upgrade 型
+（ハンドシェイク検証・101 応答送出という非同期処理を要する）のいずれも、
+3 拡張点（`Middleware`/`UpgradeHandler`/`RequestGate`）の同期 API 制約
+（dyn 互換性のため、`crates/core/src/extension.rs` 冒頭 doc）に非同期呼び
+出しを持ち込めないことにあった（6.1 節）。
+
+`RequestGate` はヘッダ検査のみで完結する既存拡張点であり、`TenantGate` の
+判定（`Authorization` ヘッダ抽出 → RS256 署名検証、`kid` による JWKS 内
+鍵選択、I/O なし）はこの同期 API 制約に抵触しない。JWKS の取得（HTTP
+フェッチ・自動リフレッシュ）自体は非同期 I/O を要するため `check()` 内では
+行わず、利用側サービスが取得済み JWKS JSON を注入し
+`SharedJwks::set()` で再起動なしローテーションする設計とすることで、
+同期 API 制約の中に収めている（TASK-9.2、`crates/plugin-hub-wiring/src/jwks.rs`）。
+したがって:
+
+- `crates/core` の `Cargo.toml`・`server.rs`・`plugin.rs` は一切変更しない
+  （`optional = true` + `dep:` 構文も、非公開シームへの分岐追加も不要）
+- 利用側サービスが `bf-plugin-hub-wiring` を依存に加え、
+  `Server::gate(TenantGate::new(TenantGateConfig::from_jwks_json(jwks_json)?))`
+  （既存の公開 API `Server::gate`、TASK-1.4）で登録するだけで配線が完結する
+- `scripts/dep-direction-check.sh` の許可リストには汎用パターン
+  `bf-plugin-*:backend-framework-core`・`bf-plugin-*:bf-http` が既に存在する
+  ため、6.1 節のような個別例外追加は不要（`crates/plugin-hub-wiring/src/lib.rs`
+  に依存方向宣言 `server → routes → http::*` を記載するのみでチェック 2 も通過する）
+
+### 5.6.2 pay-for-what-you-use の成立根拠
+
+コア側に `dep:` ゲートを持たないため、feature フラグではなく
+「利用側が依存グラフに `bf-plugin-hub-wiring` を加えるか否か」で
+pay-for-what-you-use が成立する。`cargo tree -p backend-framework-core` に
+本クレート・その依存（`ring`/`base64`/`serde`/`serde_json`）が一切現れない
+ことで機械検証できる（コアが本クレートを依存に持たないため、そもそも現れ
+ようがない設計）。
+
+JWT 検証は TASK-9.1（#61）の HS256（HMAC-SHA256、`hmac`/`sha2`）共有秘密鍵
+スパイクから、TASK-9.2（#62）で RS256（非対称鍵）+ JWKS へ差し替えた
+（HMAC 実装は本番実装に流用せず削除、`docs/spec/05-tasks.md` TASK-9.2）。
+署名検証ライブラリは `rsa`（RustCrypto）ではなく `ring` 0.17 を採用する:
+`rsa` crate は RUSTSEC-2023-0071（Marvin attack、fix なし）を抱えており
+`scripts/dep-audit.sh`（`deny.toml` advisories.ignore = [] のフェイルクローズ
+運用）で確実に FAIL する。`ring` は `crates/plugin-webrtc`（`webrtc`
+feature 経由）が既に依存グラフへ引き込んでいる実績依存（`deny.toml` の
+ライセンス許可リストに ISC 等が既存）であり、`bf-plugin-hub-wiring` 追加
+による新規のライセンス・advisory 面のリスク増はない。
+
+### 5.6.3 責務境界（`GateOutcome` はクレームを運ばない）
+
+`RequestGate::check` の戻り値 `GateOutcome` は許可/拒否の判定結果のみを運ぶ
+契約（`crates/core/src/extension.rs` doc、`docs/spec/03-poc/hub-wiring-middleware`
+PoC-6）であり、JWT 検証で抽出した `org_id` 等のクレームはコアへ一切渡らない
+（`bf-plugin-hub-wiring` 内の `jwt::Claims` に閉じる）。この境界により、
+コアは hub 固有シンボル（JWT・`org_id`・JWKS）へ一切依存しないまま、
+依存逆転型プラグインからの利用を受け付けられる。
+
+### 5.6.4 後続 Gate 型プラグインへの適用指針
+
+新規プラグインが `RequestGate`/`Middleware` のみを実装し、判定・観測ロジック
+が同期 I/O なしで完結する場合は、まず本パターン（依存逆転、コア無変更）を
+検討すること。非同期処理・上流中継・コネクション奪取が必要になった時点で
+初めて 4・5 節のコア→プラグインパターンへ切り替える。
+
+## 5.7 Middleware 型パターン（TASK-10.1 / #56 で確立）
+
+`crates/plugin-tracing`（可観測性・サンプリング付きトレーシング）は
+`Middleware` 拡張点（`crates/core/src/extension.rs`）上に実装した最初の
+プラグインである。パスインターセプト型（4 節）・Upgrade 型（5 節）に続く
+第 3 の配線パターンとして記録する。
+
+### 5.7.1 パスインターセプト型・Upgrade 型との違い
+
+`Middleware` trait（`on_request` / `on_response`）は元々 dyn 互換の同期 API
+として設計されており、`Server` は既に汎用の `middlewares: Vec<Box<dyn
+Middleware>>` を保持している。そのためパスインターセプト型・Upgrade 型が
+必要とした「専用の非公開シーム（`crate::plugin::try_intercept` /
+`try_handle_upgrade`）」は不要で、`Server::tracing(config)` は
+`TracingMiddleware`（`crates/core/src/server.rs`）を組み立てて既存の
+`middlewares` へ push するだけの薄いビルダーメソッドとして実装できる
+（コアループ `handle_connection` 側の変更はゼロ）。
+
+### 5.7.2 依存方向・循環回避
+
+`bf-plugin-tracing` は `bf-plugin-websocket`（5.2 節）と同一の非循環パターンを
+踏襲し、`backend-framework-core` に依存しない。`Middleware` trait を実装する
+アダプタ（`TracingMiddleware`）はコア側（`crates/core/src/server.rs`、
+`tracing` feature 限定）に置く。`Middleware` は dyn 互換のため、原理的には
+プラグイン側が core に依存して順方向に `impl Middleware` する設計も選べたが、
+`crates/plugin-tracing` を `crates/core` から独立にビルド・テストできる状態を
+維持するため、あえて非循環パターンを踏襲した（`crates/plugin-tracing/src/lib.rs`
+の doc・6.1 節の許可リスト例外コメントを参照）。
+
+### 5.7.3 サンプリングと記録タイミングの一本化
+
+`Middleware` には request/response を跨いで per-request 状態を運ぶ経路が
+ないため、`on_request` と `on_response` で独立にサンプリング判定すると
+同一リクエストの記録が対にならない。`TracingMiddleware::on_request` は
+no-op とし、判定・記録は `on_response`（`bf_plugin_tracing::TracingLayer::
+record_response` への委譲）の 1 点に集約する
+（`crates/plugin-tracing/src/layer.rs` の doc を参照）。
+
+採択されたリクエストの記録粒度は当初 span 1 つ + 受理・応答の 2 イベント
+（PoC-10 代表構成と同粒度）だったが、TASK-10.2（#57）で応答時 1 イベントへ
+統合した。span 廃止により採択 1 件あたりの subscriber コールバックが 4 回
+（`on_new_span` + enter/exit + イベント 2 件）から 1 回へ減り、TASK-10.4
+（性能再検証）の前提となる記録コスト削減を実現する。
+
+### 5.7.4 AGENTS.md「ミドルウェア非同期 I/O 必須化」規約との関係
+
+`TracingLayer::record_response` 内の `tracing` マクロ呼び出し自体は同期だが、
+`tracing-subscriber` に登録するレイヤーが `tracing-appender::non_blocking`
+writer を使う限り、実際のディスク/ネットワーク I/O は非同期・バッファ済みに
+なる（`bf_plugin_tracing::init_tracing` が既定でこの構成を組み立てる）。
+サンプリング（`bf_plugin_tracing::Sampler`、決定的カウンタ方式）は
+PoC-10 の知見（非同期 I/O 化だけでは RPS 劣化 31.6% を解消できない）に
+対応する追加対策であり、`Sampler::should_sample` が `false` の場合は
+`tracing` マクロ呼び出し自体を避けることで有効化コストをサンプリング間隔に
+応じて按分する。
+
 ## 6. 検証コマンド
 
 | 検証 | コマンド | 期待結果 |
@@ -386,6 +514,14 @@ TASK-4.1（#22）で `backend-framework-core:bf-plugin-websocket` を同一方�
 `backend-framework-core` に依存しないため循環にはならない）。あわせて
 チェック 3（プラグイン固有シンボル非依存検査）の例外シンボルパターンにも
 `bf_plugin_websocket`/`websocket` を追加している。
+
+TASK-10.1（#56）で `backend-framework-core:bf-plugin-tracing` を 4 件目の
+例外として追加した。`Middleware` trait は dyn 互換の同期 API のため、
+webrtc-proxy/webrtc（非同期パスインターセプト）とは異なる理由（5.6.2 節）で
+非循環パターンを選んだが、生じる workspace 内 path 依存エッジ自体は
+websocket と同型（`bf-plugin-tracing` → `backend-framework-core` の逆依存は
+発生しない）。チェック 3 の例外シンボルパターンにも `bf_plugin_tracing`/
+`TracingMiddleware` を追加している。
 
 ## 7. スコープ外（別タスクで対応）
 

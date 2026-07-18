@@ -208,3 +208,85 @@ CORE_BIN=target/release/axum-ref CORE_PORT=3102 ./benches/bench-accept.sh
 `TARGET_BIN` / `TARGET_HOST` / `TARGET_PORT`（`bench-http.sh` 等の単体実行時）や
 `BASELINE_*` / `CORE_*`（`bench-accept.sh`）を差し替えることで、`crates/core` 側の
 実行可能バイナリが揃った時点で本スクリプトの変更なしにそのまま判定に使える設計にしている。
+
+## webrtc-nfr6-bench.sh / graphql-nfr6-bench.sh — プラグイン feature の NFR 計測
+
+`webrtc`（TASK-8.4、#29）・`graphql`（TASK-5.2、#53）の各 feature を有効化した際、
+無関係パス（`GET /`）への RPS・p95 レイテンシ影響が誤差範囲に収まることを検証する
+専用ハーネス。共通パターン: ベースライン（`crates/core/examples/minimal.rs`、対象
+feature 無効）と、計測対象 feature を有効化した専用 example（`webrtc_nfr6.rs` /
+`graphql_nfr6.rs`）へそれぞれ `oha` で負荷をかけ、RPS・p95 の中央値比（`RUNS` 回、
+既定 5 回）を算出する。production 配線自体は変更せず、計測専用の example を叩くのみ。
+
+```bash
+# 事前ビルド（各スクリプトとも自動ビルドしない）
+cargo build --release -p backend-framework-core --example minimal --no-default-features
+cargo build --release -p backend-framework-core --example webrtc_nfr6 --features webrtc
+cargo build --release -p backend-framework-core --example graphql_nfr6 --features graphql
+
+./benches/webrtc-nfr6-bench.sh
+./benches/graphql-nfr6-bench.sh
+```
+
+標準出力（stderr）へ実行ログ、標準出力（stdout）へ `rps_ratio_pct=` / `p95_ratio_pct=`
+等の machine-readable な結果を出す。`RUNS` / `DURATION` / `CONNECTIONS` を env で
+上書き可能（既定 `RUNS=5 DURATION=5s CONNECTIONS=32`）。判定（PASS/WARN/FAIL）は
+`scripts/accept/lib/nfr6-ratio.sh`（`evaluate_nfr6_ratio`）を呼ぶ
+`scripts/accept/webrtc-accept.sh` / `scripts/accept/graphql-accept.sh` が担う（実務
+許容帯 [95%, 105%]・狭義帯 [100.3%, 100.8%]）。実行結果レポートは
+`reports/task-8.4-webrtc-nfr6.md` / `reports/task-5.2-graphql-performance.md` を参照。
+
+## tracing-nfr-bench.sh — サンプリング適用後の可観測性 NFR 再計測
+
+TASK-10.4（#59）: `tracing` feature（TASK-10.1〜10.3 の決定的サンプリング・イベント
+統合・高頻度パス除外を適用済み）を有効化した際、高頻度パス想定 `GET /health` への
+RPS・p95 レイテンシ影響が REQ-10 の成功基準（RPS 劣化 5% 以内・p95 悪化 110% 以内）に
+収まることを検証する。ベースライン（`crates/core/examples/minimal.rs`。TASK-10.4 で
+`GET /health` を追加）と、比較対象 `crates/core/examples/tracing_nfr.rs`（`tracing`
+feature 有効・`init_tracing` + `Server::tracing` 登録済み）へそれぞれ `oha` で負荷を
+かける。`webrtc-nfr6-bench.sh` / `graphql-nfr6-bench.sh` と同型のパターンだが、
+以下 2 シナリオを実行する点が異なる:
+
+- **シナリオ A（受け入れ判定対象）**: 全緩和策適用（サンプリング + イベント統合 +
+  `/health` を `TracingConfig::exclude_path` で除外）
+- **シナリオ B（参考値）**: 除外なし・サンプリングのみ（`EXCLUDE_HEALTH=0`）。
+  TASK-10.3 除外機構の追加効果を差分観測するための対照
+
+```bash
+# 事前ビルド（自動ビルドしない）
+cargo build --release -p backend-framework-core --example minimal --no-default-features
+cargo build --release -p backend-framework-core --example tracing_nfr --features tracing
+
+./benches/tracing-nfr-bench.sh
+```
+
+標準出力（stderr）へ実行ログ、標準出力（stdout）へ `rps_a_ratio_pct=` /
+`p95_a_ratio_pct=`（シナリオ A）・`rps_b_ratio_pct=` / `p95_b_ratio_pct=`（シナリオ
+B）等の machine-readable な結果を出す。`RUNS` / `DURATION` / `CONNECTIONS` を env で
+上書き可能（既定 `RUNS=5 DURATION=5s CONNECTIONS=32`）。判定（PASS/FAIL）は
+`scripts/accept/tracing-accept.sh` が担う（受け入れ帯: RPS 比 ≥95%・p95 比 ≤110%、
+REQ-10 の成功基準そのもの。`webrtc`/`graphql` の NFR-6 判定帯とは別の帯）。実行結果
+レポートは `reports/task-10.4-tracing-performance.md` を参照。
+
+## tracing-backpressure-bench.sh — 非同期 writer バックプレッシャー・ログ欠落率計測
+
+TASK-10.6（#90）: `tracing_appender::non_blocking`（既定 lossy=true）の高負荷時
+ログ欠落率を負荷段階（イベント総数 × 送出スレッド数）別に計測するハーネス。
+`crates/plugin-tracing/examples/backpressure_probe.rs`（既定構成のまま高負荷送出し
+`{emitted, written, dropped_lines, drop_rate_pct, events_per_sec}` を JSON 1 行で
+出力する計測プローブ）を負荷段階ごとに `RUNS` 回実行し、欠落率・実効イベントレートの
+中央値を算出する。
+
+```bash
+cargo build --release -p bf-plugin-tracing --example backpressure_probe
+RUNS=5 bash benches/tracing-backpressure-bench.sh
+
+# 動作確認用に短縮パラメータ・負荷段階で素早く回す
+RUNS=3 STAGES="10000:1 10000:4" bash benches/tracing-backpressure-bench.sh
+```
+
+負荷段階は `STAGES`（`"イベント総数:送出スレッド数"` の空白区切りリスト）・1 イベント
+あたりの目標バイト長は `LINE_BYTES` で上書き可能。標準出力（stdout）へ負荷段階別の
+結果を JSON 配列で出す（`RESULT_JSON` 指定時はファイルにも書き出す、
+`benches/lib/common.sh` の規約に準拠）。実測結果・許容基準は
+`reports/task-10.6-tracing-backpressure.md` を参照。
