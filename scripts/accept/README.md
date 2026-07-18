@@ -3,8 +3,9 @@
 `core-deps-unsafe-audit.sh`（REQ-1）・`plugin-mechanism-accept.sh`（REQ-2、TASK-2.4）・
 `dep-audit-accept.sh`（REQ-15、TASK-15.4）・`req13-change-impact-accept.sh`（REQ-13、TASK-13.2）・
 `webrtc-accept.sh`（REQ-8、TASK-8.4）・`graphql-accept.sh`（REQ-5、TASK-5.2）・
-`openapi-ts-accept.sh`（REQ-6、TASK-6.2）・`tracing-accept.sh`（REQ-10、TASK-10.4 / TASK-10.5）
-の 8 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
+`openapi-ts-accept.sh`（REQ-6、TASK-6.2）・`tracing-accept.sh`（REQ-10、TASK-10.4 / TASK-10.5）・
+`hub-wiring-accept.sh`（REQ-9、TASK-9.5）
+の 9 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
 
 `docs/spec/04-requirements.md` REQ-1（最小コア）の受け入れ基準のうち、**性能計測を除く**
 非性能系の受け入れ基準（依存クレート数比・unsafe 根拠・audit / deny・実質コード行数・
@@ -323,3 +324,41 @@ PASS を偽らない）。手動計測手順・実行結果は
 軽量なため専用セルフテストは設けず、本スクリプトの実行結果と
 `docs/acceptance/req6-typescript-types.md` の記録で確認する）。実行結果レポートは
 `docs/acceptance/req6-typescript-types.md` に記録する。
+
+## `hub-wiring-accept.sh` — REQ-9（hub 共通配線）受け入れ検証（TASK-9.5、#65）
+
+`docs/spec/05-tasks.md` TASK-9.5「hub 共通配線受け入れテスト」の受け入れ基準を検証する
+`lib/common.sh` 利用の `webrtc-accept.sh` 同型オーケストレータ。
+
+```bash
+./scripts/accept/hub-wiring-accept.sh
+```
+
+検証内容:
+
+1. **A: 越境遮断・フェイルクローズ受け入れテスト** — `cargo test -p
+   bf-plugin-hub-wiring --test hub_acceptance`（PoC-6 相当の実データ入りマルチ
+   テナントハンドラで、越境クエリ全件遮断・JWT 欠落/不正時のフェイルクローズ・
+   鍵ローテーション・検証結果キャッシュ共有を固定する 16 テスト）が全件 PASS
+   すること
+2. **B: 配線コード削減率** — `examples/hub_service_demo.rs` のマーカー区間
+   （`// --- wiring:begin --- 〜 // --- wiring:end ---`）の実 LOC を PoC-6 基準
+   （3 エンドポイント・207 行）に対して評価し、削減率 90% 以上で PASS
+   （`scripts/accept/lib/hub-wiring-loc.sh`）。ハンドラ領域（`build_router`）に
+   手書き JWT 検証・JWKS パース等の配線シンボルが現れないことも同ライブラリで
+   grep 検証する
+3. **C: 依存方向・pay-for-what-you-use** — `cargo tree -p backend-framework-core`
+   に `bf-plugin-hub-wiring` が一切現れないこと（依存逆転型プラグインの維持）
+4. **D: NFR-6** — `bf-plugin-hub-wiring` をリンクした hub サービス（`BF_HUB_GATE=off`
+   で `TenantGate` 未登録）が無関係パス（`GET /`）へ与える影響を
+   `benches/hub-nfr6-bench.sh` の実測で確認する。`webrtc-accept.sh` /
+   `graphql-accept.sh` と同一の NFR-6 判定帯（狭義 100.3〜100.8%・実務 [95%,105%]）を
+   使う。ビルド済みバイナリ・`oha` が揃っていなければ SKIP + 実行手順を案内する
+
+前提: `cargo build --release -p backend-framework-core --example minimal
+--no-default-features` と `cargo build --release -p bf-plugin-hub-wiring --example
+hub_service_demo` を事前実行（本スクリプトは自動ビルドしない）。
+
+判定ロジックのオフライン・セルフテスト（cargo・ネットワーク非依存）は
+`scripts/tests/run-hub-wiring-accept-tests.sh` を参照。実行結果レポートは
+`docs/acceptance/req9-hub-wiring.md` に記録する。

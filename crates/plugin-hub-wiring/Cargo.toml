@@ -41,13 +41,18 @@ base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# 統合テスト（tests/tenant_gate.rs）で `handle_connection` を `tokio::io::duplex`
-# 越しに駆動する E2E 確認のためのみ。本体ビルド（src/**）には影響しない
-# （`crates/core/Cargo.toml`・`crates/plugin-graphql/Cargo.toml` の
-# dev-dependencies と同型のパターン）。
+# 統合テスト（tests/tenant_gate.rs・tests/hub_acceptance.rs）で
+# `handle_connection` を `tokio::io::duplex` 越しに駆動する E2E 確認、および
+# 受け入れ検証用ダミー hub サービス（examples/hub_service_demo.rs、TASK-9.5 /
+# #65）でのみ使用。本体ビルド（src/**）には影響しない（`crates/core/Cargo.toml`・
+# `crates/plugin-graphql/Cargo.toml` の dev-dependencies と同型のパターン）。
+# `bf-routes` は `examples/hub_service_demo.rs` が PoC-6 相当の 3 エンドポイント
+# ルーティングを組み立てるためだけに使う（`crates/core/examples/minimal.rs` と
+# 同一パターン）。
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = [
   "macros",
   "rt-multi-thread",
   "io-util",
 ] }
+bf-routes = { path = "../routes" }

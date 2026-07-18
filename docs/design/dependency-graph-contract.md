@@ -249,6 +249,35 @@ NFR（RPS 比・p95 比、REQ-10）再検証で、サンプリング（TASK-10.2
    契約（`crates/core/src/extension.rs` doc）も変更していない。`benches/*` を D
    カテゴリに追加する是正は 4.3 節・4.4 節と同一の別 Issue 対象とする
 
+### 4.6 記載例（TASK-9.5 / #65 / PR #163）
+
+`crates/plugin-hub-wiring` の `RequestGate` 拡張点実装（`TenantGate`）をリンクした
+hub サービス（`examples/hub_service_demo.rs`）が、無関係パス（`GET /`）への
+RPS・p95 レイテンシに与える影響（NFR-6、`docs/spec/04-requirements.md`）を、
+ベースライン（`examples/minimal`）との比較で実測した変更で、4.3 節〜4.5 節と同一の
+理由（`extension-closure-check.sh` の分類規則が D として許可するのは `docs/*`・
+`scripts/*` 等の glob のみで `benches/*` は対象外）により、以下 2 件が E（閉包違反候補）
+と判定された。
+
+1. **対象コミット/PR**: PR #163（#65、HEAD sha `aad82ce29a745a6195e43157112d17d0ceeadd09`）
+2. **E ファイルパス**:
+   - `benches/hub-nfr6-bench.sh`
+   - `benches/reports/task-9.5-hub-wiring-performance.md`
+3. **閉じない理由**: 4.3 節〜4.5 節と同一の運用上のギャップ（`benches/*` が D 未対応）
+   により E 判定となる、`bf-plugin-hub-wiring` リンクコスト・opt-in（ゲート有効時）
+   コストを計測するベンチスクリプトとその実測結果レポートである
+   （`benches/graphql-nfr6-bench.sh`・`benches/webrtc-nfr6-bench.sh` と同型、
+   `benches/hub-nfr6-bench.sh` 冒頭コメント参照）
+4. **正当性根拠**: 両ファイルは `bf-plugin-hub-wiring` の `RequestGate` 実装
+   （`TenantGate`、2 節契約一覧の `RequestGate` 行）そのものの契約を変更するもの
+   ではなく、既存構成（`BF_HUB_GATE=off` によるリンクコスト分離計測、および
+   ゲート有効構成の opt-in コスト参考値）の負荷計測・実測結果を記録するのみで、
+   計測対象の拡張点契約・依存方向（`server → routes → http::*`、1 節）には一切
+   影響しない。計測は既存バイナリ（`examples/minimal`・`examples/hub_service_demo`）
+   に対する外部負荷生成（`oha`）であり、`GateOutcome` が判定結果のみを運ぶ契約
+   （`crates/core/src/extension.rs` doc）も変更していない。`benches/*` を D
+   カテゴリに追加する是正は 4.3 節〜4.5 節と同一の別 Issue 対象とする
+
 ## 5. `bf-plugin-openapi` の非該当理由
 
 `bf-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも
