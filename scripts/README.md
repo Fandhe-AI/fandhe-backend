@@ -43,6 +43,9 @@ TASK-6.2（#55）で、`openapi-ts.sh` の「`tsc --noEmit` が成功するこ�
 `openapi-ts-negative.sh`・受け入れテスト `accept/openapi-ts-accept.sh` を追加した
 （`docs/design/openapi-typescript-pipeline.md` TASK-6.2 節・`docs/acceptance/
 req6-typescript-types.md` 参照）。
+イシュー #180 で、`.github/workflows/*.yml` の静的検証（式インジェクション・構文誤り・
+`needs` 参照切れ等の検知）を CI 常設化する `actionlint.sh` を追加した（PR #98 以降
+「actionlint 環境未導入のため未実施」と記録され続けていたゲートの解消）。
 
 ## スクリプト一覧
 
@@ -82,6 +85,8 @@ req6-typescript-types.md` 参照）。
 | `tests/run-openapi-ts-tests.sh` | `openapi-ts.sh` のセルフテスト。`tests/fixtures/openapi-ts/*` を注入し引数検証・`schema.d.ts` diff 鮮度判定・node/npm 不在時の fail-closed 挙動・CI ジョブ存在確認を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `openapi-ts-negative.sh` | `openapi-ts.sh` の陰性対照（意図的な型不一致が `tsc --noEmit` のエラーとして検出されること）を検証する（TASK-6.2、#55）。N1: `ts/src/negative/type-mismatch.ts`（4 類型）を `tsc --noEmit -p tsconfig.negative.json` にかけ期待 TS エラーコードを確認、N2: `openapi.json` の一時コピーへ型不一致を注入し一時ディレクトリで `schema.d.ts` を再生成して既存 `usage.ts` の型検査失敗を確認する。同一実行内の陽性対照成功も前提条件とする fail-closed 判定（`docs/design/openapi-typescript-pipeline.md` 参照） | `.github/workflows/ci.yml` の `openapi-ts` ジョブから呼ばれる |
 | `tests/run-openapi-ts-negative-tests.sh` | `openapi-ts-negative.sh` のセルフテスト。`tests/fixtures/openapi-ts-negative/*` を注入し引数検証・node/npm 不在時の fail-closed 挙動・N1/N2 の期待エラーコード判定ロジック・discrimination（誤った理由での失敗を PASS と誤認しないこと）・CI ステップ存在確認を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
+| `actionlint.sh` | `.github/workflows/*.yml` を actionlint（+ shellcheck 統合）で静的検証する。式インジェクション（OWASP A03）・構文誤り・`needs` 参照切れ等のワークフロー変更退行を検知する（イシュー #180）。引数指定時はそのファイルのみ検証する（セルフテスト・陰性対照用） | `.github/workflows/ci.yml` の `actionlint` ジョブから呼ばれる |
+| `tests/run-actionlint-tests.sh` | `actionlint.sh` のセルフテスト。actionlint 不在時の fail-closed（exit 2・導入案内）、`tests/fixtures/actionlint/broken-workflow.yml`（`runs-on` 欠落・`needs` 参照切れ）を明示ファイル引数で検査する陰性対照（discrimination）、ci.yml への `actionlint` ジョブ・`ci-complete` needs 登録の存在確認を検証する | `.github/workflows/ci.yml` の `actionlint` ジョブから呼ばれる |
 
 ## 前提ツール
 
@@ -104,6 +109,8 @@ req6-typescript-types.md` 参照）。
 | C コンパイラ（`fuzz.sh` のみ） | `libfuzzer-sys` の C++ ランタイムビルドに必要 | OS のパッケージマネージャ（例: `apt install build-essential`） |
 | Node.js（`openapi-ts.sh` のみ、`ts/package.json` の `volta`/`engines` フィールドが単一真実源。動作確認済み: 24.13.0） | `openapi-typescript`・`tsc` の実行に必要 | `curl https://get.volta.sh \| bash && volta install node@24.13.0 npm@11.6.2` |
 | npm（`openapi-ts.sh` のみ、動作確認済み: 11.6.2） | `ts/` の依存インストール（`npm ci --ignore-scripts`）・スクリプト実行 | Node.js（volta）に同梱 |
+| `actionlint`（`actionlint.sh` のみ、`actionlint.sh` の `ACTIONLINT_VERSION`/`ACTIONLINT_SHA256_LINUX_AMD64` が単一真実源。動作確認済み: 1.7.12） | `.github/workflows/*.yml` の静的検証（式インジェクション・構文誤り・`needs` 参照切れ等）。Go 製単一バイナリで `cargo install` 不可 | GitHub Releases から SHA256 検証込みで導入（`scripts/actionlint.sh` 未導入時のエラーメッセージにコマンド例あり。`ci.yml` の `actionlint` ジョブと同一手順） |
+| `shellcheck`（`actionlint.sh` のみ、任意。未導入時は actionlint の `run:` ブロック検査が縮退する WARN のみ。動作確認済み: 0.11.0） | actionlint の `run:` ブロック shellcheck 統合 | OS のパッケージマネージャ（例: `apt install shellcheck`） |
 
 ## `setup-required-checks.sh` — required status check の設定
 
