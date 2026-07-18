@@ -2,25 +2,34 @@
 # REQ-9（docs/spec/04-requirements.md）NFR-6 の empirical 計測スクリプト（TASK-9.5 / #65）。
 #
 # このスクリプトの役割:
-#   `bf-plugin-hub-wiring` をリンクした hub サービス（`examples/hub_service_demo.rs`、
+#   `bf-plugin-hub-wiring` をリンクした最小サーバ（`examples/hub_link_only.rs`、
 #   `BF_HUB_GATE=off` で `TenantGate` 未登録＝リンクコストのみを分離計測）が、
 #   無関係パス（`GET /`）への RPS・p95 レイテンシに与える影響が誤差範囲に収まる
 #   ことを、実際にビルドした 2 バイナリ（ベースライン `examples/minimal`／
-#   比較対象 `examples/hub_service_demo`）へ `oha` で負荷をかけて検証する。
+#   比較対象 `examples/hub_link_only`）へ `oha` で負荷をかけて検証する。
 #   `benches/graphql-nfr6-bench.sh`・`benches/webrtc-nfr6-bench.sh`（TASK-5.2・
 #   TASK-8.4）と同型。
+#
+#   `examples/hub_service_demo.rs`（PoC-6 相当のマルチテナント `/items` 系
+#   ハンドラを持つ実データ入り example）は使わない。マルチルート登録・
+#   シードストア・`Authenticator` 呼び出し等のアプリケーション層オーバーヘッドが
+#   リンクコストの計測値へ混入するため（Cursor Bugbot review 4727552092
+#   指摘1、PR #163）。`hub_link_only.rs` は `examples/minimal.rs` と同一の
+#   `GET /` のみを持つ最小構成（`crates/plugin-hub-wiring/examples/
+#   hub_link_only.rs` 冒頭 doc 参照）。
 #
 # 前提:
 #   - `cargo build --release -p backend-framework-core --example minimal
 #      --no-default-features`
-#   - `cargo build --release -p bf-plugin-hub-wiring --example hub_service_demo`
+#   - `cargo build --release -p bf-plugin-hub-wiring --example hub_link_only`
 #   （本スクリプトはビルドを自動実行しない。既存バイナリの存在を検査するのみ。
 #    benches/lib/common.sh の「サプライチェーン考慮・自動取得しない」方針を踏襲）
 #
 # 参考値（PASS/FAIL 判定には使わない）:
-#   `BF_HUB_GATE` を未設定にした「ゲート有効 + 有効トークン」構成のスループットを
-#   opt-in コストとして併記する（`benches/reports/task-9.5-hub-wiring-performance.md`
-#   に転記）。
+#   `hub_service_demo`（実データ入り example）を使い、`BF_HUB_GATE` を未設定にした
+#   「ゲート有効 + 有効トークン」構成のスループットを opt-in コストとして手動計測し
+#   併記する（`benches/reports/task-9.5-hub-wiring-performance.md` に転記。
+#   `hub_link_only` は空 JWKS のため実トークンでの opt-in 計測はできない）。
 #
 # 呼び出し元: 人間が `bash benches/hub-nfr6-bench.sh` として直接実行する。
 # 結果は `docs/acceptance/req9-hub-wiring.md` §NFR /
@@ -47,11 +56,12 @@ DURATION="${_CALLER_DURATION:-5s}"
 CONNECTIONS="${_CALLER_CONNECTIONS:-32}"
 
 BASELINE_BIN="${WORKSPACE_ROOT}/target/release/examples/minimal"
-HUB_BIN="${WORKSPACE_ROOT}/target/release/examples/hub_service_demo"
+HUB_BIN="${WORKSPACE_ROOT}/target/release/examples/hub_link_only"
 BASELINE_PORT=3000
-# hub_service_demo は 127.0.0.1:3100 に固定でバインドする
-# （crates/plugin-hub-wiring/examples/hub_service_demo.rs）。
-HUB_PORT=3100
+# hub_link_only は 127.0.0.1:3101 に固定でバインドする
+# （crates/plugin-hub-wiring/examples/hub_link_only.rs、hub_service_demo の
+# 3100 と衝突しないポート）。
+HUB_PORT=3101
 
 if ! command -v oha >/dev/null 2>&1; then
     echo "エラー: oha が見つかりません。導入してください（例: cargo install oha）" >&2
@@ -73,7 +83,7 @@ if [ ! -x "${BASELINE_BIN}" ]; then
 fi
 if [ ! -x "${HUB_BIN}" ]; then
     echo "エラー: ${HUB_BIN} が見つかりません。先に" >&2
-    echo "  cargo build --release -p bf-plugin-hub-wiring --example hub_service_demo" >&2
+    echo "  cargo build --release -p bf-plugin-hub-wiring --example hub_link_only" >&2
     echo "を実行してください" >&2
     exit 1
 fi

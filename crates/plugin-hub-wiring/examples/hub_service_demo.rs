@@ -42,7 +42,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bf_http::request::RequestHead;
 use bf_http::response::Response;
-use bf_plugin_hub_wiring::{Authenticator, TenantGate, TenantGateConfig};
+use bf_plugin_hub_wiring::{Authenticator, TenantGate, TenantGateConfig, TokenError};
 use bf_routes::Router;
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
@@ -134,13 +134,28 @@ fn demo_token(keypair: &RsaKeyPair, org_id: &str) -> String {
 /// ゲート通過済みリクエストから `org_id` を取り出す。JWT 検証・クレーム抽出は
 /// 一切自前実装せず [`Authenticator::authenticate`]（本クレート提供）へ委譲する
 /// （TASK-9.5 の削減対象そのもの）。`BF_HUB_GATE=off` 構成で `/items` 系へ
-/// 直接到達した場合（ゲート未登録）はここで検証が走り、失敗時は `401` を
-/// 返す（ハンドラ単体でもフェイルクローズを維持する防御的多層化）。
+/// 直接到達した場合（ゲート未登録）はここで検証が走り、失敗時はハンドラ単体でも
+/// フェイルクローズを維持する防御的多層化として応答を返す。ステータス
+/// マッピングは [`TenantGate::check`]（`src/gate.rs`）の判定ポリシーと完全に
+/// 一致させる（`org_id` クレーム欠落・空は `403`、それ以外の検証失敗は `401`。
+/// ここで独自に緩めると `BF_HUB_GATE=off` 構成でのみステータスが食い違う
+/// 不整合を生むため、Cursor Bugbot 指摘対応で修正、PR #163）。
 fn require_org(authenticator: &Authenticator, head: &RequestHead) -> Result<String, Response> {
     authenticator
         .authenticate(head)
         .map(|claims| claims.org_id)
-        .map_err(|_err| Response::empty(401))
+        .map_err(|err| match err {
+            TokenError::MissingOrgId => {
+                Response::new(403, br#"{"error":"tenant_scope_required"}"#.to_vec())
+            }
+            TokenError::MissingToken
+            | TokenError::Malformed
+            | TokenError::InvalidAlgorithm
+            | TokenError::MissingKeyId
+            | TokenError::UnknownKeyId
+            | TokenError::InvalidSignature
+            | TokenError::Expired => Response::new(401, br#"{"error":"invalid_token"}"#.to_vec()),
+        })
 }
 
 /// PoC-6 と同数（3 エンドポイント、`GET /items`・`GET /items/{id}`・`POST /items`）に

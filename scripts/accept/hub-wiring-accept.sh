@@ -12,9 +12,11 @@
 #   C: 依存方向・pay-for-what-you-use。`cargo tree -p backend-framework-core` に
 #      `bf-plugin-hub-wiring` が現れないこと（依存逆転型プラグインの維持）
 #   D: NFR-6（無関係パスへの RPS・p95 影響が誤差範囲内）。ビルド済み
-#      `target/release/examples/minimal`・`target/release/examples/hub_service_demo`
-#      （`BF_HUB_GATE=off`）と `oha` が揃っていれば `benches/hub-nfr6-bench.sh` で
-#      empirical 計測する。揃っていなければ判定不能として SKIP + 実行手順を案内する
+#      `target/release/examples/minimal`・`target/release/examples/hub_link_only`
+#      （`BF_HUB_GATE=off`、`hub_service_demo` のアプリ層オーバーヘッドを含まない
+#      リンクコスト専用最小 example。Cursor Bugbot review 4727552092 指摘1対応）と
+#      `oha` が揃っていれば `benches/hub-nfr6-bench.sh` で empirical 計測する。
+#      揃っていなければ判定不能として SKIP + 実行手順を案内する
 #      （フェイルクローズ、自動ビルド・自動ダウンロードは行わない）
 #
 # 判定不能（前提ツール未導入・前提クレート未マージ等）はフェイルクローズで
@@ -125,14 +127,14 @@ check_dependency_inversion() {
 # ---------------------------------------------------------------------------
 check_nfr6() {
     local baseline_bin="${WORKSPACE_ROOT}/target/release/examples/minimal"
-    local hub_bin="${WORKSPACE_ROOT}/target/release/examples/hub_service_demo"
+    local hub_bin="${WORKSPACE_ROOT}/target/release/examples/hub_link_only"
 
     if ! command -v oha >/dev/null 2>&1; then
         record_skip "D: NFR-6 無関係パス影響" "oha 未導入（導入: cargo install oha）。導入後 benches/hub-nfr6-bench.sh を実行して再判定すること"
         return
     fi
     if [ ! -x "${baseline_bin}" ] || [ ! -x "${hub_bin}" ]; then
-        record_skip "D: NFR-6 無関係パス影響" "計測用バイナリ未ビルド。'cargo build --release -p backend-framework-core --example minimal --no-default-features' と 'cargo build --release -p bf-plugin-hub-wiring --example hub_service_demo' を実行後、benches/hub-nfr6-bench.sh を実行して再判定すること"
+        record_skip "D: NFR-6 無関係パス影響" "計測用バイナリ未ビルド。'cargo build --release -p backend-framework-core --example minimal --no-default-features' と 'cargo build --release -p bf-plugin-hub-wiring --example hub_link_only' を実行後、benches/hub-nfr6-bench.sh を実行して再判定すること"
         return
     fi
 
@@ -146,7 +148,7 @@ check_nfr6() {
 
     local verdict
     verdict="$(evaluate_nfr6_ratio "${rps_ratio_pct}" "${p95_ratio_pct}")"
-    local detail="RPS 比 ${rps_ratio_pct}% / p95 比 ${p95_ratio_pct}%（hub_service_demo・BF_HUB_GATE=off / ベースライン、GET / への負荷計測。狭義の NFR-6 帯 100.3〜100.8% との照合は benches/reports/task-9.5-hub-wiring-performance.md 参照）"
+    local detail="RPS 比 ${rps_ratio_pct}% / p95 比 ${p95_ratio_pct}%（hub_link_only・BF_HUB_GATE=off / ベースライン、GET / への負荷計測。狭義の NFR-6 帯 100.3〜100.8% との照合は benches/reports/task-9.5-hub-wiring-performance.md 参照）"
     case "${verdict}" in
     PASS)
         record_pass "D: NFR-6 無関係パス影響" "${detail}"

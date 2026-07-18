@@ -31,7 +31,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bf_http::request::RequestHead;
 use bf_http::response::Response;
 use bf_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
-use bf_plugin_hub_wiring::{Authenticator, TenantGate, TenantGateConfig};
+use bf_plugin_hub_wiring::{Authenticator, TenantGate, TenantGateConfig, TokenError};
 use bf_routes::Router;
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
@@ -152,12 +152,26 @@ fn seed_store() -> Store {
 
 /// `TenantGate` が `Allow` を返した場合にのみ `Authenticator::authenticate` を
 /// 呼ぶ（`examples/hub_service_demo.rs` と同一の再利用パターン）。JWT 検証・
-/// クレーム抽出コードはここにも一切書かない。
+/// クレーム抽出コードはここにも一切書かない。ステータスマッピングは
+/// `TenantGate::check`（`src/gate.rs`）の判定ポリシーと一致させる
+/// （`org_id` 欠落は `403`、それ以外は `401`。`examples/hub_service_demo.rs` と
+/// 同一の修正、Cursor Bugbot 指摘対応、PR #163）。
 fn require_org(authenticator: &Authenticator, head: &RequestHead) -> Result<String, Response> {
     authenticator
         .authenticate(head)
         .map(|claims| claims.org_id)
-        .map_err(|_err| Response::empty(401))
+        .map_err(|err| match err {
+            TokenError::MissingOrgId => {
+                Response::new(403, br#"{"error":"tenant_scope_required"}"#.to_vec())
+            }
+            TokenError::MissingToken
+            | TokenError::Malformed
+            | TokenError::InvalidAlgorithm
+            | TokenError::MissingKeyId
+            | TokenError::UnknownKeyId
+            | TokenError::InvalidSignature
+            | TokenError::Expired => Response::new(401, br#"{"error":"invalid_token"}"#.to_vec()),
+        })
 }
 
 /// `reached` はハンドラ本体へ実際に到達したリクエスト数を数える。`RequestGate`

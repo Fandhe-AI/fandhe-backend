@@ -36,9 +36,9 @@ TASK-9.2（#62、RS256 + JWKS 化）・TASK-9.3（#63、検証結果キャッシ
 | PASS | B: 配線コード削減率 | マーカー区間 6 行（PoC-6 基準 207 行比 削減率 97.1%、閾値 90% 以上） |
 | PASS | B補足: ハンドラ領域の手書き配線シンボル不在 | `verify_token` / `RsaKeyPair` / `JwksKeySet` / `SharedJwks::new` / `TenantGateConfig::(new\|from_jwks_json)` いずれも `build_router` 内に出現なし |
 | PASS | C: 依存逆転型プラグインの維持 | `cargo tree -p backend-framework-core` に `bf-plugin-hub-wiring` が現れない |
-| FAIL | D: NFR-6 無関係パス影響 | RPS 比 55.76〜85.08% / p95 比 207.27〜367.93%（4 回実行、詳細下記。当初実装の測定不備を是正後の数値） |
+| WARN | D: NFR-6 無関係パス影響（実務許容帯内・狭義帯外） | RPS 比 98.58〜99.71% / p95 比 100.01〜101.52%（2 回実行、詳細下記。Cursor Bugbot review 4727552092 指摘1対応でリンクコスト専用最小 example `hub_link_only.rs` へ切り替え後の数値） |
 
-**終了コード: 1（FAIL あり、基準 D）**
+**終了コード: 0（FAIL なし、PASS / WARN のみ）**
 
 ## 基準 A（越境遮断・フェイルクローズ）の詳細
 
@@ -94,38 +94,45 @@ if env::var("BF_HUB_GATE").as_deref() != Ok("off") {
 比較する不備を含んでいた（advisor レビューで指摘、是正済み）。`crates/core/examples/
 minimal.rs` と同一形状の `GET /` ハンドラを追加してから再計測している。
 
+### 是正2（Cursor Bugbot review 4727552092 指摘1、PR #163）
+
+上記是正後も、比較対象に `hub_service_demo.rs`（PoC-6 相当のマルチテナント
+`/items` 系ハンドラ・シードストア・`Authenticator` を持つ実データ入り example）を
+使い続けていたため、`webrtc-nfr6-bench.sh` / `graphql-nfr6-bench.sh` が使う
+「`GET /` のみを持つ最小 example」パターンから外れ、**アプリケーション層の
+オーバーヘッド（マルチルート登録・ハンドラクロージャの `Arc`/`Clone` キャプチャ量等）
+がリンクコストの計測値へ混入していた**（Cursor Bugbot 指摘）。
+
+是正: `crates/plugin-hub-wiring/examples/hub_link_only.rs`（`examples/minimal.rs` と
+同一の `GET /` のみを持ち、`BF_HUB_GATE=off` 未設定時のみ空 JWKS 構成の `TenantGate`
+を登録する最小 example）を新設し、`benches/hub-nfr6-bench.sh` の比較対象を
+`hub_service_demo` からこちらへ切り替えた。`hub_service_demo` は実データ・実トークンを
+要する opt-in コスト参考値の手動計測（下記「参考値」節）専用として引き続き使う。
+
 `benches/hub-nfr6-bench.sh`（`oha` による empirical 計測。計測用バイナリ:
 `crates/core/examples/minimal.rs` = ベースライン、
-`crates/plugin-hub-wiring/examples/hub_service_demo.rs`（`BF_HUB_GATE=off`）=
-`bf-plugin-hub-wiring` リンク済み・`TenantGate` 未登録）を是正後 4 回実行した結果:
+`crates/plugin-hub-wiring/examples/hub_link_only.rs`（`BF_HUB_GATE=off`）=
+`bf-plugin-hub-wiring` リンク済み・`TenantGate` 未登録・アプリ層オーバーヘッドなし）を
+是正後 2 回実行した結果:
 
 | 実行 | RPS 比（hub / baseline） | p95 比（hub / baseline） |
 |------|------|------|
-| 1 回目（RUNS=5, DURATION=5s, CONNECTIONS=32） | 85.08% | 207.27% |
-| 2 回目（RUNS=5, DURATION=5s, CONNECTIONS=32） | 82.36% | 209.81% |
-| 3 回目（RUNS=5, DURATION=5s, CONNECTIONS=32） | 82.15% | 213.58% |
-| 4 回目（RUNS=5, DURATION=5s, CONNECTIONS=32、単一実行内の振れが顕著） | 55.76% | 367.93% |
+| 1 回目（RUNS=5, DURATION=5s, CONNECTIONS=32） | 99.71% | 100.01% |
+| 2 回目（RUNS=5, DURATION=5s, CONNECTIONS=32） | 98.58% | 101.52% |
 
 詳細な生ログは `benches/reports/task-9.5-hub-wiring-performance.md` を参照。
 
-**判断**: NFR-6 の許容帯（実務帯 [95%, 105%]・狭義帯 100.3〜100.8%）のいずれにも
-4 回とも収まらず、FAIL として記録する（フェイルクローズ、`.claude/rules/security.md`、
-数値を丸めない）。
+**判断**: NFR-6 の実務許容帯 [95%, 105%] には 2 回とも収まる（狭義帯 100.3〜100.8% は
+外れるため `scripts/accept/hub-wiring-accept.sh` の判定は WARN）。是正前に記録していた
+FAIL（RPS 比 55.76〜85.08%）は、`hub_service_demo` のアプリ層オーバーヘッドが混入した
+測定不備によるものであり、`bf-plugin-hub-wiring` を単にリンクしただけの真のコストは
+実務許容帯に収まることを、アプリ層を排除した本計測で直接確認した。是正前レポートが
+記録していた「同一バイナリでもポート使用履歴・タイミングで RPS が最大 4.4 倍変動する」
+という環境ノイズの存在自体は別途確認済みの事実であり、本是正後の数値もその環境ノイズの
+影響を受け得る点は変わらないため、専有環境での確定的な再計測は
+`benches/reports/task-9.5-hub-wiring-performance.md`「専有環境での再現手順」節を参照。
 
-ただし、同レポートのコントロール実験（同一バイナリ `examples/minimal` を「本セッション
-で既に多数回使ったポート」と「初めて使うポート」で計測し比較、および `hub_service_demo`
-を未使用ポートで測定順序を入れ替えて `minimal` と比較）により、**同一バイナリ・同一
-マシンでも計測対象ポートの使用履歴・タイミングだけで RPS が最大 4.4 倍変動する**こと、
-未使用ポートでは hub / baseline の比が 99.23%（ほぼ同等）になることを直接確認した。
-本タスクは `crates/plugin-hub-wiring/src/**`・`crates/core/src/server.rs` の production
-コードを変更しておらず、`RequestGate` 拡張点の呼び出し自体は TASK-9.1〜9.4 で既に
-マージ済みの実装である。以上から、本 FAIL は「hub 共通配線のリンクによる真の性能
-劣化」よりも「本セッション（並列 issue 実装ワークフロー・繰り返し計測によるポート
-単位の負荷蓄積）に固有の環境要因」に起因する可能性が高いと判断するが、専有環境での
-確定的な反証ができていないため数値は丸めずそのまま記録する
-（`benches/reports/task-9.5-hub-wiring-performance.md` の「専有環境での再現手順」節を参照）。
-
-**この FAIL を hub-wiring 配線の設計不備として扱わない理由**: `TenantGate`
+**この結果を hub-wiring 配線の設計不備として扱わない理由**: `TenantGate`
 （`RequestGate` 拡張点）は `Server::gate` 未登録時（`BF_HUB_GATE=off`）は一切コアの
 リクエストパスに関与しない設計であり、本計測が測っているのは「クレートをリンクした
 だけ（実行時にゲート登録なし）」の影響である。JWKS/署名検証の実処理コストは
@@ -139,9 +146,10 @@ TASK-9.3（#63）で既に別途計測・最適化済み（`benches/reports/task
 
 ## BLOCKED / フォローアップ
 
-- **NFR-6 の専有環境再計測**: 本環境では専有環境（PoC-2 同等）を用意できないため、
-  上記 FAIL が環境ノイズに起因するものか実際の拡張点オーバーヘッドかを切り分けられて
-  いない。専有環境での再計測は out-of-scope-tracking 対象（[[out-of-scope-tracking]]）
+- **NFR-6 の専有環境再計測**: 是正2（`hub_link_only.rs` へのリンクコスト分離）後は
+  実務許容帯 [95%, 105%] に収まっているが、狭義帯 100.3〜100.8% には届いておらず、
+  本環境が専有環境（PoC-2 同等）ではないため環境ノイズの影響を完全には排除できない。
+  専有環境での確定的な再計測は out-of-scope-tracking 対象（[[out-of-scope-tracking]]）
 - **opt-in コスト（ゲート有効時の実測）**: 本タスクでは自動計測していない。TASK-9.3
   の署名検証・キャッシュコスト計測（マイクロベンチ）とは別に、E2E スループットとして
   計測する場合は性能最適化の深掘りに該当し、別課題として扱う
@@ -160,7 +168,7 @@ cargo test -p bf-plugin-hub-wiring --test hub_acceptance
 
 # NFR-6 計測用バイナリのビルド（D の前提）
 cargo build --release -p backend-framework-core --example minimal --no-default-features
-cargo build --release -p bf-plugin-hub-wiring --example hub_service_demo
+cargo build --release -p bf-plugin-hub-wiring --example hub_link_only
 
 # 依存インパクトの個別確認
 cargo tree -p backend-framework-core | grep -c bf-plugin-hub-wiring  # 0
