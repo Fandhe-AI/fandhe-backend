@@ -63,6 +63,14 @@ else
     echo "情報: ${DEMO_EXAMPLE} が見つからないためこのケースは省略" >&2
 fi
 
+echo "===== has_wiring_markers: マーカー対の存在検査（fail-open 回避） ====="
+assert_eq "clean フィクスチャはマーカー対あり" "1" "$(has_wiring_markers "${FIXTURES_DIR}/clean.rs")"
+assert_eq "no-marker フィクスチャはマーカー対なし" "0" "$(has_wiring_markers "${FIXTURES_DIR}/no-marker.rs")"
+assert_eq "empty-region フィクスチャはマーカー対あり（区間は空）" "1" "$(has_wiring_markers "${FIXTURES_DIR}/empty-region.rs")"
+if [ -f "${DEMO_EXAMPLE}" ]; then
+    assert_eq "実ファイル hub_service_demo.rs はマーカー対あり" "1" "$(has_wiring_markers "${DEMO_EXAMPLE}")"
+fi
+
 echo "===== evaluate_wiring_reduction: 削減率の PASS/FAIL 境界 ====="
 assert_eq "0 行（削減率 100%）は PASS" "PASS 100.0" "$(evaluate_wiring_reduction 0)"
 assert_eq "6 行（削減率 97.1%、実測相当）は PASS" "PASS 97.1" "$(evaluate_wiring_reduction 6)"

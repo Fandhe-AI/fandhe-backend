@@ -36,6 +36,23 @@ count_wiring_loc() {
     ' "${file}"
 }
 
+# マーカー区間（`// --- wiring:begin ---` 〜 `// --- wiring:end ---`）が
+# ファイル中に存在するかを検査する。`count_wiring_loc` は「マーカーなし」と
+# 「マーカーはあるが区間が空（コメントのみ）」のどちらも 0 を返し区別できない
+# ため、`evaluate_wiring_reduction` が両者を "PASS 100.0"（満点）と誤判定する
+# fail-open を避ける目的で、呼び出し側（`hub-wiring-accept.sh` 判定 B）が
+# 先にマーカー存在自体を検証するために使う。
+# 引数: $1 対象ファイルパス
+# 標準出力: マーカー（begin・end 双方）が揃っていれば "1"、片方でも欠ければ "0"
+has_wiring_markers() {
+    local file="$1"
+    awk '
+        /^[ \t]*\/\/[ \t]*---[ \t]*wiring:begin[ \t]*---[ \t]*$/ { begin_found = 1 }
+        /^[ \t]*\/\/[ \t]*---[ \t]*wiring:end[ \t]*---[ \t]*$/   { end_found = 1 }
+        END { print (begin_found && end_found) ? 1 : 0 }
+    ' "${file}"
+}
+
 # 利用側ハンドラ領域（`fn build_router` 〜 次のトップレベル `fn ` 直前まで）に、
 # 手書き JWT 検証・JWKS パース等の配線シンボルが現れていないか検査する。
 # 現れていれば「配線をプラグインへ集約できていない」ことを意味し、削減率の

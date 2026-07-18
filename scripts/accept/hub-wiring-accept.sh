@@ -77,6 +77,11 @@ check_wiring_reduction() {
         return
     fi
 
+    if [ "$(has_wiring_markers "${DEMO_EXAMPLE}")" != "1" ]; then
+        record_fail "B: 配線コード削減率" "${DEMO_EXAMPLE} に wiring:begin / wiring:end マーカーの対が見つからず判定不能（マーカーなしを満点扱いにする fail-open を避けるため FAIL とする）"
+        return
+    fi
+
     local actual_loc verdict_line verdict reduction_pct
     actual_loc="$(count_wiring_loc "${DEMO_EXAMPLE}")"
     verdict_line="$(evaluate_wiring_reduction "${actual_loc}")"

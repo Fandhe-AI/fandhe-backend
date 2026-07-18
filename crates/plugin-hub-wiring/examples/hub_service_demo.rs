@@ -253,9 +253,13 @@ async fn main() -> std::io::Result<()> {
     let server = server.handler(router);
 
     let token = demo_token(&keypair, "org-1");
+
+    // bind 成功後にのみ readiness をログ出力する（`minimal` 例と同一方針）。
+    // bind 前に出力すると、bind 失敗時にも "listening" 行が残る／レースする
+    // クライアントが connection refused になり得る（Cursor Bugbot 指摘対応）。
+    let bound = server.bind("127.0.0.1:3100").await?;
     println!("hub_service_demo: listening on http://127.0.0.1:3100");
     println!("try: curl -i -H 'Authorization: Bearer {token}' http://127.0.0.1:3100/items");
 
-    let bound = server.bind("127.0.0.1:3100").await?;
     bound.run().await
 }

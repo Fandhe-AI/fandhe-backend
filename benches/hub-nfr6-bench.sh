@@ -90,7 +90,7 @@ trap cleanup EXIT
 wait_ready() {
     local url="$1" timeout_ms=5000 elapsed_ms=0
     while [ "${elapsed_ms}" -lt "${timeout_ms}" ]; do
-        if curl -s -o /dev/null -w '%{http_code}' "${url}" 2>/dev/null | grep -qE '^[0-9]+$'; then
+        if curl -s -o /dev/null -w '%{http_code}' "${url}" 2>/dev/null | grep -q '^200$'; then
             return 0
         fi
         sleep 0.05
