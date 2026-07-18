@@ -57,8 +57,8 @@ const BEARER_SCHEME: &str = "bearer";
 
 /// `Authorization: Bearer <token>` ヘッダからトークン文字列を抽出する。
 ///
-/// [`crate::gate::TenantGate::check`] の RFC 6750 パース処理から移設した
-/// 共用ヘルパー（[`Authenticator::authenticate`] と両方から呼ばれる）。
+/// [`crate::gate::TenantGate`] の `RequestGate::check` 実装（RFC 6750 パース処理）から
+/// 移設した共用ヘルパー（[`Authenticator::authenticate`] と両方から呼ばれる）。
 ///
 /// # Examples
 ///

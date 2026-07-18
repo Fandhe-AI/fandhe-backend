@@ -224,6 +224,31 @@ NFR（RPS 比・p95 比、REQ-10）再検証で、サンプリング（TASK-10.2
      `extension-closure-check.sh` の分類規則見直しの要否を含め
      `.claude/rules/out-of-scope-tracking.md` 対象として同一の是正検討に含める
 
+### 4.5 記載例（TASK-9.3 / #63 / PR #161）
+
+`crates/plugin-hub-wiring` の `RequestGate` 拡張点実装（`TenantGate::check`）が
+`verify_token`（RS256 署名検証）を毎回呼び出していた重複を、`Authenticator` による
+リクエストスコープの検証結果キャッシュで解消した変更で、4.3 節・4.4 節と同一の理由
+（`extension-closure-check.sh` の分類規則が D として許可するのは `docs/*`・`scripts/*`
+等の glob のみで `benches/*` は対象外）により、以下 1 件が E（閉包違反候補）と判定された。
+
+1. **対象コミット/PR**: PR #161（#63、HEAD sha `5e0a81db8991f9dd0d07b0e08f464e21e246b1fc`）
+2. **E ファイルパス**:
+   - `benches/reports/task-9.3-jwt-cache-performance.md`
+3. **閉じない理由**: 4.3 節・4.4 節と同一の運用上のギャップ（`benches/*` が D 未対応）
+   により E 判定となる、キャッシュ導入前後のコスト比較（RS256 署名検証の重複解消）を
+   記録した実測レポートである。なお同一変更で追加した計測ハーネス本体
+   （`crates/plugin-hub-wiring/examples/jwt_cache_bench.rs`）はプラグインクレート内
+   （A）に該当し PASS 済みで、E 判定はレポート md ファイルのみ
+4. **正当性根拠**: 本レポートは `bf-plugin-hub-wiring` の `RequestGate` 実装
+   （`TenantGate::check`、2 節契約一覧の `RequestGate` 行）そのものの契約を変更する
+   ものではなく、検証結果キャッシュ導入によるレイテンシ・スループット改善を計測・記録
+   するのみで、拡張点契約・依存方向（`server → routes → http::*`、1 節）には影響しない。
+   `Authenticator` はキャッシュ未ヒット時に必ず `verify_token` へフェイルクローズで
+   委譲し（鍵ローテーション・`exp` は都度再判定）、`GateOutcome` が判定結果のみを運ぶ
+   契約（`crates/core/src/extension.rs` doc）も変更していない。`benches/*` を D
+   カテゴリに追加する是正は 4.3 節・4.4 節と同一の別 Issue 対象とする
+
 ## 5. `bf-plugin-openapi` の非該当理由
 
 `bf-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも
