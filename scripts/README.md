@@ -70,8 +70,8 @@ req6-typescript-types.md` 参照）。
 | `tests/run-pay-for-what-you-use-tests.sh` | `pay-for-what-you-use-check.sh` のセルフテスト。`tests/fixtures/pay-for-what-you-use/*` を注入し (a)〜(d) の判定ロジック（列挙 0 件・命名規約違反・依存漏れ・配線切れ・他プラグイン混入・geiger 漏れ・サイズ逆転・シンボル混入）を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `third-party-verify.sh` | TASK-12.4-1（#85）第三者検証ハーネス。被験 AI（別セッション・別モデル）が実装した使い捨て worktree に対し `fmt --check` / `clippy -D warnings` / `cargo nextest run --profile ci` + `cargo test --doc` を実行し PASS/FAIL/PENDING を判定する | CI からは呼ばれない。TASK-12.4-1 の完遂率再測定を実施する際にローカルで呼び出す運用（`docs/design/third-party-verification.md` 参照） |
 | `tests/run-third-party-verify-tests.sh` | `third-party-verify.sh` のセルフテスト。`--offline` は引数検証・PENDING 判定のみ（cargo ビルド不要）、既定モードは fixture worktree を作成して PASS/FAIL 検出まで確認するフル層 | CI からは呼ばれない（フル層は cargo ビルドを伴い時間を要するため） |
-| `third-party-feasibility-verify.sh` | 可否判定正解率の第三者再検証（TASK-12.4-2、#86）の機械採点ハーネス。タスク定義（正解ラベル）と被験 AI の判定記録を突き合わせ、正解率・誤判定による破壊・判断根拠提示割合を算出する | CI からは呼ばれない。人間が実測定時にローカル/手動実行する（`docs/design/third-party-feasibility-verification.md` 参照） |
-| `tests/run-third-party-feasibility-tests.sh` | `third-party-feasibility-verify.sh` のセルフテスト（ネットワーク・cargo ビルド不要、合成 fixture で採点ロジックのみを検証） | CI からは呼ばれない（Rust 非変更の範囲でローカル/任意実行を想定） |
+| `third-party-feasibility-verify.sh` | 可否判定正解率の第三者再検証（TASK-12.4-2、#86。TASK-12.6、#47 で「条件付き可」対応・`--task-ids` オプションへ拡張）の機械採点ハーネス。タスク定義（正解ラベル）と被験 AI の判定記録を突き合わせ、正解率・誤判定による破壊・判断根拠提示割合を算出する | CI からは呼ばれない。人間が実測定時にローカル/手動実行する（`docs/design/third-party-feasibility-verification.md`・`docs/design/gray-zone-feasibility-verification.md` 参照） |
+| `tests/run-third-party-feasibility-tests.sh` | `third-party-feasibility-verify.sh` のセルフテスト（ネットワーク・cargo ビルド不要、合成 fixture で採点ロジックのみを検証。TASK-12.6、#47 で「条件付き可」系アサーションを追加） | CI からは呼ばれない（Rust 非変更の範囲でローカル/任意実行を想定） |
 | `third-party-stability-aggregate.sh` | 複数回試行の安定性確認（TASK-12.5、#46）の試行横断集計ハーネス。トライアルサマリファイル（`--trial <label>:<file>` または `--trials-dir <dir>`）を突き合わせ、指標×試行の表・min/max/レンジ・平均・REQ-12 閾値充足を算出する | CI からは呼ばれない。試行 2・3 の実測定完了後にローカルで呼び出す運用（`docs/design/multi-trial-stability-verification.md` 参照） |
 | `tests/run-third-party-stability-tests.sh` | `third-party-stability-aggregate.sh` のセルフテスト（ネットワーク・cargo ビルド不要、合成 fixture で正常系・閾値未達検知・破壊検知・不正入力 fail-closed を検証） | CI からは呼ばれない（Rust 非変更の範囲でローカル/任意実行を想定） |
 | `extension-closure-check.sh` | 変更ファイル一覧を A（プラグインクレート内）/ B（コア側許容シーム）/ C（テスト）/ D（ドキュメント・運用）/ E（違反）の 4+1 カテゴリに分類し、E が 1 件でもあれば FAIL（拡張点への閉包違反）とする。`--commit <sha>`（`git diff-tree` で変更ファイル取得）または `--files-from <file>`（セルフテスト用注入口）を指定する（TASK-13.1、#49） | `scripts/extension-closure-gate.sh`（下記）から呼ばれる。人間が実コミット検証で直接実行することも可能（TASK-13.2/#50 で `.github/workflows/ci.yml` の `fetch-depth: 0` により shallow clone 制約を解消） |
@@ -342,15 +342,22 @@ warnings` / `cargo nextest run --workspace --all-features --profile ci`（テス
 は引数検証・PENDING 判定のみ（高速）、既定モードは fixture worktree を作成し PASS/FAIL
 検出まで確認するフル層（cargo ビルドを伴うため時間を要する。CI からは呼ばれない）。
 
-## `third-party-feasibility-verify.sh` — 可否判定正解率の第三者再検証・機械採点（TASK-12.4-2、#86）
+## `third-party-feasibility-verify.sh` — 可否判定正解率の第三者再検証・機械採点（TASK-12.4-2、#86／TASK-12.6、#47）
 
 ```bash
 bash scripts/third-party-feasibility-verify.sh \
   --task-definitions docs/reports/task-12-4-2-task-definitions.md \
   --records-dir <被験 AI の判定記録ディレクトリ> \
+  [--task-ids "<空白区切りタスク ID 列。省略時は既定 J-01 ... J-10>"] \
   [--worktrees-dir <被験 worktree ディレクトリ>] \
   [--output <report.md>]
 ```
+
+- TASK-12.6（#47）でグレーゾーン（判定区分 4 値のうち「条件付き可」）を含めたタスクセット
+  （`docs/reports/task-12-6-task-definitions.md`、G-01〜G-10）の採点にも対応した。既定の
+  タスク ID（`J-01 ... J-10`）は変更しておらず、`--task-ids` を省略する既存の呼び出し方法
+  はそのまま動作する（後方互換）。G-01〜G-10 を採点する場合は
+  `--task-ids "G-01 G-02 G-03 G-04 G-05 G-06 G-07 G-08 G-09 G-10"` を指定する。
 
 - PoC-9（`docs/spec/03-poc/ai-first-maintainability/README.md` T-11〜T-15）の可否判定
   正解率 100% は検証者=被験 AI のセルフ実験による自己評価バイアスを排除できていない。
@@ -364,20 +371,31 @@ bash scripts/third-party-feasibility-verify.sh \
   `docs/design/feasibility-guardrail.md`・`scripts/feasibility-check.sh --template` と
   同一の見出し形式を前提とする。判定記録の欠落・形式不備は常に不正解・根拠不足側へ
   倒す（fail-closed）。
-- `scripts/feasibility-check.sh`（TASK-12.3-2、#84、マージ済み）が存在する場合は判断
-  根拠提示割合の形式検証をそれへ委譲し、存在しない構成でのみ内蔵の最小チェックで
-  代替する。
+- `scripts/feasibility-check.sh`（TASK-12.3-2、#84、マージ済み）が存在する場合は不可系
+  （不可・要エスカレーション／不可（明確な拒否））の判断根拠提示割合の形式検証をそれへ
+  委譲し、存在しない構成でのみ内蔵の最小チェックで代替する。「条件付き可」の判断根拠
+  提示割合は `feasibility-check.sh` へ委譲せず、内蔵の新設関数 `check_conditional_fields`
+  で判定する（同スクリプトは「ユーザー承認欄が承認済みであること」を要求するが、第三者
+  再検証の文脈では被験 AI へ承認を与える人間が介在しないため、正しい記録は逆に未承認の
+  ままであるべきで、採点方向が反転してしまうため。
+  [`docs/design/gray-zone-feasibility-verification.md`](../docs/design/gray-zone-feasibility-verification.md)
+  4 節参照）。
 - `--worktrees-dir` 未指定時、誤判定による破壊は PENDING として区別する（0 件と偽らない）。
+  破壊計測の対象は「可」以外（不可系・条件付き可）のタスク。「条件付き可」タスクで未承認
+  のまま worktree に変更が生じている場合も破壊としてカウントする。
 - 終了コードは `0`（採点完了・破壊なし）/ `1`（誤判定による破壊を検知、フェイルクローズ）/
   `2`（引数・入力エラー）。正解率・根拠提示割合自体は情報提示に留め、CI ゲートとしては
   組み込まない（閾値判定は人間レビュー・TASK-12.7 のスコープ）。
 - 詳細設計・3 役分離・タスクセット構成・実施手順は
   [`docs/design/third-party-feasibility-verification.md`](../docs/design/third-party-feasibility-verification.md)
-  を参照。実測定は本 README 執筆時点で未実施（PENDING）であり、
-  [`docs/reports/task-12-4-2-feasibility-judgment-verification.md`](../docs/reports/task-12-4-2-feasibility-judgment-verification.md)
+  （3 値のみ・「条件付き可」除外の基底プロトコル）・
+  [`docs/design/gray-zone-feasibility-verification.md`](../docs/design/gray-zone-feasibility-verification.md)
+  （「条件付き可」を含めた拡張プロトコル、TASK-12.6、#47）を参照。TASK-12.6（#47）の
+  実測定は本 README 執筆時点で未実施（PENDING）であり、
+  [`docs/reports/task-12-6-gray-zone-verification.md`](../docs/reports/task-12-6-gray-zone-verification.md)
   に引き継ぎ事項を記録している。
 
-## `tests/run-third-party-feasibility-tests.sh` — 採点ハーネスのセルフテスト（TASK-12.4-2、#86）
+## `tests/run-third-party-feasibility-tests.sh` — 採点ハーネスのセルフテスト（TASK-12.4-2、#86／TASK-12.6、#47）
 
 ```bash
 bash scripts/tests/run-third-party-feasibility-tests.sh
@@ -385,12 +403,15 @@ bash scripts/tests/run-third-party-feasibility-tests.sh
 
 - ネットワーク・cargo ビルド不要。`scripts/tests/fixtures/feasibility-verify-correct`
   （全件正解）・`feasibility-verify-mixed`（過剰エスカレーション・見落とし・記録欠落・
-  形式不備の混在）と、一時的に生成する git リポジトリ（誤判定による破壊の検知）で
-  `third-party-feasibility-verify.sh` の採点ロジックを検証する。
+  形式不備の混在）・`feasibility-verify-gray-correct`/`-gray-self-approval`/
+  `-gray-missing-condition`/`-gray-mixed`（TASK-12.6、#47。「条件付き可」の正常系・自己
+  承認違反・着手条件欠落・境界誤判定）と、一時的に生成する git リポジトリ（誤判定による
+  破壊の検知）で `third-party-feasibility-verify.sh` の採点ロジックを検証する。
 - **注意**: 本セルフテストが green であることは「採点ハーネスの算出ロジックが正しく
   動くこと」の確認に過ぎない。独立した被験 AI による実測定が REQ-12 の閾値（80% 以上）
   を達成したことを意味しない。両者を混同しないこと
-  （`docs/design/third-party-feasibility-verification.md` 8 節）。
+  （`docs/design/third-party-feasibility-verification.md` 8 節・
+  `docs/design/gray-zone-feasibility-verification.md` 9 節）。
 
 ## `third-party-stability-aggregate.sh` — 複数回試行の試行横断集計（TASK-12.5、#46）
 
