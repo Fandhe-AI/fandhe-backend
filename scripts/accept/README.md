@@ -3,7 +3,7 @@
 `core-deps-unsafe-audit.sh`（REQ-1）・`plugin-mechanism-accept.sh`（REQ-2、TASK-2.4）・
 `dep-audit-accept.sh`（REQ-15、TASK-15.4）・`req13-change-impact-accept.sh`（REQ-13、TASK-13.2）・
 `webrtc-accept.sh`（REQ-8、TASK-8.4）・`graphql-accept.sh`（REQ-5、TASK-5.2）・
-`openapi-ts-accept.sh`（REQ-6、TASK-6.2）・`tracing-accept.sh`（REQ-10、TASK-10.4）
+`openapi-ts-accept.sh`（REQ-6、TASK-6.2）・`tracing-accept.sh`（REQ-10、TASK-10.4 / TASK-10.5）
 の 8 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
 
 `docs/spec/04-requirements.md` REQ-1（最小コア）の受け入れ基準のうち、**性能計測を除く**
@@ -249,10 +249,12 @@ PASS を偽らない）。手動計測手順・実行結果は
 `docs/acceptance/req5-graphql.md`、NFR の詳細計測結果は
 `benches/reports/task-5.2-graphql-performance.md` に記録する。
 
-## `tracing-accept.sh` — REQ-10（可観測性）サンプリング適用後性能再検証（TASK-10.4、#59）
+## `tracing-accept.sh` — REQ-10（可観測性）サンプリング適用後性能再検証（TASK-10.4、#59）+
+依存インパクト記録・文書化（TASK-10.5、#60）
 
-`docs/spec/05-tasks.md` TASK-10.4「サンプリング適用後性能再検証」の受け入れ基準を
-検証する `lib/common.sh` 利用の `graphql-accept.sh` 同型オーケストレータ。
+`docs/spec/05-tasks.md` TASK-10.4「サンプリング適用後性能再検証」・TASK-10.5「依存
+インパクト記録・文書化・受け入れテスト」の受け入れ基準を検証する `lib/common.sh` 利用の
+`graphql-accept.sh` 同型オーケストレータ。
 
 ```bash
 ./scripts/accept/tracing-accept.sh
@@ -270,6 +272,12 @@ PASS を偽らない）。手動計測手順・実行結果は
    の実測（シナリオ A）で確認する。`webrtc-accept.sh` / `graphql-accept.sh` の NFR-6
    判定帯（狭義 100.3〜100.8%）とは別の帯（REQ-10 の成功基準そのもの）。ビルド済み
    バイナリ・`oha` が揃っていなければ SKIP + 実行手順を案内する
+4. **D（TASK-10.5）: 依存インパクト記録・連携方式設計文書の存在検証** —
+   `docs/dep-impact/records.md` の plugin-tracing エントリ・`docs/design/
+   tracing-integration.md` の存在を grep で機械検証する
+5. **E（TASK-10.5）: 依存クレート数増分の機械検証** — `cargo tree -p
+   backend-framework-core --features tracing` の union 展開差分件数を算出し、
+   `docs/dep-impact/records.md` 記録値（+24 クレート）と許容帯（±5）で突合する
 
 前提: `cargo build --release -p backend-framework-core --example minimal
 --no-default-features` と `... --example tracing_nfr --features tracing` を事前実行
