@@ -260,20 +260,148 @@ check_extension_points() {
         record_fail "E: 3拡張点 trait 定義" "未定義:${missing}"
     fi
 
-    # コアループ本体（接続受理・リクエストループ）は TASK-1.4-2（#70）で追加される。
-    # 現時点で lib.rs 以外に実装ファイルが増えていない場合は SKIP とし、
-    # #70 マージ後の再実行で本チェックを完了させる。
-    local loop_files
-    loop_files="$(find crates/core/src -name '*.rs' ! -name 'lib.rs' ! -name 'extension.rs' 2>/dev/null || true)"
-    if [ -z "${loop_files}" ]; then
-        record_skip "E: コアループの feature 非分岐" "コアループ実装（TASK-1.4-2 #70）が本 worktree 未マージのため検証対象なし。マージ後に再実行すること"
+    # コアループ本体は TASK-1.4-2（#70）で `crates/core/src/server.rs` に固定配置
+    # された（`docs/design/plugin-boundary.md` §3）。ファイル自体が本 worktree に
+    # 存在しない場合のみ「未マージ」として SKIP する（#169 是正前は「lib.rs/
+    # extension.rs 以外のファイル増加有無」で判定していたが、TASK-2.1（#129）・
+    # TASK-4.1（#137）・TASK-8.1（#138）マージ後の現行 main では `server.rs` 自体に
+    # `Server` の cfg-gated 設定フィールド・ビルダーメソッド等、spec/design が明示
+    # 許容するコアループ「外」の cfg 分岐が多数存在し、ファイル単位の grep -l では
+    # 誤検出（FAIL）を招くため、判定粒度をコアループ関数本体に絞る）。
+    local loop_file="crates/core/src/server.rs"
+    if [ ! -f "${loop_file}" ]; then
+        record_skip "E: コアループの feature 非分岐" "コアループ実装（TASK-1.4-2 #70、${loop_file}）が本 worktree 未マージのため検証対象なし。マージ後に再実行すること"
     else
-        local cfg_hits
-        cfg_hits="$(echo "${loop_files}" | xargs grep -l '#\[cfg(feature' 2>/dev/null || true)"
-        if [ -z "${cfg_hits}" ]; then
-            record_pass "E: コアループの feature 非分岐" "コアループ実装ファイルに #[cfg(feature ...)] 分岐なし"
+        # コアループ本体は `BoundServer::run`（accept ループ）・`handle_connection`
+        # （公開ラッパー）・`handle_connection_with_permit`（実体、#23）の 3 関数に
+        # 限定する（`docs/design/plugin-boundary.md` §3 の「接続受理・リクエスト
+        # ループ本体」定義）。`Server` のビルダーメソッド・cfg-gated 設定フィールド・
+        # `WebSocketUpgradeAdapter` 等は同ファイル内にあっても対象外（§4-5 が
+        # 許容するプラグイン境界のシーム呼び出し側であり、ループ本体ではない）。
+        #
+        # 抽出は awk（POSIX 構文のみ、gawk 拡張は使わない）でトップレベル関数の
+        # 開始行〜同一インデントの `}` のみの行までを関数範囲とみなす。CI が
+        # `cargo fmt --check` を強制するため、対象ファイルは常に rustfmt 整形済み
+        # （開始行・終了 `}` が同一インデント）という前提を置ける（README に明記）。
+        # 除外: 行頭 `//`（`///`・`//!` を含む）で始まる行はコメントとして除外する
+        # （基準 F の #72 レビュー是正と同一手法。`#[cfg(feature = "...")]` を
+        # 「使っていないこと」を説明する doc comment 内の引用を誤検出しないため）。
+        #
+        # 抽出できた関数数が 0 件（正規表現の陳腐化・リファクタによる関数名変更等）
+        # の場合は誤 PASS を避け、計測不能として明示的に FAIL する
+        # （基準 A の core_deps==0 ガードと同じフェイルクローズ方針）。
+        #
+        # #171 レビュー是正1: fn_count は合計値のみのガードだったため、3 関数の
+        # うち 1 つがリネーム・シグネチャドリフトで検出できなくなっても、合計値
+        # が正のままだと PASS し得た（フェイルクローズが不完全）。3 関数それぞれ
+        # の検出有無を個別に追跡し、1 つでも未検出なら明示的に FAIL する（重複
+        # 検出の有無は問わず、存在有無のみを見る）。
+        #
+        # #171 レビュー是正2: 対象関数のシグネチャ直前（関数本体の外側）に付与
+        # される `#[cfg(feature = "...")]` は、関数本体のみを走査する従来ロジック
+        # では検出対象外だった。関数外の実属性行を pending_cfg フラグで追跡し、
+        # 対象関数のシグネチャ行に到達した時点でヒットを cfg_hits に合流させる。
+        # ただし基準 F(#72) 是正と同じく、doc comment 内に `#[cfg(feature` という
+        # 文字列が引用されているだけのケースを誤検出しないよう、属性行判定は
+        # 行頭 `#[cfg(feature` の実属性のみに限定する。コメント行（`//`・`///`・
+        # `//!`）や空行はフラグを維持したまま素通りさせる（Rust の属性はコメント
+        # や空行を挟んでも直後の item に付与されるため）。それ以外の実コード行は
+        # 無関係な item とみなしフラグをリセットする。
+        #
+        # PR #171 レビュー是正3（Stacked attributes clear pending cfg）:
+        # `#[cfg(feature = "...")]` と対象関数シグネチャの間に `#[must_use]` /
+        # `#[inline]` 等の別属性行が挟まると、上記の「それ以外の実コード行」
+        # 判定に引っかかり pending_cfg が誤ってリセットされていた。Rust では
+        # 属性列全体（複数の `#[...]` 行の連続）がまとめて後続の item に紐付く
+        # ため、行頭が `#[` で始まる属性行（cfg 以外も含む）はコメント・空行と
+        # 同様にフラグを維持したまま素通りさせる。
+        local awk_out awk_status
+        set +e
+        awk_out="$(awk '
+            BEGIN {
+                in_fn = 0; fn_count = 0; pending_cfg = 0
+                seen_run = 0; seen_hc = 0; seen_hcwp = 0
+            }
+            {
+                if (!in_fn) {
+                    if ($0 ~ /^[[:space:]]*(pub(\(crate\))?[[:space:]]+)?async[[:space:]]+fn[[:space:]]+(handle_connection_with_permit|handle_connection|run)[[:space:]]*[(<]/) {
+                        match($0, /^[[:space:]]*/)
+                        indent = RLENGTH
+                        in_fn = 1
+                        fn_count++
+                        if ($0 ~ /fn[[:space:]]+handle_connection_with_permit[[:space:]]*[(<]/) {
+                            seen_hcwp = 1
+                        } else if ($0 ~ /fn[[:space:]]+handle_connection[[:space:]]*[(<]/) {
+                            seen_hc = 1
+                        } else if ($0 ~ /fn[[:space:]]+run[[:space:]]*[(<]/) {
+                            seen_run = 1
+                        }
+                        if (pending_cfg) {
+                            print FILENAME ":" FNR ": " $0 " (関数直前の #[cfg(feature ...)] を検出)"
+                        }
+                        pending_cfg = 0
+                        next
+                    }
+                    if ($0 ~ /^[[:space:]]*#\[cfg\(feature/) {
+                        pending_cfg = 1
+                    } else if ($0 ~ /^[[:space:]]*\/\// || $0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#\[/) {
+                        # コメント・空行・他の属性行（#[must_use] 等の積み重ね）は
+                        # フラグを維持（Rust の属性列は複数行に渡っても直後の item に
+                        # まとめて付与されるため、cfg 以外の属性を挟んでもリセットしない）
+                        1
+                    } else {
+                        pending_cfg = 0
+                    }
+                } else {
+                    close_pat = "^"
+                    for (i = 0; i < indent; i++) close_pat = close_pat " "
+                    close_pat = close_pat "\\}[[:space:]]*$"
+                    if ($0 ~ close_pat) {
+                        in_fn = 0
+                        next
+                    }
+                    if ($0 !~ /^[[:space:]]*\/\//) {
+                        if ($0 ~ /#\[cfg\(feature/) {
+                            print FILENAME ":" FNR ": " $0
+                        }
+                    }
+                }
+            }
+            END {
+                print "FN_COUNT=" fn_count
+                print "SEEN_RUN=" seen_run
+                print "SEEN_HANDLE_CONNECTION=" seen_hc
+                print "SEEN_HANDLE_CONNECTION_WITH_PERMIT=" seen_hcwp
+            }
+        ' "${loop_file}" 2>/dev/null)"
+        awk_status=$?
+        set -e
+
+        local fn_count cfg_hits seen_run seen_hc seen_hcwp missing_fns
+        # awk の END ブロックは常に FN_COUNT= 等の行を出力するため grep が該当
+        # 0 件になることは通常想定しないが、`set -o pipefail` 下で万一空振り
+        # （grep 終了コード 1）した場合でもスクリプトを中断させず、下記の
+        # fn_count 空文字チェック（フェイルクローズ）へ必ず到達させるため
+        # `|| true` を付与する。
+        fn_count="$(echo "${awk_out}" | grep -o '^FN_COUNT=[0-9]*$' | cut -d= -f2 || true)"
+        seen_run="$(echo "${awk_out}" | grep -o '^SEEN_RUN=[01]$' | cut -d= -f2 || true)"
+        seen_hc="$(echo "${awk_out}" | grep -o '^SEEN_HANDLE_CONNECTION=[01]$' | cut -d= -f2 || true)"
+        seen_hcwp="$(echo "${awk_out}" | grep -o '^SEEN_HANDLE_CONNECTION_WITH_PERMIT=[01]$' | cut -d= -f2 || true)"
+        cfg_hits="$(echo "${awk_out}" | grep -v '^FN_COUNT=' | grep -v '^SEEN_' || true)"
+
+        missing_fns=""
+        if [ "${seen_run:-0}" -ne 1 ]; then missing_fns="${missing_fns} run"; fi
+        if [ "${seen_hc:-0}" -ne 1 ]; then missing_fns="${missing_fns} handle_connection"; fi
+        if [ "${seen_hcwp:-0}" -ne 1 ]; then missing_fns="${missing_fns} handle_connection_with_permit"; fi
+
+        if [ "${awk_status}" -ne 0 ] || [ -z "${fn_count}" ] || [ "${fn_count}" -eq 0 ]; then
+            record_fail "E: コアループの feature 非分岐" "コアループ関数（run/handle_connection/handle_connection_with_permit）を ${loop_file} から検出できず計測不能（関数名変更・リファクタの可能性。awk 抽出ロジックの見直しが必要）"
+        elif [ -n "${missing_fns}" ]; then
+            record_fail "E: コアループの feature 非分岐" "コアループ対象関数の一部を ${loop_file} から検出できず計測不能（関数名変更・シグネチャドリフトの可能性）: 未検出=${missing_fns# }"
+        elif [ -z "${cfg_hits}" ]; then
+            record_pass "E: コアループの feature 非分岐" "コアループ関数 ${fn_count} 件（run/handle_connection/handle_connection_with_permit）の非コメント行に #[cfg(feature ...)] なし。Server ビルダーの cfg-gated 設定・plugin.rs シームは docs/design/plugin-boundary.md §3-5 の許容領域のため対象外"
         else
-            record_fail "E: コアループの feature 非分岐" "feature 分岐を検出: ${cfg_hits}"
+            record_fail "E: コアループの feature 非分岐" "コアループ関数内で feature 分岐を検出: ${cfg_hits}"
         fi
     fi
 }
