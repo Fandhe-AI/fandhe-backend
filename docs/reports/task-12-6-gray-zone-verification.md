@@ -48,8 +48,8 @@ TASK-12.6（#47、REQ-12、Conditional Go 条件 (3)）の再検証レポート�
 - [x] プロトコル策定（基底プロトコルとの差分定義）: [`docs/design/gray-zone-feasibility-verification.md`](../design/gray-zone-feasibility-verification.md)
 - [x] タスクセット事前確定（N=10、G-01〜G-10、条件付き可 4・可 2・不可・要エスカレーション 3・不可（明確な拒否）1）: [`docs/reports/task-12-6-task-definitions.md`](./task-12-6-task-definitions.md)
 - [x] 機械採点ハーネス拡張（4 値受理・`check_conditional_fields`・`--task-ids`・破壊/根拠提示対象の拡大）: `scripts/third-party-feasibility-verify.sh`
-- [x] ハーネスのセルフテスト拡張（オフライン、既存 28 アサーション + 新規 21 アサーション、計 49 件全 PASS）: `scripts/tests/run-third-party-feasibility-tests.sh`
-- [x] 条件付き可の正常系・自己承認違反・着手条件欠落・境界誤判定 fixture: `scripts/tests/fixtures/feasibility-verify-gray-*`
+- [x] ハーネスのセルフテスト拡張（オフライン、既存 28 アサーション + 新規 24 アサーション、計 52 件全 PASS）: `scripts/tests/run-third-party-feasibility-tests.sh`
+- [x] 条件付き可の正常系・自己承認違反・着手条件欠落（空欄／未編集プレースホルダ）・境界誤判定 fixture: `scripts/tests/fixtures/feasibility-verify-gray-*`
 - [x] 後方互換の受け入れ条件確認（6 節）: TASK-12.4-2 の確定結果（8/10・破壊 0 件・根拠提示 6/6）を拡張後のハーネスで再現
 - [ ] **実測定（被験 AI の判定記録取得・採点・結果確定）: 未実施（PENDING）**
 

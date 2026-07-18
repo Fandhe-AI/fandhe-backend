@@ -299,6 +299,15 @@ assert_exit_code "gray-missing-condition フィクスチャは exit 0（破壊�
 assert_contains "G-05 の着手条件欠落は根拠提示『不足』として報告する" "${out_gray_nocond}" "| G-05 | 条件付き可 | 条件付き可 | 一致 | 不足 |"
 assert_contains "根拠提示割合は G-05 分が不足側に倒れ 7/8 になる" "${out_gray_nocond}" "| 判断根拠提示割合 | 7/8（87%） |"
 
+echo "===== feasibility-verify-gray-placeholder-condition: 着手条件の未編集プレースホルダ残置は不足側に倒す ====="
+set +e
+out_gray_placeholder="$(bash "${HARNESS}" --task-definitions "${GRAY_TASK_DEFS}" --records-dir "${FIXTURES_DIR}/feasibility-verify-gray-placeholder-condition" --task-ids "${GRAY_IDS}" 2>&1)"
+exit_gray_placeholder=$?
+set -e
+assert_exit_code "gray-placeholder-condition フィクスチャは exit 0（破壊未計測）" 0 "${exit_gray_placeholder}"
+assert_contains "G-05 の着手条件が未編集プレースホルダ（<文章>）のままの記録は根拠提示『不足』として報告する" "${out_gray_placeholder}" "| G-05 | 条件付き可 | 条件付き可 | 一致 | 不足 |"
+assert_contains "根拠提示割合は G-05 分が不足側に倒れ 7/8 になる（プレースホルダは空文字チェックのみでは検知できない）" "${out_gray_placeholder}" "| 判断根拠提示割合 | 7/8（87%） |"
+
 echo "===== feasibility-verify-gray-mixed: 上側/下側境界での誤判定バイアスを検知 ====="
 set +e
 out_gray_mixed="$(bash "${HARNESS}" --task-definitions "${GRAY_TASK_DEFS}" --records-dir "${FIXTURES_DIR}/feasibility-verify-gray-mixed" --task-ids "${GRAY_IDS}" 2>&1)"
