@@ -110,3 +110,9 @@
   運用像」に応え、実装済みの改善提案フロー・機能改修フロー・可否判定ガードレール・
   CI/scripts 群を「どの基盤で・どの頻度で・どの範囲に・誰の責任で」回すかという運用面
   として統合定義。hub 運用チームとの合意はレビューゲートで記録する方針を明記）
+- [`versioning-policy.md`](./versioning-policy.md): バージョニング方針（semver・破壊的変更
+  ポリシー）（#96、出典 #91。pre-1.0（0.x）の semver 運用・workspace 内 lockstep バージョン
+  同期・v1.0 昇格基準、Rust 公開 API/Cargo feature（default 追加禁止）/拡張点 3 trait/ワイヤ
+  契約を対象とした破壊的変更の定義・手続き（`feat!:`/`BREAKING CHANGE:`・非推奨期間）、
+  pre-1.0/v1.0 以降のサポートポリシーを記述。`webrtc-rs-version-strategy.md`（独立 WebRTC
+  サービス側のバージョン戦略）とは別軸。ドラフト、最終承認は人間レビュー）
