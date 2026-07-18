@@ -10,7 +10,7 @@
 //! 検知するために使う（`examples/minimal.rs` と同一パス）。`GET /ws`
 //! （既定パス、`bf_plugin_websocket::WebSocketConfig::default()`）が
 //! エコーセッション（`crates/plugin-websocket/src/session.rs` の
-//! `run_echo_session`）を提供する。
+//! `run_session`。既定ハンドラは `EchoHandler`、Issue #179）を提供する。
 //!
 //! 環境変数（既定値は 10,000 同時接続 + 監視用ヘルスチェック接続の余裕を
 //! 見込んだ値）:

@@ -5,7 +5,11 @@
 //! `crate::matches` / `crate::handle_upgrade` へ渡す。設定はビルド時・起動時
 //! の静的値のみで構成し、リクエスト内容からは導出しない。
 
+use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
+
+use crate::handler::{WsMessageHandler, default_handler};
 
 /// アイドルタイムアウトの既定値（60 秒）。
 ///
@@ -31,7 +35,7 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// assert_eq!(config.path, "/ws");
 /// assert_eq!(config.max_message_size, 1024 * 1024);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WebSocketConfig {
     /// WebSocket アップグレードを受け付ける request-target（既定 `/ws`）。
     pub path: String,
@@ -44,12 +48,31 @@ pub struct WebSocketConfig {
     /// クライアントからのフレーム受信が一定時間ないアイドル状態を検知し
     /// 切断するまでの猶予（既定 `Some(60 秒)`、fail-safe: 既定で有効）。
     ///
-    /// `crate::session::run_echo_session` がこの値でフレーム受信を
+    /// `crate::session::run_session` がこの値でフレーム受信を
     /// `tokio::time::timeout` し、発火時は正常な Close ハンドシェイクで
     /// 切断する（Issue #175）。`None` にするとアイドルタイムアウトを無効化
     /// する（[`without_idle_timeout`][Self::without_idle_timeout] による
     /// 明示操作でのみ無効化を許し、暗黙に保護が外れないようにする）。
     pub idle_timeout: Option<Duration>,
+    /// Text/Binary メッセージ受信ごとに呼ばれるユーザー定義ハンドラ
+    /// （Issue #179）。既定は [`crate::handler::EchoHandler`]（後方互換）。
+    ///
+    /// `dyn WsMessageHandler` の直接構築を許すと将来の表現変更（例:
+    /// 複数ハンドラの合成）の余地を狭めるため、`pub(crate)` にとどめ
+    /// [`with_handler`][Self::with_handler] 経由でのみ差し替えを許す。
+    pub(crate) handler: Arc<dyn WsMessageHandler>,
+}
+
+impl fmt::Debug for WebSocketConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebSocketConfig")
+            .field("path", &self.path)
+            .field("max_message_size", &self.max_message_size)
+            .field("max_frame_size", &self.max_frame_size)
+            .field("idle_timeout", &self.idle_timeout)
+            .field("handler", &self.handler.name())
+            .finish()
+    }
 }
 
 impl Default for WebSocketConfig {
@@ -59,6 +82,7 @@ impl Default for WebSocketConfig {
             max_message_size: 1024 * 1024,
             max_frame_size: 256 * 1024,
             idle_timeout: Some(DEFAULT_IDLE_TIMEOUT),
+            handler: default_handler(),
         }
     }
 }
@@ -116,5 +140,54 @@ impl WebSocketConfig {
     pub fn without_idle_timeout(mut self) -> Self {
         self.idle_timeout = None;
         self
+    }
+
+    /// Text/Binary メッセージ受信ごとに呼ばれるユーザー定義ハンドラを登録する
+    /// （Issue #179）。既定（未呼び出し時）は
+    /// [`EchoHandler`][crate::handler::EchoHandler] のまま（後方互換）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bf_plugin_websocket::WebSocketConfig;
+    /// use bf_plugin_websocket::handler::{WsMessage, WsMessageHandler, WsOutcome};
+    /// use futures_util::future::BoxFuture;
+    ///
+    /// struct Uppercase;
+    ///
+    /// impl WsMessageHandler for Uppercase {
+    ///     fn name(&self) -> &'static str {
+    ///         "uppercase"
+    ///     }
+    ///
+    ///     fn on_message(
+    ///         &self,
+    ///         msg: WsMessage,
+    ///     ) -> BoxFuture<'_, Result<WsOutcome, bf_plugin_websocket::handler::WsHandlerError>> {
+    ///         Box::pin(async move {
+    ///             let reply = match msg {
+    ///                 WsMessage::Text(t) => WsMessage::Text(t.to_uppercase()),
+    ///                 other => other,
+    ///             };
+    ///             Ok(WsOutcome::Reply(vec![reply]))
+    ///         })
+    ///     }
+    /// }
+    ///
+    /// let config = WebSocketConfig::default().with_handler(Uppercase);
+    /// assert_eq!(config.handler_name(), "uppercase");
+    /// ```
+    #[must_use]
+    pub fn with_handler<H: WsMessageHandler>(mut self, handler: H) -> Self {
+        self.handler = Arc::new(handler);
+        self
+    }
+
+    /// 現在登録されているハンドラの診断名（[`WsMessageHandler::name`]）。
+    /// `handler` フィールドは `pub(crate)` のため、外部から確認する手段として
+    /// 公開する。
+    #[must_use]
+    pub fn handler_name(&self) -> &'static str {
+        self.handler.name()
     }
 }

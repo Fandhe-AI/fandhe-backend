@@ -385,7 +385,11 @@ impl Server {
     /// （REQ-4「コア自身の HTTP パーサでアップグレードを検知し既存拡張点
     /// 経由で委譲する」という建て付けを維持する。`crates/plugin-websocket/src/lib.rs`
     /// の doc を参照）。異なる `path` で複数回呼び出すと複数パスを登録
-    /// できる（`websocket_configs()` の doc を参照）。
+    /// できる（`websocket_configs()` の doc を参照）。`config` に
+    /// `WebSocketConfig::with_handler` でユーザー定義メッセージハンドラを
+    /// 登録しておけば、Text/Binary 受信ごとにそのハンドラへ委譲される
+    /// （既定は `EchoHandler`、Issue #179）。コア自身はハンドラ呼び出しに
+    /// 関与せず、`bf_plugin_websocket::handle_upgrade` 以下に閉じる。
     #[cfg(feature = "websocket")]
     #[must_use]
     pub fn websocket(mut self, config: bf_plugin_websocket::WebSocketConfig) -> Self {

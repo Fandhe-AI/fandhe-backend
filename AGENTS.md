@@ -309,10 +309,12 @@ p95 レイテンシがおおむね 106〜108% となり、狭義の 100.3〜100.
 
 ## 規約: WebSocket セッションのアイドルタイムアウト既定値と DoS 耐性
 
-Issue #175 対応。`crates/plugin-websocket` のエコーセッション
-（`crates/plugin-websocket/src/session.rs` の `run_echo_session`）は、クライアント
-からのフレーム受信が一定時間ないアイドル接続を無期限に保持しない（リソース枯渇
-DoS 対策、[security.md](.claude/rules/security.md)）。
+Issue #175 対応。`crates/plugin-websocket` のセッション処理
+（`crates/plugin-websocket/src/session.rs` の `run_session`。Issue #179 で
+`run_echo_session` から改名し、Text/Binary メッセージをユーザー定義
+`WsMessageHandler`（既定 `EchoHandler`）へ委譲する建て付けへ拡張した）は、
+クライアントからのフレーム受信が一定時間ないアイドル接続を無期限に保持しない
+（リソース枯渇 DoS 対策、[security.md](.claude/rules/security.md)）。
 
 ### 既定値の根拠
 

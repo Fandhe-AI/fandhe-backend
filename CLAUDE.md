@@ -64,7 +64,10 @@ backend-framework/
 │   ├── plugin-websocket                # WebSocket プラグイン（RFC 6455 ハンドシェイク検証・101 応答・
 │   │                                    # tokio-tungstenite へのフレーミング委譲、TASK-4.1、#22。
 │   │                                    # `crates/core` の `websocket` feature 経由で `UpgradeHandler`
-│   │                                    # 拡張点配線、Upgrade 型プラグイン境界パターンの第 1 号）
+│   │                                    # 拡張点配線、Upgrade 型プラグイン境界パターンの第 1 号。
+│   │                                    # ユーザー定義メッセージハンドラ API（`WsMessageHandler`、
+│   │                                    # `WebSocketConfig::with_handler`、既定は `EchoHandler` で
+│   │                                    # 後方互換維持、Issue #179）を追加）
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O
