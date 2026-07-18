@@ -287,8 +287,10 @@ impl<'a> Iterator for CrlfSplit<'a> {
 /// RFC 9110 の tchar（token 構成文字）判定。
 ///
 /// `!#$%&'*+-.^_`|~` と DIGIT・ALPHA のみを許容する。ヘッダ名・メソッドの
-/// token 検証に使う。
-fn is_tchar(b: u8) -> bool {
+/// token 検証に使う。`crate::response::AllowedMethods`（`Allow` ヘッダ用の
+/// 検証済みメソッド型、TASK-177）がこのパーサと同一の判定基準を共有するため
+/// `pub(crate)` として公開する（二重定義によるドリフト防止）。
+pub(crate) fn is_tchar(b: u8) -> bool {
     matches!(
         b,
         b'!' | b'#'

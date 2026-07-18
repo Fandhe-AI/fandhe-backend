@@ -134,6 +134,43 @@ fn method_mismatch_on_param_route_returns_405() {
 }
 
 #[test]
+fn method_mismatch_on_param_route_includes_allow_header() {
+    // main 側で追加された 405 の Allow ヘッダ方針（TASK-177、#177）を
+    // パラメータルートにマージする際、param_route の method が Allow 候補に
+    // 正しく集約されることの回帰テスト（TASK-176 と TASK-177 のマージ地点）。
+    let router = Router::new()
+        .route_param("GET", "/hello/{name}", |_h, _params, _b| {
+            Response::new(200, b"param".to_vec())
+        })
+        .unwrap();
+
+    let res = router.dispatch(&head("POST", "/hello/alice"), &[]);
+    assert_eq!(res.status, 405);
+    let text = String::from_utf8(res.serialize(false)).unwrap();
+    assert!(text.contains("Allow: GET\r\n"));
+}
+
+#[test]
+fn method_mismatch_allow_header_combines_static_and_param_routes() {
+    // 静的ルートとパラメータルートが同じ target 形状に対して別 method を
+    // 登録している場合、405 の Allow ヘッダは両方の method をソート済み・
+    // 重複排除済みで含む必要がある。
+    let router = Router::new()
+        .route("PUT", "/hello/alice", |_h, _b| {
+            Response::new(200, b"static".to_vec())
+        })
+        .route_param("GET", "/hello/{name}", |_h, _params, _b| {
+            Response::new(200, b"param".to_vec())
+        })
+        .unwrap();
+
+    let res = router.dispatch(&head("DELETE", "/hello/alice"), &[]);
+    assert_eq!(res.status, 405);
+    let text = String::from_utf8(res.serialize(false)).unwrap();
+    assert!(text.contains("Allow: GET, PUT\r\n"));
+}
+
+#[test]
 fn unmatched_shape_returns_404() {
     let router = Router::new()
         .route_param("GET", "/hello/{name}", |_h, _params, _b| {

@@ -58,7 +58,7 @@
 use std::collections::HashMap;
 
 use bf_http::request::RequestHead;
-use bf_http::response::Response;
+use bf_http::response::{AllowedMethods, Response};
 
 mod pattern;
 
@@ -233,9 +233,14 @@ impl Router {
     ///
     /// - `target` に一致するルートが 1 件もない場合は 404（Not Found）。
     /// - `target` は一致するが `method` が一致しない場合は 405（Method Not Allowed）。
-    ///   `bf_http::response::Response` は任意ヘッダ追加 API を持たないため（response.rs
-    ///   の doc 参照）、本メソッドは `Allow` ヘッダを付与しない
-    ///   （out-of-scope-tracking 対象、TASK-1.5 スコープ外）。
+    ///   RFC 9110 §15.5.6 / §10.2.1 に従い、`target` に登録済みの全 method を
+    ///   ソート済み・重複排除済みで `Allow` ヘッダに付与する（TASK-177 / #177。
+    ///   `bf_http::response::AllowedMethods` の構築時 tchar 検証により CRLF
+    ///   インジェクションは型レベルで排除される。登録 method に不正 token が
+    ///   含まれる場合は `AllowedMethods::from_methods` が `None` を返すため、
+    ///   その分だけ除外する。パーサ（`bf-http`）は tchar のみの method しか
+    ///   生成しないため、実運用でこの除外が発生する経路はない。全滅時は
+    ///   `Allow` なしの 405 にフォールバックする、フェイルクローズ）。
     /// - 完全一致するルートがあればそのハンドラの戻り値をそのまま返す。
     ///
     /// ```
@@ -249,17 +254,24 @@ impl Router {
     ///     }
     /// }
     ///
-    /// let router = Router::new().route("GET", "/", |_head, _body| {
-    ///     bf_http::response::Response::new(200, b"ok".to_vec())
-    /// });
+    /// let router = Router::new()
+    ///     .route("GET", "/", |_head, _body| {
+    ///         bf_http::response::Response::new(200, b"ok".to_vec())
+    ///     })
+    ///     .route("POST", "/", |_head, _body| {
+    ///         bf_http::response::Response::new(201, b"created".to_vec())
+    ///     });
     ///
-    /// // 未登録パス → 404
+    /// // 未登録パス → 404（Allow は付与されない）
     /// let miss = head(b"GET /missing HTTP/1.1\r\n\r\n");
     /// assert_eq!(router.dispatch(&miss, &[]).status, 404);
     ///
-    /// // 登録済みパスだがメソッド不一致 → 405
-    /// let wrong_method = head(b"POST / HTTP/1.1\r\n\r\n");
-    /// assert_eq!(router.dispatch(&wrong_method, &[]).status, 405);
+    /// // 登録済みパスだがメソッド不一致 → 405 + Allow: GET, POST
+    /// let wrong_method = head(b"DELETE / HTTP/1.1\r\n\r\n");
+    /// let res = router.dispatch(&wrong_method, &[]);
+    /// assert_eq!(res.status, 405);
+    /// let text = String::from_utf8(res.serialize(false)).unwrap();
+    /// assert!(text.contains("Allow: GET, POST\r\n"));
     /// ```
     #[must_use]
     pub fn dispatch(&self, head: &RequestHead, body: &[u8]) -> Response {
@@ -271,31 +283,58 @@ impl Router {
         }
 
         // 2. 静的ルートが miss した場合のみ、パラメータルートを登録順に線形走査する。
-        //    method 不一致でも target 形状が一致していれば 405 判定に使うため、
-        //    まず method を問わずセグメント一致を確認する。
+        //    method 不一致でも target 形状が一致していれば 405 判定・Allow 生成に
+        //    使うため、まず method を問わずセグメント一致を確認し、一致した
+        //    パラメータルートの method を集める。
         //    `target` が origin-form（先頭 `/`）でない場合（`*` の asterisk-form 等）は
         //    `request_target_segments` が `None` を返し、パラメータルート照合を
         //    一切行わない（fail-closed、`pattern` モジュール doc参照）。
-        let mut shape_matches_any_method = false;
+        let mut param_methods: Vec<String> = Vec::new();
         if let Some(target_segments) = pattern::request_target_segments(&head.target) {
             for param_route in &self.param_routes {
                 let Some(params) = pattern::match_segments(&param_route.segments, &target_segments)
                 else {
                     continue;
                 };
-                shape_matches_any_method = true;
                 if param_route.method == head.method {
                     return (param_route.handler)(head, &params, body);
                 }
+                param_methods.push(param_route.method.clone());
             }
         }
 
-        let target_exists = shape_matches_any_method
-            || self.routes.keys().any(|(_, target)| target == &head.target);
-        if target_exists {
-            Response::empty(405)
-        } else {
-            Response::empty(404)
+        // 静的ルート（target 一致）とパラメータルート（形状一致）の両方から
+        // 405 応答の `Allow` 候補 method を集約する（TASK-176、#176。TASK-177、#177
+        // の Allow ヘッダ方針をパラメータルートにも適用する）。
+        let registered_methods: Vec<String> = self
+            .routes
+            .keys()
+            .filter(|(_, target)| target == &head.target)
+            .map(|(method, _)| method.clone())
+            .chain(param_methods)
+            .collect();
+
+        if registered_methods.is_empty() {
+            return Response::empty(404);
+        }
+
+        // `AllowedMethods::from_methods` は 1 件でも不正 token があれば全体を
+        // 構築失敗（`None`）とする all-or-nothing 契約（`response.rs` doc 参照）。
+        // Router 側は「不正 token を持つ登録ルートだけを Allow から除外し、
+        // 残りの正当な method は開示する」方針のため、要素単位で妥当性を
+        // 検証してから正当なものだけをまとめて構築する（パーサ（`bf-http`）
+        // は tchar のみの method しか生成しないため、実運用でこの除外が
+        // 発生する経路はない）。
+        let valid_methods: Vec<String> = registered_methods
+            .into_iter()
+            .filter(|m| AllowedMethods::from_methods([m.clone()]).is_some())
+            .collect();
+
+        match AllowedMethods::from_methods(valid_methods) {
+            Some(allow) => Response::empty(405).with_allow(allow),
+            // 登録 method が全て不正 token だった場合のフェイルクローズ
+            // フォールバック。`Allow` は省略するが 405 自体は変わらない。
+            None => Response::empty(405),
         }
     }
 }
@@ -388,5 +427,59 @@ mod tests {
             .route("GET", "/", |_h, _b| Response::new(200, b"second".to_vec()));
         let res = router.dispatch(&head("GET", "/"), &[]);
         assert_eq!(res.body, b"second".to_vec());
+    }
+
+    #[test]
+    fn method_mismatch_405_includes_sorted_allow_header() {
+        // TASK-177 / #177: 405 応答に RFC 9110 §15.5.6 の Allow ヘッダを付与する。
+        // 登録済み method（DELETE, GET）はソート済みで出力される。
+        let router = Router::new()
+            .route("GET", "/", |_h, _b| Response::empty(200))
+            .route("DELETE", "/", |_h, _b| Response::empty(204));
+        let res = router.dispatch(&head("POST", "/"), &[]);
+        assert_eq!(res.status, 405);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(text.contains("Allow: DELETE, GET\r\n"));
+    }
+
+    #[test]
+    fn method_mismatch_405_aggregates_multiple_registered_methods_for_same_target() {
+        let router = Router::new()
+            .route("GET", "/a", |_h, _b| Response::empty(200))
+            .route("POST", "/a", |_h, _b| Response::empty(201))
+            .route("PUT", "/a", |_h, _b| Response::empty(200));
+        let res = router.dispatch(&head("DELETE", "/a"), &[]);
+        assert_eq!(res.status, 405);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(text.contains("Allow: GET, POST, PUT\r\n"));
+    }
+
+    #[test]
+    fn unregistered_target_404_has_no_allow_header() {
+        let router = Router::new().route("GET", "/", |_h, _b| Response::empty(200));
+        let res = router.dispatch(&head("GET", "/missing"), &[]);
+        assert_eq!(res.status, 404);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(!text.contains("Allow:"));
+    }
+
+    #[test]
+    fn method_mismatch_405_allow_header_injection_regression() {
+        // ヘッダインジェクション回帰テスト（TASK-177 / #177）: 不正な method
+        // token（CRLF を含む文字列）が登録されていても、`AllowedMethods` の
+        // 構築時検証で除外され、直列化バイト列に絶対に現れない。
+        let router = Router::new()
+            .route("GET\r\nX-Evil: 1", "/", |_h, _b| Response::empty(200))
+            .route("GET", "/", |_h, _b| Response::empty(200));
+        let res = router.dispatch(&head("DELETE", "/"), &[]);
+        assert_eq!(res.status, 405);
+        let bytes = res.serialize(false);
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(!text.contains("X-Evil"));
+        // 不正 token は除外され、正当な GET のみが Allow に残る。
+        assert!(text.contains("Allow: GET\r\n"));
+        // ヘッダ数が増えていない（インジェクションによる余分な行が無い）こと
+        // を、ヘッダ/ボディ境界の空行が 1 箇所のみであることで確認する。
+        assert_eq!(text.matches("\r\n\r\n").count(), 1);
     }
 }

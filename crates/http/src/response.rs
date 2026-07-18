@@ -14,21 +14,107 @@
 //! 含む文字列がヘッダとして書き出される経路が構造的に存在せず、レスポンス分割・
 //! ヘッダインジェクションを型レベルで排除する（`.claude/rules/security.md`）。
 //!
-//! 唯一の例外が [`Response::with_content_type`] であり、値を `&'static str` に
-//! 限定することで「呼び出し元（このクレート・上位クレートのソースコード）が
-//! 静的に書いた文字列以外は絶対に渡せない」という型レベルの制約を維持したまま
-//! `Content-Type` ヘッダの付与を可能にする（TASK-2.1 / #18、
+//! 例外は 2 つある。1 つ目は [`Response::with_content_type`] であり、値を
+//! `&'static str` に限定することで「呼び出し元（このクレート・上位クレートの
+//! ソースコード）が静的に書いた文字列以外は絶対に渡せない」という型レベルの
+//! 制約を維持したまま `Content-Type` ヘッダの付与を可能にする（TASK-2.1 / #18、
 //! `crates/plugin-webrtc-proxy` のようにレスポンス種別ごとに固定の
-//! `Content-Type` を返すプラグインの配線で必要になった）。外部入力（リクエスト
-//! ヘッダ・body 等）に由来する動的な値をヘッダとして送出する API は今後も
-//! 追加しない方針を維持する。
+//! `Content-Type` を返すプラグインの配線で必要になった）。
+//!
+//! 2 つ目が [`Response::with_allow`] である（TASK-177 / #177）。`Allow` ヘッダは
+//! `crates/routes` の `Router::dispatch` が 405 応答時に払い出す許可メソッド
+//! 一覧のように、呼び出し元が静的に書けない動的な値（登録済みルートの
+//! method 集合）を送出する必要がある。そこで `&'static str` 限定の代わりに
+//! [`AllowedMethods`] という**構築時検証済みの専用型**のみを受け取ることで、
+//! CRLF を含む値がヘッダとして書き出される経路を型レベルで排除する。
+//! `AllowedMethods::from_methods` は各要素を RFC 9110 の tchar（`request.rs`
+//! の `is_tchar` を共有）のみで構成される非空文字列として検証し、1 件でも
+//! 不正な token があれば構築自体を失敗させる（フェイルクローズ）。
+//!
+//! 外部入力（リクエストヘッダ・body 等）に由来する動的な値を**検証なしで**
+//! ヘッダとして送出する任意ヘッダ API は今後も追加しない方針を維持する。
+
+/// `Allow` ヘッダ用の検証済みメソッド集合（TASK-177 / #177）。
+///
+/// RFC 9110 §15.5.6 / §10.2.1 は 405 応答に許可メソッド一覧を `Allow` ヘッダで
+/// 示すことを要求する。この値は `crates/routes` の `Router::dispatch` が
+/// 登録済みルートから動的に集めるため `Response::with_content_type` の
+/// `&'static str` 限定手法が使えない。代わりに**構築時検証**で同等の型レベル
+/// 保証を実現する: [`AllowedMethods::from_methods`] を通過した値のみが
+/// この型のインスタンスになり、CRLF・SP・`:` 等の区切り文字を構造的に
+/// 含まない（tchar のみで構成される）ことが保証される。
+///
+/// 直列化時（[`Response::serialize`]）はソート済み・重複排除済みの順序で
+/// `", "` 区切りに結合する（決定的な出力・テスト安定性のため）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AllowedMethods {
+    // 昇順ソート・重複排除済み。`from_methods` の唯一の構築経路がこの不変条件
+    // を保証する（フィールドは非公開、直接構築不可）。
+    methods: Vec<String>,
+}
+
+impl AllowedMethods {
+    /// `methods` から検証済みの [`AllowedMethods`] を構築する。
+    ///
+    /// 各要素は非空かつ RFC 9110 tchar（`crate::request` の `is_tchar` と
+    /// 同一判定基準）のみで構成される必要がある。1 件でも不正な token が
+    /// あれば `None` を返す（フェイルクローズ。部分的に妥当な要素だけを
+    /// 採用する緩和は行わない）。`methods` が空の場合も `None`（`Allow` は
+    /// 最低 1 メソッドを示す必要がある）。
+    ///
+    /// 結果はソート + 重複排除され、直列化順序が呼び出し順に依存しない
+    /// （`crates/routes` の `HashMap` 由来の非決定的な列挙順を安定化する）。
+    ///
+    /// ```
+    /// use bf_http::response::AllowedMethods;
+    ///
+    /// let allowed = AllowedMethods::from_methods(["POST".to_string(), "GET".to_string()]).unwrap();
+    /// assert_eq!(allowed.to_header_value(), "GET, POST");
+    ///
+    /// // CRLF を含む値は構築段階で拒否される（レスポンス分割対策）。
+    /// assert!(AllowedMethods::from_methods(["GET\r\nX-Evil: 1".to_string()]).is_none());
+    ///
+    /// // 空集合も拒否する。
+    /// assert!(AllowedMethods::from_methods(Vec::<String>::new()).is_none());
+    /// ```
+    #[must_use]
+    pub fn from_methods(methods: impl IntoIterator<Item = String>) -> Option<Self> {
+        let mut methods: Vec<String> = methods.into_iter().collect();
+        if methods.is_empty() {
+            return None;
+        }
+        if methods
+            .iter()
+            .any(|m| m.is_empty() || !m.bytes().all(crate::request::is_tchar))
+        {
+            return None;
+        }
+        methods.sort();
+        methods.dedup();
+        Some(Self { methods })
+    }
+
+    /// `Allow` ヘッダ値として直列化する（`", "` 区切り、ソート済み）。
+    ///
+    /// ```
+    /// use bf_http::response::AllowedMethods;
+    ///
+    /// let allowed = AllowedMethods::from_methods(["POST".to_string(), "GET".to_string()]).unwrap();
+    /// assert_eq!(allowed.to_header_value(), "GET, POST");
+    /// ```
+    #[must_use]
+    pub fn to_header_value(&self) -> String {
+        self.methods.join(", ")
+    }
+}
 
 /// 直列化対象の 1 レスポンス。
 ///
 /// `status` は HTTP ステータスコード、`body` はレスポンスボディの生バイト列。
-/// ヘッダは `Content-Length`（常時）と `Connection`（`serialize` の
-/// `keep_alive` 引数に応じて）のみを自動付与し、それ以外のヘッダを持たない
-/// 最小構成とする（本モジュールの doc を参照）。
+/// ヘッダは `Content-Length`（常時）・`Connection`（`serialize` の
+/// `keep_alive` 引数に応じて）・`Allow`（[`Response::with_allow`] 設定時）の
+/// みを自動付与し、それ以外のヘッダを持たない最小構成とする
+/// （本モジュールの doc を参照）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Response {
     /// HTTP ステータスコード。
@@ -39,6 +125,9 @@ pub struct Response {
     /// （TASK-1.4-2 / #70 時点の既定挙動を保つ）。[`Response::with_content_type`]
     /// の doc を参照。
     content_type: Option<&'static str>,
+    /// `Allow` ヘッダ値。`None` の場合はヘッダ自体を出力しない。
+    /// [`Response::with_allow`] の doc を参照（TASK-177 / #177）。
+    allow: Option<AllowedMethods>,
 }
 
 impl Response {
@@ -57,6 +146,7 @@ impl Response {
             status,
             body,
             content_type: None,
+            allow: None,
         }
     }
 
@@ -100,6 +190,28 @@ impl Response {
             "Content-Type に CRLF を含む値を渡そうとした（レスポンス分割の危険、呼び出し元の実装ミス）"
         );
         self.content_type = Some(content_type);
+        self
+    }
+
+    /// `Allow` ヘッダを設定する（405 応答用、TASK-177 / #177）。
+    ///
+    /// [`AllowedMethods`] は構築時に tchar 検証済みのため、ここで CRLF を
+    /// 含む値が渡される経路は型レベルで存在しない（本モジュール冒頭の doc・
+    /// `.claude/rules/security.md` のレスポンス分割対策を参照）。呼び出し元
+    /// （`crates/routes` の `Router::dispatch`）は 405 応答にのみ使う想定だが、
+    /// API 上はステータスコードを問わず設定可能。
+    ///
+    /// ```
+    /// use bf_http::response::{AllowedMethods, Response};
+    ///
+    /// let allowed = AllowedMethods::from_methods(["GET".to_string(), "POST".to_string()]).unwrap();
+    /// let res = Response::empty(405).with_allow(allowed);
+    /// let text = String::from_utf8(res.serialize(false)).unwrap();
+    /// assert!(text.contains("Allow: GET, POST\r\n"));
+    /// ```
+    #[must_use]
+    pub fn with_allow(mut self, allow: AllowedMethods) -> Self {
+        self.allow = Some(allow);
         self
     }
 
@@ -150,6 +262,11 @@ impl Response {
         if let Some(content_type) = self.content_type {
             out.extend_from_slice(b"Content-Type: ");
             out.extend_from_slice(content_type.as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
+        if let Some(allow) = &self.allow {
+            out.extend_from_slice(b"Allow: ");
+            out.extend_from_slice(allow.to_header_value().as_bytes());
             out.extend_from_slice(b"\r\n");
         }
         out.extend_from_slice(b"Content-Length: ");
@@ -267,6 +384,58 @@ mod tests {
         // 503 が空 reason phrase に劣化しないことを確認する（PR #138 Bugbot 指摘）。
         let service_unavailable = String::from_utf8(Response::empty(503).serialize(false)).unwrap();
         assert!(service_unavailable.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
+    }
+
+    #[test]
+    fn allowed_methods_from_methods_sorts_and_dedups() {
+        let allowed = AllowedMethods::from_methods([
+            "POST".to_string(),
+            "GET".to_string(),
+            "POST".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(allowed.to_header_value(), "GET, POST");
+    }
+
+    #[test]
+    fn allowed_methods_rejects_empty_set() {
+        assert!(AllowedMethods::from_methods(Vec::<String>::new()).is_none());
+    }
+
+    #[test]
+    fn allowed_methods_rejects_empty_string_element() {
+        assert!(AllowedMethods::from_methods([String::new()]).is_none());
+    }
+
+    #[test]
+    fn allowed_methods_rejects_crlf_injection() {
+        // レスポンス分割回帰テスト（TASK-177 / #177）: CRLF を含む method を
+        // 混入させても構築自体が失敗し、`Allow` ヘッダから絶対に出てこない。
+        assert!(AllowedMethods::from_methods(["GET\r\nX-Evil: injected".to_string()]).is_none());
+    }
+
+    #[test]
+    fn allowed_methods_rejects_space_colon_and_control_chars() {
+        assert!(AllowedMethods::from_methods(["GET POST".to_string()]).is_none());
+        assert!(AllowedMethods::from_methods(["GET:".to_string()]).is_none());
+        assert!(AllowedMethods::from_methods(["GE\u{0}T".to_string()]).is_none());
+        assert!(AllowedMethods::from_methods(["caf\u{e9}".to_string()]).is_none());
+    }
+
+    #[test]
+    fn serialize_includes_allow_header_when_set() {
+        let allowed =
+            AllowedMethods::from_methods(["POST".to_string(), "GET".to_string()]).unwrap();
+        let res = Response::empty(405).with_allow(allowed);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(text.contains("Allow: GET, POST\r\n"));
+    }
+
+    #[test]
+    fn serialize_omits_allow_header_by_default() {
+        let res = Response::empty(405);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(!text.contains("Allow:"));
     }
 
     #[test]
