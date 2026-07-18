@@ -307,6 +307,14 @@ check_extension_points() {
         # `//!`）や空行はフラグを維持したまま素通りさせる（Rust の属性はコメント
         # や空行を挟んでも直後の item に付与されるため）。それ以外の実コード行は
         # 無関係な item とみなしフラグをリセットする。
+        #
+        # PR #171 レビュー是正3（Stacked attributes clear pending cfg）:
+        # `#[cfg(feature = "...")]` と対象関数シグネチャの間に `#[must_use]` /
+        # `#[inline]` 等の別属性行が挟まると、上記の「それ以外の実コード行」
+        # 判定に引っかかり pending_cfg が誤ってリセットされていた。Rust では
+        # 属性列全体（複数の `#[...]` 行の連続）がまとめて後続の item に紐付く
+        # ため、行頭が `#[` で始まる属性行（cfg 以外も含む）はコメント・空行と
+        # 同様にフラグを維持したまま素通りさせる。
         local awk_out awk_status
         set +e
         awk_out="$(awk '
@@ -336,8 +344,10 @@ check_extension_points() {
                     }
                     if ($0 ~ /^[[:space:]]*#\[cfg\(feature/) {
                         pending_cfg = 1
-                    } else if ($0 ~ /^[[:space:]]*\/\// || $0 ~ /^[[:space:]]*$/) {
-                        # コメント・空行はフラグを維持（属性はこれらを跨いで直後の item に付与される）
+                    } else if ($0 ~ /^[[:space:]]*\/\// || $0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#\[/) {
+                        # コメント・空行・他の属性行（#[must_use] 等の積み重ね）は
+                        # フラグを維持（Rust の属性列は複数行に渡っても直後の item に
+                        # まとめて付与されるため、cfg 以外の属性を挟んでもリセットしない）
                         1
                     } else {
                         pending_cfg = 0
