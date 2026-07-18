@@ -306,3 +306,42 @@ p95 レイテンシがおおむね 106〜108% となり、狭義の 100.3〜100.
 `webrtc`/`webrtc-proxy` 両 feature の依存完全除外・クレート境界分離の機械検証は
 `scripts/accept/webrtc-accept.sh`、NFR-6 の empirical 計測は `bench-builder` が担う
 （[delegation-impl.md](.claude/rules/delegation-impl.md)）。
+
+## 規約: WebSocket セッションのアイドルタイムアウト既定値と DoS 耐性
+
+Issue #175 対応。`crates/plugin-websocket` のエコーセッション
+（`crates/plugin-websocket/src/session.rs` の `run_echo_session`）は、クライアント
+からのフレーム受信が一定時間ないアイドル接続を無期限に保持しない（リソース枯渇
+DoS 対策、[security.md](.claude/rules/security.md)）。
+
+### 既定値の根拠
+
+`WebSocketConfig::idle_timeout` の既定値は `Some(60 秒)`（fail-safe: 既定で有効）。
+一般的なリバースプロキシの読み取りタイムアウト既定（例: nginx
+`proxy_read_timeout` 60s）と同水準に揃えており、正当なクライアントは通常の通信
+または Ping で容易に接続を維持できる。既存の負荷試験ハーネス
+（`benches/bench-ws-load.sh`、ハートビート既定 2 秒間隔）はこの既定値に抵触しない
+（実装時点で確認済み）。
+
+### 無効化は明示操作のみ
+
+アイドルタイムアウトの無効化は `WebSocketConfig::without_idle_timeout()` の明示
+呼び出しでのみ行える。暗黙の設定漏れで保護が外れることはない
+（フェイルセーフ、[pay-for-what-you-use.md](.claude/rules/pay-for-what-you-use.md)
+と同様の「既定で安全側」の考え方）。
+
+### 発火時の切断シーケンスと二次 DoS 対策
+
+タイムアウト発火時はサーバ側から Close フレーム（1000 Normal Closure）を送出し、
+正常な Close ハンドシェイクで切断する（プロトコル違反ではないため `WsError` に
+新規 variant を追加せず `Ok(())` を返す）。Close 応答を返さない（無視する）
+クライアントが「クローズ送出済みだが応答待ち」の状態で接続を無期限に保持し続ける
+経路を防ぐため、クライアントの Close 応答（または EOF）のドレインには固定の
+猶予（`session.rs` の `CLOSE_GRACE` 定数、10 秒）を設け、超過時も `Ok(())` で
+確実に接続を終端する（fail-closed）。
+
+### 検証
+
+発火・非発火（通信継続で維持）・Ping のみでの維持・無効化・Close 無視クライアント
+への `CLOSE_GRACE` 適用は `crates/plugin-websocket/tests/idle_timeout.rs` の統合
+テストで検証する。

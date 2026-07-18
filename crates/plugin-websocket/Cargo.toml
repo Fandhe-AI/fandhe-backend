@@ -21,8 +21,12 @@ workspace = true
 #
 # 依存は次の 3 つに限定する:
 # - `bf-http`: `RequestHead` の参照のみ（ハンドシェイク検証の入力）
-# - `tokio`: `io-util`（AsyncRead/AsyncWrite）のみ。ソケット I/O 自体は
-#   コア（crates/core）が保持する接続から渡される
+# - `tokio`: `io-util`（AsyncRead/AsyncWrite）+ `time`（アイドルタイムアウト、
+#   Issue #175。`crate::session::run_echo_session` が `tokio::time::timeout`
+#   で受信待ちを監視する）。`time` feature はコア（crates/core）側の
+#   `websocket` feature 有効時の依存グラフに既に含まれる（`crates/core/Cargo.toml`
+#   参照）ため、`websocket` feature 有効時の依存グラフに新規クレートは増えない。
+#   ソケット I/O 自体はコア（crates/core）が保持する接続から渡される
 # - `tokio-tungstenite`: RFC 6455 フレーミング実装への委譲。
 #   `default-features = false` + `handshake` feature のみを有効化する。
 #   `handshake` feature は `Sec-WebSocket-Accept` 導出（`derive_accept_key`）
@@ -33,7 +37,7 @@ workspace = true
 #   継続的に確認する）。
 [dependencies]
 bf-http = { path = "../http" }
-tokio = { version = "1", default-features = false, features = ["io-util"] }
+tokio = { version = "1", default-features = false, features = ["io-util", "time"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = [
   "handshake",
 ] }

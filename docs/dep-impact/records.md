@@ -3,6 +3,41 @@
 `docs/dep-impact/README.md` の運用手順に従い、`crates/plugin-*` 追加・変更時の依存
 インパクト計測結果を追記する。エントリは新しい順に追加する。
 
+## 2026-07-18 — `crates/plugin-websocket` アイドルタイムアウト実装（#175）に伴う tokio feature 追加
+
+WebSocket セッションのアイドルタイムアウト実装（Issue #175、`session::run_echo_session`
+が `tokio::time::timeout` で受信待ちを監視）のため、`crates/plugin-websocket/Cargo.toml`
+の lib 依存 `tokio` に `time` feature を追加した（従来は `io-util` のみ）。
+
+### 新規クレート増加の有無
+
+`tokio` の `time` feature は `tokio` crate 自体の内部モジュール切り替えであり、新規の
+外部クレートを追加しない。加えてコア（`crates/core/Cargo.toml`）は `websocket`
+feature 有無に関わらず既に `tokio` の `time` feature を有効化済み
+（accept ループのタイムアウト等で使用）のため、`websocket` feature 有効時の
+`backend-framework-core` の依存グラフに実質差分は生じない。
+
+```
+$ cargo tree -p backend-framework-core --features websocket -e normal --no-default-features \
+    | grep -c 'bf-plugin-websocket\|tokio-tungstenite\|futures-util'
+4
+```
+
+（本コマンドは websocket feature 経由で配線される依存の内訳確認のみで、本変更前後
+での件数差分はない。`tokio` 自体は feature 追加のみで crate 数としては増減なし。）
+
+### pay-for-what-you-use の継続確認
+
+```
+$ cargo tree -p backend-framework-core -e normal --no-default-features | grep -c 'tungstenite'
+0
+```
+
+`websocket` feature 無効時は本クレート自体が依存グラフから除外される現状に変化なし。
+
+計測コマンド: `cargo tree`（`scripts/dep-impact.sh` によるフル計測は本変更が軽微
+（feature 追加のみ・新規クレート 0 件）のため今回は省略し、上記個別確認に留めた）。
+
 ## 2026-07-18 — `crates/plugin-tracing` 依存インパクト記録（#60、TASK-10.5）
 
 TASK-10.1（#56）で `crates/plugin-tracing` を追加した際、依存インパクト実測記録は
