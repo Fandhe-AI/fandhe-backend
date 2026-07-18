@@ -1,0 +1,5 @@
+# 正常系フィクスチャ: 試行 1（合成値）
+metric=completion_rate pass=8 fail=2 pending=0 total=10
+metric=feasibility_accuracy pass=8 fail=2 pending=0 total=10
+metric=evidence_rate pass=6 fail=0 pending=0 total=6
+metric=destruction count=0
