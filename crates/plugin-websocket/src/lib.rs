@@ -35,7 +35,11 @@
 //! 3. [`handle_upgrade`] は RFC 6455 4.2.1 の詳細検証（`handshake::validate`）
 //!    を行い、成功時は 101 応答、失敗時は 400/426 応答を送出する
 //! 4. 101 応答成功後は `tokio-tungstenite` の `WebSocketStream` へフレーミング
-//!    処理を委譲し、セッション終了まで面倒を見る（`session::run_echo_session`）
+//!    処理を委譲し、セッション終了まで面倒を見る（`session::run_echo_session`）。
+//!    `WebSocketConfig::idle_timeout`（既定 60 秒、fail-safe で有効）が設定
+//!    されている場合、受信アイドルが続く接続は正常な Close ハンドシェイクで
+//!    切断する（リソース枯渇 DoS 対策、Issue #175。詳細は `session` モジュール
+//!    の doc を参照）
 //!
 //! # workspace 内での依存方向
 //!

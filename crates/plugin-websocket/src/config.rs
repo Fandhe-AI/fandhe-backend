@@ -5,6 +5,17 @@
 //! `crate::matches` / `crate::handle_upgrade` へ渡す。設定はビルド時・起動時
 //! の静的値のみで構成し、リクエスト内容からは導出しない。
 
+use std::time::Duration;
+
+/// アイドルタイムアウトの既定値（60 秒）。
+///
+/// 一般的なリバースプロキシの読み取りタイムアウト既定
+/// （例: nginx `proxy_read_timeout` 60s）と同水準に揃え、正当なクライアントは
+/// 通常の通信または Ping で容易に接続を維持できる一方、無通信のまま接続
+/// （fd・タスク・メモリ）を無期限に保持させない（リソース枯渇 DoS 対策、
+/// `.claude/rules/security.md`。Issue #175）。
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// WebSocket アップグレードを受け付けるパス・DoS 安全側のフレーム制限。
 ///
 /// `Default` はアップグレード対象パスを `/ws` とし、`max_message_size` /
@@ -30,6 +41,15 @@ pub struct WebSocketConfig {
     pub max_message_size: usize,
     /// 受信する単一フレームの最大バイト数（既定 256 KiB）。
     pub max_frame_size: usize,
+    /// クライアントからのフレーム受信が一定時間ないアイドル状態を検知し
+    /// 切断するまでの猶予（既定 `Some(60 秒)`、fail-safe: 既定で有効）。
+    ///
+    /// `crate::session::run_echo_session` がこの値でフレーム受信を
+    /// `tokio::time::timeout` し、発火時は正常な Close ハンドシェイクで
+    /// 切断する（Issue #175）。`None` にするとアイドルタイムアウトを無効化
+    /// する（[`without_idle_timeout`][Self::without_idle_timeout] による
+    /// 明示操作でのみ無効化を許し、暗黙に保護が外れないようにする）。
+    pub idle_timeout: Option<Duration>,
 }
 
 impl Default for WebSocketConfig {
@@ -38,6 +58,7 @@ impl Default for WebSocketConfig {
             path: "/ws".to_string(),
             max_message_size: 1024 * 1024,
             max_frame_size: 256 * 1024,
+            idle_timeout: Some(DEFAULT_IDLE_TIMEOUT),
         }
     }
 }
@@ -61,6 +82,39 @@ impl WebSocketConfig {
     #[must_use]
     pub fn with_max_frame_size(mut self, max_frame_size: usize) -> Self {
         self.max_frame_size = max_frame_size;
+        self
+    }
+
+    /// アイドルタイムアウトを指定した値に変更する。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use bf_plugin_websocket::WebSocketConfig;
+    ///
+    /// let config = WebSocketConfig::default().with_idle_timeout(Duration::from_secs(30));
+    /// assert_eq!(config.idle_timeout, Some(Duration::from_secs(30)));
+    /// ```
+    #[must_use]
+    pub fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
+        self.idle_timeout = Some(idle_timeout);
+        self
+    }
+
+    /// アイドルタイムアウトを無効化する（明示操作でのみ許可、既定は有効）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bf_plugin_websocket::WebSocketConfig;
+    ///
+    /// let config = WebSocketConfig::default().without_idle_timeout();
+    /// assert_eq!(config.idle_timeout, None);
+    /// ```
+    #[must_use]
+    pub fn without_idle_timeout(mut self) -> Self {
+        self.idle_timeout = None;
         self
     }
 }
