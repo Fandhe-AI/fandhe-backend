@@ -30,6 +30,9 @@ jobs:
     name: Update submodule references
     if: ${{ github.event_name != 'workflow_dispatch' || contains(fromJSON('["all", "submodule"]'), inputs.target) }}
     runs-on: self-hosted
+    # self-hosted runner はハングしたジョブに無期限占有されうるため、多層防御として
+    # timeout を必ず設定する（NFR-10・.claude/rules/ci.md・#182）。
+    timeout-minutes: 15
     permissions:
       contents: write
       pull-requests: write
@@ -69,6 +72,9 @@ jobs:
     name: Update agent skills
     if: ${{ github.event_name != 'workflow_dispatch' || contains(fromJSON('["all", "skill"]'), inputs.target) }}
     runs-on: self-hosted
+    # self-hosted runner はハングしたジョブに無期限占有されうるため、多層防御として
+    # timeout を必ず設定する（NFR-10・.claude/rules/ci.md・#182）。
+    timeout-minutes: 15
     permissions:
       contents: write
       pull-requests: write
