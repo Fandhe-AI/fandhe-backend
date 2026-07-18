@@ -66,6 +66,21 @@ is_nonneg_int() {
     esac
 }
 
+is_duplicate_label() {
+    # 使用方法（本スクリプト --help）で「同一 label は不可」と明記している
+    # 制約を機械的に強制する。重複を許すと 1 つの試行ラベルの下に 2 つの
+    # サマリーが読み込まれ、集計テーブルの行が重複し、REQ-12 指標（min/max/
+    # range/mean）が歪むため（Bugbot 指摘、PR #170）。
+    local candidate="$1"
+    local existing
+    for existing in "${TRIAL_LABELS[@]}"; do
+        if [ "${existing}" = "${candidate}" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --trial)
@@ -83,6 +98,10 @@ while [ $# -gt 0 ]; do
             fi
             if ! is_valid_label "${label}"; then
                 echo "[PENDING] 試行ラベルが不正です（英数字・ハイフン・アンダースコアのみ許可）: ${label}" >&2
+                exit 2
+            fi
+            if is_duplicate_label "${label}"; then
+                echo "[PENDING] 試行ラベルが重複しています（同一 label は不可）: ${label}" >&2
                 exit 2
             fi
             TRIAL_LABELS+=("${label}")
@@ -109,6 +128,10 @@ while [ $# -gt 0 ]; do
                 label="${label%.summary}"
                 if ! is_valid_label "${label}"; then
                     echo "[PENDING] ファイル名から抽出した試行ラベルが不正です: ${base}" >&2
+                    exit 2
+                fi
+                if is_duplicate_label "${label}"; then
+                    echo "[PENDING] 試行ラベルが重複しています（同一 label は不可）: ${label}" >&2
                     exit 2
                 fi
                 TRIAL_LABELS+=("${label}")

@@ -15,6 +15,8 @@ v2 セットを使う。
 |----|---------|---------|
 | T-06 | `grep -n "impl std::error::Error for ParseError" crates/http/src/request.rs` | `impl std::error::Error for ParseError {}`（156 行目）が既に存在。v1 と同じ前提崩れが再発するため差し替える |
 | T-08 | `crates/core/src/extension.rs` の `RequestGate` trait（214 行目以降）の doc comment を読解 | `RequestGate` の doc comment・doc test（trait 実装サンプル）は既に存在（176 行目以降の Examples）。v1 と同じ前提崩れが再発するため差し替える |
+| T-08'（初版） | `grep -n "# Examples" crates/core/src/extension.rs` | `Middleware` trait（84〜95 行目）の doc comment（51 行目以降）に、動作する Examples（doc test）が既に存在することを確認（Bugbot 指摘、PR #170）。「`Middleware` に Examples がない」という T-08' 初版の前提が崩れているため再差し替えが必要 |
+| T-08''（再差し替え） | `grep -n "# Examples" crates/core/src/server.rs` と `crates/core/src/server.rs` の `Handler` trait（145〜156 行目）の doc comment を読解 | `crates/core/src/server.rs` には `# Examples` の doc test が 1 件も存在せず（`Server` 構造体の生成例のみ）、`Handler` trait（145〜152 行目の doc comment）には Examples が存在しないことを確認。3 拡張点（`Middleware`/`UpgradeHandler`/`RequestGate`）はいずれも Examples 済みのため、対象を `Handler` trait へ変更する |
 | J-02 | `grep -rn "impl Middleware for\|fn on_response" crates/` でリクエストログの実装箇所を特定 | 具象 `Middleware` 実装は存在せず、`crates/http` にリクエストログ自体が存在しない。ログ出力の実体は `crates/plugin-tracing/src/layer.rs` の `TracingLayer::record_response`（`tracing::info!` で method/path/elapsed_ms を出力、104〜109 行目）であり、対象クレートの記載が実状と食い違っていた（3.1 節） |
 | J-03 | `cargo clippy --workspace --all-features -- -D warnings` を起点コミットで実行 | 警告 0 件（`Finished` のみ）。「clippy 警告が現に検出されている」という前提が成立していないため差し替える |
 
@@ -38,15 +40,14 @@ v2 セットを使う。
 | T-05 | `crates/http` | `BodyLength` enum（`body.rs`）に対し、既知長かどうかを判定する公開ヘルパーメソッド（例: `is_known`）を追加する | 新規メソッドの単体テストが PASS。`body_length` 関数の既存挙動・テストを変更しない | 変更なし（T-05 のまま） |
 | **T-06'** | `crates/http` | `RecvBuffer::capacity`（`buffer.rs` 84 行目）は公開メソッドだが、直接 `capacity()` を呼び出す doc test・単体テストが存在しない（内部フィールド `buf.capacity()` を参照するテストのみ）。`capacity()` 呼び出しを直接検証する doc test または単体テストを追加する | 新規テストが `cargo test` で PASS。既存 `RecvBuffer` の実装・既存テストを変更しない（テスト追加のみ） | **T-06 を差し替え**（前提事前検証の表を参照。「対象が未実装」の前提を機械確認済みの新規タスク） |
 | T-07 | `crates/http` | `should_keep_alive`（`connection.rs`）の HTTP バージョン別 keep-alive 判定を検証する境界値テスト（HTTP/1.0・HTTP/1.1・`Connection` ヘッダ有無の組み合わせ）を追加する | 追加した境界値テストが全て PASS。既存 `should_keep_alive` の実装は変更しない（テスト追加のみ） | 変更なし（T-07 のまま） |
-| **T-08'** | `crates/core` | `Middleware` trait（`extension.rs` 84〜95 行目）の doc comment には `UpgradeHandler`（97〜132 行目）や `RequestGate` と異なり Examples（doc test）が存在しない。契約説明を doc comment に追記し、対応する doc test（trait を実装する最小サンプル）を追加する | doc test が `cargo test` で PASS。既存 trait のシグネチャを変更しない | **T-08 を差し替え**（前提事前検証の表を参照。`RequestGate` は既に doc test 済みのため対象を `Middleware` trait へ変更） |
+| **T-08''** | `crates/core` | `Handler` trait（`server.rs` 145〜156 行目）の doc comment には、3 拡張点（`Middleware`/`UpgradeHandler`/`RequestGate`、いずれも `extension.rs` に Examples 済み）と異なり Examples（doc test）が存在しない。契約説明を doc comment に追記し、対応する doc test（trait を実装する最小サンプル。固定レスポンスを返すトイ実装等）を追加する | doc test が `cargo test` で PASS。既存 trait のシグネチャを変更しない | **T-08 を再差し替え**（前提事前検証の表を参照。T-08' 初版が対象とした `Middleware` trait には既に Examples 付き doc test が存在したため（Bugbot 指摘、PR #170）、対象を同じく Examples 未整備の `Handler` trait（`server.rs`）へ変更） |
 | T-09 | `crates/http` | `parse_request_head`（`request.rs`）に対し、不正入力（境界を越えたヘッダ数・空行のみのバッファ等）を与えた際に `ParseError` を返すことを確認する単体テストを追加する | 追加テストが全て PASS。`parse_request_head` の実装は変更しない（テスト追加のみ） | 変更なし（T-09 のまま） |
 | T-10 | `crates/core` | `version()`（`lib.rs`）の戻り値が `Cargo.toml` の `package.version` と一致することを確認する doc test または単体テストを追加する | 新規テストが PASS。`version()` の実装を変更しない | 変更なし（T-10 のまま） |
 
-T-01 が対象とする `Middleware` trait（ヘルパー関数追加）と T-08' が対象とする `Middleware`
-trait（doc test 追加）は同一 trait だが異なる公開 API 面（ヘルパー関数 vs トレイト自体の
-doc comment）を対象とするため、独立したタスクとして両立する。ただし同一被験セッションが
-両タスクを続けて担当する運用は避け、独立 worktree で各タスクを単独に実施する（第三者性の
-担保、`third-party-verification.md` 3 節）。
+T-08'' の再差し替え（前提事前検証の表を参照）により、対象は `Middleware` trait から
+`Handler` trait（`server.rs`）へ変更されたため、T-01 が対象とする `Middleware` trait
+（ヘルパー関数追加）との対象重複は解消している。T-01・T-08'' は互いに独立したクレート内
+シンボル（`extension.rs::Middleware` / `server.rs::Handler`）を対象とし、両立する。
 
 ## 可否判定タスク v2（J-01〜J-10、TASK-12.4-2 相当）
 

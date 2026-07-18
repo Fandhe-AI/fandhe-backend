@@ -88,6 +88,15 @@ set -e
 assert_exit_code "存在しないサマリファイルは非 0 exit" 1 "${code}"
 assert_contains "存在しないファイルの PENDING メッセージ" "${out}" "サマリファイルが見つかりません"
 
+set +e
+out="$(bash "${HARNESS}" \
+    --trial "dup:${FIXTURES_DIR}/trial-normal-1.summary" \
+    --trial "dup:${FIXTURES_DIR}/trial-normal-2.summary" 2>&1)"
+code=$?
+set -e
+assert_exit_code "同一 --trial label の重複指定は exit 2" 2 "${code}"
+assert_contains "重複ラベルの PENDING メッセージ" "${out}" "試行ラベルが重複しています"
+
 echo
 echo "=== 正常系（2 試行、全指標充足） ==="
 
