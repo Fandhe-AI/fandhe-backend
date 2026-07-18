@@ -328,3 +328,22 @@ hub      p95 中央値: 0.000242196（baseline 比 101.52%）
 
 `docs/acceptance/req9-hub-wiring.md` の判定サマリーを正とする（基準 D: WARN、
 実務許容帯内・狭義帯外、FAIL なし）。
+
+## 追補（#178）: 専有計測環境の整備と再計測試行
+
+`benches/nfr6-exclusive.sh`（`benches/lib/exclusive.sh` の flock 相互排他 + 静穏確認、
+`docs/design/nfr6-exclusive-measurement.md` 参照）を整備し、本レポートの
+「診断: ポート固有の変動」で指摘した環境ノイズへの対処（専有実行枠）を導入した。
+
+本イシュー実装時点は複数 issue の並列実装ワークフロー実行中であり、静穏確認
+（既定 `LOAD1_MAX=1.0`）は一度も成立しなかった。wrapper を `LOAD1_MAX=2.0`
+（緩和・参考値）で実行したところ、webrtc 対象の計測完了後、hub 対象に到達する前の
+graphql 対象の計測直前の静穏再確認で loadavg 5.96・`cargo`/`rustc` 稼働中を検知し
+BLOCKED で正しく停止したため、hub 対象自体の専有環境再計測は本イシュー内では
+実施できなかった。専有実行枠自体は host contention 下で計測を進めない設計どおりに
+機能しており（判定を丸めていない）、上記「専有環境での確定再計測が未了」という
+本レポートの既存記述は引き続き有効である。
+
+`docs/acceptance/req9-hub-wiring.md` 基準 D の判定（WARN）は変更しない。確定再計測は
+host が真に静穏な期間に改めて実施する必要があり、フォローアップとして別途実施する
+（`.claude/rules/out-of-scope-tracking.md`）。

@@ -436,3 +436,51 @@ cargo build --release -p backend-framework-core --example ws_nfr6 --features web
 `scripts/accept/lib/nfr6-ratio.sh`（`evaluate_nfr6_ratio`）を呼ぶ
 `scripts/accept/websocket-accept.sh` が担う（実務許容帯 [95%, 105%]・狭義帯
 [100.3%, 100.8%]）。実行結果レポートは `reports/task-4.4-ws-latency.md` を参照。
+
+## nfr6-exclusive.sh — NFR-6 専有計測手順（#178）
+
+`webrtc-nfr6-bench.sh` / `graphql-nfr6-bench.sh` / `hub-nfr6-bench.sh` は同一マシン上の
+他負荷（並列 issue 実装ワークフロー等の host contention）を考慮しない。並列実行下では
+RPS 比が大きく振れ、NFR-6 判定が確定できない事例があった
+（`benches/reports/task-9.5-hub-wiring-performance.md` の「診断: ポート固有の変動」節、
+同一バイナリ・同一マシンでも計測タイミングだけで RPS が約 4.4 倍変動した実例）。
+
+`benches/nfr6-exclusive.sh` は `benches/lib/exclusive.sh` の専有実行枠
+（flock によるホストグローバル相互排他・静穏（quiescence）確認・環境スナップショット）を
+取得したうえで 3 対象を順次計測し、`scripts/accept/lib/nfr6-ratio.sh` の
+`evaluate_nfr6_ratio` で PASS/WARN/FAIL を確定する。設計判断の詳細（専用 runner 案との
+比較・ポート動的採番を見送った理由）は `docs/design/nfr6-exclusive-measurement.md` を
+参照。
+
+```bash
+# 事前ビルド（自動ビルドしない、対象は既定 "webrtc graphql hub"。TARGETS で選択可）
+cargo build --release -p backend-framework-core --example minimal --no-default-features
+cargo build --release -p backend-framework-core --example webrtc_nfr6 --features webrtc
+cargo build --release -p backend-framework-core --example graphql_nfr6 --features graphql
+cargo build --release -p bf-plugin-hub-wiring --example hub_link_only
+
+bash benches/nfr6-exclusive.sh
+```
+
+主な env（すべて省略可、既定値は `benches/lib/exclusive.sh` 参照）:
+
+| env | 既定値 | 意味 |
+|-----|--------|------|
+| `BF_NFR6_LOCK` | `/tmp/backend-framework-nfr6-bench.lock` | 専有ロックファイルパス（symlink は拒否） |
+| `LOAD1_MAX` | `1.0` | 静穏とみなす 1 分 loadavg の上限 |
+| `QUIESCE_WAIT_SECS` | `1800` | 静穏待機・ロック待機の上限秒数（超過で BLOCKED、終了コード 2） |
+| `QUIESCE_POLL_INTERVAL_SECS` | `30` | 静穏ポーリング間隔秒数 |
+| `TARGETS` | `webrtc graphql hub` | 計測対象の選択（空白区切り） |
+
+`RUNS` / `DURATION` / `CONNECTIONS` は各 `*-nfr6-bench.sh` にそのまま透過する。
+終了コード 0 は「判定を確定できた」ことを意味し、FAIL が残っても 0 で終わる
+（FAIL の是非判断は人間レビューへ委ねる）。BLOCKED（終了コード 2）は静穏未達・
+ロック取得不能で計測不能だったことを意味し、PASS へは丸めない（フェイルクローズ）。
+
+セルフテストは `bash scripts/tests/run-nfr6-exclusive-tests.sh`（cargo/oha/
+ネットワーク非依存、CI 常設組み込みなし）。
+
+**ポート動的採番は実装していない**: 対象 example（`minimal.rs` 等）は bind アドレスを
+Rust コード中にハードコードしており、`crates/**` を変更しない本イシューの方針では
+env 経由のポート上書きに対応できないため（詳細は設計ドキュメント参照）。専有性は
+flock による直列化と静穏確認で担保する。

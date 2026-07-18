@@ -123,3 +123,44 @@ WebRTC を使うサービスがこの性能影響を許容できない場合、`
 （`webrtc-proxy` feature、`webrtc-rs` 非依存の別プロセス切り出し）を選択することで、
 コアプロセスのバイナリサイズ・性能特性への影響を回避できる。詳細は `AGENTS.md`
 「WebRTC の攻撃表面と『使う/使わない』サービスの安全性方針」節を参照。
+
+## 追補（#178）: 専有計測環境での再計測
+
+`benches/nfr6-exclusive.sh`（`benches/lib/exclusive.sh` の flock 相互排他 + 静穏確認、
+`docs/design/nfr6-exclusive-measurement.md` 参照）を用いて再計測を試行した。
+
+### 生ログ（`LOAD1_MAX=2.0` 緩和試行、既定 `LOAD1_MAX=1.0` では終始 BUSY 判定）
+
+```text
+=== NFR-6 計測（RUNS=5 DURATION=5s CONNECTIONS=32） ===
+  [baseline] run 1: rps=157598.7016894772 p95=0.000219943
+  [baseline] run 2: rps=158705.88494325182 p95=0.000216174
+  [baseline] run 3: rps=157898.82749806042 p95=0.000218898
+  [baseline] run 4: rps=144488.35198155144 p95=0.000236191
+  [baseline] run 5: rps=142807.3219082106 p95=0.000239133
+  [webrtc] run 1: rps=138585.62341863848 p95=0.000246621
+  [webrtc] run 2: rps=138981.91165037194 p95=0.000246141
+  [webrtc] run 3: rps=154100.419739397 p95=0.000223541
+  [webrtc] run 4: rps=136471.40954327202 p95=0.000251795
+  [webrtc] run 5: rps=138841.9718864645 p95=0.000246442
+
+baseline RPS 中央値: 157598.7016894772
+webrtc   RPS 中央値: 138841.9718864645（baseline 比 88.10%）
+baseline p95 中央値: 0.000219943
+webrtc   p95 中央値: 0.000246442（baseline 比 112.05%）
+```
+
+判定: FAIL（`evaluate_nfr6_ratio 88.10 112.05` → FAIL）。既存 FAIL 記録と整合する。
+
+### 判断（追補時点）
+
+本イシュー実装時点は複数 issue の並列実装ワークフロー実行中であり、専有実行枠の静穏
+確認は既定閾値（`LOAD1_MAX=1.0`）では一度も成立しなかった（loadavg が終始 1.9〜6 程度で
+推移）。上記は `LOAD1_MAX` を暫定的に 2.0 へ緩和した 1 回の参考計測であり、**専有環境の
+確定値ではない**。直後の `graphql` 対象は静穏再確認時に loadavg 5.96・`cargo`/`rustc`
+稼働中を検知して BLOCKED で正しく停止しており、host contention が継続していたことを
+示している。
+
+既定閾値での確定再計測は host が真に静穏な期間に改めて実施する必要がある
+（フォローアップとして別途実施、`.claude/rules/out-of-scope-tracking.md`）。本 FAIL
+判定は暫定的に維持し、PASS へは丸めない。

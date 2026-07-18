@@ -149,7 +149,12 @@ TASK-9.3（#63）で既に別途計測・最適化済み（`benches/reports/task
 - **NFR-6 の専有環境再計測**: 是正2（`hub_link_only.rs` へのリンクコスト分離）後は
   実務許容帯 [95%, 105%] に収まっているが、狭義帯 100.3〜100.8% には届いておらず、
   本環境が専有環境（PoC-2 同等）ではないため環境ノイズの影響を完全には排除できない。
-  専有環境での確定的な再計測は out-of-scope-tracking 対象（[[out-of-scope-tracking]]）
+  `benches/nfr6-exclusive.sh`（#178、flock 相互排他 + 静穏確認、
+  `docs/design/nfr6-exclusive-measurement.md`）を整備したが、本イシュー実装時点も
+  並列 issue 実装ワークフロー実行中で静穏確認が成立せず、hub 対象自体の専有環境
+  確定再計測は実施できなかった（`benches/reports/task-9.5-hub-wiring-performance.md`
+  追補節）。専有環境での確定的な再計測は host が真に静穏な期間にフォローアップとして
+  実施する（[[out-of-scope-tracking]]）。上記 WARN 判定は維持する
 - **opt-in コスト（ゲート有効時の実測）**: 本タスクでは自動計測していない。TASK-9.3
   の署名検証・キャッシュコスト計測（マイクロベンチ）とは別に、E2E スループットとして
   計測する場合は性能最適化の深掘りに該当し、別課題として扱う
