@@ -1038,6 +1038,10 @@ mod tests {
             roundtrip(&server, b"POST / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
         assert!(wrong_method.starts_with("HTTP/1.1 405 Method Not Allowed\r\n"));
         assert!(wrong_method.contains("Content-Length: 0\r\n"));
+        // TASK-177 / #177: 405 ワイヤ応答に登録済み method の Allow ヘッダが
+        // コアループの直列化経路（bf_routes::Router::dispatch → Response::serialize）
+        // を通しても欠落しないことを確認する。
+        assert!(wrong_method.contains("Allow: GET\r\n"));
     }
 
     #[tokio::test]
