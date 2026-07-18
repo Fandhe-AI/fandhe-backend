@@ -159,7 +159,8 @@ pub trait Handler: Send + Sync {
 /// TASK-1.5 / #14）をそのままコアの既定ハンドラとして登録できるようにする。
 ///
 /// [`Router::dispatch`][bf_routes::Router::dispatch] へ委譲するだけの薄い
-/// アダプタであり、ルーティングの意味論（method + target 完全一致・
+/// アダプタであり、ルーティングの意味論（method + target 完全一致を最優先し、
+/// miss 時のみ `{name}` パスパラメータ（TASK-176、#176）を登録順で照合・
 /// 404/405 のフェイルクローズ）は `crates/routes` 側の責務のまま変わらない。
 impl Handler for bf_routes::Router {
     fn handle(&self, head: &RequestHead, body: &[u8]) -> Response {
@@ -1038,6 +1039,28 @@ mod tests {
             roundtrip(&server, b"POST / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
         assert!(wrong_method.starts_with("HTTP/1.1 405 Method Not Allowed\r\n"));
         assert!(wrong_method.contains("Content-Length: 0\r\n"));
+    }
+
+    /// TASK-176（#176）: `Router::route_param` で登録した `{name}` パスパラメータ
+    /// ルートも `Server` 経由（`impl Handler for bf_routes::Router`）で解決できる
+    /// ことを end-to-end で確認する。
+    #[tokio::test]
+    async fn router_registered_as_handler_dispatches_path_params() {
+        let router = bf_routes::Router::new()
+            .route_param("GET", "/hello/{name}", |_head, params, _body| {
+                let name = params.get("name").unwrap_or("world");
+                Response::new(200, format!("hello, {name}").into_bytes())
+            })
+            .expect("valid pattern");
+        let server = Server::new().handler(router);
+
+        let ok = roundtrip(
+            &server,
+            b"GET /hello/alice HTTP/1.1\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(ok.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(ok.ends_with("hello, alice"));
     }
 
     #[tokio::test]

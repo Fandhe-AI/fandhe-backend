@@ -202,8 +202,9 @@ fn build_router(store: Store, authenticator: Authenticator, next_id: Arc<AtomicU
         }
     });
 
-    // 単件取得（`bf_routes::Router` は完全一致のみのため、越境遮断の全件検証
-    // 対象になる既知 ID を個別ルートとして列挙登録する。`docs/design/
+    // 単件取得（`bf_routes::Router::route_param` の `{id}` パスパラメータ対応
+    // （TASK-176、#176）ではなくあえて完全一致で個別登録する。越境遮断の全件検証
+    // 対象になる既知 ID を列挙し尽くす意図を明示するため。`docs/design/
     // outbox-consent-integration.md` の「データ層フェイルクローズ 404」を踏襲し、
     // 存在するが他テナントの item も未登録 ID と同一の 404 を返す（情報漏洩防止）。
     for id in 1..=4u64 {
