@@ -14,10 +14,10 @@
 #   （stdout テキストのパースは行わない。lib/common.sh の write_result_json 契約）。
 #
 # 前提: `crates/core` 側にエンドポイント等価な計測用バイナリ（`CORE_BIN`）が存在すること。
-#   TASK-1.4-2（#70）・TASK-1.5（#14）が未 merge の間はコア側の実行可能バイナリが
-#   存在しないため、CORE_BIN が見つからない場合は「コア側計測はブロック中」として
-#   明示し、判定を実施せずに終了する（安全側に倒す。判定ロジック自体は #70/#14 マージ後、
-#   本スクリプトの変更なしにそのまま機能する設計）。
+#   TASK-1.6-3（#168）で `crates/core/examples/core-bench.rs`（axum-ref と機能等価な
+#   4 エンドポイントを提供する example）を追加し、この前提を満たした。`CORE_BIN` が
+#   見つからない場合（example のビルド漏れ等）は「コア側計測はブロック中」として明示し、
+#   判定を実施せずに終了する（安全側に倒す）。
 #
 # 使い方・パラメータは benches/README.md を参照。
 
@@ -29,9 +29,10 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 # --- 計測パラメータ（env で上書き可能。既定は lib/common.sh の RUNS/DURATION/CONNECTIONS を継承） ---
 BASELINE_BIN="${BASELINE_BIN:-${WORKSPACE_ROOT}/target/release/axum-ref}"
-# CORE_BIN の既定値は #70/#14 マージ後に追加される想定のバイナリ名（backend-framework-core）。
-# 現時点（#70/#14 未マージ）ではこのパスは存在せず、後段の存在検査でブロック終了する。
-CORE_BIN="${CORE_BIN:-${WORKSPACE_ROOT}/target/release/backend-framework-core}"
+# CORE_BIN の既定値は core-bench example の出力パス（TASK-1.6-3 / #168）。
+# `cargo build --release --example core-bench -p backend-framework-core` の出力先
+# （下の「ビルド」節を参照）。CORE_BIN で任意のパスに上書き可能。
+CORE_BIN="${CORE_BIN:-${WORKSPACE_ROOT}/target/release/examples/core-bench}"
 BASELINE_HOST="${BASELINE_HOST:-127.0.0.1}"
 CORE_HOST="${CORE_HOST:-127.0.0.1}"
 # baseline/core を同時起動しないが、直前の計測の TIME_WAIT 残留と衝突しないよう
@@ -73,6 +74,9 @@ echo
 # ビルド漏れであり、判定不能として明確にエラー終了する（ブロック扱いとは区別する）。
 echo "== ビルド =="
 cargo build --release --manifest-path "${WORKSPACE_ROOT}/Cargo.toml"
+# `cargo build --release`（workspace ビルド）は example をビルド対象に含めないため、
+# core-bench（TASK-1.6-3 / #168）は個別に明示ビルドする。
+cargo build --release --example core-bench -p backend-framework-core --manifest-path "${WORKSPACE_ROOT}/Cargo.toml"
 echo
 
 if [ ! -x "${BASELINE_BIN}" ]; then
@@ -88,18 +92,17 @@ if [ ! -x "${CORE_BIN}" ]; then
     echo "## 判定結果: BLOCKED"
     echo
     echo "コア側計測用バイナリ（CORE_BIN=${CORE_BIN}）が見つかりません。"
-    echo "TASK-1.4-2（#70）・TASK-1.5（#14）マージ後、フルスクラッチコアの"
-    echo "実行可能サーババイナリが揃った時点で CORE_BIN を指定して再実行してください。"
-    echo "（本スクリプト自体の変更は不要。CORE_BIN の既定値・バイナリ名が確定した場合は"
-    echo "  本スクリプトの既定値を更新する）"
+    echo "'cargo build --release --example core-bench -p backend-framework-core' が"
+    echo "成功しているか確認するか、CORE_BIN で既存バイナリのパスを指定して再実行してください。"
     if [ -n "${REPORT_MD}" ]; then
         {
             echo
             echo "## 判定結果: BLOCKED"
             echo
             echo "コア側計測用バイナリ（\`CORE_BIN=${CORE_BIN}\`）が見つからないため、"
-            echo "axum-ref との比較判定を実施できませんでした。TASK-1.4-2（#70）・"
-            echo "TASK-1.5（#14）マージ後に再実行してください。"
+            echo "axum-ref との比較判定を実施できませんでした。"
+            echo "'cargo build --release --example core-bench -p backend-framework-core' の"
+            echo "成功を確認してから再実行してください。"
         } >>"${REPORT_MD}"
     fi
     exit 2

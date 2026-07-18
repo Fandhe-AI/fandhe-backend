@@ -175,12 +175,17 @@ REQ-1・NFR-1・NFR-2 の基準で判定する受け入れテスト。1 件で�
 ### 使い方
 
 ```bash
+# ビルド（bench-accept.sh 内部でも実行するが、単体ビルド確認には以下を使う）
+cargo build --release
+cargo build --release --example core-bench -p backend-framework-core
+
 # 既定パラメータ（RUNS=5 DURATION=15s CONNECTIONS=128）で実行
-# CORE_BIN が指すバイナリが存在しない場合は判定を実施せず BLOCKED（終了コード 2）で終わる
+# CORE_BIN 既定値は target/release/examples/core-bench（TASK-1.6-3 / #168）。
+# ビルド漏れ等でバイナリが存在しない場合は判定を実施せず BLOCKED（終了コード 2）で終わる
 ./benches/bench-accept.sh
 
-# コア側バイナリを明示指定して実行（TASK-1.4-2 #70・TASK-1.5 #14 マージ後の想定）
-CORE_BIN=target/release/backend-framework-core ./benches/bench-accept.sh
+# コア側バイナリを明示指定して実行（既定値を上書きしたい場合）
+CORE_BIN=target/release/examples/core-bench ./benches/bench-accept.sh
 
 # 判定表を markdown レポートにも追記する
 REPORT_MD=benches/reports/task-1.6-1-performance.md ./benches/bench-accept.sh
@@ -197,14 +202,14 @@ CORE_BIN=target/release/axum-ref CORE_PORT=3102 ./benches/bench-accept.sh
 | `1` | 1 件以上 FAIL（性能基準未達） |
 | `2` | BLOCKED（`CORE_BIN` が指すバイナリが存在せず判定不能。baseline 側バイナリ欠如も `1` で別途エラー終了） |
 
-### 現状（2026-07-16 時点）
+### 現状（TASK-1.6-3 / #168 実測済み）
 
-`crates/core` 側はライブラリ（HTTP/1.1 パーサ・3 拡張点）のみで、axum-ref と等価な
-エンドポイントを提供する実行可能サーババイナリは TASK-1.4-2（#70）・TASK-1.5（#14）
-マージ後に追加される見込み。現時点で既定パラメータのまま実行すると `BLOCKED`
-（終了コード 2）で終了する。ハーネス自体の正しさは axum-ref 同士のセルフ比較
-（`CORE_BIN` に axum-ref を指定）で検証済み。実測結果は
-[`reports/task-1.6-1-performance.md`](reports/task-1.6-1-performance.md) を参照。
+`crates/core/examples/core-bench.rs`（TASK-1.6-3、#168）が axum-ref と機能等価な
+4 エンドポイントを提供する計測用サーババイナリとして追加され、`BLOCKED` は解消済み。
+axum-ref との実測比較の判定結果・環境情報は
+[`reports/task-1.6-1-performance.md`](reports/task-1.6-1-performance.md) の
+「TASK-1.6-3（#168）実測」節を参照（ハーネス自体の正しさを確認したセルフ比較の
+既存記録は同ファイルに履歴として残している）。
 
 `TARGET_BIN` / `TARGET_HOST` / `TARGET_PORT`（`bench-http.sh` 等の単体実行時）や
 `BASELINE_*` / `CORE_*`（`bench-accept.sh`）を差し替えることで、`crates/core` 側の
