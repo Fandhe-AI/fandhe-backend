@@ -232,6 +232,10 @@ PoC-9（`docs/spec/03-poc/ai-first-maintainability/README.md`）では、HTTP �
 判断不能な場合は安全側に倒し、実装を進めずエスカレーションする（fail-closed 原則。
 判定記録の形式検証は `bash scripts/feasibility-check.sh --input <record>` で行う）。
 
+上記の各機構を「どの基盤で・どの頻度で・どの範囲に・誰の責任で」回すかという運用面の
+定義は [ai-maintenance-operations.md](docs/design/ai-maintenance-operations.md) を参照
+（Issue #93、REQ-11・REQ-12。新規の機構・規約は追加せず、既存資産の統合定義）。
+
 ## 規約: WebRTC の攻撃表面と「使う/使わない」サービスの安全性方針
 
 TASK-8.4（`docs/spec/05-tasks.md`、Phase 2 / MS-2、#29）対応。`docs/spec/04-requirements.md`

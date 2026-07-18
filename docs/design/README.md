@@ -101,3 +101,8 @@
   アプリ層 403/データ層フェイルクローズ 0 行の 2 層拒否設計・完了判定を「設計完了」と
   「E2E 統合検証完了」（#97、`micro-service-hub` Outbox Relay 完了 2026-09-30 以降）の
   2 段階に分ける方針を記述）
+- [`ai-maintenance-operations.md`](./ai-maintenance-operations.md): AI 保守運用体制
+  （Issue #93、REQ-11・REQ-12。`docs/spec/01-brainstorm.md` 未解決事項「設計思想 4 の
+  運用像」に応え、実装済みの改善提案フロー・機能改修フロー・可否判定ガードレール・
+  CI/scripts 群を「どの基盤で・どの頻度で・どの範囲に・誰の責任で」回すかという運用面
+  として統合定義。hub 運用チームとの合意はレビューゲートで記録する方針を明記）
