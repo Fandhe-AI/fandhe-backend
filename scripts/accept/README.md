@@ -4,8 +4,8 @@
 `dep-audit-accept.sh`（REQ-15、TASK-15.4）・`req13-change-impact-accept.sh`（REQ-13、TASK-13.2）・
 `webrtc-accept.sh`（REQ-8、TASK-8.4）・`graphql-accept.sh`（REQ-5、TASK-5.2）・
 `openapi-ts-accept.sh`（REQ-6、TASK-6.2）・`tracing-accept.sh`（REQ-10、TASK-10.4 / TASK-10.5）・
-`hub-wiring-accept.sh`（REQ-9、TASK-9.5）
-の 9 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
+`hub-wiring-accept.sh`（REQ-9、TASK-9.5）・`websocket-accept.sh`（REQ-4、TASK-4.4）
+の 10 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
 
 `docs/spec/04-requirements.md` REQ-1（最小コア）の受け入れ基準のうち、**性能計測を除く**
 非性能系の受け入れ基準（依存クレート数比・unsafe 根拠・audit / deny・実質コード行数・
@@ -207,6 +207,62 @@ PASS を偽らない）。手動計測手順・実行結果は
 `scripts/tests/run-webrtc-accept-tests.sh` を参照。実行結果レポートは
 `docs/acceptance/req8-webrtc-attack-surface.md`、NFR-6 の詳細計測結果は
 `benches/reports/task-8.4-webrtc-nfr6.md` に記録する。
+
+## `websocket-accept.sh` — REQ-4（WebSocket）受け入れ検証（TASK-4.4、#25）
+
+`docs/spec/05-tasks.md` TASK-4.4「WebSocket プラグイン受け入れテスト」が担う受け入れ
+基準を検証する。`lib/common.sh`（PASS/FAIL/SKIP/WARN 集計）と `lib/nfr6-ratio.sh`
+（NFR 判定ロジック単体、`webrtc-accept.sh`/`graphql-accept.sh` と共有）を使う
+`graphql-accept.sh` 同型のオーケストレータ。
+
+```bash
+./scripts/accept/websocket-accept.sh
+```
+
+検証内容:
+
+1. **A: `websocket` feature 無効時の依存完全除外** — `cargo tree -p
+   backend-framework-core -e normal --no-default-features` に
+   `tokio-tungstenite` / `tungstenite` / `bf-plugin-websocket` 系依存が一切現れない
+   こと。`scripts/pay-for-what-you-use-check.sh`（動的列挙のため websocket feature も
+   自動検証対象）も併走し、依存・unsafe・バイナリサイズ完全除外を二重に確認する
+2. **A': `crates/plugin-websocket` 自コードの unsafe が 0 件**（grep）
+3. **B: 回帰テスト** — `cargo test -p backend-framework-core --features websocket`
+   （境界テスト `websocket_upgrade.rs`・`websocket_respawn.rs`）・`cargo test -p
+   bf-plugin-websocket`（RFC 6455 ハンドシェイク契約テスト）・`cargo test -p
+   backend-framework-core --no-default-features`（フォールスルー陰性対照
+   `websocket_upgrade_disabled.rs`）がすべて成功すること
+4. **C: レイテンシ計測（p95・劣化定量化）** — `WEBSOCKET_ACCEPT_RESULT_JSON` env に
+   `benches/bench-ws-load.sh` の `RESULT_JSON` 出力パスを指定すると、ティア別
+   心拍 RTT p95・接続数増による劣化率（最小ティア比）の記録が存在することを検証する。
+   未指定・バイナリ未ビルド時は SKIP + 実行手順を案内する（本スクリプト自体は長時間
+   負荷試験を自動実行しない）
+5. **D: NFR-6（無関係パスへの RPS・レイテンシ影響）** — 計測用バイナリ
+   （`target/release/examples/minimal`・`target/release/examples/ws_nfr6`）と `oha`
+   が揃っていれば `benches/ws-nfr6-bench.sh` で empirical 計測し、
+   `webrtc-accept.sh`/`graphql-accept.sh` と同じ実務許容帯 [95%, 105%]（FAIL 境界）・
+   狭義帯 [100.3%, 100.8%]（PASS/WARN 境界）と照合する。揃っていなければ SKIP + 実行
+   手順を案内する
+
+前提: `cargo build --release -p backend-framework-core --example minimal
+--no-default-features` と `... --example ws_nfr6 --features websocket` を事前実行
+（基準 D）。基準 C は追加で `cargo build --release -p backend-framework-core
+--features websocket --example ws_echo`・`cargo build --release -p axum-ref --features
+ws --target-dir target/ws-bench`・`cargo build --release -p ws-load-client` の後、
+`benches/bench-ws-load.sh` を `RESULT_JSON` 指定で実行しておく（本スクリプトは自動
+ビルド・自動長時間負荷試験を行わない）。
+
+`examples/ws_nfr6.rs`（NFR-6 専用、`current_thread` ランタイム）は `examples/ws_echo.rs`
+（TASK-4.3 の 10,000 同時接続負荷試験専用、`multi_thread` ランタイム）とは別の
+example である点に注意。ベースライン `examples/minimal.rs` も `current_thread` の
+ため、ランタイム構成を揃えないと NFR-6 比較が「feature の処理コスト」ではなく
+「ランタイムのスレッド数差」を計測してしまう（詳細は `crates/core/examples/ws_nfr6.rs`
+の doc comment・`benches/reports/task-4.4-ws-latency.md` を参照）。
+
+判定ロジックのオフライン・セルフテスト（cargo・ネットワーク非依存）は
+`scripts/tests/run-websocket-accept-tests.sh` を参照。実行結果レポートは
+`docs/acceptance/req4-websocket.md`、レイテンシ・NFR-6 の詳細計測結果は
+`benches/reports/task-4.4-ws-latency.md` に記録する。
 
 ## `graphql-accept.sh` — REQ-5（GraphQL）受け入れ検証（TASK-5.2、#53）
 

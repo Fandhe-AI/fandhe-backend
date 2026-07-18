@@ -307,6 +307,14 @@ fullscratch（`crates/core/examples/ws_echo.rs`）と axum-ref（`ws` feature �
 効果を正式に再計測し、REQ 基準（axum 比 110% 以内・確立成功率 99% 以上・1k→10k の
 線形性）を判定する。
 
+TASK-4.4（#25）でメッセージ往復レイテンシ（心拍 RTT）の percentile 計測を追加した。
+`crates/ws-load-client` の `RESULT_JSON`（`heartbeat_rtt_us.p50/p95/p99/max`）から
+ティア別・試行別に心拍 RTT percentile を抽出し、RUNS 試行の中央値を算出する。加えて
+最小ティア→最大ティアの p95 劣化率（%）を impl ごとに算出し、「接続数増による劣化
+度合いの定量化」（TASK-4.4 受け入れ基準）の判定材料とする（自動 PASS/FAIL 判定は
+行わず、定量化した値を `benches/reports/task-4.4-ws-latency.md` へ転記し目視評価する。
+既存フィールド・既存の axum 比 / 確立成功率判定への影響はない、追加のみ）。
+
 `bench-rss.sh`（試行内複数サンプル×複数試行の中央値評価）と同じ計測思想を踏襲するが、
 HTTP（oha）ではなく WebSocket 長時間接続（専用クライアント）が対象であるため独立
 スクリプトとする。`lib/common.sh` の `median`/`to_json_array`/`write_result_json` の
@@ -360,7 +368,7 @@ RESULT_JSON=/tmp/ws-load-result.json bash benches/bench-ws-load.sh
 | `SUCCESS_RATE_MIN_PCT` | `99` | 確立成功率の受け入れ基準（%） |
 | `AXUM_RATIO_MAX_PCT` | `110` | 最大接続数時点の接続あたり RSS 増分・axum 比の受け入れ基準（%） |
 | `FULLSCRATCH_BIN` / `AXUM_BIN` / `CLIENT_BIN` | `target/release/examples/ws_echo` 等 | 計測対象バイナリの明示指定 |
-| `RESULT_JSON` | 未指定 | 指定時、接続数ティア別の接続あたり RSS 増分・成立率を機械可読 JSON として書き出す |
+| `RESULT_JSON` | 未指定 | 指定時、接続数ティア別の接続あたり RSS 増分・成立率・心拍 RTT percentile（TASK-4.4）・p95 劣化率（TASK-4.4）を機械可読 JSON として書き出す |
 
 ### 判定基準（受け入れ条件、`docs/spec/05-tasks.md` TASK-4.3）
 
@@ -392,3 +400,34 @@ RUNS=3 STAGES="10000:1 10000:4" bash benches/tracing-backpressure-bench.sh
 結果を JSON 配列で出す（`RESULT_JSON` 指定時はファイルにも書き出す、
 `benches/lib/common.sh` の規約に準拠）。実測結果・許容基準は
 `reports/task-10.6-tracing-backpressure.md` を参照。
+
+## ws-nfr6-bench.sh — WebSocket プラグインの NFR-6 計測（TASK-4.4、#25）
+
+`websocket` feature を有効化した際、無関係パス（`GET /health`）への RPS・p95
+レイテンシ影響が誤差範囲に収まることを検証する専用ハーネス。`webrtc-nfr6-bench.sh` /
+`graphql-nfr6-bench.sh` と同型のパターンだが、比較対象の 2 バイナリはいずれも
+`#[tokio::main(flavor = "current_thread")]` に固定する（`crates/core/examples/ws_nfr6.rs`
+を新設し、`current_thread` ランタイムをベースライン `examples/minimal.rs` と揃える）。
+
+`examples/ws_echo.rs`（TASK-4.3 の 10,000 同時接続負荷試験専用、`multi_thread`
+ランタイム）を NFR-6 比較にそのまま流用しない: ランタイムのスレッド数が揃っていないと、
+計測される RPS 差が「`websocket` feature の実処理コスト」ではなく「シングルスレッド
+vs マルチスレッド」というランタイム構成の違いに支配されてしまう（`ws_echo` を暫定的に
+NFR-6 比較へ流用した際の実測で、無関係パスの RPS 比が baseline 比 約190% という
+説明のつかない値になり判明した。詳細は `benches/reports/task-4.4-ws-latency.md` を
+参照）。
+
+```bash
+# 事前ビルド（自動ビルドしない）
+cargo build --release -p backend-framework-core --example minimal --no-default-features
+cargo build --release -p backend-framework-core --example ws_nfr6 --features websocket
+
+./benches/ws-nfr6-bench.sh
+```
+
+標準出力（stderr）へ実行ログ、標準出力（stdout）へ `rps_ratio_pct=` / `p95_ratio_pct=`
+等の machine-readable な結果を出す。`RUNS` / `DURATION` / `CONNECTIONS` を env で
+上書き可能（既定 `RUNS=5 DURATION=5s CONNECTIONS=32`）。判定（PASS/WARN/FAIL）は
+`scripts/accept/lib/nfr6-ratio.sh`（`evaluate_nfr6_ratio`）を呼ぶ
+`scripts/accept/websocket-accept.sh` が担う（実務許容帯 [95%, 105%]・狭義帯
+[100.3%, 100.8%]）。実行結果レポートは `reports/task-4.4-ws-latency.md` を参照。
