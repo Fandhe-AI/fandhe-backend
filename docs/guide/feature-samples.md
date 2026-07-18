@@ -1,0 +1,126 @@
+# feature 構成別サンプルガイド
+
+backend-framework は「最小コア + Cargo feature 駆動プラグイン」で構成されます。
+本文書は feature ごとに、有効化方法・実行可能なサンプル・動作確認手順・
+pay-for-what-you-use（[`.claude/rules/pay-for-what-you-use.md`](../../.claude/rules/pay-for-what-you-use.md)）の
+検証方法を一覧します。実行できる example は `crates/core/examples/*` にある
+既存のものを使い、本文書にコード全文は複製しません（[`README.md`](./README.md) の原則）。
+
+> 掲載する example の多くは NFR（性能）計測専用として追加されたものです
+> （doc comment に「計測専用」と明記されています）。production 配線の書き方
+> そのものは各 example のコードと [`getting-started.md`](./getting-started.md) の
+> `Server` builder 呼び出し例を参照してください。
+
+## websocket（`bf-plugin-websocket`）
+
+RFC 6455 ハンドシェイク検証・101 応答を `UpgradeHandler` 拡張点経由で提供します。
+
+```bash
+cargo run --release --example ws_echo -p backend-framework-core --features websocket
+curl -v http://127.0.0.1:3007/health   # 200 応答
+```
+
+`GET /ws`（既定パス）へ WebSocket クライアントで接続するとエコーセッションが
+確立します。負荷試験用の派生 example として `ws_nfr6`（`current_thread` ランタイム、
+baseline との RPS 比較専用）もあります。
+
+## graphql（`bf-plugin-graphql`）
+
+`POST /graphql` をパスインターセプトし、`async-graphql` で実クエリを実行します。
+
+```bash
+cargo run --release --example graphql_nfr6 -p backend-framework-core --features graphql
+curl -v http://127.0.0.1:3003/                                          # 200 応答（無関係パス）
+curl -v -X POST http://127.0.0.1:3003/graphql -d '{"query":"{ hello }"}' # クエリ実行
+```
+
+`Server::graphql` にスキーマを登録した場合のみ `POST /graphql` を処理し、未登録時は
+feature 有効でもフォールスルーします（`crates/plugin-graphql` の doc を参照）。
+
+## webrtc-proxy（`bf-plugin-webrtc-proxy`、MVP 推奨）
+
+WebRTC シグナリングを別プロセスに切り出すプロキシ型プラグインです。単体で完結する
+runnable example は本ガイド整備時点では未整備です（[8 章「スコープ外」](#スコープ外)
+を参照）。有効化・登録手順は次の最小コード断片のとおりです。
+
+```rust,ignore
+let server = Server::new()
+    .handler(router)
+    .webrtc_proxy(bf_plugin_webrtc_proxy::ProxyConfig::default());
+```
+
+詳細な設計方針（別プロセス切り出し型を選ぶ理由・攻撃表面の考え方）は
+[`docs/design/webrtc-process-isolation.md`](../design/webrtc-process-isolation.md) を参照してください。
+
+## webrtc（`bf-plugin-webrtc`、in-process 型）
+
+`webrtc-rs` に直接依存する in-process 型です。攻撃表面が大きいため、通常は
+上記 `webrtc-proxy` を推奨します（[`CLAUDE.md`](../../CLAUDE.md) Repository Structure 参照）。
+
+```bash
+cargo build --release --example webrtc_nfr6 -p backend-framework-core --features webrtc
+```
+
+`POST /rtc/offer` へのシグナリングを扱います。動作確認手順は
+`crates/core/examples/webrtc_nfr6.rs` の doc comment を参照してください。
+
+## tracing（`bf-plugin-tracing`）
+
+サンプリング付き可観測性を `Middleware` 拡張点経由で提供します。
+
+```bash
+cargo run --release --example tracing_nfr -p backend-framework-core --features tracing
+curl -v http://127.0.0.1:3006/           # 200 応答（無関係パス）
+curl -v http://127.0.0.1:3006/health     # 200 応答（計測対象パス）
+```
+
+決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O
+（`tracing-appender` の non-blocking writer）により、RPS への影響を抑えています
+（[`docs/design/tracing-integration.md`](../design/tracing-integration.md) 参照）。
+
+## openapi（`bf-plugin-openapi`、`gen-cli` feature）
+
+OpenAPI ドキュメントは `utoipa::path` 定義から `gen-openapi` CLI で生成し、
+`crates/plugin-openapi/openapi.json` に静的埋め込みします。
+
+```bash
+# openapi.json を再生成する
+cargo run -p bf-plugin-openapi --bin gen-openapi --features gen-cli
+
+# CI と同じ 2 段階検証（--check → 全 feature ビルド）
+scripts/openapi-two-stage.sh
+```
+
+TypeScript 向け型定義（`ts/src/generated/schema.d.ts`）を連携させる場合は
+[`docs/design/openapi-typescript-pipeline.md`](../design/openapi-typescript-pipeline.md) を参照してください。
+
+## hub-wiring（`bf-plugin-hub-wiring`）
+
+マルチテナント JWT 検証（RS256 / JWKS）・テナント境界強制を `RequestGate` 拡張点
+（`TenantGate`）だけで実現するプラグインです。
+
+```bash
+cargo run --release -p bf-plugin-hub-wiring --example hub_service_demo
+```
+
+`GET /items`・`GET /items/{id}`・`POST /items` を持つダミー hub サービスが起動します。
+配線コードの範囲は `crates/plugin-hub-wiring/examples/hub_service_demo.rs` の
+`// --- wiring:begin ---` 〜 `// --- wiring:end ---` を参照してください。
+
+## pay-for-what-you-use の検証
+
+各 feature を無効化した状態で、当該プラグインの依存が依存グラフから完全に消えることを
+確認できます。
+
+```bash
+# 既定（feature なし）構成で plugin-* 依存が一切出ないことを確認する
+cargo tree -p backend-framework-core
+
+# 個別 feature を有効化した場合のみ対応する依存が現れることを確認する
+cargo tree -p backend-framework-core --features websocket
+```
+
+## スコープ外
+
+- `webrtc-proxy` feature 単体で完結する runnable example の新設は本ガイド整備の
+  対象外です。現時点ではコード断片 + 設計ドキュメント参照で代替しています。
