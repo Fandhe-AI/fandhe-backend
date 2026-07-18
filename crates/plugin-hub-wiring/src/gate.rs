@@ -9,11 +9,13 @@
 //! （`crates/core/src/server.rs` doc）ため、WebSocket アップグレード等の
 //! 長時間接続もこの認証をバイパスできない。
 
-use crate::jwks::{JwksError, JwksKeySet, SharedJwks};
-use crate::jwt::{TokenError, verify_token};
+use crate::auth::Authenticator;
+#[cfg(test)]
+use crate::jwks::JwksKeySet;
+use crate::jwks::{JwksError, SharedJwks};
+use crate::jwt::TokenError;
 use backend_framework_core::extension::{GateOutcome, RequestGate};
 use bf_http::request::RequestHead;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// [`TenantGate`] の設定。JWKS は [`SharedJwks`] ハンドル経由で保持し、
 /// 利用側サービスが再起動なしで鍵ローテーション（[`SharedJwks::set`]）を
@@ -22,9 +24,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// 利用側サービスが取得した JSON ドキュメントを注入する
 /// （.claude/rules/security.md シークレット管理: 本クレートは env 読み取り・
 /// HTTP フェッチ等を行わない）。
+///
+/// 内部で [`Authenticator`] を保持し、`TenantGate::check` はこれへ委譲する
+/// （TASK-9.3 / #63）。利用側サービスがゲート通過後のハンドラでも同一の
+/// 検証結果キャッシュを再利用したい場合は、[`Self::authenticator`] で
+/// `Authenticator` を clone して保持し、`Server::gate` へ config を渡す前に
+/// 取り出しておく。
 #[derive(Debug, Clone)]
 pub struct TenantGateConfig {
-    jwks: SharedJwks,
+    authenticator: Authenticator,
 }
 
 impl TenantGateConfig {
@@ -42,7 +50,9 @@ impl TenantGateConfig {
     /// let config = TenantGateConfig::new(shared);
     /// ```
     pub fn new(jwks: SharedJwks) -> Self {
-        Self { jwks }
+        Self {
+            authenticator: Authenticator::new(jwks),
+        }
     }
 
     /// JWKS JSON ドキュメントから直接設定を組み立てる便宜コンストラクタ。
@@ -64,6 +74,30 @@ impl TenantGateConfig {
     pub fn from_jwks_json(json: &str) -> Result<Self, JwksError> {
         Ok(Self::new(SharedJwks::from_json(json)?))
     }
+
+    /// 内部で共有する [`Authenticator`] を取得する（`Clone`、`Arc` 共有）。
+    ///
+    /// 利用側サービスがハンドラ内で `org_id` 等のクレームを再利用したい場合、
+    /// `Server::gate(TenantGate::new(config))` で `config` を消費する**前に**
+    /// 本メソッドで `Authenticator` を取り出しておく。ゲート通過後の
+    /// ハンドラで同一トークンについて [`Authenticator::authenticate`] を
+    /// 呼ぶと、ゲートの検証でキャッシュ済みのためヒットし、署名検証を
+    /// 再実行しない（TASK-9.3 / #63 の主目的）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bf_plugin_hub_wiring::gate::{TenantGate, TenantGateConfig};
+    ///
+    /// let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#).unwrap();
+    /// let authenticator = config.authenticator();
+    /// let gate = TenantGate::new(config);
+    /// // `authenticator` はハンドラ側で保持し、`gate` はコアへ登録する。
+    /// drop(gate);
+    /// ```
+    pub fn authenticator(&self) -> Authenticator {
+        self.authenticator.clone()
+    }
 }
 
 /// `Authorization: Bearer <JWT>` を検証し、テナントスコープをフェイルクローズで
@@ -84,7 +118,10 @@ impl TenantGateConfig {
 /// （`crates/core/src/extension.rs` doc）のため、検証で得た `org_id` 等の
 /// クレームはこの構造体・呼び出しの外へ一切持ち出さない（コアは hub 固有の
 /// シンボルへ依存しない）。ハンドラ側で認証済み情報を再利用したい場合は
-/// [`crate::jwt::verify_token`] を直接呼ぶ（TASK-9.3 のキャッシュ最適化対象）。
+/// [`TenantGateConfig::authenticator`] で取得した [`crate::auth::Authenticator`]
+/// を呼ぶ。ゲート（本 `check`）とハンドラが同一 `Authenticator` を共有していれば、
+/// ゲート通過時点でキャッシュが温まりハンドラ側の呼び出しは署名検証を
+/// 再実行しない（TASK-9.3 / #63 のキャッシュ最適化）。
 pub struct TenantGate {
     config: TenantGateConfig,
 }
@@ -114,70 +151,20 @@ const UNAUTHORIZED_BODY: &[u8] = br#"{"error":"invalid_token"}"#;
 /// `403` 応答の固定 body。
 const FORBIDDEN_BODY: &[u8] = br#"{"error":"tenant_scope_required"}"#;
 
-/// RFC 6750 の `Bearer` スキーム名（大文字小文字を区別しない）。
-const BEARER_SCHEME: &str = "bearer";
-
 impl RequestGate for TenantGate {
     fn name(&self) -> &'static str {
         "hub-tenant-gate"
     }
 
     fn check(&self, head: &RequestHead) -> GateOutcome {
-        let Some(authorization) = head.header("authorization") else {
-            return GateOutcome::Reject {
-                status: 401,
-                body: UNAUTHORIZED_BODY.to_vec(),
-            };
-        };
-
-        // RFC 6750 (`credentials = auth-scheme 1*SP token68`):
-        // スキーム名 `Bearer` は大文字小文字を区別せず、スキーム名とトークンの
-        // 間には 1 個以上の SP が許容される。固定長プレフィックス一致だと
-        // 「Bearer」の後にスペースが 2 個以上並ぶ正当なヘッダを誤って
-        // 拒否してしまう（先頭スペースが token68 側に混入し検証失敗する）ため、
-        // スキーム名部分とスペース列を明示的に分離して剥がす。
-        let Some(scheme_end) = authorization.find(' ') else {
-            return GateOutcome::Reject {
-                status: 401,
-                body: UNAUTHORIZED_BODY.to_vec(),
-            };
-        };
-        // `find(' ')` は ASCII 空白（1 バイト固定）の位置を返す。ASCII バイトは
-        // UTF-8 マルチバイト列の継続バイトとして現れ得ないため、この位置での
-        // スライスは常に char 境界であり安全。
-        let scheme = &authorization[..scheme_end];
-        if !scheme.eq_ignore_ascii_case(BEARER_SCHEME) {
-            return GateOutcome::Reject {
-                status: 401,
-                body: UNAUTHORIZED_BODY.to_vec(),
-            };
-        }
-        let token = authorization[scheme_end..].trim_start_matches(' ');
-        if token.is_empty() {
-            return GateOutcome::Reject {
-                status: 401,
-                body: UNAUTHORIZED_BODY.to_vec(),
-            };
-        }
-
         // `check()` は同期・非ブロッキング（I/O なし）で Tokio ワーカーを
         // 塞がない契約を維持する（`crates/core/src/extension.rs` doc）。
-        // `snapshot()` は読み取りロックを短時間保持するのみで、以降の
-        // `verify_token` 呼び出し中はロックを保持しない（.claude/rules/coding-rust.md）。
-        let keys: std::sync::Arc<JwksKeySet> = self.config.jwks.snapshot();
-
-        // フェイルクローズ: `SystemTime::now()` が UNIX epoch 秒への変換に
-        // 失敗した場合（クロック異常）に `0` を渡すと `exp <= now_unix` の
-        // 期限切れ判定が常に false になり、あらゆる `exp` を「期限内」として
-        // 誤許可してしまう（.claude/rules/security.md フェイルクローズ原則）。
-        // `u64::MAX` を渡すことで、正の `exp` を持つトークンは無条件に
-        // `TokenError::Expired`（401）として拒否される側へ倒す。
-        let now_unix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(u64::MAX);
-
-        match verify_token(token, &keys, now_unix) {
+        // `Authenticator::authenticate` はロックを短時間保持するのみで、
+        // 実際の署名検証（キャッシュミス時のみ）中はロックを保持しない
+        // （.claude/rules/coding-rust.md）。判定ポリシー（401/403 マッピング）は
+        // 従来の `verify_token` 直接呼び出しと完全に同一であり、キャッシュ
+        // ヒット/ミスで判定結果が変わることはない（TASK-9.3 / #63）。
+        match self.config.authenticator.authenticate(head) {
             Ok(_claims) => GateOutcome::Allow,
             Err(TokenError::MissingOrgId) => GateOutcome::Reject {
                 status: 403,

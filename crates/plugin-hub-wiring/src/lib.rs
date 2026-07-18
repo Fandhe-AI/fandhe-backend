@@ -38,6 +38,29 @@
 //!
 //! [RFC 7517]: https://www.rfc-editor.org/rfc/rfc7517
 //!
+//! # JWT 検証結果のリクエストスコープキャッシュ（TASK-9.3 / #63）
+//!
+//! [`gate::TenantGate`] は `GateOutcome`（許可/拒否のみ）しかコアへ返せない
+//! 契約上、検証で得た `org_id` 等のクレームを直接コアへ渡せない。従来は
+//! ハンドラ側で再度クレームが必要な場合に [`jwt::verify_token`] を再呼び出し
+//! するしかなく、1 リクエストにつき RS256 署名検証（RSA-2048）が 2 回
+//! （ゲート + ハンドラ）走っていた。
+//!
+//! [`auth::Authenticator`] はこの重複を解消する、検証成功済みトークンの
+//! キャッシュ（トークン文字列の SHA-256 ハッシュをキーとする。生トークンは
+//! 保持しない）。[`gate::TenantGateConfig::authenticator`] で取得できる
+//! `Authenticator` を、`Server::gate(TenantGate::new(config))` で `config` を
+//! 消費する**前に** clone してハンドラ側へ持ち回ることで、ゲート通過時点の
+//! 検証でキャッシュが温まり、ハンドラ内の [`auth::Authenticator::authenticate`]
+//! 呼び出しは署名検証を再実行しない。
+//!
+//! キャッシュヒットを許すのは「再検証しても同じ結果になる」場合のみ:
+//! 検証時点の鍵集合（`Arc<JwksKeySet>`）が現行 [`jwks::SharedJwks::snapshot`]
+//! と一致（`Arc::ptr_eq`）していること（鍵ローテーション後は自動的に無効化）、
+//! かつ `exp` がヒット時にも毎回再判定され期限内であること。検証**失敗**は
+//! キャッシュしない（失敗の再検証コストは要求元に払わせ、無効トークンの
+//! 大量投入によるキャッシュ汚染を防ぐ、.claude/rules/security.md）。
+//!
 //! # pay-for-what-you-use
 //!
 //! 本クレートを依存に追加しないサービスには、`ring` / `base64` / `serde` /
@@ -46,12 +69,15 @@
 //! 検証可能、.claude/rules/pay-for-what-you-use.md）。`ring` は
 //! `crates/plugin-webrtc`（`webrtc` feature 経由）が既に依存グラフへ引き込んで
 //! いる実績依存であり、本クレート追加による新規のライセンス・advisory 面の
-//! リスク増はない。
+//! リスク増はない。[`auth`] モジュールのキャッシュも `ring::digest`（既存の
+//! `ring` 依存内）のみを用い、新規依存はゼロ。
 
+pub mod auth;
 pub mod gate;
 pub mod jwks;
 pub mod jwt;
 
+pub use auth::Authenticator;
 pub use gate::{TenantGate, TenantGateConfig};
 pub use jwks::{JwksError, JwksKeySet, SharedJwks};
 pub use jwt::{Claims, TokenError, verify_token};
