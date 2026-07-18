@@ -159,6 +159,7 @@ main は判断・統合・ユーザー対話に集中する**。詳細は [rules
 | [improvement-proposal.md](.claude/rules/improvement-proposal.md) | 改善提案フロー・起票・承認の運用規約 |
 | [feature-modification.md](.claude/rules/feature-modification.md) | 機能要求→実装→テスト→ドキュメント追随→完遂判定の一貫改修フロー運用規約 |
 | [feasibility-guardrail.md](.claude/rules/feasibility-guardrail.md) | 対応可否自律判断ガードレール（曖昧要求・危険要求の不可判定規約） |
+| [ci.md](.claude/rules/ci.md) | CI 実行環境規約（self-hosted runner 必須・timeout・schedule 負荷抑制） |
 
 ## Current Skills
 
