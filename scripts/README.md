@@ -72,6 +72,8 @@ req6-typescript-types.md` 参照）。
 | `tests/run-third-party-verify-tests.sh` | `third-party-verify.sh` のセルフテスト。`--offline` は引数検証・PENDING 判定のみ（cargo ビルド不要）、既定モードは fixture worktree を作成して PASS/FAIL 検出まで確認するフル層 | CI からは呼ばれない（フル層は cargo ビルドを伴い時間を要するため） |
 | `third-party-feasibility-verify.sh` | 可否判定正解率の第三者再検証（TASK-12.4-2、#86）の機械採点ハーネス。タスク定義（正解ラベル）と被験 AI の判定記録を突き合わせ、正解率・誤判定による破壊・判断根拠提示割合を算出する | CI からは呼ばれない。人間が実測定時にローカル/手動実行する（`docs/design/third-party-feasibility-verification.md` 参照） |
 | `tests/run-third-party-feasibility-tests.sh` | `third-party-feasibility-verify.sh` のセルフテスト（ネットワーク・cargo ビルド不要、合成 fixture で採点ロジックのみを検証） | CI からは呼ばれない（Rust 非変更の範囲でローカル/任意実行を想定） |
+| `third-party-stability-aggregate.sh` | 複数回試行の安定性確認（TASK-12.5、#46）の試行横断集計ハーネス。トライアルサマリファイル（`--trial <label>:<file>` または `--trials-dir <dir>`）を突き合わせ、指標×試行の表・min/max/レンジ・平均・REQ-12 閾値充足を算出する | CI からは呼ばれない。試行 2・3 の実測定完了後にローカルで呼び出す運用（`docs/design/multi-trial-stability-verification.md` 参照） |
+| `tests/run-third-party-stability-tests.sh` | `third-party-stability-aggregate.sh` のセルフテスト（ネットワーク・cargo ビルド不要、合成 fixture で正常系・閾値未達検知・破壊検知・不正入力 fail-closed を検証） | CI からは呼ばれない（Rust 非変更の範囲でローカル/任意実行を想定） |
 | `extension-closure-check.sh` | 変更ファイル一覧を A（プラグインクレート内）/ B（コア側許容シーム）/ C（テスト）/ D（ドキュメント・運用）/ E（違反）の 4+1 カテゴリに分類し、E が 1 件でもあれば FAIL（拡張点への閉包違反）とする。`--commit <sha>`（`git diff-tree` で変更ファイル取得）または `--files-from <file>`（セルフテスト用注入口）を指定する（TASK-13.1、#49） | `scripts/extension-closure-gate.sh`（下記）から呼ばれる。人間が実コミット検証で直接実行することも可能（TASK-13.2/#50 で `.github/workflows/ci.yml` の `fetch-depth: 0` により shallow clone 制約を解消） |
 | `tests/run-extension-closure-tests.sh` | `extension-closure-check.sh` のセルフテスト。`tests/fixtures/extension-closure/*.txt` を注入し閉包（PASS）・`crates/http`/`crates/routes` 混入（FAIL）・空リスト/不正入力（フェイルクローズ）を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `extension-closure-gate.sh` | 拡張点への変更影響範囲閉包 PR ゲート（TASK-13.2、#50、`docs/design/dependency-graph-contract.md` 4 節）。`crates/plugin-*` / `crates/core/src/plugin.rs` を含まない差分は SKIP、含む差分は `extension-closure-check.sh` で閉包判定し、E ファイルがあれば `docs/design/*.md` への理由記載の有無を照合する（記載済みなら WARN 付き PASS、未記載なら FAIL）。`--base <ref>`（CI）または `--files-from <file>`（セルフテスト用注入口） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから `pull_request` イベント時のみ呼ばれる |
@@ -389,3 +391,48 @@ bash scripts/tests/run-third-party-feasibility-tests.sh
   動くこと」の確認に過ぎない。独立した被験 AI による実測定が REQ-12 の閾値（80% 以上）
   を達成したことを意味しない。両者を混同しないこと
   （`docs/design/third-party-feasibility-verification.md` 8 節）。
+
+## `third-party-stability-aggregate.sh` — 複数回試行の試行横断集計（TASK-12.5、#46）
+
+```bash
+bash scripts/third-party-stability-aggregate.sh \
+  --trial trial1:<試行 1 のトライアルサマリファイル> \
+  --trial trial2:<試行 2 のトライアルサマリファイル> \
+  [--trial trial3:<試行 3 のトライアルサマリファイル>]
+
+# または --trials-dir <dir>/trial-<label>.summary を一括読み込み
+bash scripts/third-party-stability-aggregate.sh --trials-dir <dir>
+```
+
+- TASK-12.4-1／TASK-12.4-2 の完遂率・可否判定正解率再検証を複数回試行し、結果安定性を
+  確認する TASK-12.5（#46、REQ-12 Conditional Go 条件 (3)）の評価者側集計を担う。
+  `third-party-verify.sh`／`third-party-feasibility-verify.sh` 自体は変更せず、それらを
+  試行ごとに N=10 タスク実行した結果を評価者が「トライアルサマリファイル」（本スクリプト
+  の doc コメント参照、`metric=<name> pass=<n> fail=<n> pending=<n> total=<n>` 形式）へ
+  書き起こしたものを入力とする。
+- 被験由来の値を扱う信頼境界のため、`eval`・コマンド置換への値展開を行わず、`metric` 名は
+  allowlist（`completion_rate`/`feasibility_accuracy`/`evidence_rate`/`destruction`）との
+  `grep -qxF` 完全一致でのみ照合する。試行ラベルは英数字・ハイフン・アンダースコアのみ
+  許可。数値は非負整数のみ許可し、`pass+fail+pending != total` 等の不整合行は当該指標を
+  PENDING として扱う（fail-closed、解釈できない行があった場合は終了コード `1`）。
+- 指標×試行の表（PASS/FAIL/PENDING/達成率/閾値充足）・min/max/レンジ/平均を算出する。
+  REQ-12 の閾値（完遂率 60%・可否判定正解率 80%・根拠提示割合 80%・破壊 0 件）は本
+  スクリプト内に定数として持つ（`ci-completion-criteria.md` 等の再定義はしない）。
+- 詳細設計・K=3・v2 タスクセット再設計規約・安定性判定基準は
+  [`docs/design/multi-trial-stability-verification.md`](../docs/design/multi-trial-stability-verification.md)
+  を参照。試行 2・3 の実測定は本 README 執筆時点で未実施（PENDING）であり、
+  [`docs/reports/task-12-5-stability-verification.md`](../docs/reports/task-12-5-stability-verification.md)
+  に引き継ぎ事項を記録している。
+
+## `tests/run-third-party-stability-tests.sh` — 集計ハーネスのセルフテスト（TASK-12.5、#46）
+
+```bash
+bash scripts/tests/run-third-party-stability-tests.sh
+```
+
+- ネットワーク・cargo ビルド不要。`scripts/tests/fixtures/third-party-stability/*.summary`
+  （正常系 2 試行・閾値未達・破壊検知・不正入力）で `third-party-stability-aggregate.sh`
+  の集計ロジックを検証する。
+- **注意**: 本セルフテストが green であることは「集計ハーネスの算出ロジックが正しく
+  動くこと」の確認に過ぎない。独立した被験 AI による複数回試行で安定性を確認したことを
+  意味しない。両者を混同しないこと（`docs/design/multi-trial-stability-verification.md`）。

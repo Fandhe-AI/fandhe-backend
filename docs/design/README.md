@@ -82,6 +82,11 @@
   non_blocking の lossy 特性、`TracingConfig` によるサンプリング設定・`exclude_path` に
   よる高頻度パス除外・記録粒度を上げる場合の拡張指針（method/path/elapsed_ms 限定の
   不変条件を維持）、依存インパクト要約（`docs/dep-impact/records.md` 参照）を記述）
+- [`multi-trial-stability-verification.md`](./multi-trial-stability-verification.md): 複数回
+  試行による結果安定性確認プロトコル（TASK-12.5、#46、REQ-12。TASK-12.4-1／TASK-12.4-2 の
+  第三者検証プロトコルを無変更で引用しつつ、試行回数 K=3・試行間の条件統一・タスクセット
+  v2 の前提事前検証手順・後出し防止・安定性判定基準（全試行での REQ-12 閾値充足 +
+  レンジ記録）・集計ハーネス設計を記述）
 - [`outbox-consent-integration.md`](./outbox-consent-integration.md): Outbox・同意ゲート
   実データモデル統合設計（TASK-9.4、#64、REQ-9。PoC-6 インメモリ実装（`Mutex<Vec<...>>`）
   から `micro-service-hub` の Outbox Relay・同意管理サービス（PostgreSQL）への統合方針。

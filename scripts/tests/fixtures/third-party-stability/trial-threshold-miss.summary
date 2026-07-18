@@ -1,0 +1,2 @@
+# 閾値未達検知フィクスチャ: 完遂率 50%（閾値 60% 未満）
+metric=completion_rate pass=5 fail=5 pending=0 total=10
