@@ -28,6 +28,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# common.sh は RUNS="${RUNS:-5}" を設定・export するため、本スクリプト固有の
+# 既定値（3）を後段の `RUNS="${RUNS:-3}"` で適用しようとしても、呼び出し元が
+# RUNS を未設定の場合は常に common.sh の 5 が先に確定し、本スクリプトの
+# デフォルト 3 は決して適用されない（Bugbot 指摘、PR #164/#24）。呼び出し元が
+# 明示した値かどうかをソース前に退避し、ソース後に本スクリプト固有の既定値へ
+# 差し替えることで、他の NFR ベンチ（bench-rss.sh 等）と同様に呼び出し元の
+# 明示指定を尊重しつつ、本スクリプト固有の既定値も正しく効かせる。
+runs_caller_override="${RUNS:-}"
 # shellcheck source=lib/common.sh
 # median/to_json_array/write_result_json/validate_numeric のみ利用する
 # （`RUNS`/`DURATION`/`CONNECTIONS`/`TARGET_*` の既定値・`check_dependencies`・
@@ -35,7 +43,7 @@ WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 
 # --- 計測パラメータ（env で上書き可能） ---------------------------------
-RUNS="${RUNS:-3}"
+RUNS="${runs_caller_override:-3}"
 HOLD_SECS="${HOLD_SECS:-60}"
 RAMP_BATCH="${RAMP_BATCH:-200}"
 RAMP_DELAY_MS="${RAMP_DELAY_MS:-50}"
@@ -85,11 +93,15 @@ check_prereqs() {
 }
 
 # ulimit -n（オープンファイルディスクリプタ数上限）が最大接続数を賄えるか検査する。
-# WebSocket 1 接続はクライアント・サーバ双方で 1 fd を消費するため、安全側に
-# 「最大接続数 × 2 + 余裕 100」を最小要求値とする（PoC-7 の環境制約の再発防止）。
+# `ulimit -n` はプロセス単位の上限であり、クライアント（ws-load-client）と
+# サーバ（fullscratch/axum-ref）は別プロセスとして起動するため、各プロセスが
+# 消費する fd は概ね「最大接続数」分のみ（サーバ側は listen socket 等を含めても
+# 同程度）。誤って「最大接続数 × 2」を要求すると、実際には 10,000 接続の負荷試験を
+# 問題なく実行できる環境まで弾いてしまう（Bugbot 指摘、PR #164/#24）。
+# 安全側の余裕（100）のみを加えた「最大接続数 + 余裕 100」を最小要求値とする。
 check_ulimit() {
     local max_conn="$1"
-    local required=$((max_conn * 2 + 100))
+    local required=$((max_conn + 100))
     local current
     current="$(ulimit -n)"
     if [ "${current}" != "unlimited" ] && [ "${current}" -lt "${required}" ]; then

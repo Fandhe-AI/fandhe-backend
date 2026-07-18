@@ -178,7 +178,6 @@ async fn main() {
 
     let connected = Arc::new(AtomicU64::new(0));
     let failed = Arc::new(AtomicU64::new(0));
-    let active = Arc::new(AtomicU64::new(0));
     let latencies_us: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
 
     let ramp_start = Instant::now();
@@ -188,7 +187,6 @@ async fn main() {
         let target = target.clone();
         let connected = connected.clone();
         let failed = failed.clone();
-        let active = active.clone();
         let latencies_us = latencies_us.clone();
 
         let handle = tokio::spawn(async move {
@@ -205,7 +203,6 @@ async fn main() {
                 }
             };
             connected.fetch_add(1, Ordering::Relaxed);
-            active.fetch_add(1, Ordering::Relaxed);
 
             let (mut write, mut read) = ws.split();
             let hold_deadline = Instant::now() + Duration::from_secs(hold_secs);
@@ -239,7 +236,6 @@ async fn main() {
             }
 
             let _ = write.send(Message::Close(None)).await;
-            active.fetch_sub(1, Ordering::Relaxed);
         });
         handles.push(handle);
 
