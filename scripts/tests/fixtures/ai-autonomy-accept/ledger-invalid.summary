@@ -1,0 +1,5 @@
+# セルフテスト用フィクスチャ: 不正値（負数・非数値・pass+fail+pending≠total）を含む
+metric=completion_rate pass=-1 fail=2 pending=0 total=10
+metric=regression count=abc
+metric=feasibility_accuracy pass=8 fail=2 pending=0 total=99
+metric=unknown_metric pass=1 fail=0 pending=0 total=1

@@ -1,0 +1,7 @@
+# セルフテスト用フィクスチャ: 閾値は充足するがリグレッション・誤判定破壊が発生
+metric=completion_rate pass=8 fail=2 pending=0 total=10
+metric=regression count=1
+metric=feasibility_accuracy pass=8 fail=2 pending=0 total=10
+metric=destruction count=2
+metric=evidence_rate pass=6 fail=0 pending=0 total=6
+metric=auto_fix_rate pass=8 fail=2 pending=0 total=10

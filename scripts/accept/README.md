@@ -4,8 +4,9 @@
 `dep-audit-accept.sh`（REQ-15、TASK-15.4）・`req13-change-impact-accept.sh`（REQ-13、TASK-13.2）・
 `webrtc-accept.sh`（REQ-8、TASK-8.4）・`graphql-accept.sh`（REQ-5、TASK-5.2）・
 `openapi-ts-accept.sh`（REQ-6、TASK-6.2）・`tracing-accept.sh`（REQ-10、TASK-10.4 / TASK-10.5）・
-`hub-wiring-accept.sh`（REQ-9、TASK-9.5）・`websocket-accept.sh`（REQ-4、TASK-4.4）
-の 10 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
+`hub-wiring-accept.sh`（REQ-9、TASK-9.5）・`websocket-accept.sh`（REQ-4、TASK-4.4）・
+`ai-autonomy-accept.sh`（REQ-12/NFR-8、TASK-12.7）
+の 11 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
 
 `docs/spec/04-requirements.md` REQ-1（最小コア）の受け入れ基準のうち、**性能計測を除く**
 非性能系の受け入れ基準（依存クレート数比・unsafe 根拠・audit / deny・実質コード行数・
@@ -444,3 +445,46 @@ hub_service_demo` を事前実行（本スクリプトは自動ビルドしな�
 判定ロジックのオフライン・セルフテスト（cargo・ネットワーク非依存）は
 `scripts/tests/run-hub-wiring-accept-tests.sh` を参照。実行結果レポートは
 `docs/acceptance/req9-hub-wiring.md` に記録する。
+
+## `ai-autonomy-accept.sh` — REQ-12（AI 自律改修支援機構）・NFR-8 受け入れ検証（TASK-12.7、#48）
+
+`docs/spec/05-tasks.md` TASK-12.7「AI 自律改修支援機構受け入れテスト」の受け入れ基準を
+基準 A〜F で検証する。TASK-12.4〜12.6 の第三者再検証結果に基づき確定した値を
+`docs/reports/task-12-7-metrics.summary`（機械可読台帳）から読み取り、`lib/common.sh`
+（PASS/FAIL/SKIP/WARN 集計）を使う `req13-change-impact-accept.sh` 同型のオーケストレータ。
+
+```bash
+./scripts/accept/ai-autonomy-accept.sh
+```
+
+検証内容（基準 A〜F）:
+
+- A. 自律完遂率 ≥60% かつリグレッション 0 件（確定値台帳突合）
+- B. 可否判定正解率 ≥80% かつ誤判定破壊 0 件（確定値台帳突合。判定記録
+  `docs/reports/task-12-4-2-records/` が残っていれば `third-party-feasibility-verify.sh`
+  で再採点し台帳値との一致も確認する）
+- C. エスカレーション時の判断根拠提示 ≥80%（確定値台帳突合）
+- D-1（機械）. `scripts/audit-triage.sh` が影響範囲（crate 列）・対応方針（推奨アクション）
+  欄を fixture 実行で生成することの機械検証
+- D-2（人手）. 受け入れレポート内の人手評価台帳（`docs/reports/task-12-7-acceptance.md`）
+  の集計。未記入・PENDING 行が残る場合は PASS と偽らず SKIP
+- E. NFR-8（自動修正でテストが通る修正を得られる割合）≥70%（確定値台帳突合）
+- F. TASK-12.5 試行 2・3・TASK-12.6 グレーゾーン実測の状態。試行サマリ
+  （`docs/reports/trial-*.summary`）・判定記録（`docs/reports/task-12-6-records/`）が
+  存在すれば `third-party-stability-aggregate.sh`・`third-party-feasibility-verify.sh`
+  をそれぞれ呼び出して検証し、なければ SKIP + 実施手順を案内する
+
+確定値台帳（`docs/reports/task-12-7-metrics.summary`）は被験由来の実測値を転記した
+信頼できない入力として扱い、metric 名 allowlist + 非負整数のみを受理する fail-closed
+パースを行う（`third-party-stability-aggregate.sh` のパーサ設計を踏襲。`eval`・
+コマンド置換への値展開は行わない）。
+
+`--ledger <file>` / `--audit-fixtures-dir <dir>` / `--acceptance-doc <file>` /
+`--reports-dir <dir>` でそれぞれ台帳・D-1 fixture・D-2 人手評価台帳・F の試行サマリ
+探索先を差し替え可能（`scripts/tests/run-ai-autonomy-accept-tests.sh` のセルフテスト
+注入口、`req13-change-impact-accept.sh` の `--crates-dir` 慣例を踏襲）。
+
+判定ロジックのオフライン・セルフテスト（cargo・ネットワーク非依存）は
+`scripts/tests/run-ai-autonomy-accept-tests.sh` を参照。実行結果レポートは
+`docs/acceptance/req12-ai-autonomy.md`、確定版測定値・PENDING 事項の詳細は
+`docs/reports/task-12-7-acceptance.md` に記録する。
