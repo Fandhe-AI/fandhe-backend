@@ -54,3 +54,10 @@ path = "fuzz_targets/head_semantics.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "chunked_decoder"
+path = "fuzz_targets/chunked_decoder.rs"
+test = false
+doc = false
+bench = false

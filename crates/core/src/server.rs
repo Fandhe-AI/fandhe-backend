@@ -78,6 +78,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use bf_http::body::BodyError;
 use bf_http::buffer::RecvBuffer;
+use bf_http::chunked::ChunkedError;
 use bf_http::connection::{RequestError, read_request, should_keep_alive};
 use bf_http::request::{ParseError, RequestHead};
 use bf_http::response::Response;
@@ -858,6 +859,15 @@ fn first_rejection(gates: &[Box<dyn RequestGate>], head: &RequestHead) -> Option
 /// `None` はエラー応答を送らず接続を閉じるべきケース（途中 EOF・I/O エラー）
 /// を意味する。マッピング根拠は本モジュール冒頭の doc・実装計画のセキュリティ
 /// 考慮（入力検証の全面依拠、フェイルセーフなクローズ）を参照。
+///
+/// chunked 関連（イシュー #181）: `Transfer-Encoding: chunked` 単独指定は
+/// `bf_http::body::body_length` が受理し `RequestError` にならないため、ここ
+/// では現れない（200 系として通常どおり処理される）。`gzip` 等 chunked 以外の
+/// coding・複数 TE ヘッダは従来どおり `TransferEncodingUnsupported` として
+/// 501。`Content-Length` との共存は専用エラー `ContentLengthWithChunked` として
+/// 400（RFC 9112 §6.3 のスマグリング対策の意味を明確化）。chunked デコード中の
+/// DoS 上限超過・構文エラーは `RequestError::Chunked` 経由でここに到達し、
+/// 総量超過は 413、それ以外（構文・チャンク総数・行長・trailer）は 400。
 fn error_response(err: &RequestError) -> Option<Response> {
     match err {
         RequestError::Parse(ParseError::HeaderSectionTooLarge | ParseError::TooManyHeaders) => {
@@ -869,9 +879,19 @@ fn error_response(err: &RequestError) -> Option<Response> {
         RequestError::Parse(ParseError::UnsupportedVersion) => Some(Response::empty(505)),
         RequestError::Body(BodyError::BodyTooLarge) => Some(Response::empty(413)),
         RequestError::Body(BodyError::TransferEncodingUnsupported) => Some(Response::empty(501)),
-        RequestError::Body(BodyError::DuplicateContentLength | BodyError::InvalidContentLength) => {
-            Some(Response::empty(400))
-        }
+        RequestError::Body(
+            BodyError::DuplicateContentLength
+            | BodyError::InvalidContentLength
+            | BodyError::ContentLengthWithChunked,
+        ) => Some(Response::empty(400)),
+        RequestError::Chunked(ChunkedError::BodyTooLarge) => Some(Response::empty(413)),
+        RequestError::Chunked(
+            ChunkedError::InvalidChunkSize
+            | ChunkedError::ChunkLineTooLong
+            | ChunkedError::TooManyChunks
+            | ChunkedError::TrailerUnsupported
+            | ChunkedError::InvalidLineTerminator,
+        ) => Some(Response::empty(400)),
         RequestError::UnexpectedEof | RequestError::Io(_) => None,
     }
 }
@@ -1383,14 +1403,66 @@ GET /c HTTP/1.1\r\n\r\n",
     }
 
     #[tokio::test]
-    async fn transfer_encoding_returns_501() {
+    async fn transfer_encoding_gzip_returns_501() {
+        // イシュー #181: chunked 以外の coding は従来どおり 501 未実装拒否。
         let server = Server::new();
         let response = roundtrip(
             &server,
-            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n",
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n",
         )
         .await;
         assert!(response.starts_with("HTTP/1.1 501 Not Implemented\r\n"));
+    }
+
+    #[tokio::test]
+    async fn transfer_encoding_chunked_is_accepted_and_dispatched() {
+        // イシュー #181: 単独 `chunked` は body フレーミングとして受理され、
+        // 通常のリクエストと同じくハンドラ解決まで進む（未登録ハンドラの
+        // 404 まで到達すること = chunked デコード自体はエラーにならないこと
+        // を固定する。501/400/413 のいずれでもないことが確認したい観点）。
+        let server = Server::new();
+        let response = roundtrip(
+            &server,
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n0\r\n\r\n",
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+    }
+
+    #[tokio::test]
+    async fn content_length_with_chunked_returns_400() {
+        // イシュー #181: RFC 9112 §6.3 のスマグリング対策として共存を拒否する。
+        let server = Server::new();
+        let response = roundtrip(
+            &server,
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\n4\r\nWiki\r\n0\r\n\r\n",
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+    }
+
+    #[tokio::test]
+    async fn chunked_invalid_size_returns_400() {
+        let server = Server::new();
+        let response = roundtrip(
+            &server,
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nZZZ\r\n",
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+    }
+
+    #[tokio::test]
+    async fn chunked_body_too_large_returns_413() {
+        use bf_http::body::MAX_BODY_BYTES;
+
+        let server = Server::new();
+        let request = format!(
+            "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n{:X}\r\n",
+            MAX_BODY_BYTES + 1
+        );
+        let response = roundtrip(&server, request.as_bytes()).await;
+        assert!(response.starts_with("HTTP/1.1 413 Payload Too Large\r\n"));
     }
 
     #[tokio::test]

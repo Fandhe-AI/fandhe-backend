@@ -5,12 +5,17 @@
 //! （[`crate::connection::read_request`]、TASK-1.3-2 / #67）はここで決まった
 //! バイト数だけ読み取る責務を持ち、本モジュール自体は I/O を一切行わない。
 //!
-//! `Transfer-Encoding` は本マイルストーンでは chunked 未対応のため一律拒否する。
-//! `Content-Length` の重複や不正な値も安全側（拒否）に倒す。これはリクエスト
-//! スマグリング（前段プロキシとの解釈差異によるインジェクション）対策を兼ねる
-//! （.claude/rules/security.md）。
+//! `Transfer-Encoding` は HTTP/1.1 かつ値が単独の `chunked` である場合のみ
+//! [`BodyLength::Chunked`] として受理する（イシュー #181）。それ以外
+//! （HTTP/1.0 + TE・`gzip` 等の他 coding・複数 TE ヘッダ・`chunked, chunked`
+//! のような多重指定）は一律拒否する。`Content-Length` の重複や不正な値、
+//! および `Content-Length` と `Transfer-Encoding: chunked` の共存も安全側
+//! （拒否）に倒す。これはリクエストスマグリング（前段プロキシとの解釈差異
+//! によるインジェクション）対策を兼ねる（.claude/rules/security.md）。
+//! 実際の chunked デコードは [`crate::chunked::ChunkedDecoder`]（sans-IO）が
+//! 担い、本モジュールは「body をどう読むべきか」の意味決定のみを行う。
 
-use crate::request::RequestHead;
+use crate::request::{HttpVersion, RequestHead};
 
 /// body として許容する最大バイト数（暫定上限）。
 ///
@@ -27,17 +32,30 @@ pub enum BodyLength {
     None,
     /// 固定長 body。値は 1 以上 [`MAX_BODY_BYTES`] 以下であることを検証済み。
     Fixed(u64),
+    /// chunked transfer-coding の body。
+    ///
+    /// `Transfer-Encoding` が HTTP/1.1 かつ単独の `chunked` 値であることを
+    /// 検証済み。実際の読み取り・デコードは
+    /// [`crate::connection::read_request`] が [`crate::chunked::ChunkedDecoder`]
+    /// へ委譲する。
+    Chunked,
 }
 
 /// [`body_length`] が返しうるエラー。
 #[derive(Debug, PartialEq, Eq)]
 pub enum BodyError {
-    /// `Transfer-Encoding` ヘッダが存在した。
+    /// `Transfer-Encoding` が chunked 以外・不正な形で指定された。
     ///
-    /// chunked encoding は本マイルストーンでは未対応であり、値によらず一律
-    /// 拒否する。`Content-Length` との共存によるリクエストスマグリングも
-    /// 同時に遮断する。
+    /// HTTP/1.0 での指定・`gzip` 等 chunked 以外の coding・複数の
+    /// `Transfer-Encoding` ヘッダ・`chunked, chunked` のような多重指定を
+    /// 一律拒否する（前段プロキシとの解釈差異を生む余地を残さないため）。
+    /// 単独の `chunked` は [`BodyLength::Chunked`] として受理する。
     TransferEncodingUnsupported,
+    /// `Content-Length` と `Transfer-Encoding: chunked` が共存した。
+    ///
+    /// RFC 9112 §6.3 が示すリクエストスマグリング対策として、両者の共存は
+    /// 値によらず一律拒否する。
+    ContentLengthWithChunked,
     /// `Content-Length` ヘッダが 2 個以上存在した。
     ///
     /// 値が同一であっても、前段プロキシとの解釈差異を生む余地を残さないため
@@ -54,6 +72,9 @@ impl std::fmt::Display for BodyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let msg = match self {
             BodyError::TransferEncodingUnsupported => "Transfer-Encoding is not supported",
+            BodyError::ContentLengthWithChunked => {
+                "Content-Length must not be combined with Transfer-Encoding: chunked"
+            }
             BodyError::DuplicateContentLength => "duplicate Content-Length header",
             BodyError::InvalidContentLength => "invalid Content-Length value",
             BodyError::BodyTooLarge => "Content-Length exceeds MAX_BODY_BYTES",
@@ -66,7 +87,16 @@ impl std::error::Error for BodyError {}
 
 /// `head` から body フレーミングを決定する。
 ///
-/// `Transfer-Encoding` が 1 つでも存在すれば拒否し、`Content-Length` は
+/// `Transfer-Encoding` は HTTP/1.1 かつヘッダが単独 1 行・値が OWS trim 後に
+/// ASCII 大小無視で厳密に `chunked` のみである場合に限り
+/// [`BodyLength::Chunked`] として受理する。それ以外（HTTP/1.0 での指定・
+/// `gzip` 等の他 coding・複数 `Transfer-Encoding` ヘッダ）はすべて
+/// [`BodyError::TransferEncodingUnsupported`] として拒否する。`chunked` を
+/// 受理する場合、`Content-Length` が同時に存在すれば
+/// [`BodyError::ContentLengthWithChunked`] として拒否する
+/// （RFC 9112 §6.3 のリクエストスマグリング対策）。
+///
+/// `Transfer-Encoding` が存在しない場合は `Content-Length` を
 /// [`RequestHead::headers`] で全件走査して重複・構文・上限を検証する。
 ///
 /// # Examples
@@ -82,12 +112,39 @@ impl std::error::Error for BodyError {}
 /// };
 /// assert_eq!(body_length(&head), Ok(BodyLength::Fixed(4)));
 /// ```
+///
+/// `Transfer-Encoding: chunked` 単独指定は [`BodyLength::Chunked`] になる。
+///
+/// ```
+/// use bf_http::body::{body_length, BodyLength};
+/// use bf_http::request::{parse_request_head, ParseOutcome};
+///
+/// let buf = b"POST /items HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nabcd\r\n0\r\n\r\n";
+/// let head = match parse_request_head(buf).unwrap() {
+///     ParseOutcome::Complete { head, .. } => head,
+///     ParseOutcome::Incomplete => unreachable!(),
+/// };
+/// assert_eq!(body_length(&head), Ok(BodyLength::Chunked));
+/// ```
 pub fn body_length(head: &RequestHead) -> Result<BodyLength, BodyError> {
-    if head
+    let has_content_length = head
         .headers()
-        .any(|(name, _)| name.eq_ignore_ascii_case("transfer-encoding"))
-    {
-        return Err(BodyError::TransferEncodingUnsupported);
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-length"));
+
+    let mut transfer_encodings = head
+        .headers()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("transfer-encoding"))
+        .map(|(_, value)| value);
+    if let Some(first) = transfer_encodings.next() {
+        let is_single_chunked =
+            transfer_encodings.next().is_none() && first.trim().eq_ignore_ascii_case("chunked");
+        if head.version != HttpVersion::Http11 || !is_single_chunked {
+            return Err(BodyError::TransferEncodingUnsupported);
+        }
+        if has_content_length {
+            return Err(BodyError::ContentLengthWithChunked);
+        }
+        return Ok(BodyLength::Chunked);
     }
 
     let mut content_length: Option<u64> = None;
@@ -210,8 +267,21 @@ mod tests {
     }
 
     #[test]
-    fn transfer_encoding_is_rejected() {
+    fn transfer_encoding_chunked_is_accepted() {
+        // イシュー #181: HTTP/1.1 かつ単独 `chunked` 指定は受理する。
         let head = head_of(b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n");
+        assert_eq!(body_length(&head), Ok(BodyLength::Chunked));
+    }
+
+    #[test]
+    fn transfer_encoding_chunked_case_insensitive_is_accepted() {
+        let head = head_of(b"POST / HTTP/1.1\r\nTransfer-Encoding: CHUNKED\r\n\r\n");
+        assert_eq!(body_length(&head), Ok(BodyLength::Chunked));
+    }
+
+    #[test]
+    fn transfer_encoding_other_coding_is_rejected() {
+        let head = head_of(b"POST / HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n");
         assert_eq!(
             body_length(&head),
             Err(BodyError::TransferEncodingUnsupported)
@@ -219,13 +289,42 @@ mod tests {
     }
 
     #[test]
-    fn transfer_encoding_with_content_length_is_rejected() {
-        let head =
-            head_of(b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\n");
+    fn transfer_encoding_multiple_codings_in_one_line_is_rejected() {
+        let head = head_of(b"POST / HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n");
         assert_eq!(
             body_length(&head),
             Err(BodyError::TransferEncodingUnsupported)
         );
+    }
+
+    #[test]
+    fn transfer_encoding_duplicate_header_lines_is_rejected() {
+        let head = head_of(
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n",
+        );
+        assert_eq!(
+            body_length(&head),
+            Err(BodyError::TransferEncodingUnsupported)
+        );
+    }
+
+    #[test]
+    fn transfer_encoding_chunked_on_http10_is_rejected() {
+        // chunked は HTTP/1.0 では未定義のため拒否する。
+        let head = head_of(b"POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n");
+        assert_eq!(
+            body_length(&head),
+            Err(BodyError::TransferEncodingUnsupported)
+        );
+    }
+
+    #[test]
+    fn transfer_encoding_chunked_with_content_length_is_rejected() {
+        // イシュー #181: 共存はリクエストスマグリング対策として拒否するが、
+        // TransferEncodingUnsupported ではなく専用エラーへ意味を明確化する。
+        let head =
+            head_of(b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\n");
+        assert_eq!(body_length(&head), Err(BodyError::ContentLengthWithChunked));
     }
 
     #[test]
@@ -255,6 +354,10 @@ mod tests {
         assert_eq!(
             BodyError::TransferEncodingUnsupported.to_string(),
             "Transfer-Encoding is not supported"
+        );
+        assert_eq!(
+            BodyError::ContentLengthWithChunked.to_string(),
+            "Content-Length must not be combined with Transfer-Encoding: chunked"
         );
         assert_eq!(
             BodyError::DuplicateContentLength.to_string(),

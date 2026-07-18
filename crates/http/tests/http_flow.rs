@@ -157,11 +157,13 @@ async fn pipelined_requests_over_split_writes_preserve_field_integrity() {
     write_task.await.unwrap();
 }
 
-/// 不正な `Transfer-Encoding` 指定は body フレーミング解釈で拒否され、
-/// `read_request` がヘッドパース成功後に body エラーとして返すことを検証する
-/// （request smuggling 対策の統合経路での固定、.claude/rules/security.md）。
+/// `Content-Length` と `Transfer-Encoding: chunked` の共存は body フレーミング
+/// 解釈で拒否され、`read_request` がヘッドパース成功後に body エラーとして
+/// 返すことを検証する（request smuggling 対策の統合経路での固定、
+/// .claude/rules/security.md・イシュー #181 で `ContentLengthWithChunked` へ
+/// 意味を明確化）。
 #[tokio::test]
-async fn transfer_encoding_is_rejected_end_to_end() {
+async fn content_length_with_chunked_is_rejected_end_to_end() {
     let raw =
         b"POST /items HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\nabcd";
     let mut socket: &[u8] = raw;
@@ -173,12 +175,57 @@ async fn transfer_encoding_is_rejected_end_to_end() {
     )
     .await
     .expect("test-internal timeout")
-    .expect_err("Transfer-Encoding 指定は拒否されること");
+    .expect_err("Content-Length と chunked の共存は拒否されること");
+
+    assert_eq!(
+        err.to_string(),
+        "request body error: Content-Length must not be combined with Transfer-Encoding: chunked"
+    );
+}
+
+/// chunked 以外の coding（`gzip` 等）は従来どおり `TransferEncodingUnsupported`
+/// として拒否されることを固定する（イシュー #181 で単独 `chunked` のみ受理対象に
+/// 変わったため、非対応 coding 側の回帰を防ぐ）。
+#[tokio::test]
+async fn transfer_encoding_other_coding_is_rejected_end_to_end() {
+    let raw = b"POST /items HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n";
+    let mut socket: &[u8] = raw;
+    let mut buf = RecvBuffer::new();
+
+    let err = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        read_request(&mut socket, &mut buf),
+    )
+    .await
+    .expect("test-internal timeout")
+    .expect_err("gzip は拒否されること");
 
     assert_eq!(
         err.to_string(),
         "request body error: Transfer-Encoding is not supported"
     );
+}
+
+/// 単独 `chunked` は受理され、chunked encoding がデコードされて body が復元
+/// されることを end-to-end で固定する（イシュー #181）。
+#[tokio::test]
+async fn chunked_transfer_encoding_is_decoded_end_to_end() {
+    let raw =
+        b"POST /items HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
+    let mut socket: &[u8] = raw;
+    let mut buf = RecvBuffer::new();
+
+    let req = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        read_request(&mut socket, &mut buf),
+    )
+    .await
+    .expect("test-internal timeout")
+    .expect("read should succeed")
+    .expect("request should be present");
+
+    assert_eq!(req.body, b"Wikipedia");
+    assert!(buf.unread().is_empty());
 }
 
 /// keep-alive 接続で複数リクエストを読み取っても `RecvBuffer` の容量が
