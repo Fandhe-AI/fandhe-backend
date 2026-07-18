@@ -5,8 +5,8 @@
 `webrtc-accept.sh`（REQ-8、TASK-8.4）・`graphql-accept.sh`（REQ-5、TASK-5.2）・
 `openapi-ts-accept.sh`（REQ-6、TASK-6.2）・`tracing-accept.sh`（REQ-10、TASK-10.4 / TASK-10.5）・
 `hub-wiring-accept.sh`（REQ-9、TASK-9.5）・`websocket-accept.sh`（REQ-4、TASK-4.4）・
-`ai-autonomy-accept.sh`（REQ-12/NFR-8、TASK-12.7）
-の 11 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
+`ai-autonomy-accept.sh`（REQ-12/NFR-8、TASK-12.7）・`hub-e2e-accept.sh`（REQ-9 後続、#97）
+の 12 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
 
 `docs/spec/04-requirements.md` REQ-1（最小コア）の受け入れ基準のうち、**性能計測を除く**
 非性能系の受け入れ基準（依存クレート数比・unsafe 根拠・audit / deny・実質コード行数・
@@ -488,3 +488,69 @@ hub_service_demo` を事前実行（本スクリプトは自動ビルドしな�
 `scripts/tests/run-ai-autonomy-accept-tests.sh` を参照。実行結果レポートは
 `docs/acceptance/req12-ai-autonomy.md`、確定版測定値・PENDING 事項の詳細は
 `docs/reports/task-12-7-acceptance.md` に記録する。
+
+## `hub-e2e-accept.sh` — REQ-9 後続 E2E 統合検証（Outbox Relay 完了待ち、#97）
+
+イシュー #97「MS-6 後続 E2E 統合検証（Outbox Relay 完了待ち）」の受け入れ検証。
+`docs/design/outbox-consent-integration.md` 11.2 節が定める 4 検証項目を、実
+PostgreSQL・実 `micro-service-hub` サービスとの結線で確認する。`hub-wiring-accept.sh`
+とは異なり `crates/plugin-hub-wiring` 単体の受け入れテストではなく、実データモデル・
+実外部サービスとの E2E 結線検証を担う（TASK-9.5（#65）の後続、TASK-9.4（#64）の
+「設計完了」と「E2E 統合検証完了」の 2 段階分割のうち後者）。
+
+```bash
+HUB_E2E_PG_URI="postgres://user:pass@host:5432/dbname" \
+HUB_E2E_CONSENT_API="https://consent.example.internal" \
+HUB_E2E_ORG_A="org-a-uuid" \
+HUB_E2E_ORG_B="org-b-uuid" \
+./scripts/accept/hub-e2e-accept.sh
+```
+
+### 前提（micro-service-hub 側）
+
+- Outbox Relay（MS-5、目標 2026-09-30）・同意管理サービス（MS-3、目標 2026-08-31）が
+  稼働していること。2026-07-18 時点ではいずれも未完了見込みであり、環境変数未設定で
+  実行すると前提チェック段で `exit 2`（規約違反ではなく実行前提エラー、
+  `scripts/feasibility-check.sh` の exit 規約と同型）を返す
+- `docs/design/outbox-consent-integration.md` 11.1 節の未決事項（`outbox` テーブルの
+  実カラム定義・`consent_grants` 実スキーマ/アクセス方式・`consent_revoked` ペイロード
+  形式）が確定していること。未確定の間は基準 B（同意フィルタ）を SKIP、基準 C
+  （Outbox Relay 配送）は enqueue 時点のカラム名不一致で FAIL しうる
+
+### 検証する受け入れ基準（11.2 節）
+
+| 記号 | 検証項目 | 検証手段 |
+|------|---------|---------|
+| A | 越境アクセス時の 0 行（RLS フェイルクローズ） | テナント A コンテキスト・コンテキスト未設定の双方でテナント B 行への `SELECT count(*)` が 0 件であることをパラメータ化クエリで確認 |
+| B | 同意フィルタの実データ整合 | 同意管理サービスへの到達性確認 + オプトイン/未設定/取り消し済み 3 状態の判定結果照合（API 契約確定待ちのため現状は到達性確認までを実装、SKIP） |
+| C | Outbox Relay 配送 | 検証用イベントを `enqueue` し、Relay によるポーリング配送（配送状態列の遷移）をタイムアウト付きで確認 |
+| D | RLS ポリシー・`SET LOCAL` 適用漏れ検知 | `pg_class.relforcerowsecurity` カタログ照会で `outbox` テーブルの `FORCE ROW LEVEL SECURITY` 適用を確認 |
+
+### 環境変数（すべて必須。既定値・実接続文字列はコミットしない）
+
+| 変数 | 用途 |
+|------|------|
+| `HUB_E2E_PG_URI` | 検証用 PostgreSQL への接続文字列 |
+| `HUB_E2E_CONSENT_API` | 同意管理サービスの検証用ベース URL |
+| `HUB_E2E_ORG_A` / `HUB_E2E_ORG_B` | 検証 A（越境アクセス）用のテナント ID 2 件 |
+| `HUB_E2E_RELAY_TIMEOUT_SEC`（任意、既定 30） | 検証 C の配送待ちタイムアウト秒数 |
+
+### 前提ツール
+
+| ツール | 用途 | 導入コマンド |
+|--------|------|-------------|
+| `psql` | 検証 A/C/D（PostgreSQL クライアント） | `apt install postgresql-client` 等 |
+| `curl` | 検証 B（同意管理サービス API 呼び出し） | 各 OS のパッケージマネージャ |
+
+### 出力の読み方
+
+`core-deps-unsafe-audit.sh` と同一（PASS/FAIL/SKIP/WARN、終了コードは FAIL 1 件以上で
+非 0）。ただし本スクリプトは**前提環境変数未設定時に `exit 2`** を返す点が他の
+`scripts/accept/*.sh` と異なる（前提チェック段が判定サマリー出力前に非 0 終了する）。
+
+### 実行前提・着手条件（重要）
+
+本スクリプトは着手条件（micro-service-hub 側 Outbox Relay・同意管理サービスの完了確認、
+11.1 節未決事項の確定情報入手、検証用接続情報の安全な受け渡し）が成立し、かつ
+ユーザー承認を得てから実行する（`.claude/rules/feasibility-guardrail.md` 6 節、条件付き
+可の着手ゲート）。実行結果レポートは `docs/acceptance/req9-hub-e2e.md` に記録する。
