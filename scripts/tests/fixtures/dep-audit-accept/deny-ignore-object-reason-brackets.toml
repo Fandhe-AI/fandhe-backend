@@ -1,0 +1,2 @@
+[advisories]
+ignore = [{ id = "RUSTSEC-2020-0001", reason = "空リスト [] のつもりの誤記" }]
