@@ -27,6 +27,9 @@ backend-framework/
 ├── docs/
 │   ├── spec/               # 仕様書 submodule（要件・タスク・ロードマップ）
 │   ├── design/             # リポジトリ側設計ドキュメント（実装フェーズの設計判断を記録）
+│   ├── guide/              # 利用者向けガイド（Getting Started・feature 構成別サンプル・
+│   │                        # チュートリアル、TASK-11.5 / #95）。「どう作るか」の docs/design/ とは
+│   │                        # 責務分離、「どう使うか」を扱う
 │   ├── dep-impact/         # 依存インパクト（依存数・バイナリサイズ・unsafe 件数）記録台帳（TASK-15.2）
 │   └── acceptance/         # REQ-1 等の受け入れ検証結果レポート（TASK-1.6-2 で追加）
 ├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）

@@ -4,6 +4,13 @@ AI によるセキュリティ脆弱性発見リスクに備え、Rust で新規
 
 > フレームワーク名は仮称です。正式名称の決定は今後の課題です（[仕様リポジトリの `01-brainstorm.md`](./docs/spec/01-brainstorm.md) 参照）。
 
+## Getting Started
+
+クローン〜ビルド〜最小サーバ起動までの最短手順は [`docs/guide/getting-started.md`](./docs/guide/getting-started.md) を、
+feature 構成別のサンプル（websocket / graphql / webrtc 系 / tracing / openapi / hub-wiring）は
+[`docs/guide/feature-samples.md`](./docs/guide/feature-samples.md) を、
+拡張点の実装まで含むチュートリアルは [`docs/guide/tutorial.md`](./docs/guide/tutorial.md) を参照してください。
+
 ## 仕様
 
 仕様書（ブレスト〜PoC〜要件定義〜タスク分解〜ロードマップ）は [Fandhe-AI/backend-framework-spec](https://github.com/Fandhe-AI/backend-framework-spec) で管理し、`docs/spec/` にサブモジュールとして取り込んでいます。
