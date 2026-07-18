@@ -3,6 +3,120 @@
 `docs/dep-impact/README.md` の運用手順に従い、`crates/plugin-*` 追加・変更時の依存
 インパクト計測結果を追記する。エントリは新しい順に追加する。
 
+## 2026-07-18 — `webrtc` feature の unsafe 増分乖離（PoC-5 比 2.2 倍→実測 4.4 倍）の原因特定（#183）
+
+TASK-8.4（#29、上記「`crates/plugin-webrtc` 攻撃表面評価・単独再評価」エントリ）が
+「BLOCKED / フォローアップ」として残した、PoC-5（`docs/spec/03-poc/webrtc-plugin/README.md`、
+2026-07-08 実測「約 2.2 倍」）と TASK-8.4 実測（Functions 69/170 → 304/592、約 **4.4 倍**）
+の乖離原因を、本 worktree（`rustc`/`cargo` 1.96.0、`cargo-geiger` 0.13.0）での再実測で
+特定した（`docs/acceptance/req8-webrtc-attack-surface.md` の該当項目もあわせて更新）。
+
+### 受け入れ条件 1: バージョン・計測対象範囲の比較
+
+**webrtc-rs バージョン**は PoC-5 実測時点・TASK-8.4 実測時点・本タスク実測時点のすべてで
+`webrtc` および `webrtc-data` / `webrtc-ice` / `webrtc-mdns` / `webrtc-media` /
+`webrtc-sctp` / `webrtc-srtp` / `webrtc-util` が**すべて 0.17.1 で一致**することを確認した
+（ルート `Cargo.lock` と PoC-5 側 `Cargo.lock`（後述の方法で参照）の双方を `grep` で確認）。
+バージョン変化は乖離要因から**棄却できる**。
+
+**計測対象範囲**は当初から異なる: PoC-5 は PoC 用スケルトン `pluggable-core`
+（`docs/spec/03-poc/webrtc-plugin/core/`、`plugin-webrtc` feature）、TASK-8.4 以降は
+`backend-framework-core`（`crates/core/`、`webrtc` feature）。両者とも `webrtc-rs`
+本体への依存は同一だが、常時依存する周辺クレート構成（後述）が異なる。
+
+### 受け入れ条件 2: 乖離要因の分解・特定
+
+`docs/spec` submodule はコミット対象外の read-only 参照のため、PoC-5 の
+`docs/spec/03-poc/webrtc-plugin/core/` をスクラッチパッドへコピーし（submodule 自体は
+変更しない、`git -C docs/spec status` で無変更を確認済み）、同一 `Cargo.lock` を保持した
+まま `cargo-geiger 0.13.0`（TASK-8.4 と同一バージョン）で再計測した。
+
+```
+# (a) backend-framework-core（TASK-8.4 と同一計測、本タスクで再現）
+$ cargo geiger --output-format Ascii \
+    --manifest-path "$(pwd)/crates/core/Cargo.toml" --no-default-features 2>&1 \
+    | grep -E '^[0-9]+/[0-9]+' | tail -1
+69/170     3812/6377    119/165 4/4     143/297
+$ cargo geiger --output-format Ascii \
+    --manifest-path "$(pwd)/crates/core/Cargo.toml" --features webrtc 2>&1 \
+    | grep -E '^[0-9]+/[0-9]+' | tail -1
+304/592    24704/33613  610/713 83/87   902/1263
+
+# (b) PoC-5 の pluggable-core を同一 Cargo.lock のまま現環境で再計測
+#     （CARGO_NET_OFFLINE=true は cargo-geiger 内蔵 cargo が並列 worktree 実行下の
+#     レジストリキャッシュ競合で `assertion failed: self.pending_ids.insert(id)` を
+#     panic する事象を避けるため、`cargo fetch` 後にオフラインで実行）
+$ cargo fetch --no-default-features && CARGO_NET_OFFLINE=true \
+    cargo geiger --output-format Ascii --no-default-features 2>&1 \
+    | grep -E '^[0-9]+/[0-9]+' | tail -1
+110/225    6293/9573    96/161 4/4     245/447
+$ cargo fetch --features plugin-webrtc && CARGO_NET_OFFLINE=true \
+    cargo geiger --output-format Ascii --features plugin-webrtc 2>&1 \
+    | grep -E '^[0-9]+/[0-9]+' | tail -1
+306/594    24618/33077  610/668 83/87   898/1232
+```
+
+Functions 列（PoC-5・TASK-8.4 と同一指標）で比較すると:
+
+| 計測対象 | baseline | webrtc 有効 | 比率 |
+|---|---|---|---|
+| PoC-5 原記録（2026-07-08、geiger バージョン未記録） | 111/225 | 247/594 | 約 2.2 倍 |
+| PoC-5 を本タスクで同一 `Cargo.lock` のまま再実測（geiger 0.13.0） | 110/225 | 306/594 | 約 2.78 倍 |
+| `backend-framework-core`（TASK-8.4、#29） | 69/170 | 304/592 | 約 4.4 倍 |
+
+baseline（110 vs 111）・feature 有効時 total（594 vs 594、592 vs 594 はほぼ同値）は
+高精度に再現し、**同一ソース・同一 `Cargo.lock` の計測手法自体は正しく再現できる**ことを
+確認した。一方で feature 有効時の **used Functions**（247 → 306）は同一ソース・同一
+`Cargo.lock` にもかかわらず 59 件（約 24%）増加した。乖離を 2 要因に分解する:
+
+1. **baseline（分母）の計測対象差（主因）**: PoC-5 の `pluggable-core` は常時依存に
+   `tokio`（`rt-multi-thread` 含む）・`serde`（derive）・`serde_json` を持ち baseline が
+   110〜111 と大きい。`backend-framework-core` は pay-for-what-you-use 徹底により
+   baseline が 69 と小さい。同程度の絶対増分（PoC: 306-110=196、core: 304-69=235）
+   でも、**分母が小さいほど比率は拡大する**（110→306 は 2.78 倍、69→304 は 4.4 倍）。
+   絶対増分自体も 196 vs 235 とやや core 側が大きく、これは `crates/plugin-webrtc`
+   の実装コードが PoC スケルトンより `webrtc-rs` API を広く呼び出すことに起因すると
+   考えられる（未確定、残余の不確実性として明記）。
+2. **geiger バージョン差・到達可能性判定の非決定性（副次的要因）**: PoC-5 原記録は
+   使用した `cargo-geiger` バージョンが記録されておらず、本タスクの `0.13.0` と異なる
+   可能性が高い。同一ソース・同一ロックファイルで used が 247 → 306（+59）とずれた
+   ことから、feature 有効時の到達可能性（used/reachable）判定は geiger の実装・
+   バージョンに依存し、**ソース・依存が完全に同一でも数値が変動しうる**ことが実測で
+   裏付けられた。これにより比率だけで「増分が悪化した」と単純評価するのは不適切
+   （断定と推測の区別、`.claude/rules/japanese-style.md`）。
+
+**結論**: 乖離の主因は **(1) 計測対象範囲差によるベースライン圧縮効果**（pay-for-what-
+you-use が徹底された分だけ比率が誇張される）であり、副次的に **(2) cargo-geiger の
+到達可能性判定がバージョン・環境に依存し完全な再現性を持たない**ことも実測で確認した。
+**webrtc-rs バージョン変化は要因ではない**（受け入れ条件 1 で 0.17.1 同一と確認済み）。
+
+### 受け入れ条件 3: 実害なしの確認
+
+- 依存側 unsafe（`webrtc-rs` 由来）の**絶対量自体は両時点でほぼ不変**: feature 有効時
+  total は 594（PoC-5）→ 592〜594（TASK-8.4・本タスク再実測）とほぼ同値であり、
+  `webrtc-rs` 0.17.1 自体の unsafe コード量に変化はない
+- `bash scripts/unsafe-triage.sh` で自コード（`crates/plugin-webrtc` 含む全クレート）の
+  `unsafe` 0 件・baseline から変化なしを再確認した
+- `bash scripts/dep-audit.sh`（全 feature 構成）で `cargo audit` 既知脆弱性 0 件・
+  `cargo deny check` 違反 0 件を再確認した（詳細は
+  `docs/acceptance/req8-webrtc-attack-surface.md` 参照）
+- `webrtc` feature 有効時に新規で used となったクレート集合を baseline との差分で
+  確認したところ、`icu_*` / `zerovec` / `idna` / `percent-encoding` 系（URL・IDNA
+  正規化処理）など STUN/ICE の URL 解析で一般的に使われる既知の周辺クレートのみで
+  あり、`// SAFETY:` 欠落を伴う生ポインタ操作等の新規の危険パターンは確認されなかった
+
+### 実測環境・再現手順の注意
+
+- `cargo-geiger` は内蔵する `cargo` ライブラリ（本環境では `cargo-0.86.0` 系）が、
+  並列 worktree での同時ビルド実行下ではレジストリキャッシュへの同時アクセスで
+  `panicked ... assertion failed: self.pending_ids.insert(id)` を発生させることがある
+  （`cargo_clean::clean` 内の download 重複防止アサーション）。再現する場合は
+  `cargo fetch` で依存取得を完了させたのち `CARGO_NET_OFFLINE=true` を付けて
+  `cargo geiger` を実行すると回避できる（本件は cargo-geiger 側の並行実行時の
+  既知でない不具合であり、本タスクのスコープでは回避策の記録に留める）
+- PoC-5 側の再計測は `docs/spec`（submodule）をスクラッチパッドへコピーして実行した。
+  submodule 自体への変更は一切行っていない（`git -C docs/spec status` で確認済み）
+
 ## 2026-07-18 — `crates/plugin-websocket` アイドルタイムアウト実装（#175）に伴う tokio feature 追加
 
 WebSocket セッションのアイドルタイムアウト実装（Issue #175、`session::run_echo_session`
