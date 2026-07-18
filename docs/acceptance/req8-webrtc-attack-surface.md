@@ -82,6 +82,12 @@ WebRTC を有効化したサービスは無関係パスの性能へも無視で�
 - **NFR-6 の狭義帯（100.3〜100.8%）達成**: in-process WebRTC のバイナリサイズ削減
   （不要な `webrtc-rs` feature の絞り込み等）は性能最適化の深掘りであり本タスクの
   スコープ外。対応方針は上記の通り別プロセス切り出し推奨として文書化済み。
+- **専有計測環境（#178）**: `benches/nfr6-exclusive.sh`（flock 相互排他 + 静穏確認、
+  `docs/design/nfr6-exclusive-measurement.md`）を整備した。並列 issue 実装ワークフロー
+  下では既定の静穏閾値が成立せず、緩和閾値での参考計測は FAIL（RPS 比 88.10%・p95 比
+  112.05%、既存 FAIL 記録と整合）となった（`benches/reports/task-8.4-webrtc-nfr6.md`
+  追補節）。既定閾値での確定再計測は host が真に静穏な期間にフォローアップとして
+  別途実施する。上記基準 E の FAIL 判定は維持する。
 
 ## 2 クレートの区別（再確認）
 

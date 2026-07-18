@@ -81,6 +81,12 @@ backend-framework/
 ├── benches/               # 負荷生成・計測ハーネス（TASK-1.2 で追加、bench-builder 管轄）
 │   ├── README.md                      # 再現手順・複数回計測/中央値評価の規約
 │   ├── lib/common.sh                  # 共通関数（サーバ起動/停止・中央値算出・依存ツール検査）
+│   ├── lib/exclusive.sh               # NFR-6 専有計測用の相互排他（flock）・静穏確認・環境
+│   │                                    # スナップショット（#178。並列 issue 実装ワークフロー下の
+│   │                                    # host contention による NFR-6 判定不確定への対処）
+│   ├── nfr6-exclusive.sh               # 専有実行枠で webrtc/graphql/hub の NFR-6 を順次計測・
+│   │                                    # 判定確定する wrapper（#178、docs/design/
+│   │                                    # nfr6-exclusive-measurement.md 参照）
 │   └── bench-http.sh / bench-rss.sh / bench-footprint.sh  # RPS・負荷時 RSS・起動時間/バイナリサイズ計測
 ├── scripts/               # CI・運用スクリプト（TASK-15.2 で追加）
 │   ├── README.md                      # 使い方・前提ツール・CI との対応
