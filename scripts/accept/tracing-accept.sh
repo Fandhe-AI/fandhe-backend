@@ -209,6 +209,15 @@ check_dep_count_increment() {
         | sed -E 's/^[│├└─ ]*//; s/ \(\*\)$//' \
         | grep -E '^[a-zA-Z0-9_-]+ v[0-9]' | sort -u)"
 
+    # disabled 側（無効時ベースライン）が空・パース不能な場合も enabled 側と同様に
+    # fail closed する。ここを素通りさせると comm -13 の差分が水増しされ、稀に
+    # ハードコードされた +24 の許容帯へ偶然一致して「無効時 0 件」という虚偽の
+    # PASS/WARN を出しかねない（Bugbot 指摘、PR #160 review-4727137460）。
+    if [ -z "${disabled_pkgs}" ]; then
+        record_fail "E: 依存クレート数増分の機械検証" "cargo tree -p backend-framework-core -e normal --no-default-features が空・失敗（無効時ベースライン取得不可のため新規クレート数を算出不能）"
+        return
+    fi
+
     if [ -z "${enabled_pkgs}" ]; then
         record_fail "E: 依存クレート数増分の機械検証" "cargo tree -p backend-framework-core -e normal --no-default-features --features tracing が空・失敗"
         return
