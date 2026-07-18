@@ -51,6 +51,10 @@ extract_toml_section() {
     #   3. 本文行も行末インラインコメントを除去してから出力 → コメント側の
     #      文字列で誤って PASS 判定されるのを防ぐ（行全体コメントは除去後に
     #      空行となり自然に除外される）
+    #   4. セクション終端は本物のテーブル見出し行（`[section]` / `[[section]]`）
+    #      でのみ判定する（単なる行頭 `[` 判定は複数行配列の開き括弧単独行
+    #      `ignore =` / `[` / `]` を新規見出しと誤認識しセクションを打ち切る
+    #      回帰があったため、dep-audit-accept.sh 本体と同一ロジックに統一）。
     awk -v target="[${section_name}]" '
         {
             sub(/\r$/, "")
@@ -61,7 +65,7 @@ extract_toml_section() {
             sub(/[ \t]+$/, "", header)
         }
         header == target { in_section = 1; next }
-        /^\[/ { in_section = 0 }
+        (header ~ /^\[[^][]+\]$/ || header ~ /^\[\[[^][]+\]\]$/) { in_section = 0 }
         in_section {
             line = $0
             sub(/#.*/, "", line)
@@ -128,6 +132,12 @@ if licenses_complete "${FIXTURES_DIR}/deny-header-trailing-comment.toml"; then
     pass "見出し行に trailing comment が付いた fixture（[licenses]  # 注記）でも完備と判定される"
 else
     fail "見出し行の trailing comment によりセクションが検出できず欠落と誤判定した"
+fi
+
+if licenses_complete "${FIXTURES_DIR}/deny-allow-lonebracket-array.toml"; then
+    pass "allow = / [ / ] 形式（開き括弧が独立行）の複数行配列でも 5 ライセンス完備と判定される（セクション終端誤判定の回帰検知、PR #145 review 4724103171）"
+else
+    fail "開き括弧単独行を新規テーブル見出しと誤認識してセクションを打ち切り、完備な allow リストを欠落と誤判定した（セクション終端誤判定への退行）"
 fi
 
 echo ""

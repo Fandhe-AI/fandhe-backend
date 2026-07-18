@@ -60,6 +60,13 @@ else
         #      インライン注記が生の行として後段の grep に渡り、コメント側の
         #      文字列に誤って PASS 判定される（accept-task-11-5.sh の
         #      `sub(/#.*/, "", line)` と同一対策）
+        #   4. セクション終端は「本物の TOML テーブル見出し行（`[section]` /
+        #      `[[section]]`、コメント・空白除去後に括弧の対で始まり括弧の対で
+        #      終わる行）」でのみ判定する。単に行頭が `[` であることだけを条件に
+        #      すると、`ignore =` の値を複数行配列で書いた際に開き括弧 `[` だけが
+        #      独立行に来る記法（`ignore =` / `[` / `]`）を新規テーブル見出しと
+        #      誤認識し、セクション本体を早期に打ち切ってしまう
+        #      （Cursor Bugbot 指摘、PR #145 review 4724103171）。
         awk -v target="[${section_name}]" '
             {
                 sub(/\r$/, "")
@@ -70,7 +77,7 @@ else
                 sub(/[ \t]+$/, "", header)
             }
             header == target { in_section = 1; next }
-            /^\[/ { in_section = 0 }
+            (header ~ /^\[[^][]+\]$/ || header ~ /^\[\[[^][]+\]\]$/) { in_section = 0 }
             in_section {
                 line = $0
                 sub(/#.*/, "", line)
@@ -219,7 +226,13 @@ fi
 # 任意の実測 smoke（pinned nightly + cargo-fuzz 導入済み環境でのみ）。未導入は
 # 判定不能ではなく「CI fuzz-smoke ジョブで継続検証されている」既定運用として SKIP する。
 if command -v cargo-fuzz >/dev/null 2>&1; then
-    pinned_nightly="$(grep -oP '(?<=^PINNED_NIGHTLY=")[^"]+' "${WORKSPACE_ROOT}/scripts/fuzz.sh" || true)"
+    # `grep -oP` の可変長後読み（lookbehind）は GNU grep 拡張であり BSD grep
+    # （macOS 標準）では非対応でエラー終了する。`|| true` で握りつぶされるため
+    # 失敗時に pinned_nightly が空のままとなり、cargo-fuzz とピン留め済み
+    # ツールチェーンが揃っていても「nightly not installed」（SKIP）に誤判定
+    # されていた（Cursor Bugbot 指摘、PR #145 review 4724103171）。
+    # `sed` の後方参照（BRE、POSIX 標準）に置き換えて GNU/BSD 両対応にする。
+    pinned_nightly="$(sed -n 's/^PINNED_NIGHTLY="\([^"]*\)".*/\1/p' "${WORKSPACE_ROOT}/scripts/fuzz.sh" | head -n1)"
     if [ -n "${pinned_nightly}" ] && rustup toolchain list 2>/dev/null | grep -q "^${pinned_nightly}"; then
         if bash "${WORKSPACE_ROOT}/scripts/fuzz.sh" --max-total-time 60 >/tmp/dep-audit-accept-fuzz.log 2>&1; then
             record_pass "3d: fuzz smoke 実測（任意）" "scripts/fuzz.sh --max-total-time 60 が crash/hang 0 件で正常終了（詳細: /tmp/dep-audit-accept-fuzz.log）"
