@@ -12,7 +12,9 @@
 #           生成すること（fixture 駆動）
 #      D-2（人手）: 人手評価台帳（受け入れレポート内の評価表）の充足率。未記入時は SKIP
 #   E. NFR-8: 自動修正でテストが通る修正を得られる割合 70% 以上
-#   F. 複数回試行の安定性・グレーゾーン再検証の状態（試行サマリ・記録の有無を検査）
+#   F. 複数回試行の安定性・グレーゾーン再検証の状態（試行サマリ・記録の有無に加え、存在する場合は
+#      third-party-stability-aggregate.sh / third-party-feasibility-verify.sh の出力本文から
+#      REQ-12 閾値（80%/60% 等）の実際の充足・未充足を判定する。片側のみ実施は PASS と断定せず SKIP）
 #
 # A・B・C・E は `docs/reports/task-12-7-metrics.summary`（確定値台帳）を入力とする。
 # 台帳は被験由来の実測値を転記した信頼できない入力として扱い、metric 名 allowlist +
@@ -398,34 +400,86 @@ fi
 if [ "${f_trials_found}" -eq 0 ] && [ "${f_gray_found}" -eq 0 ]; then
     record_skip "F: 複数回試行の安定性・グレーゾーン再検証" "試行サマリ（${REPORTS_DIR}/trial-*.summary）・グレーゾーン判定記録（${gray_records_dir}）とも未実施（TASK-12.5 試行 2・3／TASK-12.6 は PENDING）。実施手順: docs/design/multi-trial-stability-verification.md・docs/design/gray-zone-feasibility-verification.md の 3 役分離プロトコルに従い被験セッションを起動し、\`scripts/third-party-stability-aggregate.sh --trials-dir ${REPORTS_DIR}\` / \`scripts/third-party-feasibility-verify.sh --task-definitions docs/reports/task-12-6-task-definitions.md --records-dir ${gray_records_dir} --task-ids \"G-01 G-02 G-03 G-04 G-05 G-06 G-07 G-08 G-09 G-10\"\` を再実行する"
 else
+    # 各ハーネスは「exit code 0」を「REQ-12 閾値を充足した」の意味では返さない
+    # （third-party-stability-aggregate.sh は試行内の一部指標が閾値未達でもテキスト
+    # レポートに「未充足」と記すのみで exit 0、third-party-feasibility-verify.sh は
+    # 閾値判定自体を人間レビューへ委譲するとコメントで明記した上で誤判定破壊がない
+    # 限り exit 0 を返す）。exit code のみで PASS 判定すると、失敗した multi-trial・
+    # グレーゾーン結果を誤って greenlight しうる（Bugbot review 4728502197 #1、
+    # PR #174）。そのため生成されたレポート本文から実際の閾値充足・未充足・
+    # データ欠落（PENDING）を読み取り、閾値未達なら FAIL とする。
+    #
+    # 加えて、試行サマリ・グレーゾーン記録のどちらか一方のみが存在する場合は
+    # 「片側のみ実施」の部分実施状態であり、欠けている側を PASS 扱いに含めない。
+    # fail-closed 方針・D-2（実測 PENDING は SKIP）の挙動と整合させ、REQ-12 の
+    # 該当項目が未実装のまま完了扱いになるのを防ぐため、片側のみの場合は
+    # PASS と断定せず SKIP とする（同 review #2）。
     f_detail=""
     f_ok=1
+    f_partial=0
+    f_side_fail=0
+
     if [ "${f_trials_found}" -eq 1 ]; then
-        if bash "${WORKSPACE_ROOT}/scripts/third-party-stability-aggregate.sh" --trials-dir "${REPORTS_DIR}" >/tmp/ai-autonomy-accept-stability.log 2>&1; then
+        stability_ok=1
+        if ! bash "${WORKSPACE_ROOT}/scripts/third-party-stability-aggregate.sh" --trials-dir "${REPORTS_DIR}" >/tmp/ai-autonomy-accept-stability.log 2>&1; then
+            stability_ok=0
+        fi
+        if grep -qF "未充足" /tmp/ai-autonomy-accept-stability.log; then
+            stability_ok=0
+        fi
+        if grep -qF "PENDING（本指標のデータを含む試行がありません）" /tmp/ai-autonomy-accept-stability.log; then
+            stability_ok=0
+        fi
+        if [ "${stability_ok}" -eq 1 ]; then
             f_detail="${f_detail}安定性試行集計 PASS（詳細: /tmp/ai-autonomy-accept-stability.log）; "
         else
-            f_detail="${f_detail}安定性試行集計 FAIL（詳細: /tmp/ai-autonomy-accept-stability.log）; "
+            f_detail="${f_detail}安定性試行集計 FAIL（閾値未充足・データ欠落・parse error のいずれか。詳細: /tmp/ai-autonomy-accept-stability.log）; "
             f_ok=0
+            f_side_fail=1
         fi
     else
         f_detail="${f_detail}試行サマリなし（PENDING）; "
+        f_partial=1
     fi
+
     if [ "${f_gray_found}" -eq 1 ]; then
-        if bash "${WORKSPACE_ROOT}/scripts/third-party-feasibility-verify.sh" \
+        gray_ok=1
+        if ! bash "${WORKSPACE_ROOT}/scripts/third-party-feasibility-verify.sh" \
             --task-definitions "${REPORTS_DIR}/task-12-6-task-definitions.md" \
             --records-dir "${gray_records_dir}" \
             --task-ids "G-01 G-02 G-03 G-04 G-05 G-06 G-07 G-08 G-09 G-10" \
             >/tmp/ai-autonomy-accept-gray.log 2>&1; then
-            f_detail="${f_detail}グレーゾーン採点 PASS（詳細: /tmp/ai-autonomy-accept-gray.log）"
+            gray_ok=0
+        fi
+        # third-party-feasibility-verify.sh の出力表から実測パーセンテージを直接
+        # 読み取り、REQ-12 閾値（正解率・根拠提示割合とも 80% 以上）を本ハーネス側で
+        # 判定する（当該スクリプトは exit code では閾値判定を表現しないため）。
+        accuracy_pct="$(grep -oP '可否判定正解率（4 値厳密一致） \| [0-9]+/[0-9]+（\K[0-9]+(?=%）)' /tmp/ai-autonomy-accept-gray.log || true)"
+        basis_pct="$(grep -oP '判断根拠提示割合 \| [0-9]+/[0-9]+（\K[0-9]+(?=%）)' /tmp/ai-autonomy-accept-gray.log || true)"
+        if [ -z "${accuracy_pct}" ] || [ -z "${basis_pct}" ]; then
+            gray_ok=0
         else
-            f_detail="${f_detail}グレーゾーン採点 FAIL（詳細: /tmp/ai-autonomy-accept-gray.log）"
+            if [ "${accuracy_pct}" -lt 80 ] || [ "${basis_pct}" -lt 80 ]; then
+                gray_ok=0
+            fi
+        fi
+        if [ "${gray_ok}" -eq 1 ]; then
+            f_detail="${f_detail}グレーゾーン採点 PASS（正解率 ${accuracy_pct}%・根拠提示 ${basis_pct}%。詳細: /tmp/ai-autonomy-accept-gray.log）"
+        else
+            f_detail="${f_detail}グレーゾーン採点 FAIL（閾値未充足・値取得不可・誤判定破壊のいずれか。詳細: /tmp/ai-autonomy-accept-gray.log）"
             f_ok=0
+            f_side_fail=1
         fi
     else
         f_detail="${f_detail}グレーゾーン判定記録なし（PENDING）"
+        f_partial=1
     fi
 
-    if [ "${f_ok}" -eq 1 ]; then
+    if [ "${f_side_fail}" -eq 1 ]; then
+        record_fail "F: 複数回試行の安定性・グレーゾーン再検証" "${f_detail}"
+    elif [ "${f_partial}" -eq 1 ]; then
+        record_skip "F: 複数回試行の安定性・グレーゾーン再検証" "片側のみ実施のため PENDING（REQ-12 の当該項目が未完のまま完了扱いにしないため PASS とはしない）: ${f_detail}"
+    elif [ "${f_ok}" -eq 1 ]; then
         record_pass "F: 複数回試行の安定性・グレーゾーン再検証" "${f_detail}"
     else
         record_fail "F: 複数回試行の安定性・グレーゾーン再検証" "${f_detail}"

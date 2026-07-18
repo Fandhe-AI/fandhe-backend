@@ -1,0 +1,7 @@
+# 閾値未達フィクスチャ: completion_rate が REQ-12 閾値（60%）未満（PR #174 review
+# 4728502197 指摘 #1 の回帰テスト: exit code 0 でも「未充足」テキストを検知して
+# F を FAIL とすることを確認する）。
+metric=completion_rate pass=5 fail=5 pending=0 total=10
+metric=feasibility_accuracy pass=8 fail=2 pending=0 total=10
+metric=evidence_rate pass=6 fail=0 pending=0 total=6
+metric=destruction count=0
