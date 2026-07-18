@@ -207,6 +207,43 @@ fn registering_pattern_with_bad_syntax_returns_error_not_panic() {
     assert!(err.is_err());
 }
 
+// PR #191 Bugbot 指摘（comment id 3608815178）の回帰テスト。
+// 連続スラッシュ・末尾スラッシュによる空セグメントを含むパターンは登録時に
+// 拒否されるべきで、受理すると同じ空セグメントが要求されるため通常のパス
+// （`/hello/alice` 等）が誤って 404 になっていた。
+
+#[test]
+fn registering_pattern_with_consecutive_slash_returns_error_not_panic() {
+    let err = Router::new().route_param("GET", "/hello//{name}", |_h, _params, _b| {
+        Response::empty(200)
+    });
+    assert!(err.is_err());
+}
+
+#[test]
+fn registering_pattern_with_trailing_slash_returns_error_not_panic() {
+    let err = Router::new().route_param("GET", "/hello/{name}/", |_h, _params, _b| {
+        Response::empty(200)
+    });
+    assert!(err.is_err());
+}
+
+#[test]
+fn normal_path_still_matches_after_rejecting_empty_segment_patterns() {
+    // 空セグメントを含むパターンの登録が拒否された後も、正規のパターン登録・
+    // 通常パスへのマッチングが影響を受けないことを確認する。
+    let router = Router::new()
+        .route_param("GET", "/hello/{name}", |_h, params, _b| {
+            let name = params.get("name").unwrap_or("world");
+            Response::new(200, format!("hello, {name}").into_bytes())
+        })
+        .unwrap();
+
+    let res = router.dispatch(&head("GET", "/hello/alice"), &[]);
+    assert_eq!(res.status, 200);
+    assert_eq!(res.body, b"hello, alice".to_vec());
+}
+
 // --- 既存の完全一致ルートとの後方互換テスト ---
 
 #[test]

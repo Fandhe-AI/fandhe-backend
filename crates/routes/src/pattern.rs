@@ -83,6 +83,13 @@ pub enum RoutePatternError {
     MixedSegment(String),
     /// 同一パターン内で同じパラメータ名が複数回使われていた。
     DuplicateParamName(String),
+    /// `//`（連続スラッシュ）や末尾 `/` により空セグメントが生じた
+    /// （`/hello//{name}`・`/hello/{name}/` 等）。空セグメントを `Literal("")`
+    /// として受理すると、`route()` の静的パスがそのような URL を要求しない
+    /// 通常のリクエスト（`/hello/alice` 等）を誤って 404 にしてしまうため、
+    /// 登録時点で fail-closed に拒否する（セグメント数不変条件、モジュール doc
+    /// 「マッチング方針」節）。
+    EmptySegment,
     /// `{name}` セグメントを 1 つも含まないパターンが渡された
     /// （完全一致ルートは [`super::Router::route`] を使う責務分界のため）。
     NoParamSegment,
@@ -109,6 +116,12 @@ impl fmt::Display for RoutePatternError {
             }
             Self::DuplicateParamName(name) => {
                 write!(f, "パラメータ名 '{name}' が同一パターン内で重複しています")
+            }
+            Self::EmptySegment => {
+                write!(
+                    f,
+                    "連続スラッシュ・末尾スラッシュによる空セグメントは許可されません"
+                )
             }
             Self::NoParamSegment => {
                 write!(
@@ -191,6 +204,9 @@ pub(crate) fn parse_pattern(pattern: &str) -> Result<Vec<Segment>, RoutePatternE
     let mut has_param = false;
 
     for raw in raw_segments {
+        if raw.is_empty() {
+            return Err(RoutePatternError::EmptySegment);
+        }
         let starts = raw.starts_with('{');
         let ends = raw.ends_with('}');
         if starts && ends && raw.len() >= 2 {
@@ -306,6 +322,26 @@ mod tests {
         assert_eq!(
             parse_pattern("/a/{id}/b/{id}"),
             Err(RoutePatternError::DuplicateParamName("id".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_pattern_rejects_consecutive_slash_empty_segment() {
+        // '/hello//{name}' は '/' split で中間に空セグメントを生む
+        // （PR #191 Bugbot 指摘、comment id 3608815178）。
+        assert_eq!(
+            parse_pattern("/hello//{name}"),
+            Err(RoutePatternError::EmptySegment)
+        );
+    }
+
+    #[test]
+    fn parse_pattern_rejects_trailing_slash_empty_segment() {
+        // '/hello/{name}/' は末尾 '/' により末尾に空セグメントを生む
+        // （PR #191 Bugbot 指摘、comment id 3608815178）。
+        assert_eq!(
+            parse_pattern("/hello/{name}/"),
+            Err(RoutePatternError::EmptySegment)
         );
     }
 
