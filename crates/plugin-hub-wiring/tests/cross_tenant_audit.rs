@@ -14,6 +14,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bf_http::request::RequestHead;
 use bf_http::response::Response;
 use bf_plugin_hub_wiring::audit::{AuditContext, AuditSink, MemoryAuditSink, TenantLookupOutcome};
+use bf_plugin_hub_wiring::auth::bearer_token;
 use bf_plugin_hub_wiring::jwks::SharedJwks;
 use bf_plugin_hub_wiring::jwt::verify_token;
 use bf_plugin_hub_wiring::{TenantGate, TenantGateConfig};
@@ -98,10 +99,14 @@ impl Handler for TenantAwareHandler {
     fn handle(&self, head: &RequestHead, _body: &[u8]) -> Response {
         // `TenantGate` を通過済み（`Authorization: Bearer <valid JWT>`）である
         // 前提だが、`org_id` はゲート層から渡されないため本ハンドラで再検証する。
-        let token = head
-            .header("authorization")
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .expect("gate already validated the bearer token");
+        // 抽出には `TenantGate` と同一の RFC 6750 準拠パーサ（`auth::bearer_token`、
+        // スキーム名の大文字小文字を区別せず、トークン前の複数 SP も許容）を
+        // 用いる。ここで固定長プレフィックス一致（`strip_prefix("Bearer ")`）を
+        // 使うと、ゲートが許可した RFC 6750 準拠だが非正規のヘッダ（例:
+        // `bearer <token>` や `Bearer  <token>`）でパース不一致により
+        // panic し、本来検証すべき 404/監査ログ挙動に到達できなくなる
+        // （Cursor Bugbot 指摘、PR #162）。
+        let token = bearer_token(head).expect("gate already validated the bearer token");
         let keys = self.jwks.snapshot();
         let claims = verify_token(token, &keys, 0).expect("gate already validated the token");
 
@@ -239,6 +244,33 @@ async fn audit_event_json_never_contains_token_or_bearer_content() {
     assert!(!json.contains(&token));
     assert!(!json.contains("Bearer"));
     assert!(!json.contains("Authorization"));
+}
+
+#[tokio::test]
+async fn non_canonical_bearer_scheme_still_reaches_handler_and_is_audited() {
+    // `TenantGate` は RFC 6750 準拠（スキーム名の大文字小文字を区別せず、
+    // トークン前に複数 SP を許容）でゲートを通過させる。ハンドラ側の抽出が
+    // これと不整合（固定長プレフィックス限定）だと、ゲートを通過した本ケースで
+    // ハンドラが panic し 404/監査ログ挙動を検証できなくなる
+    // （Cursor Bugbot 指摘、PR #162）。ここではゲート通過後もハンドラが
+    // 同一 RFC 6750 準拠パーサでトークンを抽出し、越境試行が正しく監査記録
+    // されることを固定する。
+    let keypair = test_keypair();
+    let sink = Arc::new(MemoryAuditSink::new());
+    let server = server_with(&keypair, sink.clone());
+
+    let token = make_token(&keypair, TEST_KID, "org-b", 9_999_999_999);
+    let request = format!(
+        "GET /widgets/1 HTTP/1.1\r\nHost: x\r\nAuthorization: bEaReR   {token}\r\nConnection: close\r\n\r\n"
+    );
+    let response = roundtrip(&server, request.as_bytes()).await;
+
+    assert!(response.starts_with("HTTP/1.1 404"), "response: {response}");
+    assert_eq!(
+        sink.len(),
+        1,
+        "非正規（大文字小文字混在・複数スペース）でもゲート通過後は正しく監査記録されるはず"
+    );
 }
 
 #[tokio::test]
