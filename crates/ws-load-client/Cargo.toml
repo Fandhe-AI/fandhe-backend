@@ -1,0 +1,28 @@
+[package]
+name = "ws-load-client"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "10,000 同時 WebSocket 接続負荷生成クライアント（TASK-4.3 / #24 計測専用バイナリ）"
+publish = false
+
+[lints]
+workspace = true
+
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）:
+# `crates/axum-ref` と同じく workspace 内 path 依存を一切持たない独立計測バイナリ
+# （依存方向グラフの外側、`scripts/dep-direction-check.sh` チェック 1 の対象外）。
+# ここで追加する依存は `crates/core` / `crates/plugin-*` には一切波及しない。
+# 依存系譜は `docs/spec/03-poc/high-concurrency-scale/load-client`（PoC-7）と同一で、
+# workspace 内で既に導入済みの tokio / tokio-tungstenite / futures-util に限定する
+# （`crates/plugin-websocket` が同系列 crate に依存済み、`reference-researcher` 相当の
+# 追加妥当性確認は PoC-7 時点で完了済み）。
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time", "io-util", "sync"] }
+tokio-tungstenite = "0.30"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+
+# release プロファイル（lto 等）はワークスペースルート Cargo.toml の
+# [profile.release] に集約する（非 root パッケージでの profile 指定は無視される
+# という cargo の警告どおり、`crates/axum-ref/Cargo.toml` と同一方針）。

@@ -137,3 +137,11 @@ required-features = ["graphql"]
 [[example]]
 name = "tracing_nfr"
 required-features = ["tracing"]
+
+# `examples/ws_echo.rs`（TASK-4.3 / #24）は `bf-plugin-websocket::WebSocketConfig` を
+# 直接使うため、`websocket` feature 無効時に `cargo build --workspace --all-targets` 等が
+# コンパイル対象へ含めて失敗しないよう `required-features` で明示的にゲートする
+# （`webrtc_nfr6` / `graphql_nfr6` / `tracing_nfr` と同一パターン）。
+[[example]]
+name = "ws_echo"
+required-features = ["websocket"]

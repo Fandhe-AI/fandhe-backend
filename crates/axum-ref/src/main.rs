@@ -39,6 +39,9 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "ws")]
+use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
+
 /// `POST /echo` のリクエスト/レスポンス body。
 ///
 /// PoC-2 と同一スキーマを維持し、フルスクラッチコアとの比較時に
@@ -116,16 +119,56 @@ async fn echo(
     }
 }
 
+/// `GET /ws`（`ws` feature 限定、TASK-4.3 / #24）の WebSocket アップグレード入口。
+///
+/// `bf-plugin-websocket::session::run_echo_session`（`crates/plugin-websocket`）と
+/// 等価な意味論（Text/Binary はそのままエコー、Close 受信でループを終える）に
+/// 保つことで、`benches/bench-ws-load.sh` の fullscratch/axum 比較を機能差ではなく
+/// 実装差（RSS・CPU）のみに帰属させる。Ping/Pong は axum の内部実装
+/// （tokio-tungstenite 由来）が自動応答するため、ここでは明示処理しない
+/// （`run_echo_session` の Ping/Pong 無視と同一の建て付け）。
+#[cfg(feature = "ws")]
+async fn ws_echo(ws: WebSocketUpgrade) -> impl IntoResponse {
+    ws.on_upgrade(ws_echo_session)
+}
+
+/// アップグレード成立後のエコーループ本体（`ws_echo` から呼ばれる）。
+///
+/// 呼び出し元は 1 接続につき 1 タスク（axum が upgrade 済みソケットごとに
+/// spawn する）。I/O エラー・Close フレームでループを抜け、接続を閉じる。
+#[cfg(feature = "ws")]
+async fn ws_echo_session(mut socket: WebSocket) {
+    use axum::extract::ws::Message;
+
+    while let Some(Ok(message)) = socket.recv().await {
+        match message {
+            WsMessage::Text(_) | WsMessage::Binary(_) => {
+                if socket.send(message).await.is_err() {
+                    break;
+                }
+            }
+            Message::Close(_) => break,
+            // Ping/Pong は axum 内部（tokio-tungstenite）が自動応答するため無視する
+            // （`run_echo_session` と同一方針）。
+            Message::Ping(_) | Message::Pong(_) => {}
+        }
+    }
+}
+
 /// axum ルーターを構築する。
 ///
 /// 本体（`main`）とテスト（`tests::routes_*`）の両方から呼ばれる共通の組み立て口。
 /// axum 0.8 のパス構文は `{name}` 形式（0.7 以前の `:name` から変更）。
+/// `ws` feature 有効時のみ `/ws` route を追加する（既定ビルドは従来どおり）。
 fn app() -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health))
         .route("/hello/{name}", get(hello))
         .route("/users/{id}", get(get_user))
-        .route("/echo", post(echo))
+        .route("/echo", post(echo));
+    #[cfg(feature = "ws")]
+    let router = router.route("/ws", get(ws_echo));
+    router
 }
 
 #[tokio::main]
@@ -234,6 +277,22 @@ mod tests {
             )
             .await
             .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // `ws` feature 有効時のみコンパイルする回帰テスト（feature-flow-check.sh の
+    // 「src 変更にはテスト追加必須」要件を満たす。実接続は
+    // `benches/bench-ws-load.sh` 側の統合的な確認に委ね、ここでは非 Upgrade
+    // リクエストが 400 系で拒否されることのみを検証する軽量なユニットテストに
+    // 留める）。
+    #[cfg(feature = "ws")]
+    #[tokio::test]
+    async fn routes_ws_without_upgrade_headers_is_rejected() {
+        let response = app()
+            .oneshot(Request::builder().uri("/ws").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // axum の WebSocketUpgrade extractor は Upgrade ヘッダ欠落を 400 として拒否する。
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 

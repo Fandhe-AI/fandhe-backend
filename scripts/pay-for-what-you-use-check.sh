@@ -289,8 +289,8 @@ else
         else
             # cargo-geiger はビルドを伴い CI ランナー環境（レジストリ通信・並行ジョブに
             # よるキャッシュ競合等）に起因する一過性の失敗実績があるため、判定を FAIL に
-            # 倒す前に 1 回だけ再試行する（fail-closed の後退ではなく、決定的な失敗と
-            # 一過性の失敗を区別するための最小限のノイズ低減。2 回とも失敗した場合のみ
+            # 倒す前に複数回再試行する（fail-closed の後退ではなく、決定的な失敗と
+            # 一過性の失敗を区別するための最小限のノイズ低減。全試行が失敗した場合のみ
             # 下記ログ出力を経て FAIL 判定する）。
             # cargo-geiger は --target-dir オプションを持たないため、(d) の release
             # ビルド同様の隔離は CARGO_TARGET_DIR 環境変数で行う。self-hosted ランナー
@@ -300,13 +300,32 @@ else
             # `Io(Os { code: 2, kind: NotFound, ... })` で失敗する事例を実機で確認した
             # （PR #134/#19 CI、診断ログ出力により特定）。専用ディレクトリに隔離することで
             # 他ジョブの状態に左右されない決定的な実行にする。
+            #
+            # PR #164/#24 CI（headSha 341a50b）で `assertion failed:
+            # self.pending_ids.insert(id)`（cargo-0.86.0 の PackageSet 内部パニック）に
+            # よる 2 回連続失敗を実機で確認した。ローカル隔離環境（専用 CARGO_HOME・
+            # 単独実行）では同一コマンドが決定的に成功し、`crates/ws-load-client`
+            # 追加後の依存グラフ自体に起因する恒常的な失敗ではないと切り分けた
+            # （cargo-geiger は --manifest-path で指定した crates/core の到達可能な
+            # 依存のみを解決し、workspace の他メンバー（ws-load-client 含む）を
+            # 含めない。step (b) の cargo tree 結果とも一致）。self-hosted ランナー上で
+            # 他ジョブが `~/.cargo/registry`（CARGO_HOME、ジョブ間共有）のレジストリ
+            # キャッシュ/インデックスを同時に更新するタイミングと衝突すると、cargo の
+            # PackageSet 構築が重複 PackageId 挿入で panic する一過性レースだと考えられる。
+            # 2 回の再試行では同時実行中の他ジョブの完了を待ちきれず連続失敗しうるため、
+            # 試行回数を 3 回に増やし、試行間に短いバックオフ（他ジョブのレジストリ
+            # アクセスが収まる時間を確保）を入れて再現率を下げる。
             geiger_json=""
-            for geiger_attempt in 1 2; do
+            geiger_max_attempts=3
+            for geiger_attempt in $(seq 1 "${geiger_max_attempts}"); do
                 geiger_json="$(CARGO_TARGET_DIR="${TARGET_DIR}-geiger" cargo geiger --manifest-path "${CORE_MANIFEST}" --no-default-features --output-format Json -q 2>"${geiger_log}" || true)"
                 if [ -n "${geiger_json}" ]; then
                     break
                 fi
-                echo "[geiger] 試行 ${geiger_attempt}/2 が失敗しました" >&2
+                echo "[geiger] 試行 ${geiger_attempt}/${geiger_max_attempts} が失敗しました" >&2
+                if [ "${geiger_attempt}" -lt "${geiger_max_attempts}" ]; then
+                    sleep $((5 * geiger_attempt))
+                fi
             done
             if [ -z "${geiger_json}" ]; then
                 fail "c: cargo geiger 検証 — cargo geiger の実行に失敗しました（${geiger_log} 参照）。cargo-geiger はビルドを伴い壊れやすい実績があるため FAIL として扱う"

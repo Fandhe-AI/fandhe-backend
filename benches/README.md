@@ -43,6 +43,7 @@ cargo build --release --bin axum-ref
 | `bench-rss.sh` | 負荷時 RSS（試行内複数サンプル × 複数試行の中央値。PoC-2 の単発計測の是正） |
 | `bench-footprint.sh` | 起動時間・アイドル RSS・リリースバイナリサイズ |
 | `bench-accept.sh` | 上記 3 スクリプトを axum-ref（baseline）・コア側（対象）の順に実行し、比率・絶対差を算出して REQ-1・NFR-1・NFR-2 の基準で判定する受け入れテスト（TASK-1.6-1、#71） |
+| `bench-ws-load.sh` | 10,000 同時 WebSocket 接続の確立成功率・接続あたり RSS 増分（fullscratch/axum 比）・線形性を計測する負荷試験ハーネス（TASK-4.3、#24） |
 
 共通関数は `lib/common.sh` に集約している（サーバ起動/停止・前提ツール検査・中央値算出・
 `RESULT_JSON` 機械可読出力ヘルパー・数値バリデーション）。
@@ -295,6 +296,79 @@ B）等の machine-readable な結果を出す。`RUNS` / `DURATION` / `CONNECTI
 `scripts/accept/tracing-accept.sh` が担う（受け入れ帯: RPS 比 ≥95%・p95 比 ≤110%、
 REQ-10 の成功基準そのもの。`webrtc`/`graphql` の NFR-6 判定帯とは別の帯）。実行結果
 レポートは `reports/task-10.4-tracing-performance.md` を参照。
+
+## bench-ws-load.sh — 10,000 同時 WebSocket 接続負荷試験・RSS 再計測（TASK-4.3、#24）
+
+fullscratch（`crates/core/examples/ws_echo.rs`）と axum-ref（`ws` feature 有効）の
+2 実装へ `crates/ws-load-client`（PoC-7 `load-client` の移植・改良）で同一の WebSocket
+長時間接続負荷（接続数 1,000/5,000/10,000）を掛け、保持期間中のサーバ RSS を継続
+サンプリングして「接続あたり RSS 増分」を算出・比較する。TASK-4.1（#22）・TASK-4.2
+（#23）で確立した「委譲後の専用タスク再 spawn + permit 引き継ぎ」最適化の RSS 削減
+効果を正式に再計測し、REQ 基準（axum 比 110% 以内・確立成功率 99% 以上・1k→10k の
+線形性）を判定する。
+
+`bench-rss.sh`（試行内複数サンプル×複数試行の中央値評価）と同じ計測思想を踏襲するが、
+HTTP（oha）ではなく WebSocket 長時間接続（専用クライアント）が対象であるため独立
+スクリプトとする。`lib/common.sh` の `median`/`to_json_array`/`write_result_json` の
+みを再利用し、`check_dependencies`/`start_server`（oha・単一 TARGET_BIN 前提）は
+使わない。
+
+### 前提ツール・前提条件
+
+- `jq`・`curl`（`benches/lib/common.sh` と共通）
+- Linux（`ps -o rss=` を使用）
+- `ulimit -n` が「最大接続数 + 100」以上（クライアント・サーバは別プロセスのため
+  プロセス単位の fd 上限は概ね最大接続数分で足りる。不足時はスクリプトが導入手順を
+  案内して終了する。自動引き上げはしない）
+- クライアント・サーバがループバック対向のため、`/proc/sys/net/ipv4/ip_local_port_range`
+  の幅が「最大接続数 + 1000」以上（PoC-7 で確認されたエフェメラルポート枯渇の再発防止。
+  Linux 既定範囲（約 28,000）で 10,000 接続は通常充足する）
+
+### ビルド手順（自動ビルドしない）
+
+```bash
+cargo build --release -p backend-framework-core --features websocket --example ws_echo
+# axum-ref の ws feature 有効ビルドは既存の target/release/axum-ref（他ベンチの
+# baseline）を汚さないよう専用 target-dir へ分離する
+cargo build --release -p axum-ref --features ws --target-dir target/ws-bench
+cargo build --release -p ws-load-client
+```
+
+### 実行例
+
+```bash
+# 既定パラメータ（RUNS=3 HOLD_SECS=60 CONNECTION_TIERS="1000 5000 10000"）で実行
+bash benches/bench-ws-load.sh
+
+# 動作確認用に縮小パラメータで素早く回す（スモークテスト）
+CONNECTION_TIERS="100" HOLD_SECS=5 RUNS=3 bash benches/bench-ws-load.sh
+
+# 機械可読出力
+RESULT_JSON=/tmp/ws-load-result.json bash benches/bench-ws-load.sh
+```
+
+### 計測パラメータ（env で上書き可能）
+
+| 変数 | 既定値 | 意味 |
+|------|-------|------|
+| `RUNS` | `3` | 接続数ティアごとの試行回数（最低 3。中央値評価の前提） |
+| `HOLD_SECS` | `60` | 接続確立後の維持時間・秒（`crates/core` の `max_connection_lifetime` 既定 300 秒より必ず短くすること。長時間接続は委譲後の専用タスクで生存するため lifetime の影響は受けないが、心拍応答確認のため十分な保持時間を確保する） |
+| `CONNECTION_TIERS` | `"1000 5000 10000"` | 計測する接続数（空白区切り） |
+| `RAMP_BATCH` / `RAMP_DELAY_MS` | `200` / `50` | `ws-load-client` へ渡すランプアップ速度 |
+| `HEARTBEAT_MS` | `2000` | 心拍間隔・ミリ秒 |
+| `SAMPLE_INTERVAL_SEC` | `1` | 負荷印加中の RSS サンプリング間隔（秒） |
+| `SUCCESS_RATE_MIN_PCT` | `99` | 確立成功率の受け入れ基準（%） |
+| `AXUM_RATIO_MAX_PCT` | `110` | 最大接続数時点の接続あたり RSS 増分・axum 比の受け入れ基準（%） |
+| `FULLSCRATCH_BIN` / `AXUM_BIN` / `CLIENT_BIN` | `target/release/examples/ws_echo` 等 | 計測対象バイナリの明示指定 |
+| `RESULT_JSON` | 未指定 | 指定時、接続数ティア別の接続あたり RSS 増分・成立率を機械可読 JSON として書き出す |
+
+### 判定基準（受け入れ条件、`docs/spec/05-tasks.md` TASK-4.3）
+
+1. 確立成功率 99% 以上（全実装 × 全接続数ティア）
+2. 最大接続数（既定 10,000）時点の接続あたり RSS 増分が axum 比 110% 以内
+3. 1,000→10,000 の接続あたり RSS 増分の線形性（自動判定はせず、出力表を目視確認する）
+
+実測結果は [`reports/task-4.3-ws-load-rss.md`](reports/task-4.3-ws-load-rss.md) を参照。
 
 ## tracing-backpressure-bench.sh — 非同期 writer バックプレッシャー・ログ欠落率計測
 
