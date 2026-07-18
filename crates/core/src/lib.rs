@@ -61,6 +61,33 @@
 //!   `try_handle_upgrade`（Upgrade 型、TASK-4.1 / #22 で実装）の 2 種として
 //!   実証済みであり、後続プラグインは `docs/design/plugin-boundary.md` の
 //!   適用手順に従って同パターンを踏襲する
+//!
+//! # クイックスタート（TASK-11.5 / #95、`docs/guide/getting-started.md` の裏取り）
+//!
+//! [`Server`] に [`bf_routes::Router`] を 1 件登録するだけで最小サーバが
+//! 組み立てられる。`bind` → `run` の流れは `crates/core/examples/minimal.rs`
+//! （`cargo run --example minimal -p backend-framework-core` で実行可能）と同一。
+//! 本 doc test は `no_run`（実際に listen はしない）だが `cargo test --doc` で
+//! コンパイル可能性を機械検証する（AI ファースト保守性、
+//! `.claude/rules/feature-modification.md` の「実装にはテスト追加を伴う」）。
+//!
+//! ```no_run
+//! use backend_framework_core::Server;
+//! use bf_http::response::Response;
+//! use bf_routes::Router;
+//!
+//! # async fn quickstart() -> std::io::Result<()> {
+//! let router = Router::new().route("GET", "/", |_head, _body| {
+//!     Response::new(200, b"hello\n".to_vec())
+//! });
+//!
+//! let server = Server::new().handler(router);
+//! // 外部公開する場合は呼び出し側の責任でバインドアドレスを明示する
+//! // （.claude/rules/security.md の攻撃表面最小化）。ここではループバック限定。
+//! let bound = server.bind("127.0.0.1:3000").await?;
+//! bound.run().await
+//! # }
+//! ```
 
 pub mod extension;
 pub(crate) mod plugin;
