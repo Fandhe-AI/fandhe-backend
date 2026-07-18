@@ -129,27 +129,36 @@ check_quiescence_once() {
 # 待機を無限にしない・強制バイパスのフラグは設けない）。
 #
 # `QUIESCE_POLL_INTERVAL_SECS` が `0`（または不正な非数値）だと `sleep 0` を
-# 繰り返して `waited` が進まず、`QUIESCE_WAIT_SECS` に到達できずループが無限に
-# BLOCKED を返せなくなる（有界待機の契約に反する）。ポーリング間隔は 1 秒に
-# クランプし、経過時間ではなくループ回数（`QUIESCE_WAIT_SECS` を実効間隔で
-# 割った上限回数）で終了条件を判定することで、間隔の値によらず必ず有界にする。
+# 繰り返して待機が進まず、ループが無限に BLOCKED を返せなくなる（有界待機の
+# 契約に反する）。ポーリング間隔は 1 秒にクランプする。
+#
+# 有界性・待機時間の担保は経過時間（bash 組み込み変数 `SECONDS`、シェル起動
+# からの経過秒数）そのもので判定する（PR #193 Bugbot 指摘の修正）。旧実装は
+# ループ回数（`QUIESCE_WAIT_SECS` を実効間隔で割った上限回数）で終了条件を
+# 判定しており、判定→sleep の順で「N 回目の判定失敗で BLOCKED」としていた
+# ため、実際の壁時計待機時間が `QUIESCE_WAIT_SECS` より約 1 ポーリング間隔分
+# 短くなり（`QUIESCE_POLL_INTERVAL_SECS` がそれ未満だと即座に BLOCKED になり
+# 得た）、「秒単位で待つ」という契約に反していた。本実装は起点からの経過秒数
+# が `QUIESCE_WAIT_SECS` に達するまでは BLOCKED と判定せず、残り時間を超えない
+# 範囲でのみ sleep することで、有界性を保ったまま実際の待機時間を保証する。
 wait_for_quiescence() {
     local effective_interval="${QUIESCE_POLL_INTERVAL_SECS}"
     if ! [[ "${effective_interval}" =~ ^[0-9]+$ ]] || [ "${effective_interval}" -lt 1 ]; then
         effective_interval=1
     fi
-    local max_iterations=$(((QUIESCE_WAIT_SECS + effective_interval - 1) / effective_interval))
-    [ "${max_iterations}" -lt 1 ] && max_iterations=1
-    local iteration=0
+    local start_seconds="${SECONDS}"
     while true; do
         if [ "$(check_quiescence_once)" = "QUIESCENT" ]; then
             return 0
         fi
-        iteration=$((iteration + 1))
-        if [ "${iteration}" -ge "${max_iterations}" ]; then
+        local elapsed=$((SECONDS - start_seconds))
+        if [ "${elapsed}" -ge "${QUIESCE_WAIT_SECS}" ]; then
             return 1
         fi
-        sleep "${effective_interval}"
+        local remaining=$((QUIESCE_WAIT_SECS - elapsed))
+        local sleep_secs="${effective_interval}"
+        [ "${sleep_secs}" -gt "${remaining}" ] && sleep_secs="${remaining}"
+        sleep "${sleep_secs}"
     done
 }
 
