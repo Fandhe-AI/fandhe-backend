@@ -47,11 +47,29 @@
 //! `crates/plugin-webrtc`（`webrtc` feature 経由）が既に依存グラフへ引き込んで
 //! いる実績依存であり、本クレート追加による新規のライセンス・advisory 面の
 //! リスク増はない。
+//!
+//! # 越境アクセス監査ログ標準整合（TASK-9.6 / #89）
+//!
+//! [`audit`] モジュールは `docs/design/outbox-consent-integration.md` 6 節の
+//! 2 層設計（データ層 RLS 相当の越境アクセスは 0 行 → 404 相当としてフェイル
+//! クローズ遮断）を前提に、「正当な 404」と「越境 404」を**監査ログのみで**
+//! 区別する仕組みを提供する。外部応答（404）はどちらも完全同一のまま変えない
+//! （存在秘匿の維持）。`TenantGate`（本モジュール）の 401/403 判定とは独立の
+//! 関心事であり、越境検出はデータ層の所有権判定を行う利用側サービスが
+//! [`audit::TenantLookupOutcome`] を介して行う。新規依存の追加はない
+//! （既存の `serde` / `serde_json` のみを使用）。実 micro-service-hub PoC-13
+//! 標準とのフィールド厳密整合の最終確認は [#97] で行う。
+//!
+//! [#97]: https://github.com/Fandhe-AI/backend-framework/issues/97
 
+pub mod audit;
 pub mod gate;
 pub mod jwks;
 pub mod jwt;
 
+pub use audit::{
+    AuditCategory, AuditContext, AuditEvent, AuditSink, MemoryAuditSink, TenantLookupOutcome,
+};
 pub use gate::{TenantGate, TenantGateConfig};
 pub use jwks::{JwksError, JwksKeySet, SharedJwks};
 pub use jwt::{Claims, TokenError, verify_token};
