@@ -273,3 +273,68 @@ async fn request_gate_rejection_takes_precedence_over_websocket_upgrade() {
     let response_head = read_response_head(&mut stream).await;
     assert!(response_head.starts_with("HTTP/1.1 403"));
 }
+
+/// ユーザー定義 `WsMessageHandler`（Issue #179）を `Server::websocket` 経由で
+/// 登録した場合、コア配線（`try_handle_upgrade` → spawn →
+/// `bf_plugin_websocket::handle_upgrade`）を通ってもカスタム応答になることを
+/// 確認する。permit 契約・再 spawn 経路自体は
+/// `upgrade_succeeds_and_echoes_text_frame` 等の既存テストで担保済みのため、
+/// 本テストはハンドラ差し替えがコア経由で反映される点のみを検証する。
+#[tokio::test]
+async fn custom_handler_registered_via_server_websocket_is_reachable() {
+    use bf_plugin_websocket::handler::{WsHandlerError, WsMessage, WsMessageHandler, WsOutcome};
+    use std::future::Future;
+    use std::pin::Pin;
+
+    /// Text を大文字化して返すトイハンドラ（コア配線経由での反映確認用）。
+    ///
+    /// `WsMessageHandler::on_message` の戻り値型（`futures_util::future::BoxFuture`
+    /// の別名）は `Pin<Box<dyn Future<...> + Send + '_>>` そのものであり
+    /// （型エイリアス、`futures_core::future::BoxFuture` 定義参照）、本クレート
+    /// （`backend-framework-core`）の dev-dependencies に `futures-util` を
+    /// 追加せずとも構造的に同一の型を直接書けば満たせる。新規依存を増やさない
+    /// （pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）。
+    struct UppercaseHandler;
+    impl WsMessageHandler for UppercaseHandler {
+        fn name(&self) -> &'static str {
+            "uppercase"
+        }
+        fn on_message(
+            &self,
+            msg: WsMessage,
+        ) -> Pin<Box<dyn Future<Output = Result<WsOutcome, WsHandlerError>> + Send + '_>> {
+            Box::pin(async move {
+                let WsMessage::Text(t) = msg else {
+                    return Ok(WsOutcome::Reply(vec![]));
+                };
+                Ok(WsOutcome::Reply(vec![WsMessage::Text(t.to_uppercase())]))
+            })
+        }
+    }
+
+    let server = Server::new()
+        .websocket(WebSocketConfig::default().with_handler(UppercaseHandler))
+        .handler(NotCalledHandler);
+    let addr = spawn_server(server).await;
+
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream.write_all(VALID_HANDSHAKE_REQUEST).await.unwrap();
+
+    let response_head = read_response_head(&mut stream).await;
+    assert!(response_head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+
+    stream.write_all(&masked_text_frame(b"hi")).await.unwrap();
+    let (opcode, payload) = read_server_frame(&mut stream).await;
+    assert_eq!(
+        opcode, 0x1,
+        "expected Text opcode from custom handler reply"
+    );
+    assert_eq!(
+        payload, b"HI",
+        "custom handler reply must be reflected through core wiring"
+    );
+
+    stream.write_all(&masked_close_frame()).await.unwrap();
+    let mut trailing = Vec::new();
+    let _ = stream.read_to_end(&mut trailing).await;
+}

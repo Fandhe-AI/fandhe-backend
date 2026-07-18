@@ -332,6 +332,34 @@ where
   場合は、再 spawn 時に必ずその所有権をセッションタスクへ move する
   （move し忘れは DoS リグレッションになる、5.4 節）
 
+### 5.5.1 セッション内ユーザーハンドラ委譲（Issue #179、`plugin-websocket` 追補）
+
+Upgrade 型パターン確立後もアプリケーションロジックを差し込む手段がなかった
+（`crates/plugin-websocket` のセッション処理はエコー専用に固定）。Issue #179
+はこれを解消し、セッションループ内で呼ぶメッセージハンドラをユーザーが
+差し替え可能にする設計判断を追補する。
+
+- **ハンドラ trait・メッセージ型はプラグイン側で定義する**: 依存方向は
+  コア → プラグインの単方向のみ（5.2 節）を維持する制約があるため、
+  ハンドラ trait（`WsMessageHandler`）・メッセージ型（`WsMessage` /
+  `WsOutcome`）は `crates/plugin-websocket` 側に置く。コアのシグネチャ
+  変更は不要で、`WebSocketConfig`（`Server::websocket(config)` で受け渡す
+  既存の設定型）の中を旅させるだけで済む
+- **`async fn` in trait の型消去**: dyn 互換にするため、`crates/plugin-graphql`
+  の `BoxExecuteFn` の先例に倣い、新規依存を追加せず既存依存
+  `futures-util`（`std` feature）が提供する `BoxFuture` で手書きする
+  （async-trait 等は追加しない、pay-for-what-you-use）
+- **tungstenite 型を公開 API に漏らさない**: `WsMessage` は独自表現とし、
+  内部依存（`tokio-tungstenite`）のバージョン更新から公開 API を絶縁する
+- **呼び出し順序**: セッションループはメッセージごとにハンドラを直列
+  `await` する（順序保証・自然なバックプレッシャ。並行処理したい場合は
+  ハンドラ内で自前に `tokio::spawn` する建て付け）
+- **既存 DoS 上限を後退させない**: `max_message_size` / `max_frame_size` は
+  tungstenite 側でハンドラ呼び出し**前**に強制され続ける（上限超過メッセージは
+  ハンドラへ到達しない）。ハンドラの `Err` は既存の `WsError` へ
+  `Handler(...)` variant として合流させ、コア境界を越えて panic させない
+  契約を維持する
+
 ## 5.6 Gate 型パターン（依存逆転型、TASK-9.1 / #61 で確立、TASK-9.2 / #62 で
 RS256 + JWKS へ差し替え）
 

@@ -129,7 +129,9 @@ fn from_plugin_response(response: bf_plugin_webrtc_proxy::Response) -> Response 
 ///
 /// # 委譲後の専用タスク再 spawn（TASK-4.2 / #23）
 ///
-/// マッチ確定時、ハンドシェイク + エコーループ（`bf_plugin_websocket::handle_upgrade`）
+/// マッチ確定時、ハンドシェイク + メッセージハンドラループ（既定エコー、
+/// `WebSocketConfig::with_handler` でユーザー定義ハンドラへ差し替え可能。
+/// Issue #179）を提供する `bf_plugin_websocket::handle_upgrade`
 /// を呼び出し元の `handle_connection` タスク内でインラインに await せず、
 /// `tokio::spawn` した専用タスクへ完全に切り離す。`handle_connection` の
 /// tokio タスクは `read_request`・応答直列化等を含む大きなステートマシンで

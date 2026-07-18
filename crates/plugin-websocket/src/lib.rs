@@ -35,11 +35,14 @@
 //! 3. [`handle_upgrade`] は RFC 6455 4.2.1 の詳細検証（`handshake::validate`）
 //!    を行い、成功時は 101 応答、失敗時は 400/426 応答を送出する
 //! 4. 101 応答成功後は `tokio-tungstenite` の `WebSocketStream` へフレーミング
-//!    処理を委譲し、セッション終了まで面倒を見る（`session::run_echo_session`）。
-//!    `WebSocketConfig::idle_timeout`（既定 60 秒、fail-safe で有効）が設定
-//!    されている場合、受信アイドルが続く接続は正常な Close ハンドシェイクで
-//!    切断する（リソース枯渇 DoS 対策、Issue #175。詳細は `session` モジュール
-//!    の doc を参照）
+//!    処理を委譲し、セッション終了まで面倒を見る（`session::run_session`）。
+//!    Text/Binary メッセージは [`handler::WsMessageHandler`]（既定
+//!    [`handler::EchoHandler`]、Issue #179）へ委譲され、返り値
+//!    （[`handler::WsOutcome`]）に従って返信送出・セッション継続/終了を
+//!    決める。`WebSocketConfig::idle_timeout`（既定 60 秒、fail-safe で有効）
+//!    が設定されている場合、受信アイドルが続く接続は正常な Close
+//!    ハンドシェイクで切断する（リソース枯渇 DoS 対策、Issue #175。詳細は
+//!    `session` モジュールの doc を参照）
 //!
 //! # workspace 内での依存方向
 //!
@@ -63,6 +66,7 @@
 
 mod config;
 mod error;
+pub mod handler;
 mod handshake;
 mod session;
 
@@ -157,5 +161,5 @@ where
         .write_all(&handshake::serialize_101(&validated.accept_key))
         .await?;
 
-    session::run_echo_session(stream, leftover, config).await
+    session::run_session(stream, leftover, config).await
 }

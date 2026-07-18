@@ -3,14 +3,16 @@
 //! `crate::handle_upgrade` から呼ばれる。101 応答送出直後の生ストリームを
 //! `WebSocketStream::from_partially_read` へ渡し、以降の RFC 6455 フレーミング
 //! （マスク処理・Ping/Pong 自動応答・Close ハンドシェイク）は tokio-tungstenite
-//! に委ねる。TASK-4.1 時点のセッション本体はエコーループ（Text/Binary を
-//! そのまま返送）に限定し、ユーザー定義メッセージハンドラ API は導入しない
-//! （後続 Issue のスコープ、Issue #22 実装計画 8 節）。
+//! に委ねる。Text/Binary メッセージは [`crate::handler::WsMessageHandler`]
+//! （`config.handler`、既定 [`crate::handler::EchoHandler`]）へ委譲し、
+//! 返り値（[`crate::handler::WsOutcome`]）に従って返信送出・セッション
+//! 継続/終了を決める（Issue #179、親 #91。TASK-4.1 時点の「ユーザー定義
+//! メッセージハンドラ API は導入しない」制約はここで解消された）。
 //!
 //! `config.idle_timeout` が有効な場合、フレーム受信を都度
 //! `tokio::time::timeout` で監視し、アイドル（無通信）が続く接続を正常な
 //! Close ハンドシェイクで切断する（リソース枯渇 DoS 対策、Issue #175。
-//! 詳細は [`run_echo_session`] の doc を参照）。
+//! 詳細は [`run_session`] の doc を参照）。
 
 use std::time::Duration;
 
@@ -23,6 +25,7 @@ use futures_util::{SinkExt, StreamExt};
 
 use crate::config::WebSocketConfig;
 use crate::error::WsError;
+use crate::handler::{WsMessage, WsOutcome};
 
 /// タイムアウト発火後、サーバ側が送出した Close フレームへのクライアント
 /// 応答（または EOF）を待つ上限（10 秒）。
@@ -34,18 +37,26 @@ use crate::error::WsError;
 const CLOSE_GRACE: Duration = Duration::from_secs(10);
 
 /// 101 応答送出済みのストリームを受け取り、WebSocket セッション終了まで
-/// 処理する（エコーループ）。
+/// 処理する。
 ///
 /// `leftover` は 101 応答送出前にクライアントから先行到着していた可能性の
 /// ある残余バイト列（コア側 `RecvBuffer::unread` 由来）。
 /// `WebSocketStream::from_partially_read` へそのまま渡すことで、先行フレーム
 /// を取りこぼさない。
 ///
-/// Text/Binary メッセージはそのまま送り返し、Ping には tokio-tungstenite が
-/// 自動で Pong を返す（tungstenite の既定動作）。Close フレーム受信、または
-/// I/O エラー・プロトコルエラーでループを終える。エラーは呼び出し元
-/// （`crate::handle_upgrade`）へ伝播し、コア境界（`crates/core`）を越えて
-/// panic させない。
+/// Text/Binary メッセージは [`crate::handler::WsMessageHandler::on_message`]
+/// （`config.handler`）へ変換して委譲する。ハンドラは受信メッセージごとに
+/// 直列 `await` される（順序保証・自然なバックプレッシャのため。並行処理
+/// したいユーザーはハンドラ内で自前に `tokio::spawn` する）。
+/// [`WsOutcome::Reply`] は到着順に `ws.send()` で送出してセッションを継続し、
+/// [`WsOutcome::Close`] はサーバ起点の Close ハンドシェイクを開始する。
+/// ハンドラが `Err` を返した場合は [`WsError::Handler`] へ変換してループを
+/// 終える（コア境界を越えて panic させない契約は維持、
+/// `.claude/rules/coding-rust.md`）。
+///
+/// Ping には tokio-tungstenite が自動で Pong を返す（tungstenite の既定
+/// 動作）。Close フレーム受信、または I/O エラー・プロトコルエラーで
+/// ループを終える。エラーは呼び出し元（`crate::handle_upgrade`）へ伝播する。
 ///
 /// `config.idle_timeout` が `Some(d)` の場合、各受信待ちを `d` で
 /// `tokio::time::timeout` する。フレーム（Ping/Pong を含む全種別）を 1 つ
@@ -56,7 +67,14 @@ const CLOSE_GRACE: Duration = Duration::from_secs(10);
 /// プロトコル違反ではないため `WsError` の新規 variant は追加しない）。
 /// `idle_timeout` が `None`（`without_idle_timeout` による明示的無効化）の
 /// 場合は従来どおり無期限に受信を待つ。
-pub(crate) async fn run_echo_session<S>(
+///
+/// # サイズ上限とハンドラ呼び出し順序（DoS 対策の維持、Issue #179 セキュリティ考慮）
+///
+/// `max_message_size` / `max_frame_size` は tungstenite 側で強制されるため、
+/// 上限超過メッセージはハンドラへ届く前にプロトコルエラーとして拒否される
+/// （`ws.next()` が `Err` を返す）。ハンドラ呼び出し前のサイズ検証という
+/// 既存の安全性方針を後退させない。
+pub(crate) async fn run_session<S>(
     stream: S,
     leftover: Vec<u8>,
     config: &WebSocketConfig,
@@ -85,19 +103,61 @@ where
         };
         let message = message?;
         match message {
-            Message::Text(_) | Message::Binary(_) => {
-                ws.send(message).await?;
+            Message::Text(text) => {
+                let outcome = config
+                    .handler
+                    .on_message(WsMessage::Text(text.as_str().to_owned()))
+                    .await?;
+                if apply_outcome(&mut ws, outcome).await? {
+                    break;
+                }
+            }
+            Message::Binary(bin) => {
+                let outcome = config
+                    .handler
+                    .on_message(WsMessage::Binary(bin.into()))
+                    .await?;
+                if apply_outcome(&mut ws, outcome).await? {
+                    break;
+                }
             }
             Message::Close(_) => {
                 break;
             }
             // Ping/Pong は tungstenite が内部で自動応答するため、Stream 経由で
-            // ここへ届くのは診断用の可視化のみ。エコーループとしては無視する。
+            // ここへ届くのは診断用の可視化のみ。ハンドラには委譲しない
+            // （ハンドラ契約は Text/Binary のみを扱う、`handler` モジュール
+            // の doc を参照）。
             Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
         }
     }
 
     Ok(())
+}
+
+/// [`crate::handler::WsMessageHandler::on_message`] の戻り値をセッション
+/// ループへ反映する。`Ok(true)` はセッション終了（`WsOutcome::Close`）を
+/// 意味し、呼び出し元はループを抜ける。
+async fn apply_outcome<S>(ws: &mut WebSocketStream<S>, outcome: WsOutcome) -> Result<bool, WsError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    match outcome {
+        WsOutcome::Reply(messages) => {
+            for msg in messages {
+                let frame = match msg {
+                    WsMessage::Text(t) => Message::Text(t.into()),
+                    WsMessage::Binary(b) => Message::Binary(b.into()),
+                };
+                ws.send(frame).await?;
+            }
+            Ok(false)
+        }
+        WsOutcome::Close => {
+            ws.close(None).await?;
+            Ok(true)
+        }
+    }
 }
 
 /// アイドルタイムアウト発火時の切断シーケンス（正常な Close ハンドシェイク）。
@@ -106,7 +166,7 @@ where
 /// からの Close 応答（または EOF・エラー）をドレインする。相手が既に
 /// 切断済みのケース（`ConnectionClosed` / `AlreadyClosed`）や `CLOSE_GRACE`
 /// 超過は、アイドル切断そのものは意図どおり完了しているため異常とは扱わず
-/// `Ok(())` を返す（呼び出し元 `run_echo_session` の唯一の呼び出し箇所）。
+/// `Ok(())` を返す（呼び出し元 `run_session` の唯一の呼び出し箇所）。
 async fn handle_idle_timeout<S>(mut ws: WebSocketStream<S>) -> Result<(), WsError>
 where
     S: AsyncRead + AsyncWrite + Unpin,

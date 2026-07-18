@@ -20,6 +20,10 @@ pub enum WsError {
     Io(std::io::Error),
     /// tokio-tungstenite 側のプロトコルエラー（不正フレーム等）。
     Protocol(tokio_tungstenite::tungstenite::Error),
+    /// ユーザー定義 `WsMessageHandler::on_message` がエラーを返した
+    /// （Issue #179）。呼び出し元は接続をクローズ扱いにする（panic に
+    /// 変換しない契約は本 variant にも適用される）。
+    Handler(crate::handler::WsHandlerError),
 }
 
 impl fmt::Display for WsError {
@@ -31,6 +35,7 @@ impl fmt::Display for WsError {
             WsError::UnsupportedVersion => write!(f, "unsupported websocket version"),
             WsError::Io(_) => write!(f, "websocket io error"),
             WsError::Protocol(_) => write!(f, "websocket protocol error"),
+            WsError::Handler(err) => write!(f, "{err}"),
         }
     }
 }
@@ -40,6 +45,7 @@ impl std::error::Error for WsError {
         match self {
             WsError::Io(e) => Some(e),
             WsError::Protocol(e) => Some(e),
+            WsError::Handler(e) => Some(e),
             WsError::InvalidHandshake(_) | WsError::UnsupportedVersion => None,
         }
     }
@@ -54,5 +60,11 @@ impl From<std::io::Error> for WsError {
 impl From<tokio_tungstenite::tungstenite::Error> for WsError {
     fn from(e: tokio_tungstenite::tungstenite::Error) -> Self {
         WsError::Protocol(e)
+    }
+}
+
+impl From<crate::handler::WsHandlerError> for WsError {
+    fn from(e: crate::handler::WsHandlerError) -> Self {
+        WsError::Handler(e)
     }
 }
