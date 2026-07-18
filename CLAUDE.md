@@ -46,7 +46,8 @@ backend-framework/
 │   │                                    # `graphql`（TASK-2.4、#21）の 4 feature で `dep:` 構文
 │   │                                    # により各プラグインを着脱可能に配線済み
 │   │                                    # （`webrtc-proxy` 優先評価）
-│   ├── http / routes                  # HTTP プリミティブ・ルーティング
+│   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
+│   │                                    # `{name}` パスパラメータ対応、TASK-176、#176）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）

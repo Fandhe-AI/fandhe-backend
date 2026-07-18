@@ -141,7 +141,8 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
 
 #### 新規エンドポイント追加手順
 
-1. `bf_routes::Router::route()` へのルート登録
+1. `bf_routes::Router::route()`（完全一致）または `bf_routes::Router::route_param()`
+   （`{name}` パスパラメータ、TASK-176・#176）へのルート登録
 2. ハンドラ実装（対象クレートは「モジュール境界」節の crates 一覧・
    [delegation-impl.md](.claude/rules/delegation-impl.md) のパスベース委譲に従い判断する）
 3. doc コメント + doc test（`# Examples`）を付与する
