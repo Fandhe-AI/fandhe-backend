@@ -167,6 +167,14 @@ check_consent_filter_parity() {
 # タイムアウト付きで確認する。投入イベント数は最小固定件数（1 件）とし、無制限
 # ポーリング・大量 enqueue を行わない（DoS 対策、docs/design/
 # outbox-consent-integration.md 10 節）。
+#
+# チェック A（越境アクセス時の 0 行）と同様に、enqueue・poll のいずれも
+# `SET LOCAL app.current_org_id` でテナントコンテキストを設定したセッション内で
+# 実行する。`FORCE ROW LEVEL SECURITY`・fail-closed ポリシー（D で検証）下では、
+# コンテキスト未設定のまま INSERT すると RLS ポリシーに阻まれてエラーになるか、
+# poll 側が該当行を見えず誤って 0 件（未配送）と判定してしまう
+# （Relay が実際には正常でも本チェックが偽陰性になる、または逆にテナント境界を
+# 迂回した検証になり本チェックの意味が失われる）。
 # ---------------------------------------------------------------------------
 check_outbox_relay_delivery() {
     local event_id out status
@@ -175,13 +183,13 @@ check_outbox_relay_delivery() {
     set +e
     out="$(psql "${HUB_E2E_PG_URI}" -Atq \
         -v org_a="${HUB_E2E_ORG_A}" -v event_id="${event_id}" \
-        -c "INSERT INTO outbox (id, org_id, event_type, payload) VALUES (:'event_id', :'org_a', 'e2e-accept-check', '{}'::jsonb);" \
+        -c "BEGIN; SET LOCAL app.current_org_id = :'org_a'; INSERT INTO outbox (id, org_id, event_type, payload) VALUES (:'event_id', :'org_a', 'e2e-accept-check', '{}'::jsonb); COMMIT;" \
         2>/tmp/hub-e2e-accept-c-enqueue.log)"
     status=$?
     set -e
 
     if [ "${status}" -ne 0 ]; then
-        record_fail "C: Outbox Relay 配送" "enqueue（INSERT）自体が失敗し測定不能: $(tail -5 /tmp/hub-e2e-accept-c-enqueue.log | tr '\n' ' ')。outbox テーブルの実カラム定義（配送状態列名）が micro-service-hub 側で未確定の場合はここで失敗する（11.1 節）"
+        record_fail "C: Outbox Relay 配送" "enqueue（INSERT、テナント A コンテキスト下）自体が失敗し測定不能: $(tail -5 /tmp/hub-e2e-accept-c-enqueue.log | tr '\n' ' ')。outbox テーブルの実カラム定義（配送状態列名）が micro-service-hub 側で未確定の場合はここで失敗する（11.1 節）"
         return
     fi
 
@@ -190,19 +198,19 @@ check_outbox_relay_delivery() {
     while [ "${elapsed}" -lt "${RELAY_TIMEOUT_SEC}" ]; do
         set +e
         delivered="$(psql "${HUB_E2E_PG_URI}" -Atq \
-            -v event_id="${event_id}" \
-            -c "SELECT delivered_at IS NOT NULL FROM outbox WHERE id = :'event_id';" \
+            -v org_a="${HUB_E2E_ORG_A}" -v event_id="${event_id}" \
+            -c "BEGIN; SET LOCAL app.current_org_id = :'org_a'; SELECT delivered_at IS NOT NULL FROM outbox WHERE id = :'event_id'; ROLLBACK;" \
             2>/tmp/hub-e2e-accept-c-poll.log)"
         set -e
         if [ "${delivered}" = "t" ]; then
-            record_pass "C: Outbox Relay 配送" "enqueue から ${elapsed}s 以内に配送済み（delivered_at 設定確認、イベント ${event_id}）"
+            record_pass "C: Outbox Relay 配送" "enqueue から ${elapsed}s 以内に配送済み（delivered_at 設定確認、テナント A コンテキスト下、イベント ${event_id}）"
             return
         fi
         sleep 2
         elapsed=$((elapsed + 2))
     done
 
-    record_fail "C: Outbox Relay 配送" "${RELAY_TIMEOUT_SEC}s 以内に配送確認できず（イベント ${event_id}）。Relay 未稼働または配送状態列名が実装と不一致の可能性（11.1 節、delivered_at は想定カラム名でありmicro-service-hub 側確定待ち）"
+    record_fail "C: Outbox Relay 配送" "${RELAY_TIMEOUT_SEC}s 以内に配送確認できず（テナント A コンテキスト下、イベント ${event_id}）。Relay 未稼働または配送状態列名が実装と不一致の可能性（11.1 節、delivered_at は想定カラム名でありmicro-service-hub 側確定待ち）"
 }
 
 # ---------------------------------------------------------------------------
