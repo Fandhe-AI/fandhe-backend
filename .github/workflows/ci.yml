@@ -74,6 +74,17 @@ jobs:
         # submodule（docs/spec）は fmt/clippy/test に不要なため取得しない。
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
+      # self-hosted runner に rustup が未導入/欠落している場合に備え、
+      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
+      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
+      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
+
       - name: Sync toolchain (rust-toolchain.toml)
         run: rustup show
 
@@ -92,6 +103,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      # self-hosted runner に rustup が未導入/欠落している場合に備え、
+      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
+      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
+      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
 
       - name: Sync toolchain (rust-toolchain.toml)
         run: rustup show
@@ -129,6 +151,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      # self-hosted runner に rustup が未導入/欠落している場合に備え、
+      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
+      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
+      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
 
       - name: Sync toolchain (rust-toolchain.toml)
         run: rustup show
@@ -173,6 +206,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
+      # self-hosted runner に rustup が未導入/欠落している場合に備え、
+      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
+      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
+      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
+
       - name: Sync toolchain (rust-toolchain.toml)
         run: rustup show
 
@@ -202,6 +246,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      # self-hosted runner に rustup が未導入/欠落している場合に備え、
+      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
+      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
+      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
 
       - name: Sync toolchain (rust-toolchain.toml)
         run: rustup show
@@ -308,6 +363,17 @@ jobs:
 
       # dep-direction-check.sh（下記）が `cargo metadata` を要するため toolchain を
       # 同期する。既存ステップ（grep ベース）は cargo 非依存のため影響しない。
+      # self-hosted runner に rustup が未導入/欠落している場合に備え、
+      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
+      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
+      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
+
       - name: Sync toolchain (rust-toolchain.toml)
         run: rustup show
 
@@ -404,6 +470,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
+      # self-hosted runner に rustup が未導入/欠落している場合に備え、
+      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
+      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
+      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
+
       - name: Sync toolchain (rust-toolchain.toml)
         run: rustup show
 
@@ -435,6 +512,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      # self-hosted runner に rustup が未導入/欠落している場合に備え、
+      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
+      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
+      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
 
       - name: Sync toolchain (rust-toolchain.toml)
         run: rustup show
@@ -493,6 +581,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
+      # self-hosted runner に rustup が未導入/欠落している場合に備え、
+      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
+      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
+      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
+
       - name: Sync toolchain (rust-toolchain.toml)
         run: rustup show
 
@@ -522,6 +621,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      # self-hosted runner に rustup が未導入/欠落している場合に備え、
+      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
+      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
+      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
 
       - name: Sync toolchain (rust-toolchain.toml)
         run: rustup show
@@ -567,6 +677,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      # self-hosted runner に rustup が未導入/欠落している場合に備え、
+      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
+      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
+      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
 
       - name: Sync toolchain (rust-toolchain.toml)
         run: rustup show
