@@ -7,7 +7,10 @@
 #   を掛け、保持期間中のサーバ RSS を継続サンプリングして「接続あたり RSS 増分」を
 #   算出・比較する。docs/spec/03-poc/high-concurrency-scale（PoC-7）で確認された
 #   axum 比 155.2%（TASK-4.2 最適化後、未実測）を正式に再計測し、REQ 基準
-#   （axum 比 110% 以内・確立成功率 99% 以上・1k→10k の線形性）を判定する。
+#   （axum 比 110% 以内・確立・維持成功率 99% 以上・1k→10k の線形性）を判定する。
+#   「確立・維持成功率」は `crates/ws-load-client` が算出する
+#   `success_rate_percent`（ハンドシェイク成功かつ `HOLD_SECS` の維持を完了できた
+#   接続の割合。ハンドシェイクのみ成功し hold 中に切断された接続は含まない）を指す。
 #
 # `benches/bench-rss.sh`（試行内複数サンプル×複数試行の中央値評価）と同じ計測
 # 思想を踏襲するが、対象が HTTP（oha）ではなく WebSocket 長時間接続（専用クライアント）
@@ -269,14 +272,14 @@ for impl in fullscratch axum; do
                 'BEGIN { printf "%.4f", (load_kb - idle) / n }')"
             increments+=("${increment_kb}")
             success_rates+=("${success_rate_pct}")
-            echo "  試行 ${trial}: idle=${idle_rss_kb}KB load中央値=${load_rss_kb}KB connected=${connected} success_rate=${success_rate_pct}% 接続あたり増分=${increment_kb}KB" >&2
+            echo "  試行 ${trial}: idle=${idle_rss_kb}KB load中央値=${load_rss_kb}KB connected=${connected} 確立・維持成功率=${success_rate_pct}% 接続あたり増分=${increment_kb}KB" >&2
         done
 
         increment_median="$(printf '%s\n' "${increments[@]}" | median)"
         success_rate_median="$(printf '%s\n' "${success_rates[@]}" | median)"
         PER_CONN_INCREMENT_MEDIAN_KB["${impl}_${conn}"]="${increment_median}"
         SUCCESS_RATE_MEDIAN_PCT["${impl}_${conn}"]="${success_rate_median}"
-        echo "  => ${impl}/${conn}: 接続あたり RSS 増分中央値=${increment_median}KB 成立率中央値=${success_rate_median}%" >&2
+        echo "  => ${impl}/${conn}: 接続あたり RSS 増分中央値=${increment_median}KB 確立・維持成功率中央値=${success_rate_median}%" >&2
     done
 done
 
@@ -321,7 +324,7 @@ for impl in fullscratch axum; do
         fi
     done
 done
-echo "判定(2) 確立成功率 ${SUCCESS_RATE_MIN_PCT}% 以上（全 impl × 全接続数）: ${judge_success}" >&2
+echo "判定(2) 確立・維持成功率 ${SUCCESS_RATE_MIN_PCT}% 以上（全 impl × 全接続数）: ${judge_success}" >&2
 
 echo "判定(3) 1k→10k の線形性: 上記接続あたり RSS 増分の表を目視確認すること（自動判定は行わない。増分が接続数に対して概ね一定であれば線形とみなす）" >&2
 

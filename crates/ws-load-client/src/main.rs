@@ -19,6 +19,11 @@
 //! - 確立成功率・保持完了数の集計を [`ConnectSummary`] としてクライアント側でも
 //!   構造化し、`RESULT_JSON`（環境変数でパス指定時のみ）へ機械可読出力する
 //!   （`benches/lib/common.sh` の `write_result_json` と同じ「未指定時は no-op」契約）。
+//!   `success_rate_percent` はハンドシェイク成功率ではなく、`HOLD_SECS` の維持を
+//!   最後まで完了できた接続の割合（`held_completed / requested_connections`）で
+//!   算出する。ハンドシェイク後の hold 中に send/recv が失敗して切断された接続
+//!   （`dropped_during_hold`）を成功として数えないことで、`bench-ws-load.sh` の
+//!   維持基準（maintain criterion）が実際の維持状況を反映するようにする。
 //!   接続あたり RSS 増分の判定自体は `benches/bench-ws-load.sh` 側（サーバプロセスの
 //!   `ps -o rss=` サンプリング）が担い、本クライアントは接続数・成功率・心拍
 //!   レイテンシの計測に徹する（PoC-7 と同じ責務分界）。
@@ -128,11 +133,21 @@ fn json_escape(value: &str) -> String {
 
 /// 1 回の負荷試験実行の集計結果。`RESULT_JSON` の機械可読出力・標準出力の
 /// 人間可読表示の両方の元データとして使う共通構造体。
+///
+/// `success_rate_percent` はハンドシェイク成功率ではなく、`held_completed /
+/// requested_connections` （`HOLD_SECS` の維持を最後まで完了できた接続の割合）
+/// を表す。`bench-ws-load.sh` の維持基準（maintain criterion）はこの値で判定
+/// するため、ハンドシェイク後 `HOLD_SECS` 中の send/recv 失敗で切断された接続
+/// （`dropped_during_hold`）を成功として数えない。
 struct ConnectSummary {
     target: String,
     requested_connections: u64,
     connected: u64,
     failed: u64,
+    /// ハンドシェイク後、`HOLD_SECS` 中に send/recv 失敗で切断された接続数。
+    dropped_during_hold: u64,
+    /// ハンドシェイクに成功し、`HOLD_SECS` の維持を最後まで完了できた接続数。
+    held_completed: u64,
     success_rate_percent: f64,
     heartbeat_samples: usize,
     p50_us: u64,
@@ -150,12 +165,15 @@ impl ConnectSummary {
     fn to_json(&self) -> String {
         format!(
             "{{\"target\":\"{}\",\"requested_connections\":{},\"connected\":{},\"failed\":{},\
+             \"dropped_during_hold\":{},\"held_completed\":{},\
              \"success_rate_percent\":{:.2},\"heartbeat_samples\":{},\"heartbeat_rtt_us\":{{\
              \"p50\":{},\"p95\":{},\"p99\":{},\"max\":{}}}}}",
             json_escape(&self.target),
             self.requested_connections,
             self.connected,
             self.failed,
+            self.dropped_during_hold,
+            self.held_completed,
             self.success_rate_percent,
             self.heartbeat_samples,
             self.p50_us,
@@ -178,6 +196,8 @@ async fn main() {
 
     let connected = Arc::new(AtomicU64::new(0));
     let failed = Arc::new(AtomicU64::new(0));
+    let dropped_during_hold = Arc::new(AtomicU64::new(0));
+    let held_completed = Arc::new(AtomicU64::new(0));
     let latencies_us: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
 
     let ramp_start = Instant::now();
@@ -187,6 +207,8 @@ async fn main() {
         let target = target.clone();
         let connected = connected.clone();
         let failed = failed.clone();
+        let dropped_during_hold = dropped_during_hold.clone();
+        let held_completed = held_completed.clone();
         let latencies_us = latencies_us.clone();
 
         let handle = tokio::spawn(async move {
@@ -206,6 +228,11 @@ async fn main() {
 
             let (mut write, mut read) = ws.split();
             let hold_deadline = Instant::now() + Duration::from_secs(hold_secs);
+            // `HOLD_SECS` 中に send/recv が失敗して離脱したか（true）、最後まで
+            // 維持できたか（false、ループがタイムアウトで自然終了）を区別する。
+            // `success_rate_percent` の算出に使うため、ハンドシェイク成功だけを
+            // 「成功」と数えない（Bugbot 指摘: hold drops ignored in success rate）。
+            let mut hold_broken = false;
 
             loop {
                 let now = Instant::now();
@@ -224,6 +251,7 @@ async fn main() {
                     .await
                     .is_err()
                 {
+                    hold_broken = true;
                     break;
                 }
                 match tokio::time::timeout(Duration::from_secs(5), read.next()).await {
@@ -231,8 +259,17 @@ async fn main() {
                         let rtt = sent_at.elapsed().as_micros() as u64;
                         latencies_us.lock().await.push(rtt);
                     }
-                    _ => break,
+                    _ => {
+                        hold_broken = true;
+                        break;
+                    }
                 }
+            }
+
+            if hold_broken {
+                dropped_during_hold.fetch_add(1, Ordering::Relaxed);
+            } else {
+                held_completed.fetch_add(1, Ordering::Relaxed);
             }
 
             let _ = write.send(Message::Close(None)).await;
@@ -256,6 +293,8 @@ async fn main() {
 
     let connected_n = connected.load(Ordering::Relaxed);
     let failed_n = failed.load(Ordering::Relaxed);
+    let dropped_during_hold_n = dropped_during_hold.load(Ordering::Relaxed);
+    let held_completed_n = held_completed.load(Ordering::Relaxed);
     let mut lats = latencies_us.lock().await.clone();
     lats.sort_unstable();
 
@@ -264,7 +303,12 @@ async fn main() {
         requested_connections: connections as u64,
         connected: connected_n,
         failed: failed_n,
-        success_rate_percent: success_rate_percent(connected_n, connections as u64),
+        dropped_during_hold: dropped_during_hold_n,
+        held_completed: held_completed_n,
+        // `HOLD_SECS` を維持し切れた接続の割合。ハンドシェイク成功率
+        // （`connected_n`）ではなく `held_completed_n` を分子に使う
+        // （doc comment の契約参照）。
+        success_rate_percent: success_rate_percent(held_completed_n, connections as u64),
         heartbeat_samples: lats.len(),
         p50_us: percentile_us(&lats, 0.50),
         p95_us: percentile_us(&lats, 0.95),
@@ -277,6 +321,8 @@ async fn main() {
     println!("requested_connections={}", summary.requested_connections);
     println!("connected={}", summary.connected);
     println!("failed={}", summary.failed);
+    println!("dropped_during_hold={}", summary.dropped_during_hold);
+    println!("held_completed={}", summary.held_completed);
     println!("success_rate={:.2}%", summary.success_rate_percent);
     println!("heartbeat_samples={}", summary.heartbeat_samples);
     if summary.heartbeat_samples > 0 {
@@ -368,6 +414,8 @@ mod tests {
             requested_connections: 10,
             connected: 10,
             failed: 0,
+            dropped_during_hold: 0,
+            held_completed: 10,
             success_rate_percent: 100.0,
             heartbeat_samples: 0,
             p50_us: 0,
@@ -378,6 +426,34 @@ mod tests {
         let json = summary.to_json();
         assert!(json.starts_with('{') && json.ends_with('}'));
         assert!(json.contains("\"connected\":10"));
+        assert!(json.contains("\"held_completed\":10"));
+        assert!(json.contains("\"dropped_during_hold\":0"));
         assert!(json.contains("\"success_rate_percent\":100.00"));
+    }
+
+    #[test]
+    fn connect_summary_to_json_reflects_hold_drops_in_success_rate() {
+        // ハンドシェイクは 10 件全て成功したが、HOLD_SECS 中に 3 件が離脱した
+        // ケース。success_rate_percent は held_completed（7）基準で算出済みの
+        // 値を渡すこと（Bugbot 指摘: hold drops ignored in success rate の回帰防止）。
+        let summary = ConnectSummary {
+            target: "ws://127.0.0.1:3000/ws".to_string(),
+            requested_connections: 10,
+            connected: 10,
+            failed: 0,
+            dropped_during_hold: 3,
+            held_completed: 7,
+            success_rate_percent: success_rate_percent(7, 10),
+            heartbeat_samples: 0,
+            p50_us: 0,
+            p95_us: 0,
+            p99_us: 0,
+            max_us: 0,
+        };
+        let json = summary.to_json();
+        assert!(json.contains("\"connected\":10"));
+        assert!(json.contains("\"dropped_during_hold\":3"));
+        assert!(json.contains("\"held_completed\":7"));
+        assert!(json.contains("\"success_rate_percent\":70.00"));
     }
 }
