@@ -69,21 +69,21 @@ baseline（110 vs 111）・feature 有効時 total（594 vs 594、592 vs 594 は
 確認した。一方で feature 有効時の **used Functions**（247 → 306）は同一ソース・同一
 `Cargo.lock` にもかかわらず 59 件（約 24%）増加した。乖離を 2 要因に分解する:
 
-1. **geiger バージョン差・到達可能性判定の非決定性（主要因の一つ）**: PoC-5 原記録は
+1. **baseline（分母）の計測対象差（主因）**: PoC-5 の `pluggable-core` は常時依存に
+   `tokio`（`rt-multi-thread` 含む）・`serde`（derive）・`serde_json` を持ち baseline が
+   110〜111 と大きい。`backend-framework-core` は pay-for-what-you-use 徹底により
+   baseline が 69 と小さい。同程度の絶対増分（PoC: 306-110=196、core: 304-69=235）
+   でも、**分母が小さいほど比率は拡大する**（110→306 は 2.78 倍、69→304 は 4.4 倍）。
+   絶対増分自体も 196 vs 235 とやや core 側が大きく、これは `crates/plugin-webrtc`
+   の実装コードが PoC スケルトンより `webrtc-rs` API を広く呼び出すことに起因すると
+   考えられる（未確定、残余の不確実性として明記）。
+2. **geiger バージョン差・到達可能性判定の非決定性（副次的要因）**: PoC-5 原記録は
    使用した `cargo-geiger` バージョンが記録されておらず、本タスクの `0.13.0` と異なる
    可能性が高い。同一ソース・同一ロックファイルで used が 247 → 306（+59）とずれた
    ことから、feature 有効時の到達可能性（used/reachable）判定は geiger の実装・
    バージョンに依存し、**ソース・依存が完全に同一でも数値が変動しうる**ことが実測で
    裏付けられた。これにより比率だけで「増分が悪化した」と単純評価するのは不適切
    （断定と推測の区別、`.claude/rules/japanese-style.md`）。
-2. **baseline（分母）の計測対象差（主要因）**: PoC-5 の `pluggable-core` は常時依存に
-   `tokio`（`rt-multi-thread` 含む）・`serde`（derive）・`serde_json` を持ち baseline が
-   110〜111 と大きい。`backend-framework-core` は pay-for-what-you-use 徹底により
-   baseline が 69 と小さい。同程度の絶対増分（PoC: 306-110=196、core: 304-69=235）
-   でも、**分母が小さいほど比率は拡大する**（110→306 は 2.78 倍、69→304 は 4.4 倍。
-   絶対増分自体も 196 vs 235 とやや core 側が大きく、これは `crates/plugin-webrtc`
-   の実装コードが PoC スケルトンより `webrtc-rs` API を広く呼び出すことに起因すると
-   考えられる（未確定、残余の不確実性として明記）。
 
 **結論**: 乖離の主因は **(1) 計測対象範囲差によるベースライン圧縮効果**（pay-for-what-
 you-use が徹底された分だけ比率が誇張される）であり、副次的に **(2) cargo-geiger の
