@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "backend-framework の最小コア（HTTP/1.1・3 種拡張点）。TASK-1.3 以降で実体を追加する"
+# イシュー #94（OSS 公開準備）: 正式名称確定・リポジトリ public 化・公開対象クレートの
+# 最終選定（`docs/design/crates-io-release.md` 1 節の前提条件）が完了するまで、
+# 意図しない `cargo publish` 事故をフェイルクローズで防ぐ。他の 11 クレート
+# （`bf-http` / `bf-routes` / `bf-plugin-*` / `axum-ref` / `ws-load-client`）は
+# 既に `publish = false` を設定済みで、本クレートのみ未設定だった。公開判断が
+# 下った際の解除手順は `docs/design/crates-io-release.md` 4〜5 節を参照。
+publish = false
 
 [lints]
 workspace = true

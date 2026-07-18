@@ -25,10 +25,14 @@ backend-framework/
 ├── AGENTS.md              # 横断的設計規約（TASK-2.3）+ AI エージェント向け変更ガイド
 │                            # （モジュール境界・変更手順・判定基準・エスカレーション基準、TASK-11.3）
 ├── README.md
+├── LICENSE-MIT            # MIT ライセンス（デュアルライセンスの一方、イシュー #94）
+├── LICENSE-APACHE         # Apache License 2.0（デュアルライセンスの一方、イシュー #94）
+├── CONTRIBUTING.md        # 貢献ガイド（開発フロー・コミット規約・設計原則・ライセンス同意、イシュー #94）
 ├── skills-lock.json       # 導入スキルのロック
 ├── docs/
 │   ├── spec/               # 仕様書 submodule（要件・タスク・ロードマップ）
 │   ├── design/             # リポジトリ側設計ドキュメント（実装フェーズの設計判断を記録）
+│   │   └── crates-io-release.md  # crates.io 公開手順（名前確保・所有権・リリース CI、イシュー #94）
 │   ├── guide/              # 利用者向けガイド（Getting Started・feature 構成別サンプル・
 │   │                        # チュートリアル、TASK-11.5 / #95）。「どう作るか」の docs/design/ とは
 │   │                        # 責務分離、「どう使うか」を扱う
