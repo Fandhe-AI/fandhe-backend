@@ -107,6 +107,10 @@
   リリース CI 設計の YAML 草案（実ファイル化は名称確定後に別イシューへ切り出し）・
   バージョニング方針・公開前チェックリストを記述。前提条件（正式名称確定・
   リポジトリ public 化）が充足するまで実行しない設計文書）
+- [`framework-naming.md`](./framework-naming.md): フレームワーク正式名称の決定記録
+  （#92。命名基準・候補評価マトリクス・決定候補 `wrenframe`（レビューゲート確定待ち）・
+  `bf-` プレフィックスからの 4 段階移行計画・責務分界（リポジトリ名変更・crates.io
+  名称確保は人間管理者実施）を記述）
 - [`ai-maintenance-operations.md`](./ai-maintenance-operations.md): AI 保守運用体制
   （Issue #93、REQ-11・REQ-12。`docs/spec/01-brainstorm.md` 未解決事項「設計思想 4 の
   運用像」に応え、実装済みの改善提案フロー・機能改修フロー・可否判定ガードレール・

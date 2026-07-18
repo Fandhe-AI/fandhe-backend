@@ -2,8 +2,10 @@
 
 ## Overview
 
-**backend-framework** は、AI によるセキュリティ脆弱性発見リスクに備え、Rust で新規構築する
-軽量・高速・高並行なバックエンドフレームワーク（名称は仮称）。axum 級の性能を目標に、
+**backend-framework**（正式名称の決定候補: `wrenframe`。レビューゲート確定待ち。
+命名根拠・反映方針は [`docs/design/framework-naming.md`](docs/design/framework-naming.md)
+参照）は、AI によるセキュリティ脆弱性発見リスクに備え、Rust で新規構築する
+軽量・高速・高並行なバックエンドフレームワーク。axum 級の性能を目標に、
 **最小コア + Cargo feature 駆動プラグイン** 設計で、WebSocket / GraphQL / WebRTC /
 OpenAPI 自動生成 / hub 配線 / 可観測性を段階的に拡張できる。
 
