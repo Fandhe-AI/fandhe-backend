@@ -170,8 +170,9 @@ impl AuditEvent {
 ///
 /// # 実装契約
 ///
-/// - **非ブロッキング**: [`RequestGate::check`]（`crates/core/src/extension.rs`
-///   doc）等の拡張点フック・ホットパスから呼ばれ得るため、`record` の実装は
+/// - **非ブロッキング**: [`backend_framework_core::RequestGate::check`]
+///   （`crates/core/src/extension.rs` doc）等の拡張点フック・ホットパスから
+///   呼ばれ得るため、`record` の実装は
 ///   同期ブロッキング I/O を行わない契約とする（Tokio ワーカーを塞がない、
 ///   `AGENTS.md`「規約: ミドルウェア非同期 I/O 必須化」・
 ///   .claude/rules/coding-rust.md）。ファイル書き込み等の実 I/O は非同期
