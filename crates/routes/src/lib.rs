@@ -303,7 +303,7 @@ impl Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bf_http::request::{parse_request_head, ParseOutcome};
+    use bf_http::request::{ParseOutcome, parse_request_head};
 
     // `RequestHead` は非公開フィールドを持ち構造体リテラルで直接組み立てられない
     // ため、パーサ（`parse_request_head`）経由で生成する。他クレートのテスト

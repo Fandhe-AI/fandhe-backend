@@ -4,7 +4,7 @@
 //! 本ファイルは `Router` 経由の end-to-end 挙動（後方互換・優先順位・
 //! フェイルクローズ）を検証する。
 
-use bf_http::request::{parse_request_head, ParseOutcome, RequestHead};
+use bf_http::request::{ParseOutcome, RequestHead, parse_request_head};
 use bf_http::response::Response;
 use bf_routes::Router;
 
