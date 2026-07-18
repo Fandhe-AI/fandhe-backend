@@ -290,10 +290,30 @@ check_extension_points() {
         # 抽出できた関数数が 0 件（正規表現の陳腐化・リファクタによる関数名変更等）
         # の場合は誤 PASS を避け、計測不能として明示的に FAIL する
         # （基準 A の core_deps==0 ガードと同じフェイルクローズ方針）。
+        #
+        # #171 レビュー是正1: fn_count は合計値のみのガードだったため、3 関数の
+        # うち 1 つがリネーム・シグネチャドリフトで検出できなくなっても、合計値
+        # が正のままだと PASS し得た（フェイルクローズが不完全）。3 関数それぞれ
+        # の検出有無を個別に追跡し、1 つでも未検出なら明示的に FAIL する（重複
+        # 検出の有無は問わず、存在有無のみを見る）。
+        #
+        # #171 レビュー是正2: 対象関数のシグネチャ直前（関数本体の外側）に付与
+        # される `#[cfg(feature = "...")]` は、関数本体のみを走査する従来ロジック
+        # では検出対象外だった。関数外の実属性行を pending_cfg フラグで追跡し、
+        # 対象関数のシグネチャ行に到達した時点でヒットを cfg_hits に合流させる。
+        # ただし基準 F(#72) 是正と同じく、doc comment 内に `#[cfg(feature` という
+        # 文字列が引用されているだけのケースを誤検出しないよう、属性行判定は
+        # 行頭 `#[cfg(feature` の実属性のみに限定する。コメント行（`//`・`///`・
+        # `//!`）や空行はフラグを維持したまま素通りさせる（Rust の属性はコメント
+        # や空行を挟んでも直後の item に付与されるため）。それ以外の実コード行は
+        # 無関係な item とみなしフラグをリセットする。
         local awk_out awk_status
         set +e
         awk_out="$(awk '
-            BEGIN { in_fn = 0; fn_count = 0 }
+            BEGIN {
+                in_fn = 0; fn_count = 0; pending_cfg = 0
+                seen_run = 0; seen_hc = 0; seen_hcwp = 0
+            }
             {
                 if (!in_fn) {
                     if ($0 ~ /^[[:space:]]*(pub(\(crate\))?[[:space:]]+)?async[[:space:]]+fn[[:space:]]+(handle_connection_with_permit|handle_connection|run)[[:space:]]*[(<]/) {
@@ -301,7 +321,26 @@ check_extension_points() {
                         indent = RLENGTH
                         in_fn = 1
                         fn_count++
+                        if ($0 ~ /fn[[:space:]]+handle_connection_with_permit[[:space:]]*[(<]/) {
+                            seen_hcwp = 1
+                        } else if ($0 ~ /fn[[:space:]]+handle_connection[[:space:]]*[(<]/) {
+                            seen_hc = 1
+                        } else if ($0 ~ /fn[[:space:]]+run[[:space:]]*[(<]/) {
+                            seen_run = 1
+                        }
+                        if (pending_cfg) {
+                            print FILENAME ":" FNR ": " $0 " (関数直前の #[cfg(feature ...)] を検出)"
+                        }
+                        pending_cfg = 0
                         next
+                    }
+                    if ($0 ~ /^[[:space:]]*#\[cfg\(feature/) {
+                        pending_cfg = 1
+                    } else if ($0 ~ /^[[:space:]]*\/\// || $0 ~ /^[[:space:]]*$/) {
+                        # コメント・空行はフラグを維持（属性はこれらを跨いで直後の item に付与される）
+                        1
+                    } else {
+                        pending_cfg = 0
                     }
                 } else {
                     close_pat = "^"
@@ -318,21 +357,37 @@ check_extension_points() {
                     }
                 }
             }
-            END { print "FN_COUNT=" fn_count }
+            END {
+                print "FN_COUNT=" fn_count
+                print "SEEN_RUN=" seen_run
+                print "SEEN_HANDLE_CONNECTION=" seen_hc
+                print "SEEN_HANDLE_CONNECTION_WITH_PERMIT=" seen_hcwp
+            }
         ' "${loop_file}" 2>/dev/null)"
         awk_status=$?
         set -e
 
-        local fn_count cfg_hits
-        # awk の END ブロックは常に FN_COUNT= 行を出力するため grep が該当 0 件になる
-        # ことは通常想定しないが、`set -o pipefail` 下で万一空振り（grep 終了コード 1）
-        # した場合でもスクリプトを中断させず、下記の fn_count 空文字チェック（フェイル
-        # クローズ）へ必ず到達させるため `|| true` を付与する。
+        local fn_count cfg_hits seen_run seen_hc seen_hcwp missing_fns
+        # awk の END ブロックは常に FN_COUNT= 等の行を出力するため grep が該当
+        # 0 件になることは通常想定しないが、`set -o pipefail` 下で万一空振り
+        # （grep 終了コード 1）した場合でもスクリプトを中断させず、下記の
+        # fn_count 空文字チェック（フェイルクローズ）へ必ず到達させるため
+        # `|| true` を付与する。
         fn_count="$(echo "${awk_out}" | grep -o '^FN_COUNT=[0-9]*$' | cut -d= -f2 || true)"
-        cfg_hits="$(echo "${awk_out}" | grep -v '^FN_COUNT=' || true)"
+        seen_run="$(echo "${awk_out}" | grep -o '^SEEN_RUN=[01]$' | cut -d= -f2 || true)"
+        seen_hc="$(echo "${awk_out}" | grep -o '^SEEN_HANDLE_CONNECTION=[01]$' | cut -d= -f2 || true)"
+        seen_hcwp="$(echo "${awk_out}" | grep -o '^SEEN_HANDLE_CONNECTION_WITH_PERMIT=[01]$' | cut -d= -f2 || true)"
+        cfg_hits="$(echo "${awk_out}" | grep -v '^FN_COUNT=' | grep -v '^SEEN_' || true)"
+
+        missing_fns=""
+        if [ "${seen_run:-0}" -ne 1 ]; then missing_fns="${missing_fns} run"; fi
+        if [ "${seen_hc:-0}" -ne 1 ]; then missing_fns="${missing_fns} handle_connection"; fi
+        if [ "${seen_hcwp:-0}" -ne 1 ]; then missing_fns="${missing_fns} handle_connection_with_permit"; fi
 
         if [ "${awk_status}" -ne 0 ] || [ -z "${fn_count}" ] || [ "${fn_count}" -eq 0 ]; then
             record_fail "E: コアループの feature 非分岐" "コアループ関数（run/handle_connection/handle_connection_with_permit）を ${loop_file} から検出できず計測不能（関数名変更・リファクタの可能性。awk 抽出ロジックの見直しが必要）"
+        elif [ -n "${missing_fns}" ]; then
+            record_fail "E: コアループの feature 非分岐" "コアループ対象関数の一部を ${loop_file} から検出できず計測不能（関数名変更・シグネチャドリフトの可能性）: 未検出=${missing_fns# }"
         elif [ -z "${cfg_hits}" ]; then
             record_pass "E: コアループの feature 非分岐" "コアループ関数 ${fn_count} 件（run/handle_connection/handle_connection_with_permit）の非コメント行に #[cfg(feature ...)] なし。Server ビルダーの cfg-gated 設定・plugin.rs シームは docs/design/plugin-boundary.md §3-5 の許容領域のため対象外"
         else
