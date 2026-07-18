@@ -19,6 +19,9 @@
 //!    （[`socket`]、feature `net` 前提、TASK-1.3-3 / #68）
 //! 4. HTTP/1.1 レスポンス直列化（[`response`]、TASK-1.4-2 / #70）。コアの
 //!    接続ループ（`crates/core/src/server.rs`）が唯一の呼び出し元。
+//! 5. chunked transfer-coding のデコード（[`chunked`]、イシュー #181）。
+//!    [`body`] が `Transfer-Encoding: chunked` を受理した場合にのみ
+//!    [`connection::read_request`] から呼ばれる sans-IO 状態機械。
 //!
 //! 本クレートの実行時依存は tokio の `io-util`（`AsyncRead`/`AsyncReadExt`）
 //! のみであり、それ以外の依存は持たない（pay-for-what-you-use。
@@ -30,6 +33,7 @@
 
 pub mod body;
 pub mod buffer;
+pub mod chunked;
 pub mod connection;
 pub mod request;
 pub mod response;

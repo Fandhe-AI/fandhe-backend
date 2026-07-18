@@ -37,19 +37,24 @@ nightly 限定のサニタイザ計装を要する `cargo-fuzz` を未実施の�
 
 ## fuzz target 一覧と対象 API
 
-`crates/http/fuzz/fuzz_targets/` に 2 本配置する。
+`crates/http/fuzz/fuzz_targets/` に 3 本配置する。
 
 | target | 対象 API | 検証範囲 |
 |--------|---------|---------|
 | `parse_request_head` | `bf_http::request::parse_request_head(&[u8])` | 構文解析層単体。任意バイト列を直接投入し、パニック・メモリ不正が起きないことを検証する |
 | `head_semantics` | `parse_request_head` → `Complete` の場合のみ `bf_http::body::body_length` / `bf_http::connection::should_keep_alive` | 意味解釈層のパイプライン。構文的に妥当なヘッダ列を前提に動く `Content-Length` 解析・`Connection` トークン走査のパニック要因（オーバーフロー等）を検証する |
+| `chunked_decoder` | `bf_http::chunked::ChunkedDecoder::decode`（イシュー #181） | chunked transfer-coding の sans-IO デコーダ。入力を一括投入する経路とインクリメンタルに分割投入する経路の両方で、パニック・メモリ不正が起きないこと・復号後バイト列が `bf_http::body::MAX_BODY_BYTES` を超えないこと・両経路の結果（Complete/Incomplete/Err の別・復号済みバイト列）が一致することを検証する |
 
 いずれも戻り値の Ok/Err・Complete/Incomplete の意味的正しさは検証しない（それは
 `crates/http/src/*.rs` の `#[cfg(test)]`・doc test の責務）。fuzz target は「パニックしない
-こと」「メモリ不正を起こさないこと」のみを libFuzzer に判定させる。
+こと」「メモリ不正を起こさないこと」のみを libFuzzer に判定させる（`chunked_decoder` のみ、
+上記の 2 経路一致・DoS 上限遵守という追加の不変条件も検証する）。
 
-`Transfer-Encoding`（chunked）は本マイルストーンで一律拒否されるため fuzz target の対象
-としない。chunked 対応後に別 target を追加検討する（out-of-scope、下記参照）。
+`Transfer-Encoding`（chunked 以外の coding・複数指定等）は従来どおり `body_length` が
+一律拒否するため、これらの意味検証は `head_semantics`（`body_length` 呼び出し経路）で
+引き続きカバーされる。単独 `chunked` 受理後のデコード自体は `chunked_decoder` target が
+専任で検証する（イシュー #181 で追加、旧「chunked 対応後の fuzz target 追加」フォロー
+アップを解消）。
 
 ## pay-for-what-you-use の担保
 
@@ -119,8 +124,18 @@ TASK-15.3-2（#88）で `bash scripts/fuzz.sh --max-total-time 240` により両
 - pay-for-what-you-use: `.claude/rules/pay-for-what-you-use.md`（fuzz 専用依存の
   workspace 除外）
 
+## イシュー #181（chunked Transfer-Encoding 対応）fuzz target 追加
+
+`bf_http::body::body_length` が単独 `chunked` を受理するようになったことに伴い、
+`chunked_decoder` target を追加した（本書「fuzz target 一覧と対象 API」参照）。
+`bash scripts/fuzz.sh --max-total-time 20` で他 2 target とあわせて実行し、crash/hang
+なしを確認済み（実装時点で約 270 万実行、smoke 相当の短時間実行）。corpus シード
+（`crates/http/fuzz/corpus/chunked_decoder/`）は正常系（単一/複数チャンク・chunk
+拡張・大文字 hex）・異常系（不正 hex・bare LF・非空 trailer・chunk-data 直後 CRLF
+欠落・サイズ宣言オーバーフロー）・境界系（chunk-data 途中での EOF 相当）を手動
+キュレーションして配置した。
+
 ## スコープ外（out-of-scope-tracking）
 
-- chunked Transfer-Encoding 対応後の fuzz target 追加（現状は一律拒否のため対象外）
 - corpus の永続化・自動最小化（`cargo fuzz cmin`）・カバレッジ計測の CI 化、
   OSS-Fuzz 等の外部基盤連携（必要になれば #88 レビュー時に Issue 化を検討）

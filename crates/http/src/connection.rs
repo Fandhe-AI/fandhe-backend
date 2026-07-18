@@ -4,7 +4,9 @@
 //! 判定を行う sans-IO 純関数。[`read_request`] は [`crate::request::parse_request_head`]
 //! （構文解析）と [`crate::body::body_length`]（body フレーミング解釈）を組み合わせ、
 //! 1 リクエスト分（ヘッド + body）をソケットから読み取る非同期関数であり、本クレート
-//! で唯一 tokio（`io-util`）に依存する箇所。
+//! で唯一 tokio（`io-util`）に依存する箇所。`body_length` が `Chunked` と
+//! 判定した場合は `read_body_chunked` が [`crate::chunked::ChunkedDecoder`]
+//! （sans-IO）へ読み取ったバイト列を渡してデコードする（イシュー #181）。
 //!
 //! 呼び出し元はコアの接続受理ループ（TASK-1.4 / #13）であり、1 コネクションにつき
 //! [`crate::buffer::RecvBuffer`] を 1 つ保持して繰り返し [`read_request`] を呼ぶ
@@ -22,6 +24,7 @@ use tokio::io::AsyncRead;
 
 use crate::body::{BodyError, BodyLength, body_length};
 use crate::buffer::RecvBuffer;
+use crate::chunked::{ChunkedDecoder, ChunkedError, DecodeOutcome};
 use crate::request::{HttpVersion, ParseError, ParseOutcome, RequestHead, parse_request_head};
 
 /// 読み取り済みの 1 リクエスト（ヘッド + body）。
@@ -40,6 +43,9 @@ pub enum RequestError {
     Parse(ParseError),
     /// body フレーミングの意味エラー（[`crate::body::body_length`] 由来）。
     Body(BodyError),
+    /// chunked body デコードエラー（[`crate::chunked::ChunkedDecoder`] 由来、
+    /// イシュー #181）。
+    Chunked(ChunkedError),
     /// ヘッドまたは body の途中でソケットが EOF に達した。
     ///
     /// リクエストの先頭（1 バイト目）に到達する前の EOF は正常なコネクション
@@ -55,6 +61,7 @@ impl std::fmt::Display for RequestError {
         match self {
             RequestError::Parse(e) => write!(f, "request parse error: {e}"),
             RequestError::Body(e) => write!(f, "request body error: {e}"),
+            RequestError::Chunked(e) => write!(f, "chunked body error: {e}"),
             RequestError::UnexpectedEof => f.write_str("unexpected EOF while reading request"),
             RequestError::Io(e) => write!(f, "I/O error while reading request: {e}"),
         }
@@ -66,6 +73,7 @@ impl std::error::Error for RequestError {
         match self {
             RequestError::Parse(e) => Some(e),
             RequestError::Body(e) => Some(e),
+            RequestError::Chunked(e) => Some(e),
             RequestError::UnexpectedEof => None,
             RequestError::Io(e) => Some(e),
         }
@@ -81,6 +89,12 @@ impl From<ParseError> for RequestError {
 impl From<BodyError> for RequestError {
     fn from(e: BodyError) -> Self {
         RequestError::Body(e)
+    }
+}
+
+impl From<ChunkedError> for RequestError {
+    fn from(e: ChunkedError) -> Self {
+        RequestError::Chunked(e)
     }
 }
 
@@ -169,6 +183,7 @@ pub async fn read_request<R: AsyncRead + Unpin>(
     let body = match body_length(&head)? {
         BodyLength::None => Vec::new(),
         BodyLength::Fixed(n) => read_body(reader, buf, n).await?,
+        BodyLength::Chunked => read_body_chunked(reader, buf).await?,
     };
 
     // keep-alive 接続は同じ RecvBuffer を繰り返し使うため、大 body 処理後の
@@ -232,6 +247,40 @@ async fn read_body<R: AsyncRead + Unpin>(
     let body = buf.unread()[..n].to_vec();
     buf.consume(n);
     Ok(body)
+}
+
+/// chunked transfer-coding の body を [`ChunkedDecoder`] へ委譲して読み取る。
+///
+/// [`body_length`] が `BodyLength::Chunked` を返した場合にのみ呼ばれる。
+/// `buf.unread()` を毎回デコーダへ渡し、消費できた分だけ `buf.consume` で
+/// カーソルを前進させる。終端（`0` チャンク + 空 trailer + CRLF）まで正確に
+/// 消費するため、パイプライン済み次リクエストの先頭バイトは
+/// [`crate::buffer::RecvBuffer`] に残ったまま返る（本モジュール冒頭の
+/// keep-alive 契約を維持）。復号総量はデコーダ内部で
+/// [`crate::body::MAX_BODY_BYTES`] に有界化済みのため、無制限のバッファ
+/// 成長は発生しない。
+async fn read_body_chunked<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    buf: &mut RecvBuffer,
+) -> Result<Vec<u8>, RequestError> {
+    let mut decoder = ChunkedDecoder::new();
+    let mut body = Vec::new();
+    loop {
+        let outcome = decoder.decode(buf.unread(), &mut body)?;
+        match outcome {
+            DecodeOutcome::Complete { consumed } => {
+                buf.consume(consumed);
+                return Ok(body);
+            }
+            DecodeOutcome::Incomplete { consumed } => {
+                buf.consume(consumed);
+                let n = buf.read_chunk(reader).await.map_err(RequestError::Io)?;
+                if n == 0 {
+                    return Err(RequestError::UnexpectedEof);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -402,10 +451,90 @@ mod tests {
 
     #[tokio::test]
     async fn body_error_is_propagated() {
-        let mut socket: &[u8] = b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n";
+        // `gzip` は chunked 以外の coding のため BodyError::TransferEncodingUnsupported
+        // として拒否される（単独 `chunked` はイシュー #181 で受理対象になった
+        // ため、本テストの入力から除外した）。
+        let mut socket: &[u8] = b"POST / HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n";
         let mut buf = RecvBuffer::new();
         let err = read_request(&mut socket, &mut buf).await.unwrap_err();
         assert!(matches!(err, RequestError::Body(_)));
+    }
+
+    #[tokio::test]
+    async fn reads_chunked_request_body() {
+        // イシュー #181: RFC 9112 §7.1 の chunked encoding の例（Wikipedia の
+        // 記事から）を最小化した end-to-end 検証。
+        let mut socket: &[u8] =
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
+        let mut buf = RecvBuffer::new();
+        let req = read_request(&mut socket, &mut buf)
+            .await
+            .unwrap()
+            .expect("request should be present");
+        assert_eq!(req.body, b"Wikipedia");
+        assert!(buf.unread().is_empty());
+    }
+
+    #[tokio::test]
+    async fn chunked_pipelined_requests_leave_remainder_in_buf() {
+        // chunked body の終端 CRLF までを正確に消費し、パイプライン済み次
+        // リクエストが RecvBuffer に残ることを固定する（keep-alive 契約維持）。
+        let mut socket: &[u8] = b"POST /a HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nabcd\r\n0\r\n\r\nGET /b HTTP/1.1\r\n\r\n";
+        let mut buf = RecvBuffer::new();
+
+        let first = read_request(&mut socket, &mut buf)
+            .await
+            .unwrap()
+            .expect("first request should be present");
+        assert_eq!(first.head.target, "/a");
+        assert_eq!(first.body, b"abcd");
+
+        let second = read_request(&mut socket, &mut buf)
+            .await
+            .unwrap()
+            .expect("second request should be present");
+        assert_eq!(second.head.target, "/b");
+        assert!(buf.unread().is_empty());
+    }
+
+    #[tokio::test]
+    async fn chunked_body_split_across_multiple_socket_chunks() {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let payload =
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n0\r\n\r\n";
+
+        let write_task = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            for chunk in payload.chunks(5) {
+                client.write_all(chunk).await.unwrap();
+                client.flush().await.unwrap();
+            }
+        });
+
+        let mut buf = RecvBuffer::new();
+        let req = read_request(&mut server, &mut buf)
+            .await
+            .unwrap()
+            .expect("request should be present");
+        assert_eq!(req.body, b"Wiki");
+
+        write_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn chunked_error_is_propagated() {
+        let mut socket: &[u8] = b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nZZZ\r\n";
+        let mut buf = RecvBuffer::new();
+        let err = read_request(&mut socket, &mut buf).await.unwrap_err();
+        assert!(matches!(err, RequestError::Chunked(_)));
+    }
+
+    #[tokio::test]
+    async fn eof_mid_chunked_body_is_unexpected_eof() {
+        let mut socket: &[u8] = b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWi";
+        let mut buf = RecvBuffer::new();
+        let err = read_request(&mut socket, &mut buf).await.unwrap_err();
+        assert!(matches!(err, RequestError::UnexpectedEof));
     }
 
     #[test]
@@ -423,6 +552,12 @@ mod tests {
         assert_eq!(
             body_err.to_string(),
             "request body error: Content-Length exceeds MAX_BODY_BYTES"
+        );
+
+        let chunked_err = RequestError::from(ChunkedError::TooManyChunks);
+        assert_eq!(
+            chunked_err.to_string(),
+            "chunked body error: chunk count exceeds MAX_CHUNK_COUNT"
         );
 
         assert_eq!(
@@ -443,6 +578,9 @@ mod tests {
 
         let body_err = RequestError::from(BodyError::DuplicateContentLength);
         assert!(body_err.source().is_some());
+
+        let chunked_err = RequestError::from(ChunkedError::InvalidChunkSize);
+        assert!(chunked_err.source().is_some());
 
         // UnexpectedEof はこれ自体が終端要因であり、内包エラーを持たない契約。
         assert!(RequestError::UnexpectedEof.source().is_none());
