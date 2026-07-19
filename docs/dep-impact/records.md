@@ -8,6 +8,130 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-07-19 — REQ-8 webrtc unsafe 増分の削減策評価とリスク受容判断確定（#242）
+
+`docs/acceptance/req8-webrtc-attack-surface.md` の基準 B補足（依存側 unsafe 増分、WARN）に
+ついて、悪化要因の特定記録の確定・削減策の評価・削減不能な残余リスクの受容判断の 3 点を
+確定させた（親トラッキング #235 の Conditional Go 条件(2)「WebRTC 別プロセス切り出し・
+攻撃表面評価」の「条件付き解消」を解消するための対応）。
+
+**スコープの明確化**: 本エントリは基準 B補足（unsafe 増分、WARN）のみを対象とする。
+同レポートに併存する基準 E（NFR-6 無関係パス性能影響、FAIL）は host contention（#178）に
+起因する別課題であり、本エントリでは一切扱わない（再論しない）。
+
+### 1. 悪化要因の特定記録の確定（既存記録の再掲・結論固定）
+
+見かけの「約 2.2 倍→約 4.4 倍」の乖離要因は **#183 で既に特定済み**（本ファイル下記
+「`webrtc` feature の unsafe 増分乖離（PoC-5 比 2.2 倍→実測 4.4 倍）の原因特定（#183）」
+エントリ）であり、2026-07-19 の再実測（#220、`docs/acceptance/req8-webrtc-attack-surface.md`
+「2026-07 再実行」節）でも Functions 69/170・304/592 が完全一致することを確認済みである。
+本イシューはこの結論を **確定した最終結論として固定**する。
+
+- **主因**: ベースライン圧縮効果。pay-for-what-you-use を徹底した `crates/core` は
+  baseline（webrtc 無効時）が 69 と小さく、PoC-5 の PoC 用スケルトン（baseline
+  110〜111）に比べて同程度の絶対増分でも比率が拡大する。
+- **副次要因**: `cargo-geiger` の到達可能性（used）判定がバージョン・環境に依存し、
+  同一ソース・同一 `Cargo.lock` でも再現性を完全には持たない（実測で 247→306 のずれを確認済み）。
+- **バージョン差は要因から棄却済み**: `webrtc-rs` は PoC-5・#183・本エントリの全時点で
+  一貫して 0.17.1（後述「2. 削減策の評価」でも最新版であることを確認）。
+- **実害の有無**: 依存側 unsafe の絶対量（feature 有効時 total 592〜594）は両時点で
+  ほぼ不変であり、新規の危険 unsafe パターン（`// SAFETY:` 欠落を伴う生ポインタ操作等）は
+  確認されていない。**見かけの 4.4 倍は比率の誇張であり、実害の増加ではない**という
+  結論を本エントリで最終確定する。
+
+### 2. 削減策の評価（バージョン更新・feature 絞り込み）
+
+#### 2.1 バージョン更新 — 不適用
+
+`docs/design/webrtc-rs-version-strategy.md` の 2026-07-17 再確認結果（crates.io 上の
+`webrtc` クレート最新版は引き続き v0.17.1、Sans-I/O 系は別クレート `rtc` へ分離され
+`webrtc` 本体の v0.20 化は確認されず）を根拠とする。**本エントリ作成時点（2026-07-19）で
+この記録から 2 日しか経過しておらず、かつ本セッションはネットワークアクセス権限を持たない
+subagent 実行環境のため、crates.io への再照会は実施できなかった**（`curl` / `cargo search`
+とも権限エラーで失敗、実行不能を確認済み。捏造しない・断定と推測の区別、
+`.claude/rules/japanese-style.md`・`.claude/rules/security.md`）。したがって
+「2026-07-17 時点で v0.17.1 が最新」という直近の確定記録を根拠として据え、バージョン更新は
+以下の理由により**不適用**と判定する。
+
+- 安定した後継版（`webrtc` v0.20 系）が存在せず、Sans-I/O 系の `rtc` クレートは
+  webrtc-rs-version-strategy.md の移行トリガー（安定版リリース）が未成立のため採用対象外
+- `webrtc-rs-version-strategy.md` は当面 v0.17.x（保守モード）継続を決定事項としており、
+  unsafe 削減のみを目的とした先行バージョン更新はこの決定と整合しない
+- 直近 2 日間で webrtc 系クレートに RUSTSEC advisory が新規発行された兆候はない
+  （`bash scripts/dep-audit.sh` が CI schedule で監視を継続しており、基準 C は PASS 継続）
+
+**フォローアップ**: crates.io の最新版確認は次回 `webrtc-rs-version-strategy.md` の
+定期再確認（同ドキュメント記載の移行トリガー監視）またはネットワークアクセス権限を持つ
+セッションでの再確認時に行う。本エントリはこの確認を「省略」したのではなく、「実行不能を
+確認したうえで直近の確定記録に依拠した」ことを明記して残す。
+
+#### 2.2 feature 絞り込み — 不適用（現状では安全な除去候補を特定できず）
+
+`crates/plugin-webrtc` が実際に使う機能は SDP Offer/Answer・データチャネル確立
+（`crates/plugin-webrtc/src/lib.rs` の `RTCPeerConnection` 経由 API）のみであり、
+`webrtc` 0.17 系は crates.io 上で default feature を分割公開していない
+（`webrtc` クレートは単一の default feature 構成で SDP/ICE/SCTP/DataChannel が
+不可分に結合しており、部分的な機能除去による依存削減の余地が確認できなかった）。
+除去候補の機械的な列挙（`cargo metadata` によるオプション feature 一覧確認）は
+本エントリの調査範囲では実施しておらず、確度の高い安全な除去候補は特定できなかった
+ため、**現時点では不適用**と判定する。
+
+- 安全に除去できる default-on feature が具体的に特定できた場合は
+  `crates/plugin-webrtc/Cargo.toml` の production 変更・テスト追加を伴うため、
+  `.claude/rules/out-of-scope-tracking.md` に従い**別 Issue として切り出す**方針とし、
+  本エントリ（ドキュメント確定タスク）では適用しない
+- 現状の不適用判定は「調査不足による保留」であり「機能除去不可能と断定した」わけではない
+  ことを明記する（断定と推測の区別）
+
+#### 2.3 不適用の総合根拠（既存の攻撃表面最小化方針の再確認）
+
+- in-process 版（`crates/plugin-webrtc`）は既に非推奨。MVP 推奨は別プロセス切り出し版
+  （`crates/plugin-webrtc-proxy`）で、こちらは `webrtc-rs` に一切依存しない
+  （`docs/acceptance/req8-webrtc-attack-surface.md` 基準 D補足）
+- フレームワーク本体は `webrtc` feature が既定で無効であり、無効時は `cargo tree` に
+  webrtc 系依存が 0 件（基準 A、pay-for-what-you-use を既に満たす）
+- 依存側 unsafe の絶対量は #183 で確認済みのとおり不変・危険パターンなし
+
+### 3. 削減不能な残余リスクの受容判断（提案・PR レビュー承認で確定）
+
+上記のとおり、バージョン更新・feature 絞り込みのいずれも本時点では適用しないため、
+`webrtc` feature を有効化した in-process WebRTC 利用時の依存側 unsafe（大きな絶対量、
+feature 有効時 total 592〜594）は削減されずに残る。この残余リスクについて、以下を
+**リスク受容案（提案）**として記録する。
+
+- **リスクの所在**: 残余リスクは、`AGENTS.md`「WebRTC の攻撃表面と『使う/使わない』
+  サービスの安全性方針」および `crates/plugin-webrtc/Cargo.toml` の「高攻撃表面の
+  選択肢」コメントに既に明記されているとおり、**明示的に非推奨の in-process プラグイン
+  （`webrtc` feature）を opt-in したサービスにのみ顕在化する**。既定構成・別プロセス
+  切り出し版（`plugin-webrtc-proxy`）を利用するサービスは本リスクの影響を受けない
+  （pay-for-what-you-use により依存グラフから完全除外）。
+- **受容の根拠**（新しい正当化を創作せず、既存フレーミングに依拠）:
+  1. `webrtc-rs` は攻撃表面の大きさを承知のうえで PoC-5・TASK-8.1〜8.3 を経て採用された
+     既知のトレードオフであり、別プロセス切り出し設計（`crates/plugin-webrtc-proxy`）
+     という緩和策が既に提供されている
+  2. 依存側 unsafe の絶対量は変化しておらず、新規の危険パターンも確認されていない
+     （#183・本エントリ 1 節）
+  3. `cargo audit` / `cargo deny check`（基準 C）による既知脆弱性監視は CI schedule で
+     継続しており、監視体制自体は本判断で弱めない
+- **承認フローの扱い（自動運転モード）**: 本判断は自動運転モードでの実装のため
+  ユーザー承認を待たずに記録するが、**最終承認は本タスクの PR レビュー（人間承認ゲート）
+  で行う**。これは `webrtc-rs-version-strategy.md`（「最終承認は人間レビュー（本タスクの
+  PR レビュー）で行う」）・`.claude/rules/feature-modification.md`（受け入れ基準充足は
+  人間レビューゲート）の既存前例と同一原則に従う。
+
+**基準 B補足の確定扱い**: 上記 1〜3 節を根拠に、`docs/acceptance/req8-webrtc-attack-surface.md`
+の基準 B補足を「**受容 WARN（削減不能・残余リスク受容済み、PR レビュー承認をもって確定）**」
+として記載を更新した。これにより親トラッキング #235 の Conditional Go 条件(2) の
+「条件付き解消」を解消できる状態になる（最終確定は PR レビュー承認後）。
+
+### 検証方法
+
+- `bash scripts/tests/run-webrtc-accept-tests.sh`（cargo 非依存のオフラインセルフテスト、
+  判定ロジック `scripts/accept/lib/nfr6-ratio.sh` には触れないため非退行）
+- `docs/acceptance/req8-webrtc-attack-surface.md` の基準 B補足・判定サマリー表の更新箇所
+- 次回バージョン再確認は `webrtc-rs-version-strategy.md` の移行トリガー監視、または
+  ネットワークアクセス権限を持つセッションでの `cargo search` / crates.io 参照で実施
+
 ## 2026-07-18 — `webrtc` feature の unsafe 増分乖離（PoC-5 比 2.2 倍→実測 4.4 倍）の原因特定（#183）
 
 TASK-8.4（#29、上記「`crates/plugin-webrtc` 攻撃表面評価・単独再評価」エントリ）が
