@@ -65,7 +65,10 @@ Claude ファミリー内での 3 役分離に留まる。実施環境が別ベ�
 被験者の確保手段のいずれも保有していないためであり、対応可否判定は
 [`docs/reports/task-12-4-third-party-scope-feasibility.md`](../reports/task-12-4-third-party-scope-feasibility.md)
 に「不可・要エスカレーション（未定義依存）」として記録した。この限界を受容して TASK-12.4
-を確定するかは人間判断へ引き渡す（同判定記録の「要人間判断事項」参照）。
+を確定するかは人間判断へ引き渡す（同判定記録の「要人間判断事項」参照）。制約解消までの
+恒久追跡先はイシュー #262 とし、実施条件・暫定運用の詳細は
+[`third-party-model-diversity-reverification.md`](./third-party-model-diversity-reverification.md)
+に整理する。
 
 ## 4. タスク設計規約
 
@@ -151,4 +154,5 @@ TASK-12.4-2（#86）のスコープ。可否判定タスク（「不可」また
   ション・別 Claude モデル）に留まり、別ベンダー LLM・人間被験者による追検証は現行の自動
   運転実行環境では実施不能である（イシュー #241 対応）。対応可否判定は
   [`docs/reports/task-12-4-third-party-scope-feasibility.md`](../reports/task-12-4-third-party-scope-feasibility.md)
-  に記録し、限界の受容可否は人間判断へ引き渡す。
+  に記録し、限界の受容可否は人間判断へ引き渡す。恒久追跡先はイシュー #262
+  （[`third-party-model-diversity-reverification.md`](./third-party-model-diversity-reverification.md)）。

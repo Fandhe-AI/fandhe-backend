@@ -81,7 +81,8 @@ bash scripts/tests/run-ai-autonomy-accept-tests.sh
   8 節）。
 - 被験 AI は Claude ファミリーに限られる（TASK-12.4-1／TASK-12.4-2／TASK-12.5／TASK-12.6
   と同一の既知の限界）。隔離はファイル削除 + 指示による運用であり、サンドボックスに
-  よる強制ではない。
+  よる強制ではない。制約解消までの恒久追跡先はイシュー #262
+  （[`../design/third-party-model-diversity-reverification.md`](../design/third-party-model-diversity-reverification.md)）。
 
 ## 参照
 
