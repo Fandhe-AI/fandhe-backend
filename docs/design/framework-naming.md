@@ -1,16 +1,78 @@
 # フレームワーク正式名称の決定記録
 
-> **ステータス: 決定候補（レビューゲート未確定）。**
-> 本ドキュメントはイシュー #92 対応として作成した決定記録であり、名称
-> 「wrenframe」は AI エージェントによる**選定・提案**である。[[review-gate]]
-> （PR レビュー・人間承認によるマージ）を通過して初めて正式名称として確定する。
-> マージ前に人間レビュアーが本ドキュメントの候補評価マトリクスを見て別候補を
-> 選び直すことも想定している（4 節の全候補を残しているのはそのため）。
+> **ステータス: 正式名称 `fandhe-backend` に確定。**
+> ユーザー決定（2026-07-19、親イシュー #200）により、fandhe ブランドで複数
+> フレームワーク（backend / frontend / AI）を展開する方針のもと、org 名 `fandhe`
+> をプレフィックスとする統一命名 **`fandhe-backend`** を正式名称として確定した。
+> 旧候補 `wrenframe`（イシュー #92 で AI エージェントが選定・提案し、
+> レビューゲート確定待ちとしていたもの）は、この方針転換により**経緯**として
+> 2 節以降にそのまま保持する（削除しない）。決定の根拠・可用性証跡・確定版
+> 新旧マッピング表は「決定（確定版）」節を参照。
 
-対応: #92（`chore(global): フレームワーク正式名称の確定`）、
-`docs/spec/01-brainstorm.md` 「未解消（残る確認事項）」の
+対応: #200（`fandhe-backend` への改名ツリー・親イシュー）・#201（本イシュー、
+決定記録の改訂）、#92（`chore(global): フレームワーク正式名称の確定`、旧候補
+`wrenframe` の選定記録）、`docs/spec/01-brainstorm.md` 「未解消（残る確認事項）」の
 「フレームワーク名の確定（Phase 2 以降）」（該当行は仕様書 submodule 側の
 履歴としてそのまま残し、書き換えない）。
+
+## 決定（確定版）
+
+**決定名称: `fandhe-backend`**（ユーザー決定 2026-07-19、親イシュー #200）。
+
+### 根拠
+
+- fandhe ブランドで複数フレームワーク（backend / frontend / AI）を展開する方針が
+  新たに定まり、各フレームワークを org 名 `fandhe` をプレフィックスとする統一命名
+  体系（`fandhe-backend` / `fandhe-web` / `fandhe-ai` 等）に揃えることで、ブランド
+  としての一貫性・検索性・今後の関連プロジェクトとの整合を優先した
+- 旧候補 `wrenframe`（2〜5 節、単独ブランド案）は 3〜4 節の一次スクリーニングでは
+  重大な衝突が見つからず有効な候補だったが、本方針転換（統一プレフィックス採用）
+  により経緯（過去の選定記録）として扱う。`wrenframe` 自体の可用性評価が誤って
+  いたわけではない
+- `fandhe-backend` は「fandhe 傘下の backend フレームワーク」であることが名称
+  から直接読み取れ、`fandhe-web` / `fandhe-ai` 等の将来追加フレームワークとも
+  命名規則上の対称性を持つ
+
+### 可用性確認の証跡（2026-07-19、実装時に再確認済み）
+
+親イシュー #200 記載の確認結果（crates.io `fandhe-backend`/`fandhe`/`fandhe-web`/
+`fandhe-ai` 未登録、npm `@fandhe/backend`・`fandhe-backend` 未登録、GitHub
+`Fandhe-AI/fandhe-backend` 未使用）を出典としつつ、本イシュー実装時（2026-07-19）
+に同一 API で再確認した実測結果は次のとおり（3 節と同形式。200=使用中/404=未使用）。
+
+| 対象 | 確認方法 | 結果 |
+|------|---------|------|
+| crates.io `fandhe-backend` | `https://crates.io/api/v1/crates/fandhe-backend` | 未使用 (404) |
+| crates.io `fandhe` | `https://crates.io/api/v1/crates/fandhe` | 未使用 (404) |
+| crates.io `fandhe-web` | `https://crates.io/api/v1/crates/fandhe-web` | 未使用 (404) |
+| crates.io `fandhe-ai` | `https://crates.io/api/v1/crates/fandhe-ai` | 未使用 (404) |
+| npm `fandhe-backend` | `https://registry.npmjs.org/fandhe-backend` | 未使用 (404) |
+| npm `@fandhe/backend` | `https://registry.npmjs.org/@fandhe%2Fbackend` | 未使用 (404) |
+| GitHub `Fandhe-AI/fandhe-backend` | `https://api.github.com/repos/Fandhe-AI/fandhe-backend` | 未使用 (404) |
+
+3 節と同様、crates.io の API 応答はブラウザ相当の `User-Agent` ヘッダ付与が
+必要（既定 User-Agent では Cloudflare 由来の 403 を返す環境がある）。本確認も
+crates.io/npm registry・GitHub API による一次スクリーニングであり、商標登録
+データベースの調査や法的なクリアランスではない（6 節参照。フェイルクローズ:
+到達不能・想定外応答の場合は「未使用」と断定せず #200 の記載を出典として明記する
+方針だが、今回は両出典が一致した）。
+
+### 確定版 新旧マッピング表（#200 本文を正とし転記。#202〜#205 の実装が参照する）
+
+| 種別 | 旧 | 新 |
+|------|-----|-----|
+| Cargo package（コア） | `backend-framework-core` | `fandhe-backend-core` |
+| Cargo package | `bf-http` / `bf-routes` / `bf-http-fuzz` | `fandhe-backend-http` / `fandhe-backend-routes` / `fandhe-backend-http-fuzz` |
+| Cargo package | `bf-plugin-<x>`（8 種） | `fandhe-backend-plugin-<x>` |
+| Rust import | `bf_http::` / `bf_routes::` / `bf_plugin_<x>::` / `backend_framework_core::` | `fandhe_backend_http::` 等 |
+| 環境変数 | `BF_*`（`BF_HUB_GATE`・`BF_TRACING_PROBE_*` 等） | `FANDHE_BACKEND_*` |
+| ts パッケージ | `backend-framework-openapi-ts` | `@fandhe/backend-openapi-ts` |
+| GitHub リポジトリ | `Fandhe-AI/backend-framework` | `Fandhe-AI/fandhe-backend` |
+| 文書表記 | `backend-framework` / `wrenframe` | `fandhe-backend` |
+
+対象外（#200 と同一方針）: `axum-ref`・`ws-load-client`・`gen-openapi` 等の
+中立な補助バイナリ名、`docs/spec/`（別リポジトリ `backend-framework-spec`。
+本ツリーでは参照表記のみ更新し、リポジトリ自体の改名は別途判断）。
 
 ## 1. 背景
 
@@ -19,8 +81,14 @@
   命名根拠・反映方針の確定が必要（#92 受け入れ条件 1・2）。
 - 既存の名称露出箇所（crate 名 `backend-framework-core` / `bf-http` /
   `bf-routes` / `bf-plugin-*`、`ts/package.json` の `backend-framework-openapi-ts`、
-  README.md・CLAUDE.md の仮称注記）は本 PR では変更しない。反映は 5 節の
-  段階的移行計画に従う。
+  README.md・CLAUDE.md の仮称注記）は本イシュー（#201）では変更しない。反映は
+  7 節の段階的移行計画に従う。
+
+## 経緯（旧候補 `wrenframe` の選定記録、#92）
+
+> この節（2〜5 節）は `fandhe-backend` 確定前（#92 時点）の選定記録であり、
+> 現在の正式名称の決定は「決定（確定版）」節を参照。以下は改変せず保持する
+> （受け入れ条件 3、#201）。
 
 ## 2. 命名基準（評価軸）
 
@@ -133,33 +201,32 @@ Web 検索（一般 Web 衝突確認）: `wrenframe` を Web 検索したとこ�
 - `docs/spec/`（別リポジトリ `Fandhe-AI/backend-framework-spec`）側の名称関連記述の
   更新（submodule のため本リポジトリ側からは書き換えない）
 
-## 7. 反映方針（段階的移行計画、#92 受け入れ条件 2 対応）
+## 7. 反映方針（段階的移行計画）
 
-名称確定の影響範囲が広く（`bf-` プレフィックス crate 群・`ts/package.json`・
-リポジトリ名・ドキュメント全体）、1 回の変更にまとめるとレビュー困難・ロール
-バック困難になるため、次の 4 段階に分けて実施する。各段階は個別 Issue 化
-（[[out-of-scope-tracking]] に従いユーザー承認後に起票）・個別 PR とし、
-本イシュー（#92）では第 1 段階のみを実施する。
+> 旧計画（#92 時点、下段の各段階名は当時 `wrenframe-*` を用いていた）を、
+> `fandhe-backend` 確定後の実イシュー（#200 ツリー配下 #201〜#205）に対応付けて
+> 改訂する。各段階は個別 Issue・個別 PR とし、影響箇所リストなど旧計画で有用
+> だった内容は確定名（`fandhe-backend`）に読み替えて維持する。
 
-### 第 1 段階（本 PR で実施）
+名称確定の影響範囲が広く（`bf-` プレフィックス crate 群・環境変数・
+`ts/package.json`・リポジトリ名・ドキュメント全体）、1 回の変更にまとめると
+レビュー困難・ロールバック困難になるため、次の段階に分けて実施する。
 
-- 本決定記録（`docs/design/framework-naming.md`）の追加
-- `docs/design/README.md` インデックスへの追加
-- `README.md` / `CLAUDE.md` の仮称注記を「決定候補 `wrenframe`、レビューゲート
-  確定待ち」の記述へ更新（実装フェーズの詳細は本ドキュメントへ誘導）
+### 第 1 段階: 決定記録の改訂（本イシュー #201 で実施）
 
-### 第 2 段階（フォローアップ Issue、未実施）
+- 本決定記録（`docs/design/framework-naming.md`）の `fandhe-backend` 確定への
+  改訂・確定版新旧マッピング表の追加
+- `docs/design/README.md` インデックス説明の更新
+- `README.md` / `CLAUDE.md` の仮称注記を「正式名称 `fandhe-backend`（確定）」の
+  記述へ更新（実装フェーズの詳細は本ドキュメントへ誘導）
 
-- `docs/design/*.md`・`docs/acceptance/*.md`・`benches/README.md` 等、ドキュメント
-  全体での呼称統一（「backend-framework」表記から正式名称への置換）
-- `docs/spec/**` は submodule のため対象外（別リポジトリ側での対応が必要な場合は
-  そちらへ別途申し入れる）
+### 第 2 段階: crate・import 一括改名（#202、未実施）
 
-### 第 3 段階（フォローアップ Issue、未実施）
-
-- crate 名リネーム: `backend-framework-core` → `wrenframe-core`、
-  `bf-http` → `wrenframe-http`、`bf-routes` → `wrenframe-routes`、
-  `bf-plugin-*` → `wrenframe-plugin-*` 等
+- crate 名リネーム: `backend-framework-core` → `fandhe-backend-core`、
+  `bf-http` → `fandhe-backend-http`、`bf-routes` → `fandhe-backend-routes`、
+  `bf-http-fuzz` → `fandhe-backend-http-fuzz`、`bf-plugin-*`（8 種）→
+  `fandhe-backend-plugin-*`、Rust import（`bf_http::` 等）→
+  `fandhe_backend_http::` 等
 - 影響箇所（リネーム時に追随が必要な範囲、実装時に全数確認すること）:
   - workspace 内の相互参照（各 `Cargo.toml` の `[dependencies]` セクション、
     feature 経由の `dep:` 配線、`crates/core/Cargo.toml` の feature 定義）
@@ -172,10 +239,26 @@ Web 検索（一般 Web 衝突確認）: `wrenframe` を Web 検索したとこ�
     方針を推奨）
   - `AGENTS.md`（クレート名を含む説明箇所）
 
-### 第 4 段階（フォローアップ Issue、未実施、人間実施を含む）
+### 第 3 段階: 環境変数改名（#203、未実施）
 
-- `ts/package.json` の `name`（`backend-framework-openapi-ts` → `wrenframe-openapi-ts` 等）
-  および `ts/package-lock.json` の追随
+- `BF_*`（`BF_HUB_GATE`・`BF_TRACING_PROBE_*` 等）→ `FANDHE_BACKEND_*`
+- 参照箇所（コード・CI・スクリプト・ドキュメントの環境変数参照）の全数確認
+
+### 第 4 段階: ts パッケージ改名（#204、未実施）
+
+- `ts/package.json` の `name`（`backend-framework-openapi-ts` →
+  `@fandhe/backend-openapi-ts`）および `ts/package-lock.json` の追随
+
+### 第 5 段階: ドキュメント・CI・スクリプト表記統一（#205、未実施）
+
+- `docs/design/*.md`・`docs/acceptance/*.md`・`benches/README.md` 等、ドキュメント
+  全体での呼称統一（`backend-framework` / `wrenframe` 表記から `fandhe-backend`
+  への置換。本決定記録の経緯節・過去レポートの実測値記録は対象外）
+- `docs/spec/**` は submodule のため対象外（別リポジトリ側での対応が必要な場合は
+  そちらへ別途申し入れる）
+
+### ツリー外（人間管理者実施、6 節）
+
 - リポジトリ名の変更（人間管理者実施、6 節）。GitHub はリポジトリ名変更時に
   旧 URL からのリダイレクトを提供するが、`docs/spec/`（submodule）側の
   `.gitmodules` 参照 URL・`Fandhe-AI/backend-framework-spec` 側からの逆参照
@@ -184,6 +267,7 @@ Web 検索（一般 Web 衝突確認）: `wrenframe` を Web 検索したとこ�
 
 ## 参照
 
+- 決定の親イシュー・改名ツリー: #200（本記録は配下 #201 対応）
 - 背景: `docs/spec/01-brainstorm.md`「未解消（残る確認事項）」
 - レビューゲート運用: [[review-gate]]（`docs/design/review-gate.md`）
 - スコープ外課題の追跡: [[out-of-scope-tracking]]

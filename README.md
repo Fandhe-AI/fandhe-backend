@@ -2,12 +2,12 @@
 
 AI によるセキュリティ脆弱性発見リスクに備え、Rust で新規構築する軽量・高速・高並行なバックエンドフレームワークです。axum 級の性能を目標に、プラグインによる拡張（WebRTC / WebSocket）、多様な通信規格（GraphQL / tRPC）、OpenAPI 自動生成・容易なロギングを備えます。
 
-> フレームワーク名は仮称（`backend-framework`）です。正式名称の決定候補として
-> `wrenframe` を選定しました（命名根拠・候補評価は
+> リポジトリ名は仮称（`backend-framework`）のままですが、正式名称は
+> **`fandhe-backend`** に確定しました（決定経緯・可用性証跡・新旧マッピング・
+> 段階的移行計画は
 > [`docs/design/framework-naming.md`](./docs/design/framework-naming.md) 参照）。
-> この決定候補は PR レビューゲート（人間承認）の通過をもって正式に確定し、
-> crate 名・リポジトリ名等への反映は同ドキュメントの段階的移行計画に従い
-> 順次進めます。
+> crate 名・リポジトリ名等への反映は同ドキュメントの計画（#200 改名ツリー）に
+> 従い順次進めます。
 
 ## Getting Started
 
