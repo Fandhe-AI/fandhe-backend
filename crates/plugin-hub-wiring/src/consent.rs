@@ -68,9 +68,10 @@ pub trait ConsentStore: Send + Sync {
     ///
     /// 判定不能（未登録テナント等）はオプトイン原則により拒否側
     /// （`false`）に倒す。`org_id` は必須パラメータであり、暗黙のデフォルト
-    /// テナントを持たせない（§6.2）。空文字列 `org_id` も他のキーと同様に
-    /// `HashMap` のキー不一致で未登録扱いとなり `false`（フェイルクローズ）
-    /// を返す。
+    /// テナントを持たせない（§6.2）。空文字列 `org_id` は
+    /// [`OutboxStore::list_for_org`](crate::outbox::OutboxStore::list_for_org)
+    /// の読み出し側ガードと対称に、実装が明示的にガードし登録状態に
+    /// 関わらず常に `false`（フェイルクローズ）を返すこと。
     fn is_granted(
         &self,
         org_id: &str,
@@ -117,6 +118,9 @@ impl InMemoryConsentStore {
     /// テスト・初期データ投入用: `(org_id, service, info_type)` を同意済みに
     /// する。
     ///
+    /// 空文字列 `org_id` で登録しても、[`Self::is_granted`] は読み出し側の
+    /// 明示ガードにより常に `false` を返す（フェイルクローズ、§7・§8）。
+    ///
     /// # Panics
     ///
     /// 内部 `Mutex` が poison 状態の場合に panic する（テスト・スパイク
@@ -149,7 +153,11 @@ impl InMemoryConsentStore {
 impl ConsentStore for InMemoryConsentStore {
     /// 登録済みかつ `true` の場合のみ `Ok(true)` を返す。未登録の組・
     /// [`Self::revoke`] 済みの組は `Ok(false)`（オプトイン原則のフェイル
-    /// クローズ）。
+    /// クローズ）。空文字列 `org_id` は
+    /// [`OutboxStore::list_for_org`](crate::outbox::OutboxStore::list_for_org)
+    /// と対称の明示ガードにより、[`Self::grant`] で登録済みであっても常に
+    /// `Ok(false)` を返す（暗黙のデフォルトテナントへのフォールバックを
+    /// 防ぐ、§6.2・§7・§8）。
     ///
     /// # Panics
     ///
@@ -160,6 +168,13 @@ impl ConsentStore for InMemoryConsentStore {
         service: &str,
         info_type: &str,
     ) -> Result<bool, ConsentError> {
+        // フェイルクローズ: 空文字列 org_id は暗黙のデフォルトテナントを
+        // 意味しないため、登録状態に関わらず常に拒否する
+        // （`OutboxStore::list_for_org` の読み出し側ガードと対称、§7・§8）。
+        if org_id.is_empty() {
+            return Ok(false);
+        }
+
         let key = (
             org_id.to_string(),
             service.to_string(),
@@ -228,11 +243,15 @@ mod tests {
 
     #[test]
     fn is_granted_is_false_for_empty_org_id() {
-        // フェイルクローズ: 空文字列 org_id は HashMap キー不一致により
-        // 常に未登録扱いとなり false を返す（暗黙のデフォルトテナントに
-        // フォールバックしない）。
+        // フェイルクローズ: 空文字列 org_id は明示ガードにより、grant で
+        // 登録済みであっても常に false を返す（暗黙のデフォルトテナントに
+        // フォールバックしない。OutboxStore::list_for_org の読み出し側
+        // ガードと対称）。
         let store = InMemoryConsentStore::new();
-        assert!(!store.is_granted("", "crm", "email").unwrap());
+        assert!(!store.is_granted("", "svc", "email").unwrap());
+
+        store.grant("", "svc", "email");
+        assert!(!store.is_granted("", "svc", "email").unwrap());
     }
 
     #[test]
