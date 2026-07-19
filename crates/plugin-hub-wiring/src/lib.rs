@@ -85,17 +85,35 @@
 //! 標準とのフィールド厳密整合の最終確認は [#97] で行う。
 //!
 //! [#97]: https://github.com/Fandhe-AI/fandhe-backend/issues/97
+//!
+//! # Outbox・同意ゲート ストレージ抽象（TASK-9.4 / #64 §4.1、実装は #243）
+//!
+//! [`outbox`]（`OutboxStore`）・[`consent`]（`ConsentStore`）は
+//! `docs/design/outbox-consent-integration.md` §4.1 が確定した trait 境界の
+//! 実コード実装。コアはこれらの trait を一切知らない。[`gate::TenantGate`]
+//! （`RequestGate` 拡張点）の判定通過**後**に、ハンドラ層（利用側サービスの
+//! エンドポイント実装）から呼ばれる想定であり、`RequestGate::check` の同期
+//! API 制約（`crates/core/src/extension.rs` doc）の対象外（同ドキュメント
+//! §4.2）。テスト用インメモリ実装（[`outbox::InMemoryOutboxStore`]・
+//! [`consent::InMemoryConsentStore`]）のみを本クレートに含み、PostgreSQL
+//! 実装は利用側サービスまたは独立アダプタクレートが提供する
+//! （`sqlx`/`tokio-postgres` 等の DB クライアントを本クレートに追加しない、
+//! .claude/rules/pay-for-what-you-use.md）。
 
 pub mod audit;
 pub mod auth;
+pub mod consent;
 pub mod gate;
 pub mod jwks;
 pub mod jwt;
+pub mod outbox;
 
 pub use audit::{
     AuditCategory, AuditContext, AuditEvent, AuditSink, MemoryAuditSink, TenantLookupOutcome,
 };
 pub use auth::Authenticator;
+pub use consent::{ConsentError, ConsentStore, InMemoryConsentStore};
 pub use gate::{TenantGate, TenantGateConfig};
 pub use jwks::{JwksError, JwksKeySet, SharedJwks};
 pub use jwt::{Claims, TokenError, verify_token};
+pub use outbox::{InMemoryOutboxStore, OutboxError, OutboxEvent, OutboxStore};
