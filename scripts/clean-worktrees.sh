@@ -204,9 +204,13 @@ for abs_path in "${ORPHAN_DIRS[@]}"; do
 
     if [ "${SALVAGE}" -eq 1 ]; then
         tar_path="${SALVAGE_DIR}/${dirname_only}.tar.gz"
+        # --exclude のパターンは "*/target" のようにワイルドカードを先頭に置き、
+        # cargo workspace のネストしたビルド成果物（例: crates/*/fuzz/target）も
+        # 除外する（トップレベルの "${dirname_only}/target" だけでなく任意の深さに
+        # マッチさせるため。イシュー #221 レビュー指摘）。
         if ! tar -C "${WORKTREES_ROOT}" \
-            --exclude="${dirname_only}/target" \
-            --exclude="${dirname_only}/node_modules" \
+            --exclude="*/target" \
+            --exclude="*/node_modules" \
             --exclude="${dirname_only}/.git" \
             -czf "${tar_path}" -- "${dirname_only}"; then
             echo "==> 警告: '${dirname_only}' の退避（tar）に失敗したため削除をスキップします" >&2
