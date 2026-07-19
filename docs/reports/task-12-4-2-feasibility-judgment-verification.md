@@ -131,8 +131,9 @@ PoC-9 の可否判定正解率（5/5、100%）との対比: 第三者測定で�
 に「不可・要エスカレーション（未定義依存）」として明示的に記録した。現行の自動運転実行
 環境には別ベンダー LLM の呼び出し手段・人間被験者の確保手段のいずれも存在しないため、
 限界を受容して本レポートの数値（正解率 8/10）を確定とするかは人間判断へ引き渡す。
-制約解消までの恒久追跡先はイシュー #262（[`../design/third-party-model-diversity-
-reverification.md`](../design/third-party-model-diversity-reverification.md)）とする。
+制約解消までの恒久追跡先はイシュー #262
+（[`../design/third-party-model-diversity-reverification.md`](../design/third-party-model-diversity-reverification.md)）
+とする。
 
 ## 7. 要対応事項（人間への引き継ぎ）
 
