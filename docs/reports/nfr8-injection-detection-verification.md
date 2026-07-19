@@ -29,7 +29,7 @@
 | ID | 結果 | 検知チャネル | 備考 |
 |----|------|-------------|------|
 | R-01 | DETECTED | `cargo nextest`（`too_many_headers`） | |
-| R-02 | DETECTED | `cargo clippy`（未使用ローカル変数 warning が `-D warnings` で検知） | 意味論的検知を狙った箇所だが、実際には該当行削除に伴う clippy warning が先に検知した（`GATE=clippy` としてログに記録）。nextest 側の `decoded_body_exceeding_max_returns_body_too_large` 系テストも本来検知しうるが、clippy が先行ゲートのため検知チャネルは clippy として記録される |
+| R-02 | DETECTED | `cargo clippy`（未使用ローカル変数 warning が `-D warnings` で検知）＋ `cargo nextest`（追加検証で確認、下記） | 本番計測では該当行削除に伴う clippy warning が先に検知した（`GATE=clippy`）。clippy 単独の検知では「意味論的な破壊を既存テストが捕捉できるか」を証明しないため、追加で `cargo nextest run -p fandhe-backend-http`（clippy を経由しない単独実行）を実施したところ `chunked::tests::single_chunk_exceeding_max_body_bytes_is_rejected`・`chunked::tests::total_decoded_across_chunks_exceeding_max_body_bytes_is_rejected` の 2 件が実際に FAIL することを確認した（ビルド自体は成功、`unused_imports` warning のみで打ち切られていない）。ケース定義の想定どおり意味論的検知が機能している |
 | R-03 | DETECTED | `cargo clippy`（`clippy::overly_complex_bool_expr`、`if false && ...`） | ケース定義で想定した通り |
 | R-04 | DETECTED | `cargo nextest`（`http11_connection_close_disables_keep_alive` 等・doc test） | |
 | R-05 | DETECTED | `cargo nextest`（`match_segments_rejects_dot_and_dotdot_path_traversal`） | |
@@ -37,7 +37,7 @@
 | R-07 | DETECTED | `cargo nextest`（`websocket_upgrade_disabled.rs`・`plugin_boundary*.rs`） | |
 | R-08 | DETECTED | `cargo nextest`（`validate_rejects_malformed_key_length`） | |
 | R-09 | DETECTED | `cargo nextest`（`falls_through_on_unrelated_path`・`falls_through_on_wrong_method`） | |
-| R-10 | DETECTED | `cargo clippy`（`now_unix` 未使用引数 warning） | ケース定義では nextest（`expired_token_is_401`）を主に想定していたが、`now_unix` 引数が未使用になったことで clippy が先行して検知した |
+| R-10 | DETECTED | `cargo clippy`（`now_unix` 未使用引数 warning）＋ `cargo nextest`（追加検証で確認、下記） | 本番計測では `now_unix` 引数が未使用になったことで clippy が先行して検知した。R-02 と同じ理由で追加検証を行い、`cargo nextest run -p fandhe-backend-plugin-hub-wiring`（clippy を経由しない単独実行）で `gate::tests::expired_token_is_401`・`jwt::tests::expired_token_is_rejected`・`jwt::tests::exp_equal_to_now_is_rejected`・`hub_acceptance::expired_token_is_rejected_before_handler` 等 7 件が実際に FAIL することを確認した。ケース定義の想定どおり意味論的検知が機能している |
 | R-11 | DETECTED | `cargo nextest`（doc test・`interval_hundred_samples_one_in_hundred`） | |
 | R-12 | DETECTED | `cargo nextest`（`oversized_offer_is_rejected`） | |
 
@@ -58,6 +58,36 @@ metric=injection_detection_rate pass=12 fail=0 pending=0 total=12
 初回計測で 90% を上回ったため、`docs/reports/nfr8-injection-case-definitions.md` に定めた
 「90% 未満ならテスト追加のうえ再計測する」手順は発動していない（テスト追加・再計測は
 不要だった）。
+
+## 追加検証: clippy 先行検知 2 件（R-02・R-10）の意味論的検知の裏付け
+
+`regression-injection-verify.sh` は「いずれか 1 つのゲートが失敗すれば検知」と
+定義しており、本番計測では R-02・R-10 の 2 件が `cargo clippy` で先に検知された
+（該当パッチが未使用ローカル変数・未使用引数を残す実装だったため）。これは
+NFR-8 の文言「AI 生成テストによる注入リグレッションの検知率」に照らすと
+「テストによる検知」ではなく「lint による検知」であり、検知率の解釈にあいまいさが
+残る（`clippy -D warnings` 自体は `.github/workflows/ci.yml` test ジョブ相当の
+既存ゲートの一部だが、テストスイートそのものではない）。
+
+このあいまいさを解消するため、R-02・R-10 それぞれについて `cargo clippy` を経由
+しない `cargo nextest run -p <crate>` 単独実行を追加で行った（起点コミット
+`54e87a7` に対して同一パッチを適用、ビルド自体が失敗していないことも確認）。
+
+- **R-02**（`crates/http/src/chunked.rs`）: `cargo nextest run -p fandhe-backend-http`
+  で `chunked::tests::single_chunk_exceeding_max_body_bytes_is_rejected`・
+  `chunked::tests::total_decoded_across_chunks_exceeding_max_body_bytes_is_rejected`
+  の 2 件が FAIL（138 passed, 2 failed / 140 件）
+- **R-10**（`crates/plugin-hub-wiring/src/jwt.rs`）: `cargo nextest run -p
+  fandhe-backend-plugin-hub-wiring` で `gate::tests::expired_token_is_401`・
+  `jwt::tests::expired_token_is_rejected`・`jwt::tests::exp_equal_to_now_is_rejected`・
+  `hub_acceptance::expired_token_is_rejected_before_handler`・
+  `tenant_gate::expired_token_is_rejected_before_handler` 等 7 件が FAIL
+  （102 passed, 7 failed / 109 件）
+
+両ケースとも意味論的な破壊を既存の `#[test]` が確実に捕捉することを確認した。
+したがって **12/12（100%）は「テストによる検知率」の厳密な解釈でも成立する**
+（clippy 先行検知はあくまで実測実行順序の結果であり、テストが検知しないことを
+意味しない）。
 
 ## 再現手順
 
