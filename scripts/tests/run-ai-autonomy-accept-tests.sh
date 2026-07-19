@@ -252,6 +252,26 @@ if [ -f "${GRAY_TASK_DEFS_FOR_F_TESTS}" ]; then
     assert_contains "F の SKIP 詳細にグレーゾーン採点 PASS を記録する" "${output}" "グレーゾーン採点 PASS"
 fi
 
+# --- ケース 13f: v2 グレーゾーン記録（task-12-6-records-v2）が存在する場合は、
+#     v1（task-12-6-records）が閾値未達でも v2 を優先採点する（Issue #240）。
+#     v1 = mixed（閾値未達）・v2 = correct（閾値充足）を同居させ、F が PASS になること
+#     で「v2 優先・v1 は歴史的記録として残置」の挙動を回帰確認する ---
+if [ -f "${GRAY_TASK_DEFS_FOR_F_TESTS}" ]; then
+    V2_PREF_DIR="$(mktemp -d)"
+    cp "${SCRIPT_DIR}/fixtures/third-party-stability/trial-normal-1.summary" "${V2_PREF_DIR}/"
+    cp "${SCRIPT_DIR}/fixtures/third-party-stability/trial-normal-2.summary" "${V2_PREF_DIR}/"
+    cp "${GRAY_TASK_DEFS_FOR_F_TESTS}" "${V2_PREF_DIR}/task-12-6-task-definitions.md"
+    mkdir -p "${V2_PREF_DIR}/task-12-6-records"
+    cp "${FIXTURES_DIR}/../feasibility-verify-gray-mixed/"*.md "${V2_PREF_DIR}/task-12-6-records/"
+    mkdir -p "${V2_PREF_DIR}/task-12-6-records-v2"
+    cp "${FIXTURES_DIR}/../feasibility-verify-gray-correct/"*.md "${V2_PREF_DIR}/task-12-6-records-v2/"
+    set +e
+    output="$(bash "${ACCEPT_SCRIPT}" --ledger "${FIXTURES_DIR}/ledger-ok.summary" --reports-dir "${V2_PREF_DIR}" 2>&1)"
+    set -e
+    rm -rf "${V2_PREF_DIR}"
+    assert_contains "v2 グレーゾーン記録が存在すれば v1 閾値未達でも v2 を優先採点し F が PASS" "${output}" "[PASS] F:"
+fi
+
 # --- ケース 14: フル実行（workspace の実データ、確定値台帳・実レポート含む）が
 #     クラッシュせずサマリーまで完走することを確認する（回帰確認）。
 #     exit 0（FAIL なし）/ exit 1（実測 FAIL あり）はいずれも正当な判定結果であり、

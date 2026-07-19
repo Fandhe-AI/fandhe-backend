@@ -430,7 +430,18 @@ for f in "${REPORTS_DIR}"/trial-*.summary; do
     f_trials_found=1
 done
 
+# グレーゾーン判定記録は v2（Issue #240、境界基準明文化 #227・タスク定義前提崩れ是正
+# #228 を反映した再測定）を最新の有効測定として優先採点する。v2 が存在しない環境
+# （セルフテストの隔離 fixture 等）では従来どおり v1（task-12-6-records）を採点する。
+# v1 記録は歴史的記録として保持され、gray-zone-verification.md 5・6 節で参照される。
 gray_records_dir="${REPORTS_DIR}/task-12-6-records"
+if [ -d "${REPORTS_DIR}/task-12-6-records-v2" ]; then
+    for f in "${REPORTS_DIR}/task-12-6-records-v2"/*.md; do
+        [ -e "${f}" ] || continue
+        gray_records_dir="${REPORTS_DIR}/task-12-6-records-v2"
+        break
+    done
+fi
 f_gray_found=0
 if [ -d "${gray_records_dir}" ]; then
     for f in "${gray_records_dir}"/*.md; do
