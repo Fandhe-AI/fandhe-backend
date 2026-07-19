@@ -161,3 +161,9 @@ REQ-14 は「人間または追加の AI レビュー」を明示的に許容し
 - `cargo geiger` の CI 常設化（TASK-15 系、`docs/dep-impact/` 運用のスコープ）
 
 該当課題が具体化した場合は `.claude/rules/out-of-scope-tracking.md` に従い Issue へ記録する。
+
+## 6. 受け入れ検証レポート
+
+受け入れ検証レポート: `docs/acceptance/req14-verification-gate.md`（#264）。
+REQ-14 受け入れ基準 3 項目のうち基準 3（レビューゲート運用の定義）の証跡として
+本文書（定義・ruleset ルール・受け入れテスト構成・§4 実施記録）を集約転記している。
