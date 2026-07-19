@@ -33,6 +33,9 @@ TIMEOUT_SECONDS="${REGRESSION_INJECTION_TIMEOUT:-600}"
 # `mktemp -d` は環境変数 `TMPDIR` を尊重するため、`/tmp` の残容量が少ない環境では
 # 呼び出し元が `TMPDIR` を書き込み可能な別ディレクトリへ差し替えること。
 TARGET_DIR=""
+# 呼び出し元が `--target-dir` を明示指定したかどうか（自動生成分のみ後始末対象と
+# 区別するためのフラグ。明示指定分は再実行時の再利用を意図するため削除しない）。
+TARGET_DIR_AUTO=0
 
 usage() {
     cat >&2 <<'EOF'
@@ -43,8 +46,8 @@ usage() {
   --gate-cmd <cmd>     検知ゲートの差し替え（セルフテスト用の注入口）。指定時は
                         `<cmd> <worktree-dir> <case-id>` として呼び出し、終了コード
                         0 で「全ゲート通過（検知漏れ）」、非 0 で「検知」と解釈する
-  --target-dir <dir>   cargo の共有 CARGO_TARGET_DIR（既定: mktemp で自動生成、
-                        終了時に削除しない。呼び出し元が明示指定した場合も削除しない
+  --target-dir <dir>   cargo の共有 CARGO_TARGET_DIR（既定: mktemp で自動生成し、
+                        終了時に削除する。呼び出し元が明示指定した場合は削除しない
                         ＝ 再実行時の再利用を意図する）
 EOF
 }
@@ -90,6 +93,7 @@ fi
 
 if [ -z "${TARGET_DIR}" ]; then
     TARGET_DIR="$(mktemp -d)"
+    TARGET_DIR_AUTO=1
 fi
 mkdir -p "${TARGET_DIR}"
 
@@ -112,6 +116,12 @@ cleanup() {
         fi
     done
     rm -rf "${WT_ROOT}"
+    # `--target-dir` 未指定で自動生成した CARGO_TARGET_DIR はビルドキャッシュを含み
+    # サイズが大きいため、デフォルト実行のたびに残留させない（呼び出し元が明示指定
+    # した場合は再実行時の再利用を意図して削除しない）。
+    if [ "${TARGET_DIR_AUTO}" -eq 1 ] && [ -n "${TARGET_DIR}" ]; then
+        rm -rf "${TARGET_DIR}"
+    fi
 }
 trap cleanup EXIT
 
@@ -138,26 +148,38 @@ run_default_gates() {
         cd "${wt_dir}/${crate_dir}" || exit 1
         export CARGO_TARGET_DIR="${TARGET_DIR}"
 
-        if ! timeout "${TIMEOUT_SECONDS}" cargo clippy --all-targets --all-features -- -D warnings >>"${log_file}" 2>&1; then
+        # 呼び出し元（メインループ）は `gate_rc -eq 124` でハングタイムアウトを
+        # 「timeout」チャンネルとして識別する。ここで一律 `exit 1` に潰すと
+        # `timeout` コマンドが返す 124 が失われ、ゲート失敗（clippy 等）と
+        # 誤ラベル化されるため、各ゲートの実際の終了コードをそのまま伝播する。
+        timeout "${TIMEOUT_SECONDS}" cargo clippy --all-targets --all-features -- -D warnings >>"${log_file}" 2>&1
+        rc=$?
+        if [ "${rc}" -ne 0 ]; then
             echo "GATE=clippy" >>"${log_file}"
-            exit 1
+            exit "${rc}"
         fi
         # cargo-nextest はテスト単位タイムアウト（.config/nextest.toml profile:ci）
         # を持ち、ハング型のバグ（PoC-9 BUG-3 の教訓）も検知として扱えるようにする。
         if command -v cargo-nextest >/dev/null 2>&1; then
-            if ! timeout "${TIMEOUT_SECONDS}" cargo nextest run --all-features --profile ci >>"${log_file}" 2>&1; then
+            timeout "${TIMEOUT_SECONDS}" cargo nextest run --all-features --profile ci >>"${log_file}" 2>&1
+            rc=$?
+            if [ "${rc}" -ne 0 ]; then
                 echo "GATE=nextest" >>"${log_file}"
-                exit 1
+                exit "${rc}"
             fi
         else
-            if ! timeout "${TIMEOUT_SECONDS}" cargo test --all-features >>"${log_file}" 2>&1; then
+            timeout "${TIMEOUT_SECONDS}" cargo test --all-features >>"${log_file}" 2>&1
+            rc=$?
+            if [ "${rc}" -ne 0 ]; then
                 echo "GATE=test" >>"${log_file}"
-                exit 1
+                exit "${rc}"
             fi
         fi
-        if ! timeout "${TIMEOUT_SECONDS}" cargo test --doc --all-features >>"${log_file}" 2>&1; then
+        timeout "${TIMEOUT_SECONDS}" cargo test --doc --all-features >>"${log_file}" 2>&1
+        rc=$?
+        if [ "${rc}" -ne 0 ]; then
             echo "GATE=doctest" >>"${log_file}"
-            exit 1
+            exit "${rc}"
         fi
         exit 0
     )

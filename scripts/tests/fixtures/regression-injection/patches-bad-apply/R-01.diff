@@ -3,8 +3,8 @@ index b6be099..89598ca 100644
 --- a/README.md
 +++ b/README.md
 @@ -53,3 +53,5 @@ git submodule update --init
- crates.io への公開手順（名前確保・所有権・リリース CI）は
+ この行は README.md の実際の内容と一致しないコンテキスト行です（意図的な apply 失敗フィクスチャ）
  [`docs/design/crates-io-release.md`](./docs/design/crates-io-release.md) で定めています
  （現時点では実際の公開は行っていません）。
-+<!-- regression-injection-verify.sh セルフテスト用フィクスチャ（無害な注入例） -->
++<!-- regression-injection-verify.sh セルフテスト用フィクスチャ（意図的な apply 失敗例: コンテキスト行不一致） -->
 +
