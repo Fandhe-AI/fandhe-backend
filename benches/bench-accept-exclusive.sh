@@ -17,24 +17,27 @@
 # `fandhe-backend-core` の `default = []` 構成でビルドされるため、webrtc-proxy・graphql
 # 両 feature が無効な状態そのものが計測対象になる（`crates/**` の追加変更は不要）。
 #
-# ビルド（axum-ref・core-bench の release ビルド）は本 wrapper が**専有ロック取得前**に
-# 行う。`bench-accept.sh` は `SKIP_BUILD=1` を付けて呼び出し、内部の `cargo build` を
-# 実行させない。専有ロック取得後に cargo/rustc の負荷が発生すると、静穏（quiescence）
-# 確認から計測開始までの間に 1 分間 loadavg が再び上昇し、静穏ゲートの意味が失われる
-# ため（`nfr6-exclusive.sh` が事前ビルド前提でロック取得後は一切ビルドしない設計と
-# 揃える、イシュー #260 Bugbot 指摘対応）。
+# ビルド（axum-ref・core-bench の release ビルド）は本 wrapper が**専有ロック取得後・
+# 静穏確認前**に行う。`bench-accept.sh` は `SKIP_BUILD=1` を付けて呼び出し、内部の
+# `cargo build` を実行させない。ロック取得前にビルドすると、他の専有計測プロセスが
+# 既に共有ロックを保持し計測中の間にホスト負荷を急増させてしまい、`nfr6-exclusive.sh`
+# が依存する flock 相互排他保証そのものを崩す（イシュー #260 PR #268 Bugbot 指摘：
+# "Pre-lock build breaks exclusivity"）。そのため quiescence-safe な順序
+# 「lock → build → wait_for_quiescence → SKIP_BUILD=1 で measure」を採る。ビルド自体は
+# ロック保持中に行うため、ビルド完了直後に静穏確認（`wait_for_quiescence`）で
+# cargo/rustc 由来の負荷が収まるのを待ってから計測に入る。
 #
 # 呼び出し元: 人間が `bash benches/bench-accept-exclusive.sh` として直接実行する
 # （CI 常設ジョブへは組み込まない。self-hosted runner 負荷抑制方針、.claude/rules/ci.md）。
 #
 # 終了コード: `bench-accept.sh` の終了コードをそのまま透過する
 # （0 = 全項目 PASS、1 = 1 件以上 FAIL、2 = CORE_BIN 未整備で BLOCKED）。
-# `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`（既定 2） = 専有ロック取得不能・静穏未達・
-# 事前ビルド失敗で計測そのものに着手できず BLOCKED（PASS へ丸めない。フェイルクローズ）。
+# `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`（既定 2） = 専有ロック取得不能・ビルド失敗・
+# 静穏未達で計測そのものに着手できず BLOCKED（PASS へ丸めない。フェイルクローズ）。
 # 変数名は `lib/exclusive.sh` の既存 export をそのまま再利用する（NFR-6 専用の意味は
 # 持たず、本 wrapper でも「計測不能時の BLOCKED 終了コード」として共用する）。
 #
-# REPORT_MD 指定時、専有ロック取得不能・静穏未達・事前ビルド失敗のいずれで BLOCKED
+# REPORT_MD 指定時、専有ロック取得不能・ビルド失敗・静穏未達のいずれで BLOCKED
 # 終了する場合も REPORT_MD に「## 結論」セクションを追記し、既存の古い PASS/FAIL が
 # 権威として残り続ける事態（stale PASS）を防ぐ（フェイルクローズ、イシュー #260
 # Bugbot 指摘対応。`bench-accept.sh` 側の同種処理は `write_report_conclusion` を参照）。
@@ -69,15 +72,6 @@ trap release_exclusive_lock_on_exit EXIT
 
 echo "=== REQ-2 基準 5 専有計測 wrapper（bench-accept.sh） ===" >&2
 
-echo "--- 事前ビルド（専有ロック取得前。ロック取得後にビルドが走ると静穏確認の意味が薄れるため） ---" >&2
-if ! cargo build --release --manifest-path "${WORKSPACE_ROOT}/Cargo.toml" >&2 \
-    || ! cargo build --release --example core-bench -p fandhe-backend-core --manifest-path "${WORKSPACE_ROOT}/Cargo.toml" >&2; then
-    echo "BLOCKED: 事前ビルドに失敗しました" >&2
-    write_blocked_conclusion "事前ビルド失敗のため判定不能"
-    exit "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}"
-fi
-echo "事前ビルド完了" >&2
-
 echo "--- 専有ロック取得を試行（${FANDHE_BACKEND_NFR6_LOCK}） ---" >&2
 if ! acquire_exclusive_lock; then
     echo "BLOCKED: 専有ロックを取得できませんでした。他の計測プロセスが実行中の可能性があります" >&2
@@ -85,6 +79,15 @@ if ! acquire_exclusive_lock; then
     exit "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}"
 fi
 echo "専有ロック取得済み" >&2
+
+echo "--- ビルド（専有ロック取得後。ロック保持中に行い、他の専有計測との同時ビルドを防ぐ） ---" >&2
+if ! cargo build --release --manifest-path "${WORKSPACE_ROOT}/Cargo.toml" >&2 \
+    || ! cargo build --release --example core-bench -p fandhe-backend-core --manifest-path "${WORKSPACE_ROOT}/Cargo.toml" >&2; then
+    echo "BLOCKED: ビルドに失敗しました" >&2
+    write_blocked_conclusion "ビルド失敗のため判定不能"
+    exit "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}"
+fi
+echo "ビルド完了" >&2
 
 echo "--- 静穏確認（LOAD1_MAX=${LOAD1_MAX} QUIESCE_WAIT_SECS=${QUIESCE_WAIT_SECS}） ---" >&2
 if ! wait_for_quiescence; then
