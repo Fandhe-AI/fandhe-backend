@@ -1,0 +1,15 @@
+diff --git a/crates/plugin-webrtc-proxy/src/handler.rs b/crates/plugin-webrtc-proxy/src/handler.rs
+index 9f05440..0f0b3f2 100644
+--- a/crates/plugin-webrtc-proxy/src/handler.rs
++++ b/crates/plugin-webrtc-proxy/src/handler.rs
+@@ -95,9 +95,7 @@ pub async fn try_handle_rtc_offer(
+     if declared_len != body.len() {
+         return Some(Response::error(400, "Bad Request"));
+     }
+-    if body.len() > config.max_offer_bytes() {
+-        return Some(Response::error(413, "Payload Too Large"));
+-    }
++    let _ = config.max_offer_bytes();
+ 
+     match forward_offer(config, body).await {
+         Ok(answer) => Some(Response {

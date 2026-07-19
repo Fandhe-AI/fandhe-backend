@@ -1,0 +1,10 @@
+diff --git a/README.md b/README.md
+index b6be099..89598ca 100644
+--- a/README.md
++++ b/README.md
+@@ -9999,3 +9999,5 @@ 存在しない行番号を参照する意図的な apply 失敗フィクスチャ
+ crates.io への公開手順（名前確保・所有権・リリース CI・存在しないコンテキスト行）は
+ [`docs/design/crates-io-release.md`](./docs/design/crates-io-release.md) で定めています
+ （現時点では実際の公開は行っていません、この行もフィクスチャ用に不一致にしてあります）。
++<!-- regression-injection-verify.sh セルフテスト用フィクスチャ（意図的な apply 失敗例: 存在しない行番号・不一致コンテキスト） -->
++

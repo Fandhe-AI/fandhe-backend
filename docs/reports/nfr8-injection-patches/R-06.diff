@@ -1,0 +1,17 @@
+diff --git a/crates/core/src/server.rs b/crates/core/src/server.rs
+index 7d2244b..b264e94 100644
+--- a/crates/core/src/server.rs
++++ b/crates/core/src/server.rs
+@@ -854,9 +854,9 @@ pub(crate) async fn handle_connection_with_permit<S>(
+ /// 登録順に `gates` を評価し、最初の [`GateOutcome::Reject`] を返す。
+ /// 全件 `Allow` の場合は `None`。
+ fn first_rejection(gates: &[Box<dyn RequestGate>], head: &RequestHead) -> Option<GateOutcome> {
+-    gates.iter().find_map(|gate| match gate.check(head) {
+-        GateOutcome::Allow => None,
+-        reject @ GateOutcome::Reject { .. } => Some(reject),
++    gates.iter().find_map(|gate| {
++        let _ = gate.check(head);
++        None
+     })
+ }
+ 

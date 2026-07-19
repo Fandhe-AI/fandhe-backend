@@ -472,6 +472,9 @@ hub_service_demo` を事前実行（本スクリプトは自動ビルドしな�
 - D-2（人手）. 受け入れレポート内の人手評価台帳（`docs/reports/task-12-7-acceptance.md`）
   の集計。未記入・PENDING 行が残る場合は PASS と偽らず SKIP
 - E. NFR-8（自動修正でテストが通る修正を得られる割合）≥70%（確定値台帳突合）
+- E-2. NFR-8（AI 生成テストによる注入リグレッション検知率）≥90%（確定値台帳突合、
+  #238。実測は `scripts/regression-injection-verify.sh` が担い、
+  `docs/reports/nfr8-injection-detection-verification.md` に記録した値を台帳へ転記する）
 - F. TASK-12.5 試行 2・3・TASK-12.6 グレーゾーン実測の状態。試行サマリ
   （`docs/reports/trial-*.summary`）・判定記録（`docs/reports/task-12-6-records/`）が
   存在すれば `third-party-stability-aggregate.sh`・`third-party-feasibility-verify.sh`

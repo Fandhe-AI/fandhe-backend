@@ -1,0 +1,13 @@
+diff --git a/crates/core/src/server.rs b/crates/core/src/server.rs
+index 7d2244b..921ed34 100644
+--- a/crates/core/src/server.rs
++++ b/crates/core/src/server.rs
+@@ -762,7 +762,7 @@ pub(crate) async fn handle_connection_with_permit<S>(
+         if server
+             .upgrade_handlers
+             .iter()
+-            .any(|handler| handler.matches(&request.head))
++            .any(|handler| { let _ = handler.matches(&request.head); true })
+         {
+             // 長時間接続へ委譲する前に、パイプライン済みの可能性がある残余
+             // バイト列（次リクエストの先頭・WebSocket の先行フレーム等）を

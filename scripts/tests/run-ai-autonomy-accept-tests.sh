@@ -87,6 +87,7 @@ assert_contains "台帳充足は基準 A が PASS" "${output}" "[PASS] A:"
 assert_contains "台帳充足は基準 B が PASS" "${output}" "[PASS] B:"
 assert_contains "台帳充足は基準 C が PASS" "${output}" "[PASS] C:"
 assert_contains "台帳充足は基準 E が PASS" "${output}" "[PASS] E:"
+assert_contains "台帳充足は基準 E-2 が PASS" "${output}" "[PASS] E-2:"
 assert_exit_code "台帳充足は終了コード 0" 0 "${status}"
 
 # --- ケース 2: 閾値未達の台帳は A・B・E が FAIL、終了コード非 0 ---
@@ -96,6 +97,7 @@ status=$?
 set -e
 assert_contains "閾値未達は基準 A が FAIL" "${output}" "[FAIL] A:"
 assert_contains "閾値未達は基準 E が FAIL" "${output}" "[FAIL] E:"
+assert_contains "閾値未達は基準 E-2 が FAIL" "${output}" "[FAIL] E-2:"
 if [ "${status}" -ne 0 ]; then
     pass "閾値未達は終了コード非 0"
 else
@@ -128,6 +130,7 @@ assert_contains "台帳不在は基準 A が SKIP" "${output}" "[SKIP] A:"
 assert_contains "台帳不在は基準 B が SKIP" "${output}" "[SKIP] B:"
 assert_contains "台帳不在は基準 C が SKIP" "${output}" "[SKIP] C:"
 assert_contains "台帳不在は基準 E が SKIP" "${output}" "[SKIP] E:"
+assert_contains "台帳不在は基準 E-2 が SKIP" "${output}" "[SKIP] E-2:"
 assert_exit_code "台帳不在（SKIP のみ）は終了コード 0" 0 "${status}"
 
 # --- ケース 6: D-1 fixture 不在は FAIL（判定不能） ---

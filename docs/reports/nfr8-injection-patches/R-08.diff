@@ -1,0 +1,24 @@
+diff --git a/crates/plugin-websocket/src/handshake.rs b/crates/plugin-websocket/src/handshake.rs
+index 656620b..b07b772 100644
+--- a/crates/plugin-websocket/src/handshake.rs
++++ b/crates/plugin-websocket/src/handshake.rs
+@@ -83,9 +83,7 @@ pub(crate) fn validate(head: &RequestHead) -> Result<ValidatedHandshake, WsError
+     let key = head
+         .header("sec-websocket-key")
+         .ok_or(WsError::InvalidHandshake("missing Sec-WebSocket-Key"))?;
+-    if !is_valid_base64_key(key) {
+-        return Err(WsError::InvalidHandshake("invalid Sec-WebSocket-Key"));
+-    }
++    let _ = is_valid_base64_key(key);
+ 
+     let accept_key = derive_accept_key(key.as_bytes());
+     Ok(ValidatedHandshake { accept_key })
+@@ -155,7 +153,7 @@ pub(crate) fn serialize_426() -> Vec<u8> {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
++    use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+ 
+     fn head_from(buf: &[u8]) -> RequestHead {
+         match parse_request_head(buf).expect("parse should succeed") {

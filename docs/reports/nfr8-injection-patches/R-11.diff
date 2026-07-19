@@ -1,0 +1,13 @@
+diff --git a/crates/plugin-tracing/src/sampler.rs b/crates/plugin-tracing/src/sampler.rs
+index 4b78d24..6efea59 100644
+--- a/crates/plugin-tracing/src/sampler.rs
++++ b/crates/plugin-tracing/src/sampler.rs
+@@ -68,7 +68,7 @@ impl Sampler {
+     /// ```
+     pub fn should_sample(&self) -> bool {
+         let n = self.counter.fetch_add(1, Ordering::Relaxed);
+-        n.is_multiple_of(self.interval.get())
++        !n.is_multiple_of(self.interval.get())
+     }
+ }
+ 

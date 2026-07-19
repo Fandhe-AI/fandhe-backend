@@ -1,0 +1,23 @@
+diff --git a/crates/plugin-hub-wiring/src/jwt.rs b/crates/plugin-hub-wiring/src/jwt.rs
+index be8a74f..265ba09 100644
+--- a/crates/plugin-hub-wiring/src/jwt.rs
++++ b/crates/plugin-hub-wiring/src/jwt.rs
+@@ -17,8 +17,8 @@
+ //! RSA 演算を実装しない（.claude/rules/security.md A02）。
+ 
+ use crate::jwks::JwksKeySet;
+-use base64::Engine as _;
+ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
++use base64::Engine as _;
+ use ring::signature::{self, RsaPublicKeyComponents};
+ use serde::Deserialize;
+ 
+@@ -188,7 +188,7 @@ pub fn verify_token(token: &str, keys: &JwksKeySet, now_unix: u64) -> Result<Cla
+     let payload: Payload =
+         serde_json::from_slice(&payload_json).map_err(|_| TokenError::Malformed)?;
+ 
+-    if payload.exp <= now_unix {
++    if payload.exp == 0 {
+         return Err(TokenError::Expired);
+     }
+ 

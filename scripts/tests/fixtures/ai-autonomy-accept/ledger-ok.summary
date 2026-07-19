@@ -5,3 +5,4 @@ metric=feasibility_accuracy pass=8 fail=2 pending=0 total=10
 metric=destruction count=0
 metric=evidence_rate pass=6 fail=0 pending=0 total=6
 metric=auto_fix_rate pass=8 fail=2 pending=0 total=10
+metric=injection_detection_rate pass=12 fail=0 pending=0 total=12

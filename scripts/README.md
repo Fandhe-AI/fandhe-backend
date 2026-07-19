@@ -49,6 +49,12 @@ req6-typescript-types.md` 参照）。
 イシュー #221 で、`implement-issue-tree` ワークフローが作成する per-issue git worktree
 （`.claude/worktrees/`）の残存棚卸し・退避・削除を行う `clean-worktrees.sh` を追加した
 （親: #215、2026-07-19 時点で約 160 ディレクトリ・約 97GB の残存を確認）。
+イシュー #238 で、NFR-8「AI 生成テストによる注入リグレッションの検知率が 90% 以上」の
+実装フェーズ確定検証として、既知の破壊的変更を使い捨て `git worktree` へ注入し
+既存テストスイート（clippy / cargo-nextest / doc test）の検知可否を計測する
+`regression-injection-verify.sh` を追加した（実測結果は
+`docs/reports/nfr8-injection-detection-verification.md`、
+`scripts/accept/ai-autonomy-accept.sh` 基準 E-2 として台帳突合）。
 
 ## スクリプト一覧
 
@@ -91,6 +97,8 @@ req6-typescript-types.md` 参照）。
 | `actionlint.sh` | `.github/workflows/*.yml` を actionlint（+ shellcheck 統合）で静的検証する。式インジェクション（OWASP A03）・構文誤り・`needs` 参照切れ等のワークフロー変更退行を検知する（イシュー #180）。引数指定時はそのファイルのみ検証する（セルフテスト・陰性対照用） | `.github/workflows/ci.yml` の `actionlint` ジョブから呼ばれる |
 | `tests/run-actionlint-tests.sh` | `actionlint.sh` のセルフテスト。actionlint 不在時の fail-closed（exit 2・導入案内）、`tests/fixtures/actionlint/broken-workflow.yml`（`runs-on` 欠落・`needs` 参照切れ）を明示ファイル引数で検査する陰性対照（discrimination）、ci.yml への `actionlint` ジョブ・`ci-complete` needs 登録の存在確認を検証する | `.github/workflows/ci.yml` の `actionlint` ジョブから呼ばれる |
 | `clean-worktrees.sh` | `.claude/worktrees/` 配下を「登録済み（`git worktree list --porcelain`、clean/dirty/locked）」「孤児（登録簿に存在しないが実在するディレクトリ）」に分類し棚卸し表を出力する。既定 dry-run、`--apply` で孤児のみ退避（`_/worktree-salvage/<dirname>.tar.gz`、`--no-salvage` でスキップ可）・削除・`git worktree prune` を実行する（イシュー #221） | CI からは呼ばれない（本体はディスク一括削除を伴うため self-hosted runner の負荷対象外）。セルフテストのみ CI 化 |
+| `regression-injection-verify.sh` | NFR-8「注入リグレッション検知率 90% 以上」の実装フェーズ確定検証ハーネス（#238）。`docs/reports/nfr8-injection-patches/R-*.diff`（既知の破壊的変更 12 件、`docs/reports/nfr8-injection-case-definitions.md` で選定根拠を確定）を使い捨て `git worktree` へ 1 件ずつ適用し、対象クレートで clippy / cargo-nextest / doc test を実行して検知可否を判定する。`metric=injection_detection_rate pass=.. fail=.. pending=0 total=..` 形式のサマリを出力し、検知率 90% 未満またはパッチ適用不能ケースがあれば非 0 終了する（フェイルクローズ） | CI には常設追加しない（重量ビルドを 12 回伴うため。self-hosted runner の負荷抑制規約、`.claude/rules/ci.md`）。実測は手動実行し結果をレポートへ記録する |
+| `tests/run-regression-injection-tests.sh` | `regression-injection-verify.sh` のセルフテスト。`tests/fixtures/regression-injection/stub-gate.sh` を `--gate-cmd` 注入し、cargo 非依存で検知率集計・閾値判定・タイムアウト扱い・パッチ適用失敗のフェイルクローズを検証する（実際の検知率実測とは別物。本体の実測は上記コマンドを直接実行する） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `tests/run-clean-worktrees-tests.sh` | `clean-worktrees.sh` のセルフテスト（一時 git リポジトリで登録済み clean/dirty・孤児を再現、ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 
 ## 前提ツール

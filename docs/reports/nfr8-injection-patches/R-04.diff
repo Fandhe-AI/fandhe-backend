@@ -1,0 +1,13 @@
+diff --git a/crates/http/src/connection.rs b/crates/http/src/connection.rs
+index c1893a3..fdb96d8 100644
+--- a/crates/http/src/connection.rs
++++ b/crates/http/src/connection.rs
+@@ -131,7 +131,7 @@ pub fn should_keep_alive(head: &RequestHead) -> bool {
+     let has_close = || tokens().any(|token| token.eq_ignore_ascii_case("close"));
+ 
+     match head.version {
+-        HttpVersion::Http11 => !has_close(),
++        HttpVersion::Http11 => has_close(),
+         // HTTP/1.0 はデフォルトが close なので `keep-alive` トークンが必要だが、
+         // `Connection: keep-alive, close` のように両方が指定された場合は
+         // `close` を優先して接続を閉じる（明示的な close 指定は他のトークン

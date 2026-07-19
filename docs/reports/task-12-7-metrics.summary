@@ -30,3 +30,10 @@ metric=evidence_rate pass=6 fail=0 pending=0 total=6
 #       保守的に採用する（一次機械ゲートのみの 10/10=100% は参考値。T-06/T-08 は
 #       無変更提出のため「修正を得られた」とみなさない fail-closed 側の集計）。
 metric=auto_fix_rate pass=8 fail=2 pending=0 total=10
+
+# 出典: docs/reports/nfr8-injection-detection-verification.md（#238、TASK-12.6 の後続、
+#       NFR-8「注入リグレッション検知率」の実装フェーズ確定検証）
+#       実測日 2026-07-19、起点コミット 54e87a7、ケース定義
+#       docs/reports/nfr8-injection-case-definitions.md（R-01〜R-12、計測より先行コミット）
+#       注入リグレッション検知率 12/12（100%）
+metric=injection_detection_rate pass=12 fail=0 pending=0 total=12

@@ -1,0 +1,13 @@
+diff --git a/crates/http/src/request.rs b/crates/http/src/request.rs
+index 6c2862c..b0bb279 100644
+--- a/crates/http/src/request.rs
++++ b/crates/http/src/request.rs
+@@ -216,7 +216,7 @@ pub fn parse_request_head(buf: &[u8]) -> Result<ParseOutcome, ParseError> {
+ 
+     let mut headers: Vec<(String, String)> = Vec::new();
+     for line in lines {
+-        if headers.len() >= MAX_HEADER_COUNT {
++        if headers.len() > MAX_HEADER_COUNT {
+             return Err(ParseError::TooManyHeaders);
+         }
+         headers.push(parse_header_line(line)?);

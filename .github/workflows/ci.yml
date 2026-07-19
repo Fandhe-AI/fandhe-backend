@@ -401,6 +401,13 @@ jobs:
       - name: run-clean-worktrees-tests.sh（clean-worktrees.sh のセルフテスト、#221）
         run: bash scripts/tests/run-clean-worktrees-tests.sh
 
+      # イシュー #238: NFR-8 注入リグレッション検知ハーネスのセルフテスト。本体
+      # （regression-injection-verify.sh）は 12 ケース分の cargo フルビルドを伴い重い
+      # ため CI には組み込まず（.claude/rules/ci.md の self-hosted 負荷抑制規約）、
+      # スタブゲート注入でロジックのみを検証するセルフテストを常設する。
+      - name: run-regression-injection-tests.sh（regression-injection-verify.sh のセルフテスト、#238）
+        run: bash scripts/tests/run-regression-injection-tests.sh
+
       # TASK-1.5（#14）: server → routes → http::* の依存方向一方向性を機械検証する。
       - name: dep-direction-check.sh（依存方向一方向性の機械検証）
         run: bash scripts/dep-direction-check.sh

@@ -1,0 +1,18 @@
+diff --git a/crates/routes/src/pattern.rs b/crates/routes/src/pattern.rs
+index 01d3430..bb1f62e 100644
+--- a/crates/routes/src/pattern.rs
++++ b/crates/routes/src/pattern.rs
+@@ -265,12 +265,7 @@ pub(crate) fn match_segments<'a>(
+                 }
+             }
+             Segment::Param(name) => {
+-                if value.is_empty()
+-                    || *value == "."
+-                    || *value == ".."
+-                    || value.contains('?')
+-                    || value.contains('#')
+-                {
++                if value.is_empty() || value.contains('?') || value.contains('#') {
+                     return None;
+                 }
+                 params.push((name.clone(), *value));
