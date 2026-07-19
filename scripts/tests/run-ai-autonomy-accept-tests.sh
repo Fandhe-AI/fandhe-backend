@@ -19,13 +19,22 @@ ACCEPT_SCRIPT="${SCRIPTS_DIR}/accept/ai-autonomy-accept.sh"
 # 受けないようにする（Issue #218 で D-2/F が実測 FAIL 確定した際のハーミシティ修正）。
 EMPTY_REPORTS_DIR="$(mktemp -d)"
 
+# ケース 14（フル実行）のログ出力先。共有 /tmp の固定パスはシンボリックリンク攻撃・
+# 情報漏えいの理論的リスクがあるため mktemp（予測不能名・0600）で生成する
+# （#229、#218 監査指摘）。失敗時（FAIL あり）はログを残し、fail メッセージが指す
+# パスを事後に確認できるようにする（ai-autonomy-accept.sh 側の cleanup 方針を踏襲）。
+FULL_RUN_LOG="$(mktemp)"
+
 # bash の EXIT trap は単一ハンドラのため、後続ケースが個別に trap を張ると先の
 # 登録が上書きされて一時ディレクトリが残留する（PR #230 review 4730615163 指摘）。
-# trap 経由で消す一時ディレクトリはすべてこの関数に集約し、登録は 1 回に限る。
+# trap 経由で消す一時ディレクトリ・ログはすべてこの関数に集約し、登録は 1 回に限る。
 cleanup_temp_dirs() {
     rm -rf "${EMPTY_REPORTS_DIR}"
     if [ -n "${TRIALS_OK_DIR:-}" ]; then
         rm -rf "${TRIALS_OK_DIR}"
+    fi
+    if [ "${FAIL_COUNT:-0}" -eq 0 ]; then
+        rm -f "${FULL_RUN_LOG}"
     fi
 }
 trap cleanup_temp_dirs EXIT
@@ -246,13 +255,13 @@ fi
 #     workspace の実測状態（Issue #218 で D-2/F が実測 FAIL 確定）に依存させない。
 #     exit 2 以上（引数・パースエラー等の異常終了）とサマリー欠落のみを失敗とする ---
 set +e
-bash "${ACCEPT_SCRIPT}" >/tmp/ai-autonomy-accept-selftest-full-run.log 2>&1
+bash "${ACCEPT_SCRIPT}" >"${FULL_RUN_LOG}" 2>&1
 full_status=$?
 set -e
-if [ "${full_status}" -le 1 ] && grep -q "受け入れ検証サマリー" /tmp/ai-autonomy-accept-selftest-full-run.log; then
-    pass "フル実行（workspace 実データ）がサマリーまで完走（exit ${full_status}。詳細: /tmp/ai-autonomy-accept-selftest-full-run.log）"
+if [ "${full_status}" -le 1 ] && grep -q "受け入れ検証サマリー" "${FULL_RUN_LOG}"; then
+    pass "フル実行（workspace 実データ）がサマリーまで完走（exit ${full_status}。詳細: ${FULL_RUN_LOG}）"
 else
-    fail "フル実行（workspace 実データ）が異常終了またはサマリー欠落（exit ${full_status}。詳細: /tmp/ai-autonomy-accept-selftest-full-run.log）"
+    fail "フル実行（workspace 実データ）が異常終了またはサマリー欠落（exit ${full_status}。詳細: ${FULL_RUN_LOG}）"
 fi
 
 echo ""
