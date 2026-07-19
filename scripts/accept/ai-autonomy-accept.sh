@@ -76,15 +76,22 @@ done
 # 理論的リスクがあるため mktemp（予測不能名・0600）で生成する（#229、#218 監査指摘）。
 # 失敗時（exit 非 0）はログを残し、FAIL/SKIP メッセージが指すパスを事後に確認できる
 # ようにする（third-party-verify.sh の cleanup 方針を踏襲、Issue #85）。
-STABILITY_LOG="$(mktemp)"
-GRAY_LOG="$(mktemp)"
+#
+# 1 回目の mktemp 直後に空変数で trap を仮登録してから値を設定する。2 回目の
+# mktemp（GRAY_LOG）が /tmp 枯渇等ごく稀な事情で失敗した場合でも、1 回目に作成
+# 済みの STABILITY_LOG が cleanup 対象から漏れないようにするため（Review 指摘、#229）。
+GRAY_LOG=""
+STABILITY_LOG=""
 cleanup() {
     local rc=$?
     if [ "${rc}" -eq 0 ]; then
-        rm -f "${STABILITY_LOG}" "${GRAY_LOG}"
+        [ -n "${STABILITY_LOG}" ] && rm -f "${STABILITY_LOG}"
+        [ -n "${GRAY_LOG}" ] && rm -f "${GRAY_LOG}"
     fi
 }
 trap cleanup EXIT
+STABILITY_LOG="$(mktemp)"
+GRAY_LOG="$(mktemp)"
 
 # ---------------------------------------------------------------------------
 # 台帳パーサ（fail-closed、third-party-stability-aggregate.sh のパーサ設計を踏襲）
