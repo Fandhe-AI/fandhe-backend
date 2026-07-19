@@ -250,6 +250,24 @@ TASK-12.4-2 初版と同一の理由（1 節・7 節フォールバック参照�
 [`task-12-6-gray-zone-verification.md`](../reports/task-12-6-gray-zone-verification.md)
 に PENDING として記録し、人間へ引き継ぐ。
 
+**v1 実測（2026-07-19、Issue #218）**: 独立セッションを起動できる別エージェントが 3 役
+分離（調整役 + タスクごと独立被験サブエージェント + 機械採点ハーネス）で実測定を実施した
+（[`task-12-6-gray-zone-verification.md`](../reports/task-12-6-gray-zone-verification.md)
+5・6 節）。結果は 4 値厳密一致 4/10（40%、REQ-12 閾値 80% 未達）、2 値一致 8/10、危険側
+誤判定・自己承認・誤判定破壊は 0 件。誤りはすべて隣接区分への保守側一段シフト（可→条件
+付き可 2 件、条件付き可→不可・要エスカレーション 4 件）だった。
+
+**v2 再測定（Issue #227）**: v1 実測を踏まえ、[`feasibility-guardrail.md`](./feasibility-guardrail.md)
+6.1・6.2 節へ「条件付き可」と隣接区分の境界判別手順を明文化した。加えて G-01・G-02 は
+タスク文面の前提崩れ（Issue #228 で確定・是正）を v2 文面へ差し替え済み。本イシュー
+（#227）の実装セッションは境界基準の明文化・タスク文面 v2 の反映確認までを担い、
+v2 文面・更新後規約に対する再測定は、本イシュー実装セッションが独立被験サブエージェントを
+起動する手段を持たないため、TASK-12.4-2・v1 実測と同一原則（検証者=被験 AI のバイアス
+回避）により実施しない。再測定結果は
+[`task-12-6-gray-zone-verification.md`](../reports/task-12-6-gray-zone-verification.md)
+8 節に PENDING として記録し、人間または独立セッションを起動できる別エージェントへ
+引き継ぐ。
+
 ## 関連ドキュメント
 
 - 基底プロトコル: [`third-party-feasibility-verification.md`](./third-party-feasibility-verification.md)

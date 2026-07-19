@@ -61,6 +61,13 @@ bash scripts/tests/run-ai-autonomy-accept-tests.sh
 - **F（グレーゾーン）= FAIL の扱い**: 危険側誤判定・破壊・自己承認は 0 件で fail-closed
   特性は維持されているが、「条件付き可」の 4 値弁別が 40% にとどまる。判定規約の境界
   基準明確化・タスク設計時の前提事前検証強化が是正候補（別 Issue として切り出す）。
+  Issue #227 で境界基準（[`feasibility-guardrail.md`](../design/feasibility-guardrail.md)
+  6.1・6.2 節）を明文化し、G-01/G-02 のタスク文面前提崩れも Issue #228 で v2 へ差し替え
+  済みだが、**v2 文面・更新後規約に対する再測定は独立被験サブエージェントを起動できない
+  制約により PENDING のまま**（実施手順は
+  [`task-12-6-gray-zone-verification.md`](../reports/task-12-6-gray-zone-verification.md)
+  8 節）。新たな実測データが存在しないため、基準 8 の判定は本表のとおり **FAIL のまま
+  維持する**（4 値厳密一致 4/10・40% を確定値として不変）。
 - 被験 AI は Claude ファミリーに限られる（TASK-12.4-1／TASK-12.4-2／TASK-12.5／TASK-12.6
   と同一の既知の限界）。隔離はファイル削除 + 指示による運用であり、サンドボックスに
   よる強制ではない。
