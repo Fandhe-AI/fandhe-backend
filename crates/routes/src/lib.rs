@@ -47,7 +47,16 @@
 //! パラメータルートにも踏襲する）。加えてパス走査・過剰キャプチャ対策として、
 //! `{name}` は値が `.` / `..` と一致するセグメント、および `?` / `#` を含む
 //! セグメントには一致しない（不一致 = フェイルクローズで 404 側に倒す）。
-//! クエリ文字列の分離パース自体は本クレートのスコープ外（out-of-scope-tracking 対象）。
+//!
+//! パス照合は [`fandhe_backend_http::request::RequestHead::path`]（`target` 中の最初の
+//! `?` より前）に対して行い、クエリ文字列は [`fandhe_backend_http::request::RequestHead::query`]
+//! でハンドラが参照する（イシュー #258、`/search?q=...` のようなクエリ付きリクエストが
+//! 静的・パラメータ両方のルートに一致できるようにするための対応）。静的ルート照合・
+//! パラメータルート照合・405 の `Allow` 集約の 3 経路はすべて同一の `path()` を参照し、
+//! 経路間でパース結果が食い違わないようにする。`match_segments` の `?` / `#` 拒否は
+//! `path()` 分離後は通常到達しないが、多層防御として維持する。`Router::route` で
+//! 登録する `path` 自体に `?` を含めた場合、リクエスト側は常に `path()` で分離される
+//! ため当該ルートは到達不能になる（[`Router::route`] の doc comment 参照）。
 //!
 //! # フェイルクローズ
 //!
@@ -154,6 +163,11 @@ impl Router {
     /// 同一 `(method, path)` を複数回登録した場合は最後の登録が有効になる
     /// （`HashMap` の上書き挙動をそのまま踏襲する。起動時構築のみを想定するため
     /// 警告ログ等は出さない）。
+    ///
+    /// `path` にはクエリ文字列（`?` 以降）を含めないこと。`dispatch` はリクエスト
+    /// 側の `target` を常に [`fandhe_backend_http::request::RequestHead::path`]
+    /// （最初の `?` より前）に分離してから照合するため、`path` 引数に `?` を
+    /// 含めて登録したルートはリクエスト側と一致せず到達不能になる（イシュー #258）。
     ///
     /// ```
     /// use fandhe_backend_routes::Router;
@@ -278,7 +292,10 @@ impl Router {
         // 1. 静的ルート（完全一致）を最優先で照合する。既存の HashMap ルックアップに
         //    手を加えていないため、パラメータルート追加前後でこの経路の挙動・性能は
         //    変わらない（後方互換、モジュール doc「マッチング方針」節）。
-        if let Some(handler) = self.routes.get(&(head.method.clone(), head.target.clone())) {
+        if let Some(handler) = self
+            .routes
+            .get(&(head.method.clone(), head.path().to_string()))
+        {
             return handler(head, body);
         }
 
@@ -290,7 +307,7 @@ impl Router {
         //    `request_target_segments` が `None` を返し、パラメータルート照合を
         //    一切行わない（fail-closed、`pattern` モジュール doc参照）。
         let mut param_methods: Vec<String> = Vec::new();
-        if let Some(target_segments) = pattern::request_target_segments(&head.target) {
+        if let Some(target_segments) = pattern::request_target_segments(head.path()) {
             for param_route in &self.param_routes {
                 let Some(params) = pattern::match_segments(&param_route.segments, &target_segments)
                 else {
@@ -309,7 +326,7 @@ impl Router {
         let registered_methods: Vec<String> = self
             .routes
             .keys()
-            .filter(|(_, target)| target == &head.target)
+            .filter(|(_, target)| target == head.path())
             .map(|(method, _)| method.clone())
             .chain(param_methods)
             .collect();

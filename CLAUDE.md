@@ -49,7 +49,10 @@ fandhe-backend/
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。chunked
 │   │                                    # Transfer-Encoding 対応（sans-IO `ChunkedDecoder`、
-│   │                                    # DoS 上限・fuzz target 追加、イシュー #181）
+│   │                                    # DoS 上限・fuzz target 追加、イシュー #181）。`RequestHead::path`
+│   │                                    # / `query` でクエリ文字列を分離し `Router::dispatch` の
+│   │                                    # パス照合をクエリ付きリクエストに対応させる（/search 前提整備、
+│   │                                    # イシュー #258）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
