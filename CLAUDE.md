@@ -60,10 +60,13 @@ fandhe-backend/
 │   │                                    # `crates/core` の `webrtc` feature 経由で配線。攻撃表面が大きいため
 │   │                                    # `plugin-webrtc-proxy` が MVP 推奨、クレート境界で完全分離）
 │   ├── plugin-graphql                 # GraphQL プラグイン（パスインターセプト型、TASK-2.4、#21 で境界確立。
-│   │                                    # REQ-2 の「2 種のプラグイン着脱」受け入れ基準を webrtc-proxy と共に
-│   │                                    # 実証する第 2 インスタンス。TASK-5.1、#38 で async-graphql による
-│   │                                    # 実クエリ実行へ実装。`Server::graphql` にスキーマ登録した場合のみ
-│   │                                    # `POST /graphql` を処理し、未登録時は feature 有効でもフォールスルー）
+│   │                                    # REQ-2 の「2 種のプラグイン着脱」受け入れ基準は当初 webrtc-proxy と
+│   │                                    # 共に実証（#21。実 WebSocket が並行実装中だったための代替ペア）、
+│   │                                    # 現在は仕様が名指しする websocket と共に実ペアで再実証済み
+│   │                                    # （イシュー #261、`docs/acceptance/req2-plugin-mechanism.md`）。
+│   │                                    # TASK-5.1、#38 で async-graphql による実クエリ実行へ実装。
+│   │                                    # `Server::graphql` にスキーマ登録した場合のみ `POST /graphql` を
+│   │                                    # 処理し、未登録時は feature 有効でもフォールスルー）
 │   ├── plugin-openapi                 # OpenAPI ドキュメント生成プラグイン（ApiDoc + utoipa::path 定義、TASK-3.1、#30。
 │   │                                   # gen-openapi CLI・openapi.json 静的埋め込み、TASK-3.2、#31）
 │   ├── plugin-websocket                # WebSocket プラグイン（RFC 6455 ハンドシェイク検証・101 応答・
