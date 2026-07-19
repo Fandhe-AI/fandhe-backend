@@ -58,7 +58,7 @@ fn demo_schema() -> GraphQlConfig {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
     let router = Router::new().route("GET", "/", |_head, _body| {
-        Response::new(200, b"backend-framework: graphql nfr6 example\n".to_vec())
+        Response::new(200, b"fandhe-backend: graphql nfr6 example\n".to_vec())
     });
 
     let server = Server::new().handler(router).graphql(demo_schema());

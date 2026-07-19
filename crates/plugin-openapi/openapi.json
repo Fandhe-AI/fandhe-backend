@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "backend-framework OpenAPI",
+    "title": "fandhe-backend OpenAPI",
     "description": "TASK-3.1（REQ-3）: ドキュメント専用関数 + utoipa 統合による OpenAPI 自動生成の最小エンドポイント定義",
     "license": {
       "name": "MIT OR Apache-2.0",

@@ -38,7 +38,7 @@ issue 実装ワークフロー下の host contention により以下の状態で
 
 ### 3.1 相互排他（flock）
 
-`FANDHE_BACKEND_NFR6_LOCK`（既定 `/tmp/backend-framework-nfr6-bench.lock`）に対する `flock` で
+`FANDHE_BACKEND_NFR6_LOCK`（既定 `/tmp/fandhe-backend-nfr6-bench.lock`）に対する `flock` で
 ホストグローバルな相互排他を行う。並列 worktree の同一スクリプト同士が同時に計測しない
 ことを保証する。
 

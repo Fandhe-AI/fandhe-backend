@@ -10,9 +10,9 @@
 
 以下がすべて完了するまで、本ドキュメントの手順 2 節以降は実行しない。
 
-1. **正式名称の確定**: 現状 `backend-framework` は仮称（
-   [`docs/spec/01-brainstorm.md`](../spec/01-brainstorm.md) の残課題）。crates.io の
-   ネームスクワッティング抑止ポリシー上、名称未確定のまま名前を予約すべきではない
+1. **正式名称の確定**: `fandhe-backend` に確定済み（#200、
+   [`docs/design/framework-naming.md`](./framework-naming.md) 参照。crate/import 改名は
+   #202・PR #209 で反映済み）。本ブロッカーは解消済み
 2. **リポジトリの public 化**: 現状 `PRIVATE`（`gh repo view` で確認）。OSS として公開する
    判断が正式に下されてから public 化する
 3. **公開対象クレートの最終選定**: 4 節の区分表をレビューで確定させる
@@ -30,7 +30,7 @@
   ```
 
 - 確認対象は 4 節の公開予定クレート名すべて（`fandhe-backend-http` / `fandhe-backend-routes` /
-  `fandhe-backend-core` 等、正式名称確定後に改名される可能性がある）
+  `fandhe-backend-core` 等）
 
 ## 3. 所有権
 

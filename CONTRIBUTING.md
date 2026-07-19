@@ -1,6 +1,6 @@
 # CONTRIBUTING
 
-backend-framework への貢献ありがとうございます。本ドキュメントは Issue 起票からマージ
+fandhe-backend への貢献ありがとうございます。本ドキュメントは Issue 起票からマージ
 までの開発フロー・規約をまとめたものです。詳細な運用ルールは `.claude/rules/` に
 機械可読な形で定義されているため、AI エージェントで開発する場合はそちらも参照してください。
 
@@ -14,7 +14,7 @@ backend-framework への貢献ありがとうございます。本ドキュメ�
 - 仕様書は `docs/spec/` に submodule として取り込んでいます。クローン時は次のいずれかで取得してください。
 
 ```bash
-git clone --recurse-submodules git@github.com:Fandhe-AI/backend-framework.git
+git clone --recurse-submodules git@github.com:Fandhe-AI/fandhe-backend.git
 # 既存クローンの場合
 git submodule update --init
 ```

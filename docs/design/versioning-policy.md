@@ -1,8 +1,8 @@
 # バージョニング方針（semver・破壊的変更ポリシー）
 
-- **対応イシュー**: [#96](https://github.com/Fandhe-AI/backend-framework/issues/96)「バージョニング方針
+- **対応イシュー**: [#96](https://github.com/Fandhe-AI/fandhe-backend/issues/96)「バージョニング方針
   （semver・破壊的変更ポリシー）の策定」
-- **出典**: [#91](https://github.com/Fandhe-AI/backend-framework/issues/91) スコープ外トラッキング
+- **出典**: [#91](https://github.com/Fandhe-AI/fandhe-backend/issues/91) スコープ外トラッキング
   「運用面の欠落」（本体の semver 運用・破壊的変更ポリシー・サポートポリシーが `docs/spec/**` にも
   `docs/design/**` にも存在しない）
 - **ステータス**: ドラフト（自動運転モードでの実装であるため、本ドキュメントは安全側の保守的判断として
@@ -60,8 +60,8 @@ Cargo 慣行どおり、現行の `0.y.z` では **`y` が実質 major**（破�
 
 1. `docs/spec/06-roadmap.md` の MS-1〜MS-6 が完了していること
 2. 各マイルストーンの受け入れ検証（`docs/acceptance/**`）が充足していること
-3. [#94](https://github.com/Fandhe-AI/backend-framework/issues/94)（OSS 公開準備・crates.io）・
-   [#95](https://github.com/Fandhe-AI/backend-framework/issues/95)（Getting Started）が完了していること
+3. [#94](https://github.com/Fandhe-AI/fandhe-backend/issues/94)（OSS 公開準備・crates.io）・
+   [#95](https://github.com/Fandhe-AI/fandhe-backend/issues/95)（Getting Started）が完了していること
 
 ## 3. 破壊的変更の定義（何が公開 API か）
 
@@ -91,7 +91,7 @@ Cargo 慣行どおり、現行の `0.y.z` では **`y` が実質 major**（破�
 2. 可能な限り `#[deprecated]` による **1 リリース以上の非推奨期間**を挟む 2 段階
    （deprecate → remove）で進める。即時削除は緊急のセキュリティ対応等やむを得ない場合に限る
 3. 変更内容・移行手順をリリースノートに記載する。CHANGELOG 運用そのものの整備は
-   [#94](https://github.com/Fandhe-AI/backend-framework/issues/94) と調整する
+   [#94](https://github.com/Fandhe-AI/fandhe-backend/issues/94) と調整する
 
 ## 5. サポートポリシー
 
@@ -125,10 +125,10 @@ Cargo 慣行どおり、現行の `0.y.z` では **`y` が実質 major**（破�
 
 ## 8. 関連・スコープ外
 
-- **[#94](https://github.com/Fandhe-AI/backend-framework/issues/94)**（OSS 公開準備・crates.io）:
+- **[#94](https://github.com/Fandhe-AI/fandhe-backend/issues/94)**（OSS 公開準備・crates.io）:
   `crates/core` の `publish = false` 未設定（他クレートと不揃い）の是正・crates.io 公開手順そのものは
   同イシューのスコープ
-- **[#95](https://github.com/Fandhe-AI/backend-framework/issues/95)**（Getting Started）:
+- **[#95](https://github.com/Fandhe-AI/fandhe-backend/issues/95)**（Getting Started）:
   v1.0 昇格基準の前提の一つ
 - **[`webrtc-rs-version-strategy.md`](./webrtc-rs-version-strategy.md)**（TASK-8.3）: 独立 WebRTC サービス側が
   依存する `webrtc-rs` のバージョン戦略。本ドキュメント（フレームワーク本体の semver）とは別軸であり、

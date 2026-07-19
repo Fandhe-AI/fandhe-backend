@@ -1,6 +1,6 @@
 # Rust コーディング規約
 
-backend-framework は「最小コア + Cargo feature 駆動プラグイン」を核とする Rust cargo workspace。
+fandhe-backend は「最小コア + Cargo feature 駆動プラグイン」を核とする Rust cargo workspace。
 軽量・高速・高並行・攻撃表面最小を最優先する。
 
 ## エディション・ツールチェーン

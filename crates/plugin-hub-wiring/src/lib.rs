@@ -84,7 +84,7 @@
 //! （既存の `serde` / `serde_json` のみを使用）。実 micro-service-hub PoC-13
 //! 標準とのフィールド厳密整合の最終確認は [#97] で行う。
 //!
-//! [#97]: https://github.com/Fandhe-AI/backend-framework/issues/97
+//! [#97]: https://github.com/Fandhe-AI/fandhe-backend/issues/97
 
 pub mod audit;
 pub mod auth;

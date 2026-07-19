@@ -1,6 +1,6 @@
 # Getting Started
 
-backend-framework をクローンしてから最小サーバを起動し、動作確認するまでの最短手順です。
+fandhe-backend をクローンしてから最小サーバを起動し、動作確認するまでの最短手順です。
 
 ## 前提
 
@@ -12,8 +12,8 @@ backend-framework をクローンしてから最小サーバを起動し、動�
 ## 1. クローン
 
 ```bash
-git clone --recurse-submodules git@github.com:Fandhe-AI/backend-framework.git
-cd backend-framework
+git clone --recurse-submodules git@github.com:Fandhe-AI/fandhe-backend.git
+cd fandhe-backend
 ```
 
 既存クローンに submodule が入っていない場合は次で取り込めます。

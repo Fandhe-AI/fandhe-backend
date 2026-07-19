@@ -1,4 +1,4 @@
-//! backend-framework の OpenAPI ドキュメント生成プラグイン（TASK-3.1、REQ-3【Must】）。
+//! fandhe-backend の OpenAPI ドキュメント生成プラグイン（TASK-3.1、REQ-3【Must】）。
 //!
 //! 拡張点対応: 非該当（理由の参照: docs/design/dependency-graph-contract.md）
 //! （ビルド時生成でランタイム拡張点を使わない。理由の実体は

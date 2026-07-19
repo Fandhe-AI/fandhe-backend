@@ -32,7 +32,7 @@ use fandhe_backend_routes::Router;
 async fn main() -> std::io::Result<()> {
     let router = Router::new()
         .route("GET", "/", |_head, _body| {
-            Response::new(200, b"backend-framework: minimal example\n".to_vec())
+            Response::new(200, b"fandhe-backend: minimal example\n".to_vec())
         })
         .route("GET", "/health", |_head, _body| {
             Response::new(200, b"ok\n".to_vec())

@@ -40,7 +40,7 @@ set -uo pipefail
 
 # 専有ロックファイルの既定パス。env で上書き可能（並列 worktree でロック対象を
 # 分離したい場合や、`/tmp` 以外の専有ディレクトリを使いたい場合に指定する）。
-FANDHE_BACKEND_NFR6_LOCK="${FANDHE_BACKEND_NFR6_LOCK:-/tmp/backend-framework-nfr6-bench.lock}"
+FANDHE_BACKEND_NFR6_LOCK="${FANDHE_BACKEND_NFR6_LOCK:-/tmp/fandhe-backend-nfr6-bench.lock}"
 # 静穏とみなす 1 分 loadavg の上限（nproc に対する絶対値ではなく固定閾値。
 # 既定 1.0 は「ほぼアイドル」を意味する保守的な値。env で上書き可能）。
 LOAD1_MAX="${LOAD1_MAX:-1.0}"

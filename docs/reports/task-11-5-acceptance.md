@@ -1,5 +1,9 @@
 # TASK-11.5 受け入れテスト実行結果レポート
 
+> 注記: 本レポートは 2026-07 の crate・import 一括改名（#202）以前の実測記録であり、
+> 旧クレート名（`backend-framework-core` / `bf-http` / `bf-plugin-*` 等）表記のまま
+> 保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
+
 Issue #78（TASK-11.5-2）の成果物。`scripts/coverage.sh`・`scripts/accept-task-11-5.sh` に
 よる TASK-11.5（#37、`docs/spec/05-tasks.md`）受け入れ確認の実行結果を記録する。
 

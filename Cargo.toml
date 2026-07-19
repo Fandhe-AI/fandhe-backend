@@ -1,4 +1,4 @@
-# backend-framework の cargo workspace ルート定義（仮想 workspace）。
+# fandhe-backend の cargo workspace ルート定義（仮想 workspace）。
 #
 # TASK-1.1（docs/spec/05-tasks.md）時点のクレート分割方針:
 #   - crates/core    : 最小コア（HTTP/1.1 パーサ・3 拡張点 Middleware/UpgradeHandler/RequestGate）。
@@ -30,7 +30,7 @@ exclude = ["crates/http/fuzz"]
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/Fandhe-AI/backend-framework"
+repository = "https://github.com/Fandhe-AI/fandhe-backend"
 
 # workspace 全体の lint 既定値。各クレートの Cargo.toml で
 # `[lints] workspace = true` を指定して継承する。

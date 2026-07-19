@@ -244,7 +244,7 @@ REQ-8（WebRTC）受け入れ基準・NFR-6（拡張の非侵襲性）を満た�
 
 ### 背景: 2 クレートの対照
 
-backend-framework は WebRTC を 2 つの独立クレートで提供し、**クレート境界で完全に
+fandhe-backend は WebRTC を 2 つの独立クレートで提供し、**クレート境界で完全に
 分離**する（相互 path 依存なし。`docs/dep-impact/records.md` の TASK-8.4 エントリで
 機械検証済み）。
 

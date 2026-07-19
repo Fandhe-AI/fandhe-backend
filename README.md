@@ -1,13 +1,10 @@
-# backend-framework
+# fandhe-backend
 
 AI によるセキュリティ脆弱性発見リスクに備え、Rust で新規構築する軽量・高速・高並行なバックエンドフレームワークです。axum 級の性能を目標に、プラグインによる拡張（WebRTC / WebSocket）、多様な通信規格（GraphQL / tRPC）、OpenAPI 自動生成・容易なロギングを備えます。
 
-> リポジトリ名は仮称（`backend-framework`）のままですが、正式名称は
-> **`fandhe-backend`** に確定しました（決定経緯・可用性証跡・新旧マッピング・
-> 段階的移行計画は
+> 正式名称は **`fandhe-backend`** に確定しています（決定経緯・可用性証跡・
+> 新旧マッピングは
 > [`docs/design/framework-naming.md`](./docs/design/framework-naming.md) 参照）。
-> crate 名・リポジトリ名等への反映は同ドキュメントの計画（#200 改名ツリー）に
-> 従い順次進めます。
 
 ## Getting Started
 
@@ -18,10 +15,10 @@ feature 構成別のサンプル（websocket / graphql / webrtc 系 / tracing / 
 
 ## 仕様
 
-仕様書（ブレスト〜PoC〜要件定義〜タスク分解〜ロードマップ）は [Fandhe-AI/backend-framework-spec](https://github.com/Fandhe-AI/backend-framework-spec) で管理し、`docs/spec/` にサブモジュールとして取り込んでいます。
+仕様書（ブレスト〜PoC〜要件定義〜タスク分解〜ロードマップ）は [Fandhe-AI/fandhe-backend-spec](https://github.com/Fandhe-AI/fandhe-backend-spec) で管理し、`docs/spec/` にサブモジュールとして取り込んでいます。
 
 ```bash
-git clone --recurse-submodules git@github.com:Fandhe-AI/backend-framework.git
+git clone --recurse-submodules git@github.com:Fandhe-AI/fandhe-backend.git
 # 既存クローンの場合
 git submodule update --init
 ```

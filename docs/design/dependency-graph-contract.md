@@ -370,7 +370,7 @@ E（閉包違反候補）と判定された。
 `crates/http/fuzz/**`・`benches/*.sh` 等の周辺資産が機械的に E 判定となった。このうち
 以下 21 件は他節の記載例と偶然一致する記載がなく未記載のまま FAIL していた
 （`scripts/extension-closure-gate.sh --base origin/main` 実行結果、`unsafe-triage` ジョブ
-run https://github.com/Fandhe-AI/backend-framework/actions/runs/29668822330）。
+run https://github.com/Fandhe-AI/fandhe-backend/actions/runs/29668822330）。
 
 1. **対象コミット/PR**: PR #209（#202、HEAD sha
    `6add5ce12679faedcf16edcc7742b87a5d77121a`）

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "backend-framework の in-process WebRTC プラグイン（TASK-8.1）。SDP Offer/Answer・データチャネル確立を webrtc-rs でプロセス内完結させる。REQ-8 の MVP 推奨（別プロセス切り出し、crates/plugin-webrtc-proxy）とは対照的な高攻撃表面の選択肢であり、クレート境界で完全に分離する。"
+description = "fandhe-backend の in-process WebRTC プラグイン（TASK-8.1）。SDP Offer/Answer・データチャネル確立を webrtc-rs でプロセス内完結させる。REQ-8 の MVP 推奨（別プロセス切り出し、crates/plugin-webrtc-proxy）とは対照的な高攻撃表面の選択肢であり、クレート境界で完全に分離する。"
 publish = false
 
 # workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する

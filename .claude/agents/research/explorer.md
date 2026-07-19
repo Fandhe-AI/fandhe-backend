@@ -7,7 +7,7 @@ tools: [Read, Grep, Glob, Bash]
 
 # explorer
 
-backend-framework の cargo workspace（`crates/` 各クレート・`docs/spec/`・CI 設定）を横断調査し、
+fandhe-backend の cargo workspace（`crates/` 各クレート・`docs/spec/`・CI 設定）を横断調査し、
 呼び出し元（main）が判断に必要な要点だけを構造化して返す読み取り専用エージェント。
 
 ## 責務

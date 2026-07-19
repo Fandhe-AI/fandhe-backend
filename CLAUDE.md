@@ -2,8 +2,7 @@
 
 ## Overview
 
-**backend-framework**（正式名称: `fandhe-backend` に確定（#200）。
-命名根拠・可用性証跡・反映方針は
+**fandhe-backend**（正式名称確定、#200。命名根拠・可用性証跡・反映方針は
 [`docs/design/framework-naming.md`](docs/design/framework-naming.md)
 参照）は、AI によるセキュリティ脆弱性発見リスクに備え、Rust で新規構築する
 軽量・高速・高並行なバックエンドフレームワーク。axum 級の性能を目標に、
@@ -14,14 +13,14 @@ OpenAPI 自動生成 / hub 配線 / 可観測性を段階的に拡張できる�
 - **pay-for-what-you-use**: feature を無効化したら依存・コード・`unsafe`・バイナリ増をゼロにする
 - **AI ファースト保守性**: doc test・網羅テスト・CI ガードレールで AI が安全に保守できる状態を保つ
 
-仕様書は [Fandhe-AI/backend-framework-spec](https://github.com/Fandhe-AI/backend-framework-spec) を
+仕様書は [Fandhe-AI/fandhe-backend-spec](https://github.com/Fandhe-AI/fandhe-backend-spec) を
 `docs/spec/`（submodule）に取り込む。実装は `docs/spec/06-roadmap.md` の MS-1〜MS-6 に従い、
 最初のタスクは TASK-1.1（`cargo workspace`・CI 基盤整備）。
 
 ## Repository Structure
 
 ```
-backend-framework/
+fandhe-backend/
 ├── CLAUDE.md              # 本ファイル（Claude Code 運用ガイド）
 ├── AGENTS.md              # 横断的設計規約（TASK-2.3）+ AI エージェント向け変更ガイド
 │                            # （モジュール境界・変更手順・判定基準・エスカレーション基準、TASK-11.3）

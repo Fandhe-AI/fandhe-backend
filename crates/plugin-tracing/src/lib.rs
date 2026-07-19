@@ -1,4 +1,4 @@
-//! backend-framework の可観測性（トレーシング）プラグイン（TASK-10.1、REQ-10）。
+//! fandhe-backend の可観測性（トレーシング）プラグイン（TASK-10.1、REQ-10）。
 //!
 //! 拡張点対応: Middleware
 //! （拡張点定義: `crates/core/src/extension.rs`）

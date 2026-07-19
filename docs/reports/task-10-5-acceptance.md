@@ -1,5 +1,9 @@
 # TASK-10.5 受け入れテスト実行結果レポート
 
+> 注記: 本レポートは 2026-07 の crate・import 一括改名（#202）以前の実測記録であり、
+> 旧クレート名（`backend-framework-core` / `bf-http` / `bf-plugin-*` 等）表記のまま
+> 保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
+
 Issue #60（TASK-10.5、REQ-10）の成果物。`scripts/accept/tracing-accept.sh`（D/E チェック
 拡張）による TASK-10.5「依存インパクト記録・文書化・受け入れテスト」受け入れ確認の
 実行結果を記録する。TASK-10.4（#59）の既存 A〜C チェックも同一実行に含まれる。

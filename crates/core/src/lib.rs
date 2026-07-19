@@ -1,4 +1,4 @@
-//! backend-framework の最小コア。
+//! fandhe-backend の最小コア。
 //!
 //! # このクレートの役割
 //!

@@ -5,7 +5,7 @@
 
 ## 1. 結論
 
-backend-framework は **コンパイル時 Cargo feature flag + `dep:` 構文によるプラグイン機構**
+fandhe-backend は **コンパイル時 Cargo feature flag + `dep:` 構文によるプラグイン機構**
 を採用し、**実行時動的ロード（`dylib` + C ABI、`dlopen` 系）は不採用**とする。
 本判断は PoC-3（`docs/spec/03-poc/plugin-mechanism/`）で確立され、
 `docs/spec/04-requirements.md` REQ-2 に明記済みの決定を、TASK-2.4 の受け入れ検証
@@ -61,7 +61,7 @@ ABI 不一致はコンパイルエラーとして即座に検出され、実行�
 ### (c) 本フレームワークのユースケースでは無停止差し替えの利点を要しない
 
 動的ロードの主な利点は「プロセスを止めずにプラグインを差し替えられる」ことだが、
-backend-framework が想定するユースケース（`.claude/rules/pay-for-what-you-use.md` の
+fandhe-backend が想定するユースケース（`.claude/rules/pay-for-what-you-use.md` の
 「多数のマイクロサービスを低リソースで運用する」）は、feature 構成がサービスごとに
 デプロイ時点で確定し、実行中に切り替える要求を持たない。コンテナオーケストレーション
 前提のデプロイフロー（ロールアウトによる新バージョンへの切り替え）で十分に運用でき、

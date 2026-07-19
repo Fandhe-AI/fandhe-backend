@@ -1,4 +1,4 @@
-//! `fandhe-backend-http`: backend-framework の最小 HTTP コア。
+//! `fandhe-backend-http`: fandhe-backend の最小 HTTP コア。
 //!
 //! # workspace 内での依存方向
 //!
