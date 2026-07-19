@@ -111,16 +111,19 @@ fi
 # ---------------------------------------------------------------------------
 # A/B 性能計測は数分の専有実行枠（benches/lib/exclusive.sh の flock・静穏確認）を
 # 要するため本スクリプト内では再実行せず、確定済みレポートの判定行を参照する。
-# 判定行が PASS/BLOCKED のいずれでもない・レポート不在の場合はフェイルクローズで FAIL。
+# PASS/BLOCKED とも見出し行アンカーの厳密一致で判定する（レポート本文・履歴注記に
+# 含まれる恒久的な "BLOCKED" 文字列への誤ヒットで、判定行の欠落・変質を SKIP に
+# 丸め込まないため）。判定行がいずれにも一致しない・レポート不在の場合は
+# フェイルクローズで FAIL。
 perf_report="${WORKSPACE_ROOT}/benches/reports/task-3.3-openapi-performance.md"
 if [ ! -f "${perf_report}" ]; then
     record_fail "4: GET /health 性能有意差（±5% 以内）" "${perf_report} が見つかりません（判定不能、フェイルクローズ）"
 elif grep -q "^### 判定結果（再計測、#259）: PASS" "${perf_report}"; then
     record_pass "4: GET /health 性能有意差（±5% 以内）" "benches/reports/task-3.3-openapi-performance.md の再計測（#259、RUNS=5 中央値・専有計測枠）で PASS 確定。再計測はレポート記載の手順で行う"
-elif grep -q "BLOCKED" "${perf_report}"; then
-    record_skip "4: GET /health 性能有意差（±5% 以内）" "benches/reports/task-3.3-openapi-performance.md の判定が BLOCKED（判定不能を PASS へ丸めない）。レポート記載の再計測手順で確定させること"
+elif grep -q "^### 判定結果（再計測、#259）: BLOCKED" "${perf_report}"; then
+    record_skip "4: GET /health 性能有意差（±5% 以内）" "benches/reports/task-3.3-openapi-performance.md の再計測判定行が BLOCKED（判定不能を PASS へ丸めない）。レポート記載の再計測手順で確定させること"
 else
-    record_fail "4: GET /health 性能有意差（±5% 以内）" "benches/reports/task-3.3-openapi-performance.md に確定判定行が見つかりません（判定不能、フェイルクローズ）"
+    record_fail "4: GET /health 性能有意差（±5% 以内）" "benches/reports/task-3.3-openapi-performance.md に確定判定行（^### 判定結果（再計測、#259）: PASS|BLOCKED）が見つかりません（判定不能、フェイルクローズ）"
 fi
 
 # ---------------------------------------------------------------------------

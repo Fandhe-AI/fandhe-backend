@@ -149,7 +149,7 @@ openapi_endpoints.rs`）を受けて再実行し、判定を確定した。
 | PASS | 2a: ApiDoc/openapi.json 内部整合（機械検証） | `cargo test -p fandhe-backend-plugin-openapi` 全 PASS（unit 8 + doc test 6 を含む全テスト、`tests/openapi_consistency.rs` 含む） |
 | PASS | 2b: 実装との突合（手動突合表 + 機械検証） | 下記「手動突合表（再判定）」で 5 件すべて齟齬 0 件。機械検証は `cargo test -p fandhe-backend-core --example openapi_endpoints`（15 テスト PASS、Content-Type アサート含む） |
 | PASS | 3: `openapi` feature 存在・依存除外検証 | `cargo metadata` の feature 一覧に `openapi` が存在。`cargo tree -p fandhe-backend-core -e normal --no-default-features` で `fandhe-backend-plugin-openapi` 0 件（default 構成でも 0 件）、`--features openapi` でのみ出現。`scripts/pay-for-what-you-use-check.sh` exit 0（依存・unsafe・バイナリシンボル・全構成ビルドの各検証 PASS、`openapi` feature は動的列挙で検証対象に含まれることをログで確認） |
-| PASS | 4: `GET /health` 性能有意差（±5% 以内） | 専有計測枠（`benches/lib/exclusive.sh` の flock + 静穏確認、開始時 loadavg1=0.89）で RUNS=5・交互ペア・中央値方式の A/B 計測を実施。中央値差 **RPS +0.58%（baseline 143142.89 → openapi 143973.18）・p95 +1.59%（0.000908s → 0.000923s）** でいずれも ±5% 以内。詳細・全 run 実測値・baseline run 1 無効化の注記は `benches/reports/task-3.3-openapi-performance.md` の「再計測（#259）」節 |
+| PASS | 4: `GET /health` 性能有意差（±5% 以内） | 専有計測枠（`benches/lib/exclusive.sh` の flock + 静穏確認、開始時 loadavg1=0.89）で RUNS=5・交互ペア・中央値方式の A/B 計測を実施。中央値差 **RPS +0.58%（baseline 143142.89 → openapi 143973.18）・p95 +1.59%（0.000908s → 0.000923s）** でいずれも ±5% 以内（baseline 中央値は下側中央値。`benches/lib/common.sh` `median()` 規約の中央 2 値平均で再計算しても RPS −1.96%・p95 +0.64% で判定不変）。詳細・全 run 実測値・baseline run 1 無効化の注記は `benches/reports/task-3.3-openapi-performance.md` の「再計測（#259）」節 |
 | PASS | 5: CI 2 段階ビルド順序 | 初回検証から変更なし（`openapi-two-stage` ジョブ + `scripts/openapi-two-stage.sh` の存在を `scripts/accept/openapi-accept.sh` 節 5 が継続検証） |
 
 `bash scripts/accept/openapi-accept.sh`（#259 で節 2b・3・4 を再判定に追随させて更新）は

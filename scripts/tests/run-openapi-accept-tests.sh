@@ -64,6 +64,70 @@ else
 fi
 
 echo ""
+echo "===== 性能レポート判定行チェック（節 4、#259）のロジック検証 ====="
+
+# openapi-accept.sh 節 4 が使う grep パターンと同一条件を fixture に対して適用する。
+# 判定 3 値（pass/skip/fail）を返す。PASS/BLOCKED とも見出し行アンカーの厳密一致
+# であり、本文中の恒久的な "BLOCKED" 文字列には誤ヒットしない（フェイルクローズ:
+# 判定行の欠落・変質は skip でなく fail）。
+perf_verdict_check() {
+    local file="$1"
+    if [ ! -f "${file}" ]; then
+        echo "fail"
+    elif grep -q "^### 判定結果（再計測、#259）: PASS" "${file}"; then
+        echo "pass"
+    elif grep -q "^### 判定結果（再計測、#259）: BLOCKED" "${file}"; then
+        echo "skip"
+    else
+        echo "fail"
+    fi
+}
+
+if [ "$(perf_verdict_check "${FIXTURES_DIR}/perf-pass-with-blocked-note.md")" = "pass" ]; then
+    pass "本文に BLOCKED 文字列（履歴注記）があっても判定行が PASS なら PASS 相当と判定される"
+else
+    fail "本文の BLOCKED 文字列に誤ヒットし、PASS 判定行のある fixture が PASS 相当と判定されなかった"
+fi
+
+if [ "$(perf_verdict_check "${FIXTURES_DIR}/perf-blocked-line.md")" = "skip" ]; then
+    pass "判定行が BLOCKED の fixture は SKIP 相当と判定される"
+else
+    fail "判定行が BLOCKED の fixture が SKIP 相当と判定されなかった"
+fi
+
+if [ "$(perf_verdict_check "${FIXTURES_DIR}/perf-no-verdict.md")" = "fail" ]; then
+    pass "判定行を持たない fixture（本文に BLOCKED 語のみ）は FAIL 相当と判定される（フェイルクローズ）"
+else
+    fail "判定行を持たない fixture が FAIL 相当と判定されなかった（SKIP への丸め込みの疑い）"
+fi
+
+if [ "$(perf_verdict_check "${FIXTURES_DIR}/no-such-file.md")" = "fail" ]; then
+    pass "レポート不在は FAIL 相当と判定される（フェイルクローズ）"
+else
+    fail "レポート不在が FAIL 相当と判定されなかった"
+fi
+
+echo ""
+echo "===== 実リポジトリの性能レポートに対する節 4 ロジックの疎通確認 ====="
+if [ "$(perf_verdict_check "${WORKSPACE_ROOT}/benches/reports/task-3.3-openapi-performance.md")" = "pass" ]; then
+    pass "実リポジトリの task-3.3-openapi-performance.md は PASS 判定行を含む（#259 確定判定の回帰検知）"
+else
+    fail "実リポジトリの task-3.3-openapi-performance.md から PASS 判定行が検出できない（退行の可能性）"
+fi
+
+echo ""
+echo "===== 節 2b（実装との突合）の機械検証コマンド存在確認 ====="
+# 節 2b は cargo test の実行を伴うため fixture 化せず、openapi-accept.sh が
+# example テスト（crates/core/examples/openapi_endpoints.rs、15 テスト）を
+# 呼び出し続けていることを回帰検知する（節 5 の ci.yml 疎通確認と同型）。
+if grep -q -- "cargo test -p fandhe-backend-core --example openapi_endpoints" \
+    "${WORKSPACE_ROOT}/scripts/accept/openapi-accept.sh"; then
+    pass "openapi-accept.sh 節 2b が openapi_endpoints example テストを呼び出す（#259 更新の回帰検知）"
+else
+    fail "openapi-accept.sh から openapi_endpoints example テストの呼び出しが検出できない（退行の可能性）"
+fi
+
+echo ""
 echo "===== lib/common.sh の PASS/FAIL/SKIP 集計と終了コードの対応検証 ====="
 
 # サブシェルで lib/common.sh を source し、record_* の組み合わせごとに
