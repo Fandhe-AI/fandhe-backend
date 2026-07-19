@@ -240,6 +240,14 @@ fn build_router() -> Router {
 async fn main() -> std::io::Result<()> {
     let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3003".to_string());
     let server = fandhe_backend_core::Server::new().handler(build_router());
+    // `openapi` feature 有効時は `GET /openapi.json` の静的サービングも登録する
+    // （`Server::openapi()`、TASK-2.1 / #256 の opt-in 契約）。これにより本 example
+    // 単体で REQ-3 基準 4（OpenAPI 生成有無での `GET /health` 性能 A/B 比較、#259）の
+    // 「生成有効」構成（`--features openapi`）と「無効」構成（feature なし）を
+    // 同一ソースから作り分けられる。feature 無効時は本行ごとコンパイルから消え、
+    // 依存・コードとも残らない（`.claude/rules/pay-for-what-you-use.md`）。
+    #[cfg(feature = "openapi")]
+    let server = server.openapi();
     let bound = server.bind(&addr).await?;
     println!("openapi_endpoints listening on {}", bound.local_addr()?);
     bound.run().await

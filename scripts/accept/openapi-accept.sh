@@ -7,22 +7,21 @@
 #      （API 設計ベストプラクティス系ルールとは区別する。`openapi-spec-validator` は
 #      スキーマ妥当性のみを検証しベストプラクティス系ルールを含まないため採用）
 #   2. 生成定義とエンドポイント実装の齟齬 0 件
-#      （機械検証: `cargo test -p fandhe-backend-plugin-openapi`、うち `openapi_consistency.rs` が
-#      path/method/パラメータ名・型/レスポンススキーマを網羅アサート。ただし
-#      `crates/routes` 側の実サービングは `GET /health` を除く 4 エンドポイントが
-#      本イシュー着手時点で未実装のため、完全な「実装との」突合は BLOCKED として
-#      docs/acceptance/req3-openapi-generation.md の手動突合表に記録する）
+#      （機械検証 2a: `cargo test -p fandhe-backend-plugin-openapi`、うち `openapi_consistency.rs` が
+#      path/method/パラメータ名・型/レスポンススキーマを網羅アサート。
+#      機械検証 2b: `crates/core/examples/openapi_endpoints.rs`（#257 で 5 エンドポイントを
+#      実サービング）のテストで実装側の method/パラメータ/応答/Content-Type を検証。
+#      手動突合表は docs/acceptance/req3-openapi-generation.md に記録）
 #   3. `openapi` feature 無効時の依存完全除外
 #   4. OpenAPI 生成有無での `GET /health` 相当の性能有意差なし（±5% 以内）
 #   5. CI の 2 段階ビルド順序（TASK-3.2 実装済み）の存在確認
 #
-# 節 3・4 は `crates/core` にサーバ側 `openapi` feature（`openapi =
-# ["dep:fandhe-backend-plugin-openapi"]` 相当）の配線が本イシュー着手時点で存在しないため実行不能である
-# （`crates/plugin-openapi/src/lib.rs`・`embed.rs` の doc comment が「TASK-2.1（#18）に
-# 接続点を委ねる」と明記。TASK-2.1（#18）は当該配線を実施せずクローズされ、後継 Issue も
-# 未起票）。判定不能を PASS と偽らず BLOCKED として記録し非 0 終了しない（SKIP 相当。
-# record_skip を用いる。判定不能を FAIL とする一般原則は「検証を試みたが失敗した」場合の
-# ものであり、本件は前提が存在せず検証自体が成立しないケースのため区別する）。
+# 節 3・4 の前提だった `crates/core` のサーバ側 `openapi` feature
+# （`openapi = ["dep:fandhe-backend-plugin-openapi"]`）は #256 で配線済み。節 3 は
+# scripts/pay-for-what-you-use-check.sh で機械検証する。節 4 の A/B 性能計測は
+# 実行時間・専有計測枠（benches/lib/exclusive.sh）を要するため本スクリプトでは
+# 再実行せず、benches/reports/task-3.3-openapi-performance.md の確定判定を参照する
+# （判定行が見つからない場合はフェイルクローズで FAIL）。
 #
 # 呼び出し元: 人間が `bash scripts/accept/openapi-accept.sh` として直接実行する。
 # セルフテスト: `scripts/tests/run-openapi-accept-tests.sh`（判定ロジックのみを fixture で検証）。
@@ -72,7 +71,15 @@ if cargo test -p fandhe-backend-plugin-openapi >/tmp/openapi-accept-consistency.
 else
     record_fail "2a: ApiDoc/openapi.json 内部整合（機械検証）" "cargo test -p fandhe-backend-plugin-openapi が FAIL（詳細: /tmp/openapi-accept-consistency.log）"
 fi
-record_skip "2b: 実装（crates/routes）との突合" "GET /health を除く 4 エンドポイントの実サービングが未実装のため機械検証不能。手動突合表を docs/acceptance/req3-openapi-generation.md に記録（前提 Issue 未起票、要フォローアップ）"
+# 2b: 実装側（crates/core/examples/openapi_endpoints.rs、#257）のテストで
+# 5 エンドポイントの method・パラメータ・応答・Content-Type を機械検証する。
+# 宣言と実装の対応関係そのものの手動突合表は docs/acceptance/
+# req3-openapi-generation.md に記録済み（#259 で PASS へ更新）。
+if cargo test -p fandhe-backend-core --example openapi_endpoints >/tmp/openapi-accept-endpoints.log 2>&1; then
+    record_pass "2b: 実装（openapi_endpoints example）との突合" "cargo test -p fandhe-backend-core --example openapi_endpoints が PASS（5 エンドポイントの実サービング検証、手動突合表: docs/acceptance/req3-openapi-generation.md）"
+else
+    record_fail "2b: 実装（openapi_endpoints example）との突合" "cargo test -p fandhe-backend-core --example openapi_endpoints が FAIL（詳細: /tmp/openapi-accept-endpoints.log）"
+fi
 
 # ---------------------------------------------------------------------------
 # 3: openapi feature 無効時の依存完全除外
@@ -102,7 +109,22 @@ fi
 # ---------------------------------------------------------------------------
 # 4: OpenAPI 生成有無での GET /health 性能有意差（±5% 以内）
 # ---------------------------------------------------------------------------
-record_skip "4: GET /health 性能有意差（±5% 以内）" "節 3 と同じ理由（openapi feature 未配線）で A/B 計測不能。配線後は benches/reports/task-3.3-openapi-performance.md の再計測手順に従い RUNS=5 中央値方式で計測すること"
+# A/B 性能計測は数分の専有実行枠（benches/lib/exclusive.sh の flock・静穏確認）を
+# 要するため本スクリプト内では再実行せず、確定済みレポートの判定行を参照する。
+# PASS/BLOCKED とも見出し行アンカーの厳密一致で判定する（レポート本文・履歴注記に
+# 含まれる恒久的な "BLOCKED" 文字列への誤ヒットで、判定行の欠落・変質を SKIP に
+# 丸め込まないため）。判定行がいずれにも一致しない・レポート不在の場合は
+# フェイルクローズで FAIL。
+perf_report="${WORKSPACE_ROOT}/benches/reports/task-3.3-openapi-performance.md"
+if [ ! -f "${perf_report}" ]; then
+    record_fail "4: GET /health 性能有意差（±5% 以内）" "${perf_report} が見つかりません（判定不能、フェイルクローズ）"
+elif grep -q "^### 判定結果（再計測、#259）: PASS" "${perf_report}"; then
+    record_pass "4: GET /health 性能有意差（±5% 以内）" "benches/reports/task-3.3-openapi-performance.md の再計測（#259、RUNS=5 中央値・専有計測枠）で PASS 確定。再計測はレポート記載の手順で行う"
+elif grep -q "^### 判定結果（再計測、#259）: BLOCKED" "${perf_report}"; then
+    record_skip "4: GET /health 性能有意差（±5% 以内）" "benches/reports/task-3.3-openapi-performance.md の再計測判定行が BLOCKED（判定不能を PASS へ丸めない）。レポート記載の再計測手順で確定させること"
+else
+    record_fail "4: GET /health 性能有意差（±5% 以内）" "benches/reports/task-3.3-openapi-performance.md に確定判定行（^### 判定結果（再計測、#259）: PASS|BLOCKED）が見つかりません（判定不能、フェイルクローズ）"
+fi
 
 # ---------------------------------------------------------------------------
 # 5: CI 2 段階ビルド順序の存在確認（TASK-3.2 実装済み、記録用）
