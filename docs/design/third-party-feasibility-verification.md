@@ -44,6 +44,18 @@ PoC-9 のバイアス（検証者=被験 AI）を再生産しないため、以�
 `docs/reports/task-12-4-2-task-definitions.md` の正解ラベル列を含む状態のリポジトリを
 渡さない運用とする（実施時の人間の作業手順として 7 節に明記）。
 
+### 被験構成の実態と限界（イシュー #241 対応で追記）
+
+(B) 被験 AI 欄の「可能であれば別モデル」について、実測定（`docs/reports/task-12-4-2-
+feasibility-judgment-verification.md` 2 節）では**別セッション・別 Claude モデル
+（調整役: Claude Fable 5／被験 AI: claude-sonnet-5 ×10）としては実施済み**だが、**別ベンダー
+LLM・人間被験者による追検証は現行の自動運転実行環境では実施不能**であり未実施である。
+実施経路（別ベンダー LLM の呼び出し手段・人間被験者の確保手段）が定義されていないため、
+対応可否判定は
+[`docs/reports/task-12-4-third-party-scope-feasibility.md`](../reports/task-12-4-third-party-scope-feasibility.md)
+に「不可・要エスカレーション（未定義依存）」として記録した。限界の受容可否は人間判断へ
+引き渡す。
+
 ## 3. タスクセットの構成（N=10）
 
 `docs/reports/task-12-4-2-task-definitions.md` に J-01〜J-10 として事前確定する（#85 の
@@ -164,7 +176,12 @@ TASK-12.3-2（#84、PR #121）はマージ済みであり、判定記録は同�
    working tree 上では検知できない）。
 3. `bash scripts/third-party-feasibility-verify.sh --task-definitions docs/reports/task-12-4-2-task-definitions.md --records-dir <判定記録ディレクトリ> [--worktrees-dir <被験 worktree ディレクトリ>]` を実行し、採点結果を得る。
 4. 採点結果を `docs/reports/task-12-4-2-feasibility-judgment-verification.md` へ反映し、
-   人間レビューによる承認を得る。
+   人間レビューによる承認を得る。**承認欄は「AI 実装/マージセッションが記録した自己
+   サインオフ」と「独立した外部人間ユーザーによる review 承認」を区別して記載する**
+   （イシュー #241 対応）。PR の author/mergedBy と承認記録の記入者が同一アカウントの場合、
+   GitHub 上の review approval イベントに裏付けられない限り外部人間承認としては未成立で
+   ある旨を承認欄自体に明記し、既存の自己記録行は監査証跡として保持したまま再ラベルし、
+   別途 PENDING の外部人間承認行を新設する。
 
 ## 8. セキュリティ考慮事項（OWASP Top 10 観点）
 
@@ -183,7 +200,10 @@ TASK-12.3-2（#84、PR #121）はマージ済みであり、判定記録は同�
   実測定は PENDING であり、`docs/reports/task-12-4-2-feasibility-judgment-verification.md`
   の結果表は未確定のプレースホルダである**。承認欄が PENDING のまま確定値として扱わない。
 - **ゲート迂回の防止**: 自動マージなし。実測定・確定は人間レビュー（TASK-12.4 の担当区分
-  「人間」）を経る前提を本書・レポート双方に明記する。
+  「人間」）を経る前提を本書・レポート双方に明記する。別ベンダー LLM・人間被験による
+  追検証の未実施という限界は AI が自己確定せず、
+  [`docs/reports/task-12-4-third-party-scope-feasibility.md`](../reports/task-12-4-third-party-scope-feasibility.md)
+  として要エスカレーション記録に残し、受容可否を人間判断へ引き渡す（イシュー #241 対応）。
 - **攻撃表面**: ドキュメント + ローカル実行 bash のみの変更で実行時攻撃表面の増加なし。
   依存追加なし（`cargo tree` への影響なし、pay-for-what-you-use 違反なし）。
 
@@ -203,3 +223,5 @@ TASK-12.3-2（#84、PR #121）はマージ済みであり、判定記録は同�
 - 再検証レポート: `docs/reports/task-12-4-2-feasibility-judgment-verification.md`
 - スコープ外課題の追跡規約: [`.claude/rules/out-of-scope-tracking.md`](../../.claude/rules/out-of-scope-tracking.md)
 - セキュリティ規約: [`.claude/rules/security.md`](../../.claude/rules/security.md)
+- 別モデル・人間被験の未充足に関する対応可否判定記録（イシュー #241）:
+  [`docs/reports/task-12-4-third-party-scope-feasibility.md`](../reports/task-12-4-third-party-scope-feasibility.md)
