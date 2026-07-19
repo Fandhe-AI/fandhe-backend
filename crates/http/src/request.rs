@@ -104,6 +104,64 @@ impl RequestHead {
     pub fn headers(&self) -> impl Iterator<Item = (&str, &str)> {
         self.headers.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
+
+    /// `target` からクエリ文字列を除いたパス部分を返す。
+    ///
+    /// 分離は `target` 中の**最初の `?` の 1 点のみ**で行う（`?` が存在しな
+    /// ければ `target` 全体を返す）。上位層（`fandhe-backend-routes` の
+    /// `Router::dispatch`）はこのパスをルート照合キーとして使う契約とし、
+    /// クエリ文字列付きリクエスト（`GET /search?q=x`）が静的・パラメータ
+    /// ルートの双方に一致できるようにする（イシュー #258）。
+    ///
+    /// % デコード・末尾スラッシュ正規化等は一切行わない。既存の
+    /// 「target は無正規化・非デコードのまま保持する」契約を踏襲し、
+    /// デコード差異によるルート一致のずれ（OWASP A01 正規化バイパス）を
+    /// 生じさせない。デコード・再検証はハンドラの責務。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_http::request::parse_request_head;
+    ///
+    /// let buf = b"GET /search?q=x&limit=10 HTTP/1.1\r\nHost: example.com\r\n\r\n";
+    /// let outcome = parse_request_head(buf).unwrap();
+    /// let head = match outcome {
+    ///     fandhe_backend_http::request::ParseOutcome::Complete { head, .. } => head,
+    ///     _ => unreachable!(),
+    /// };
+    /// assert_eq!(head.path(), "/search");
+    /// assert_eq!(head.query(), Some("q=x&limit=10"));
+    /// ```
+    pub fn path(&self) -> &str {
+        match self.target.split_once('?') {
+            Some((path, _)) => path,
+            None => self.target.as_str(),
+        }
+    }
+
+    /// `target` からクエリ文字列（最初の `?` より後）を返す。
+    ///
+    /// `?` が存在しなければ `None`。`?` のみで値が空（`/search?`）の場合は
+    /// `Some("")` を返し、「クエリ区切り自体の有無」を呼び出し側が区別
+    /// できるようにする。生文字列のまま返し、% デコード・key-value 分解は
+    /// 行わない（呼び出し元の責務、イシュー #258）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_http::request::parse_request_head;
+    ///
+    /// let buf = b"GET /search HTTP/1.1\r\nHost: example.com\r\n\r\n";
+    /// let outcome = parse_request_head(buf).unwrap();
+    /// let head = match outcome {
+    ///     fandhe_backend_http::request::ParseOutcome::Complete { head, .. } => head,
+    ///     _ => unreachable!(),
+    /// };
+    /// assert_eq!(head.query(), None);
+    /// ```
+    pub fn query(&self) -> Option<&str> {
+        self.target.split_once('?').map(|(_, query)| query)
+    }
 }
 
 /// [`parse_request_head`] の成功時の結果。
@@ -481,6 +539,57 @@ mod tests {
         assert_eq!(head.header("x-a"), Some("1"));
         let all: Vec<_> = head.headers().collect();
         assert_eq!(all, vec![("X-A", "1"), ("X-B", "2"), ("X-A", "3")]);
+    }
+
+    #[test]
+    fn path_and_query_without_query_string() {
+        let buf = b"GET /search HTTP/1.1\r\n\r\n";
+        let (head, _) = complete(buf);
+        assert_eq!(head.path(), "/search");
+        assert_eq!(head.query(), None);
+    }
+
+    #[test]
+    fn path_and_query_with_query_string() {
+        let buf = b"GET /search?q=x&limit=10 HTTP/1.1\r\n\r\n";
+        let (head, _) = complete(buf);
+        assert_eq!(head.path(), "/search");
+        assert_eq!(head.query(), Some("q=x&limit=10"));
+    }
+
+    #[test]
+    fn path_and_query_with_empty_query_string() {
+        // `?` のみ（値なし）は「クエリ区切りは存在するが空」を表す Some("") を返す。
+        let buf = b"GET /search? HTTP/1.1\r\n\r\n";
+        let (head, _) = complete(buf);
+        assert_eq!(head.path(), "/search");
+        assert_eq!(head.query(), Some(""));
+    }
+
+    #[test]
+    fn path_and_query_split_on_first_question_mark_only() {
+        // 2 個目以降の `?` はクエリ文字列側にそのまま残す（1 点分離の契約）。
+        let buf = b"GET /a?b?c HTTP/1.1\r\n\r\n";
+        let (head, _) = complete(buf);
+        assert_eq!(head.path(), "/a");
+        assert_eq!(head.query(), Some("b?c"));
+    }
+
+    #[test]
+    fn path_does_not_percent_decode() {
+        // % デコードは行わない契約。`%3F`（エンコード済み `?`）はパス側に残る。
+        let buf = b"GET /a%3Fb HTTP/1.1\r\n\r\n";
+        let (head, _) = complete(buf);
+        assert_eq!(head.path(), "/a%3Fb");
+        assert_eq!(head.query(), None);
+    }
+
+    #[test]
+    fn path_and_query_for_asterisk_form() {
+        let buf = b"OPTIONS * HTTP/1.1\r\n\r\n";
+        let (head, _) = complete(buf);
+        assert_eq!(head.path(), "*");
+        assert_eq!(head.query(), None);
     }
 
     #[test]
