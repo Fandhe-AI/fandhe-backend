@@ -5,7 +5,9 @@
 # （命名規約違反・0 件のフェイルクローズを含む）・(b) cargo tree 判定（無効構成の依存
 # 漏れ・有効構成の配線切れ・他プラグインとの混入）・(c) cargo geiger 判定・(d) バイナリ
 # サイズ比較とシンボル表検査のロジックを、workspace の実状態・cargo ビルド・ネットワーク
-# に依存せず固定化する。
+# に依存せず固定化する。(c) のリトライループ（一過性失敗からの回復・全失敗 fail-closed、
+# Issue #212）は PFWU_GEIGER_CMD フックにモック geiger（fixtures/geiger-mock-*.sh）を
+# 注入して検証する。
 #
 # (e) 全構成ビルド検証は cargo ビルドそのものが検証対象のため fixture 化しない
 # （`--skip-build-steps` で (d)/(e) の実ビルドを回避しつつ、注入した値で (d) の判定
@@ -171,6 +173,46 @@ run_check --skip-build-steps \
     --symbols-file "${FIXTURES_DIR}/symbols-clean.txt"
 assert_exit_code "geiger パッケージリスト空は exit 1（フェイルクローズ）" 1 "${status}"
 assert_contains "geiger パッケージリスト空は判定不能メッセージを含む" "${output}" "geiger_packages が空のため判定不能です"
+
+# --- ケース 12: geiger 一過性失敗からのリトライ回復（Issue #212） ---
+# --geiger-packages-file を渡さず、PFWU_GEIGER_CMD フックでモック geiger を注入して
+# リトライループ本体を通す（--geiger-packages-file は jq 解析後の結果差し替えのみで
+# ループを通らないため）。モックは 2 回失敗 → 3 回目成功。バックオフは
+# PFWU_GEIGER_RETRY_WAIT=0 で無効化しテストを高速に保つ。
+geiger_mock_state="$(mktemp)"
+rm -f "${geiger_mock_state}" # モックが 1 回目から数え始めるよう未作成状態にする
+export PFWU_GEIGER_CMD="${FIXTURES_DIR}/geiger-mock-flaky.sh"
+export PFWU_GEIGER_RETRY_WAIT=0
+export GEIGER_MOCK_STATE="${geiger_mock_state}"
+run_check --skip-build-steps \
+    --metadata-file "${FIXTURES_DIR}/metadata-valid.json" \
+    --tree-negative-file "${FIXTURES_DIR}/tree-negative-clean.txt" \
+    --tree-positive-dir "${FIXTURES_DIR}/tree-positive-valid" \
+    --size-negative 1000 --size-positive 1200 \
+    --symbols-file "${FIXTURES_DIR}/symbols-clean.txt"
+assert_exit_code "geiger flaky（2 回失敗 → 3 回目成功）は exit 0（リトライ回復）" 0 "${status}"
+assert_contains "geiger flaky 回復は (c) が PASS" "${output}" "[PASS] c:"
+assert_contains "geiger flaky 回復は試行 1/3 の失敗理由ログを含む" "${output}" "試行 1/3 失敗:"
+assert_contains "geiger flaky 回復は試行 2/3 の失敗理由ログを含む" "${output}" "試行 2/3 失敗:"
+assert_contains "geiger flaky 回復は失敗理由（stderr 末尾）を転記する" "${output}" "pending_ids.insert(id)"
+rm -f "${geiger_mock_state}"
+unset GEIGER_MOCK_STATE
+
+# --- ケース 13: geiger 全試行失敗は fail-closed で FAIL（Issue #212） ---
+export PFWU_GEIGER_CMD="${FIXTURES_DIR}/geiger-mock-always-fail.sh"
+run_check --skip-build-steps \
+    --metadata-file "${FIXTURES_DIR}/metadata-valid.json" \
+    --tree-negative-file "${FIXTURES_DIR}/tree-negative-clean.txt" \
+    --tree-positive-dir "${FIXTURES_DIR}/tree-positive-valid" \
+    --size-negative 1000 --size-positive 1200 \
+    --symbols-file "${FIXTURES_DIR}/symbols-clean.txt"
+assert_exit_code "geiger 全試行失敗は exit 1（フェイルクローズ）" 1 "${status}"
+assert_contains "geiger 全試行失敗は (c) が FAIL" "${output}" "[FAIL] c: cargo geiger 検証 — cargo geiger の実行に失敗しました"
+assert_contains "geiger 全試行失敗は試行 3/3 の失敗理由ログを含む" "${output}" "試行 3/3 失敗:"
+assert_contains "geiger 全試行失敗はまとめ出力に stderr を転記する" "${output}" "----- cargo geiger stderr"
+assert_contains "geiger 全試行失敗は失敗理由（panic メッセージ）を転記する" "${output}" "pending_ids.insert(id)"
+unset PFWU_GEIGER_CMD
+unset PFWU_GEIGER_RETRY_WAIT
 
 echo ""
 echo "=== 結果: ${PASS_COUNT} passed, ${FAIL_COUNT} failed ==="

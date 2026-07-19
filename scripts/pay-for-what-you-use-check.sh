@@ -38,6 +38,8 @@
 # `--tree-positive-dir`、(c) は `--geiger-packages-file`、(d) のサイズ比較・シンボル検査
 # ロジックは `--size-negative`/`--size-positive`/`--symbols-file` で実データ取得を
 # 差し替え、workspace の実状態・cargo ビルドに依存せず判定ロジックを検証する。
+# (c) のリトライループ自体は環境変数 `PFWU_GEIGER_CMD`（geiger コマンド差し替え）・
+# `PFWU_GEIGER_RETRY_WAIT`（バックオフ基準秒数、既定 5）でモック検証する（Issue #212）。
 # (e) は cargo ビルドそのものが検証対象のため fixture 化せず、本スクリプトの通常実行
 # （CI・人間によるローカル実行）でのみ検証される。
 set -euo pipefail
@@ -282,7 +284,15 @@ else
             geiger_packages="$(cat "${GEIGER_PACKAGES_FILE}")"
         fi
     else
-        if ! command -v cargo-geiger >/dev/null 2>&1; then
+        # PFWU_GEIGER_CMD: セルフテスト専用の geiger コマンド差し替えフック
+        # （--metadata-file 等の --*-file 注入パターンと同系。Issue #212）。
+        # --geiger-packages-file は jq 解析後の結果を差し替えるだけでリトライループ
+        # 自体を通らないため、リトライ経路（一過性失敗からの回復・全失敗 fail-closed）
+        # をモックで検証する目的で、実行コマンドそのものを差し替える口を設ける。
+        # 設定時は cargo-geiger 未導入環境（セルフテスト実行環境）でも走らせるため
+        # 存在チェックをスキップする。未設定時（CI・人間の通常実行）は既定の
+        # cargo geiger 実行で、挙動は従来と変わらない。
+        if [ -z "${PFWU_GEIGER_CMD:-}" ] && ! command -v cargo-geiger >/dev/null 2>&1; then
             fail "c: cargo geiger 検証 — cargo-geiger が見つかりません。導入: cargo install --locked cargo-geiger@0.13.0"
             geiger_step_failed=1
             geiger_packages=""
@@ -317,14 +327,33 @@ else
             # アクセスが収まる時間を確保）を入れて再現率を下げる。
             geiger_json=""
             geiger_max_attempts=3
+            # PFWU_GEIGER_RETRY_WAIT: 試行間バックオフの基準秒数（既定 5。試行 1→2 で
+            # 基準 ×1、2→3 で ×2 待つ）。セルフテストで sleep 待ちを省くための
+            # 上書き口で、CI・通常実行では未設定のまま既定値を使う（Issue #212）。
+            geiger_retry_wait="${PFWU_GEIGER_RETRY_WAIT:-5}"
             for geiger_attempt in $(seq 1 "${geiger_max_attempts}"); do
-                geiger_json="$(CARGO_TARGET_DIR="${TARGET_DIR}-geiger" cargo geiger --manifest-path "${CORE_MANIFEST}" --no-default-features --output-format Json -q 2>"${geiger_log}" || true)"
+                if [ -n "${PFWU_GEIGER_CMD:-}" ]; then
+                    # セルフテスト用モック実行（上記フックのコメント参照）。モックは
+                    # 引数を見ないため cargo geiger の引数体系は渡さず、stdout/stderr の
+                    # 配線（JSON → geiger_json、stderr → geiger_log）のみ本番と揃える。
+                    geiger_json="$("${PFWU_GEIGER_CMD}" 2>"${geiger_log}" || true)"
+                else
+                    geiger_json="$(CARGO_TARGET_DIR="${TARGET_DIR}-geiger" cargo geiger --manifest-path "${CORE_MANIFEST}" --no-default-features --output-format Json -q 2>"${geiger_log}" || true)"
+                fi
                 if [ -n "${geiger_json}" ]; then
                     break
                 fi
                 echo "[geiger] 試行 ${geiger_attempt}/${geiger_max_attempts} が失敗しました" >&2
+                # 各試行の失敗理由（stderr 末尾）を即時に stdout へ出す。/tmp のログは
+                # ジョブ終了後に消えるため、全失敗時のまとめ出力（下記）だけでなく
+                # 試行ごとにも CI ログへ残し、flaky（一過性 panic）か決定的失敗かを
+                # 実行中のログだけで切り分けられるようにする（Issue #212）。
+                if [ -f "${geiger_log}" ]; then
+                    echo "[geiger] 試行 ${geiger_attempt}/${geiger_max_attempts} 失敗:"
+                    tail -n 5 "${geiger_log}" | sed 's/^/[geiger]   /' || true
+                fi
                 if [ "${geiger_attempt}" -lt "${geiger_max_attempts}" ]; then
-                    sleep $((5 * geiger_attempt))
+                    sleep $((geiger_retry_wait * geiger_attempt))
                 fi
             done
             if [ -z "${geiger_json}" ]; then
