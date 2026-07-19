@@ -27,6 +27,14 @@
 # 値として取り出し、`eval` やシェルの再解釈（コマンド置換・`sh -c` 埋め込み）に一切渡さない。
 # printf '%s\n' で出力するに留め、レポート本文への埋め込みも markdown の素の文字列として
 # 扱う（コマンドとして実行されない）。
+#
+# 改善提案フローとの整合（#226、docs/design/improvement-proposal-flow.md 4 節）:
+# 改善提案の必須 5 項目（背景・根拠データ／影響範囲／対応方針／検証方法／リスク）のうち、
+# 従来は影響範囲（crate 表）と対応方針（推奨アクション）しか出力しておらず、CI が
+# `--body-file` でそのまま Issue 起票する際に「検証方法」「リスク」欄が欠落していた
+# （#218 D-2 の人手評価で不当判定の一因）。本スクリプトは 3 区分それぞれの非空分岐に
+# 検証方法・リスクの定型文を追加し、5 項目を機械的に揃える。区分ロジック・終了コード・
+# `--vuln-ids-output` の出力内容は変更しない（互換性維持）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -154,6 +162,14 @@ REPORT_FILE="${WORKDIR}/report.md"
     echo
     echo "生成日時: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     echo
+    # 改善提案フロー（docs/design/improvement-proposal-flow.md 4 節）の必須項目
+    # 「背景・根拠データ」を明示する。一次データは cargo audit --json の生出力そのもの。
+    if [ -n "${INPUT_JSON}" ]; then
+        printf '背景・根拠データ: cargo audit --json の出力（%s）を一次データとして自動生成\n' "${INPUT_JSON}"
+    else
+        echo "背景・根拠データ: 本リポジトリで実行した cargo audit --json の出力を一次データとして自動生成"
+    fi
+    echo
 
     echo "## 概要"
     echo
@@ -190,6 +206,20 @@ REPORT_FILE="${WORKDIR}/report.md"
             printf 'cargo update -p %s\n' "${name}"
         done <<< "${AUTO_UPDATE_LIST}"
         echo '```'
+        echo
+        # advisory ID 一覧は jq で取り出した信頼できない文字列を printf '%s' の引数として
+        # のみ埋め込む（コマンド置換・eval への再解釈は行わない、OWASP A03 対策）。
+        AUTO_UPDATE_IDS="$(jq -r '
+            [.vulnerabilities.list[]? | select((.versions.patched // []) | length > 0) | .advisory.id]
+            | join(", ")
+        ' "${AUDIT_JSON}")"
+        echo "検証方法:"
+        echo '- 上記の `cargo update -p <crate>` を適用後、`bash scripts/dep-audit.sh` を再実行し全 feature 構成で当該指摘が解消されることを確認する'
+        echo "- CI \`dep-audit\` ジョブ（.github/workflows/ci.yml）の通過を確認する"
+        echo
+        echo "リスク:"
+        printf -- '- 対応しない場合: 既知の脆弱性（advisory ID: %s）が依存ツリーに残置される\n' "${AUTO_UPDATE_IDS}"
+        echo "- 対応する場合: crate 更新に伴う API・挙動変化の可能性がある（CI 全ジョブ通過を条件に検証する）"
     fi
     echo
 
@@ -214,6 +244,18 @@ REPORT_FILE="${WORKDIR}/report.md"
         echo "推奨アクション: 修正版が存在しないため自動更新できない。次のいずれかをユーザーへエスカレーションする:"
         echo "- 代替 crate への切り替えを検討する"
         echo "- 影響がない・許容範囲と判断できる場合は \`deny.toml\` の advisories ignore に理由を明記して追加する（ユーザー承認必須）"
+        echo
+        ESCALATE_IDS="$(jq -r '
+            [.vulnerabilities.list[]? | select((.versions.patched // []) | length == 0) | .advisory.id]
+            | join(", ")
+        ' "${AUDIT_JSON}")"
+        echo "検証方法:"
+        echo "- 代替 crate へ切り替えた場合: \`bash scripts/dep-audit.sh\` を再実行し当該指摘が解消されることを確認する"
+        echo "- \`deny.toml\` ignore を追加した場合: 理由の明記とユーザー承認を確認のうえ \`bash scripts/dep-audit.sh\` の通過を確認する"
+        echo
+        echo "リスク:"
+        printf -- '- 対応しない場合: 修正版が存在しない脆弱性（advisory ID: %s）が未対応のまま残置される\n' "${ESCALATE_IDS}"
+        echo "- 対応する場合: 代替 crate への切り替えに伴う互換性リスク、または ignore 追加が恒久化し検知が形骸化するリスク"
     fi
     echo
 
@@ -238,6 +280,13 @@ REPORT_FILE="${WORKDIR}/report.md"
         done <<< "${WARNING_LIST}"
         echo
         echo "推奨アクション: CI は失敗させない（cargo audit 既定の安全側動作を踏襲）。定期的な監視・棚卸しの対象として記録する。"
+        echo
+        echo "検証方法:"
+        echo "- 日次 schedule の CI \`dep-audit\` ジョブによる継続監視で状態変化（yanked 化・脆弱性化）を検知する"
+        echo
+        echo "リスク:"
+        echo "- 対応しない場合: unmaintained / unsound 等の crate が将来の脆弱性の温床になりうる（現時点で CI は失敗させない）"
+        echo "- 対応する場合: 追加コストは監視・棚卸しのみで小さい"
     fi
     echo
 } > "${REPORT_FILE}"

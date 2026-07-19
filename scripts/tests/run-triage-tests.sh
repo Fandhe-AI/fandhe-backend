@@ -58,6 +58,18 @@ exit_clean=$?
 set -e
 assert_exit_code "audit-clean は exit 0" 0 "${exit_clean}"
 assert_contains "audit-clean のレポートに『該当なし』が3回分含まれる" "${out_clean}" "該当なし"
+# #226: 該当エントリがない区分には検証方法・リスク欄を出力しない設計を固定する
+# （非空分岐限定の出力であることの negative assert）。
+if printf '%s' "${out_clean}" | grep -qF "検証方法:"; then
+    fail "audit-clean（該当なし）のレポートに検証方法欄が誤って出力されている"
+else
+    pass "audit-clean（該当なし）のレポートに検証方法欄が出力されない"
+fi
+if printf '%s' "${out_clean}" | grep -qF "リスク:"; then
+    fail "audit-clean（該当なし）のレポートにリスク欄が誤って出力されている"
+else
+    pass "audit-clean（該当なし）のレポートにリスク欄が出力されない"
+fi
 
 echo "===== audit-triage.sh: audit-patched.json ====="
 set +e
@@ -67,6 +79,12 @@ set -e
 assert_exit_code "audit-patched は exit 1（vulnerability あり）" 1 "${exit_patched}"
 assert_contains "audit-patched のレポートに自動更新提案の advisory ID を含む" "${out_patched}" "RUSTSEC-2099-0001"
 assert_contains "audit-patched のレポートに cargo update 提案を含む" "${out_patched}" "cargo update -p example-crate"
+# #226: 改善提案フローの必須 5 項目（背景・根拠データ／検証方法／リスク）を機械確認する。
+assert_contains "audit-patched のレポートに背景・根拠データ欄を含む" "${out_patched}" "背景・根拠データ"
+assert_contains "audit-patched のレポートに検証方法欄を含む" "${out_patched}" "検証方法:"
+assert_contains "audit-patched のレポートに検証方法として dep-audit.sh 再実行を含む" "${out_patched}" "scripts/dep-audit.sh"
+assert_contains "audit-patched のレポートにリスク欄を含む" "${out_patched}" "リスク:"
+assert_contains "audit-patched のリスク欄に『対応しない場合』を含む" "${out_patched}" "対応しない場合:"
 
 echo "===== audit-triage.sh: audit-unpatched-warning.json ====="
 set +e
@@ -77,6 +95,11 @@ assert_exit_code "audit-unpatched-warning は exit 1（vulnerability あり）" 
 assert_contains "要エスカレーションの advisory ID を含む" "${out_unpatched}" "RUSTSEC-2099-0002"
 assert_contains "情報（記録・監視）の advisory ID を含む" "${out_unpatched}" "RUSTSEC-2099-0003"
 assert_contains "エスカレーション推奨アクション文言を含む" "${out_unpatched}" "ユーザーへエスカレーション"
+# #226: 要エスカレーション区分・情報区分の双方に検証方法・リスク欄が出力されることを確認する。
+assert_contains "audit-unpatched-warning のレポートに検証方法欄を含む" "${out_unpatched}" "検証方法:"
+assert_contains "audit-unpatched-warning のレポートにリスク欄を含む" "${out_unpatched}" "リスク:"
+assert_contains "要エスカレーション区分のリスク文言（未対応のまま残置）を含む" "${out_unpatched}" "未対応のまま残置される"
+assert_contains "情報区分の検証方法文言（継続監視）を含む" "${out_unpatched}" "継続監視"
 
 echo "===== audit-triage.sh: --output オプション ====="
 OUTPUT_TMP="$(mktemp)"
