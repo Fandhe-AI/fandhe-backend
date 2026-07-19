@@ -66,24 +66,31 @@ TASK-2.1 までの検証は `docs/design/plugin-boundary.md` 6 節の**手動コ
 絶対パス>` を使う（実装時に実機確認済み）。
 
 CI ランナー環境限定で `cargo geiger` の実行自体が失敗する事例が確認されている
-（PR #134/#19、ローカルでは複数回実行しても再現せず安定して成功する）。判定を
-FAIL に倒す前に 1 回だけ再試行し（fail-closed の後退ではなく決定的な失敗と
-一過性の失敗を区別するための最小限のノイズ低減）、2 回とも失敗した場合は
-`/tmp/pfwu-check-geiger.log`（cargo geiger の stderr）の内容を stdout（CI ログに
-残る）へも出力してから FAIL 判定する。`/tmp` 配下のログはジョブ終了後に破棄され
-GitHub Actions のログにも残らないため、原因調査ができない状態を防ぐための対応
-である。
+（PR #134/#19、#164/#24、ローカルでは複数回実行しても再現せず安定して成功する）。
+判定を FAIL に倒す前に **最大 3 回再試行**する（fail-closed の後退ではなく決定的な
+失敗と一過性の失敗を区別するための最小限のノイズ低減）。試行間には短いバックオフ
+（試行 N 後に N×基準秒 sleep、基準は環境変数 `PFWU_GEIGER_RETRY_WAIT`・既定 5 秒）
+を入れ、レジストリアクセスの競合が収まる時間を確保して再現率を低下させる。
 
-上記診断出力により、実機で発生した失敗の実体は
-`Io(Os { code: 2, kind: NotFound, ... }, ".../crates/observer/src/lib.rs")` で
-あることが判明した（本 workspace に `crates/observer` は存在しない）。self-hosted
-ランナーの `CARGO_TARGET_DIR` がジョブ間で共有される構成になっており、並行実行中の
-他ブランチ（本 PR には存在しない crate を含む構成）のビルド成果物・増分メタデータを
-cargo-geiger が誤って再利用しようとして失敗したものと判断できる。`cargo geiger` は
-`--target-dir` オプションを持たないため、(d) の release ビルド（専用
-`--target-dir`）と同様に `CARGO_TARGET_DIR=target/pay-for-what-you-use-check-geiger`
+**リトライは geiger 実行失敗（空出力・非 0 終了）のみが対象**であり、unsafe 検出
+結果の FAIL はリトライで揉み消さない。各試行失敗時には stderr 末尾 5 行を stdout
+へ即時出力し、実行中のログだけで flaky（一過性 panic）か決定的失敗かを切り分け
+られるようにする。全試行が失敗した場合は従来どおり stderr 全文を stdout へ転記
+してから FAIL 判定する。`/tmp` 配下のログはジョブ終了後に破棄され GitHub Actions
+のログにも残らないため、原因調査ができない状態を防ぐための対応である。
+
+`cargo geiger` は `--target-dir` オプションを持たないため、(d) の release ビルド
+（専用 `--target-dir`）と同様に `CARGO_TARGET_DIR=target/pay-for-what-you-use-check-geiger`
 環境変数で専用ディレクトリへ隔離し、他の並行ジョブの状態に左右されない決定的な
-実行にする。
+実行にする。実機で観測された失敗の詳細原因（cargo-geiger の PackageSet 内部 panic、
+self-hosted ランナーの CARGO_HOME レジストリキャッシュ/インデックス競合）については
+`docs/design/cargo-geiger-flakiness.md` を参照。
+
+セルフテスト時には以下の環境変数で動作をモック・制御できる（Issue #212）:
+- `PFWU_GEIGER_CMD`: geiger 実行コマンド全体を差し替え（デフォルト未設定。設定時は
+  `cargo-geiger` 存在チェックをスキップし、セルフテスト実行環境でも動作する）
+- `PFWU_GEIGER_RETRY_WAIT`: リトライ間バックオフの基準秒数（デフォルト 5。セルフテストで
+  0 を指定すれば sleep 待ちを省ける）
 
 ### 3.4 (d) バイナリサイズ計測（コード 0 件）
 
@@ -112,6 +119,12 @@ fixture を注入口（`--metadata-file`・`--tree-negative-file`・`--tree-posi
 経由で与え、(a)〜(d) の判定ロジックを workspace の実状態・実ビルドに依存せず固定化
 する。`--skip-build-steps` は (d)/(e) の実ビルドを回避しつつ、注入した値で (d) の
 判定ロジックのみを検証する。
+
+(c) のリトライループ自体（ファイル注入では通れない経路）は、環境変数フック
+`PFWU_GEIGER_CMD`（geiger コマンド差し替え）・`PFWU_GEIGER_RETRY_WAIT`（バックオフ
+基準秒。テストでは 0 を指定）とモック geiger（`geiger-mock-flaky.sh` /
+`geiger-mock-always-fail.sh`）で、リトライ回復・全試行失敗（fail-closed）の 2 経路を
+検証する（3.3 節・Issue #212 参照）。
 
 (e) は cargo ビルドそのものが検証対象のため fixture 化しない。実ビルドを伴う (e) の
 動作確認は本スクリプトの通常実行（CI の `pay-for-what-you-use` ジョブ・人間による
