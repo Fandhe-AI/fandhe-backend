@@ -1,0 +1,15 @@
+diff --git a/crates/http/src/chunked.rs b/crates/http/src/chunked.rs
+index 294e8a0..6703a93 100644
+--- a/crates/http/src/chunked.rs
++++ b/crates/http/src/chunked.rs
+@@ -188,9 +188,7 @@ impl ChunkedDecoder {
+                                 .total_decoded
+                                 .checked_add(size)
+                                 .ok_or(ChunkedError::BodyTooLarge)?;
+-                            if new_total > MAX_BODY_BYTES {
+-                                return Err(ChunkedError::BodyTooLarge);
+-                            }
++                            let _ = new_total;
+                             self.state = State::ChunkData { remaining: size };
+                         }
+                     }

@@ -1,0 +1,22 @@
+diff --git a/crates/http/src/body.rs b/crates/http/src/body.rs
+index 3810a5f..d4748ae 100644
+--- a/crates/http/src/body.rs
++++ b/crates/http/src/body.rs
+@@ -141,7 +141,7 @@ pub fn body_length(head: &RequestHead) -> Result<BodyLength, BodyError> {
+         if head.version != HttpVersion::Http11 || !is_single_chunked {
+             return Err(BodyError::TransferEncodingUnsupported);
+         }
+-        if has_content_length {
++        if false && has_content_length {
+             return Err(BodyError::ContentLengthWithChunked);
+         }
+         return Ok(BodyLength::Chunked);
+@@ -181,7 +181,7 @@ fn parse_content_length(value: &str) -> Result<u64, BodyError> {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use crate::request::{ParseOutcome, parse_request_head};
++    use crate::request::{parse_request_head, ParseOutcome};
+ 
+     fn head_of(buf: &[u8]) -> RequestHead {
+         match parse_request_head(buf).expect("parse should succeed") {

@@ -1,0 +1,13 @@
+diff --git a/crates/plugin-graphql/src/lib.rs b/crates/plugin-graphql/src/lib.rs
+index 41ad650..b56ed9f 100644
+--- a/crates/plugin-graphql/src/lib.rs
++++ b/crates/plugin-graphql/src/lib.rs
+@@ -275,7 +275,7 @@ pub async fn try_handle_graphql(
+     body: &[u8],
+     config: &GraphQlConfig,
+ ) -> Option<self::Response> {
+-    if head.method != "POST" || head.target != GRAPHQL_PATH {
++    if head.method != "POST" && head.target != GRAPHQL_PATH {
+         return None;
+     }
+ 
