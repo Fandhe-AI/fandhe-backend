@@ -60,11 +60,14 @@ async fn registered_openapi_serves_embedded_json_and_bypasses_default_handler() 
     let response = roundtrip(&server, request).await;
     let response = String::from_utf8_lossy(&response);
 
-    // ステータス・Content-Type・body の全件を検証する（PoC-9 教訓:
-    // ステータスのみの検証は reason/Content-Type/body の劣化を見逃す。
-    // `crates/core/tests/plugin_graphql_boundary.rs` と同一原則）。
+    // ステータス・Content-Type・Content-Length・body の全件を検証する（PoC-9
+    // 教訓: ステータスのみの検証は reason/Content-Type/body の劣化を見逃す。
+    // AGENTS.md「アサーション網羅性」節が HTTP レスポンステストで少なくとも
+    // Content-Type / Content-Length の検証を必須としているため、
+    // `Response::new` が `body.len()` から算出する Content-Length も検証する）。
     assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
     assert!(response.contains("Content-Type: application/json\r\n"));
+    assert!(response.contains(&format!("Content-Length: {}\r\n", OPENAPI_JSON.len())));
     assert!(response.ends_with(OPENAPI_JSON));
 }
 
