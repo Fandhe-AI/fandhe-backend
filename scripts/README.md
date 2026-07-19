@@ -69,8 +69,8 @@ req6-typescript-types.md` 参照）。
 | `tests/run-guardrail-tests.sh` | `feasibility-check.sh` のセルフテスト（PoC-9 T-11〜T-15 判定例 fixture・正常系・異常系、ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `dep-direction-check.sh` | `server → routes → http::*` の依存方向一方向性を (1) `cargo metadata` 依存エッジのホワイトリスト照合・循環検出、(2) core/routes/http の `src/lib.rs` 依存方向宣言の存在確認、(3) routes・http のプラグイン固有シンボル非依存 grep の 3 段で機械検証する（TASK-1.5、#14）。`--metadata-file <path>` で `cargo metadata` の代わりに JSON を注入できる（セルフテスト用） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `tests/run-dep-direction-tests.sh` | `dep-direction-check.sh` のセルフテスト。`tests/fixtures/dep-direction/*.json` を注入し正常グラフ・逆方向エッジ（循環）・コア→プラグイン依存（ホワイトリスト違反）・dev-dependency 除外を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
-| `pay-for-what-you-use-check.sh` | プラグイン feature 無効時の依存・`unsafe`・コードが 0 件であることを (a) feature 動的列挙 (b) `cargo tree` (c) `cargo geiger` (d) バイナリサイズ・シンボル表 (e) 全構成ビルド の 5 段で PASS/FAIL 判定する（TASK-2.2、#19）。`--metadata-file`/`--tree-negative-file`/`--tree-positive-dir`/`--geiger-packages-file`/`--size-negative`/`--size-positive`/`--symbols-file`/`--skip-build-steps` でセルフテスト用の実データ注入・実ビルド回避ができる | `.github/workflows/ci.yml` の `pay-for-what-you-use` ジョブから呼ばれる |
-| `tests/run-pay-for-what-you-use-tests.sh` | `pay-for-what-you-use-check.sh` のセルフテスト。`tests/fixtures/pay-for-what-you-use/*` を注入し (a)〜(d) の判定ロジック（列挙 0 件・命名規約違反・依存漏れ・配線切れ・他プラグイン混入・geiger 漏れ・サイズ逆転・シンボル混入）を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
+| `pay-for-what-you-use-check.sh` | プラグイン feature 無効時の依存・`unsafe`・コードが 0 件であることを (a) feature 動的列挙 (b) `cargo tree` (c) `cargo geiger` (d) バイナリサイズ・シンボル表 (e) 全構成ビルド の 5 段で PASS/FAIL 判定する（TASK-2.2、#19）。`--metadata-file`/`--tree-negative-file`/`--tree-positive-dir`/`--geiger-packages-file`/`--size-negative`/`--size-positive`/`--symbols-file`/`--skip-build-steps` でセルフテスト用の実データ注入・実ビルド回避ができる。環境変数 `PFWU_GEIGER_CMD`（geiger コマンド差し替え）・`PFWU_GEIGER_RETRY_WAIT`（リトライバックオフ基準秒、既定 5）で (c) のリトライ経路をセルフテストから検証できる（#212） | `.github/workflows/ci.yml` の `pay-for-what-you-use` ジョブから呼ばれる |
+| `tests/run-pay-for-what-you-use-tests.sh` | `pay-for-what-you-use-check.sh` のセルフテスト。`tests/fixtures/pay-for-what-you-use/*` を注入し (a)〜(d) の判定ロジック（列挙 0 件・命名規約違反・依存漏れ・配線切れ・他プラグイン混入・geiger 漏れ・サイズ逆転・シンボル混入）に加え、モック geiger による (c) のリトライ経路（回復・全失敗 fail-closed）を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `third-party-verify.sh` | TASK-12.4-1（#85）第三者検証ハーネス。被験 AI（別セッション・別モデル）が実装した使い捨て worktree に対し `fmt --check` / `clippy -D warnings` / `cargo nextest run --profile ci` + `cargo test --doc` を実行し PASS/FAIL/PENDING を判定する | CI からは呼ばれない。TASK-12.4-1 の完遂率再測定を実施する際にローカルで呼び出す運用（`docs/design/third-party-verification.md` 参照） |
 | `tests/run-third-party-verify-tests.sh` | `third-party-verify.sh` のセルフテスト。`--offline` は引数検証・PENDING 判定のみ（cargo ビルド不要）、既定モードは fixture worktree を作成して PASS/FAIL 検出まで確認するフル層 | CI からは呼ばれない（フル層は cargo ビルドを伴い時間を要するため） |
 | `third-party-feasibility-verify.sh` | 可否判定正解率の第三者再検証（TASK-12.4-2、#86。TASK-12.6、#47 で「条件付き可」対応・`--task-ids` オプションへ拡張）の機械採点ハーネス。タスク定義（正解ラベル）と被験 AI の判定記録を突き合わせ、正解率・誤判定による破壊・判断根拠提示割合を算出する | CI からは呼ばれない。人間が実測定時にローカル/手動実行する（`docs/design/third-party-feasibility-verification.md`・`docs/design/gray-zone-feasibility-verification.md` 参照） |
@@ -258,8 +258,11 @@ bash scripts/pay-for-what-you-use-check.sh
   未導入・実行失敗はいずれも FAIL とし、握りつぶさない。self-hosted ランナーの
   共有 `CARGO_TARGET_DIR` に起因する並行ジョブ間の状態汚染を避けるため、
   `CARGO_TARGET_DIR=target/pay-for-what-you-use-check-geiger` で専用隔離した上で
-  最大 2 回まで再試行し、2 回とも失敗した場合は捕捉した stderr を CI ログへ出力する
-  （`docs/design/pay-for-what-you-use-check.md` 3.3 節参照）。
+  最大 3 回まで再試行する（試行 N 後に N×基準秒の線形バックオフ。基準は
+  `PFWU_GEIGER_RETRY_WAIT`、既定 5 秒）。試行ごとに失敗理由（stderr 末尾）を CI ログへ
+  即時出力し、全試行失敗時は捕捉した stderr 全文を転記して FAIL とする
+  （`docs/design/pay-for-what-you-use-check.md` 3.3 節・
+  `docs/design/cargo-geiger-flakiness.md` 参照）。
 - (d) のビルドは共有 `target/` を汚さないよう `target/pay-for-what-you-use-check*`
   専用ディレクトリを使う。
 
