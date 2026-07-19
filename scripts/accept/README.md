@@ -100,26 +100,43 @@ FAIL ではなく SKIP として記録され、終了コードには影響しな
 
 実行結果レポートは `docs/acceptance/req1-deps-unsafe-audit.md` に記録する。
 
-## `plugin-mechanism-accept.sh` — REQ-2（プラグイン機構）受け入れ検証（TASK-2.4、#21）
+## `plugin-mechanism-accept.sh` — REQ-2（プラグイン機構）受け入れ検証（TASK-2.4、#21。実ペア再検証、#261）
 
-`docs/spec/04-requirements.md` REQ-2 の受け入れ基準のうち TASK-2.4 が担う 3 点
-（2 種以上のプラグインの feature flag 着脱・コンパイル時 vs 動的ロードのトレードオフ
-設計文書・受け入れテストスクリプトと結果）を検証する。`core-deps-unsafe-audit.sh`
-と同じ `lib/common.sh`（PASS/FAIL/SKIP/WARN 集計）を共有する。
+`docs/spec/04-requirements.md` REQ-2 の受け入れ基準（**WebSocket・GraphQL** の
+少なくとも 2 種のプラグインを feature flag で着脱できること）を、既定では
+仕様が名指しする実プラグインペア（`websocket` + `graphql`）で検証する。
+`core-deps-unsafe-audit.sh` と同じ `lib/common.sh`（PASS/FAIL/SKIP/WARN 集計）を
+共有する。
+
+対象 feature ペアは環境変数 `REQ2_FEATURES`（空白区切り、既定
+`"websocket graphql"`）でパラメータ化できる。TASK-2.4（#21）実施当時の代替ペア
+（実 WebSocket プラグインが並行実装中だったため使用した `webrtc-proxy` +
+`graphql`）は `REQ2_FEATURES="webrtc-proxy graphql"` で再現できる（後方互換）。
+入力は許可リスト正規表現（`[a-z0-9-]+`）+ `cargo metadata` 実在確認で検証し、
+未知の文字列・存在しない feature 名は即 FAIL する（コマンドインジェクション
+防止・判定不能を PASS と偽らないフェイルクローズ、`.claude/rules/security.md`）。
 
 ```bash
+# 既定（websocket + graphql 実ペア）
 ./scripts/accept/plugin-mechanism-accept.sh
+
+# 旧代替ペアを再現する場合
+REQ2_FEATURES="webrtc-proxy graphql" ./scripts/accept/plugin-mechanism-accept.sh
 ```
 
 検証内容:
 
-1. `webrtc-proxy`・`graphql` の 2 feature が `fandhe-backend-core` に存在すること
-   （`cargo metadata` + `jq`）
+1. 対象 feature ペア（既定: `websocket`・`graphql`）が `fandhe-backend-core` に
+   存在すること（`cargo metadata` + `jq`）。未検出・入力不正の場合はここで
+   即 FAIL し、以降の重い cargo build/test ステップは実行しない
 2. `scripts/pay-for-what-you-use-check.sh`（TASK-2.2）を呼び出し、feature 無効時の
-   依存・unsafe・バイナリサイズ完全除外を確認（動的列挙のため graphql 追加時も
-   同スクリプトの変更は不要）
-3. 4 通りの feature 構成（無効・graphql 単独・webrtc-proxy 単独・全 feature）で
-   `cargo build` / `cargo test` が成功すること
+   依存・unsafe・バイナリサイズ完全除外を確認（動的列挙のため対象追加時も
+   同スクリプトの変更は不要）。加えて対象ペア限定の直接証跡として `cargo tree` で
+   当該プラグインクレートの無効時不出現・有効時出現（ポジティブコントロール）を確認
+3. 各 feature 構成（無効・各 feature 単独・ペア同時有効・全 feature）で
+   `cargo build` / `cargo test` が成功すること（実プラグインの統合テスト、例:
+   `websocket_upgrade.rs`・`plugin_graphql_boundary.rs` による動作確認を兼ねる）。
+   加えて対象プラグインクレート単体の契約テストも実行する
 4. `docs/design/plugin-loading-tradeoffs.md`（安全性トレードオフ設計文書）の存在
 
 5. 両 feature 無効時のコア性能（REQ-1 基準維持）: `benches/reports/
