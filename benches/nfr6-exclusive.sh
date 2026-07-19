@@ -23,7 +23,7 @@
 # 終了コード: 0 = 全対象を計測・判定確定（PASS/WARN/FAIL いずれでも判定を
 # 偽らず記録する。FAIL 残存時も 0 で終える —— 判定確定こそが本スクリプトの
 # 責務であり、判定結果の是非は人間レビューが担う）。
-# `BF_NFR6_BLOCKED_EXIT_CODE`（既定 2） = 静穏未達またはロック取得不能で
+# `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`（既定 2） = 静穏未達またはロック取得不能で
 # 計測不能（BLOCKED。PASS へ丸めない。フェイルクローズ）。
 
 set -euo pipefail
@@ -51,10 +51,10 @@ trap release_exclusive_lock_on_exit EXIT
 
 echo "=== NFR-6 専有計測 wrapper（TARGETS=${TARGETS}） ===" >&2
 
-echo "--- 専有ロック取得を試行（${BF_NFR6_LOCK}） ---" >&2
+echo "--- 専有ロック取得を試行（${FANDHE_BACKEND_NFR6_LOCK}） ---" >&2
 if ! acquire_exclusive_lock; then
     echo "BLOCKED: 専有ロックを取得できませんでした。他の計測プロセスが実行中の可能性があります" >&2
-    exit "${BF_NFR6_BLOCKED_EXIT_CODE}"
+    exit "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}"
 fi
 echo "専有ロック取得済み" >&2
 
@@ -62,7 +62,7 @@ echo "--- 静穏確認（LOAD1_MAX=${LOAD1_MAX} QUIESCE_WAIT_SECS=${QUIESCE_WAIT
 if ! wait_for_quiescence; then
     echo "BLOCKED: ${QUIESCE_WAIT_SECS}s 待っても静穏（loadavg <= ${LOAD1_MAX}・cargo/rustc/oha 不在）が得られませんでした" >&2
     snapshot_environment blocked >&2
-    exit "${BF_NFR6_BLOCKED_EXIT_CODE}"
+    exit "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}"
 fi
 echo "静穏確認 OK" >&2
 snapshot_environment before >&2
@@ -83,7 +83,7 @@ for target in ${TARGETS}; do
     if ! wait_for_quiescence; then
         echo "BLOCKED: 対象 ${target} の計測直前に静穏を再取得できませんでした" >&2
         snapshot_environment "blocked-${target}" >&2
-        exit "${BF_NFR6_BLOCKED_EXIT_CODE}"
+        exit "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}"
     fi
 
     echo "### 対象: ${target} 計測開始 ###" >&2

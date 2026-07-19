@@ -8,10 +8,10 @@
 //! （レポート転記・複数回計測の自動化のため）。
 //!
 //! 入力は環境変数のみ:
-//! - `BF_TRACING_PROBE_OUTPUT`（必須）: 非同期 writer の書き込み先ファイルパス
-//! - `BF_TRACING_PROBE_EVENTS`（既定 100000）: 総送出イベント数
-//! - `BF_TRACING_PROBE_THREADS`（既定 1）: 送出スレッド数（EVENTS を均等分配）
-//! - `BF_TRACING_PROBE_LINE_BYTES`（既定 64）: 1 イベントのメッセージ本体の目標バイト長
+//! - `FANDHE_BACKEND_TRACING_PROBE_OUTPUT`（必須）: 非同期 writer の書き込み先ファイルパス
+//! - `FANDHE_BACKEND_TRACING_PROBE_EVENTS`（既定 100000）: 総送出イベント数
+//! - `FANDHE_BACKEND_TRACING_PROBE_THREADS`（既定 1）: 送出スレッド数（EVENTS を均等分配）
+//! - `FANDHE_BACKEND_TRACING_PROBE_LINE_BYTES`（既定 64）: 1 イベントのメッセージ本体の目標バイト長
 //!
 //! 出力先パスは `mktemp -d` 等で用意した一時ディレクトリを渡す運用を想定し、本体は
 //! リポジトリへコミットしない（`.claude/rules/security.md` シークレット・一時生成物の
@@ -45,11 +45,11 @@ fn build_message(target_bytes: usize) -> String {
 /// 誤った結果を静かに返すより即座に失敗させる方が安全なため、ここに限定して用いる
 /// （ライブラリコードでは `.claude/rules/coding-rust.md` により避ける方針）。
 fn main() {
-    let output_path = env::var("BF_TRACING_PROBE_OUTPUT")
-        .expect("BF_TRACING_PROBE_OUTPUT（出力先ファイルパス）を指定してください");
-    let total_events = env_usize("BF_TRACING_PROBE_EVENTS", 100_000);
-    let threads = env_usize("BF_TRACING_PROBE_THREADS", 1).max(1);
-    let line_bytes = env_usize("BF_TRACING_PROBE_LINE_BYTES", 64);
+    let output_path = env::var("FANDHE_BACKEND_TRACING_PROBE_OUTPUT")
+        .expect("FANDHE_BACKEND_TRACING_PROBE_OUTPUT（出力先ファイルパス）を指定してください");
+    let total_events = env_usize("FANDHE_BACKEND_TRACING_PROBE_EVENTS", 100_000);
+    let threads = env_usize("FANDHE_BACKEND_TRACING_PROBE_THREADS", 1).max(1);
+    let line_bytes = env_usize("FANDHE_BACKEND_TRACING_PROBE_LINE_BYTES", 64);
 
     // 出力先ディレクトリの存在を事前検証してから使う（存在しないディレクトリ等での
     // 原因不明な失敗を防ぐ。呼び出し元がパスを検証してから使う契約は計画§3.2 参照）。

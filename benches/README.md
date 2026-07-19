@@ -247,7 +247,7 @@ cargo build --release -p fandhe-backend-core --example graphql_nfr6 --features g
 `fandhe-backend-plugin-hub-wiring`（依存逆転型プラグイン）をリンクした最小サーバが、無関係
 パス（`GET /`）への RPS・p95 レイテンシに与える影響を検証する。`webrtc-nfr6-bench.sh` /
 `graphql-nfr6-bench.sh` と同型だが、比較対象は feature 有効化ではなく **クレートの
-リンク**（`Server::gate` 未登録＝`BF_HUB_GATE=off`）である点が異なる（依存逆転型
+リンク**（`Server::gate` 未登録＝`FANDHE_BACKEND_HUB_GATE=off`）である点が異なる（依存逆転型
 プラグインは Cargo feature ではなく利用側の依存追加で着脱するため）。
 
 比較対象には `examples/hub_link_only.rs`（`examples/minimal.rs` と同一の `GET /` の
@@ -466,7 +466,7 @@ bash benches/nfr6-exclusive.sh
 
 | env | 既定値 | 意味 |
 |-----|--------|------|
-| `BF_NFR6_LOCK` | `/tmp/backend-framework-nfr6-bench.lock` | 専有ロックファイルパス（symlink は拒否） |
+| `FANDHE_BACKEND_NFR6_LOCK` | `/tmp/backend-framework-nfr6-bench.lock` | 専有ロックファイルパス（symlink は拒否） |
 | `LOAD1_MAX` | `1.0` | 静穏とみなす 1 分 loadavg の上限 |
 | `QUIESCE_WAIT_SECS` | `1800` | 静穏待機・ロック待機の上限秒数（超過で BLOCKED、終了コード 2） |
 | `QUIESCE_POLL_INTERVAL_SECS` | `30` | 静穏ポーリング間隔秒数 |

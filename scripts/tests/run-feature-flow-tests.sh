@@ -81,7 +81,7 @@ EOF
 run_check_in() {
     local repo="$1"
     shift
-    BF_FEATURE_FLOW_REPO_ROOT="${repo}" bash "${SCRIPTS_DIR}/feature-flow-check.sh" "$@"
+    FANDHE_BACKEND_FEATURE_FLOW_REPO_ROOT="${repo}" bash "${SCRIPTS_DIR}/feature-flow-check.sh" "$@"
 }
 
 commit_all() {
@@ -211,7 +211,7 @@ rm -rf "${REPO6}"
 echo "===== ケース7: --base 未指定は使用法エラーで exit 2 ====="
 REPO7="$(setup_repo)"
 set +e
-out7="$(BF_FEATURE_FLOW_REPO_ROOT="${REPO7}" bash "${SCRIPTS_DIR}/feature-flow-check.sh" 2>&1)"
+out7="$(FANDHE_BACKEND_FEATURE_FLOW_REPO_ROOT="${REPO7}" bash "${SCRIPTS_DIR}/feature-flow-check.sh" 2>&1)"
 exit7=$?
 set -e
 assert_exit_code "--base 未指定は exit 2" 2 "${exit7}"

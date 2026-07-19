@@ -30,8 +30,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # REPO_ROOT はスクリプト自身の所在（scripts/ の親）から解決するのが既定だが、
 # scripts/tests/run-feature-flow-tests.sh のセルフテストが実 workspace を汚さずに
 # 一時 git リポジトリで検証できるよう、環境変数で上書き可能にする
-# （unsafe-triage.sh の BF_UNSAFE_TRIAGE_REPO_ROOT と同一パターン）。
-REPO_ROOT="${BF_FEATURE_FLOW_REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+# （unsafe-triage.sh の FANDHE_BACKEND_UNSAFE_TRIAGE_REPO_ROOT と同一パターン）。
+REPO_ROOT="${FANDHE_BACKEND_FEATURE_FLOW_REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 cd "${REPO_ROOT}"
 
 BASE_REV=""

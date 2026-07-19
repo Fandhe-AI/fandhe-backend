@@ -432,7 +432,7 @@ example である点に注意。ベースライン `examples/minimal.rs` も `cu
    grep 検証する
 3. **C: 依存方向・pay-for-what-you-use** — `cargo tree -p fandhe-backend-core`
    に `fandhe-backend-plugin-hub-wiring` が一切現れないこと（依存逆転型プラグインの維持）
-4. **D: NFR-6** — `fandhe-backend-plugin-hub-wiring` をリンクした hub サービス（`BF_HUB_GATE=off`
+4. **D: NFR-6** — `fandhe-backend-plugin-hub-wiring` をリンクした hub サービス（`FANDHE_BACKEND_HUB_GATE=off`
    で `TenantGate` 未登録）が無関係パス（`GET /`）へ与える影響を
    `benches/hub-nfr6-bench.sh` の実測で確認する。`webrtc-accept.sh` /
    `graphql-accept.sh` と同一の NFR-6 判定帯（狭義 100.3〜100.8%・実務 [95%,105%]）を

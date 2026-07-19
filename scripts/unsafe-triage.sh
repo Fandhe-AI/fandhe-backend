@@ -37,8 +37,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # REPO_ROOT は既定でスクリプト自身の所在（scripts/ の親）から解決するが、
 # scripts/tests/run-triage-tests.sh のセルフテストが実 workspace（crates/・
 # scripts/unsafe-baseline.json）を汚さずに擬似クレートで検証できるよう、
-# 環境変数 BF_UNSAFE_TRIAGE_REPO_ROOT で上書き可能にする（テスト専用の注入口）。
-REPO_ROOT="${BF_UNSAFE_TRIAGE_REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+# 環境変数 FANDHE_BACKEND_UNSAFE_TRIAGE_REPO_ROOT で上書き可能にする（テスト専用の注入口）。
+REPO_ROOT="${FANDHE_BACKEND_UNSAFE_TRIAGE_REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 cd "${REPO_ROOT}"
 
 BASELINE_FILE="${REPO_ROOT}/scripts/unsafe-baseline.json"

@@ -3,6 +3,7 @@
 > 注記: 本レポートは 2026-07 の crate・import 一括改名（#202）以前の実測記録であり、
 > 旧クレート名（`backend-framework-core` / `bf-http` / `bf-routes` / `bf-plugin-*` 等）
 > 表記のまま保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
+> 旧環境変数名 `BF_*` 表記のまま保持（#203）。
 
 `docs/spec/05-tasks.md` TASK-9.5「hub 共通配線受け入れテスト」の受け入れ基準を
 `scripts/accept/hub-wiring-accept.sh` で検証した結果。TASK-9.1（#61、TenantGate 初版）・

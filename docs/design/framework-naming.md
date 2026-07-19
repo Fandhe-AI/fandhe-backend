@@ -239,10 +239,23 @@ Web 検索（一般 Web 衝突確認）: `wrenframe` を Web 検索したとこ�
     方針を推奨）
   - `AGENTS.md`（クレート名を含む説明箇所）
 
-### 第 3 段階: 環境変数改名（#203、未実施）
+### 第 3 段階: 環境変数改名（#203、実施済み）
 
 - `BF_*`（`BF_HUB_GATE`・`BF_TRACING_PROBE_*` 等）→ `FANDHE_BACKEND_*`
 - 参照箇所（コード・CI・スクリプト・ドキュメントの環境変数参照）の全数確認
+
+**breaking change の記録**（#209 の crate・import 改名と同種の判断）:
+
+- 後方互換シムは設けない。旧環境変数名 `BF_*` を指定しても新コードは無視し、
+  `FANDHE_BACKEND_*` を認識しない旧コードへのフォールバックも行わない
+  （pre-1.0・外部利用者が存在しないため、シム維持コストに見合わない）
+- 旧名 `BF_HUB_GATE=off` を設定し続けた場合、新コードでは `Server::gate` の
+  `TenantGate` 登録判定に影響しない（安全側＝ゲート有効のまま）ため fail-open
+  にはならない。`BF_TRACING_PROBE_OUTPUT` 等の必須 env は旧名指定時に
+  「未指定」として明示的にエラー停止し、サイレントな誤動作は発生しない
+- 影響範囲: `crates/plugin-hub-wiring`・`crates/plugin-tracing` の example、
+  `benches/**`・`scripts/**` の呼び出し環境変数。移行は利用箇所を
+  `FANDHE_BACKEND_*` へ置換するのみで追加の互換コードは不要
 
 ### 第 4 段階: ts パッケージ改名（#204 で実施）
 
