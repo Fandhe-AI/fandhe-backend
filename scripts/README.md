@@ -56,7 +56,7 @@ req6-typescript-types.md` 参照）。
 |-----------|------|-------------|
 | `dep-audit.sh` | 全 feature 構成で `cargo audit`（`audit-triage.sh` 経由）・`cargo deny check` を実行する依存監査 | `.github/workflows/ci.yml` の `dep-audit` ジョブから呼ばれる |
 | `openapi-two-stage.sh` | `gen-openapi` CLI（`fandhe-backend-plugin-openapi` の `gen-cli` feature）を `--check` 実行し `crates/plugin-openapi/openapi.json` の鮮度を検証してから `cargo build --workspace --all-features` を実行する（`--update` で in-place 再生成も可能） | `.github/workflows/ci.yml` の `openapi-two-stage` ジョブから呼ばれる |
-| `audit-triage.sh` | `cargo audit --json` の指摘を「自動更新提案」「要エスカレーション」「情報（記録・監視）」に分類し markdown レポートを生成する | `dep-audit.sh` から呼ばれる。`dep-audit` ジョブは schedule / workflow_dispatch 実行時に限り、検知結果を Issue（`audit-triage` ラベル）として起票する |
+| `audit-triage.sh` | `cargo audit --json` の指摘を「自動更新提案」「要エスカレーション」「情報（記録・監視）」に分類し、改善提案の必須 5 項目（背景・根拠データ／影響範囲／対応方針／検証方法／リスク、`docs/design/improvement-proposal-flow.md` 4 節、#226）を満たす形式で markdown レポートを生成する | `dep-audit.sh` から呼ばれる。`dep-audit` ジョブは schedule / workflow_dispatch 実行時に限り、検知結果を Issue（`audit-triage` ラベル）として起票する |
 | `unsafe-triage.sh` | workspace（`crates/*/src`・`crates/*/tests`）の `unsafe` 使用数を `unsafe-baseline.json` と比較し、増加・SAFETY コメント欠落を検知する | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `dep-impact.sh` | feature 構成ごとの依存クレート数・リリースバイナリサイズ・`unsafe` 件数を計測し markdown 表を出力する | CI からは呼ばれない。plugin 追加 PR でのローカル実行を想定（`docs/dep-impact/README.md` 参照） |
 | `coverage.sh` | コア（`fandhe-backend-core`・`fandhe-backend-http`。`axum-ref`・`fandhe-backend-plugin-*` は除外）の行カバレッジを計測し `--fail-under-lines 80` でゲートする | `.github/workflows/ci.yml` の `coverage` ジョブから呼ばれる |
@@ -183,13 +183,20 @@ bash scripts/audit-triage.sh --input <cargo-audit-json> --output <report.md>
 ```
 
 `cargo audit --json` の出力を次の 3 区分に分類し、markdown レポートを標準出力する
-（`--output` 指定時はファイルへも書き出す）。
+（`--output` 指定時はファイルへも書き出す）。改善提案の必須 5 項目（背景・根拠データ／
+影響範囲／対応方針（推奨アクション）／検証方法／リスク、
+`docs/design/improvement-proposal-flow.md` 4 節）を満たす形式で出力する（#226）。
+`dep-audit` ジョブがこのレポートをそのまま `--body-file` で Issue 起票するため、必須
+5 項目はレポート側で機械的に揃える。
 
-| 区分 | 条件 | 推奨アクション |
-|------|------|----------------|
-| 自動更新提案 | vulnerability かつ `versions.patched` が非空 | 修正版への更新コマンドを提示（`cargo update -p <crate>`） |
-| 要エスカレーション | vulnerability かつ patched なし（未修正） | 代替 crate 検討・`deny.toml` ignore（理由必須、ユーザー承認要）をユーザーへ提示 |
-| 情報（記録・監視） | warnings（unmaintained / unsound / yanked / notice） | CI は失敗させず記録・監視のみ（cargo audit 既定の安全側動作） |
+| 区分 | 条件 | 推奨アクション | 検証方法・リスク |
+|------|------|----------------|------------------|
+| 自動更新提案 | vulnerability かつ `versions.patched` が非空 | 修正版への更新コマンドを提示（`cargo update -p <crate>`） | 検証方法: `cargo update` 適用後の `dep-audit.sh` 再実行 + CI 通過確認。リスク: 未対応時は既知脆弱性が残置、対応時は更新に伴う挙動変化の可能性 |
+| 要エスカレーション | vulnerability かつ patched なし（未修正） | 代替 crate 検討・`deny.toml` ignore（理由必須、ユーザー承認要）をユーザーへ提示 | 検証方法: 代替 crate 切替後 or ignore 追加後の `dep-audit.sh` 再実行確認。リスク: 未対応時は未修正脆弱性が残置、対応時は互換性リスクまたは ignore 恒久化リスク |
+| 情報（記録・監視） | warnings（unmaintained / unsound / yanked / notice） | CI は失敗させず記録・監視のみ（cargo audit 既定の安全側動作） | 検証方法: 日次 schedule の CI 継続監視。リスク: 未対応時は将来の脆弱性の温床になりうる（CI は失敗させない） |
+
+該当エントリがある区分にのみ「検証方法」「リスク」欄を出力する（「該当なし」の区分には
+定型文を出さず、クリーン時のレポートを簡潔に保つ）。
 
 `--input` はテスト用フィクスチャ注入口で、指定時はネットワーク接続なしにロジックを検証
 できる（`tests/fixtures/` 参照）。終了コードは `0`（vulnerability なし）/ `1`
