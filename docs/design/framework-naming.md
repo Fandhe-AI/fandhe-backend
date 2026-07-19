@@ -244,7 +244,7 @@ Web 検索（一般 Web 衝突確認）: `wrenframe` を Web 検索したとこ�
 - `BF_*`（`BF_HUB_GATE`・`BF_TRACING_PROBE_*` 等）→ `FANDHE_BACKEND_*`
 - 参照箇所（コード・CI・スクリプト・ドキュメントの環境変数参照）の全数確認
 
-### 第 4 段階: ts パッケージ改名（#204、未実施）
+### 第 4 段階: ts パッケージ改名（#204 で実施）
 
 - `ts/package.json` の `name`（`backend-framework-openapi-ts` →
   `@fandhe/backend-openapi-ts`）および `ts/package-lock.json` の追随
