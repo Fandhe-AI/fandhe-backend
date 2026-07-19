@@ -1,6 +1,6 @@
-backend-framework-core
-bf-http
-bf-routes
+fandhe-backend-core
+fandhe-backend-http
+fandhe-backend-routes
 tokio
 libc
 mio

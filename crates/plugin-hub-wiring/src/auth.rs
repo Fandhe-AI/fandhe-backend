@@ -38,7 +38,7 @@
 
 use crate::jwks::{JwksKeySet, SharedJwks};
 use crate::jwt::{Claims, TokenError, verify_token};
-use bf_http::request::RequestHead;
+use fandhe_backend_http::request::RequestHead;
 use ring::digest::{self, SHA256};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -63,8 +63,8 @@ const BEARER_SCHEME: &str = "bearer";
 /// # Examples
 ///
 /// ```
-/// use bf_http::request::{parse_request_head, ParseOutcome};
-/// use bf_plugin_hub_wiring::auth::bearer_token;
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+/// use fandhe_backend_plugin_hub_wiring::auth::bearer_token;
 ///
 /// let raw = b"GET / HTTP/1.1\r\nAuthorization: Bearer abc.def.ghi\r\n\r\n";
 /// let head = match parse_request_head(raw).unwrap() {
@@ -245,7 +245,7 @@ impl TokenCache {
 /// # Examples
 ///
 /// ```
-/// use bf_plugin_hub_wiring::gate::TenantGateConfig;
+/// use fandhe_backend_plugin_hub_wiring::gate::TenantGateConfig;
 ///
 /// let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#).unwrap();
 /// let authenticator = config.authenticator();
@@ -339,7 +339,7 @@ mod tests {
     use crate::jwks::JwksKeySet;
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use bf_http::request::{ParseOutcome, parse_request_head};
+    use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
     use ring::rand::SystemRandom;
     use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
 

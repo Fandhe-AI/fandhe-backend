@@ -1,6 +1,6 @@
 # Outbox・同意ゲート 実データモデル統合設計
 
-TASK-9.4（#64、REQ-9）対応。`bf-plugin-hub-wiring` が概念実証した Outbox パターン・
+TASK-9.4（#64、REQ-9）対応。`fandhe-backend-plugin-hub-wiring` が概念実証した Outbox パターン・
 同意ゲートを、`micro-service-hub` の Outbox Relay（ポーリング配送）・同意管理サービス
 （PostgreSQL の実データモデル）と統合するための設計を記録する。
 
@@ -71,7 +71,7 @@ MS-6 完了基準「Outbox・同意ゲートの実データモデルとの統合
 1. テナントコンテキスト欠落時は Outbox・同意ゲートともに常に空集合/全拒否を返す
 2. 同意ゲートはオプトイン原則（デフォルト非共有）を既定動作とする
 3. コアは Outbox・同意ゲート固有のシンボルへ一切依存しない（依存方向は
-   `bf-plugin-hub-wiring` → コアの一方向、[`plugin-boundary.md` 5.6 節](./plugin-boundary.md)）
+   `fandhe-backend-plugin-hub-wiring` → コアの一方向、[`plugin-boundary.md` 5.6 節](./plugin-boundary.md)）
 
 ## 3. 統合先（`micro-service-hub`）の前提
 
@@ -86,13 +86,13 @@ API エンドポイント URL 等の詳細）は 11 節「未決事項」に切�
 | Outbox Relay | Outbox テーブルをポーリングし配送する常駐プロセス | REQ-4 / MS-5 | 2026-09-30 |
 | 同意管理サービス | `(org_id, service, info_type)` 同意状態を PostgreSQL で永続化するサービス | REQ-2 / MS-3 | 2026-08-31 |
 
-`bf-plugin-hub-wiring` はいずれのサービスとも直接通信しない（4 節の trait 境界により、
+`fandhe-backend-plugin-hub-wiring` はいずれのサービスとも直接通信しない（4 節の trait 境界により、
 実データモデルとの結線は利用側サービス・別クレートが担う）。
 
 ## 4. trait 境界設計（依存逆転の維持）
 
 TASK-9.1 で確立した依存逆転型パターン（[`plugin-boundary.md` 5.6 節](./plugin-boundary.md)）を
-維持したまま実データモデルに対応するため、`bf-plugin-hub-wiring` 側にストレージ抽象を
+維持したまま実データモデルに対応するため、`fandhe-backend-plugin-hub-wiring` 側にストレージ抽象を
 定義する方針とする。
 
 ### 4.1 方針
@@ -100,7 +100,7 @@ TASK-9.1 で確立した依存逆転型パターン（[`plugin-boundary.md` 5.6 
 ```rust
 // crates/plugin-hub-wiring/src/outbox.rs（設計方針、未実装）
 //
-// コアは本 trait を一切知らない。`bf-plugin-hub-wiring` を依存に加えた
+// コアは本 trait を一切知らない。`fandhe-backend-plugin-hub-wiring` を依存に加えた
 // 利用側サービスが、この trait の実装（インメモリ or PostgreSQL）を
 // 選択して注入する。
 pub trait OutboxStore: Send + Sync {
@@ -125,14 +125,14 @@ pub trait ConsentStore: Send + Sync {
 ```
 
 - インメモリ実装（PoC-6 相当、`Mutex<Vec<...>>` / `Mutex<HashMap<...>>`）はテスト・スパイク
-  用として `bf-plugin-hub-wiring` 内に残す
+  用として `fandhe-backend-plugin-hub-wiring` 内に残す
 - PostgreSQL 実装は、利用側サービス（`micro-service-hub` の hub 基幹）または独立した
   アダプタクレートが `OutboxStore` / `ConsentStore` を実装して提供する。これにより
-  `bf-plugin-hub-wiring` は `sqlx`/`tokio-postgres` 等の DB クライアントに依存しない
+  `fandhe-backend-plugin-hub-wiring` は `sqlx`/`tokio-postgres` 等の DB クライアントに依存しない
   （pay-for-what-you-use、[`pay-for-what-you-use.md`](../../.claude/rules/pay-for-what-you-use.md)）
 - コア（`crates/core`）は本 trait 群を一切知らない。依存方向は
-  `PostgreSQL 実装（利用側） → OutboxStore/ConsentStore（bf-plugin-hub-wiring） ← インメモリ実装（テスト用）`
-  であり、`bf-plugin-hub-wiring` → コアの既存の依存逆転（5.6 節）とは独立した、
+  `PostgreSQL 実装（利用側） → OutboxStore/ConsentStore（fandhe-backend-plugin-hub-wiring） ← インメモリ実装（テスト用）`
+  であり、`fandhe-backend-plugin-hub-wiring` → コアの既存の依存逆転（5.6 節）とは独立した、
   プラグイン内部の trait 境界として設計する
 
 ### 4.2 同期 API 制約との関係
@@ -160,8 +160,8 @@ pub trait ConsentStore: Send + Sync {
 
 | PoC-6 インメモリ構造 | PostgreSQL 実データモデル（想定、要 `micro-service-hub` 側確認） | 対応方針 |
 |---|---|---|
-| `(org_id, service, info_type) -> bool`（`HashMap` 相当） | 同意管理サービスの `consent_grants` テーブル（`micro-service-hub` REQ-2 が定義） | `bf-plugin-hub-wiring` は同意管理サービスのテーブルへ直接アクセスしない。`ConsentStore` の PostgreSQL 実装（利用側）が同意管理サービスの API またはテーブルを参照する |
-| `filter_fields(org_id, service, fields)` | 同意管理サービスへの参照結果を用いたフィールドフィルタ | ロジックは `bf-plugin-hub-wiring` 側に残し、`ConsentStore::is_granted` の呼び出し結果のみを利用する（判定ロジックと永続化を分離） |
+| `(org_id, service, info_type) -> bool`（`HashMap` 相当） | 同意管理サービスの `consent_grants` テーブル（`micro-service-hub` REQ-2 が定義） | `fandhe-backend-plugin-hub-wiring` は同意管理サービスのテーブルへ直接アクセスしない。`ConsentStore` の PostgreSQL 実装（利用側）が同意管理サービスの API またはテーブルを参照する |
+| `filter_fields(org_id, service, fields)` | 同意管理サービスへの参照結果を用いたフィールドフィルタ | ロジックは `fandhe-backend-plugin-hub-wiring` 側に残し、`ConsentStore::is_granted` の呼び出し結果のみを利用する（判定ロジックと永続化を分離） |
 
 ### 5.3 トランザクション境界と責務分界
 
@@ -169,10 +169,10 @@ pub trait ConsentStore: Send + Sync {
   Outbox パターンの前提（`docs/spec/03-poc/hub-wiring-middleware/README.md` の
   「hub 仕様の読み取り結果」表、`data-ownership-propagation` PoC-3 由来）に従い、
   `OutboxStore::enqueue` の PostgreSQL 実装は呼び出し元の業務トランザクション内で実行する
-  契約とする。`bf-plugin-hub-wiring` はトランザクション管理そのものを担わず、呼び出し元
+  契約とする。`fandhe-backend-plugin-hub-wiring` はトランザクション管理そのものを担わず、呼び出し元
   （利用側サービス）がコネクション/トランザクションコンテキストを `OutboxStore` 実装へ
   渡す設計とする
-- **配送責務は Outbox Relay 側**: `bf-plugin-hub-wiring`・`OutboxStore` の責務は
+- **配送責務は Outbox Relay 側**: `fandhe-backend-plugin-hub-wiring`・`OutboxStore` の責務は
   `enqueue`（追記）までであり、ポーリング配送・リトライ・配送状態管理は
   `micro-service-hub` の Outbox Relay の責務である。この境界を越えない
 
@@ -201,7 +201,7 @@ PoC-6 は単一レイヤー（インメモリ `MockDb`）で両者を統合し�
   欠落）はアプリ層側で発生させない契約とし、万一発生した場合も trait 実装側で空集合を
   返すフェイルクローズを維持する（7 節）
 - `ConsentStore::is_granted`: 越境（他テナントの同意状態を参照しようとする呼び出し）は
-  同意管理サービス側の RLS 相当の境界強制で遮断される想定。`bf-plugin-hub-wiring` 側は
+  同意管理サービス側の RLS 相当の境界強制で遮断される想定。`fandhe-backend-plugin-hub-wiring` 側は
   `is_granted` の呼び出し引数に `org_id` を必須パラメータとして持たせ、暗黙のデフォルト
   テナントを持たせない
 
@@ -267,7 +267,7 @@ PoC-6 の不変条件（テナントコンテキスト欠落時は常に空集�
   欠落時は常に空集合（既定拒否）
 - **A02 暗号化の失敗 / シークレット管理**: 本ドキュメントに実鍵・接続文字列・実トークンを
   一切記載しない（記載箇所はすべてプレースホルダ）。JWT 方式の詳細は TASK-9.2（#62）に
-  委ね、`bf-plugin-hub-wiring` の現行 HS256 実装が本番流用不可のスパイクであることは
+  委ね、`fandhe-backend-plugin-hub-wiring` の現行 HS256 実装が本番流用不可のスパイクであることは
   `crates/plugin-hub-wiring/src/lib.rs` の doc comment 既述のとおり本ドキュメントでも
   前提として維持する
 - **A03 インジェクション**: 7 節「クエリ規約」で、パラメータ化クエリの徹底・文字列連結

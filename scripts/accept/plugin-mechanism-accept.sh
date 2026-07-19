@@ -41,7 +41,7 @@ elif ! metadata="$(cargo metadata --format-version 1 --no-deps 2>/tmp/plugin-mec
     record_fail "1: 2 種プラグイン feature 存在確認" "cargo metadata に失敗しました（/tmp/plugin-mechanism-accept-metadata.log 参照）"
 else
     core_features="$(printf '%s' "${metadata}" | jq -r '
-        .packages[] | select(.name == "backend-framework-core") | .features | keys[]
+        .packages[] | select(.name == "fandhe-backend-core") | .features | keys[]
     ' 2>/dev/null || true)"
     missing=()
     for f in webrtc-proxy graphql; do
@@ -50,7 +50,7 @@ else
         fi
     done
     if [ "${#missing[@]}" -eq 0 ]; then
-        record_pass "1: 2 種プラグイン feature 存在確認" "webrtc-proxy・graphql の両 feature が backend-framework-core に存在（着脱可能な 2 プラグインの前提を充足）"
+        record_pass "1: 2 種プラグイン feature 存在確認" "webrtc-proxy・graphql の両 feature が fandhe-backend-core に存在（着脱可能な 2 プラグインの前提を充足）"
     else
         record_fail "1: 2 種プラグイン feature 存在確認" "未検出の feature: ${missing[*]}"
     fi
@@ -58,7 +58,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 2: pay-for-what-you-use 機械検証（TASK-2.2、#19）の呼び出し
-#    graphql feature は dep:bf-plugin-graphql 命名規約に従うため、
+#    graphql feature は dep:fandhe-backend-plugin-graphql 命名規約に従うため、
 #    scripts/pay-for-what-you-use-check.sh の動的列挙により追加対応なしで
 #    検証対象に含まれる（同スクリプトの doc を参照）。
 # ---------------------------------------------------------------------------
@@ -77,8 +77,8 @@ build_and_test() {
     local label="$1"
     shift
     local feature_args=("$@")
-    if cargo build -p backend-framework-core "${feature_args[@]}" >/tmp/plugin-mechanism-accept-build-"${label}".log 2>&1 \
-        && cargo test -p backend-framework-core "${feature_args[@]}" >/tmp/plugin-mechanism-accept-test-"${label}".log 2>&1; then
+    if cargo build -p fandhe-backend-core "${feature_args[@]}" >/tmp/plugin-mechanism-accept-build-"${label}".log 2>&1 \
+        && cargo test -p fandhe-backend-core "${feature_args[@]}" >/tmp/plugin-mechanism-accept-test-"${label}".log 2>&1; then
         record_pass "3: build/test（${label}）" "cargo build/test 成功"
     else
         record_fail "3: build/test（${label}）" "cargo build/test に失敗（詳細: /tmp/plugin-mechanism-accept-{build,test}-${label}.log）"

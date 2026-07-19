@@ -42,21 +42,21 @@ assert_eq() {
 
 echo "===== 基準A: 依存除外 grep パイプライン（graphql-accept.sh check_dep_exclusion と同一パターン） ====="
 # graphql-accept.sh check_dep_exclusion と同一の grep パイプライン
-# （async-graphql|bf-plugin-graphql）を擬似 cargo tree 出力へ適用し、
+# （async-graphql|fandhe-backend-plugin-graphql）を擬似 cargo tree 出力へ適用し、
 # 陽性/陰性対照の両方を検証する（`webrtc-accept.sh` の check_dep_exclusion の
 # webrtc grep と同種のロジック）。
 count_graphql_deps() {
-    printf '%s\n' "$1" | grep -c -E 'async-graphql|bf-plugin-graphql' || true
+    printf '%s\n' "$1" | grep -c -E 'async-graphql|fandhe-backend-plugin-graphql' || true
 }
 
-no_deps_tree="backend-framework-core v0.1.0
-bf-http v0.1.0
-bf-routes v0.1.0
+no_deps_tree="fandhe-backend-core v0.1.0
+fandhe-backend-http v0.1.0
+fandhe-backend-routes v0.1.0
 tokio v1.53.0"
 assert_eq "graphql 無効相当ツリーは 0 件" "0" "$(count_graphql_deps "${no_deps_tree}")"
 
-with_deps_tree="backend-framework-core v0.1.0
-bf-plugin-graphql v0.1.0
+with_deps_tree="fandhe-backend-core v0.1.0
+fandhe-backend-plugin-graphql v0.1.0
 async-graphql v7.2.1
 async-graphql-parser v7.2.1
 async-graphql-value v7.2.1"

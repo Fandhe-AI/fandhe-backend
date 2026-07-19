@@ -3,7 +3,7 @@
 //! `crates/plugin-webrtc/src/handler.rs` の `#[cfg(test)]` モジュールは同一クレート内
 //! （white-box）から `try_handle_rtc_offer` の境界（サイズ上限・接続数上限・
 //! タイムアウト・不正 Offer）を検証済みだが、本ファイルは公開クレート境界の外側
-//! （`bf_plugin_webrtc::{WebRtcConfig, try_handle_rtc_offer, OFFER_PATH}`）からのみ
+//! （`fandhe_backend_plugin_webrtc::{WebRtcConfig, try_handle_rtc_offer, OFFER_PATH}`）からのみ
 //! black-box で同じ境界を再アサートする受け入れテストとして独立させる
 //! （TASK-8.1 実装のリファクタで内部モジュール構造が変わっても、公開 API 契約が
 //! 破られていないことを別視点で継続検証する。`docs/acceptance/req8-webrtc-attack-surface.md`
@@ -13,8 +13,8 @@
 //! リターンする）シナリオのみを対象とし、`tests/webrtc_datachannel.rs`
 //! （実ネットワーク疎通）とは責務を分離する。実装変更は行わない。
 
-use bf_http::request::{ParseOutcome, RequestHead, parse_request_head};
-use bf_plugin_webrtc::{OFFER_PATH, WebRtcConfig, try_handle_rtc_offer};
+use fandhe_backend_http::request::{ParseOutcome, RequestHead, parse_request_head};
+use fandhe_backend_plugin_webrtc::{OFFER_PATH, WebRtcConfig, try_handle_rtc_offer};
 use std::time::Duration;
 
 /// 生のリクエストバイト列から `RequestHead` を組み立てる（テストユーティリティ）。

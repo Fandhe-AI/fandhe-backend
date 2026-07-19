@@ -105,7 +105,7 @@ REQ-14 は「人間または追加の AI レビュー」を明示的に許容し
 
 - **deny lint 検出テスト**: `git archive HEAD` で scratch 領域へ workspace 全体を複製し、
   `crates/http/src/lib.rs` 相当の複製ファイルへ PoC-9 模擬パターン（`with_capacity` の
-  直後に `unsafe { reserve; set_len }`）を注入したうえで `cargo clippy -p bf-http --
+  直後に `unsafe { reserve; set_len }`）を注入したうえで `cargo clippy -p fandhe-backend-http --
   -D warnings` を実行し、非 0 終了かつ出力に `uninit_vec` を含むことを確認する。
   さらに同じ関数に `#[allow(clippy::uninit_vec, ...)]` を付与した変種でも、
   `E0453`（forbid lint への `#[allow]` はコンパイルエラー）が発生することを確認する。
@@ -137,7 +137,7 @@ REQ-14 は「人間または追加の AI レビュー」を明示的に許容し
 
 - 実施日: 2026-07-17
 - deny lint 検出テスト:
-  - `uninit_vec` 注入 → `cargo clippy -p bf-http -- -D warnings` は非 0 終了、出力に
+  - `uninit_vec` 注入 → `cargo clippy -p fandhe-backend-http -- -D warnings` は非 0 終了、出力に
     `clippy::uninit_vec` を含む → PASS
   - `#[allow(clippy::uninit_vec, ...)]` 付与変種 → `error[E0453]` を含む非 0 終了 → PASS
   - 検証用複製は `/tmp` 配下の一時ディレクトリのみに作成し、作業ツリーは変更していない

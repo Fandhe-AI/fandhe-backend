@@ -1,5 +1,5 @@
 [package]
-name = "bf-routes"
+name = "fandhe-backend-routes"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -11,9 +11,9 @@ publish = false
 workspace = true
 
 # pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）:
-# 本クレートは依存方向グラフの中間層であり、下位層 bf-http（crates/http）にのみ
+# 本クレートは依存方向グラフの中間層であり、下位層 fandhe-backend-http（crates/http）にのみ
 # 依存する。workspace 内クレート以外の外部依存は持たない（Router の内部状態は
-# 標準ライブラリの Vec のみで足りるため）。`cargo tree -p bf-routes` で
-# bf-http 以外の依存が増えていないことを確認する。
+# 標準ライブラリの Vec のみで足りるため）。`cargo tree -p fandhe-backend-routes` で
+# fandhe-backend-http 以外の依存が増えていないことを確認する。
 [dependencies]
-bf-http = { path = "../http" }
+fandhe-backend-http = { path = "../http" }

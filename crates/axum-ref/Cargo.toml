@@ -12,7 +12,7 @@ workspace = true
 
 # pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）:
 # axum-ref は crates/core とは独立した比較専用バイナリであり、ここで追加する依存は
-# core・plugin-* には一切波及しない（`cargo tree -p backend-framework-core` で検証可能）。
+# core・plugin-* には一切波及しない（`cargo tree -p fandhe-backend-core` で検証可能）。
 # axum は現行最新の安定版系列を採用する（reference-researcher 確認、2026-07 時点 0.8 系）。
 [dependencies]
 axum = "0.8"

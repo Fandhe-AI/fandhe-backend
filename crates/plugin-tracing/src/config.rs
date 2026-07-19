@@ -47,7 +47,7 @@ impl Default for TracingConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_tracing::TracingConfig;
+    /// use fandhe_backend_plugin_tracing::TracingConfig;
     /// use std::num::NonZeroU64;
     ///
     /// let config = TracingConfig::default();
@@ -73,7 +73,7 @@ impl TracingConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_tracing::TracingConfig;
+    /// use fandhe_backend_plugin_tracing::TracingConfig;
     /// use std::num::NonZeroU64;
     ///
     /// let config = TracingConfig::new(NonZeroU64::new(1).unwrap());
@@ -97,7 +97,7 @@ impl TracingConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_tracing::TracingConfig;
+    /// use fandhe_backend_plugin_tracing::TracingConfig;
     ///
     /// let config = TracingConfig::default()
     ///     .exclude_path("/health")

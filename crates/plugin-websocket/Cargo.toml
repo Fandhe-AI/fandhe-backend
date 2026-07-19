@@ -1,5 +1,5 @@
 [package]
-name = "bf-plugin-websocket"
+name = "fandhe-backend-plugin-websocket"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -20,7 +20,7 @@ workspace = true
 # 置き、本クレートは純関数 + 設定型のみを公開する。
 #
 # 依存は次の 3 つに限定する:
-# - `bf-http`: `RequestHead` の参照のみ（ハンドシェイク検証の入力）
+# - `fandhe-backend-http`: `RequestHead` の参照のみ（ハンドシェイク検証の入力）
 # - `tokio`: `io-util`（AsyncRead/AsyncWrite）+ `time`（アイドルタイムアウト、
 #   Issue #175。`crate::session::run_echo_session` が `tokio::time::timeout`
 #   で受信待ちを監視する）。`time` feature はコア（crates/core）側の
@@ -33,10 +33,10 @@ workspace = true
 #   に必要な `tungstenite/handshake`（sha1 + data-encoding）を有効化するために
 #   要る。`connect`（クライアント接続関数群、`tokio/net` 依存）・TLS 系
 #   feature は本クレートが必要としないため有効化しない
-#   （`cargo tree -p bf-plugin-websocket` で `native-tls` 等が現れないことを
+#   （`cargo tree -p fandhe-backend-plugin-websocket` で `native-tls` 等が現れないことを
 #   継続的に確認する）。
 [dependencies]
-bf-http = { path = "../http" }
+fandhe-backend-http = { path = "../http" }
 tokio = { version = "1", default-features = false, features = ["io-util", "time"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = [
   "handshake",

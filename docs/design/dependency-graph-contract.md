@@ -28,43 +28,43 @@ feature 着脱）が加わる。
 
 ```mermaid
 graph LR
-    server[server<br/>backend-framework-core] --> routes[bf-routes]
-    routes --> http[bf-http]
+    server[server<br/>fandhe-backend-core] --> routes[fandhe-backend-routes]
+    routes --> http[fandhe-backend-http]
 
-    server -.->|optional dep, feature 有効時のみ| ws[bf-plugin-websocket]
-    server -.->|optional dep, feature 有効時のみ| gql[bf-plugin-graphql]
-    server -.->|optional dep, feature 有効時のみ| rtc[bf-plugin-webrtc]
-    server -.->|optional dep, feature 有効時のみ| rtcproxy[bf-plugin-webrtc-proxy]
+    server -.->|optional dep, feature 有効時のみ| ws[fandhe-backend-plugin-websocket]
+    server -.->|optional dep, feature 有効時のみ| gql[fandhe-backend-plugin-graphql]
+    server -.->|optional dep, feature 有効時のみ| rtc[fandhe-backend-plugin-webrtc]
+    server -.->|optional dep, feature 有効時のみ| rtcproxy[fandhe-backend-plugin-webrtc-proxy]
 
     subgraph "プラグイン（feature 着脱、pay-for-what-you-use）"
         ws
         gql
         rtc
         rtcproxy
-        openapi[bf-plugin-openapi<br/>非該当・独立クレート]
+        openapi[fandhe-backend-plugin-openapi<br/>非該当・独立クレート]
     end
 ```
 
 - 実線（`server → routes → http::*`）: 常時有効な一方向コア依存。循環なし
-- 破線（`server -.-> bf-plugin-*`）: feature 無効時は `cargo tree` に一切現れない
+- 破線（`server -.-> fandhe-backend-plugin-*`）: feature 無効時は `cargo tree` に一切現れない
   （pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）コンパイル時依存逆転
-- `bf-plugin-openapi` はいずれのプラグイン依存逆転エッジにも乗らない独立クレート
+- `fandhe-backend-plugin-openapi` はいずれのプラグイン依存逆転エッジにも乗らない独立クレート
   （5 節参照。現状 core / http / routes / 他プラグインのいずれからも参照されない）
 
 ### 1.2 許可エッジ一覧（`allowed_edge_patterns` からの転記）
 
 | from | to | 種別 |
 |---|---|---|
-| `backend-framework-core` | `bf-http` | コア一方向依存 |
-| `backend-framework-core` | `bf-routes` | コア一方向依存 |
-| `backend-framework-core` | `bf-plugin-webrtc-proxy` | プラグイン依存逆転（パスインターセプト型） |
-| `backend-framework-core` | `bf-plugin-webrtc` | プラグイン依存逆転（パスインターセプト型） |
-| `backend-framework-core` | `bf-plugin-websocket` | プラグイン依存逆転（Upgrade 型） |
-| `backend-framework-core` | `bf-plugin-graphql` | プラグイン依存逆転（パスインターセプト型） |
-| `bf-routes` | `bf-http` | コア一方向依存 |
-| `bf-plugin-*` | `bf-http` | プラグイン→コア基盤層参照（許可） |
-| `bf-plugin-*` | `bf-routes` | プラグイン→コア基盤層参照（許可） |
-| `bf-plugin-*` | `backend-framework-core` | 汎用パターン（現状 `bf-plugin-websocket` は循環回避のため不使用） |
+| `fandhe-backend-core` | `fandhe-backend-http` | コア一方向依存 |
+| `fandhe-backend-core` | `fandhe-backend-routes` | コア一方向依存 |
+| `fandhe-backend-core` | `fandhe-backend-plugin-webrtc-proxy` | プラグイン依存逆転（パスインターセプト型） |
+| `fandhe-backend-core` | `fandhe-backend-plugin-webrtc` | プラグイン依存逆転（パスインターセプト型） |
+| `fandhe-backend-core` | `fandhe-backend-plugin-websocket` | プラグイン依存逆転（Upgrade 型） |
+| `fandhe-backend-core` | `fandhe-backend-plugin-graphql` | プラグイン依存逆転（パスインターセプト型） |
+| `fandhe-backend-routes` | `fandhe-backend-http` | コア一方向依存 |
+| `fandhe-backend-plugin-*` | `fandhe-backend-http` | プラグイン→コア基盤層参照（許可） |
+| `fandhe-backend-plugin-*` | `fandhe-backend-routes` | プラグイン→コア基盤層参照（許可） |
+| `fandhe-backend-plugin-*` | `fandhe-backend-core` | 汎用パターン（現状 `fandhe-backend-plugin-websocket` は循環回避のため不使用） |
 
 上記以外のエッジ（逆方向・未許可のプラグイン依存等）は `dep-direction-check.sh`
 チェック 1 が非 0 終了で検出する。循環依存は同スクリプト内 DFS で別途検出する
@@ -78,9 +78,9 @@ graph LR
 | # | 拡張点 / シーム | trait / シグネチャ | dyn 互換性 | 同期/非同期 | 実装クレート | 契約・前提条件 |
 |---|---|---|---|---|---|---|
 | 1 | `Middleware` | `crates/core/src/extension.rs` | dyn 互換 | 同期 | （現状該当実装なし、将来用） | リクエスト前後処理への割り込み |
-| 2 | `UpgradeHandler` | 同上（`try_handle_upgrade`） | dyn 互換 | 同期（委譲判定のみ）+ 実処理は非同期委譲 | `bf-plugin-websocket` | 「委譲判定のみ」を担い、ハンドシェイク検証・101 応答送出・フレーミングはプラグイン側に閉じる契約（REQ-4） |
+| 2 | `UpgradeHandler` | 同上（`try_handle_upgrade`） | dyn 互換 | 同期（委譲判定のみ）+ 実処理は非同期委譲 | `fandhe-backend-plugin-websocket` | 「委譲判定のみ」を担い、ハンドシェイク検証・101 応答送出・フレーミングはプラグイン側に閉じる契約（REQ-4） |
 | 3 | `RequestGate` | 同上 | dyn 互換 | 同期 | （現状該当実装なし、将来用） | リクエスト可否判定 |
-| 4 | `try_intercept`（固定シーム） | `crates/core/src/plugin.rs` | — | 非同期 | `bf-plugin-graphql`・`bf-plugin-webrtc`・`bf-plugin-webrtc-proxy` | 3 trait はいずれも dyn 互換性のため同期 API 限定であり、非同期の上流中継・クエリ実行を要するプラグインは既存拡張点経由の依存逆転で表現できない（`dep-direction-check.sh` 該当コメント）。パスインターセプト型は cfg-gated 分岐として `try_intercept` に集約され、`Option` フォールスルーで次のプラグインへ委譲する（`docs/design/plugin-boundary.md` 4 節） |
+| 4 | `try_intercept`（固定シーム） | `crates/core/src/plugin.rs` | — | 非同期 | `fandhe-backend-plugin-graphql`・`fandhe-backend-plugin-webrtc`・`fandhe-backend-plugin-webrtc-proxy` | 3 trait はいずれも dyn 互換性のため同期 API 限定であり、非同期の上流中継・クエリ実行を要するプラグインは既存拡張点経由の依存逆転で表現できない（`dep-direction-check.sh` 該当コメント）。パスインターセプト型は cfg-gated 分岐として `try_intercept` に集約され、`Option` フォールスルーで次のプラグインへ委譲する（`docs/design/plugin-boundary.md` 4 節） |
 
 3 拡張点 trait（`Middleware` / `UpgradeHandler` / `RequestGate`）+ `try_intercept`
 固定シームの計 4 つが「変更影響範囲を機械判定できる閉じたシーム」の全体集合である
@@ -101,11 +101,11 @@ graph LR
 
 | 値 | 適用クレート | 補足 |
 |---|---|---|
-| `UpgradeHandler（try_handle_upgrade）` | `bf-plugin-websocket` | Upgrade 型シーム |
-| `パスインターセプト型（try_intercept）` | `bf-plugin-graphql`・`bf-plugin-webrtc`・`bf-plugin-webrtc-proxy` | 3 trait 非該当だがシグネチャ固定シームに閉じる。宣言直後に `docs/design/extension-closure-verification.md` 3.4 節への参照を必須とする |
+| `UpgradeHandler（try_handle_upgrade）` | `fandhe-backend-plugin-websocket` | Upgrade 型シーム |
+| `パスインターセプト型（try_intercept）` | `fandhe-backend-plugin-graphql`・`fandhe-backend-plugin-webrtc`・`fandhe-backend-plugin-webrtc-proxy` | 3 trait 非該当だがシグネチャ固定シームに閉じる。宣言直後に `docs/design/extension-closure-verification.md` 3.4 節への参照を必須とする |
 | `Middleware` | （現状該当なし、将来用） | 新規実装時にこの語彙で宣言する |
 | `RequestGate` | （現状該当なし、将来用） | 同上 |
-| `非該当（<理由の参照: docs/design/*.md>）` | `bf-plugin-openapi` | ビルド時生成でランタイム拡張点を使わない。理由の実体は本書 5 節。参照先ファイルの存在を機械検査する |
+| `非該当（<理由の参照: docs/design/*.md>）` | `fandhe-backend-plugin-openapi` | ビルド時生成でランタイム拡張点を使わない。理由の実体は本書 5 節。参照先ファイルの存在を機械検査する |
 
 `core` / `http` / `routes` / `axum-ref` は本宣言の対象外とする（プラグイン境界の
 宣言であるため）。これらは既存の依存方向宣言（`server → routes → http::*`、
@@ -205,7 +205,7 @@ NFR（RPS 比・p95 比、REQ-10）再検証で、サンプリング（TASK-10.2
      一致せず E 判定となる
 4. **正当性根拠**:
    - `benches/tracing-nfr-bench.sh`・`benches/reports/task-10.4-tracing-performance.md`
-     は `bf-plugin-tracing` の実装ロジック（拡張点 `Middleware`、2 節契約一覧の
+     は `fandhe-backend-plugin-tracing` の実装ロジック（拡張点 `Middleware`、2 節契約一覧の
      `Middleware` 行）そのものを変更せず、既存構成の NFR を計測・記録するのみで、
      計測対象の拡張点契約・依存方向（`server → routes → http::*`、1 節）には影響しない
    - `crates/core/examples/minimal.rs` は既存の負荷計測対象サンプルに `GET /health`
@@ -240,7 +240,7 @@ NFR（RPS 比・p95 比、REQ-10）再検証で、サンプリング（TASK-10.2
    記録した実測レポートである。なお同一変更で追加した計測ハーネス本体
    （`crates/plugin-hub-wiring/examples/jwt_cache_bench.rs`）はプラグインクレート内
    （A）に該当し PASS 済みで、E 判定はレポート md ファイルのみ
-4. **正当性根拠**: 本レポートは `bf-plugin-hub-wiring` の `RequestGate` 実装
+4. **正当性根拠**: 本レポートは `fandhe-backend-plugin-hub-wiring` の `RequestGate` 実装
    （`TenantGate::check`、2 節契約一覧の `RequestGate` 行）そのものの契約を変更する
    ものではなく、検証結果キャッシュ導入によるレイテンシ・スループット改善を計測・記録
    するのみで、拡張点契約・依存方向（`server → routes → http::*`、1 節）には影響しない。
@@ -264,11 +264,11 @@ RPS・p95 レイテンシに与える影響（NFR-6、`docs/spec/04-requirements
    - `benches/hub-nfr6-bench.sh`
    - `benches/reports/task-9.5-hub-wiring-performance.md`
 3. **閉じない理由**: 4.3 節〜4.5 節と同一の運用上のギャップ（`benches/*` が D 未対応）
-   により E 判定となる、`bf-plugin-hub-wiring` リンクコスト・opt-in（ゲート有効時）
+   により E 判定となる、`fandhe-backend-plugin-hub-wiring` リンクコスト・opt-in（ゲート有効時）
    コストを計測するベンチスクリプトとその実測結果レポートである
    （`benches/graphql-nfr6-bench.sh`・`benches/webrtc-nfr6-bench.sh` と同型、
    `benches/hub-nfr6-bench.sh` 冒頭コメント参照）
-4. **正当性根拠**: 両ファイルは `bf-plugin-hub-wiring` の `RequestGate` 実装
+4. **正当性根拠**: 両ファイルは `fandhe-backend-plugin-hub-wiring` の `RequestGate` 実装
    （`TenantGate`、2 節契約一覧の `RequestGate` 行）そのものの契約を変更するもの
    ではなく、既存構成（`BF_HUB_GATE=off` によるリンクコスト分離計測、および
    ゲート有効構成の opt-in コスト参考値）の負荷計測・実測結果を記録するのみで、
@@ -280,7 +280,7 @@ RPS・p95 レイテンシに与える影響（NFR-6、`docs/spec/04-requirements
 
 ### 4.7 記載例（TASK-176 / #176 / PR #191）
 
-`bf-routes`（`crates/routes`）の `Router` に `{name}` パスパラメータ対応
+`fandhe-backend-routes`（`crates/routes`）の `Router` に `{name}` パスパラメータ対応
 （`route_param` / `dispatch` の優先順位付き解決、`PathParams` によるゼロコピー
 値抽出）を追加した変更で、`extension-closure-check.sh` の分類規則（A はプラグイン
 クレート内 `crates/plugin-*/**`、B はコア側許容シームのうち `crates/core/Cargo.toml`・
@@ -298,20 +298,20 @@ RPS・p95 レイテンシに与える影響（NFR-6、`docs/spec/04-requirements
 3. **閉じない理由**: `extension-closure-check.sh` の分類規則は「プラグインクレート内
    （A）」「コア側許容シーム（B、`crates/core` の 4 ファイルのみ）」「テスト（C、
    `crates/core/tests/**`・`crates/plugin-*/tests/**` のみ）」「ドキュメント・運用
-   （D、`docs/*`・`scripts/*` 等）」の 4 カテゴリしか許可しておらず、`bf-routes`
+   （D、`docs/*`・`scripts/*` 等）」の 4 カテゴリしか許可しておらず、`fandhe-backend-routes`
    （1 節の正準依存グラフにおける中間層クレート、`server → routes → http::*`）を
    走査対象に含めていない。今回の変更は 3 拡張点 trait（`Middleware` /
    `UpgradeHandler` / `RequestGate`）にも `try_intercept` 固定シームにも一切触れて
-   おらず、いずれのプラグインクレート（`crates/plugin-*`）でもない `bf-routes` 自体の
+   おらず、いずれのプラグインクレート（`crates/plugin-*`）でもない `fandhe-backend-routes` 自体の
    ルーティング機能拡張であるため、分類規則の対象漏れにより機械的に A〜D いずれにも
    一致せず E 判定となる
-4. **正当性根拠**: 3 ファイルはいずれも `bf-routes` の既存責務（method + `target` の
+4. **正当性根拠**: 3 ファイルはいずれも `fandhe-backend-routes` の既存責務（method + `target` の
    完全一致解決）に `{name}` パラメータ照合を追加するのみで、2 節契約一覧の 4 拡張点
    （`Middleware`・`UpgradeHandler`・`RequestGate`・`try_intercept`）のいずれの実装
-   クレート（`bf-plugin-websocket`・`bf-plugin-graphql`・`bf-plugin-webrtc`・
-   `bf-plugin-webrtc-proxy`）にも属さず、それらの契約・シグネチャを変更しない。
+   クレート（`fandhe-backend-plugin-websocket`・`fandhe-backend-plugin-graphql`・`fandhe-backend-plugin-webrtc`・
+   `fandhe-backend-plugin-webrtc-proxy`）にも属さず、それらの契約・シグネチャを変更しない。
    依存方向（`server → routes → http::*`、1 節）も維持したまま
-   （`crates/routes/src/pattern.rs` は `bf-http` の型に依存しない旨を冒頭 doc に明記、
+   （`crates/routes/src/pattern.rs` は `fandhe-backend-http` の型に依存しない旨を冒頭 doc に明記、
    `crates/routes/src/lib.rs` 冒頭 doc の依存方向宣言も無変更）であり、
    `crates/plugin-*` 固有シンボルへの依存も追加していない
    （`scripts/dep-direction-check.sh` で検証可能）。既存の静的ルート（完全一致）の
@@ -320,8 +320,8 @@ RPS・p95 レイテンシに与える影響（NFR-6、`docs/spec/04-requirements
    path_params.rs` は追加した `route_param` / `dispatch` の振る舞いを検証するテスト
    に過ぎない。したがって本件は拡張点設計の閉包漏れ（プラグイン実装ロジックの拡張点
    外への漏出）ではなく、`extension-closure-check.sh` の分類規則が中間層クレート
-   `bf-routes` を A〜D のいずれにも割り当てていない運用上のギャップに起因する。
-   `bf-routes`（コア一方向依存の中間層、B 相当の許容シームへの追加）を分類規則に
+   `fandhe-backend-routes` を A〜D のいずれにも割り当てていない運用上のギャップに起因する。
+   `fandhe-backend-routes`（コア一方向依存の中間層、B 相当の許容シームへの追加）を分類規則に
    含める是正は 4.3 節〜4.6 節と同一の別 Issue 対象とする
    （`.claude/rules/out-of-scope-tracking.md`）
 
@@ -348,7 +348,7 @@ E（閉包違反候補）と判定された。
    → `run_session`）・既定ハンドラ導入（`EchoHandler`）に追随して doc comment の
    参照名を更新したのみである
 4. **正当性根拠**: 変更は doc comment（コメント文字列）のみであり、
-   `crates/core/examples/ws_echo.rs` が呼び出す `bf_plugin_websocket::WebSocketConfig`
+   `crates/core/examples/ws_echo.rs` が呼び出す `fandhe_backend_plugin_websocket::WebSocketConfig`
    の公開 API・`Server::websocket` の配線・拡張点契約（`UpgradeHandler`、2 節契約
    一覧）を一切変更しない。参照先の実装（`run_session` への改名・`WsMessageHandler`
    拡張、既定は `EchoHandler` で従来の `run_echo_session` と同一の観測可能な挙動を
@@ -357,16 +357,100 @@ E（閉包違反候補）と判定された。
    `crates/core/examples/*` の扱い見直し（分類規則の是正）は同節と同一の別 Issue
    対象のまま据え置く
 
-## 5. `bf-plugin-openapi` の非該当理由
+### 4.9 記載例（#202 / PR #209、パッケージ名一括改名）
 
-`bf-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも
+イシュー #202「全 crate の package 名・import 名を `fandhe-backend` 体系へ一括改名」
+（PR #209、HEAD sha `6add5ce12679faedcf16edcc7742b87a5d77121a`）は、workspace 全体の
+`bf-*` パッケージ名・`bf_http` 等の import パスを `fandhe-backend-*` /
+`fandhe_backend_*` へ機械的に置換する改名専用コミットである。新規プロトコル・機能の
+追加や拡張点契約の変更を一切伴わないが、`extension-closure-check.sh` は「変更ファイル
+一覧」を機械的に A〜D 分類するのみで「変更の性質（改名か機能追加か）」を判定しないため、
+`crates/http/**`・`crates/routes/**`・`crates/axum-ref/**` 等（4.7 節と同一の運用上の
+ギャップ。中間層・比較専用クレートが A〜D いずれにも割り当てられていない）や
+`crates/http/fuzz/**`・`benches/*.sh` 等の周辺資産が機械的に E 判定となった。このうち
+以下 21 件は他節の記載例と偶然一致する記載がなく未記載のまま FAIL していた
+（`scripts/extension-closure-gate.sh --base origin/main` 実行結果、`unsafe-triage` ジョブ
+run https://github.com/Fandhe-AI/backend-framework/actions/runs/29668822330）。
+
+1. **対象コミット/PR**: PR #209（#202、HEAD sha
+   `6add5ce12679faedcf16edcc7742b87a5d77121a`）
+2. **E ファイルパス**（未記載だった 21 件。48 件の E 判定全体のうち、他節既存記載と
+   文字列一致していなかった残り）:
+   - `benches/bench-accept.sh`
+   - `benches/bench-ws-load.sh`
+   - `benches/reports/task-1.6-1-performance.md`
+   - `benches/reports/task-3.3-openapi-performance.md`
+   - `benches/reports/task-4.3-ws-load-rss.md`
+   - `benches/reports/task-4.4-ws-latency.md`
+   - `benches/reports/task-8.4-webrtc-nfr6.md`
+   - `benches/ws-nfr6-bench.sh`
+   - `crates/axum-ref/Cargo.toml`
+   - `crates/axum-ref/src/main.rs`
+   - `crates/core/examples/core-bench.rs`
+   - `crates/core/examples/graphql_nfr6.rs`
+   - `crates/core/examples/webrtc_nfr6.rs`
+   - `crates/core/examples/ws_nfr6.rs`
+   - `crates/http/Cargo.toml`
+   - `crates/http/fuzz/fuzz_targets/chunked_decoder.rs`
+   - `crates/http/fuzz/fuzz_targets/head_semantics.rs`
+   - `crates/http/fuzz/fuzz_targets/parse_request_head.rs`
+   - `crates/http/src/body.rs`
+   - `crates/http/src/chunked.rs`
+   - `crates/routes/Cargo.toml`
+
+   （残り 27 件 — `benches/README.md`・`benches/graphql-nfr6-bench.sh`・
+   `benches/hub-nfr6-bench.sh`・`benches/nfr6-exclusive.sh`・
+   `benches/reports/task-10.4-tracing-performance.md`・
+   `benches/reports/task-10.6-tracing-backpressure.md`・
+   `benches/reports/task-9.3-jwt-cache-performance.md`・
+   `benches/reports/task-9.5-hub-wiring-performance.md`・
+   `benches/tracing-backpressure-bench.sh`・`benches/tracing-nfr-bench.sh`・
+   `benches/webrtc-nfr6-bench.sh`・`crates/core/examples/minimal.rs`・
+   `crates/core/examples/tracing_nfr.rs`・`crates/core/examples/ws_echo.rs`・
+   `crates/core/src/extension.rs`・`crates/http/fuzz/Cargo.toml`・
+   `crates/http/src/buffer.rs`・`crates/http/src/connection.rs`・
+   `crates/http/src/lib.rs`・`crates/http/src/request.rs`・
+   `crates/http/src/response.rs`・`crates/http/src/socket.rs`・
+   `crates/http/tests/http_flow.rs`・`crates/routes/src/lib.rs`・
+   `crates/routes/src/pattern.rs`・`crates/routes/tests/path_params.rs`・
+   `ts/src/generated/schema.d.ts` — は 4.3 節〜4.8 節の既存記載パスと文字列一致して
+   おり、本 PR 時点で `extension-closure-gate.sh` の理由記載照合をすでに満たしていた。
+   本節はこれらも含め、48 件全件が「改名専用コミットであり閉包違反ではない」ことを
+   記録として明記する）
+3. **閉じない理由**: `extension-closure-check.sh` の分類規則（A: `crates/plugin-*/**`、
+   B: `crates/core` の 4 ファイルのみ、C: `crates/core/tests/**`・
+   `crates/plugin-*/tests/**` のみ、D: `docs/*`・`scripts/*` 等）は、中間層・参照専用
+   クレート（`crates/http`・`crates/routes`・`crates/axum-ref`）や `crates/core/examples/*`・
+   `benches/*`・`crates/http/fuzz/**`・`ts/src/generated/schema.d.ts` を走査対象に
+   含めていない（4.3 節〜4.7 節と同一の運用上のギャップ）。加えて本コミットは
+   これら周辺資産すべてに対し `bf-*` → `fandhe-backend-*` の package/import 名置換を
+   一括で行っているため、対象範囲が 4.3 節〜4.8 節のいずれよりも広く、機械的に
+   E 判定となるファイルが 48 件に達した
+4. **正当性根拠**: 本コミットの差分は package 名・import パス文字列の置換のみに限定
+   される（例: `crates/http/src/body.rs` の doc test 内 `use bf_http::body::...` →
+   `use fandhe_backend_http::body::...`、`crates/routes/Cargo.toml` の
+   `name = "bf-routes"` → `name = "fandhe-backend-routes"`）。3 拡張点 trait
+   （`Middleware` / `UpgradeHandler` / `RequestGate`）・`try_intercept` 固定シームの
+   契約・シグネチャ・実装ロジックはいずれも変更しておらず、依存方向
+   （`server → routes → http::*`、1 節）にも変更はない（`scripts/dep-direction-check.sh`
+   で検証可能）。したがって本件は拡張点設計の閉包漏れ（プラグイン実装ロジックの
+   拡張点外への漏出）ではなく、`extension-closure-check.sh` の分類規則が改名のような
+   workspace 全体一括変更・中間層クレート・周辺資産（`benches/*`・
+   `crates/core/examples/*`・`crates/http/fuzz/**` 等）を想定していないことに起因する
+   運用上のギャップである。分類規則自体の見直し（中間層クレート・`benches/*`・
+   `examples/*` の A〜D への追加）は 4.3 節〜4.7 節と同一の別 Issue 対象として据え置く
+   （`.claude/rules/out-of-scope-tracking.md`）
+
+## 5. `fandhe-backend-plugin-openapi` の非該当理由
+
+`fandhe-backend-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも
 使わない。ビルド時（`gen-openapi` CLI、TASK-3.2 / #31）に `openapi.json` を静的生成し、
 実行時は生成済み JSON を配信するのみで、コアのリクエスト処理ループへ動的に割り込む
 ランタイム拡張点を要さないためである（`crates/plugin-openapi/src/lib.rs` 冒頭 doc・
 `docs/spec/03-poc/openapi-generation/README.md`）。
 
 コアとの接続（`GET /openapi.json` の配線）は TASK-2.1（#18）のサーバ側 feature
-（`openapi = ["dep:bf-plugin-openapi"]` 相当）に委ねられ、これはコンパイル時の
+（`openapi = ["dep:fandhe-backend-plugin-openapi"]` 相当）に委ねられ、これはコンパイル時の
 feature 着脱であって実行時拡張点の契約ではない。したがって「3 拡張点のいずれかに
 閉じるか、閉じない場合は理由を明記する」という REQ-13 の要求に対しては、
 「拡張点自体を使用しない（非該当）」区分として扱い、本節をその理由の実体とする。

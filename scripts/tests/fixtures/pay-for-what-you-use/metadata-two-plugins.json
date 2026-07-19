@@ -1,11 +1,11 @@
 {
   "packages": [
     {
-      "name": "backend-framework-core",
+      "name": "fandhe-backend-core",
       "features": {
         "default": [],
-        "webrtc-proxy": ["dep:bf-plugin-webrtc-proxy"],
-        "example-other": ["dep:bf-plugin-example-other"]
+        "webrtc-proxy": ["dep:fandhe-backend-plugin-webrtc-proxy"],
+        "example-other": ["dep:fandhe-backend-plugin-example-other"]
       }
     }
   ]

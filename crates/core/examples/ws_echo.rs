@@ -8,7 +8,7 @@
 //!
 //! `GET /health` は `benches/lib/common.sh` の `wait_for_health` が起動完了を
 //! 検知するために使う（`examples/minimal.rs` と同一パス）。`GET /ws`
-//! （既定パス、`bf_plugin_websocket::WebSocketConfig::default()`）が
+//! （既定パス、`fandhe_backend_plugin_websocket::WebSocketConfig::default()`）が
 //! エコーセッション（`crates/plugin-websocket/src/session.rs` の
 //! `run_session`。既定ハンドラは `EchoHandler`、Issue #179）を提供する。
 //!
@@ -24,14 +24,14 @@
 //!
 //! 動作確認手順:
 //! ```text
-//! $ cargo run --release --example ws_echo -p backend-framework-core --features websocket
+//! $ cargo run --release --example ws_echo -p fandhe-backend-core --features websocket
 //! $ curl -v http://127.0.0.1:3007/health   # 200 応答
 //! ```
 
-use backend_framework_core::Server;
-use bf_http::response::Response;
-use bf_plugin_websocket::WebSocketConfig;
-use bf_routes::Router;
+use fandhe_backend_core::Server;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_websocket::WebSocketConfig;
+use fandhe_backend_routes::Router;
 
 /// `MAX_CONNECTIONS` env を読み、不正値（非数値・`0`）は既定 10,100
 /// （10,000 WS 接続 + 監視用ヘルスチェック接続の余裕）へフォールバックする。

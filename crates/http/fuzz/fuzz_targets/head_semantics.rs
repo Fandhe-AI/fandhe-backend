@@ -14,9 +14,9 @@
 
 #![no_main]
 
-use bf_http::body::body_length;
-use bf_http::connection::should_keep_alive;
-use bf_http::request::{parse_request_head, ParseOutcome};
+use fandhe_backend_http::body::body_length;
+use fandhe_backend_http::connection::should_keep_alive;
+use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

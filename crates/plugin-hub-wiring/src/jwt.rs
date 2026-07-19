@@ -124,8 +124,8 @@ struct Payload {
 /// # Examples
 ///
 /// ```
-/// use bf_plugin_hub_wiring::jwks::JwksKeySet;
-/// use bf_plugin_hub_wiring::jwt::{verify_token, TokenError};
+/// use fandhe_backend_plugin_hub_wiring::jwks::JwksKeySet;
+/// use fandhe_backend_plugin_hub_wiring::jwt::{verify_token, TokenError};
 ///
 /// let keys = JwksKeySet::from_json(r#"{"keys":[]}"#).unwrap();
 ///

@@ -10,9 +10,9 @@
 #   `try_intercept`）自体は変更しない（計測専用の example を叩くのみ）。
 #
 # 前提:
-#   - `cargo build --release -p backend-framework-core --example minimal
+#   - `cargo build --release -p fandhe-backend-core --example minimal
 #      --no-default-features`
-#   - `cargo build --release -p backend-framework-core --example webrtc_nfr6
+#   - `cargo build --release -p fandhe-backend-core --example webrtc_nfr6
 #      --features webrtc`
 #   （本スクリプトはビルドを自動実行しない。既存バイナリの存在を検査するのみ。
 #    benches/lib/common.sh の「サプライチェーン考慮・自動取得しない」方針を踏襲）
@@ -63,13 +63,13 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 if [ ! -x "${BASELINE_BIN}" ]; then
     echo "エラー: ${BASELINE_BIN} が見つかりません。先に" >&2
-    echo "  cargo build --release -p backend-framework-core --example minimal --no-default-features" >&2
+    echo "  cargo build --release -p fandhe-backend-core --example minimal --no-default-features" >&2
     echo "を実行してください" >&2
     exit 1
 fi
 if [ ! -x "${WEBRTC_BIN}" ]; then
     echo "エラー: ${WEBRTC_BIN} が見つかりません。先に" >&2
-    echo "  cargo build --release -p backend-framework-core --example webrtc_nfr6 --features webrtc" >&2
+    echo "  cargo build --release -p fandhe-backend-core --example webrtc_nfr6 --features webrtc" >&2
     echo "を実行してください" >&2
     exit 1
 fi

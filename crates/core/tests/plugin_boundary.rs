@@ -1,7 +1,7 @@
 //! `webrtc-proxy` feature（TASK-2.1 / #18）配線の統合テスト（feature 有効側）。
 //!
 //! `crates/core/src/plugin.rs` の非公開 `try_intercept` シームが実際に
-//! `bf_plugin_webrtc_proxy::try_handle_rtc_offer` へ委譲し、`POST /rtc/offer`
+//! `fandhe_backend_plugin_webrtc_proxy::try_handle_rtc_offer` へ委譲し、`POST /rtc/offer`
 //! が既定 `Handler` より先にインターセプトされることを、モック上流 TCP
 //! サーバ + `tokio::io::duplex` で駆動する `handle_connection` を通して
 //! 検証する。無関係パスは素通りして既定 `Handler` に到達することも併せて
@@ -13,10 +13,10 @@
 
 #![cfg(feature = "webrtc-proxy")]
 
-use backend_framework_core::{Handler, Server, handle_connection};
-use bf_http::request::RequestHead;
-use bf_http::response::Response;
-use bf_plugin_webrtc_proxy::ProxyConfig;
+use fandhe_backend_core::{Handler, Server, handle_connection};
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_webrtc_proxy::ProxyConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -43,7 +43,7 @@ impl Handler for FixedOkHandler {
 
 /// SDP Answer 固定バイト列を返すモック上流 WebRTC シグナリングサーバ。
 ///
-/// `bf_plugin_webrtc_proxy::client::forward_offer` が中継する先として使う。
+/// `fandhe_backend_plugin_webrtc_proxy::client::forward_offer` が中継する先として使う。
 /// 本テストの関心は「コアが上流応答を最終応答へ変換して返すこと」であり、
 /// 上流プロトコルの厳密なパースは `crates/plugin-webrtc-proxy` 側の責務
 /// （既存テストで検証済み）のため、ここでは固定応答で十分とする。
@@ -115,7 +115,7 @@ async fn unrelated_path_falls_through_to_default_handler() {
 async fn upstream_failure_returns_bad_gateway_with_reason_and_content_type() {
     // 上流未起動（127.0.0.1:1 は通常未リッスン）: 502/504 のいずれかへ丸められる
     // ことに加え、reason phrase が空文字へ劣化していないことを確認する
-    // （TASK-2.1 レビュー指摘: bf_http::response::Response の固定 reason
+    // （TASK-2.1 レビュー指摘: fandhe_backend_http::response::Response の固定 reason
     // テーブルに 502/504 が欠けていると `HTTP/1.1 502 \r\n` になってしまう）。
     let config =
         ProxyConfig::new("127.0.0.1:1").with_connect_timeout(std::time::Duration::from_millis(200));

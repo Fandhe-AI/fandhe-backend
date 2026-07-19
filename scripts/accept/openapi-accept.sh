@@ -7,7 +7,7 @@
 #      （API 設計ベストプラクティス系ルールとは区別する。`openapi-spec-validator` は
 #      スキーマ妥当性のみを検証しベストプラクティス系ルールを含まないため採用）
 #   2. 生成定義とエンドポイント実装の齟齬 0 件
-#      （機械検証: `cargo test -p bf-plugin-openapi`、うち `openapi_consistency.rs` が
+#      （機械検証: `cargo test -p fandhe-backend-plugin-openapi`、うち `openapi_consistency.rs` が
 #      path/method/パラメータ名・型/レスポンススキーマを網羅アサート。ただし
 #      `crates/routes` 側の実サービングは `GET /health` を除く 4 エンドポイントが
 #      本イシュー着手時点で未実装のため、完全な「実装との」突合は BLOCKED として
@@ -17,7 +17,7 @@
 #   5. CI の 2 段階ビルド順序（TASK-3.2 実装済み）の存在確認
 #
 # 節 3・4 は `crates/core` にサーバ側 `openapi` feature（`openapi =
-# ["dep:bf-plugin-openapi"]` 相当）の配線が本イシュー着手時点で存在しないため実行不能である
+# ["dep:fandhe-backend-plugin-openapi"]` 相当）の配線が本イシュー着手時点で存在しないため実行不能である
 # （`crates/plugin-openapi/src/lib.rs`・`embed.rs` の doc comment が「TASK-2.1（#18）に
 # 接続点を委ねる」と明記。TASK-2.1（#18）は当該配線を実施せずクローズされ、後継 Issue も
 # 未起票）。判定不能を PASS と偽らず BLOCKED として記録し非 0 終了しない（SKIP 相当。
@@ -67,10 +67,10 @@ fi
 # ---------------------------------------------------------------------------
 # 2: 生成定義とエンドポイント実装の齟齬（機械検証分）
 # ---------------------------------------------------------------------------
-if cargo test -p bf-plugin-openapi >/tmp/openapi-accept-consistency.log 2>&1; then
-    record_pass "2a: ApiDoc/openapi.json 内部整合（機械検証）" "cargo test -p bf-plugin-openapi が PASS（詳細: /tmp/openapi-accept-consistency.log）"
+if cargo test -p fandhe-backend-plugin-openapi >/tmp/openapi-accept-consistency.log 2>&1; then
+    record_pass "2a: ApiDoc/openapi.json 内部整合（機械検証）" "cargo test -p fandhe-backend-plugin-openapi が PASS（詳細: /tmp/openapi-accept-consistency.log）"
 else
-    record_fail "2a: ApiDoc/openapi.json 内部整合（機械検証）" "cargo test -p bf-plugin-openapi が FAIL（詳細: /tmp/openapi-accept-consistency.log）"
+    record_fail "2a: ApiDoc/openapi.json 内部整合（機械検証）" "cargo test -p fandhe-backend-plugin-openapi が FAIL（詳細: /tmp/openapi-accept-consistency.log）"
 fi
 record_skip "2b: 実装（crates/routes）との突合" "GET /health を除く 4 エンドポイントの実サービングが未実装のため機械検証不能。手動突合表を docs/acceptance/req3-openapi-generation.md に記録（前提 Issue 未起票、要フォローアップ）"
 
@@ -79,7 +79,7 @@ record_skip "2b: 実装（crates/routes）との突合" "GET /health を除く 4
 # ---------------------------------------------------------------------------
 if metadata="$(cargo metadata --format-version 1 --no-deps 2>/tmp/openapi-accept-metadata.log)" && command -v jq >/dev/null 2>&1; then
     core_features="$(printf '%s' "${metadata}" | jq -r '
-        .packages[] | select(.name == "backend-framework-core") | .features | keys[]
+        .packages[] | select(.name == "fandhe-backend-core") | .features | keys[]
     ' 2>/dev/null || true)"
     if printf '%s\n' "${core_features}" | grep -qx "openapi"; then
         # openapi feature が存在する場合のみ、その存在を根拠に PASS を詐称せず
@@ -93,7 +93,7 @@ if metadata="$(cargo metadata --format-version 1 --no-deps 2>/tmp/openapi-accept
             record_fail "3: openapi feature 存在・依存除外検証" "openapi feature は存在するが scripts/pay-for-what-you-use-check.sh が FAIL（詳細: /tmp/openapi-accept-pfwu.log）"
         fi
     else
-        record_skip "3: openapi feature 存在・依存除外検証" "backend-framework-core に openapi feature が存在しない（TASK-2.1、#18 のスコープとして接続契約に明記されたが未配線・後継 Issue 未起票）。配線後は scripts/pay-for-what-you-use-check.sh が動的列挙により自動的に検証対象へ含める（本スクリプトの変更不要）"
+        record_skip "3: openapi feature 存在・依存除外検証" "fandhe-backend-core に openapi feature が存在しない（TASK-2.1、#18 のスコープとして接続契約に明記されたが未配線・後継 Issue 未起票）。配線後は scripts/pay-for-what-you-use-check.sh が動的列挙により自動的に検証対象へ含める（本スクリプトの変更不要）"
     fi
 else
     record_fail "3: openapi feature 存在・依存除外検証" "cargo metadata または jq の実行に失敗（判定不能、フェイルクローズ）"

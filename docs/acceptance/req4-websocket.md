@@ -1,5 +1,9 @@
 # REQ-4 受け入れ検証レポート — WebSocket 受け入れテスト（TASK-4.4、#25）
 
+> 注記: 本レポートは 2026-07 の crate・import 一括改名（#202）以前の実測記録であり、
+> 旧クレート名（`backend-framework-core` / `bf-http` / `bf-routes` / `bf-plugin-*` 等）
+> 表記のまま保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
+
 `docs/spec/04-requirements.md` REQ-4（WebSocket）の受け入れ基準のうち TASK-4.4 が担う
 「WebSocket プラグイン受け入れテスト」を `scripts/accept/websocket-accept.sh` で
 検証した結果。TASK-4.1（#22、RFC 6455 ハンドシェイク・`UpgradeHandler` 拡張点配線）・

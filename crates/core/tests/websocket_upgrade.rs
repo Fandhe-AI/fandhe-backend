@@ -1,7 +1,7 @@
 //! `websocket` feature（TASK-4.1 / #22）配線の統合テスト（feature 有効側）。
 //!
 //! `crates/core/src/plugin.rs` の非公開 `try_handle_upgrade` シームが実際に
-//! `bf_plugin_websocket::handle_upgrade` へ委譲し、`GET /ws`（既定パス）への
+//! `fandhe_backend_plugin_websocket::handle_upgrade` へ委譲し、`GET /ws`（既定パス）への
 //! アップグレードが `UpgradeHandler` 拡張点経由で成立することを、モック
 //! クライアントを生 TCP + 手書きフレームで駆動する `handle_connection` を
 //! 通して検証する。
@@ -14,10 +14,10 @@
 
 #![cfg(feature = "websocket")]
 
-use backend_framework_core::{GateOutcome, Handler, RequestGate, Server, handle_connection};
-use bf_http::request::RequestHead;
-use bf_http::response::Response;
-use bf_plugin_websocket::WebSocketConfig;
+use fandhe_backend_core::{GateOutcome, Handler, RequestGate, Server, handle_connection};
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_websocket::WebSocketConfig;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -276,13 +276,15 @@ async fn request_gate_rejection_takes_precedence_over_websocket_upgrade() {
 
 /// ユーザー定義 `WsMessageHandler`（Issue #179）を `Server::websocket` 経由で
 /// 登録した場合、コア配線（`try_handle_upgrade` → spawn →
-/// `bf_plugin_websocket::handle_upgrade`）を通ってもカスタム応答になることを
+/// `fandhe_backend_plugin_websocket::handle_upgrade`）を通ってもカスタム応答になることを
 /// 確認する。permit 契約・再 spawn 経路自体は
 /// `upgrade_succeeds_and_echoes_text_frame` 等の既存テストで担保済みのため、
 /// 本テストはハンドラ差し替えがコア経由で反映される点のみを検証する。
 #[tokio::test]
 async fn custom_handler_registered_via_server_websocket_is_reachable() {
-    use bf_plugin_websocket::handler::{WsHandlerError, WsMessage, WsMessageHandler, WsOutcome};
+    use fandhe_backend_plugin_websocket::handler::{
+        WsHandlerError, WsMessage, WsMessageHandler, WsOutcome,
+    };
     use std::future::Future;
     use std::pin::Pin;
 
@@ -291,7 +293,7 @@ async fn custom_handler_registered_via_server_websocket_is_reachable() {
     /// `WsMessageHandler::on_message` の戻り値型（`futures_util::future::BoxFuture`
     /// の別名）は `Pin<Box<dyn Future<...> + Send + '_>>` そのものであり
     /// （型エイリアス、`futures_core::future::BoxFuture` 定義参照）、本クレート
-    /// （`backend-framework-core`）の dev-dependencies に `futures-util` を
+    /// （`fandhe-backend-core`）の dev-dependencies に `futures-util` を
     /// 追加せずとも構造的に同一の型を直接書けば満たせる。新規依存を増やさない
     /// （pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）。
     struct UppercaseHandler;

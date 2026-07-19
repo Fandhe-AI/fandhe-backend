@@ -1,5 +1,5 @@
 [package]
-name = "bf-plugin-webrtc-proxy"
+name = "fandhe-backend-plugin-webrtc-proxy"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -14,12 +14,12 @@ workspace = true
 
 # pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）: 本クレートは
 # `crates/plugin-webrtc`（TASK-8.1、in-process 実装・webrtc-rs 依存）とは
-# クレート境界で完全に分離する。依存は `bf-http`（レスポンス構文検証の一部で
+# クレート境界で完全に分離する。依存は `fandhe-backend-http`（レスポンス構文検証の一部で
 # 流用）と `tokio`（`net`/`io-util`/`time` のみ、`default-features = false`）
 # に限定し、`webrtc-rs` 系クレートを一切含まない。`cargo tree -p
-# bf-plugin-webrtc-proxy` で `webrtc` 系依存が 0 件であることを継続的に確認する。
+# fandhe-backend-plugin-webrtc-proxy` で `webrtc` 系依存が 0 件であることを継続的に確認する。
 [dependencies]
-bf-http = { path = "../http" }
+fandhe-backend-http = { path = "../http" }
 tokio = { version = "1", default-features = false, features = ["net", "io-util", "time"] }
 
 # 統合テスト（tests/proxy_e2e.rs）でモック上流サーバ・非同期テストランタイムを使うためのみ。

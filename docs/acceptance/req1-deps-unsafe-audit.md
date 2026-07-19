@@ -1,5 +1,9 @@
 # REQ-1 受け入れ検証レポート — 依存数・unsafe・監査（TASK-1.6-2、#72 / TASK-1.6-4、#169）
 
+> 注記: 本レポートは 2026-07 の crate・import 一括改名（#202）以前の実測記録であり、
+> 旧クレート名（`backend-framework-core` / `bf-http` / `bf-routes` / `bf-plugin-*` 等）
+> 表記のまま保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
+
 `docs/spec/04-requirements.md` REQ-1（最小コア）の受け入れ基準のうち、性能計測を除く
 非性能系の基準を `scripts/accept/core-deps-unsafe-audit.sh` で検証した結果。
 性能計測（RPS・レイテンシ・RSS・バイナリサイズ・起動時間）は姉妹イシュー

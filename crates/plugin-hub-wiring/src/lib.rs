@@ -1,4 +1,4 @@
-//! `bf-plugin-hub-wiring`: hub 共通配線プラグイン（TASK-9.1 / #61）。
+//! `fandhe-backend-plugin-hub-wiring`: hub 共通配線プラグイン（TASK-9.1 / #61）。
 //!
 //! 拡張点対応: RequestGate
 //!
@@ -65,7 +65,7 @@
 //!
 //! 本クレートを依存に追加しないサービスには、`ring` / `base64` / `serde` /
 //! `serde_json` を含む本クレートの依存・コード・バイナリ増が一切発生しない
-//! （`cargo tree -p backend-framework-core` に本クレート・本依存が現れないことで
+//! （`cargo tree -p fandhe-backend-core` に本クレート・本依存が現れないことで
 //! 検証可能、.claude/rules/pay-for-what-you-use.md）。`ring` は
 //! `crates/plugin-webrtc`（`webrtc` feature 経由）が既に依存グラフへ引き込んで
 //! いる実績依存であり、本クレート追加による新規のライセンス・advisory 面の

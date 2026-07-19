@@ -25,14 +25,14 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use backend_framework_core::{Server, handle_connection};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use bf_http::request::RequestHead;
-use bf_http::response::Response;
-use bf_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
-use bf_plugin_hub_wiring::{Authenticator, TenantGate, TenantGateConfig, TokenError};
-use bf_routes::Router;
+use fandhe_backend_core::{Server, handle_connection};
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
+use fandhe_backend_plugin_hub_wiring::{Authenticator, TenantGate, TenantGateConfig, TokenError};
+use fandhe_backend_routes::Router;
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -348,7 +348,7 @@ async fn list_endpoint_returns_only_own_tenant_rows() {
 
 #[tokio::test]
 async fn post_creates_item_scoped_to_caller_org_and_stays_tenant_isolated() {
-    // `bf_routes::Router` は起動時登録の完全一致のみ（`crates/routes/src/lib.rs`
+    // `fandhe_backend_routes::Router` は起動時登録の完全一致のみ（`crates/routes/src/lib.rs`
     // doc「実行時にルートを追加・削除する API は持たない」）のため、新規作成
     // item への単件アクセスは一覧（`GET /items`、org でフィルタする既存ロジック）
     // 経由で境界を確認する（単件ルートは既知 ID を起動時に列挙登録する設計、

@@ -4,9 +4,9 @@
 //! 本ファイルは `Router` 経由の end-to-end 挙動（後方互換・優先順位・
 //! フェイルクローズ）を検証する。
 
-use bf_http::request::{ParseOutcome, RequestHead, parse_request_head};
-use bf_http::response::Response;
-use bf_routes::Router;
+use fandhe_backend_http::request::{ParseOutcome, RequestHead, parse_request_head};
+use fandhe_backend_http::response::Response;
+use fandhe_backend_routes::Router;
 
 fn head(method: &str, target: &str) -> RequestHead {
     let request_line = format!("{method} {target} HTTP/1.1\r\n\r\n");

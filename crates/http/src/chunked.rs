@@ -118,7 +118,7 @@ enum State {
 /// # Examples
 ///
 /// ```
-/// use bf_http::chunked::{ChunkedDecoder, DecodeOutcome};
+/// use fandhe_backend_http::chunked::{ChunkedDecoder, DecodeOutcome};
 ///
 /// let mut decoder = ChunkedDecoder::new();
 /// let mut out = Vec::new();

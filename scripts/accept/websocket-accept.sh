@@ -3,15 +3,15 @@
 #
 # `docs/spec/05-tasks.md` TASK-4.4「WebSocket プラグイン受け入れテスト」の受け入れ
 # 基準を機械検証する:
-#   A: `websocket` feature 無効時、`backend-framework-core` の依存ツリーに
-#      `tokio-tungstenite` / `tungstenite` / `bf-plugin-websocket` 系依存が
+#   A: `websocket` feature 無効時、`fandhe-backend-core` の依存ツリーに
+#      `tokio-tungstenite` / `tungstenite` / `fandhe-backend-plugin-websocket` 系依存が
 #      一切現れない（pay-for-what-you-use の完全除外、
 #      `.claude/rules/pay-for-what-you-use.md`）。
 #      `scripts/pay-for-what-you-use-check.sh`（動的列挙のため websocket feature も
 #      自動的に検証対象へ含まれる）も併走させ、依存・unsafe・バイナリサイズ除外を
 #      二重に確認する
-#   B: 回帰テスト（`cargo test -p backend-framework-core --features websocket` /
-#      `cargo test -p bf-plugin-websocket` / `cargo test -p backend-framework-core
+#   B: 回帰テスト（`cargo test -p fandhe-backend-core --features websocket` /
+#      `cargo test -p fandhe-backend-plugin-websocket` / `cargo test -p fandhe-backend-core
 #      --no-default-features`）がすべて成功する
 #   C: 維持中の WebSocket 接続でメッセージ往復レイテンシ（p95）を計測記録し、
 #      接続数増（1,000 / 5,000 / 10,000）による劣化度合いを定量化する。
@@ -65,29 +65,29 @@ check_dep_exclusion() {
     # 対象とし、境界テスト専用の dev-dependency（あれば）を「残留」と誤検知しない
     # （`scripts/pay-for-what-you-use-check.sh` の (b) と同一のフラグ構成）。
     local tree_output disabled_count
-    if ! tree_output="$(cargo tree -p backend-framework-core -e normal --no-default-features 2>/dev/null)"; then
-        record_fail "A: websocket 無効時の依存完全除外" "cargo tree -p backend-framework-core -e normal --no-default-features 自体が失敗し測定不能（cargo 呼び出しが壊れている可能性）"
+    if ! tree_output="$(cargo tree -p fandhe-backend-core -e normal --no-default-features 2>/dev/null)"; then
+        record_fail "A: websocket 無効時の依存完全除外" "cargo tree -p fandhe-backend-core -e normal --no-default-features 自体が失敗し測定不能（cargo 呼び出しが壊れている可能性）"
         return
     fi
-    disabled_count="$(printf '%s\n' "${tree_output}" | grep -c -E 'tokio-tungstenite|tungstenite|bf-plugin-websocket' || true)"
+    disabled_count="$(printf '%s\n' "${tree_output}" | grep -c -E 'tokio-tungstenite|tungstenite|fandhe-backend-plugin-websocket' || true)"
 
     if [ "${disabled_count}" -eq 0 ]; then
-        record_pass "A: websocket 無効時の依存完全除外" "cargo tree -p backend-framework-core -e normal --no-default-features | grep -c -E 'tokio-tungstenite|tungstenite|bf-plugin-websocket' = 0（release ビルドの依存グラフのみを対象）"
+        record_pass "A: websocket 無効時の依存完全除外" "cargo tree -p fandhe-backend-core -e normal --no-default-features | grep -c -E 'tokio-tungstenite|tungstenite|fandhe-backend-plugin-websocket' = 0（release ビルドの依存グラフのみを対象）"
     else
-        record_fail "A: websocket 無効時の依存完全除外" "websocket 系依存が ${disabled_count} 件残留（cargo tree -p backend-framework-core -e normal --no-default-features）"
+        record_fail "A: websocket 無効時の依存完全除外" "websocket 系依存が ${disabled_count} 件残留（cargo tree -p fandhe-backend-core -e normal --no-default-features）"
     fi
 
     # 陽性対照: --features websocket では両者が出現すること（列挙腐敗・配線切れの検知）。
     local enabled_tree_output enabled_count
-    if ! enabled_tree_output="$(cargo tree -p backend-framework-core -e normal --no-default-features --features websocket 2>/dev/null)"; then
-        record_warn "A補足: websocket 有効時の依存インパクト（陽性対照）" "cargo tree -p backend-framework-core -e normal --no-default-features --features websocket 自体が失敗し測定不能"
+    if ! enabled_tree_output="$(cargo tree -p fandhe-backend-core -e normal --no-default-features --features websocket 2>/dev/null)"; then
+        record_warn "A補足: websocket 有効時の依存インパクト（陽性対照）" "cargo tree -p fandhe-backend-core -e normal --no-default-features --features websocket 自体が失敗し測定不能"
         return
     fi
-    enabled_count="$(printf '%s\n' "${enabled_tree_output}" | grep -c -E 'tokio-tungstenite|tungstenite|bf-plugin-websocket' || true)"
+    enabled_count="$(printf '%s\n' "${enabled_tree_output}" | grep -c -E 'tokio-tungstenite|tungstenite|fandhe-backend-plugin-websocket' || true)"
     if [ "${enabled_count}" -eq 0 ]; then
-        record_fail "A補足: websocket 有効時の依存インパクト（陽性対照）" "cargo tree -p backend-framework-core -e normal --no-default-features --features websocket に tokio-tungstenite/tungstenite/bf-plugin-websocket が 0 件（配線切れ・列挙腐敗の疑い）"
+        record_fail "A補足: websocket 有効時の依存インパクト（陽性対照）" "cargo tree -p fandhe-backend-core -e normal --no-default-features --features websocket に tokio-tungstenite/tungstenite/fandhe-backend-plugin-websocket が 0 件（配線切れ・列挙腐敗の疑い）"
     else
-        record_warn "A補足: websocket 有効時の依存インパクト（陽性対照）" "cargo tree -p backend-framework-core -e normal --no-default-features --features websocket | grep -c -E 'tokio-tungstenite|tungstenite|bf-plugin-websocket' = ${enabled_count}（docs/dep-impact/records.md 参照）"
+        record_warn "A補足: websocket 有効時の依存インパクト（陽性対照）" "cargo tree -p fandhe-backend-core -e normal --no-default-features --features websocket | grep -c -E 'tokio-tungstenite|tungstenite|fandhe-backend-plugin-websocket' = ${enabled_count}（docs/dep-impact/records.md 参照）"
     fi
 }
 
@@ -137,37 +137,37 @@ check_regression() {
     local out status
 
     set +e
-    out="$(cargo test -p backend-framework-core --features websocket 2>&1)"
+    out="$(cargo test -p fandhe-backend-core --features websocket 2>&1)"
     status=$?
     set -e
     if [ "${status}" -eq 0 ]; then
-        record_pass "B: cargo test -p backend-framework-core --features websocket" "websocket_upgrade.rs・websocket_respawn.rs 等の境界テストを含め成功"
+        record_pass "B: cargo test -p fandhe-backend-core --features websocket" "websocket_upgrade.rs・websocket_respawn.rs 等の境界テストを含め成功"
     else
-        record_fail "B: cargo test -p backend-framework-core --features websocket" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
+        record_fail "B: cargo test -p fandhe-backend-core --features websocket" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
     fi
 
     set +e
-    out="$(cargo test -p backend-framework-core --no-default-features 2>&1)"
+    out="$(cargo test -p fandhe-backend-core --no-default-features 2>&1)"
     status=$?
     set -e
     if [ "${status}" -eq 0 ]; then
-        record_pass "B補足: cargo test -p backend-framework-core --no-default-features" "websocket feature 無効時のフォールスルー（websocket_upgrade_disabled.rs）を含め成功"
+        record_pass "B補足: cargo test -p fandhe-backend-core --no-default-features" "websocket feature 無効時のフォールスルー（websocket_upgrade_disabled.rs）を含め成功"
     else
-        record_fail "B補足: cargo test -p backend-framework-core --no-default-features" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
+        record_fail "B補足: cargo test -p fandhe-backend-core --no-default-features" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
     fi
 
     if [ ! -d "crates/plugin-websocket" ]; then
-        record_skip "B: cargo test -p bf-plugin-websocket" "crates/plugin-websocket が未存在のため検証対象なし"
+        record_skip "B: cargo test -p fandhe-backend-plugin-websocket" "crates/plugin-websocket が未存在のため検証対象なし"
         return
     fi
     set +e
-    out="$(cargo test -p bf-plugin-websocket 2>&1)"
+    out="$(cargo test -p fandhe-backend-plugin-websocket 2>&1)"
     status=$?
     set -e
     if [ "${status}" -eq 0 ]; then
-        record_pass "B: cargo test -p bf-plugin-websocket" "RFC 6455 ハンドシェイク検証・フレーミング委譲の契約テストが成功"
+        record_pass "B: cargo test -p fandhe-backend-plugin-websocket" "RFC 6455 ハンドシェイク検証・フレーミング委譲の契約テストが成功"
     else
-        record_fail "B: cargo test -p bf-plugin-websocket" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
+        record_fail "B: cargo test -p fandhe-backend-plugin-websocket" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
     fi
 }
 
@@ -180,7 +180,7 @@ check_regression() {
 check_latency() {
     local result_json="${WEBSOCKET_ACCEPT_RESULT_JSON:-}"
     if [ -z "${result_json}" ]; then
-        record_skip "C: レイテンシ計測（p95・劣化定量化）" "WEBSOCKET_ACCEPT_RESULT_JSON 未指定。'cargo build --release -p backend-framework-core --features websocket --example ws_echo' 等の前提ビルド後、'CONNECTION_TIERS=\"1000 5000 10000\" HOLD_SECS=30 RUNS=3 RESULT_JSON=/tmp/ws-bench-result.json bash benches/bench-ws-load.sh' を実行し、'WEBSOCKET_ACCEPT_RESULT_JSON=/tmp/ws-bench-result.json bash scripts/accept/websocket-accept.sh' として再実行すること"
+        record_skip "C: レイテンシ計測（p95・劣化定量化）" "WEBSOCKET_ACCEPT_RESULT_JSON 未指定。'cargo build --release -p fandhe-backend-core --features websocket --example ws_echo' 等の前提ビルド後、'CONNECTION_TIERS=\"1000 5000 10000\" HOLD_SECS=30 RUNS=3 RESULT_JSON=/tmp/ws-bench-result.json bash benches/bench-ws-load.sh' を実行し、'WEBSOCKET_ACCEPT_RESULT_JSON=/tmp/ws-bench-result.json bash scripts/accept/websocket-accept.sh' として再実行すること"
         return
     fi
     if [ ! -r "${result_json}" ]; then
@@ -226,7 +226,7 @@ check_nfr() {
         return
     fi
     if [ ! -x "${baseline_bin}" ] || [ ! -x "${ws_bin}" ]; then
-        record_skip "D: NFR-6 無関係パス影響" "計測用バイナリ未ビルド。'cargo build --release -p backend-framework-core --example minimal --no-default-features' と '... --example ws_nfr6 --features websocket' を実行後、benches/ws-nfr6-bench.sh を実行して再判定すること"
+        record_skip "D: NFR-6 無関係パス影響" "計測用バイナリ未ビルド。'cargo build --release -p fandhe-backend-core --example minimal --no-default-features' と '... --example ws_nfr6 --features websocket' を実行後、benches/ws-nfr6-bench.sh を実行して再判定すること"
         return
     fi
 

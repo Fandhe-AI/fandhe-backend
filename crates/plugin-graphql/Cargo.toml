@@ -1,5 +1,5 @@
 [package]
-name = "bf-plugin-graphql"
+name = "fandhe-backend-plugin-graphql"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -25,9 +25,9 @@ workspace = true
 # `dep:` 構文）を通じてのみ本クレートごと依存グラフへ載る。playground /
 # graphiql 等の開発 UI 系 feature は使わないため `default-features = false` と
 # し、実行に必要な最小 feature のみ個別に有効化する。`cargo tree -p
-# bf-plugin-graphql` で不要依存が混入していないことを継続的に確認する。
+# fandhe-backend-plugin-graphql` で不要依存が混入していないことを継続的に確認する。
 [dependencies]
-bf-http = { path = "../http" }
+fandhe-backend-http = { path = "../http" }
 async-graphql = { version = "7", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -3,7 +3,7 @@
 //! `examples/hub_service_demo.rs` は PoC-6 相当のマルチテナント `/items` 系ハンドラ
 //! （JWKS 注入・RSA 鍵・シードストア・`Authenticator` 呼び出し）を持つため、
 //! `benches/hub-nfr6-bench.sh` がその `GET /`（無関係パス）へ負荷をかけても
-//! 計測値には `bf-plugin-hub-wiring` のリンクコストに加えてアプリケーション層
+//! 計測値には `fandhe-backend-plugin-hub-wiring` のリンクコストに加えてアプリケーション層
 //! （マルチルート登録・ハンドラクロージャの `Arc`/`Clone` キャプチャ量等）の
 //! オーバーヘッドが混入し得る、という指摘（Bugbot review 4727552092、指摘1）を
 //! 受けて追加した最小 example。
@@ -26,17 +26,17 @@
 //! （`docs/acceptance/req9-hub-wiring.md` 参照）。
 //!
 //! ```bash
-//! cargo build --release -p bf-plugin-hub-wiring --example hub_link_only
+//! cargo build --release -p fandhe-backend-plugin-hub-wiring --example hub_link_only
 //! BF_HUB_GATE=off ./target/release/examples/hub_link_only &
 //! curl -v http://127.0.0.1:3101/   # 200 応答（無関係パス、minimal と同一 body）
 //! ```
 
 use std::env;
 
-use backend_framework_core::Server;
-use bf_http::response::Response;
-use bf_plugin_hub_wiring::{TenantGate, TenantGateConfig};
-use bf_routes::Router;
+use fandhe_backend_core::Server;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_hub_wiring::{TenantGate, TenantGateConfig};
+use fandhe_backend_routes::Router;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {

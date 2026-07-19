@@ -7,7 +7,7 @@
 //! `docs/spec/03-poc/webrtc-plugin/core/tests/webrtc_datachannel.rs` PoC-5 実施制約を
 //! 踏襲）。
 //!
-//! サーバ側は `bf_http::connection::read_request` → `try_handle_rtc_offer` →
+//! サーバ側は `fandhe_backend_http::connection::read_request` → `try_handle_rtc_offer` →
 //! `Response::serialize` という最小のリクエスト/レスポンスループのみを組み立てる
 //! （コアの接続受理ループ・feature 配線は別途 `crates/core/tests/plugin_boundary_webrtc.rs`
 //! が検証する。本テストはハンドラ単体の実疎通に責務を限定する）。
@@ -16,9 +16,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bf_http::buffer::RecvBuffer;
-use bf_http::connection::read_request;
-use bf_plugin_webrtc::{WebRtcConfig, try_handle_rtc_offer};
+use fandhe_backend_http::buffer::RecvBuffer;
+use fandhe_backend_http::connection::read_request;
+use fandhe_backend_plugin_webrtc::{WebRtcConfig, try_handle_rtc_offer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -50,7 +50,7 @@ async fn spawn_server(config: WebRtcConfig) -> SocketAddr {
                 let response =
                     match try_handle_rtc_offer(&request.head, &request.body, &config).await {
                         Some(response) => response,
-                        None => bf_http::response::Response::empty(404),
+                        None => fandhe_backend_http::response::Response::empty(404),
                     };
                 let _ = stream.write_all(&response.serialize(false)).await;
             });

@@ -196,7 +196,7 @@
     "schemas": {
       "EchoBody": {
         "type": "object",
-        "description": "`POST /echo` のリクエスト/レスポンスボディ。\n\n# Examples\n```\nuse bf_plugin_openapi::EchoBody;\n\nlet body = EchoBody { message: \"hi\".to_string() };\nlet json = serde_json::to_string(&body).unwrap();\nassert_eq!(json, r#\"{\"message\":\"hi\"}\"#);\n```",
+        "description": "`POST /echo` のリクエスト/レスポンスボディ。\n\n# Examples\n```\nuse fandhe_backend_plugin_openapi::EchoBody;\n\nlet body = EchoBody { message: \"hi\".to_string() };\nlet json = serde_json::to_string(&body).unwrap();\nassert_eq!(json, r#\"{\"message\":\"hi\"}\"#);\n```",
         "required": [
           "message"
         ],
@@ -209,7 +209,7 @@
       },
       "ErrorBody": {
         "type": "object",
-        "description": "エラーレスポンス共通ボディ。\n\n# Examples\n```\nuse bf_plugin_openapi::ErrorBody;\n\nlet body = ErrorBody { error: \"invalid id\".to_string() };\nassert_eq!(body.error, \"invalid id\");\n```",
+        "description": "エラーレスポンス共通ボディ。\n\n# Examples\n```\nuse fandhe_backend_plugin_openapi::ErrorBody;\n\nlet body = ErrorBody { error: \"invalid id\".to_string() };\nassert_eq!(body.error, \"invalid id\");\n```",
         "required": [
           "error"
         ],
@@ -222,7 +222,7 @@
       },
       "SearchResponse": {
         "type": "object",
-        "description": "`GET /search` のレスポンスボディ（クエリパラメータを受け取るエンドポイントの例）。\n\n# Examples\n```\nuse bf_plugin_openapi::SearchResponse;\n\nlet body = SearchResponse {\n    query: \"rust\".to_string(),\n    limit: 10,\n    results: vec![\"rust-result-0\".to_string()],\n};\nassert_eq!(body.limit, 10);\n```",
+        "description": "`GET /search` のレスポンスボディ（クエリパラメータを受け取るエンドポイントの例）。\n\n# Examples\n```\nuse fandhe_backend_plugin_openapi::SearchResponse;\n\nlet body = SearchResponse {\n    query: \"rust\".to_string(),\n    limit: 10,\n    results: vec![\"rust-result-0\".to_string()],\n};\nassert_eq!(body.limit, 10);\n```",
         "required": [
           "query",
           "limit",
@@ -250,7 +250,7 @@
       },
       "UserResponse": {
         "type": "object",
-        "description": "`GET /users/{id}` のレスポンスボディ。\n\n# Examples\n```\nuse bf_plugin_openapi::UserResponse;\n\nlet body = UserResponse { id: 42, name: \"User 42\".to_string() };\nassert_eq!(body.id, 42);\n```",
+        "description": "`GET /users/{id}` のレスポンスボディ。\n\n# Examples\n```\nuse fandhe_backend_plugin_openapi::UserResponse;\n\nlet body = UserResponse { id: 42, name: \"User 42\".to_string() };\nassert_eq!(body.id, 42);\n```",
         "required": [
           "id",
           "name"

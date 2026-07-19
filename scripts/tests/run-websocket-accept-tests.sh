@@ -42,21 +42,21 @@ assert_eq() {
 
 echo "===== 基準A: 依存除外 grep パイプライン（websocket-accept.sh check_dep_exclusion と同一パターン） ====="
 # websocket-accept.sh check_dep_exclusion と同一の grep パイプライン
-# （tokio-tungstenite|tungstenite|bf-plugin-websocket）を擬似 cargo tree 出力へ
+# （tokio-tungstenite|tungstenite|fandhe-backend-plugin-websocket）を擬似 cargo tree 出力へ
 # 適用し、陽性/陰性対照の両方を検証する（`graphql-accept.sh` の
 # check_dep_exclusion の graphql grep と同種のロジック）。
 count_ws_deps() {
-    printf '%s\n' "$1" | grep -c -E 'tokio-tungstenite|tungstenite|bf-plugin-websocket' || true
+    printf '%s\n' "$1" | grep -c -E 'tokio-tungstenite|tungstenite|fandhe-backend-plugin-websocket' || true
 }
 
-no_deps_tree="backend-framework-core v0.1.0
-bf-http v0.1.0
-bf-routes v0.1.0
+no_deps_tree="fandhe-backend-core v0.1.0
+fandhe-backend-http v0.1.0
+fandhe-backend-routes v0.1.0
 tokio v1.53.0"
 assert_eq "websocket 無効相当ツリーは 0 件" "0" "$(count_ws_deps "${no_deps_tree}")"
 
-with_deps_tree="backend-framework-core v0.1.0
-bf-plugin-websocket v0.1.0
+with_deps_tree="fandhe-backend-core v0.1.0
+fandhe-backend-plugin-websocket v0.1.0
 tokio-tungstenite v0.24.0
 tungstenite v0.24.0"
 assert_eq "websocket 有効相当ツリーは 3 件（陽性対照）" "3" "$(count_ws_deps "${with_deps_tree}")"

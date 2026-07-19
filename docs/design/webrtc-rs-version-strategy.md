@@ -48,7 +48,7 @@
 
 [TASK-8.2 別プロセス切り出し設計](./webrtc-process-isolation.md)により、本フレームワーク側の実装
 （`crates/plugin-webrtc-proxy`）は `webrtc-rs` に**一切依存しない**（同ドキュメント「6. pay-for-what-you-use
-検証方針」、`cargo tree -p bf-plugin-webrtc-proxy` で webrtc 系依存 0 件を検証可能）。したがって、
+検証方針」、`cargo tree -p fandhe-backend-plugin-webrtc-proxy` で webrtc 系依存 0 件を検証可能）。したがって、
 本バージョン戦略が実際に影響する範囲は次の 2 つに限られ、**フレームワーク本体の対応 crate 一覧・API には
 一切影響しない**。
 
@@ -107,7 +107,7 @@
 - **攻撃表面最小化（本フレームワークの核）**: 別プロセス切り出し（TASK-8.2）により `webrtc-rs` の巨大依存
   （+189 クレート・`unsafe` Functions 約 2.2 倍、[webrtc-process-isolation.md「1. 背景」](./webrtc-process-isolation.md)）
   が本フレームワーク側の監査対象に入らない構造を維持することを、本バージョン戦略の**不変条件**とする。
-  `cargo tree -p bf-plugin-webrtc-proxy` で webrtc 系依存 0 件であることの継続検証は TASK-8.4（#29）で実施する
+  `cargo tree -p fandhe-backend-plugin-webrtc-proxy` で webrtc 系依存 0 件であることの継続検証は TASK-8.4（#29）で実施する
 - **シークレット混入防止**: 本ドキュメントにトークン・内部 URL 等の機密情報は含まない
 - **DoS・入力検証**: シグナリング境界（`POST /rtc/offer`）の SSRF 対策・ボディサイズ上限・タイムアウトは
   [webrtc-process-isolation.md「5. セキュリティ設計」](./webrtc-process-isolation.md)・

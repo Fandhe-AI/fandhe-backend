@@ -10,8 +10,8 @@
 
 #![cfg(not(feature = "websocket"))]
 
-use backend_framework_core::{Server, UpgradeHandler, handle_connection};
-use bf_http::request::RequestHead;
+use fandhe_backend_core::{Server, UpgradeHandler, handle_connection};
+use fandhe_backend_http::request::RequestHead;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// `Upgrade: websocket` ヘッダの有無だけを見るトイ `UpgradeHandler`

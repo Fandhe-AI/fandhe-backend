@@ -106,7 +106,7 @@ else
         # 確認する（旧実装は grep パターンが nextest の実出力と一致せず、かつ突合ブロック自体が
         # 到達不能な構造だったため機能していなかった。レビュー指摘、Issue #85）。
         cat >"${BASELINE_LOG}" <<'BASELOG'
-        FAIL [   0.003s] (1/1) backend-framework-core third_party_verify_fixture_baseline::third_party_verify_fixture_pre_existing_failure
+        FAIL [   0.003s] (1/1) fandhe-backend-core third_party_verify_fixture_baseline::third_party_verify_fixture_pre_existing_failure
 BASELOG
         printf '\n#[cfg(test)]\nmod third_party_verify_fixture_baseline {\n    #[test]\n    fn third_party_verify_fixture_pre_existing_failure() {\n        assert!(false);\n    }\n}\n' >>"${FIXTURE_DIR}/crates/core/src/lib.rs"
         assert_exit_code "起点コミット由来の既知の失敗のみは baseline 突合で exit 0（PASS、リグレッションなし）" 0 bash "${HARNESS}" --worktree "${FIXTURE_DIR}" --task-id T-TEST-BASELINE-KNOWN --baseline-tests "${BASELINE_LOG}"

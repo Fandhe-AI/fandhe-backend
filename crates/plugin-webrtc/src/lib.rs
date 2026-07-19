@@ -1,4 +1,4 @@
-//! `bf-plugin-webrtc`: in-process WebRTC プラグイン（TASK-8.1、#26）。
+//! `fandhe-backend-plugin-webrtc`: in-process WebRTC プラグイン（TASK-8.1、#26）。
 //!
 //! 拡張点対応: パスインターセプト型（try_intercept）
 //! （3 拡張点 trait には非該当。固定シグネチャシームへの閉包根拠は
@@ -40,11 +40,11 @@
 //!
 //! 本クレート単体では HTTP サーバのリスンループを持たない。コアの接続受理ループ
 //! （TASK-1.4-2 / #70）は、`webrtc` feature（TASK-2.1 / #18 で確立したプラグイン境界
-//! パターンに従い、`backend_framework_core::server::Server::webrtc` で
+//! パターンに従い、`fandhe_backend_core::server::Server::webrtc` で
 //! [`WebRtcConfig`] を登録）を有効化した際に、既定 `Handler` より先に非公開の
 //! `plugin::try_intercept` シームから [`handler::try_handle_rtc_offer`] を呼び出す形で
 //! 配線される（`docs/design/plugin-boundary.md` のプラグイン境界パターン）。
-//! `webrtc` feature 無効時（既定）は本クレート自体が `backend-framework-core` の
+//! `webrtc` feature 無効時（既定）は本クレート自体が `fandhe-backend-core` の
 //! 依存グラフから除外される（`optional = true` + `dep:` 構文）。
 //!
 //! `webrtc-proxy` feature（別プロセス切り出し型）と `webrtc` feature（本クレート、
@@ -65,7 +65,7 @@
 //!
 //! # 依存インパクトの計測
 //!
-//! `cargo tree -p backend-framework-core` で `webrtc` feature 無効時に `webrtc` 系依存が
+//! `cargo tree -p fandhe-backend-core` で `webrtc` feature 無効時に `webrtc` 系依存が
 //! 一切現れないこと、有効時の依存インパクトは `docs/dep-impact/records.md` に記録する
 //! （`scripts/dep-impact.sh`）。
 //!
@@ -73,10 +73,10 @@
 //!
 //! `docs/spec/04-requirements.md` REQ-1 / `docs/spec/05-tasks.md` TASK-11.1 の方針に従い、
 //! workspace 全体の依存方向は次の一方向を維持する（依存方向: server → routes → http::*）。
-//! 本クレートはプラグイン層（`bf-plugin-*`）に位置し、コアの拡張点を実装する側であり、
-//! コア（`backend-framework-core`）・`bf-routes` からプラグインへの逆依存は発生しない
+//! 本クレートはプラグイン層（`fandhe-backend-plugin-*`）に位置し、コアの拡張点を実装する側であり、
+//! コア（`fandhe-backend-core`）・`fandhe-backend-routes` からプラグインへの逆依存は発生しない
 //! （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。本クレートの
-//! workspace 内 path 依存は `bf-http`（下位層の sans-IO パーサ）のみ。依存方向の機械
+//! workspace 内 path 依存は `fandhe-backend-http`（下位層の sans-IO パーサ）のみ。依存方向の機械
 //! 検証は `scripts/dep-direction-check.sh`（TASK-1.5 / TASK-11.1）が担う。
 //!
 //! # Examples
@@ -86,8 +86,8 @@
 //! ないことを示す）。
 //!
 //! ```
-//! use bf_http::request::{parse_request_head, ParseOutcome};
-//! use bf_plugin_webrtc::{WebRtcConfig, try_handle_rtc_offer};
+//! use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+//! use fandhe_backend_plugin_webrtc::{WebRtcConfig, try_handle_rtc_offer};
 //!
 //! let buf = b"GET /health HTTP/1.1\r\n\r\n";
 //! let head = match parse_request_head(buf).unwrap() {

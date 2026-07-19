@@ -132,10 +132,10 @@ evaluate_dep_exclusion() {
 # id 4723597731 指摘 1: PR #146）。
 assert_eq "cargo tree 失敗時（stdout 空・非 0 終了）は FAIL" "FAIL" "$(evaluate_dep_exclusion "" 1)"
 # cargo tree が成功し webrtc 系依存が真に 0 件の場合は PASS。
-assert_eq "cargo tree 成功・webrtc 依存 0 件は PASS" "PASS" "$(evaluate_dep_exclusion "backend-framework-core v0.1.0
+assert_eq "cargo tree 成功・webrtc 依存 0 件は PASS" "PASS" "$(evaluate_dep_exclusion "fandhe-backend-core v0.1.0
 tokio v1.40.0" 0)"
 # cargo tree が成功し webrtc 系依存が残留している場合は FAIL。
-assert_eq "cargo tree 成功・webrtc 依存残留は FAIL" "FAIL" "$(evaluate_dep_exclusion "backend-framework-core v0.1.0
+assert_eq "cargo tree 成功・webrtc 依存残留は FAIL" "FAIL" "$(evaluate_dep_exclusion "fandhe-backend-core v0.1.0
 webrtc v0.11.0" 0)"
 
 echo ""

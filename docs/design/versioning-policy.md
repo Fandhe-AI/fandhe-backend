@@ -18,9 +18,9 @@
 **本ドキュメントのスコープ（フレームワーク本体の semver）とは別軸**。両者を混同・混在させない。
 
 - **適用対象**（本ドキュメントが定義する semver 運用の対象クレート）:
-  `backend-framework-core`（`crates/core`）、`bf-http`（`crates/http`）、`bf-routes`（`crates/routes`）、
-  `bf-plugin-websocket` / `bf-plugin-graphql` / `bf-plugin-openapi` / `bf-plugin-webrtc` /
-  `bf-plugin-webrtc-proxy` / `bf-plugin-hub-wiring` / `bf-plugin-tracing`（`crates/plugin-*`）
+  `fandhe-backend-core`（`crates/core`）、`fandhe-backend-http`（`crates/http`）、`fandhe-backend-routes`（`crates/routes`）、
+  `fandhe-backend-plugin-websocket` / `fandhe-backend-plugin-graphql` / `fandhe-backend-plugin-openapi` / `fandhe-backend-plugin-webrtc` /
+  `fandhe-backend-plugin-webrtc-proxy` / `fandhe-backend-plugin-hub-wiring` / `fandhe-backend-plugin-tracing`（`crates/plugin-*`）
 - **非対象**（内部専用・バージョン保証の対象外）: `axum-ref`（性能比較用参照実装）・`ws-load-client`
   （負荷生成ハーネス）・`crates/http/fuzz`（cargo-fuzz 専用クレート、root workspace から exclude 済み）。
   いずれも `Cargo.toml` に `publish = false` が設定されており（`axum-ref`・`ws-load-client` は確認済み）、
@@ -29,8 +29,8 @@
 ## 1. 現状（策定時点の前提事実）
 
 - 全クレートが `version = "0.1.0"`（pre-1.0）
-- `publish = false` は `axum-ref`・`bf-http`・`bf-routes`・全 `bf-plugin-*`・`ws-load-client` に設定済みだが、
-  **`crates/core`（`backend-framework-core`）には未設定**。他クレートとの不揃いであり、本ドキュメントでは
+- `publish = false` は `axum-ref`・`fandhe-backend-http`・`fandhe-backend-routes`・全 `fandhe-backend-plugin-*`・`ws-load-client` に設定済みだが、
+  **`crates/core`（`fandhe-backend-core`）には未設定**。他クレートとの不揃いであり、本ドキュメントでは
   是正せず「6. 関連・スコープ外」に記録し #94（crates.io 公開準備）側の対応とする
   （バージョニング運用の方針策定自体は crates.io 公開状態と独立に定義可能なため、本イシューをブロックしない）
 - ツールチェーンは `rust-toolchain.toml` で `stable` に追随、`edition = "2024"`。MSRV（最小サポート

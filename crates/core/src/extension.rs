@@ -36,7 +36,7 @@
 //! 実装は非同期チャネルへの送信に留め、実際の I/O は別タスクで行う契約とする
 //! （詳細規約は TASK-2.3 で `AGENTS.md` に整備済み）。
 
-use bf_http::request::RequestHead;
+use fandhe_backend_http::request::RequestHead;
 use std::time::Duration;
 
 /// リクエスト/レスポンスを**観測するだけ**のフック。
@@ -51,8 +51,8 @@ use std::time::Duration;
 /// # Examples
 ///
 /// ```
-/// use backend_framework_core::extension::Middleware;
-/// use bf_http::request::{parse_request_head, ParseOutcome};
+/// use fandhe_backend_core::extension::Middleware;
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
 /// use std::time::Duration;
 ///
 /// /// 呼び出し回数を数えるだけのトイ実装。
@@ -65,11 +65,11 @@ use std::time::Duration;
 ///         "counting-middleware"
 ///     }
 ///
-///     fn on_request(&self, _head: &bf_http::request::RequestHead) {
+///     fn on_request(&self, _head: &fandhe_backend_http::request::RequestHead) {
 ///         self.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 ///     }
 ///
-///     fn on_response(&self, _head: &bf_http::request::RequestHead, _elapsed: Duration) {}
+///     fn on_response(&self, _head: &fandhe_backend_http::request::RequestHead, _elapsed: Duration) {}
 /// }
 ///
 /// let mw = CountingMiddleware { requests: std::sync::atomic::AtomicUsize::new(0) };
@@ -105,8 +105,8 @@ pub trait Middleware: Send + Sync {
 /// # Examples
 ///
 /// ```
-/// use backend_framework_core::extension::UpgradeHandler;
-/// use bf_http::request::{parse_request_head, ParseOutcome};
+/// use fandhe_backend_core::extension::UpgradeHandler;
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
 ///
 /// /// `Upgrade: websocket` ヘッダの有無だけを見るトイ実装。
 /// struct WebSocketUpgrade;
@@ -116,7 +116,7 @@ pub trait Middleware: Send + Sync {
 ///         "websocket-upgrade"
 ///     }
 ///
-///     fn matches(&self, head: &bf_http::request::RequestHead) -> bool {
+///     fn matches(&self, head: &fandhe_backend_http::request::RequestHead) -> bool {
 ///         head.header("upgrade")
 ///             .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
 ///     }
@@ -173,8 +173,8 @@ pub enum GateOutcome {
 /// # Examples
 ///
 /// ```
-/// use backend_framework_core::extension::{GateOutcome, RequestGate};
-/// use bf_http::request::{parse_request_head, ParseOutcome};
+/// use fandhe_backend_core::extension::{GateOutcome, RequestGate};
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
 ///
 /// /// `Authorization` ヘッダの有無だけを見るトイ実装（フェイルクローズ）。
 /// struct RequireAuthHeader;
@@ -184,7 +184,7 @@ pub enum GateOutcome {
 ///         "require-auth-header"
 ///     }
 ///
-///     fn check(&self, head: &bf_http::request::RequestHead) -> GateOutcome {
+///     fn check(&self, head: &fandhe_backend_http::request::RequestHead) -> GateOutcome {
 ///         match head.header("authorization") {
 ///             Some(_) => GateOutcome::Allow,
 ///             None => GateOutcome::Reject { status: 401, body: Vec::new() },
@@ -223,7 +223,7 @@ pub trait RequestGate: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bf_http::request::{ParseOutcome, parse_request_head};
+    use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
 
     /// 3 trait すべてが object safe（dyn 互換）であることをコンパイル時に検証する。
     ///

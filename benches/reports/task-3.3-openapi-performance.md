@@ -1,5 +1,9 @@
 # TASK-3.3 性能受け入れ計測レポート — OpenAPI 生成有無での `GET /health` 性能有意差
 
+> 注記: 本レポートは 2026-07 の crate・import 一括改名（#202）以前の実測記録であり、
+> 旧クレート名（`backend-framework-core` / `bf-http` / `bf-routes` / `bf-plugin-*` 等）
+> 表記のまま保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
+
 Issue #32 の成果物。REQ-3 受け入れ基準「OpenAPI 生成の有無で `GET /health` 相当の
 ランタイム性能指標（RPS・p95）に有意差がない（±5% 以内）」の検証結果。
 

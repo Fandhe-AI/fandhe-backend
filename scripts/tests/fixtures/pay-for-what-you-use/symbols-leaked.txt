@@ -1,3 +1,3 @@
 0000000000005d10 r GCC_except_table10
-00000000000263c0 t _ZN22bf_plugin_webrtc_proxy7handler8Response5errorE
+00000000000263c0 t _ZN34fandhe_backend_plugin_webrtc_proxy7handler8Response5errorE
 0000000000037a70 t _ZN4core3ptr17drop_in_placeE

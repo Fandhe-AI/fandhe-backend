@@ -9,12 +9,12 @@
 //! `CORE_BIN` 未検出で BLOCKED 終了）。本 example がその計測対象を提供する。
 //!
 //! axum-ref と同じ 4 エンドポイント（`GET /health` / `GET /hello/{name}` /
-//! `GET /users/{id}` / `POST /echo`）を、`backend_framework_core::Handler`
-//! （`crates/core/src/server.rs`）を直接実装する形で提供する。`bf_routes::Router`
+//! `GET /users/{id}` / `POST /echo`）を、`fandhe_backend_core::Handler`
+//! （`crates/core/src/server.rs`）を直接実装する形で提供する。`fandhe_backend_routes::Router`
 //! は (method, target) の完全一致ディスパッチのみでパスパラメータ
 //! （`{name}` / `{id}`）を扱えない（TASK-1.5 / #14 時点の既知の制約）ため、
 //! パスパラメータ対応の Router 拡張を待たずに計測できるよう、本 example では
-//! プレフィックスマッチによる手書きディスパッチを行う（`bf_routes::Router` への
+//! プレフィックスマッチによる手書きディスパッチを行う（`fandhe_backend_routes::Router` への
 //! パスパラメータ対応は本イシューのスコープ外。out-of-scope-tracking 対象として
 //! PR 側に記録する）。
 //!
@@ -32,7 +32,7 @@
 //! を使う（手書き JSON パーサは正確性・安全性リスクがあり不採用）。Cargo の
 //! example は `[dev-dependencies]` のみを参照するため、`crates/core/Cargo.toml`
 //! の `[dev-dependencies]` に追加した serde/serde_json は本体（lib）の依存
-//! グラフ・下流クレートに一切波及しない（`cargo tree -p backend-framework-core
+//! グラフ・下流クレートに一切波及しない（`cargo tree -p fandhe-backend-core
 //! -e normal` に現れないことで検証可能）。
 //!
 //! # axum-ref との既知の機能差
@@ -44,7 +44,7 @@
 //! # 動作確認手順
 //!
 //! ```text
-//! $ cargo run --example core-bench -p backend-framework-core
+//! $ cargo run --example core-bench -p fandhe-backend-core
 //! $ curl -v http://127.0.0.1:3002/health
 //! $ curl -v http://127.0.0.1:3002/hello/world
 //! $ curl -v http://127.0.0.1:3002/users/42
@@ -54,9 +54,9 @@
 //! $ curl -v http://127.0.0.1:3002/missing        # 404
 //! ```
 
-use backend_framework_core::{Handler, Server};
-use bf_http::request::RequestHead;
-use bf_http::response::Response;
+use fandhe_backend_core::{Handler, Server};
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
 use serde::{Deserialize, Serialize};
 
 /// `POST /echo` のリクエスト/レスポンス body。`crates/axum-ref/src/main.rs` の
@@ -81,7 +81,7 @@ struct ErrorBody {
 }
 
 /// axum-ref と機能等価な 4 エンドポイントをプレフィックスマッチで振り分ける
-/// `Handler`（`backend_framework_core::server::Handler` 拡張点の実装。
+/// `Handler`（`fandhe_backend_core::server::Handler` 拡張点の実装。
 /// モジュール冒頭の doc「このバイナリの役割」を参照）。
 struct BenchHandler;
 
@@ -207,10 +207,10 @@ async fn main() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bf_http::request::{ParseOutcome, parse_request_head};
+    use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
 
     /// テスト専用: 生の HTTP リクエストヘッドをパースして `RequestHead` を得る。
-    /// `bf_http::request::parse_request_head`（sans-IO パーサ）に委譲するだけの
+    /// `fandhe_backend_http::request::parse_request_head`（sans-IO パーサ）に委譲するだけの
     /// 薄いヘルパーで、`BenchHandler::handle` をソケットなしで直接検証できる
     /// ようにする（TASK-1.6-3 / #168 の等価性テストの共通基盤）。
     fn head_of(raw: &str) -> RequestHead {

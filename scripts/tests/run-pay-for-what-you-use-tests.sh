@@ -108,7 +108,7 @@ run_check --skip-build-steps \
     --tree-positive-dir "${FIXTURES_DIR}/tree-positive-valid" \
     --geiger-packages-file "${FIXTURES_DIR}/geiger-packages-clean.txt"
 assert_exit_code "無効構成への依存漏れは exit 1" 1 "${status}"
-assert_contains "無効構成への依存漏れは漏れクレートを報告する" "${output}" "無効構成にもかかわらず出現したクレート: bf-plugin-webrtc-proxy"
+assert_contains "無効構成への依存漏れは漏れクレートを報告する" "${output}" "無効構成にもかかわらず出現したクレート: fandhe-backend-plugin-webrtc-proxy"
 
 # --- ケース 6: cargo tree（有効構成）で対象クレートが出現しない（配線切れ） ---
 run_check --skip-build-steps \
@@ -126,7 +126,7 @@ run_check --skip-build-steps \
     --tree-positive-dir "${FIXTURES_DIR}/tree-positive-crosscontam" \
     --geiger-packages-file "${FIXTURES_DIR}/geiger-packages-clean.txt"
 assert_exit_code "他プラグイン混入は exit 1" 1 "${status}"
-assert_contains "他プラグイン混入は混入クレートを報告する" "${output}" "他プラグインクレートが混入: bf-plugin-example-other"
+assert_contains "他プラグイン混入は混入クレートを報告する" "${output}" "他プラグインクレートが混入: fandhe-backend-plugin-example-other"
 
 # --- ケース 8: cargo geiger の依存グラフにプラグインクレートが出現（unsafe 計上対象） ---
 run_check --skip-build-steps \
@@ -156,7 +156,7 @@ run_check --skip-build-steps \
     --size-negative 1000 --size-positive 1200 \
     --symbols-file "${FIXTURES_DIR}/symbols-leaked.txt"
 assert_exit_code "シンボル混入は exit 1" 1 "${status}"
-assert_contains "シンボル混入は混入クレートを報告する" "${output}" "プラグイン由来シンボルが検出されました: bf-plugin-webrtc-proxy"
+assert_contains "シンボル混入は混入クレートを報告する" "${output}" "プラグイン由来シンボルが検出されました: fandhe-backend-plugin-webrtc-proxy"
 
 # --- ケース 11: cargo geiger のパッケージリストが空（fail-closed。PASS/SKIP にしない） ---
 # Bugbot 指摘（PR #134/#19）: geiger_packages が空のまま (c) をフォールスルーさせると

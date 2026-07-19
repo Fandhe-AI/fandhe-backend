@@ -21,7 +21,7 @@ const READ_CHUNK_BYTES: usize = 4 * 1024;
 
 /// 上流応答のヘッド（ステータスライン + ヘッダ）として許容するバイト数上限。
 ///
-/// `bf_http::request::MAX_HEADER_BYTES` と同じ考え方で、ヘッダ終端
+/// `fandhe_backend_http::request::MAX_HEADER_BYTES` と同じ考え方で、ヘッダ終端
 /// （`\r\n\r\n`）に到達しないまま無制限にバッファが成長するのを防ぐ
 /// （リソース枯渇対策、.claude/rules/security.md）。
 const RESPONSE_HEAD_LIMIT: usize = 8 * 1024;
@@ -44,8 +44,8 @@ const RESPONSE_HEAD_LIMIT: usize = 8 * 1024;
 /// `Err` になることを示す（外部ネットワークに依存しない決定的な例）。
 ///
 /// ```
-/// use bf_plugin_webrtc_proxy::ProxyConfig;
-/// use bf_plugin_webrtc_proxy::client::forward_offer;
+/// use fandhe_backend_plugin_webrtc_proxy::ProxyConfig;
+/// use fandhe_backend_plugin_webrtc_proxy::client::forward_offer;
 ///
 /// let config = ProxyConfig::new("127.0.0.1:1")
 ///     .with_connect_timeout(std::time::Duration::from_millis(200));
@@ -147,7 +147,7 @@ async fn read_response_body(
 ///
 /// `Content-Length` が存在しない、重複する、数値として不正な場合はいずれも
 /// [`ProxyError::UpstreamProtocol`] として拒否する。重複禁止は
-/// `bf_http::request` の意味検証方針（重複 `Content-Length` 拒否）と同じ考え方
+/// `fandhe_backend_http::request` の意味検証方針（重複 `Content-Length` 拒否）と同じ考え方
 /// で request smuggling 類似の曖昧さを排除するため。
 fn parse_response_head(head: &[u8]) -> Result<(u16, usize), ProxyError> {
     let text = std::str::from_utf8(head).map_err(|_| ProxyError::UpstreamProtocol)?;
@@ -189,7 +189,7 @@ fn parse_response_head(head: &[u8]) -> Result<(u16, usize), ProxyError> {
 
 /// `haystack` 中で `needle` が最初に現れる位置を返す。
 ///
-/// `bf_http::request` の同名関数は `pub(crate)` で外部から使えないため、
+/// `fandhe_backend_http::request` の同名関数は `pub(crate)` で外部から使えないため、
 /// 病的入力による計算量爆発を避ける単純な線形走査として本クレート内に
 /// 同じ実装方針で複製する。
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {

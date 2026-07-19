@@ -7,7 +7,7 @@
 
 #![cfg(not(feature = "webrtc-proxy"))]
 
-use backend_framework_core::{Server, handle_connection};
+use fandhe_backend_core::{Server, handle_connection};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 async fn roundtrip(server: &Server, request: &[u8]) -> String {

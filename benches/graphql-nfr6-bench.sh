@@ -11,9 +11,9 @@
 #   `benches/webrtc-nfr6-bench.sh`（TASK-8.4 / #29）と同型。
 #
 # 前提:
-#   - `cargo build --release -p backend-framework-core --example minimal
+#   - `cargo build --release -p fandhe-backend-core --example minimal
 #      --no-default-features`
-#   - `cargo build --release -p backend-framework-core --example graphql_nfr6
+#   - `cargo build --release -p fandhe-backend-core --example graphql_nfr6
 #      --features graphql`
 #   （本スクリプトはビルドを自動実行しない。既存バイナリの存在を検査するのみ。
 #    benches/lib/common.sh の「サプライチェーン考慮・自動取得しない」方針を踏襲）
@@ -65,13 +65,13 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 if [ ! -x "${BASELINE_BIN}" ]; then
     echo "エラー: ${BASELINE_BIN} が見つかりません。先に" >&2
-    echo "  cargo build --release -p backend-framework-core --example minimal --no-default-features" >&2
+    echo "  cargo build --release -p fandhe-backend-core --example minimal --no-default-features" >&2
     echo "を実行してください" >&2
     exit 1
 fi
 if [ ! -x "${GRAPHQL_BIN}" ]; then
     echo "エラー: ${GRAPHQL_BIN} が見つかりません。先に" >&2
-    echo "  cargo build --release -p backend-framework-core --example graphql_nfr6 --features graphql" >&2
+    echo "  cargo build --release -p fandhe-backend-core --example graphql_nfr6 --features graphql" >&2
     echo "を実行してください" >&2
     exit 1
 fi

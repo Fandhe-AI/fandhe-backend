@@ -20,7 +20,7 @@
 # `median`/`to_json_array`/`write_result_json`/`validate_numeric` のみ再利用する）。
 #
 # 前提（自動ビルドしない、サプライチェーン考慮 .claude/rules/security.md）:
-#   cargo build --release -p backend-framework-core --features websocket --example ws_echo
+#   cargo build --release -p fandhe-backend-core --features websocket --example ws_echo
 #   cargo build --release -p axum-ref --features ws --target-dir target/ws-bench
 #   cargo build --release -p ws-load-client
 #

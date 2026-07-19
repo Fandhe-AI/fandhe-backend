@@ -51,7 +51,7 @@ check_dep_count() {
     # `|| true` でパイプラインの失敗を吸収し、失敗時は空文字列 → wc -l で 0 として
     # 後続の記録ガードに必ず到達させる（正常系では cargo tree が exit 0 のため無害）。
     local core_deps axum_deps ratio_pct
-    core_deps="$(cargo tree -p backend-framework-core -e normal --prefix none 2>/dev/null | sed 's/ v[0-9].*$//' | sort -u | wc -l | tr -d ' ' || true)"
+    core_deps="$(cargo tree -p fandhe-backend-core -e normal --prefix none 2>/dev/null | sed 's/ v[0-9].*$//' | sort -u | wc -l | tr -d ' ' || true)"
     axum_deps="$(cargo tree -p axum-ref -e normal --prefix none 2>/dev/null | sed 's/ v[0-9].*$//' | sort -u | wc -l | tr -d ' ' || true)"
 
     if [ "${axum_deps}" -eq 0 ]; then
@@ -59,12 +59,12 @@ check_dep_count() {
         return
     fi
 
-    # backend-framework-core に対する cargo tree 自体が失敗（クレート未存在・ビルド
+    # fandhe-backend-core に対する cargo tree 自体が失敗（クレート未存在・ビルド
     # エラー等）すると core_deps も 0 になり得る。この場合 core_deps<=axum_deps/2 が
     # 常に成立し「50% 以下の基準を満たした」と誤 PASS してしまうため、計測破綻として
     # 明示的に FAIL 扱いする（axum_deps==0 と同様のフェイルクローズ）。
     if [ "${core_deps}" -eq 0 ]; then
-        record_fail "A: 依存クレート数比" "core の依存数が 0 と算出された（cargo tree -p backend-framework-core 自体が失敗した可能性があり測定不能）"
+        record_fail "A: 依存クレート数比" "core の依存数が 0 と算出された（cargo tree -p fandhe-backend-core 自体が失敗した可能性があり測定不能）"
         return
     fi
 
@@ -144,7 +144,7 @@ check_unsafe() {
 
     # cargo geiger は導入済みの場合のみ参考値として実行する（自動導入しない）。
     if check_tool cargo-geiger "cargo install cargo-geiger"; then
-        record_warn "B補足: cargo geiger" "$(cargo geiger --output-format Ascii -p backend-framework-core 2>/dev/null | tail -5 | tr '\n' ' ' || echo '実行に失敗（参考値のため受け入れ判定に影響しない）')"
+        record_warn "B補足: cargo geiger" "$(cargo geiger --output-format Ascii -p fandhe-backend-core 2>/dev/null | tail -5 | tr '\n' ' ' || echo '実行に失敗（参考値のため受け入れ判定に影響しない）')"
     else
         record_skip "B補足: cargo geiger" "cargo-geiger 未導入のため参考値なし（導入: cargo install cargo-geiger）"
     fi

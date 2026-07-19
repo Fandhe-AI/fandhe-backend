@@ -1,15 +1,15 @@
-//! `bf_http::chunked::ChunkedDecoder`（sans-IO chunked デコーダ）を叩く fuzz
+//! `fandhe_backend_http::chunked::ChunkedDecoder`（sans-IO chunked デコーダ）を叩く fuzz
 //! target（イシュー #181）。
 //!
 //! `crates/http/src/chunked.rs` は「入力を 1 回で丸ごと渡す」経路（本体の
 //! `crates/http/tests/http_flow.rs` 等）と、「ソケットから届いた分だけ複数回に
-//! 分けて渡す」経路（[`bf_http::connection::read_request`] の実運用パス）の
+//! 分けて渡す」経路（[`fandhe_backend_http::connection::read_request`] の実運用パス）の
 //! 両方で使われる sans-IO 状態機械であり、状態遷移（chunk-size 行 → chunk-data
 //! → chunk-data 直後の CRLF → 次チャンク／trailer）を跨いだ分割入力でパニック・
 //! メモリ不正・処理結果の不一致が起きないかを検証する。
 //!
 //! 検証する不変条件は 2 つ:
-//! 1. 復号後バイト列は常に [`bf_http::body::MAX_BODY_BYTES`] 以下
+//! 1. 復号後バイト列は常に [`fandhe_backend_http::body::MAX_BODY_BYTES`] 以下
 //!    （DoS 上限が実際に効いていること）
 //! 2. 一括投入（経路 (a)）とインクリメンタル投入（経路 (b)）の結果
 //!    （Complete / Incomplete / Err の別、復号済みバイト列）が一致すること
@@ -21,8 +21,8 @@
 
 #![no_main]
 
-use bf_http::body::MAX_BODY_BYTES;
-use bf_http::chunked::{ChunkedDecoder, DecodeOutcome};
+use fandhe_backend_http::body::MAX_BODY_BYTES;
+use fandhe_backend_http::chunked::{ChunkedDecoder, DecodeOutcome};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

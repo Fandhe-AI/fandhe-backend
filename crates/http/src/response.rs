@@ -2,7 +2,7 @@
 //!
 //! コアの接続ループ（`crates/core/src/server.rs`）が `RequestGate::Reject`・
 //! ハンドラ結果・エラー応答を HTTP/1.1 ワイヤフォーマットへ直列化する際に使う
-//! 唯一の経路。`backend_framework_core::extension::GateOutcome` の doc に
+//! 唯一の経路。`fandhe_backend_core::extension::GateOutcome` の doc に
 //! 明記されているとおり、ステータス行の組み立て（reason phrase 付与等）は
 //! このモジュールの責務であり、コアループ自身は文字列組み立てを行わない。
 //!
@@ -66,7 +66,7 @@ impl AllowedMethods {
     /// （`crates/routes` の `HashMap` 由来の非決定的な列挙順を安定化する）。
     ///
     /// ```
-    /// use bf_http::response::AllowedMethods;
+    /// use fandhe_backend_http::response::AllowedMethods;
     ///
     /// let allowed = AllowedMethods::from_methods(["POST".to_string(), "GET".to_string()]).unwrap();
     /// assert_eq!(allowed.to_header_value(), "GET, POST");
@@ -97,7 +97,7 @@ impl AllowedMethods {
     /// `Allow` ヘッダ値として直列化する（`", "` 区切り、ソート済み）。
     ///
     /// ```
-    /// use bf_http::response::AllowedMethods;
+    /// use fandhe_backend_http::response::AllowedMethods;
     ///
     /// let allowed = AllowedMethods::from_methods(["POST".to_string(), "GET".to_string()]).unwrap();
     /// assert_eq!(allowed.to_header_value(), "GET, POST");
@@ -135,7 +135,7 @@ impl Response {
     /// 未設定（ヘッダを出力しない）。
     ///
     /// ```
-    /// use bf_http::response::Response;
+    /// use fandhe_backend_http::response::Response;
     ///
     /// let res = Response::new(200, b"ok".to_vec());
     /// assert_eq!(res.status, 200);
@@ -153,7 +153,7 @@ impl Response {
     /// body なしの `status` レスポンスを組み立てる。
     ///
     /// ```
-    /// use bf_http::response::Response;
+    /// use fandhe_backend_http::response::Response;
     ///
     /// let res = Response::empty(404);
     /// assert!(res.body.is_empty());
@@ -177,7 +177,7 @@ impl Response {
     /// のみを渡す契約を信頼し、コストのかかる実行時チェックを省く）。
     ///
     /// ```
-    /// use bf_http::response::Response;
+    /// use fandhe_backend_http::response::Response;
     ///
     /// let res = Response::new(200, b"{}".to_vec()).with_content_type("application/json");
     /// let text = String::from_utf8(res.serialize(true)).unwrap();
@@ -202,7 +202,7 @@ impl Response {
     /// API 上はステータスコードを問わず設定可能。
     ///
     /// ```
-    /// use bf_http::response::{AllowedMethods, Response};
+    /// use fandhe_backend_http::response::{AllowedMethods, Response};
     ///
     /// let allowed = AllowedMethods::from_methods(["GET".to_string(), "POST".to_string()]).unwrap();
     /// let res = Response::empty(405).with_allow(allowed);
@@ -230,7 +230,7 @@ impl Response {
     /// 制御する拡張が必要になる点に注意する。
     ///
     /// ```
-    /// use bf_http::response::Response;
+    /// use fandhe_backend_http::response::Response;
     ///
     /// let res = Response::new(200, b"hi".to_vec());
     /// let bytes = res.serialize(true);
@@ -242,7 +242,7 @@ impl Response {
     /// ```
     ///
     /// ```
-    /// use bf_http::response::Response;
+    /// use fandhe_backend_http::response::Response;
     ///
     /// let res = Response::empty(400);
     /// let bytes = res.serialize(false);
@@ -286,7 +286,7 @@ impl Response {
 /// 未知のコードは空文字列を返す（`HTTP/1.1 <code> \r\n` のように reason
 /// phrase 省略として出力される。RFC 7230 上 reason phrase は省略可能）。
 /// テーブルはコアループ（`crates/core/src/server.rs`）・`crates/routes`
-/// （`bf_routes::Router::dispatch`、TASK-1.5 / #14 でメソッド不一致時に 405 を
+/// （`fandhe_backend_routes::Router::dispatch`、TASK-1.5 / #14 でメソッド不一致時に 405 を
 /// 払い出す）・`crates/plugin-webrtc-proxy`（TASK-2.1 / #18 の配線経由で
 /// 502/504 を払い出す。上流中継失敗時のフォールバックステータス）・
 /// `crates/plugin-webrtc`（TASK-8.1 / #26 の `try_handle_rtc_offer` が同時接続数

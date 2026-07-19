@@ -56,7 +56,7 @@ impl RecvBuffer {
     /// # Examples
     ///
     /// ```
-    /// use bf_http::buffer::RecvBuffer;
+    /// use fandhe_backend_http::buffer::RecvBuffer;
     ///
     /// let buf = RecvBuffer::new();
     /// assert!(buf.unread().is_empty());

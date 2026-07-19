@@ -111,7 +111,7 @@ impl JwksKeySet {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_hub_wiring::jwks::JwksKeySet;
+    /// use fandhe_backend_plugin_hub_wiring::jwks::JwksKeySet;
     ///
     /// // 空の `keys` 配列は有効な JWKS だが、鍵ゼロの `JwksKeySet` になる。
     /// let keys = JwksKeySet::from_json(r#"{"keys":[]}"#).expect("valid empty jwks");
@@ -194,7 +194,7 @@ impl JwksKeySet {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_hub_wiring::jwks::JwksKeySet;
+    /// use fandhe_backend_plugin_hub_wiring::jwks::JwksKeySet;
     ///
     /// let keys = JwksKeySet::from_json(r#"{"keys":[]}"#).expect("valid empty jwks");
     /// assert_eq!(keys.len(), 0);
@@ -263,7 +263,7 @@ impl SharedJwks {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
+    /// use fandhe_backend_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
     ///
     /// let initial = JwksKeySet::from_json(r#"{"keys":[]}"#).unwrap();
     /// let shared = SharedJwks::new(initial);
@@ -303,7 +303,7 @@ impl SharedJwks {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
+    /// use fandhe_backend_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
     ///
     /// let shared = SharedJwks::new(JwksKeySet::from_json(r#"{"keys":[]}"#).unwrap());
     /// shared.set(JwksKeySet::from_json(r#"{"keys":[]}"#).unwrap());

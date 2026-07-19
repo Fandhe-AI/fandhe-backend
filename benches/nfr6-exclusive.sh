@@ -11,10 +11,10 @@
 #
 # 前提: 各対象の release バイナリを事前にビルドしておくこと（自動ビルドしない。
 # 個々の `*-nfr6-bench.sh` が存在検査してエラーメッセージを出す）。
-#   cargo build --release -p backend-framework-core --example minimal --no-default-features
-#   cargo build --release -p backend-framework-core --example webrtc_nfr6 --features webrtc
-#   cargo build --release -p backend-framework-core --example graphql_nfr6 --features graphql
-#   cargo build --release -p bf-plugin-hub-wiring --example hub_link_only
+#   cargo build --release -p fandhe-backend-core --example minimal --no-default-features
+#   cargo build --release -p fandhe-backend-core --example webrtc_nfr6 --features webrtc
+#   cargo build --release -p fandhe-backend-core --example graphql_nfr6 --features graphql
+#   cargo build --release -p fandhe-backend-plugin-hub-wiring --example hub_link_only
 #
 # 呼び出し元: 人間が `bash benches/nfr6-exclusive.sh` として直接実行する
 # （CI 常設ジョブへは組み込まない。self-hosted runner 負荷抑制方針、.claude/rules/ci.md）。

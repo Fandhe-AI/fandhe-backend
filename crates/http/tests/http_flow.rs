@@ -1,10 +1,10 @@
-//! `bf-http` の統合テスト（TASK-11.5-1 / #77）。
+//! `fandhe-backend-http` の統合テスト（TASK-11.5-1 / #77）。
 //!
 //! 単体テスト（`request.rs` / `body.rs` / `connection.rs` の `#[cfg(test)]`）は
 //! 各モジュール単体の境界・異常系を検証する。本ファイルはヘッドパース →
 //! body フレーミング解釈 → keep-alive 判定の一連フローを
 //! `tokio::io::duplex` 経由で結合し、実際のソケット読み取り経路
-//! （[`bf_http::connection::read_request`]）を通したときに全体として正しく
+//! （[`fandhe_backend_http::connection::read_request`]）を通したときに全体として正しく
 //! 振る舞うことを検証する。
 //!
 //! PoC-9（`docs/spec/03-poc/`）の教訓「body 内容のみ検証しステータス行・
@@ -12,10 +12,10 @@
 //! メソッド・ターゲット・バージョン・全ヘッダ・body 全文・keep-alive 判定を
 //! 網羅的にアサートする（部分一致で済ませない）。
 
-use bf_http::body::{BodyLength, body_length};
-use bf_http::buffer::RecvBuffer;
-use bf_http::connection::{read_request, should_keep_alive};
-use bf_http::request::HttpVersion;
+use fandhe_backend_http::body::{BodyLength, body_length};
+use fandhe_backend_http::buffer::RecvBuffer;
+use fandhe_backend_http::connection::{read_request, should_keep_alive};
+use fandhe_backend_http::request::HttpVersion;
 
 /// 正常系: ヘッダ・body・keep-alive 判定のすべてを網羅的に検証する
 /// （PoC-9 教訓の実践）。

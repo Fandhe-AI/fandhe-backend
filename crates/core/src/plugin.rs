@@ -21,8 +21,8 @@
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::OwnedSemaphorePermit;
 
-use bf_http::request::RequestHead;
-use bf_http::response::Response;
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
 
 use crate::server::Server;
 
@@ -38,7 +38,7 @@ use crate::server::Server;
 ///
 /// `webrtc-proxy`・`webrtc`・`graphql` のいずれの feature も無効時は
 /// `server`/`head`/`body` を一切参照せず即座に `None` を返す（`cargo tree` で
-/// `bf-plugin-webrtc-proxy`・`bf-plugin-webrtc`・`bf-plugin-graphql` のいずれも
+/// `fandhe-backend-plugin-webrtc-proxy`・`fandhe-backend-plugin-webrtc`・`fandhe-backend-plugin-graphql` のいずれも
 /// 現れないことに加え、本関数自体もコード上ゼロコストであることの根拠）。
 /// `graphql` feature は TASK-2.4（#21）で追加した第 2 のプラグイン境界
 /// インスタンスであり、TASK-5.1（#38）で実 GraphQL 実行へ差し替えた
@@ -62,7 +62,7 @@ pub(crate) async fn try_intercept(
     {
         if let Some(config) = server.webrtc_proxy_config()
             && let Some(response) =
-                bf_plugin_webrtc_proxy::try_handle_rtc_offer(head, body, config).await
+                fandhe_backend_plugin_webrtc_proxy::try_handle_rtc_offer(head, body, config).await
         {
             return Some(from_plugin_response(response));
         }
@@ -71,7 +71,8 @@ pub(crate) async fn try_intercept(
     #[cfg(feature = "webrtc")]
     {
         if let Some(config) = server.webrtc_config()
-            && let Some(response) = bf_plugin_webrtc::try_handle_rtc_offer(head, body, config).await
+            && let Some(response) =
+                fandhe_backend_plugin_webrtc::try_handle_rtc_offer(head, body, config).await
         {
             return Some(response);
         }
@@ -85,7 +86,8 @@ pub(crate) async fn try_intercept(
     #[cfg(feature = "graphql")]
     {
         if let Some(config) = server.graphql_config()
-            && let Some(response) = bf_plugin_graphql::try_handle_graphql(head, body, config).await
+            && let Some(response) =
+                fandhe_backend_plugin_graphql::try_handle_graphql(head, body, config).await
         {
             return Some(from_graphql_response(response));
         }
@@ -100,15 +102,15 @@ pub(crate) async fn try_intercept(
     None
 }
 
-/// `bf_plugin_webrtc_proxy::Response`（プラグイン側の中間表現）を
-/// [`bf_http::response::Response`] へ変換する。
+/// `fandhe_backend_plugin_webrtc_proxy::Response`（プラグイン側の中間表現）を
+/// [`fandhe_backend_http::response::Response`] へ変換する。
 ///
 /// `content_type` は [`Response::with_content_type`] が `&'static str` のみを
 /// 受け付ける制約に従う。プラグイン側の `content_type` フィールドも
 /// `&'static str` に限定されているため、変換経路に外部入力由来の動的文字列が
 /// 混入する余地はない（`crates/http/src/response.rs` の doc を参照）。
 #[cfg(feature = "webrtc-proxy")]
-fn from_plugin_response(response: bf_plugin_webrtc_proxy::Response) -> Response {
+fn from_plugin_response(response: fandhe_backend_plugin_webrtc_proxy::Response) -> Response {
     Response::new(response.status, response.body).with_content_type(response.content_type)
 }
 
@@ -122,7 +124,7 @@ fn from_plugin_response(response: bf_plugin_webrtc_proxy::Response) -> Response 
 /// 呼ばれる。戻り値 `Some(stream)` は「委譲されず、呼び出し元が後続処理
 /// （フォールバック応答）を続けるべき」ことを意味し、`websocket` feature
 /// 無効時・`server.websocket_configs()` が空、または登録済みいずれの設定にも
-/// `bf_plugin_websocket::matches` が一致しない時のいずれかで発生する
+/// `fandhe_backend_plugin_websocket::matches` が一致しない時のいずれかで発生する
 /// （呼び出し元は 501 を返す、`server.rs` の
 /// doc を参照）。`None` は「完全に委譲済みで呼び出し元はこれ以上ストリームに
 /// 触れない」ことを意味する。
@@ -131,7 +133,7 @@ fn from_plugin_response(response: bf_plugin_webrtc_proxy::Response) -> Response 
 ///
 /// マッチ確定時、ハンドシェイク + メッセージハンドラループ（既定エコー、
 /// `WebSocketConfig::with_handler` でユーザー定義ハンドラへ差し替え可能。
-/// Issue #179）を提供する `bf_plugin_websocket::handle_upgrade`
+/// Issue #179）を提供する `fandhe_backend_plugin_websocket::handle_upgrade`
 /// を呼び出し元の `handle_connection` タスク内でインラインに await せず、
 /// `tokio::spawn` した専用タスクへ完全に切り離す。`handle_connection` の
 /// tokio タスクは `read_request`・応答直列化等を含む大きなステートマシンで
@@ -159,11 +161,11 @@ fn from_plugin_response(response: bf_plugin_webrtc_proxy::Response) -> Response 
 /// セッション終了と同時に（タスクの戻りで）解放される。
 ///
 /// `websocket` feature 無効時は `stream`/`head`/`leftover`/`server`/`permit`
-/// を一切参照せず即座に `Some(stream)` を返し、`bf_plugin_websocket` への
+/// を一切参照せず即座に `Some(stream)` を返し、`fandhe_backend_plugin_websocket` への
 /// 依存・呼び出しコード・`tokio::spawn` 呼び出しともバイナリに含まれない
 /// （`cargo tree` で確認可能、pay-for-what-you-use）。
 ///
-/// [`bf_plugin_websocket::handle_upgrade`] 内のエラー（ハンドシェイク検証
+/// [`fandhe_backend_plugin_websocket::handle_upgrade`] 内のエラー（ハンドシェイク検証
 /// 違反・I/O・プロトコルエラー）は新タスクの境界で吸収し、panic としてコア
 /// 境界を越えさせない（`.claude/rules/coding-rust.md`）。エラー発生時は
 /// 接続を静かにクローズしたものとして扱う（`handle_upgrade` 自体が 400/426
@@ -186,7 +188,7 @@ where
         if let Some(config) = server
             .websocket_configs()
             .iter()
-            .find(|config| bf_plugin_websocket::matches(head, config))
+            .find(|config| fandhe_backend_plugin_websocket::matches(head, config))
         {
             let config = config.clone();
             let head = head.clone();
@@ -199,7 +201,10 @@ where
                 // permit を保持し、`max_connections` のカウントから漏れない
                 // ようにする。
                 let _permit = permit;
-                let _ = bf_plugin_websocket::handle_upgrade(stream, &head, leftover, &config).await;
+                let _ = fandhe_backend_plugin_websocket::handle_upgrade(
+                    stream, &head, leftover, &config,
+                )
+                .await;
             });
             return None;
         }
@@ -213,10 +218,10 @@ where
     Some(stream)
 }
 
-/// `bf_plugin_graphql::Response`（プラグイン側の中間表現）を
-/// [`bf_http::response::Response`] へ変換する。[`from_plugin_response`] と
+/// `fandhe_backend_plugin_graphql::Response`（プラグイン側の中間表現）を
+/// [`fandhe_backend_http::response::Response`] へ変換する。[`from_plugin_response`] と
 /// 同一の変換原則（`content_type` は `&'static str` 限定）に従う。
 #[cfg(feature = "graphql")]
-fn from_graphql_response(response: bf_plugin_graphql::Response) -> Response {
+fn from_graphql_response(response: fandhe_backend_plugin_graphql::Response) -> Response {
     Response::new(response.status, response.body).with_content_type(response.content_type)
 }

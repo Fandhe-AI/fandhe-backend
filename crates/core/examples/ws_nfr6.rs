@@ -1,7 +1,7 @@
 //! TASK-4.4（#25）NFR-6 計測専用サーバ。
 //!
 //! `websocket` feature 有効時に `Server::websocket` へ [`WebSocketConfig`] を登録した
-//! 構成で `examples/minimal.rs` と同一の `GET /health`（`bf_routes::Router`）を提供する。
+//! 構成で `examples/minimal.rs` と同一の `GET /health`（`fandhe_backend_routes::Router`）を提供する。
 //! `docs/acceptance/req4-websocket.md`（REQ-4 受け入れ基準: 無関係パスへの RPS・
 //! レイテンシ影響が誤差範囲内）が、本 example と `examples/minimal.rs`（`websocket`
 //! feature 無効のベースライン）へそれぞれ無関係パス（`/health`）へ負荷をかけ、RPS・
@@ -30,14 +30,14 @@
 //!
 //! 動作確認手順:
 //! ```text
-//! $ cargo run --release --example ws_nfr6 -p backend-framework-core --features websocket
+//! $ cargo run --release --example ws_nfr6 -p fandhe-backend-core --features websocket
 //! $ curl -v http://127.0.0.1:3009/health   # 200 応答（無関係パス）
 //! ```
 
-use backend_framework_core::Server;
-use bf_http::response::Response;
-use bf_plugin_websocket::WebSocketConfig;
-use bf_routes::Router;
+use fandhe_backend_core::Server;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_websocket::WebSocketConfig;
+use fandhe_backend_routes::Router;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {

@@ -41,9 +41,9 @@ nightly 限定のサニタイザ計装を要する `cargo-fuzz` を未実施の�
 
 | target | 対象 API | 検証範囲 |
 |--------|---------|---------|
-| `parse_request_head` | `bf_http::request::parse_request_head(&[u8])` | 構文解析層単体。任意バイト列を直接投入し、パニック・メモリ不正が起きないことを検証する |
-| `head_semantics` | `parse_request_head` → `Complete` の場合のみ `bf_http::body::body_length` / `bf_http::connection::should_keep_alive` | 意味解釈層のパイプライン。構文的に妥当なヘッダ列を前提に動く `Content-Length` 解析・`Connection` トークン走査のパニック要因（オーバーフロー等）を検証する |
-| `chunked_decoder` | `bf_http::chunked::ChunkedDecoder::decode`（イシュー #181） | chunked transfer-coding の sans-IO デコーダ。入力を一括投入する経路とインクリメンタルに分割投入する経路の両方で、パニック・メモリ不正が起きないこと・復号後バイト列が `bf_http::body::MAX_BODY_BYTES` を超えないこと・両経路の結果（Complete/Incomplete/Err の別・復号済みバイト列）が一致することを検証する |
+| `parse_request_head` | `fandhe_backend_http::request::parse_request_head(&[u8])` | 構文解析層単体。任意バイト列を直接投入し、パニック・メモリ不正が起きないことを検証する |
+| `head_semantics` | `parse_request_head` → `Complete` の場合のみ `fandhe_backend_http::body::body_length` / `fandhe_backend_http::connection::should_keep_alive` | 意味解釈層のパイプライン。構文的に妥当なヘッダ列を前提に動く `Content-Length` 解析・`Connection` トークン走査のパニック要因（オーバーフロー等）を検証する |
+| `chunked_decoder` | `fandhe_backend_http::chunked::ChunkedDecoder::decode`（イシュー #181） | chunked transfer-coding の sans-IO デコーダ。入力を一括投入する経路とインクリメンタルに分割投入する経路の両方で、パニック・メモリ不正が起きないこと・復号後バイト列が `fandhe_backend_http::body::MAX_BODY_BYTES` を超えないこと・両経路の結果（Complete/Incomplete/Err の別・復号済みバイト列）が一致することを検証する |
 
 いずれも戻り値の Ok/Err・Complete/Incomplete の意味的正しさは検証しない（それは
 `crates/http/src/*.rs` の `#[cfg(test)]`・doc test の責務）。fuzz target は「パニックしない
@@ -63,7 +63,7 @@ nightly 限定のサニタイザ計装を要する `cargo-fuzz` を未実施の�
 
 - `cargo build` / `cargo tree`（workspace ルートでの実行）に `crates/http/fuzz` も
   `libfuzzer-sys` も一切現れない
-- `crates/http/fuzz/Cargo.toml` は `bf-http` を `path = ".."` 依存として個別参照する
+- `crates/http/fuzz/Cargo.toml` は `fandhe-backend-http` を `path = ".."` 依存として個別参照する
   独立ビルド単位であり、`cargo +<pinned-nightly> fuzz run <target>`（`scripts/fuzz.sh`
   経由）でのみビルド・実行される
 
@@ -126,7 +126,7 @@ TASK-15.3-2（#88）で `bash scripts/fuzz.sh --max-total-time 240` により両
 
 ## イシュー #181（chunked Transfer-Encoding 対応）fuzz target 追加
 
-`bf_http::body::body_length` が単独 `chunked` を受理するようになったことに伴い、
+`fandhe_backend_http::body::body_length` が単独 `chunked` を受理するようになったことに伴い、
 `chunked_decoder` target を追加した（本書「fuzz target 一覧と対象 API」参照）。
 `bash scripts/fuzz.sh --max-total-time 20` で他 2 target とあわせて実行し、crash/hang
 なしを確認済み（実装時点で約 270 万実行、smoke 相当の短時間実行）。corpus シード

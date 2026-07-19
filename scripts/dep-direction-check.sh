@@ -92,7 +92,7 @@ else
 
         if [ -z "${edges_tsv}" ] && [ ! -s /tmp/dep-direction-check-jq.log ]; then
             # workspace 内 path 依存が 1 件もない状態は現状ありえない（core が最低でも
-            # bf-http に依存する）。jq エラーではなく本当に 0 件だった場合も、依存方向
+            # fandhe-backend-http に依存する）。jq エラーではなく本当に 0 件だった場合も、依存方向
             # グラフを検証できていないため判定不能として FAIL 扱いにする（フェイルクローズ）。
             fail "1: 依存エッジホワイトリスト照合 — path 依存エッジが 0 件でした（測定不能）"
         elif [ -s /tmp/dep-direction-check-jq.log ]; then
@@ -104,7 +104,7 @@ else
             # 追加する際は本リストの明示更新を要求する（ホワイトリスト方式の意図:
             # 未知のエッジはすべて拒否）。
             #
-            # 例外: `backend-framework-core:bf-plugin-webrtc-proxy`（TASK-2.1、#18）。
+            # 例外: `fandhe-backend-core:fandhe-backend-plugin-webrtc-proxy`（TASK-2.1、#18）。
             # `docs/spec/04-requirements.md` REQ-2 は「プラグインは `[features]` の
             # `dep:` 構文で feature 無効時に依存自体を未解決のまま除外する」
             # コンパイル時プラグイン機構を明示的に要求しており、パスインターセプト型
@@ -117,63 +117,63 @@ else
             # 未解決のまま消え、依存・コード・`unsafe` を一切バイナリに含まない
             # （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）ことを
             # `docs/design/plugin-boundary.md` で検証済み。本エッジは他プラグインへ
-            # 一般化せず（`bf-plugin-*` ワイルドカードにしない）、新規プラグインが
+            # 一般化せず（`fandhe-backend-plugin-*` ワイルドカードにしない）、新規プラグインが
             # 同パターンを踏襲する際は本リストへの明示追加とレビューを要求する。
             #
-            # `backend-framework-core:bf-plugin-webrtc`（TASK-8.1、#26）: `webrtc`
+            # `fandhe-backend-core:fandhe-backend-plugin-webrtc`（TASK-8.1、#26）: `webrtc`
             # feature 有効時のみ、同型のパスインターセプト機構（`plugin::try_intercept`
             # 内の cfg-gated 分岐）で in-process WebRTC ハンドラ
             # （`crates/plugin-webrtc`、webrtc-rs 依存）へ配線する。上記
-            # `bf-plugin-webrtc-proxy` の許可根拠（拡張点の同期 API 限定に非同期
+            # `fandhe-backend-plugin-webrtc-proxy` の許可根拠（拡張点の同期 API 限定に非同期
             # 呼び出しを持ち込めない）と同一のため、個別のエッジとして明示追加する。
             #
-            # 例外 2: `backend-framework-core:bf-plugin-websocket`（TASK-4.1、#22）。
+            # 例外 2: `fandhe-backend-core:fandhe-backend-plugin-websocket`（TASK-4.1、#22）。
             # WebSocket は「委譲判定のみ」の `UpgradeHandler`（同期 API）に加え、
             # ハンドシェイク検証・101 応答送出・フレーミング委譲という非同期処理を
             # 要する Upgrade 型プラグインの第 1 号であり、webrtc-proxy と同型の
             # 依存逆転（コア → プラグインの optional 依存）で表現する。
-            # `bf-plugin-websocket` 自体は循環依存を避けるため
-            # `backend-framework-core` に依存しない（下の
-            # `bf-plugin-*:backend-framework-core` パターンには乗らない設計、
+            # `fandhe-backend-plugin-websocket` 自体は循環依存を避けるため
+            # `fandhe-backend-core` に依存しない（下の
+            # `fandhe-backend-plugin-*:fandhe-backend-core` パターンには乗らない設計、
             # `crates/plugin-websocket/src/lib.rs` の doc・
             # `docs/design/plugin-boundary.md` 6.1 節を参照）。本エッジも他
             # プラグインへ一般化せず、新規 Upgrade 型プラグインは本リストへの
             # 明示追加とレビューを要求する。
             #
-            # 例外 3: `backend-framework-core:bf-plugin-tracing`（TASK-10.1、#56）。
+            # 例外 3: `fandhe-backend-core:fandhe-backend-plugin-tracing`（TASK-10.1、#56）。
             # `Middleware` trait 自体は dyn 互換の同期 API
             # （`crates/core/src/extension.rs`）であり、原理的にはプラグイン側が
             # コアへ依存して直接 `impl Middleware` する「順方向」も選択肢だった。
-            # それでも `bf-plugin-websocket`（例外 2）と同一の非循環パターン
+            # それでも `fandhe-backend-plugin-websocket`（例外 2）と同一の非循環パターン
             # （プラグインクレートは core に依存せず、`Middleware` 実装アダプタを
             # コア側に置く）を踏襲したのは、`crates/plugin-tracing` を
-            # `crates/core` から独立に（`backend-framework-core` を解決せずに）
+            # `crates/core` から独立に（`fandhe-backend-core` を解決せずに）
             # ビルド・テストできる状態を維持するため（`cargo build -p
-            # bf-plugin-tracing` が `backend-framework-core` の全依存を引き込まずに
+            # fandhe-backend-plugin-tracing` が `fandhe-backend-core` の全依存を引き込まずに
             # 完結する。プラグイン境界の一貫性、`docs/design/plugin-boundary.md`
-            # 6.1 節）。`bf-plugin-tracing` 自体は他の Middleware 型プラグインへ
+            # 6.1 節）。`fandhe-backend-plugin-tracing` 自体は他の Middleware 型プラグインへ
             # 一般化せず、新規 Middleware 型プラグインは本リストへの明示追加と
             # レビューを要求する。
             allowed_edge_patterns=(
-                "backend-framework-core:bf-http"
-                "backend-framework-core:bf-routes"
-                "backend-framework-core:bf-plugin-webrtc-proxy"
-                "backend-framework-core:bf-plugin-webrtc"
-                "backend-framework-core:bf-plugin-websocket"
-                "backend-framework-core:bf-plugin-tracing"
+                "fandhe-backend-core:fandhe-backend-http"
+                "fandhe-backend-core:fandhe-backend-routes"
+                "fandhe-backend-core:fandhe-backend-plugin-webrtc-proxy"
+                "fandhe-backend-core:fandhe-backend-plugin-webrtc"
+                "fandhe-backend-core:fandhe-backend-plugin-websocket"
+                "fandhe-backend-core:fandhe-backend-plugin-tracing"
                 # TASK-2.4（#21）: REQ-2「少なくとも 2 種のプラグインを feature
                 # flag で着脱できる」受け入れ基準の第 2 インスタンス（パス
                 # インターセプト型）。根拠は上記
-                # backend-framework-core:bf-plugin-webrtc-proxy の例外コメントと
+                # fandhe-backend-core:fandhe-backend-plugin-webrtc-proxy の例外コメントと
                 # 同一（3 拡張点はいずれも dyn 互換性のため同期 API 限定であり、
                 # パスインターセプト型プラグインの依存を既存拡張点経由の依存逆転
                 # で表現できない）。`crates/plugin-graphql` の doc・
                 # `docs/design/plugin-loading-tradeoffs.md` を参照。
-                "backend-framework-core:bf-plugin-graphql"
-                "bf-routes:bf-http"
-                "bf-plugin-*:bf-http"
-                "bf-plugin-*:bf-routes"
-                "bf-plugin-*:backend-framework-core"
+                "fandhe-backend-core:fandhe-backend-plugin-graphql"
+                "fandhe-backend-routes:fandhe-backend-http"
+                "fandhe-backend-plugin-*:fandhe-backend-http"
+                "fandhe-backend-plugin-*:fandhe-backend-routes"
+                "fandhe-backend-plugin-*:fandhe-backend-core"
             )
 
             violating_edges=()
@@ -292,32 +292,32 @@ fi
 # ---------------------------------------------------------------------------
 # 3: core・routes・http のプラグイン固有シンボル非依存検査
 #    （scripts/accept/core-deps-unsafe-audit.sh 基準 F と同一手法。TASK-11.1 で
-#    crates/core を対象に追加。bf-plugin-* 自体は「plugin」を正当に含むため
+#    crates/core を対象に追加。fandhe-backend-plugin-* 自体は「plugin」を正当に含むため
 #    検査対象にしない。依存方向はチェック 1 のホワイトリストが別途担保する）
 #
 #    例外: TASK-2.1（#18、PR #129）でチェック 1 のホワイトリストへ追加された
-#    エッジ backend-framework-core:bf-plugin-webrtc-proxy（本体チェック 1
+#    エッジ fandhe-backend-core:fandhe-backend-plugin-webrtc-proxy（本体チェック 1
 #    該当コメント・docs/design/plugin-boundary.md 6.1 節参照）に対応する実装。
 #    3 拡張点（Middleware/UpgradeHandler/RequestGate、いずれも dyn 互換性のため
 #    同期 API 限定）に載らない非同期アップグレード中継（WebRTC シグナリング
 #    プロキシへの委譲）専用に、crates/core/src/plugin.rs へ隔離してある。
-#    TASK-8.1（#26）で同一パターンを踏襲する backend-framework-core:bf-plugin-webrtc
+#    TASK-8.1（#26）で同一パターンを踏襲する fandhe-backend-core:fandhe-backend-plugin-webrtc
 #    エッジ（in-process WebRTC ハンドラ）も同様に追加された。
 #    本チェックはこのファイル・crates/core/src/lib.rs の `mod plugin;` 宣言・
 #    crates/core/src/server.rs の `webrtc_proxy`/`webrtc_config` 系シンボル・
-#    crates/core/Cargo.toml の `bf-plugin-webrtc-proxy`/`bf-plugin-webrtc` 依存に
+#    crates/core/Cargo.toml の `fandhe-backend-plugin-webrtc-proxy`/`fandhe-backend-plugin-webrtc` 依存に
 #    限り許可し、他プラグインへは一般化しない（上記 2 件以外の plugin- 依存・
 #    プラグイン固有シンボルは引き続き通常どおり FAIL する）。
 #
-#    TASK-4.1（#22）で `backend-framework-core:bf-plugin-websocket`（チェック 1
-#    該当コメント参照）を同様に許可した際、`bf_plugin_websocket` 系シンボル
+#    TASK-4.1（#22）で `fandhe-backend-core:fandhe-backend-plugin-websocket`（チェック 1
+#    該当コメント参照）を同様に許可した際、`fandhe_backend_plugin_websocket` 系シンボル
 #    （`crates/core/src/plugin.rs` の Upgrade シーム実装・
 #    `crates/core/src/server.rs` の `websocket` 系ビルダー/フィールド）も
 #    webrtc-proxy と同一方針で例外対象に加える。
 # ---------------------------------------------------------------------------
 webrtc_proxy_exception_file="crates/core/src/plugin.rs"
-# TASK-2.4（#21）で graphql feature（bf-plugin-graphql、backend-framework-core:
-# bf-plugin-graphql の許可リスト例外に対応）を同一ファイルへ追加したため、
+# TASK-2.4（#21）で graphql feature（fandhe-backend-plugin-graphql、fandhe-backend-core:
+# fandhe-backend-plugin-graphql の許可リスト例外に対応）を同一ファイルへ追加したため、
 # 例外シンボルパターンにも graphql 系識別子を含める（webrtc-proxy・webrtc・
 # websocket・graphql の 4 件に限定したまま維持し、一般化はしない）。
 # TASK-10.1（#56）: `TracingMiddleware`（`crates/core/src/server.rs`、`tracing`
@@ -327,7 +327,7 @@ webrtc_proxy_exception_file="crates/core/src/plugin.rs"
 # だけの薄いアダプタのため `crates/core/src/plugin.rs` への追加は不要
 # （`Server::tracing` ビルダーメソッド・`TracingMiddleware` 構造体は
 # `crates/core/src/server.rs` に閉じる）。
-webrtc_proxy_exception_symbol_pattern='bf_plugin_webrtc_proxy|bf_plugin_webrtc\b|webrtc_proxy|webrtc_config|bf_plugin_websocket|websocket|bf_plugin_graphql|bf_plugin_tracing|TracingMiddleware|crate::plugin::|pub\(crate\) mod plugin;'
+webrtc_proxy_exception_symbol_pattern='fandhe_backend_plugin_webrtc_proxy|fandhe_backend_plugin_webrtc\b|webrtc_proxy|webrtc_config|fandhe_backend_plugin_websocket|websocket|fandhe_backend_plugin_graphql|fandhe_backend_plugin_tracing|TracingMiddleware|crate::plugin::|pub\(crate\) mod plugin;'
 
 plugin_hits_all=""
 for dir in crates/core crates/http crates/routes; do
@@ -353,16 +353,16 @@ for dir in crates/core crates/http crates/routes; do
         # （.rs 側のコメント除外と同一方針）。
         cargo_toml_hits="$(grep -n 'plugin-' "${dir}/Cargo.toml" | grep -v -E '^[0-9]+:[[:space:]]*#' || true)"
         if [ "${dir}" = "crates/core" ] && [ -n "${cargo_toml_hits}" ]; then
-            # `bf-plugin-webrtc-proxy =` の依存宣言・`dep:bf-plugin-webrtc-proxy` の
-            # feature 宣言、`bf-plugin-webrtc =` の依存宣言・`dep:bf-plugin-webrtc` の
-            # feature 宣言（`bf-plugin-webrtc` は `bf-plugin-webrtc-proxy` の前方一致
+            # `fandhe-backend-plugin-webrtc-proxy =` の依存宣言・`dep:fandhe-backend-plugin-webrtc-proxy` の
+            # feature 宣言、`fandhe-backend-plugin-webrtc =` の依存宣言・`dep:fandhe-backend-plugin-webrtc` の
+            # feature 宣言（`fandhe-backend-plugin-webrtc` は `fandhe-backend-plugin-webrtc-proxy` の前方一致
             # 部分文字列でもあるため 1 パターンでまとめて除外できる）、
-            # `bf-plugin-websocket =` の依存宣言・`dep:bf-plugin-websocket` の
-            # feature 宣言、`bf-plugin-graphql =` の依存宣言・
-            # `dep:bf-plugin-graphql` の feature 宣言、および `bf-plugin-tracing =`
-            # の依存宣言・`dep:bf-plugin-tracing` の feature 宣言（TASK-10.1、#56）
+            # `fandhe-backend-plugin-websocket =` の依存宣言・`dep:fandhe-backend-plugin-websocket` の
+            # feature 宣言、`fandhe-backend-plugin-graphql =` の依存宣言・
+            # `dep:fandhe-backend-plugin-graphql` の feature 宣言、および `fandhe-backend-plugin-tracing =`
+            # の依存宣言・`dep:fandhe-backend-plugin-tracing` の feature 宣言（TASK-10.1、#56）
             # を許可する。
-            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v -E 'bf-plugin-webrtc(-proxy)?|bf-plugin-websocket|bf-plugin-graphql|bf-plugin-tracing' || true)"
+            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v -E 'fandhe-backend-plugin-webrtc(-proxy)?|fandhe-backend-plugin-websocket|fandhe-backend-plugin-graphql|fandhe-backend-plugin-tracing' || true)"
         fi
         if [ -n "${cargo_toml_hits}" ]; then
             plugin_hits_all="${plugin_hits_all}${dir}/Cargo.toml に plugin- 依存あり: ${cargo_toml_hits}

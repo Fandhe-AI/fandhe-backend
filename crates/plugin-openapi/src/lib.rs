@@ -7,7 +7,7 @@
 //!
 //! # 役割・責務境界
 //! 本クレートは実装本体（`crates/routes` 等）から独立した「OpenAPI ドキュメント
-//! 定義」のみを持つ。`bf-routes::Router` は method + target 完全一致の関数ベース
+//! 定義」のみを持つ。`fandhe-backend-routes::Router` は method + target 完全一致の関数ベース
 //! ルーティングであり、axum のような属性マクロで飾れるハンドラ単位を持たない。
 //! そこで実装本体とは疎結合な「ドキュメント専用の薄い関数」に
 //! `#[utoipa::path(...)]` を付与し、[`ApiDoc`] に集約する（PoC-4 で検証・
@@ -18,7 +18,7 @@
 //!   （`crates/plugin-webrtc-proxy` と同一パターン）。core / http / routes /
 //!   他プラグインのどこからも参照しない限り `utoipa` 系依存は本クレートの外に
 //!   一切現れない（pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）。
-//! - サーバ側 feature（`openapi = ["dep:bf-plugin-openapi"]` 相当）による配線は
+//! - サーバ側 feature（`openapi = ["dep:fandhe-backend-plugin-openapi"]` 相当）による配線は
 //!   TASK-2.1（#18、並列進行中）に接続点を委ねる。本クレート単体では未接続。
 //! - `GET /openapi.json` の静的埋め込み（[`OPENAPI_JSON`]）・生成 CLI（`gen-openapi`、
 //!   `gen-cli` feature）は TASK-3.2（#31）で実装済み。埋め込み実体の鮮度保証・
@@ -34,7 +34,7 @@
 //! # workspace 内での依存方向
 //! `docs/spec/04-requirements.md` REQ-1 / `docs/spec/05-tasks.md` TASK-11.1 の方針に従い、
 //! workspace 全体の依存方向は次の一方向を維持する（依存方向: server → routes → http::*）。
-//! 本クレートはプラグイン層（`bf-plugin-*`）に位置し、上述のとおり core / http / routes /
+//! 本クレートはプラグイン層（`fandhe-backend-plugin-*`）に位置し、上述のとおり core / http / routes /
 //! 他プラグインのいずれにも依存せず、それらからの逆依存も発生しない
 //! （pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）。依存方向の機械検証は
 //! `scripts/dep-direction-check.sh`（TASK-1.5 / TASK-11.1）が担う。

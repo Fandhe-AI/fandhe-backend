@@ -13,8 +13,8 @@
 //! 101 応答をクライアント側で読み切ってから `WebSocketStream::from_raw_socket`
 //! （ハンドシェイクなし）に切り替えてフレームをやり取りする。
 
-use bf_http::request::{ParseOutcome, parse_request_head};
-use bf_plugin_websocket::{WebSocketConfig, handle_upgrade};
+use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade};
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::AsyncReadExt;
 use tokio_tungstenite::WebSocketStream;

@@ -21,9 +21,9 @@
 #       残す。サンプリング対象パスに残るオーバーヘッドの実測記録が目的
 #
 # 前提:
-#   - `cargo build --release -p backend-framework-core --example minimal
+#   - `cargo build --release -p fandhe-backend-core --example minimal
 #      --no-default-features`
-#   - `cargo build --release -p backend-framework-core --example tracing_nfr
+#   - `cargo build --release -p fandhe-backend-core --example tracing_nfr
 #      --features tracing`
 #   （本スクリプトはビルドを自動実行しない。既存バイナリの存在を検査するのみ。
 #    benches/lib/common.sh の「サプライチェーン考慮・自動取得しない」方針を踏襲）
@@ -73,13 +73,13 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 if [ ! -x "${BASELINE_BIN}" ]; then
     echo "エラー: ${BASELINE_BIN} が見つかりません。先に" >&2
-    echo "  cargo build --release -p backend-framework-core --example minimal --no-default-features" >&2
+    echo "  cargo build --release -p fandhe-backend-core --example minimal --no-default-features" >&2
     echo "を実行してください" >&2
     exit 1
 fi
 if [ ! -x "${TRACING_BIN}" ]; then
     echo "エラー: ${TRACING_BIN} が見つかりません。先に" >&2
-    echo "  cargo build --release -p backend-framework-core --example tracing_nfr --features tracing" >&2
+    echo "  cargo build --release -p fandhe-backend-core --example tracing_nfr --features tracing" >&2
     echo "を実行してください" >&2
     exit 1
 fi

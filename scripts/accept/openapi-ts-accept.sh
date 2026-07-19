@@ -126,7 +126,7 @@ check_rust_definition_propagation() {
     rm -f "${docs_rs}.bak"
 
     local out status
-    if out="$(cd "${WORKSPACE_ROOT}" && cargo run -p bf-plugin-openapi --features gen-cli --bin gen-openapi -- --update 2>&1)"; then
+    if out="$(cd "${WORKSPACE_ROOT}" && cargo run -p fandhe-backend-plugin-openapi --features gen-cli --bin gen-openapi -- --update 2>&1)"; then
         status=0
     else
         status=$?

@@ -1,5 +1,9 @@
 # TASK-8.4（#29）NFR-6 計測レポート — WebRTC 無関係パスへの性能影響
 
+> 注記: 本レポートは 2026-07 の crate・import 一括改名（#202）以前の実測記録であり、
+> 旧クレート名（`backend-framework-core` / `bf-http` / `bf-routes` / `bf-plugin-*` 等）
+> 表記のまま保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
+
 `docs/spec/04-requirements.md` NFR-6「パス一致時のみ介入する拡張点は、無関係なパスへの
 RPS・レイテンシ影響が誤差範囲内（100.3〜100.8%相当）である」を、`webrtc` feature
 （`crates/plugin-webrtc`、in-process 実装）について empirical に計測した結果。

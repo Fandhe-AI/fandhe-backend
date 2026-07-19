@@ -1,7 +1,7 @@
 //! `webrtc` feature（TASK-8.1 / #26）配線の統合テスト（feature 有効側）。
 //!
 //! `crates/core/src/plugin.rs` の非公開 `try_intercept` シームが実際に
-//! `bf_plugin_webrtc::try_handle_rtc_offer` へ委譲し、`POST /rtc/offer` が
+//! `fandhe_backend_plugin_webrtc::try_handle_rtc_offer` へ委譲し、`POST /rtc/offer` が
 //! 既定 `Handler` より先にインターセプトされることを、`tokio::io::duplex` で
 //! 駆動する `handle_connection` を通して検証する。無関係パスは素通りして既定
 //! `Handler` に到達することも併せて確認する
@@ -16,10 +16,10 @@
 
 #![cfg(feature = "webrtc")]
 
-use backend_framework_core::{Handler, Server, handle_connection};
-use bf_http::request::RequestHead;
-use bf_http::response::Response;
-use bf_plugin_webrtc::WebRtcConfig;
+use fandhe_backend_core::{Handler, Server, handle_connection};
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_webrtc::WebRtcConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// `Handler::handle` が呼ばれたら panic するトイハンドラ。

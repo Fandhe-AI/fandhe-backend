@@ -1,4 +1,4 @@
-//! `bf-plugin-graphql`: パスインターセプト型 GraphQL プラグイン実装（TASK-5.1 / #38）。
+//! `fandhe-backend-plugin-graphql`: パスインターセプト型 GraphQL プラグイン実装（TASK-5.1 / #38）。
 //!
 //! 拡張点対応: パスインターセプト型（try_intercept）
 //! （3 拡張点 trait には非該当。固定シグネチャシームへの閉包根拠は
@@ -18,15 +18,15 @@
 //!
 //! 本クレート単体では HTTP サーバのリスンループを持たない。`graphql` feature
 //! （`optional = true` + `dep:` 構文、`.claude/rules/pay-for-what-you-use.md`）
-//! 有効時のみ `backend_framework_core::plugin::try_intercept` から
+//! 有効時のみ `fandhe_backend_core::plugin::try_intercept` から
 //! [`try_handle_graphql`] が呼ばれる（`crates/core/src/plugin.rs` を参照）。
-//! feature 無効時（既定）は本クレート自体が `backend-framework-core` の
+//! feature 無効時（既定）は本クレート自体が `fandhe-backend-core` の
 //! 依存グラフから除外される。
 //!
 //! TASK-2.4 時代と異なり、TASK-5.1 以降は**スキーマが未登録の場合は
 //! フォールスルー（404）** に挙動が変わる（`webrtc-proxy`・`webrtc` プラグイン
 //! と同じ「設定登録型」パターンへ揃えるため）。[`GraphQlConfig`] を
-//! `backend_framework_core::Server::graphql` で登録しない限り、`graphql`
+//! `fandhe_backend_core::Server::graphql` で登録しない限り、`graphql`
 //! feature が有効でも `POST /graphql` は既定 `Handler` へフォールスルーする
 //! （`crates/core/src/server.rs` の `graphql_config` doc を参照）。
 //!
@@ -34,17 +34,17 @@
 //!
 //! `docs/spec/04-requirements.md` REQ-1 / `docs/spec/05-tasks.md` TASK-11.1 の
 //! 方針に従い、依存方向は `server → routes → http::*` の一方向を維持する。
-//! 本クレートはプラグイン層（`bf-plugin-*`）に位置し、workspace 内 path 依存は
-//! `bf-http`（下位層の sans-IO パーサ）のみ。依存方向の機械検証は
+//! 本クレートはプラグイン層（`fandhe-backend-plugin-*`）に位置し、workspace 内 path 依存は
+//! `fandhe-backend-http`（下位層の sans-IO パーサ）のみ。依存方向の機械検証は
 //! `scripts/dep-direction-check.sh` が担う。
 //!
 //! # pay-for-what-you-use
 //!
 //! `async-graphql`（`default-features = false`）とその推移的依存は `graphql`
-//! feature 有効時のみ依存グラフへ載る（本クレート自体が `bf-plugin-graphql`
+//! feature 有効時のみ依存グラフへ載る（本クレート自体が `fandhe-backend-plugin-graphql`
 //! という 1 つの `dep:` 単位のため）。feature 無効構成では本クレートごと
 //! 依存グラフから消え、`async-graphql` 系クレートは一切ビルドされない
-//! （`cargo tree -p backend-framework-core --no-default-features` で確認可能、
+//! （`cargo tree -p fandhe-backend-core --no-default-features` で確認可能、
 //! `.claude/rules/pay-for-what-you-use.md`）。
 //!
 //! # Examples
@@ -52,8 +52,8 @@
 //! 対象外パスは `None` を返し、無関係なリクエストへの性能影響がないことを示す。
 //!
 //! ```
-//! use bf_http::request::{parse_request_head, ParseOutcome};
-//! use bf_plugin_graphql::{try_handle_graphql, GraphQlConfig};
+//! use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+//! use fandhe_backend_plugin_graphql::{try_handle_graphql, GraphQlConfig};
 //! use async_graphql::Value;
 //! use async_graphql::dynamic::{Field, FieldFuture, Object, Schema, TypeRef};
 //!
@@ -91,7 +91,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_graphql::{Executor, Variables};
-use bf_http::request::RequestHead;
+use fandhe_backend_http::request::RequestHead;
 use serde::Deserialize;
 
 /// 本プラグインがパスインターセプトの対象とするリクエストパス。
@@ -107,7 +107,7 @@ pub struct Response {
     /// HTTP ステータスコード。
     pub status: u16,
     /// `Content-Type` ヘッダ値（`&'static str` 限定。
-    /// `bf_http::response::Response::with_content_type` の制約に合わせる）。
+    /// `fandhe_backend_http::response::Response::with_content_type` の制約に合わせる）。
     pub content_type: &'static str,
     /// レスポンス body。
     pub body: Vec<u8>,
@@ -139,7 +139,7 @@ type BoxExecuteFn = Arc<
 
 /// [`try_handle_graphql`] が実行する GraphQL スキーマの登録設定。
 ///
-/// `backend_framework_core::Server::graphql` に渡して有効化する（`webrtc-proxy`
+/// `fandhe_backend_core::Server::graphql` に渡して有効化する（`webrtc-proxy`
 /// feature の `ProxyConfig` 登録パターンと同型）。未登録時は `graphql` feature
 /// が有効でも `POST /graphql` はフォールスルーする（本クレート crate doc を
 /// 参照）。
@@ -149,7 +149,7 @@ type BoxExecuteFn = Arc<
 /// ```
 /// use async_graphql::Value;
 /// use async_graphql::dynamic::{Field, FieldFuture, Object, Schema, TypeRef};
-/// use bf_plugin_graphql::GraphQlConfig;
+/// use fandhe_backend_plugin_graphql::GraphQlConfig;
 ///
 /// let query = Object::new("Query").field(Field::new(
 ///     "hello",
@@ -237,8 +237,8 @@ const INVALID_REQUEST_BODY: &str = "{\"errors\":[{\"message\":\"invalid request 
 /// ```
 /// use async_graphql::Value;
 /// use async_graphql::dynamic::{Field, FieldFuture, Object, Schema, TypeRef};
-/// use bf_http::request::{parse_request_head, ParseOutcome};
-/// use bf_plugin_graphql::{try_handle_graphql, GraphQlConfig};
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+/// use fandhe_backend_plugin_graphql::{try_handle_graphql, GraphQlConfig};
 ///
 /// let query = Object::new("Query").field(Field::new(
 ///     "hello",
@@ -310,7 +310,7 @@ mod tests {
     use super::*;
     use async_graphql::Value;
     use async_graphql::dynamic::{Field, FieldFuture, InputValue, Object, Schema, TypeRef};
-    use bf_http::request::{ParseOutcome, parse_request_head};
+    use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
 
     /// `hello`（引数なし）・`echo(value: String)` を持つ最小デモスキーマ。
     ///

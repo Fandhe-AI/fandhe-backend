@@ -1,7 +1,7 @@
 {
   "packages": [
     {
-      "name": "backend-framework-core",
+      "name": "fandhe-backend-core",
       "features": {
         "default": []
       }

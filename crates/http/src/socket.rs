@@ -21,7 +21,7 @@
 /// ```
 /// # #[tokio::main(flavor = "current_thread")]
 /// # async fn main() -> std::io::Result<()> {
-/// use bf_http::socket::configure_stream;
+/// use fandhe_backend_http::socket::configure_stream;
 /// use tokio::net::{TcpListener, TcpStream};
 ///
 /// let listener = TcpListener::bind("127.0.0.1:0").await?;

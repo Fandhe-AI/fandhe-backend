@@ -7,8 +7,8 @@
 
 use std::time::Duration;
 
-use bf_http::request::{ParseOutcome, parse_request_head};
-use bf_plugin_websocket::{WebSocketConfig, handle_upgrade};
+use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade};
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::AsyncReadExt;
 use tokio_tungstenite::WebSocketStream;
@@ -49,7 +49,7 @@ async fn handshake(
     config: WebSocketConfig,
 ) -> (
     WebSocketStream<tokio::io::DuplexStream>,
-    tokio::task::JoinHandle<Result<(), bf_plugin_websocket::WsError>>,
+    tokio::task::JoinHandle<Result<(), fandhe_backend_plugin_websocket::WsError>>,
 ) {
     let head = match parse_request_head(handshake_request_bytes()).unwrap() {
         ParseOutcome::Complete { head, .. } => head,

@@ -6,7 +6,7 @@ REQ-6（TypeScript 型安全性提供、Should）に基づき、「`utoipa` 属�
 `openapi-typescript` → TS 型 → 型安全クライアント」の一方向パイプラインを構築する
 （`docs/spec/05-tasks.md` TASK-6.1、`docs/spec/04-requirements.md` REQ-6）。
 
-前提タスク TASK-3.2（#31、CLOSED）で `bf-plugin-openapi` の `gen-openapi` CLI
+前提タスク TASK-3.2（#31、CLOSED）で `fandhe-backend-plugin-openapi` の `gen-openapi` CLI
 （`--check`/`--update`）・コミット済み `crates/plugin-openapi/openapi.json`（`/health`・
 `/hello/{name}`・`/users/{id}`・`/echo`・`/search` の 5 エンドポイント）・CI
 `openapi-two-stage` ジョブが整備済みであり、本タスクはこの投資をそのまま入力として
@@ -21,7 +21,7 @@ PoC-8（`docs/spec/03-poc/trpc-contract/`）で `openapi-typescript` による�
 
 ```
 crates/plugin-openapi/src/docs.rs（utoipa::path 属性）
-        │  cargo run -p bf-plugin-openapi --features gen-cli --bin gen-openapi
+        │  cargo run -p fandhe-backend-plugin-openapi --features gen-cli --bin gen-openapi
         ▼
 crates/plugin-openapi/openapi.json（コミット対象、TASK-3.2 で確立済み）
         │  npm run gen:types（ts/、openapi-typescript）

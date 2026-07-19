@@ -10,7 +10,7 @@
 //! （`.claude/rules/pay-for-what-you-use.md`）。
 //!
 //! ```bash
-//! cargo run --release -p bf-plugin-hub-wiring --example jwt_cache_bench
+//! cargo run --release -p fandhe-backend-plugin-hub-wiring --example jwt_cache_bench
 //! ```
 //!
 //! 環境変数（すべて任意）:
@@ -22,10 +22,10 @@ use std::time::Instant;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use bf_plugin_hub_wiring::Claims;
-use bf_plugin_hub_wiring::gate::TenantGateConfig;
-use bf_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
-use bf_plugin_hub_wiring::jwt::verify_token;
+use fandhe_backend_plugin_hub_wiring::Claims;
+use fandhe_backend_plugin_hub_wiring::gate::TenantGateConfig;
+use fandhe_backend_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
+use fandhe_backend_plugin_hub_wiring::jwt::verify_token;
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
 
@@ -73,10 +73,10 @@ fn make_token(keypair: &RsaKeyPair, kid: &str, org_id: &str, exp: u64) -> String
     format!("{header_b64}.{payload_b64}.{sig_b64}")
 }
 
-/// `head_from` 相当のヘッダ組み立て（`bf-http` の `RequestHead` は生バイト列から
+/// `head_from` 相当のヘッダ組み立て（`fandhe-backend-http` の `RequestHead` は生バイト列から
 /// パースする API のみを公開するため、実リクエストと同じ経路で組み立てる）。
-fn head_with_bearer(token: &str) -> bf_http::request::RequestHead {
-    use bf_http::request::{ParseOutcome, parse_request_head};
+fn head_with_bearer(token: &str) -> fandhe_backend_http::request::RequestHead {
+    use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
     let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
     match parse_request_head(&raw).expect("valid head") {
         ParseOutcome::Complete { head, .. } => head,

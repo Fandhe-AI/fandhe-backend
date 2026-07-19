@@ -8,13 +8,13 @@
 //!
 //! `crates/plugin-webrtc-proxy::handler` が独自の中間 `Response` 型を持つのは配線
 //! 確立前（TASK-8.2-2 時点）の歴史的経緯であり、本クレートは
-//! [`bf_http::response::Response`] を直接組み立てて返す（変換層を省く。
+//! [`fandhe_backend_http::response::Response`] を直接組み立てて返す（変換層を省く。
 //! `docs/design/plugin-boundary.md` 4.3 節）。
 
 use std::sync::{Arc, Mutex};
 
-use bf_http::request::RequestHead;
-use bf_http::response::Response;
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
 use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
@@ -62,8 +62,8 @@ fn error_response(status: u16, body: &'static [u8]) -> Response {
 /// # Examples
 ///
 /// ```
-/// use bf_http::request::{parse_request_head, ParseOutcome};
-/// use bf_plugin_webrtc::{WebRtcConfig, try_handle_rtc_offer};
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+/// use fandhe_backend_plugin_webrtc::{WebRtcConfig, try_handle_rtc_offer};
 ///
 /// let buf = b"GET /health HTTP/1.1\r\n\r\n";
 /// let head = match parse_request_head(buf).unwrap() {
@@ -343,7 +343,7 @@ fn register_echo_handler(pc: &Arc<RTCPeerConnection>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bf_http::request::{ParseOutcome, parse_request_head};
+    use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
     use std::time::Duration;
 
     fn head_from(buf: &[u8]) -> RequestHead {

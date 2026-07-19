@@ -3,7 +3,7 @@
 //! `crates/routes::Router` の `route_param` / `dispatch` から呼ばれる内部実装を
 //! 切り出したモジュール。公開 API（[`PathParams`] / [`RoutePatternError`] /
 //! [`Segment`] / [`ParamRoute`]）は `lib.rs` から re-export される。
-//! 本モジュール単体では `bf-http` の型に依存しない（`ParamRoute::handler` の
+//! 本モジュール単体では `fandhe-backend-http` の型に依存しない（`ParamRoute::handler` の
 //! シグネチャのみ `lib.rs` 側の `ParamRouteHandler` 型を利用する）。
 
 use std::error::Error;
@@ -28,14 +28,14 @@ impl<'a> PathParams<'a> {
     /// `name` に対応する値を返す。未束縛または存在しないパラメータ名なら `None`。
     ///
     /// ```
-    /// use bf_routes::Router;
-    /// use bf_http::request::{parse_request_head, ParseOutcome};
+    /// use fandhe_backend_routes::Router;
+    /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
     ///
     /// let router = Router::new()
     ///     .route_param("GET", "/users/{id}", |_head, params, _body| {
     ///         assert_eq!(params.get("id"), Some("42"));
     ///         assert_eq!(params.get("missing"), None);
-    ///         bf_http::response::Response::empty(200)
+    ///         fandhe_backend_http::response::Response::empty(200)
     ///     })
     ///     .unwrap();
     /// let head = match parse_request_head(b"GET /users/42 HTTP/1.1\r\n\r\n").unwrap() {
@@ -69,7 +69,7 @@ impl<'a> PathParams<'a> {
 
 /// パターン登録時（[`super::Router::route_param`]）の検証エラー。
 ///
-/// `bf-routes` は外部依存ゼロを維持する契約（`crates/routes/Cargo.toml` 参照）の
+/// `fandhe-backend-routes` は外部依存ゼロを維持する契約（`crates/routes/Cargo.toml` 参照）の
 /// ため、`thiserror` を使わず `std::error::Error` を手実装する。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutePatternError {
@@ -155,7 +155,7 @@ pub struct ParamRoute {
 /// `/` 区切りでセグメント分割する。
 ///
 /// 先頭の `/` は空セグメントを生まないよう取り除く（`"/a/b"` → `["a", "b"]`）。
-/// `bf-http` は target の % デコード・正規化を行わないため、ここでの分割も
+/// `fandhe-backend-http` は target の % デコード・正規化を行わないため、ここでの分割も
 /// バイト列（UTF-8 として妥当な範囲の `str`）をそのまま `/` で割るのみに留める。
 ///
 /// 本関数はパターン文字列専用であり、リクエストの `target` 分割には使わない
@@ -174,7 +174,7 @@ pub(crate) fn split_segments(pattern: &str) -> Vec<&str> {
 /// リクエストの `target` を、パラメータルート照合用にセグメント分割する。
 ///
 /// `target` が先頭 `/` で始まる origin-form の場合のみ `Some` を返す。
-/// `bf-http` の `RequestHead::target` は request-target の形式（origin-form /
+/// `fandhe-backend-http` の `RequestHead::target` は request-target の形式（origin-form /
 /// absolute-form / authority-form / asterisk-form、RFC 9112 3.2 節）を区別せず
 /// 生文字列のまま保持するため、ここで origin-form を明示的に要求しないと
 /// `*`（asterisk-form）や `hello/alice`（先頭 `/` を欠く不正形式）のような

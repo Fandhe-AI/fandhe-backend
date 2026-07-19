@@ -1,7 +1,7 @@
-backend-framework-core
-bf-http
-bf-routes
-bf-plugin-webrtc-proxy
+fandhe-backend-core
+fandhe-backend-http
+fandhe-backend-routes
+fandhe-backend-plugin-webrtc-proxy
 tokio
 libc
 mio

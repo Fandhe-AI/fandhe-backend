@@ -109,9 +109,9 @@ server → routes → http::*
   [pay-for-what-you-use.md](.claude/rules/pay-for-what-you-use.md)）。
   プラグインは feature 経由でコアの拡張点を実装する側であり、コアからプラグインへの
   依存は発生しない設計とする
-- **既知の例外（是正中）**: `crates/core` → `bf-plugin-webrtc-proxy`
+- **既知の例外（是正中）**: `crates/core` → `fandhe-backend-plugin-webrtc-proxy`
   （`webrtc-proxy` feature 経由）は現状の依存グラフで許可リスト化された例外であり、
-  是正は Issue #136（`fix(core): crates/core が bf_plugin_webrtc_proxy に直接依存し
+  是正は Issue #136（`fix(core): crates/core が fandhe_backend_plugin_webrtc_proxy に直接依存し
   依存方向一方向性に違反`）で追跡する。新規変更でこの例外を拡大しない
 - 機械検証: `bash scripts/dep-direction-check.sh`（`cargo metadata` の依存エッジを
   許可リストと照合、循環依存検出、コアへのプラグイン固有シンボル混入を grep 検出）
@@ -121,8 +121,8 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
 | クレート | 責務 |
 |---------|------|
 | `core` | HTTP/1.1 パーサ・keep-alive・3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）を持つ最小コア |
-| `http` | sans-IO な HTTP プリミティブ（`bf-http`）。workspace 内で最下層 |
-| `routes` | ルーティング（`bf-routes`）。`server → routes → http::*` の中間層 |
+| `http` | sans-IO な HTTP プリミティブ（`fandhe-backend-http`）。workspace 内で最下層 |
+| `routes` | ルーティング（`fandhe-backend-routes`）。`server → routes → http::*` の中間層 |
 | `plugin-websocket` | WebSocket（RFC 6455 ハンドシェイク・`UpgradeHandler` 拡張点） |
 | `plugin-graphql` | GraphQL プラグイン境界 |
 | `plugin-openapi` | OpenAPI ドキュメント生成 |
@@ -141,7 +141,7 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
 
 #### 新規エンドポイント追加手順
 
-1. `bf_routes::Router::route()`（完全一致）または `bf_routes::Router::route_param()`
+1. `fandhe_backend_routes::Router::route()`（完全一致）または `fandhe_backend_routes::Router::route_param()`
    （`{name}` パスパラメータ、TASK-176・#176）へのルート登録
 2. ハンドラ実装（対象クレートは「モジュール境界」節の crates 一覧・
    [delegation-impl.md](.claude/rules/delegation-impl.md) のパスベース委譲に従い判断する）
@@ -250,7 +250,7 @@ backend-framework は WebRTC を 2 つの独立クレートで提供し、**ク�
 
 | クレート | feature | 依存モデル | 攻撃表面 |
 |---------|---------|-----------|---------|
-| `crates/plugin-webrtc` | `webrtc` | `webrtc-rs`（0.17.1 系）を**プロセス内**に直接組み込む（in-process） | 大（`webrtc` feature 単体で `cargo tree -p backend-framework-core --features webrtc` に webrtc 系依存 23 件、release バイナリサイズ約 11 倍、TASK-8.4 実測。`docs/dep-impact/records.md`） |
+| `crates/plugin-webrtc` | `webrtc` | `webrtc-rs`（0.17.1 系）を**プロセス内**に直接組み込む（in-process） | 大（`webrtc` feature 単体で `cargo tree -p fandhe-backend-core --features webrtc` に webrtc 系依存 23 件、release バイナリサイズ約 11 倍、TASK-8.4 実測。`docs/dep-impact/records.md`） |
 | `crates/plugin-webrtc-proxy` | `webrtc-proxy` | `webrtc-rs` に**一切依存しない**軽量シグナリングプロキシ。重い WebRTC サービスは別プロセスへ切り出す | 小（`webrtc-rs` 依存が本体プロセスに一切現れない） |
 
 `crates/core/src/plugin.rs` の `try_intercept` は両 feature が同時に有効な場合
@@ -263,7 +263,7 @@ backend-framework は WebRTC を 2 つの独立クレートで提供し、**ク�
 - **WebRTC を使わないサービス**: `webrtc`・`webrtc-proxy` のどちらの feature も有効化
   しない。依存・`unsafe`・バイナリ増をゼロに保つ（pay-for-what-you-use、
   [pay-for-what-you-use.md](.claude/rules/pay-for-what-you-use.md)）。`cargo tree -p
-  backend-framework-core` にいずれの feature 無効時も webrtc 系依存が一切現れないこと
+  fandhe-backend-core` にいずれの feature 無効時も webrtc 系依存が一切現れないこと
   を維持する。
 - **WebRTC を使うサービス**: 可能な限り `plugin-webrtc-proxy`（`webrtc-proxy` feature）
   による**別プロセス切り出し**を第一選択とする。`webrtc-rs` の巨大な依存グラフ・

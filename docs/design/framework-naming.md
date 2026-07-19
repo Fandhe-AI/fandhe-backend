@@ -220,7 +220,7 @@ Web 検索（一般 Web 衝突確認）: `wrenframe` を Web 検索したとこ�
 - `README.md` / `CLAUDE.md` の仮称注記を「正式名称 `fandhe-backend`（確定）」の
   記述へ更新（実装フェーズの詳細は本ドキュメントへ誘導）
 
-### 第 2 段階: crate・import 一括改名（#202、未実施）
+### 第 2 段階: crate・import 一括改名（#202、実施済み）
 
 - crate 名リネーム: `backend-framework-core` → `fandhe-backend-core`、
   `bf-http` → `fandhe-backend-http`、`bf-routes` → `fandhe-backend-routes`、

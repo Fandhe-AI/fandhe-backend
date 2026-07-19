@@ -52,12 +52,12 @@ fi
 # --------------------------------------------------
 # 「コア」クレートの動的決定
 #
-# docs/spec/05-tasks.md TASK-11.5 の「コア全体」は `crates/core`（backend-framework-core）・
-# `crates/http`（bf-http）・将来追加される `crates/routes` を指し、性能比較用参照実装
-# （axum-ref）とプラグイン（bf-plugin-*）は含まない（プラグインは pay-for-what-you-use により
+# docs/spec/05-tasks.md TASK-11.5 の「コア全体」は `crates/core`（fandhe-backend-core）・
+# `crates/http`（fandhe-backend-http）・将来追加される `crates/routes` を指し、性能比較用参照実装
+# （axum-ref）とプラグイン（fandhe-backend-plugin-*）は含まない（プラグインは pay-for-what-you-use により
 # feature 単位で着脱されるため、コアの 80% ゲートに混ぜると feature 追加のたびに閾値の意味が
 # 変わってしまう）。Cargo.toml 冒頭コメントのクレート分割方針に合わせ、`cargo metadata` から
-# workspace メンバーを列挙し、`axum-ref` と `bf-plugin-*`（名前が `plugin-` を含むパッケージ）を
+# workspace メンバーを列挙し、`axum-ref` と `fandhe-backend-plugin-*`（名前が `plugin-` を含むパッケージ）を
 # 除いた残りを「コア」として動的に決定する。
 # --------------------------------------------------
 mapfile -t all_members < <(

@@ -30,7 +30,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 # --- 計測パラメータ（env で上書き可能。既定は lib/common.sh の RUNS/DURATION/CONNECTIONS を継承） ---
 BASELINE_BIN="${BASELINE_BIN:-${WORKSPACE_ROOT}/target/release/axum-ref}"
 # CORE_BIN の既定値は core-bench example の出力パス（TASK-1.6-3 / #168）。
-# `cargo build --release --example core-bench -p backend-framework-core` の出力先
+# `cargo build --release --example core-bench -p fandhe-backend-core` の出力先
 # （下の「ビルド」節を参照）。CORE_BIN で任意のパスに上書き可能。
 CORE_BIN="${CORE_BIN:-${WORKSPACE_ROOT}/target/release/examples/core-bench}"
 BASELINE_HOST="${BASELINE_HOST:-127.0.0.1}"
@@ -76,7 +76,7 @@ echo "== ビルド =="
 cargo build --release --manifest-path "${WORKSPACE_ROOT}/Cargo.toml"
 # `cargo build --release`（workspace ビルド）は example をビルド対象に含めないため、
 # core-bench（TASK-1.6-3 / #168）は個別に明示ビルドする。
-cargo build --release --example core-bench -p backend-framework-core --manifest-path "${WORKSPACE_ROOT}/Cargo.toml"
+cargo build --release --example core-bench -p fandhe-backend-core --manifest-path "${WORKSPACE_ROOT}/Cargo.toml"
 echo
 
 if [ ! -x "${BASELINE_BIN}" ]; then
@@ -92,7 +92,7 @@ if [ ! -x "${CORE_BIN}" ]; then
     echo "## 判定結果: BLOCKED"
     echo
     echo "コア側計測用バイナリ（CORE_BIN=${CORE_BIN}）が見つかりません。"
-    echo "'cargo build --release --example core-bench -p backend-framework-core' が"
+    echo "'cargo build --release --example core-bench -p fandhe-backend-core' が"
     echo "成功しているか確認するか、CORE_BIN で既存バイナリのパスを指定して再実行してください。"
     if [ -n "${REPORT_MD}" ]; then
         {
@@ -101,7 +101,7 @@ if [ ! -x "${CORE_BIN}" ]; then
             echo
             echo "コア側計測用バイナリ（\`CORE_BIN=${CORE_BIN}\`）が見つからないため、"
             echo "axum-ref との比較判定を実施できませんでした。"
-            echo "'cargo build --release --example core-bench -p backend-framework-core' の"
+            echo "'cargo build --release --example core-bench -p fandhe-backend-core' の"
             echo "成功を確認してから再実行してください。"
         } >>"${REPORT_MD}"
     fi

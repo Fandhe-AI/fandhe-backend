@@ -84,7 +84,7 @@ cfg-gated 設定アクセスの一般化）が明記済みである。B カテ�
 `reason_phrase` 固定テーブルへ、`plugin-webrtc` が同時接続数上限到達時に払い出す
 `503` の reason phrase を追加する 1 行の変更が含まれる。
 
-- **なぜ閉じなかったか**: `reason_phrase` はコアループ・`bf_routes::Router::dispatch`・
+- **なぜ閉じなかったか**: `reason_phrase` はコアループ・`fandhe_backend_routes::Router::dispatch`・
   `plugin-webrtc-proxy` の複数箇所が共有するステータスコード→文言の静的対応表であり、
   `crates/http` に一元管理されている（同ファイル該当 doc comment 参照）。新しい HTTP
   ステータスコードを払い出すプラグインを追加すると、この共有テーブルへのエントリ追加が

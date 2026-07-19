@@ -1,5 +1,9 @@
 # TASK-4.3（#24）10,000 同時 WebSocket 接続負荷試験・RSS 再計測レポート
 
+> 注記: 本レポートは 2026-07 の crate・import 一括改名（#202）以前の実測記録であり、
+> 旧クレート名（`backend-framework-core` / `bf-http` / `bf-routes` / `bf-plugin-*` 等）
+> 表記のまま保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
+
 `docs/spec/05-tasks.md` TASK-4.3・Issue #24 の成果物。TASK-4.1（#22）・TASK-4.2（#23）
 で確立した WebSocket プラグイン（`crates/plugin-websocket`）と「委譲後の専用タスク
 再 spawn + permit 引き継ぎ」最適化の RSS 削減効果を、`benches/bench-ws-load.sh` +
