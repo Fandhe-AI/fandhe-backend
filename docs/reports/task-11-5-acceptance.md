@@ -7,6 +7,10 @@
 Issue #78（TASK-11.5-2）の成果物。`scripts/coverage.sh`・`scripts/accept-task-11-5.sh` に
 よる TASK-11.5（#37、`docs/spec/05-tasks.md`）受け入れ確認の実行結果を記録する。
 
+> REQ-11 の受け入れ基準ごとの判定は `docs/acceptance/req11-ai-first-maintainability.md`
+> に集約している（イシュー #236 で `docs/acceptance/` の配置パターンへ整合）。本レポートは
+> TASK-11.5 時点の一次記録として保持し、実測値本文は改変しない。
+
 ## 実施日時・環境
 
 - 実施日時: 2026-07-17（JST）
