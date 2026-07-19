@@ -136,3 +136,56 @@ host contention を検知して計測を進めない設計どおりに機能し�
 したがって本レポートの GraphQL FAIL 記録は変更しない。既定閾値での確定再計測は
 host が真に静穏な期間に改めて実施する必要があり、フォローアップとして別途実施する
 （`.claude/rules/out-of-scope-tracking.md`）。
+
+## 追補（#216）: 専有計測枠での確定再計測
+
+イシュー #216 対応。`TARGETS=graphql bash benches/nfr6-exclusive.sh`（既定閾値
+`LOAD1_MAX=1.0`）を実行したところ、専有ロック取得・事前静穏確認・対象直前の静穏
+再確認のいずれも成立し、host contention なしで graphql 対象の計測が完了した
+（`snapshot_busy_processes=none`、事前 loadavg1=0.88）。production コード
+（`crates/core/src/plugin.rs`・`crates/plugin-graphql/src/lib.rs`）は本イシューで
+変更していない。
+
+生ログ（`bash benches/nfr6-exclusive.sh` 実行時点、コミット `9f335db`、実行日時
+2026-07-19T05:09:40Z〜05:10:37Z UTC）:
+
+```text
+=== NFR 計測（RUNS=5 DURATION=5s CONNECTIONS=32） ===
+baseline: .../target/release/examples/minimal（graphql feature 無効）
+graphql : .../target/release/examples/graphql_nfr6（graphql feature 有効、Server::graphql 登録済み）
+
+  [baseline] run 1: rps=139996.13141389005 p95=0.000259144
+  [baseline] run 2: rps=141428.2934734174 p95=0.000253592
+  [baseline] run 3: rps=140466.7288061406 p95=0.000246774
+  [baseline] run 4: rps=139804.36913885694 p95=0.000246981
+  [baseline] run 5: rps=140632.34223064137 p95=0.000246328
+  [graphql] run 1: rps=137205.38407184414 p95=0.000253241
+  [graphql] run 2: rps=154052.88776538323 p95=0.000226986
+  [graphql] run 3: rps=139202.82349245308 p95=0.000248184
+  [graphql] run 4: rps=138193.849317785 p95=0.000250294
+  [graphql] run 5: rps=137678.48886270783 p95=0.000251041
+
+=== 結果（中央値、対象: GET / 無関係パス） ===
+baseline RPS 中央値: 140466.7288061406
+graphql  RPS 中央値: 138193.849317785（baseline 比 98.38%）
+baseline p95 中央値: 0.000246981
+graphql  p95 中央値: 0.000250294（baseline 比 101.34%）
+rps_ratio_pct=98.38
+p95_ratio_pct=101.34
+判定（graphql）: WARN（rps_ratio_pct=98.38 p95_ratio_pct=101.34）
+```
+
+**判断**: `evaluate_nfr6_ratio`（`scripts/accept/lib/nfr6-ratio.sh`）による判定は
+**WARN**（RPS 比 98.38%・p95 比 101.34% はいずれも実務許容帯 [RPS 95〜105%・p95
+0〜105%] 内だが、狭義帯 [100.3〜100.8%] 外）。専有計測枠（host contention なし）
+での実行では 2026-07-17 時点の FAIL（RPS 比 93.72%・p95 比 111.31%）は再現せず、
+実務許容帯には安定して収まった。2026-07-17 の FAIL は host contention による環境
+ノイズが主因であったとの当時の判断（本レポート上部「判断」節）と整合する。
+
+本追補は 1 回のみの実行結果であり、過去の 5 回試行（振れ幅 RPS 比 93.72〜108.51%・
+p95 比 50.25〜111.31%）とは異なり複数回による安定性確認は行っていない。狭義帯
+未達（WARN）自体は許容範囲内（PASS へ丸めない `evaluate_nfr6_ratio` の設計どおり）
+であり、`docs/acceptance/req5-graphql.md` 基準 C の最終判定を本追補の実行結果を
+もって WARN として確定する（FAIL は再現しなかったため、受け入れ条件チェックリストの
+「FAIL が再現する場合は原因分析と対応方針を記録し、別 Issue に切り出す」は本追補では
+適用しない）。

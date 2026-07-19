@@ -35,9 +35,10 @@ TASK-2.4（#21、パスインターセプト型境界の確立）・TASK-5.1（#
 | PASS | B補足: `cargo test -p backend-framework-core --no-default-features` | `plugin_graphql_boundary_disabled.rs`（graphql feature 無効時の陰性対照）を含め成功 |
 | PASS | B: `cargo test -p bf-plugin-graphql` | `try_handle_graphql` の契約テスト（クエリ実行・エラー処理・不正 JSON 拒否・メソッド不一致フォールスルー等 8 件）が成功 |
 | PASS | B補足: graphql_nfr6 live 疎通確認 | `target/release/examples/graphql_nfr6` へ `POST /graphql {"query":"{ hello }"}` を送信し `{"data":{"hello":"world"}}` を確認 |
-| FAIL | C: NFR 無関係パス影響 | RPS 比・p95 比とも実行のたびに大きく変動（詳細下記）。最終実行（採用値）は RPS 比 93.72% / p95 比 111.31% |
+| FAIL→WARN（#216 再計測で確定、下記「追補（#216）」参照） | C: NFR 無関係パス影響 | 2026-07-17 実行（振れ幅大、最終値 RPS 比 93.72% / p95 比 111.31%）は FAIL。2026-07-19 の専有計測枠（#178）再計測は RPS 比 98.38% / p95 比 101.34% で WARN（実務許容帯内、狭義帯外） |
 
-**終了コード: 1（FAIL あり、基準 C）**
+**終了コード（2026-07-17 時点の初回記録）: 1（FAIL あり、基準 C）。#216 の専有計測枠
+再計測により基準 C の最終判定は WARN で確定（下記「追補（#216）」参照）。**
 
 ## 基準 C（NFR）の詳細と判断
 
@@ -77,8 +78,10 @@ worktree であり、他エージェントの並行実行によるホスト負�
 
 - [x] 依存除外: 基準 A・A' が PASS（`cargo tree` 0 件・`pay-for-what-you-use-check.sh`
       PASS・unsafe 0 件）
-- [ ] 性能影響誤差範囲: 基準 C は環境ノイズにより安定した PASS/WARN を得られず、
-      最終実行は FAIL。**未達として記録する**（フェイルクローズ、PASS を偽らない）
+- [x] 性能影響誤差範囲: 基準 C は 2026-07-17 時点で環境ノイズにより安定した PASS/WARN を
+      得られず FAIL として記録したが、#216 の専有計測枠（host contention なし）再計測で
+      WARN（実務許容帯内・狭義帯外）が確定した。実務許容帯を満たすため受け入れとして
+      通す（フェイルクローズを維持したうえで PASS には丸めない。「追補（#216）」参照）
 - [x] 最小疎通: 基準 B が PASS（クエリ実行と結果 JSON 返却、境界テスト・契約テスト・
       live 疎通確認のいずれも成功）
 - [x] 成果物（スクリプト・実行結果レポート）が揃っている
@@ -98,6 +101,34 @@ worktree であり、他エージェントの並行実行によるホスト負�
   並列 issue 実装ワークフロー実行中であり、静穏確認が成立せず GraphQL 対象の専有環境
   確定再計測はできなかった（`benches/reports/task-5.2-graphql-performance.md` 追補節）。
   上記 FAIL 記録は維持し、host が真に静穏な期間の再計測をフォローアップとする。
+  → #216 で専有計測枠による確定再計測を実施済み（下記「追補（#216）」参照）。
+
+## 追補（#216）: 専有計測枠での確定再計測と基準 C の判定確定
+
+- **実行日時**: 2026-07-19T05:09:40Z〜05:10:37Z UTC
+- **対象コミット**: `9f335db9505be4bc79b241480aff7bcd7cc63893`（作業ブランチ起点、`origin/main`）
+- **実行コマンド**: `TARGETS=graphql bash benches/nfr6-exclusive.sh`（既定閾値
+  `LOAD1_MAX=1.0`・`QUIESCE_WAIT_SECS=1800`）
+- **結果**: 専有ロック取得・事前静穏確認（loadavg1=0.88・`cargo`/`rustc`/`oha` 不在）・
+  対象直前の静穏再確認のいずれも成立し、host contention なしで計測完了（BLOCKED では
+  なかった）。`rps_ratio_pct=98.38`・`p95_ratio_pct=101.34` を得て
+  `evaluate_nfr6_ratio`（`scripts/accept/lib/nfr6-ratio.sh`）の判定は **WARN**
+  （実務許容帯 [RPS 95〜105%・p95 0〜105%] 内、狭義帯 [100.3〜100.8%] 外）。
+  生ログ・詳細は `benches/reports/task-5.2-graphql-performance.md`「追補（#216）」節を参照
+
+**基準 C の最終判定（本イシューで確定）**: **WARN**。2026-07-17 時点の FAIL（振れ幅の
+大きい 5 回試行の最終値、RPS 比 93.72% / p95 比 111.31%）は、host contention のない
+専有計測枠での再計測では再現しなかった。production コード（`crates/core/src/plugin.rs`・
+`crates/plugin-graphql/src/lib.rs`）は本イシューで変更していないため、2026-07-17 の
+FAIL は環境ノイズ（並列 issue 実装ワークフロー下の host contention）が主因であった
+という当時の判断（本レポート上記「基準 C（NFR）の詳細と判断」節）と整合する。
+
+WARN は `evaluate_nfr6_ratio` の設計上「実務許容帯内・狭義帯外」を意味し、受け入れ
+としては通すが乖離を記録する区分であり PASS には丸めない（フェイルクローズ、
+`.claude/rules/security.md`）。今回の再計測は 1 回のみの実行であり、過去のような
+複数回試行による安定性の確認は行っていない。FAIL は再現しなかったため、イシュー
+#216 の受け入れ条件「FAIL が再現する場合は原因分析と対応方針を記録し、別 Issue に
+切り出す」は本件では適用しない（別 Issue への切り出しは不要と判断する）。
 
 ## 検証コマンド一覧（再現手順）
 
