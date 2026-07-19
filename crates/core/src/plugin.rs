@@ -36,10 +36,11 @@ use crate::server::Server;
 /// 無効」であり、呼び出し元は既定 `Handler::handle`（未登録時 404）へ
 /// フォールスルーする。
 ///
-/// `webrtc-proxy`・`webrtc`・`graphql` のいずれの feature も無効時は
+/// `webrtc-proxy`・`webrtc`・`graphql`・`openapi` のいずれの feature も無効時は
 /// `server`/`head`/`body` を一切参照せず即座に `None` を返す（`cargo tree` で
-/// `fandhe-backend-plugin-webrtc-proxy`・`fandhe-backend-plugin-webrtc`・`fandhe-backend-plugin-graphql` のいずれも
-/// 現れないことに加え、本関数自体もコード上ゼロコストであることの根拠）。
+/// `fandhe-backend-plugin-webrtc-proxy`・`fandhe-backend-plugin-webrtc`・`fandhe-backend-plugin-graphql`・
+/// `fandhe-backend-plugin-openapi` のいずれも現れないことに加え、本関数自体もコード上
+/// ゼロコストであることの根拠）。
 /// `graphql` feature は TASK-2.4（#21）で追加した第 2 のプラグイン境界
 /// インスタンスであり、TASK-5.1（#38）で実 GraphQL 実行へ差し替えた
 /// （`crates/plugin-graphql` の doc を参照）。`webrtc-proxy`・`webrtc` と
@@ -90,6 +91,30 @@ pub(crate) async fn try_intercept(
                 fandhe_backend_plugin_graphql::try_handle_graphql(head, body, config).await
         {
             return Some(from_graphql_response(response));
+        }
+    }
+
+    // TASK-2.1（#256）: `GET /openapi.json` の静的サービング。プラグイン側
+    // （`crates/plugin-openapi`）はハンドラを持たず定数 `OPENAPI_JSON` を
+    // 公開するのみのため（`embed.rs` の接続契約）、他の設定登録型プラグイン
+    // と異なり `fandhe_backend_plugin_openapi::try_handle_*` のような非同期
+    // 委譲関数は呼ばない。`server.openapi_enabled()` が `true`（明示登録済み）
+    // かつメソッド・パスが完全一致した場合のみ、コンパイル時埋め込みの静的
+    // JSON をそのまま返す薄い分岐（実行時生成コストゼロ、PoC-4 成功基準 3）。
+    // 未登録時は feature が有効でもフォールスルーする（`webrtc-proxy`・
+    // `graphql` と同じ設定登録型パターン、`Server::openapi` の doc を参照）。
+    #[cfg(feature = "openapi")]
+    {
+        if server.openapi_enabled() && head.method == "GET" && head.target == "/openapi.json" {
+            return Some(
+                Response::new(
+                    200,
+                    fandhe_backend_plugin_openapi::OPENAPI_JSON
+                        .as_bytes()
+                        .to_vec(),
+                )
+                .with_content_type("application/json"),
+            );
         }
     }
 

@@ -170,6 +170,14 @@ else
                 # で表現できない）。`crates/plugin-graphql` の doc・
                 # `docs/design/plugin-loading-tradeoffs.md` を参照。
                 "fandhe-backend-core:fandhe-backend-plugin-graphql"
+                # TASK-2.1（#256）: `openapi` feature 有効時のみ、`GET /openapi.json`
+                # の静的サービング（パスインターセプト型、`plugin::try_intercept`
+                # 内の cfg-gated 分岐）で `crates/plugin-openapi` の定数
+                # `OPENAPI_JSON` へ配線する。プラグイン側は非同期ハンドラを持たず
+                # 定数を公開するのみだが、依存自体は他のパスインターセプト型
+                # プラグインと同じ「コア → プラグインの optional 依存」で表現する
+                # ため、上記 webrtc-proxy 等の許可根拠と同一のエッジとして明示追加する。
+                "fandhe-backend-core:fandhe-backend-plugin-openapi"
                 "fandhe-backend-routes:fandhe-backend-http"
                 "fandhe-backend-plugin-*:fandhe-backend-http"
                 "fandhe-backend-plugin-*:fandhe-backend-routes"
@@ -327,7 +335,10 @@ webrtc_proxy_exception_file="crates/core/src/plugin.rs"
 # だけの薄いアダプタのため `crates/core/src/plugin.rs` への追加は不要
 # （`Server::tracing` ビルダーメソッド・`TracingMiddleware` 構造体は
 # `crates/core/src/server.rs` に閉じる）。
-webrtc_proxy_exception_symbol_pattern='fandhe_backend_plugin_webrtc_proxy|fandhe_backend_plugin_webrtc\b|webrtc_proxy|webrtc_config|fandhe_backend_plugin_websocket|websocket|fandhe_backend_plugin_graphql|fandhe_backend_plugin_tracing|TracingMiddleware|crate::plugin::|pub\(crate\) mod plugin;'
+# TASK-2.1（#256）: `fandhe_backend_plugin_openapi`（`crates/core/src/plugin.rs`
+# の静的サービング分岐・`crates/core/src/server.rs` の `openapi`/`openapi_enabled`
+# 系ビルダー/フィールド）を同一方針で例外対象に加える。
+webrtc_proxy_exception_symbol_pattern='fandhe_backend_plugin_webrtc_proxy|fandhe_backend_plugin_webrtc\b|webrtc_proxy|webrtc_config|fandhe_backend_plugin_websocket|websocket|fandhe_backend_plugin_graphql|fandhe_backend_plugin_tracing|TracingMiddleware|fandhe_backend_plugin_openapi|openapi|crate::plugin::|pub\(crate\) mod plugin;'
 
 plugin_hits_all=""
 for dir in crates/core crates/http crates/routes; do
@@ -361,8 +372,9 @@ for dir in crates/core crates/http crates/routes; do
             # feature 宣言、`fandhe-backend-plugin-graphql =` の依存宣言・
             # `dep:fandhe-backend-plugin-graphql` の feature 宣言、および `fandhe-backend-plugin-tracing =`
             # の依存宣言・`dep:fandhe-backend-plugin-tracing` の feature 宣言（TASK-10.1、#56）
-            # を許可する。
-            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v -E 'fandhe-backend-plugin-webrtc(-proxy)?|fandhe-backend-plugin-websocket|fandhe-backend-plugin-graphql|fandhe-backend-plugin-tracing' || true)"
+            # を許可する。TASK-2.1（#256）: `fandhe-backend-plugin-openapi =` の依存宣言・
+            # `dep:fandhe-backend-plugin-openapi` の feature 宣言も同様に許可する。
+            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v -E 'fandhe-backend-plugin-webrtc(-proxy)?|fandhe-backend-plugin-websocket|fandhe-backend-plugin-graphql|fandhe-backend-plugin-tracing|fandhe-backend-plugin-openapi' || true)"
         fi
         if [ -n "${cargo_toml_hits}" ]; then
             plugin_hits_all="${plugin_hits_all}${dir}/Cargo.toml に plugin- 依存あり: ${cargo_toml_hits}

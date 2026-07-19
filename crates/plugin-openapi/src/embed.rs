@@ -8,12 +8,13 @@
 //! （実行時コストゼロ）を満たす。
 //!
 //! # 接続契約（TASK-2.1 との関係）
-//! `GET /openapi.json` を実サービングする HTTP ハンドラの配線は TASK-2.1（#18、
-//! サーバ側 feature `openapi = ["dep:fandhe-backend-plugin-openapi"]` 相当）のスコープであり、
-//! 本クレートはハンドラを持たない。TASK-2.1 は本定数を `Content-Type:
-//! application/json` で返すだけの薄いハンドラを実装すればよい。実装との齟齬照合
-//! （宣言した path と `crates/routes` の実ルーティングの一致確認）は TASK-3.3（#32）の
-//! スコープ。
+//! `GET /openapi.json` を実サービングする HTTP ハンドラの配線は TASK-2.1（#256、
+//! サーバ側 feature `openapi = ["dep:fandhe-backend-plugin-openapi"]`）で完了した。
+//! 本クレートはハンドラを持たない。`crates/core/src/plugin.rs` の
+//! `try_intercept` が `Server::openapi()` の明示登録後に限り、本定数を
+//! `Content-Type: application/json` で返すだけの薄いハンドラとして配線している。
+//! 実装との齟齬照合（宣言した path と `crates/routes` の実ルーティングの一致確認）は
+//! TASK-3.3（#32）のスコープ。
 //!
 //! # 鮮度保証（fail-closed）
 //! `openapi.json` は生成物のコミットであるため [`ApiDoc`] の変更後に再生成し忘れると
