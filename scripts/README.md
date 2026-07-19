@@ -46,6 +46,9 @@ req6-typescript-types.md` 参照）。
 イシュー #180 で、`.github/workflows/*.yml` の静的検証（式インジェクション・構文誤り・
 `needs` 参照切れ等の検知）を CI 常設化する `actionlint.sh` を追加した（PR #98 以降
 「actionlint 環境未導入のため未実施」と記録され続けていたゲートの解消）。
+イシュー #221 で、`implement-issue-tree` ワークフローが作成する per-issue git worktree
+（`.claude/worktrees/`）の残存棚卸し・退避・削除を行う `clean-worktrees.sh` を追加した
+（親: #215、2026-07-19 時点で約 160 ディレクトリ・約 97GB の残存を確認）。
 
 ## スクリプト一覧
 
@@ -87,6 +90,8 @@ req6-typescript-types.md` 参照）。
 | `tests/run-openapi-ts-negative-tests.sh` | `openapi-ts-negative.sh` のセルフテスト。`tests/fixtures/openapi-ts-negative/*` を注入し引数検証・node/npm 不在時の fail-closed 挙動・N1/N2 の期待エラーコード判定ロジック・discrimination（誤った理由での失敗を PASS と誤認しないこと）・CI ステップ存在確認を検証する（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `actionlint.sh` | `.github/workflows/*.yml` を actionlint（+ shellcheck 統合）で静的検証する。式インジェクション（OWASP A03）・構文誤り・`needs` 参照切れ等のワークフロー変更退行を検知する（イシュー #180）。引数指定時はそのファイルのみ検証する（セルフテスト・陰性対照用） | `.github/workflows/ci.yml` の `actionlint` ジョブから呼ばれる |
 | `tests/run-actionlint-tests.sh` | `actionlint.sh` のセルフテスト。actionlint 不在時の fail-closed（exit 2・導入案内）、`tests/fixtures/actionlint/broken-workflow.yml`（`runs-on` 欠落・`needs` 参照切れ）を明示ファイル引数で検査する陰性対照（discrimination）、ci.yml への `actionlint` ジョブ・`ci-complete` needs 登録の存在確認を検証する | `.github/workflows/ci.yml` の `actionlint` ジョブから呼ばれる |
+| `clean-worktrees.sh` | `.claude/worktrees/` 配下を「登録済み（`git worktree list --porcelain`、clean/dirty/locked）」「孤児（登録簿に存在しないが実在するディレクトリ）」に分類し棚卸し表を出力する。既定 dry-run、`--apply` で孤児のみ退避（`_/worktree-salvage/<dirname>.tar.gz`、`--no-salvage` でスキップ可）・削除・`git worktree prune` を実行する（イシュー #221） | CI からは呼ばれない（本体はディスク一括削除を伴うため self-hosted runner の負荷対象外）。セルフテストのみ CI 化 |
+| `tests/run-clean-worktrees-tests.sh` | `clean-worktrees.sh` のセルフテスト（一時 git リポジトリで登録済み clean/dirty・孤児を再現、ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 
 ## 前提ツール
 
@@ -467,3 +472,29 @@ bash scripts/tests/run-third-party-stability-tests.sh
 - **注意**: 本セルフテストが green であることは「集計ハーネスの算出ロジックが正しく
   動くこと」の確認に過ぎない。独立した被験 AI による複数回試行で安定性を確認したことを
   意味しない。両者を混同しないこと（`docs/design/multi-trial-stability-verification.md`）。
+
+## `clean-worktrees.sh` — 残存ワークツリーの棚卸し・退避・削除（イシュー #221）
+
+```bash
+bash scripts/clean-worktrees.sh              # dry-run（既定）: 棚卸し表を出力するのみ
+bash scripts/clean-worktrees.sh --apply      # 孤児のみ退避（tar.gz）→ 削除 → git worktree prune
+bash scripts/clean-worktrees.sh --apply --no-salvage  # 退避せずに削除
+```
+
+- `implement-issue-tree` ワークフローが `.claude/worktrees/<id>/` に作成する per-issue
+  git worktree は、セッション終了後の掃除漏れやリポジトリ改名（#209〜#211）による `.git`
+  参照断絶で「登録済みだが古い」「孤児（`git worktree list` に現れない）」ディレクトリが
+  蓄積し、ディスクを圧迫する（2026-07-19 時点で約 160 ディレクトリ・約 97GB）。
+- 安全基準は fail-closed（`.claude/rules/security.md`）:
+  `git worktree list --porcelain` に登録済みのワークツリーは locked / dirty / clean の
+  いずれでも**既定で削除しない**（並列実行中の他セッションを壊さないため）。削除対象は
+  「`.claude/worktrees/` 直下に実在するが登録簿に存在しない孤児」のみ。
+- 孤児は git で未コミット変更を判定できないため、`--apply` 実行時は削除前に source のみ
+  （`target/`・`node_modules/`・`.git` を除く）を `_/worktree-salvage/<dirname>.tar.gz`
+  へ退避してから削除する（`--no-salvage` で退避をスキップ可能）。
+- 削除パスは `realpath` 解決後、メイン working copy 配下の `.claude/worktrees/` 直下で
+  あることを再検証してから `rm -rf --` する（symlink・パストラバーサル対策）。
+- CI には本体ではなくセルフテスト（`tests/run-clean-worktrees-tests.sh`）のみを組み込む。
+  97GB 規模の削除は self-hosted runner 上で実行する処理ではなく、人間・エージェントが
+  ローカル/運用時に手動実行する想定。
+

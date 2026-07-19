@@ -13,3 +13,8 @@ crates/http/fuzz/target/
 # package-lock.json から npm ci で再現可能なため対象外（生成物の schema.d.ts は
 # コミット対象、docs/design/openapi-typescript-pipeline.md 参照）。
 node_modules/
+
+# implement-issue-tree ワークフローが作成する per-issue git worktree（イシュー #221）。
+# 誤って `git add -A` 等で 97GB 規模の作業ツリーを stage しないための衛生目的。
+# 残存ワークツリーの棚卸し・整理は scripts/clean-worktrees.sh を使う。
+.claude/worktrees/

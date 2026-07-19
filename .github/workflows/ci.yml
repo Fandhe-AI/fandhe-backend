@@ -395,6 +395,12 @@ jobs:
       - name: run-guardrail-tests.sh（対応可否判定記録バリデータのセルフテスト、TASK-12.3-2、#84）
         run: bash scripts/tests/run-guardrail-tests.sh
 
+      # イシュー #221: .claude/worktrees/ 残存ワークツリー整理スクリプトのセルフテスト。
+      # 本体（clean-worktrees.sh）は 97GB 規模の削除を伴いうるため CI には組み込まず、
+      # 一時 git リポジトリで検証するセルフテストのみを常設する。
+      - name: run-clean-worktrees-tests.sh（clean-worktrees.sh のセルフテスト、#221）
+        run: bash scripts/tests/run-clean-worktrees-tests.sh
+
       # TASK-1.5（#14）: server → routes → http::* の依存方向一方向性を機械検証する。
       - name: dep-direction-check.sh（依存方向一方向性の機械検証）
         run: bash scripts/dep-direction-check.sh
