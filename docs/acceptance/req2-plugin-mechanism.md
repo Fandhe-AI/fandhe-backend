@@ -4,6 +4,12 @@
 > 旧クレート名（`backend-framework-core` / `bf-http` / `bf-routes` / `bf-plugin-*` 等）
 > 表記のまま保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
 
+> **再検証済み（イシュー #261）**: `docs/spec/04-requirements.md` REQ-2 が名指しする
+> **WebSocket・GraphQL** の実プラグインペアで着脱を再検証済み。最新結果は末尾の
+> 「再検証（#261、websocket + graphql 実ペア）」節を参照。以下の本文（2026-07-17 の
+> `webrtc-proxy` + `graphql` 代替ペアでの実測・当時のスコープ判断）は実装当時の判断
+> 経緯として一切改変せず保持する（`docs/design/framework-naming.md` 7 節と同方針）。
+
 `docs/spec/04-requirements.md` REQ-2（プラグイン機構）の受け入れ基準を
 `scripts/accept/plugin-mechanism-accept.sh` で検証した結果。
 
@@ -116,3 +122,105 @@ CORE_BIN=target/release/examples/bench-endpoints \
 - `crates/plugin-graphql/src/lib.rs`（第 2 プラグイン境界インスタンスの doc）
 - `scripts/accept/plugin-mechanism-accept.sh`（本レポートの実行スクリプト）
 - `benches/reports/task-1.6-1-performance.md`（性能受け入れ BLOCKED の記録）
+
+## 再検証（#261、websocket + graphql 実ペア）
+
+TASK-2.4（#21）実施当時は実 WebSocket プラグイン（TASK-4.1、#22）が並行実装中だった
+ため代替ペア（`webrtc-proxy` + `graphql`）で暫定実証したが（上記本文）、現在は実
+WebSocket プラグイン（`crates/plugin-websocket`）と実 GraphQL 実行
+（`async-graphql`、TASK-5.1・#38）がともに実装済みのため、
+`docs/spec/04-requirements.md` REQ-2 が名指しする **websocket + graphql** の実
+プラグインペアで再検証した（イシュー #261）。`scripts/accept/plugin-mechanism-accept.sh`
+を対象 feature ペアのパラメータ化（環境変数 `REQ2_FEATURES`、既定
+`"websocket graphql"`）へ更新し、既定値（実ペア）で再実行した。
+
+### 実行環境
+
+| 項目 | 値 |
+|------|-----|
+| 実行日時 | 2026-07-19 |
+| 対象コミット | `3e55c52`（origin/main 先端） |
+| rustc | 1.96.0 (ac68faa20 2026-05-25) |
+| cargo | 1.96.0 (30a34c682 2026-05-25) |
+
+### 判定サマリー
+
+`bash scripts/accept/plugin-mechanism-accept.sh`（既定 `REQ2_FEATURES="websocket graphql"`）の実行結果（終了コード 0）。
+
+| 判定 | 基準 | 詳細 |
+|------|------|------|
+| PASS | 1: 対象プラグイン feature 存在確認 | `websocket`・`graphql` が `fandhe-backend-core` に存在 |
+| PASS | 2: pay-for-what-you-use 機械検証 | `scripts/pay-for-what-you-use-check.sh` PASS |
+| PASS | 2b: 対象ペア cargo tree 直接確認 | 両 feature で無効時不出現・有効時出現を確認（配線切れなし） |
+| PASS | 3: build/test（no-default-features） | `cargo build`/`test` 成功 |
+| PASS | 3: build/test（websocket 単独） | `cargo build`/`test` 成功（`websocket_upgrade.rs` 等の RFC 6455 ハンドシェイク動作確認を含む） |
+| PASS | 3: build/test（graphql 単独） | `cargo build`/`test` 成功（`plugin_graphql_boundary.rs` の実クエリ実行動作確認を含む） |
+| PASS | 3: build/test（websocket,graphql 同時有効） | `cargo build`/`test` 成功（REQ-2「2 種を着脱できる」の同時有効側を実証） |
+| PASS | 3: build/test（all-features） | `cargo build`/`test` 成功 |
+| PASS | 3b: プラグイン単体契約テスト（`fandhe-backend-plugin-websocket`） | `cargo test -p` 成功 |
+| PASS | 3b: プラグイン単体契約テスト（`fandhe-backend-plugin-graphql`） | `cargo test -p` 成功 |
+| PASS | 4: 安全性トレードオフ設計文書 | `docs/design/plugin-loading-tradeoffs.md` 存在確認 |
+| SKIP | 5: 両 feature 無効時の性能維持（REQ-1 基準） | 専有計測枠（`benches/nfr6-exclusive.sh`、#178）が必要なため自動検証対象外（下記「基準 5 について」参照） |
+
+旧代替ペア（`webrtc-proxy` + `graphql`）も `REQ2_FEATURES="webrtc-proxy graphql"` で
+再実行し、同様に全基準 PASS・基準 5 SKIP を確認した（後方互換）。
+
+陰性対照（フェイルクローズ検証）:
+
+| 入力 | 結果 |
+|------|------|
+| `REQ2_FEATURES="no-such-feature graphql"`（存在しない feature） | 基準 1 で即 FAIL・終了コード非 0（cargo build 前に短絡） |
+| `REQ2_FEATURES='foo;rm graphql'`（許可されない文字） | 基準 0 の入力検証で即 FAIL・終了コード非 0（cargo 未実行） |
+| `REQ2_FEATURES="graphql"`（1 種のみ） | 基準 0 で即 FAIL・終了コード非 0（REQ-2 は最低 2 種を要求） |
+
+### REQ-2 受け入れ基準との対応
+
+`docs/spec/04-requirements.md` REQ-2 の「少なくとも 2 種のプラグイン（WebSocket・
+GraphQL）を feature flag で着脱できる」という受け入れ基準を、仕様が名指しする実
+プラグインペアそのもので充足したことを確認した:
+
+- **WebSocket**: `crates/plugin-websocket`（RFC 6455 ハンドシェイク検証・101 応答・
+  `tokio-tungstenite` へのフレーミング委譲、TASK-4.1・#22）
+- **GraphQL**: `crates/plugin-graphql`（`async-graphql` による実クエリ実行、
+  TASK-5.1・#38）
+
+両 feature とも `crates/core/Cargo.toml` で `optional = true` + `dep:` 構文により
+配線され、無効時は `cargo tree` に当該プラグインクレートが一切出現しない
+（pay-for-what-you-use、上記基準 2b）。
+
+### 基準 5（性能維持）について
+
+旧レポート（上記本文）が SKIP 理由とした「axum-ref 等価計測用バイナリが #15/#71
+BLOCKED」は陳腐化している（#15・#71 とも CLOSED、`crates/core/examples/core-bench.rs`
+が整備済み）。本再検証では性能再計測は受け入れ条件に含めていないが、専有計測枠
+（`benches/nfr6-exclusive.sh`、#178。並列 issue 実装ワークフロー下の host
+contention により非専有環境では NFR-6 系の判定が不確定になるため導入された仕組み）
+が必要なため、引き続き自動検証対象外として SKIP を維持する（判定不能を PASS と
+偽らないフェイルクローズ原則、`.claude/rules/security.md`）。
+
+手動再現手順（`core-bench` 使用）:
+
+```bash
+cargo build --release -p fandhe-backend-core --example core-bench --no-default-features
+# benches/README.md の手順に従い、両 feature 無効構成での RPS を計測し
+# REQ-1 基準（docs/spec/04-requirements.md）との比較を行う。
+```
+
+実測証跡は `benches/reports/task-1.6-1-performance.md` を参照。
+
+### 実行環境上の注意（本再検証で確認した事象、フレームワーク実装への影響なし）
+
+本再検証の初回実行時、`/tmp`（tmpfs、並列 worktree 実行による共有ホストの
+リソース逼迫）が逼迫している状態で `cargo test`（doc test のリンク時に `/tmp` を
+使用）が `Bus error` で失敗する事象を確認した。`TMPDIR` をディスクバック
+ファイルシステム上のディレクトリへ切り替えて再実行したところ全構成 PASS した。
+これは実行環境（共有ホストの `/tmp` 容量）に起因する事象であり、
+`fandhe-backend` 側の実装・本受け入れスクリプトの不備ではない。
+
+### 対象外（out-of-scope-tracking 対象）
+
+- 両 feature 無効時の REQ-1 性能基準の実測再計測（専有計測枠 #178 の運用が必要。
+  基準 5 は SKIP のまま維持）
+- `plugin-mechanism-accept.sh` の fixture ベースセルフテスト新設（判定ロジックの
+  大半が cargo 実行そのものであり fixture 化になじまないため見送り）
+- `/tmp` 固定パスの `mktemp` 化（既存 accept スクリプト群横断の課題）
