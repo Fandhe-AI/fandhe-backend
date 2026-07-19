@@ -43,13 +43,18 @@ fandhe-backend/
 ├── crates/                # cargo workspace
 │   ├── core                           # 最小コア。`webrtc-proxy`（TASK-2.1、#18）・`webrtc`
 │   │                                    # （TASK-8.1、#26）・`websocket`（TASK-4.1、#22）・
-│   │                                    # `graphql`（TASK-2.4、#21）の 4 feature で `dep:` 構文
-│   │                                    # により各プラグインを着脱可能に配線済み
-│   │                                    # （`webrtc-proxy` 優先評価）
+│   │                                    # `graphql`（TASK-2.4、#21）・`openapi`（TASK-2.1、#256）
+│   │                                    # の 5 feature で `dep:` 構文により各プラグインを
+│   │                                    # 着脱可能に配線済み（`webrtc-proxy` 優先評価）。
+│   │                                    # `openapi` は `Server::openapi()` の明示登録
+│   │                                    # （opt-in）時のみ `GET /openapi.json` を返す
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。chunked
 │   │                                    # Transfer-Encoding 対応（sans-IO `ChunkedDecoder`、
-│   │                                    # DoS 上限・fuzz target 追加、イシュー #181）
+│   │                                    # DoS 上限・fuzz target 追加、イシュー #181）。`RequestHead::path`
+│   │                                    # / `query` でクエリ文字列を分離し `Router::dispatch` の
+│   │                                    # パス照合をクエリ付きリクエストに対応させる（/search 前提整備、
+│   │                                    # イシュー #258）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
@@ -62,7 +67,9 @@ fandhe-backend/
 │   │                                    # 実クエリ実行へ実装。`Server::graphql` にスキーマ登録した場合のみ
 │   │                                    # `POST /graphql` を処理し、未登録時は feature 有効でもフォールスルー）
 │   ├── plugin-openapi                 # OpenAPI ドキュメント生成プラグイン（ApiDoc + utoipa::path 定義、TASK-3.1、#30。
-│   │                                   # gen-openapi CLI・openapi.json 静的埋め込み、TASK-3.2、#31）
+│   │                                   # gen-openapi CLI・openapi.json 静的埋め込み、TASK-3.2、#31。
+│   │                                   # `crates/core` の `openapi` feature 経由で配線、TASK-2.1、#256。
+│   │                                   # `Server::openapi()` 登録時のみ `GET /openapi.json` を配信）
 │   ├── plugin-websocket                # WebSocket プラグイン（RFC 6455 ハンドシェイク検証・101 応答・
 │   │                                    # tokio-tungstenite へのフレーミング委譲、TASK-4.1、#22。
 │   │                                    # `crates/core` の `websocket` feature 経由で `UpgradeHandler`

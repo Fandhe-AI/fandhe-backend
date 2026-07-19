@@ -81,6 +81,16 @@ fandhe-backend-plugin-graphql = { path = "../plugin-graphql", optional = true }
 # が一切現れない。
 fandhe-backend-plugin-tracing = { path = "../plugin-tracing", optional = true }
 
+# TASK-2.1（#256、REQ-3 の核心接続点）: `openapi` feature 有効時のみ依存として
+# 解決される、`GET /openapi.json` 静的サービング用プラグイン。`webrtc-proxy` /
+# `graphql` と同じパスインターセプト型パターンだが、プラグイン側はハンドラを
+# 持たず定数 `OPENAPI_JSON` を公開するのみ（`crates/plugin-openapi/src/embed.rs`
+# の接続契約を参照）。コア側（`crate::plugin::try_intercept`）が
+# `Content-Type: application/json` を付けて返す薄いハンドラを実装する。
+# feature 無効時は `cargo tree -p fandhe-backend-core` に本行の依存（および
+# 推移的な `utoipa` 系）が一切現れない。
+fandhe-backend-plugin-openapi = { path = "../plugin-openapi", optional = true }
+
 # feature 命名規約（`docs/design/plugin-boundary.md`）: プラグインクレート名
 # （`fandhe-backend-plugin-<name>`）から `fandhe-backend-plugin-` 接頭辞を除いた `<name>` を feature 名
 # とする。`default = []` によりビルド時に何も選択しなければプラグインは
@@ -95,6 +105,9 @@ webrtc = ["dep:fandhe-backend-plugin-webrtc"]
 websocket = ["dep:fandhe-backend-plugin-websocket"]
 graphql = ["dep:fandhe-backend-plugin-graphql"]
 tracing = ["dep:fandhe-backend-plugin-tracing"]
+# TASK-2.1（#256）: `GET /openapi.json` 静的サービング（設定登録型、
+# `Server::openapi()` で明示登録した場合のみ応答する opt-in）。
+openapi = ["dep:fandhe-backend-plugin-openapi"]
 
 # テスト専用（`#[tokio::test]` / `tokio::io::duplex` / マルチスレッドランタイム）。
 # 本体ビルドの feature 集合には影響しない。`async-graphql` は

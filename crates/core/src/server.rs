@@ -229,6 +229,16 @@ pub struct Server {
     /// （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
     #[cfg(feature = "graphql")]
     graphql_config: Option<fandhe_backend_plugin_graphql::GraphQlConfig>,
+    /// `openapi` feature（TASK-2.1 / #256）有効時のみ意味を持つ、`GET
+    /// /openapi.json` の公開トグル。`crate::plugin::try_intercept` がこの
+    /// フィールドを参照して応答するかどうかを判定する。既定 `false`
+    /// （未登録）では feature が有効でもフォールスルーする（`webrtc-proxy`・
+    /// `graphql` と同じ「設定登録型」パターン。API 構造の開示を利用者の
+    /// 明示的 opt-in に限定する意図、`.claude/rules/security.md` の
+    /// A01/A05 観点）。feature 無効時はフィールド自体が構造体から消え、
+    /// 依存・コードともゼロコストになる（pay-for-what-you-use）。
+    #[cfg(feature = "openapi")]
+    openapi_enabled: bool,
 }
 
 impl Default for Server {
@@ -249,6 +259,8 @@ impl Default for Server {
             websocket_configs: Vec::new(),
             #[cfg(feature = "graphql")]
             graphql_config: None,
+            #[cfg(feature = "openapi")]
+            openapi_enabled: false,
         }
     }
 }
@@ -438,6 +450,41 @@ impl Server {
     #[cfg(feature = "graphql")]
     pub(crate) fn graphql_config(&self) -> Option<&fandhe_backend_plugin_graphql::GraphQlConfig> {
         self.graphql_config.as_ref()
+    }
+
+    /// OpenAPI ドキュメント配信プラグイン（`crates/plugin-openapi`）を
+    /// 有効化する（`openapi` feature 限定 API、TASK-2.1 / #256）。
+    ///
+    /// 登録すると `GET /openapi.json` が `RequestGate` → `UpgradeHandler` の
+    /// 評価を通過した後、既定 [`Handler`] より先にパスインターセプトされ、
+    /// `fandhe_backend_plugin_openapi::OPENAPI_JSON`（コンパイル時埋め込みの
+    /// 静的 JSON）を `Content-Type: application/json` で返す（対象外パス・
+    /// メソッドは素通りし、既定 `Handler` へフォールスルーする。
+    /// `crate::plugin::try_intercept` の doc を参照）。**未登録の場合は
+    /// feature が有効でも常にフォールスルー**（404）する（`webrtc-proxy`・
+    /// `graphql` と同じ設定登録型パターン）。API 構造の開示となるため、既定
+    /// 非公開（fail-closed）とし利用者の明示登録を必須とする
+    /// （`.claude/rules/security.md` の A01/A05 観点）。
+    ///
+    /// # Examples
+    /// ```
+    /// use fandhe_backend_core::Server;
+    ///
+    /// let server = Server::new().openapi();
+    /// let _ = server;
+    /// ```
+    #[cfg(feature = "openapi")]
+    #[must_use]
+    pub fn openapi(mut self) -> Self {
+        self.openapi_enabled = true;
+        self
+    }
+
+    /// `plugin::try_intercept` が参照する、`GET /openapi.json` 公開の有効/
+    /// 無効フラグ（`openapi` feature 限定、TASK-2.1 / #256）。
+    #[cfg(feature = "openapi")]
+    pub(crate) fn openapi_enabled(&self) -> bool {
+        self.openapi_enabled
     }
 
     /// トレーシングプラグイン（`crates/plugin-tracing`）を有効化する
