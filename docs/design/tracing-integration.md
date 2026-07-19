@@ -177,7 +177,7 @@ PoC-10 実測ほどの相対増分（RSS +301.4%）にはならないことを�
 | `tracing` feature 有効時の依存クレート数・バイナリサイズ・RSS の増分を実測記録する | `docs/dep-impact/records.md` 該当エントリ（5 節に要約） |
 | `tracing` feature 無効時に依存が一切現れないことを確認する | `docs/dep-impact/records.md` 該当エントリ + `scripts/accept/tracing-accept.sh` A（既存）/D/E（本タスクで追加） |
 | `tracing` エコシステムとの連携方式（サンプリング設定・記録粒度の切り替え方法）を設計文書化する | 本文書 2〜4 節 |
-| 受け入れテストスクリプトと実行結果を記録する | `scripts/accept/tracing-accept.sh`（D/E 追加）+ `docs/reports/task-10-5-acceptance.md` |
+| 受け入れテストスクリプトと実行結果を記録する | `scripts/accept/tracing-accept.sh`（D/E 追加）+ `docs/reports/task-10-5-acceptance.md` + `docs/acceptance/req10-tracing.md`（#219） |
 
 [`TracingConfig`]: ../../crates/plugin-tracing/src/config.rs
 [`TracingConfig::exclude_path`]: ../../crates/plugin-tracing/src/config.rs

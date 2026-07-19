@@ -373,6 +373,9 @@ example である点に注意。ベースライン `examples/minimal.rs` も `cu
 実行結果レポート側の役割とする。実行結果レポートは
 `benches/reports/task-10.4-tracing-performance.md` に記録する。
 
+TASK-10.5 分（D/E チェック）の受け入れ記録は `docs/acceptance/req10-tracing.md` に
+記録する（一次記録: `docs/reports/task-10-5-acceptance.md`）。
+
 ## `openapi-ts-accept.sh` — REQ-6（openapi-typescript 連携）受け入れ検証（TASK-6.2、#55）
 
 `docs/spec/05-tasks.md` TASK-6.2「陰性対照 CI 型検査整備・受け入れテスト」の受け入れ
