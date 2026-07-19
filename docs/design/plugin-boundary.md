@@ -488,6 +488,30 @@ PoC-10 の知見（非同期 I/O 化だけでは RPS 劣化 31.6% を解消で�
 `tracing` マクロ呼び出し自体を避けることで有効化コストをサンプリング間隔に
 応じて按分する。
 
+## 5.8 パスインターセプト型の静的サービング変種（TASK-2.1 / #256 で確立）
+
+`crates/plugin-openapi`（`openapi` feature）は 4 節のパスインターセプト型と
+同じ「コア → プラグインの optional 依存」+ `plugin::try_intercept` 分岐で
+配線するが、2 点の変種を持つ。
+
+- **プラグイン側に非同期ハンドラがない**: `webrtc-proxy`/`webrtc`/`graphql`
+  は `fandhe_backend_plugin_*::try_handle_*(head, body, config).await` という
+  非同期関数へ委譲するが、`fandhe-backend-plugin-openapi` は定数
+  `OPENAPI_JSON`（`include_str!` によるコンパイル時埋め込み、`embed.rs`）を
+  公開するのみでハンドラを持たない（`crates/plugin-openapi/src/lib.rs` の
+  「拡張点対応: 非該当」宣言はこのため変更していない。実行時拡張点の契約では
+  なくコンパイル時 feature 着脱に閉じる、`docs/design/dependency-graph-contract.md`
+  5 節）。`plugin::try_intercept` 側は `server.openapi_enabled() &&
+  head.method == "GET" && head.target == "/openapi.json"` を判定するだけの
+  同期分岐で完結し、`.await` を挟まない
+- **設定登録型（`bool` トグル）**: `webrtc_proxy_config`/`graphql_config` の
+  ような設定値ではなく、`Server::openapi()` は `openapi_enabled: bool` を
+  `true` にするだけの opt-in トグル。API 構造の開示（`GET /openapi.json` が
+  内部エンドポイント構成を露出する）を利用者の明示登録なしに既定公開しない
+  ため（`.claude/rules/security.md` A01/A05 観点、`Server::openapi` の doc
+  comment を参照）。未登録時は feature が有効でも常にフォールスルー（404）
+  する点は他の設定登録型プラグイン（`webrtc-proxy`・`graphql`）と同じ
+
 ## 6. 検証コマンド
 
 | 検証 | コマンド | 期待結果 |
@@ -506,6 +530,13 @@ PoC-10 の知見（非同期 I/O 化だけでは RPS 劣化 31.6% を解消で�
 `fandhe-backend-plugin-websocket`・`tokio-tungstenite` が出現し、`webrtc-rs` 系は
 出現しない。`crates/core/tests/websocket_upgrade.rs`（feature 有効側）・
 `websocket_upgrade_disabled.rs`（feature 無効側）で green。
+
+`openapi` feature（TASK-2.1 / #256）も同一パターンで検証済み:
+`cargo tree -p fandhe-backend-core --features openapi` で
+`fandhe-backend-plugin-openapi`・`utoipa` 系が出現し、他プラグインは出現しない。
+`crates/core/tests/plugin_openapi_boundary.rs`（feature 有効側、未登録
+フォールスルー・メソッド不一致・無関係パスも併せて検証）・
+`plugin_openapi_boundary_disabled.rs`（feature 無効側）で green。
 
 ## 6.1 `scripts/dep-direction-check.sh` ホワイトリストの例外（TASK-1.5 との整合）
 

@@ -35,21 +35,26 @@ graph LR
     server -.->|optional dep, feature 有効時のみ| gql[fandhe-backend-plugin-graphql]
     server -.->|optional dep, feature 有効時のみ| rtc[fandhe-backend-plugin-webrtc]
     server -.->|optional dep, feature 有効時のみ| rtcproxy[fandhe-backend-plugin-webrtc-proxy]
+    server -.->|optional dep, feature 有効時のみ| openapi[fandhe-backend-plugin-openapi<br/>拡張点対応: 非該当]
 
     subgraph "プラグイン（feature 着脱、pay-for-what-you-use）"
         ws
         gql
         rtc
         rtcproxy
-        openapi[fandhe-backend-plugin-openapi<br/>非該当・独立クレート]
+        openapi
     end
 ```
 
 - 実線（`server → routes → http::*`）: 常時有効な一方向コア依存。循環なし
 - 破線（`server -.-> fandhe-backend-plugin-*`）: feature 無効時は `cargo tree` に一切現れない
   （pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）コンパイル時依存逆転
-- `fandhe-backend-plugin-openapi` はいずれのプラグイン依存逆転エッジにも乗らない独立クレート
-  （5 節参照。現状 core / http / routes / 他プラグインのいずれからも参照されない）
+- `fandhe-backend-plugin-openapi` は他プラグインと同じコンパイル時依存逆転エッジ
+  （`fandhe-backend-core:fandhe-backend-plugin-openapi`、TASK-2.1 / #256 で配線済み）を
+  持つが、実行時拡張点（`Middleware`/`UpgradeHandler`/`RequestGate`）のいずれにも
+  乗らない「拡張点対応: 非該当」区分は維持する（5 節参照。プラグイン側は
+  ハンドラを持たず定数 `OPENAPI_JSON` を公開するのみで、`plugin::try_intercept`
+  側の同期分岐が返却するだけの接続のため）
 
 ### 1.2 許可エッジ一覧（`allowed_edge_patterns` からの転記）
 
@@ -61,6 +66,7 @@ graph LR
 | `fandhe-backend-core` | `fandhe-backend-plugin-webrtc` | プラグイン依存逆転（パスインターセプト型） |
 | `fandhe-backend-core` | `fandhe-backend-plugin-websocket` | プラグイン依存逆転（Upgrade 型） |
 | `fandhe-backend-core` | `fandhe-backend-plugin-graphql` | プラグイン依存逆転（パスインターセプト型） |
+| `fandhe-backend-core` | `fandhe-backend-plugin-openapi` | プラグイン依存逆転（パスインターセプト型の静的サービング変種、TASK-2.1 / #256） |
 | `fandhe-backend-routes` | `fandhe-backend-http` | コア一方向依存 |
 | `fandhe-backend-plugin-*` | `fandhe-backend-http` | プラグイン→コア基盤層参照（許可） |
 | `fandhe-backend-plugin-*` | `fandhe-backend-routes` | プラグイン→コア基盤層参照（許可） |
@@ -516,11 +522,15 @@ package/import 名の改名に続き、リポジトリ名・ドキュメント�
 ランタイム拡張点を要さないためである（`crates/plugin-openapi/src/lib.rs` 冒頭 doc・
 `docs/spec/03-poc/openapi-generation/README.md`）。
 
-コアとの接続（`GET /openapi.json` の配線）は TASK-2.1（#18）のサーバ側 feature
-（`openapi = ["dep:fandhe-backend-plugin-openapi"]` 相当）に委ねられ、これはコンパイル時の
-feature 着脱であって実行時拡張点の契約ではない。したがって「3 拡張点のいずれかに
-閉じるか、閉じない場合は理由を明記する」という REQ-13 の要求に対しては、
-「拡張点自体を使用しない（非該当）」区分として扱い、本節をその理由の実体とする。
+コアとの接続（`GET /openapi.json` の配線）は TASK-2.1（#256）で配線済み
+（`crates/core/Cargo.toml` の `openapi = ["dep:fandhe-backend-plugin-openapi"]`、
+`crates/core/src/plugin.rs` の `try_intercept` 内 cfg-gated 分岐、`Server::openapi()`
+による opt-in 登録）である。これはコンパイル時の feature 着脱であって実行時
+拡張点の契約ではない（プラグイン側は `try_handle_*` のような非同期委譲関数を
+持たず、定数 `OPENAPI_JSON` を公開するのみ。`plugin::try_intercept` 側の同期
+分岐がそれを返却するだけで完結する）。したがって「3 拡張点のいずれかに閉じるか、
+閉じない場合は理由を明記する」という REQ-13 の要求に対しては、配線後も
+「拡張点自体を使用しない（非該当）」区分を維持し、本節をその理由の実体とする。
 
 ## 6. 検証コマンド
 

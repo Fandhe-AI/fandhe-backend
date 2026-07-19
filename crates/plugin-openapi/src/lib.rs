@@ -18,8 +18,10 @@
 //!   （`crates/plugin-webrtc-proxy` と同一パターン）。core / http / routes /
 //!   他プラグインのどこからも参照しない限り `utoipa` 系依存は本クレートの外に
 //!   一切現れない（pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）。
-//! - サーバ側 feature（`openapi = ["dep:fandhe-backend-plugin-openapi"]` 相当）による配線は
-//!   TASK-2.1（#18、並列進行中）に接続点を委ねる。本クレート単体では未接続。
+//! - サーバ側 feature（`openapi = ["dep:fandhe-backend-plugin-openapi"]`）による配線は
+//!   TASK-2.1（#256）で完了した。`crates/core` の `openapi` feature 有効時、
+//!   `Server::openapi()` を明示登録すると `GET /openapi.json` が
+//!   `crate::plugin::try_intercept` 経由で [`OPENAPI_JSON`] を返す。
 //! - `GET /openapi.json` の静的埋め込み（[`OPENAPI_JSON`]）・生成 CLI（`gen-openapi`、
 //!   `gen-cli` feature）は TASK-3.2（#31）で実装済み。埋め込み実体の鮮度保証・
 //!   TASK-2.1 との接続契約は `embed.rs` の doc comment を参照。
