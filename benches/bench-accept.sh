@@ -274,6 +274,25 @@ if [ -n "${REPORT_MD}" ]; then
     } >>"${REPORT_MD}"
 fi
 
+# `scripts/accept/plugin-mechanism-accept.sh` 基準 5 は REPORT_MD の「## 結論」
+# セクション内の `**総合判定: PASS/FAIL**` 行のみを機械判定に使う（他セクションに
+# 引用として埋め込まれた同一文言の誤検知を避けるため、セクション限定・複数存在時は
+# 末尾のセクションを採用する設計、イシュー #260 Bugbot 指摘対応）。再計測のたびに
+# 新しい「## 結論」セクションを追記することで、レポートを手編集しなくても
+# 受け入れゲートへ再計測結果を機械的に反映できるようにする。
+if [ -n "${REPORT_MD}" ]; then
+    {
+        echo
+        echo "## 結論（自動記録: bench-accept.sh 再計測、$(date -u '+%Y-%m-%dT%H:%M:%SZ')）"
+        echo
+        if [ "${OVERALL_PASS}" -eq 1 ]; then
+            echo "**総合判定: PASS**"
+        else
+            echo "**総合判定: FAIL**"
+        fi
+    } >>"${REPORT_MD}"
+fi
+
 if [ "${OVERALL_PASS}" -eq 1 ]; then
     echo "## 判定結果: PASS"
     exit 0

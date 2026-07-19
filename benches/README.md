@@ -516,5 +516,11 @@ REPORT_MD=benches/reports/task-2.4-plugin-accept.md bash benches/bench-accept-ex
 BLOCKED（PASS へは丸めない）。
 
 `scripts/accept/plugin-mechanism-accept.sh` 基準 5 は `benches/reports/
-task-2.4-plugin-accept.md` の「総合判定」行を参照して PASS/FAIL/SKIP を判定する
-（レポート不在・BLOCKED 記録のみの場合は SKIP）。
+task-2.4-plugin-accept.md` の「## 結論」セクション内の「総合判定」行を参照して
+PASS/FAIL/SKIP を判定する（レポート不在・「## 結論」セクションに総合判定の記録が
+ない・BLOCKED 記録のみの場合は SKIP）。`REPORT_MD` 指定時、`bench-accept.sh` は
+再計測のたびに「## 結論（自動記録: ...）」セクションと総合判定行を REPORT_MD に
+追記するため、レポートを手編集しなくても再計測結果を機械的に受け入れゲートへ
+反映できる（他セクションへの過去実測の引用に埋め込まれた総合判定文言は判定対象に
+含めない。複数「## 結論」セクションが存在する場合はレポート末尾に近い方＝直近の
+再計測結果を採用する。イシュー #260 Bugbot 指摘対応）。

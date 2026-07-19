@@ -122,10 +122,17 @@ FAIL ではなく SKIP として記録され、終了コードには影響しな
    `cargo build` / `cargo test` が成功すること
 4. `docs/design/plugin-loading-tradeoffs.md`（安全性トレードオフ設計文書）の存在
 
-両 feature 無効時のコア性能（REQ-1 基準維持）は axum-ref 等価計測用バイナリが
-TASK-1.6-1（#71）BLOCKED のため自動検証対象外（SKIP として記録、フェイルクローズで
-PASS を偽らない）。手動計測手順・実行結果は
-`docs/acceptance/req2-plugin-mechanism.md` を参照。
+5. 両 feature 無効時のコア性能（REQ-1 基準維持）: `benches/reports/
+   task-2.4-plugin-accept.md` の「## 結論」セクション内の「総合判定」行を
+   `lib/plugin-mechanism-conclusion-verdict.awk` で判定（他セクションへの過去実測の
+   引用は無視し、セクションが複数存在する場合はレポート末尾に近い方＝直近の
+   再計測結果を採用する、TASK-260 / #260）。`benches/bench-accept-exclusive.sh`
+   （`REPORT_MD=` 指定）で再計測するたびにレポートへ「## 結論（自動記録）」
+   セクションが追記され、手編集なしにゲートへ反映される。レポート不在・
+   「## 結論」セクションに記録なし・BLOCKED のみの場合は SKIP（フェイルクローズで
+   PASS を偽らない）。awk ロジックは `scripts/tests/
+   run-plugin-mechanism-accept-tests.sh` で回帰検証する。手動計測手順・実行結果は
+   `docs/acceptance/req2-plugin-mechanism.md` を参照。
 
 ## `dep-audit-accept.sh` — REQ-15（依存監査基盤）受け入れ検証（TASK-15.4、#52）
 
