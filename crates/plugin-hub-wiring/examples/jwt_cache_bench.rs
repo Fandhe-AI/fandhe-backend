@@ -14,8 +14,8 @@
 //! ```
 //!
 //! 環境変数（すべて任意）:
-//! - `BF_JWT_CACHE_BENCH_OPS`（既定 20000）: 1 試行あたりの呼び出し回数
-//! - `BF_JWT_CACHE_BENCH_TRIALS`（既定 7）: 試行回数（中央値算出用）
+//! - `FANDHE_BACKEND_JWT_CACHE_BENCH_OPS`（既定 20000）: 1 試行あたりの呼び出し回数
+//! - `FANDHE_BACKEND_JWT_CACHE_BENCH_TRIALS`（既定 7）: 試行回数（中央値算出用）
 
 use std::env;
 use std::time::Instant;
@@ -95,8 +95,8 @@ fn median(mut values: Vec<f64>) -> f64 {
 }
 
 fn main() {
-    let ops = env_usize("BF_JWT_CACHE_BENCH_OPS", 20_000);
-    let trials = env_usize("BF_JWT_CACHE_BENCH_TRIALS", 7);
+    let ops = env_usize("FANDHE_BACKEND_JWT_CACHE_BENCH_OPS", 20_000);
+    let trials = env_usize("FANDHE_BACKEND_JWT_CACHE_BENCH_TRIALS", 7);
 
     let keypair = RsaKeyPair::from_pkcs8(TEST_PKCS8).expect("valid pkcs8 fixture");
     let keys = JwksKeySet::from_json(&jwks_json_for(&keypair, TEST_KID)).expect("valid jwks");

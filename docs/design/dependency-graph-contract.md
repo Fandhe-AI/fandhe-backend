@@ -270,7 +270,7 @@ RPS・p95 レイテンシに与える影響（NFR-6、`docs/spec/04-requirements
    `benches/hub-nfr6-bench.sh` 冒頭コメント参照）
 4. **正当性根拠**: 両ファイルは `fandhe-backend-plugin-hub-wiring` の `RequestGate` 実装
    （`TenantGate`、2 節契約一覧の `RequestGate` 行）そのものの契約を変更するもの
-   ではなく、既存構成（`BF_HUB_GATE=off` によるリンクコスト分離計測、および
+   ではなく、既存構成（`FANDHE_BACKEND_HUB_GATE=off` によるリンクコスト分離計測、および
    ゲート有効構成の opt-in コスト参考値）の負荷計測・実測結果を記録するのみで、
    計測対象の拡張点契約・依存方向（`server → routes → http::*`、1 節）には一切
    影響しない。計測は既存バイナリ（`examples/minimal`・`examples/hub_service_demo`）

@@ -3,7 +3,7 @@
 #
 # このスクリプトの役割:
 #   `fandhe-backend-plugin-hub-wiring` をリンクした最小サーバ（`examples/hub_link_only.rs`、
-#   `BF_HUB_GATE=off` で `TenantGate` 未登録＝リンクコストのみを分離計測）が、
+#   `FANDHE_BACKEND_HUB_GATE=off` で `TenantGate` 未登録＝リンクコストのみを分離計測）が、
 #   無関係パス（`GET /`）への RPS・p95 レイテンシに与える影響が誤差範囲に収まる
 #   ことを、実際にビルドした 2 バイナリ（ベースライン `examples/minimal`／
 #   比較対象 `examples/hub_link_only`）へ `oha` で負荷をかけて検証する。
@@ -26,7 +26,7 @@
 #    benches/lib/common.sh の「サプライチェーン考慮・自動取得しない」方針を踏襲）
 #
 # 参考値（PASS/FAIL 判定には使わない）:
-#   `hub_service_demo`（実データ入り example）を使い、`BF_HUB_GATE` を未設定にした
+#   `hub_service_demo`（実データ入り example）を使い、`FANDHE_BACKEND_HUB_GATE` を未設定にした
 #   「ゲート有効 + 有効トークン」構成のスループットを opt-in コストとして手動計測し
 #   併記する（`benches/reports/task-9.5-hub-wiring-performance.md` に転記。
 #   `hub_link_only` は空 JWKS のため実トークンでの opt-in 計測はできない）。
@@ -150,11 +150,11 @@ measure() {
 
 echo "=== NFR-6 計測（RUNS=${RUNS} DURATION=${DURATION} CONNECTIONS=${CONNECTIONS}） ===" >&2
 echo "baseline: ${BASELINE_BIN}（fandhe-backend-plugin-hub-wiring 未リンク）" >&2
-echo "hub     : ${HUB_BIN}（fandhe-backend-plugin-hub-wiring リンク済み・BF_HUB_GATE=off で TenantGate 未登録、GET / は無関係パス）" >&2
+echo "hub     : ${HUB_BIN}（fandhe-backend-plugin-hub-wiring リンク済み・FANDHE_BACKEND_HUB_GATE=off で TenantGate 未登録、GET / は無関係パス）" >&2
 echo "" >&2
 
 read -r baseline_rps baseline_p95 <<<"$(measure "${BASELINE_BIN}" "${BASELINE_PORT}" baseline)"
-read -r hub_rps hub_p95 <<<"$(measure "${HUB_BIN}" "${HUB_PORT}" "hub(gate off)" "BF_HUB_GATE=off")"
+read -r hub_rps hub_p95 <<<"$(measure "${HUB_BIN}" "${HUB_PORT}" "hub(gate off)" "FANDHE_BACKEND_HUB_GATE=off")"
 
 rps_ratio_pct="$(LC_NUMERIC=C awk -v a="${hub_rps}" -v b="${baseline_rps}" 'BEGIN { printf "%.2f", (a / b) * 100 }')"
 p95_ratio_pct="$(LC_NUMERIC=C awk -v a="${hub_p95}" -v b="${baseline_p95}" 'BEGIN { printf "%.2f", (a / b) * 100 }')"

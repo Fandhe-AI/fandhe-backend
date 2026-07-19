@@ -74,10 +74,10 @@ for stage in "${STAGES[@]}"; do
 
     for ((i = 1; i <= RUNS; i++)); do
         out_file="${TMP_DIR}/probe-${events}-${threads}-${i}.log"
-        json="$(BF_TRACING_PROBE_OUTPUT="${out_file}" \
-            BF_TRACING_PROBE_EVENTS="${events}" \
-            BF_TRACING_PROBE_THREADS="${threads}" \
-            BF_TRACING_PROBE_LINE_BYTES="${LINE_BYTES}" \
+        json="$(FANDHE_BACKEND_TRACING_PROBE_OUTPUT="${out_file}" \
+            FANDHE_BACKEND_TRACING_PROBE_EVENTS="${events}" \
+            FANDHE_BACKEND_TRACING_PROBE_THREADS="${threads}" \
+            FANDHE_BACKEND_TRACING_PROBE_LINE_BYTES="${LINE_BYTES}" \
             "${PROBE_BIN}")"
         rm -f "${out_file}"
 

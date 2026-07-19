@@ -124,10 +124,10 @@ rm -f "${VULN_IDS_CLEAN_TMP}"
 run_unsafe_triage_in() {
     local workdir="$1"
     shift
-    # BF_UNSAFE_TRIAGE_REPO_ROOT で擬似 workspace を指す（unsafe-triage.sh 側の
+    # FANDHE_BACKEND_UNSAFE_TRIAGE_REPO_ROOT で擬似 workspace を指す（unsafe-triage.sh 側の
     # テスト注入口）。実 workspace の crates/・scripts/unsafe-baseline.json は
     # 一切変更しない。
-    BF_UNSAFE_TRIAGE_REPO_ROOT="${workdir}" bash "${SCRIPTS_DIR}/unsafe-triage.sh" "$@"
+    FANDHE_BACKEND_UNSAFE_TRIAGE_REPO_ROOT="${workdir}" bash "${SCRIPTS_DIR}/unsafe-triage.sh" "$@"
 }
 
 setup_pseudo_workspace() {

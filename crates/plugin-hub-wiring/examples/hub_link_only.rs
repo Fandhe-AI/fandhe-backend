@@ -9,7 +9,7 @@
 //! 受けて追加した最小 example。
 //!
 //! `examples/minimal.rs`（ベースライン）と同一の `GET /`（200・同一 body）のみを
-//! 持ち、`BF_HUB_GATE=off` 未設定時のみ空 JWKS（`TenantGateConfig::from_jwks_json`
+//! 持ち、`FANDHE_BACKEND_HUB_GATE=off` 未設定時のみ空 JWKS（`TenantGateConfig::from_jwks_json`
 //! の doctest と同一の `{"keys":[]}`、鍵ローテーション・実トークンは計測対象外の
 //! ため不要）で構成した `TenantGate` を登録する。`hub_service_demo.rs` の
 //! `// --- wiring:begin --- 〜 // --- wiring:end ---` 区間と同型の配線のみを行い、
@@ -19,7 +19,7 @@
 //! hub-wiring はコア機能ではなく `server.gate(...)` 経由の汎用配線のため、
 //! 本 example は `crates/plugin-hub-wiring/examples/` に置く）。
 //!
-//! `benches/hub-nfr6-bench.sh` の主計測（`BF_HUB_GATE=off` によるリンクコスト
+//! `benches/hub-nfr6-bench.sh` の主計測（`FANDHE_BACKEND_HUB_GATE=off` によるリンクコスト
 //! 分離計測）は本 example をベースラインと比較する。ゲート有効 + 有効トークン時の
 //! opt-in コスト参考値（PASS/FAIL 判定には使わない）は、実データ・実トークンを
 //! 要するため引き続き `hub_service_demo.rs` を手動計測で使う
@@ -27,7 +27,7 @@
 //!
 //! ```bash
 //! cargo build --release -p fandhe-backend-plugin-hub-wiring --example hub_link_only
-//! BF_HUB_GATE=off ./target/release/examples/hub_link_only &
+//! FANDHE_BACKEND_HUB_GATE=off ./target/release/examples/hub_link_only &
 //! curl -v http://127.0.0.1:3101/   # 200 応答（無関係パス、minimal と同一 body）
 //! ```
 
@@ -54,7 +54,7 @@ async fn main() -> std::io::Result<()> {
     let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#)
         .expect("空 JWKS の構築は静的に妥当なので必ず成功する");
     let mut server = Server::new();
-    if env::var("BF_HUB_GATE").as_deref() != Ok("off") {
+    if env::var("FANDHE_BACKEND_HUB_GATE").as_deref() != Ok("off") {
         server = server.gate(TenantGate::new(config));
     }
     // --- wiring:end ---

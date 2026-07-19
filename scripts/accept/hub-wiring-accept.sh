@@ -13,7 +13,7 @@
 #      `fandhe-backend-plugin-hub-wiring` が現れないこと（依存逆転型プラグインの維持）
 #   D: NFR-6（無関係パスへの RPS・p95 影響が誤差範囲内）。ビルド済み
 #      `target/release/examples/minimal`・`target/release/examples/hub_link_only`
-#      （`BF_HUB_GATE=off`、`hub_service_demo` のアプリ層オーバーヘッドを含まない
+#      （`FANDHE_BACKEND_HUB_GATE=off`、`hub_service_demo` のアプリ層オーバーヘッドを含まない
 #      リンクコスト専用最小 example。Cursor Bugbot review 4727552092 指摘1対応）と
 #      `oha` が揃っていれば `benches/hub-nfr6-bench.sh` で empirical 計測する。
 #      揃っていなければ判定不能として SKIP + 実行手順を案内する
@@ -148,7 +148,7 @@ check_nfr6() {
 
     local verdict
     verdict="$(evaluate_nfr6_ratio "${rps_ratio_pct}" "${p95_ratio_pct}")"
-    local detail="RPS 比 ${rps_ratio_pct}% / p95 比 ${p95_ratio_pct}%（hub_link_only・BF_HUB_GATE=off / ベースライン、GET / への負荷計測。狭義の NFR-6 帯 100.3〜100.8% との照合は benches/reports/task-9.5-hub-wiring-performance.md 参照）"
+    local detail="RPS 比 ${rps_ratio_pct}% / p95 比 ${p95_ratio_pct}%（hub_link_only・FANDHE_BACKEND_HUB_GATE=off / ベースライン、GET / への負荷計測。狭義の NFR-6 帯 100.3〜100.8% との照合は benches/reports/task-9.5-hub-wiring-performance.md 参照）"
     case "${verdict}" in
     PASS)
         record_pass "D: NFR-6 無関係パス影響" "${detail}"

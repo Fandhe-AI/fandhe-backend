@@ -16,9 +16,9 @@
 //! （3 エンドポイント × 手書き JWT 検証・クレーム抽出・境界チェック）に対し、
 //! ここでは JWKS 注入 + ゲート登録の数行のみで済む。
 //!
-//! # `BF_HUB_GATE=off`（NFR-6 「無関係パスへの影響」計測用、`benches/hub-nfr6-bench.sh`）
+//! # `FANDHE_BACKEND_HUB_GATE=off`（NFR-6 「無関係パスへの影響」計測用、`benches/hub-nfr6-bench.sh`）
 //!
-//! 環境変数 `BF_HUB_GATE=off` を設定すると `TenantGate` を登録せずに起動する
+//! 環境変数 `FANDHE_BACKEND_HUB_GATE=off` を設定すると `TenantGate` を登録せずに起動する
 //! （本クレート・依存自体はリンクされたまま。ビルド成果物としてのリンク
 //! コストとゲート登録コストを分離計測するための切り替え）。`GET /items` 系は
 //! この構成でもルート自体は登録済みのままだが、各ハンドラが `require_org`
@@ -133,12 +133,12 @@ fn demo_token(keypair: &RsaKeyPair, org_id: &str) -> String {
 
 /// ゲート通過済みリクエストから `org_id` を取り出す。JWT 検証・クレーム抽出は
 /// 一切自前実装せず [`Authenticator::authenticate`]（本クレート提供）へ委譲する
-/// （TASK-9.5 の削減対象そのもの）。`BF_HUB_GATE=off` 構成で `/items` 系へ
+/// （TASK-9.5 の削減対象そのもの）。`FANDHE_BACKEND_HUB_GATE=off` 構成で `/items` 系へ
 /// 直接到達した場合（ゲート未登録）はここで検証が走り、失敗時はハンドラ単体でも
 /// フェイルクローズを維持する防御的多層化として応答を返す。ステータス
 /// マッピングは [`TenantGate::check`]（`src/gate.rs`）の判定ポリシーと完全に
 /// 一致させる（`org_id` クレーム欠落・空は `403`、それ以外の検証失敗は `401`。
-/// ここで独自に緩めると `BF_HUB_GATE=off` 構成でのみステータスが食い違う
+/// ここで独自に緩めると `FANDHE_BACKEND_HUB_GATE=off` 構成でのみステータスが食い違う
 /// 不整合を生むため、Cursor Bugbot 指摘対応で修正、PR #163）。
 fn require_org(authenticator: &Authenticator, head: &RequestHead) -> Result<String, Response> {
     authenticator
@@ -260,7 +260,7 @@ async fn main() -> std::io::Result<()> {
     let config = TenantGateConfig::from_jwks_json(&jwks_json).expect("valid demo jwks");
     let authenticator = config.authenticator();
     let mut server = Server::new();
-    if env::var("BF_HUB_GATE").as_deref() != Ok("off") {
+    if env::var("FANDHE_BACKEND_HUB_GATE").as_deref() != Ok("off") {
         server = server.gate(TenantGate::new(config));
     }
     // --- wiring:end ---

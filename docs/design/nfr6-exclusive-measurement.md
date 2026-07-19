@@ -38,7 +38,7 @@ issue 実装ワークフロー下の host contention により以下の状態で
 
 ### 3.1 相互排他（flock）
 
-`BF_NFR6_LOCK`（既定 `/tmp/backend-framework-nfr6-bench.lock`）に対する `flock` で
+`FANDHE_BACKEND_NFR6_LOCK`（既定 `/tmp/backend-framework-nfr6-bench.lock`）に対する `flock` で
 ホストグローバルな相互排他を行う。並列 worktree の同一スクリプト同士が同時に計測しない
 ことを保証する。
 
@@ -47,7 +47,7 @@ issue 実装ワークフロー下の host contention により以下の状態で
 - ロックファイルへデータを書き込むことはない（`exec N>path` で空ファイルを開くのみ。
   squat されても flock 待ちになるだけで情報漏えい・上書き破壊は起きない）
 - 取得できない場合は `QUIESCE_WAIT_SECS` を上限に待機し、超過時は BLOCKED
-  （`BF_NFR6_BLOCKED_EXIT_CODE`、既定 2）として終了する。バイパス用の強制フラグは
+  （`FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`、既定 2）として終了する。バイパス用の強制フラグは
   設けない（フェイルクローズ）
 
 ### 3.2 静穏確認（quiescence check）
@@ -92,7 +92,7 @@ machine-readable な `key=value` 行で出力する。**プロセスは名前の
 再確認する（前対象の計測完了直後・他ジョブの割り込み開始を検知するため）。
 
 FAIL が残っても wrapper 自体は非 0 で終了しない（判定確定こそが wrapper の責務であり、
-FAIL の是非判断は人間レビューへ委ねる）。BLOCKED のみ非 0（`BF_NFR6_BLOCKED_EXIT_CODE`）
+FAIL の是非判断は人間レビューへ委ねる）。BLOCKED のみ非 0（`FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`）
 で終了し、フェイルクローズを徹底する。
 
 ## 5. 再計測の実施結果（#178 時点）

@@ -40,7 +40,7 @@ set -uo pipefail
 
 # 専有ロックファイルの既定パス。env で上書き可能（並列 worktree でロック対象を
 # 分離したい場合や、`/tmp` 以外の専有ディレクトリを使いたい場合に指定する）。
-BF_NFR6_LOCK="${BF_NFR6_LOCK:-/tmp/backend-framework-nfr6-bench.lock}"
+FANDHE_BACKEND_NFR6_LOCK="${FANDHE_BACKEND_NFR6_LOCK:-/tmp/backend-framework-nfr6-bench.lock}"
 # 静穏とみなす 1 分 loadavg の上限（nproc に対する絶対値ではなく固定閾値。
 # 既定 1.0 は「ほぼアイドル」を意味する保守的な値。env で上書き可能）。
 LOAD1_MAX="${LOAD1_MAX:-1.0}"
@@ -51,7 +51,7 @@ QUIESCE_POLL_INTERVAL_SECS="${QUIESCE_POLL_INTERVAL_SECS:-30}"
 
 # `wait_for_quiescence` / `acquire_exclusive_lock` が静穏未達・ロック取得不能で
 # 諦めた場合に呼び出し元が使うべき終了コード（BLOCKED、PASS/FAIL とは別区分）。
-BF_NFR6_BLOCKED_EXIT_CODE=2
+FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE=2
 
 # 数値検証（`benches/lib/common.sh` の `validate_numeric` と同型・独立実装）。
 # exclusive.sh は常に common.sh と同時に source される前提を置かないため、
@@ -125,7 +125,7 @@ check_quiescence_once() {
 
 # 静穏が得られるまで `QUIESCE_WAIT_SECS` を上限にポーリングする。
 # 戻り値: 0 = 静穏取得済み、1 = BLOCKED（呼び出し元は
-# `BF_NFR6_BLOCKED_EXIT_CODE` で終了し、試行記録を正直に残すこと。
+# `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE` で終了し、試行記録を正直に残すこと。
 # 待機を無限にしない・強制バイパスのフラグは設けない）。
 #
 # `QUIESCE_POLL_INTERVAL_SECS` が `0`（または不正な非数値）だと `sleep 0` を
@@ -167,7 +167,7 @@ wait_for_quiescence() {
 _NFR6_LOCK_FD=9
 
 # ホストグローバルな専有ロックを取得する（並列 worktree の同時計測を防ぐ）。
-# 引数: $1 ロックファイルパス（省略時 `BF_NFR6_LOCK`）
+# 引数: $1 ロックファイルパス（省略時 `FANDHE_BACKEND_NFR6_LOCK`）
 # 戻り値: 0 = 取得成功、1 = 取得不能（symlink 拒否 or タイムアウト。BLOCKED 扱い）
 #
 # セキュリティ: ロックパスが symlink の場合は使用を拒否する（world-writable な
@@ -175,7 +175,7 @@ _NFR6_LOCK_FD=9
 # データを書き込むことはない（flock 待ちが発生するのみで情報漏えい・上書き破壊は
 # 起きない設計）。
 acquire_exclusive_lock() {
-    local lockpath="${1:-${BF_NFR6_LOCK}}"
+    local lockpath="${1:-${FANDHE_BACKEND_NFR6_LOCK}}"
     if [ -L "${lockpath}" ]; then
         echo "エラー: ロックパス ${lockpath} が symlink です。使用を拒否します" >&2
         return 1
@@ -231,4 +231,4 @@ snapshot_environment() {
     printf 'snapshot_busy_processes=%s\n' "${busy:-none}"
 }
 
-export BF_NFR6_LOCK LOAD1_MAX QUIESCE_WAIT_SECS QUIESCE_POLL_INTERVAL_SECS BF_NFR6_BLOCKED_EXIT_CODE
+export FANDHE_BACKEND_NFR6_LOCK LOAD1_MAX QUIESCE_WAIT_SECS QUIESCE_POLL_INTERVAL_SECS FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE
