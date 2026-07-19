@@ -197,3 +197,12 @@ required-features = ["websocket"]
 [[example]]
 name = "core-bench"
 test = true
+
+# イシュー #257（REQ-3）: `examples/openapi_endpoints.rs`（ApiDoc 対象 5 エンドポイント
+# の実サービング）。`core-bench` と同一理由で `test = true` により
+# `#[cfg(test)] mod tests`（5 エンドポイント × 正常系/400 系）を `cargo test` の対象に含める。
+# feature 非依存（`fandhe_backend_routes::Router::route_param` は crates/routes 本体の
+# 公開 API であり、オプション依存プラグインを使わない）。
+[[example]]
+name = "openapi_endpoints"
+test = true
