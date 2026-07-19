@@ -467,8 +467,10 @@ hub_service_demo` を事前実行（本スクリプトは自動ビルドしな�
   `docs/reports/task-12-4-2-records/` が残っていれば `third-party-feasibility-verify.sh`
   で再採点し台帳値との一致も確認する）
 - C. エスカレーション時の判断根拠提示 ≥80%（確定値台帳突合）
-- D-1（機械）. `scripts/audit-triage.sh` が影響範囲（crate 列）・対応方針（推奨アクション）
-  欄を fixture 実行で生成することの機械検証
+- D-1（機械）. `scripts/audit-triage.sh` が改善提案の必須 5 項目（背景・根拠データ／
+  影響範囲（crate 列）／対応方針（推奨アクション）／検証方法／リスク、
+  `docs/design/improvement-proposal-flow.md` 4 節）の全欄を fixture 実行で生成することの
+  機械検証（検証方法・リスク欄はコミット `becf0e0` で追加）
 - D-2（人手）. 受け入れレポート内の人手評価台帳（`docs/reports/task-12-7-acceptance.md`）
   の集計。未記入・PENDING 行が残る場合は PASS と偽らず SKIP
 - E. NFR-8（自動修正でテストが通る修正を得られる割合）≥70%（確定値台帳突合）

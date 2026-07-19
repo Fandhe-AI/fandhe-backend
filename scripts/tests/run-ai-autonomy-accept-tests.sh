@@ -88,6 +88,9 @@ assert_contains "台帳充足は基準 B が PASS" "${output}" "[PASS] B:"
 assert_contains "台帳充足は基準 C が PASS" "${output}" "[PASS] C:"
 assert_contains "台帳充足は基準 E が PASS" "${output}" "[PASS] E:"
 assert_contains "台帳充足は基準 E-2 が PASS" "${output}" "[PASS] E-2:"
+# D-1 は実スクリプト（scripts/audit-triage.sh）+ 既定 fixture で必須 5 項目
+# （背景・根拠データ／影響範囲／対応方針／検証方法／リスク）を全生成し PASS する正常系。
+assert_contains "台帳充足は基準 D-1 が PASS（必須 5 項目全生成）" "${output}" "[PASS] D-1:"
 assert_exit_code "台帳充足は終了コード 0" 0 "${status}"
 
 # --- ケース 2: 閾値未達の台帳は A・B・E が FAIL、終了コード非 0 ---
@@ -138,6 +141,40 @@ set +e
 output="$(bash "${ACCEPT_SCRIPT}" --ledger "${FIXTURES_DIR}/ledger-ok.summary" --audit-fixtures-dir "${FIXTURES_DIR}/does-not-exist-dir" 2>&1)"
 set -e
 assert_contains "D-1 fixture 不在は FAIL" "${output}" "[FAIL] D-1:"
+
+# --- ケース 6b: D-1 は audit-triage.sh 出力に「検証方法」「リスク」欄が欠ける場合
+#     FAIL とする（改善提案必須 5 項目チェックの回帰テスト。コミット becf0e0 で
+#     追加された両欄の退行を、欠落出力を返すスタブ（--audit-triage-script 注入口）で
+#     検知できることを確認する） ---
+STUB_TRIAGE_DIR="$(mktemp -d)"
+cat > "${STUB_TRIAGE_DIR}/audit-triage-missing-two.sh" <<'EOF'
+#!/usr/bin/env bash
+# D-1 セルフテスト用スタブ: 必須 5 項目のうち「検証方法」「リスク」を欠いた出力を返す。
+echo "背景・根拠データ: cargo audit --json の出力を一次データとして自動生成"
+echo "| advisory ID | crate | 現バージョン | 修正版 | 概要 |"
+echo "推奨アクション: 各 crate を修正版へ更新する。"
+EOF
+set +e
+output="$(bash "${ACCEPT_SCRIPT}" --ledger "${FIXTURES_DIR}/ledger-ok.summary" --audit-triage-script "${STUB_TRIAGE_DIR}/audit-triage-missing-two.sh" 2>&1)"
+set -e
+assert_contains "検証方法・リスク欄欠落は D-1 が FAIL" "${output}" "[FAIL] D-1:"
+assert_contains "D-1 の FAIL 詳細に欠落欄（検証方法・リスク）を列挙する" "${output}" "欠落欄: 検証方法 リスク"
+
+# --- ケース 6c: D-1 は「リスク」のみ欠ける場合も FAIL とする（単一欄の欠落検知） ---
+cat > "${STUB_TRIAGE_DIR}/audit-triage-missing-risk.sh" <<'EOF'
+#!/usr/bin/env bash
+# D-1 セルフテスト用スタブ: 必須 5 項目のうち「リスク」のみを欠いた出力を返す。
+echo "背景・根拠データ: cargo audit --json の出力を一次データとして自動生成"
+echo "| advisory ID | crate | 現バージョン | 修正版 | 概要 |"
+echo "推奨アクション: 各 crate を修正版へ更新する。"
+echo "検証方法:"
+EOF
+set +e
+output="$(bash "${ACCEPT_SCRIPT}" --ledger "${FIXTURES_DIR}/ledger-ok.summary" --audit-triage-script "${STUB_TRIAGE_DIR}/audit-triage-missing-risk.sh" 2>&1)"
+set -e
+rm -rf "${STUB_TRIAGE_DIR}"
+assert_contains "リスク欄のみ欠落でも D-1 が FAIL" "${output}" "[FAIL] D-1:"
+assert_contains "D-1 の FAIL 詳細が欠落欄をリスクのみと列挙する" "${output}" "欠落欄: リスク"
 
 # --- ケース 7: D-2 人手評価台帳が全件記入・閾値充足時は PASS ---
 set +e

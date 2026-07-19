@@ -8,8 +8,9 @@
 #   B. 可否判定正解率 80% 以上・誤判定破壊 0 件
 #   C. エスカレーション時の判断根拠提示 80% 以上
 #   D. 自動監査タスクの妥当性判断 80% 以上
-#      D-1（機械）: audit-triage.sh が影響範囲（crate 列）・対応方針（推奨アクション）欄を
-#           生成すること（fixture 駆動）
+#      D-1（機械）: audit-triage.sh が改善提案の必須 5 項目（背景・根拠データ／影響範囲
+#           （crate 列）／対応方針（推奨アクション）／検証方法／リスク）の各欄を
+#           生成すること（fixture 駆動、`.claude/rules/improvement-proposal.md`）
 #      D-2（人手）: 人手評価台帳（受け入れレポート内の評価表）の充足率。未記入時は SKIP
 #   E. NFR-8: 自動修正でテストが通る修正を得られる割合 70% 以上
 #   F. 複数回試行の安定性・グレーゾーン再検証の状態（試行サマリ・記録の有無に加え、存在する場合は
@@ -29,9 +30,10 @@
 # 呼び出し元: 人間が `bash scripts/accept/ai-autonomy-accept.sh` として直接実行する。
 #
 # `--ledger <file>` で確定値台帳を、`--audit-fixtures-dir <dir>` で D-1 の fixture 群を、
-# `--acceptance-doc <file>` で D-2 の人手評価台帳（markdown）を、`--reports-dir <dir>` で
-# F の試行サマリ探索先を差し替え可能（`scripts/tests/run-ai-autonomy-accept-tests.sh` の
-# セルフテスト注入口、`req13-change-impact-accept.sh` の `--crates-dir` 慣例を踏襲）。
+# `--audit-triage-script <file>` で D-1 の被検証スクリプト本体を、`--acceptance-doc <file>`
+# で D-2 の人手評価台帳（markdown）を、`--reports-dir <dir>` で F の試行サマリ探索先を
+# 差し替え可能（`scripts/tests/run-ai-autonomy-accept-tests.sh` のセルフテスト注入口、
+# `req13-change-impact-accept.sh` の `--crates-dir` 慣例を踏襲）。
 
 set -euo pipefail
 
@@ -42,6 +44,7 @@ cd "${WORKSPACE_ROOT}"
 
 LEDGER_FILE="${WORKSPACE_ROOT}/docs/reports/task-12-7-metrics.summary"
 AUDIT_FIXTURES_DIR="${WORKSPACE_ROOT}/scripts/tests/fixtures"
+AUDIT_TRIAGE_SCRIPT="${WORKSPACE_ROOT}/scripts/audit-triage.sh"
 ACCEPTANCE_DOC="${WORKSPACE_ROOT}/docs/reports/task-12-7-acceptance.md"
 REPORTS_DIR="${WORKSPACE_ROOT}/docs/reports"
 TASK_DEFS_124_2="${WORKSPACE_ROOT}/docs/reports/task-12-4-2-task-definitions.md"
@@ -55,6 +58,10 @@ while [ $# -gt 0 ]; do
             ;;
         --audit-fixtures-dir)
             AUDIT_FIXTURES_DIR="$2"
+            shift 2
+            ;;
+        --audit-triage-script)
+            AUDIT_TRIAGE_SCRIPT="$2"
             shift 2
             ;;
         --acceptance-doc)
@@ -305,30 +312,40 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# D-1: 自動監査タスクの妥当性（機械） — audit-triage.sh が影響範囲（crate 列）・
-#      対応方針（推奨アクション）欄を生成することを fixture で検証する
+# D-1: 自動監査タスクの妥当性（機械） — audit-triage.sh が改善提案の必須 5 項目
+#      （背景・根拠データ／影響範囲（crate 列）／対応方針（推奨アクション）／検証方法／
+#      リスク、`.claude/rules/improvement-proposal.md`）の各欄を生成することを
+#      fixture で検証する
 # ---------------------------------------------------------------------------
-audit_triage_script="${WORKSPACE_ROOT}/scripts/audit-triage.sh"
 d1_fixture="${AUDIT_FIXTURES_DIR}/audit-patched.json"
-if [ ! -f "${audit_triage_script}" ]; then
-    record_fail "D-1: 自動監査タスクの影響範囲・対応方針欄の機械生成" "scripts/audit-triage.sh が見つかりません"
+if [ ! -f "${AUDIT_TRIAGE_SCRIPT}" ]; then
+    record_fail "D-1: 自動監査タスクの改善提案必須 5 項目の機械生成" "${AUDIT_TRIAGE_SCRIPT} が見つかりません"
 elif [ ! -f "${d1_fixture}" ]; then
-    record_fail "D-1: 自動監査タスクの影響範囲・対応方針欄の機械生成" "fixture ${d1_fixture} が見つかりません（判定不能）"
+    record_fail "D-1: 自動監査タスクの改善提案必須 5 項目の機械生成" "fixture ${d1_fixture} が見つかりません（判定不能）"
 else
     set +e
-    d1_output="$(bash "${audit_triage_script}" --input "${d1_fixture}" 2>/dev/null)"
+    d1_output="$(bash "${AUDIT_TRIAGE_SCRIPT}" --input "${d1_fixture}" 2>/dev/null)"
     set -e
     d1_missing=()
+    # 背景・根拠データ: 検知に使った一次データ（cargo audit --json 出力）の明示
+    # （改善提案フロー 4 節「背景・根拠データ」に対応）。
+    printf '%s' "${d1_output}" | grep -qF -- "背景・根拠データ:" || d1_missing+=("背景・根拠データ")
     # 影響範囲: どの crate が影響を受けるかを示す列（改善提案フロー 4 節「影響範囲」の
     # 機械的代理指標。audit-triage.sh は crate 名・バージョン列を持つ表を生成する）。
     printf '%s' "${d1_output}" | grep -q '| advisory ID | crate |' || d1_missing+=("影響範囲（crate 列）")
     # 対応方針（推奨アクション）: 改善提案フロー 4 節の「対応方針（推奨アクション）」に対応。
     printf '%s' "${d1_output}" | grep -qF -- "推奨アクション" || d1_missing+=("対応方針（推奨アクション）")
+    # 検証方法: 対応後の確認手段（再実行するスクリプト・CI ジョブ名）の見出し
+    # （コミット becf0e0 で追加。改善提案フロー 4 節「検証方法」に対応）。
+    printf '%s' "${d1_output}" | grep -qF -- "検証方法:" || d1_missing+=("検証方法")
+    # リスク: 対応した場合／しなかった場合のリスクの見出し
+    # （コミット becf0e0 で追加。改善提案フロー 4 節「リスク」に対応）。
+    printf '%s' "${d1_output}" | grep -qF -- "リスク:" || d1_missing+=("リスク")
 
     if [ ${#d1_missing[@]} -eq 0 ]; then
-        record_pass "D-1: 自動監査タスクの影響範囲・対応方針欄の機械生成" "scripts/audit-triage.sh が fixture 実行で影響範囲（crate 列）・対応方針（推奨アクション）の両欄を生成することを確認（docs/design/improvement-proposal-flow.md 4 節）"
+        record_pass "D-1: 自動監査タスクの改善提案必須 5 項目の機械生成" "audit-triage.sh が fixture 実行で背景・根拠データ／影響範囲（crate 列）／対応方針（推奨アクション）／検証方法／リスクの必須 5 項目すべてを生成することを確認（docs/design/improvement-proposal-flow.md 4 節）"
     else
-        record_fail "D-1: 自動監査タスクの影響範囲・対応方針欄の機械生成" "欠落欄: ${d1_missing[*]}"
+        record_fail "D-1: 自動監査タスクの改善提案必須 5 項目の機械生成" "必須 5 項目のうち欠落欄: ${d1_missing[*]}"
     fi
 fi
 
