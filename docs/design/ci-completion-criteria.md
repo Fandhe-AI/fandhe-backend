@@ -99,3 +99,6 @@ forbid（`#[allow]` による抑制も不可）/ deny（局所例外可）の 2 
 CI が実際に赤くなるケースでゲートが機能することを確認する受け入れテストは、
 TASK-14.3（#41）で `scripts/tests/run-review-gate-tests.sh` としてスクリプト化し、
 `docs/design/review-gate.md` の実施記録に結果を残した。
+
+受け入れ検証レポート: `docs/acceptance/req14-verification-gate.md`（#264）。
+REQ-14 受け入れ基準 3 項目のうち基準 1 の証跡として本文書を集約転記している。

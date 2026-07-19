@@ -146,3 +146,9 @@ edition 2024 では既定で deny だが、意図を明示するため workspace
   （`rust-toolchain.toml` が stable の浮動 channel であるため、ツールチェーン更新時に
   自動的に検証される）。検知した場合は改名先へ差し替えるか、rustc 側の deny-by-default で
   既に担保されていることを確認した上でリストから除外し、本ファイルに理由を追記する。
+
+## 受け入れ検証レポート
+
+受け入れ検証レポート: `docs/acceptance/req14-verification-gate.md`（#264）。
+REQ-14 受け入れ基準 3 項目のうち基準 2（危険 `unsafe` パターンの機械的検出）の証跡として
+本文書（2 層 lint テーブル・ネガティブ検証）を集約転記している。
