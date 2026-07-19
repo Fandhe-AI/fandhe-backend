@@ -139,6 +139,28 @@ EOF
 assert_eq "同一セクション内 FAIL→PASS の順でも FAIL を優先" "FAIL" "$(run_verdict "${fixture_e2}")"
 rm -f "${fixture_e2}"
 
+echo "===== ケース f: 直近の再計測が BLOCKED（結論セクションに総合判定行なし）の場合、古い PASS を無効化する ====="
+echo "===== （stale PASS 回帰防止、イシュー #260 Bugbot 指摘対応） ====="
+fixture_f="$(mktemp)"
+cat >"${fixture_f}" <<'EOF'
+# レポート
+
+## 結論（自動記録: bench-accept.sh 再計測、2026-07-18T00:00:00Z）
+
+**総合判定: PASS**
+
+## 判定結果: BLOCKED
+
+コア側計測用バイナリ（`CORE_BIN=target/release/examples/core-bench`）が見つからないため、
+axum-ref との比較判定を実施できませんでした。
+
+## 結論（自動記録: bench-accept.sh 再計測、2026-07-19T00:00:00Z）
+
+**総合判定: BLOCKED（CORE_BIN 未整備のため判定不能。既存の古い判定は無効）**
+EOF
+assert_eq "直近の BLOCKED 結論セクションが古い PASS を上書きし空文字（SKIP）になる" "" "$(run_verdict "${fixture_f}")"
+rm -f "${fixture_f}"
+
 echo ""
 echo "===== サマリー ====="
 echo "PASS: ${PASS_COUNT} / FAIL: ${FAIL_COUNT}"

@@ -494,13 +494,19 @@ flock による直列化と静穏確認で担保する。
 専有実行枠を薄くラップした `benches/bench-accept-exclusive.sh` を使う。
 
 ```bash
-# 事前ビルド（wrapper 自体は自動ビルドしない。専有ロック取得後にビルドが走ると
-# 静穏確認の意味が薄れるため、ロック取得前に済ませておく）
-cargo build --release
-cargo build --release --example core-bench -p fandhe-backend-core
-
 REPORT_MD=benches/reports/task-2.4-plugin-accept.md bash benches/bench-accept-exclusive.sh
 ```
+
+`bench-accept-exclusive.sh` は `nfr6-exclusive.sh` と同様、**専有ロック取得後は
+一切ビルドを行わない**設計にしている（`cargo build --release` /
+`cargo build --release --example core-bench -p fandhe-backend-core` は本 wrapper が
+専有ロック取得前に自動実行する）。専有ロック取得後に cargo/rustc の負荷が発生すると、
+静穏（quiescence）確認から計測開始までの間に 1 分間 loadavg が再び上昇し、静穏ゲートの
+意味が失われるため（イシュー #260 Bugbot 指摘対応。以前は `bench-accept.sh` が
+ロック取得後も無条件にビルドしていた）。`bench-accept.sh` は `SKIP_BUILD=1` を付けて
+呼び出され、内部の `cargo build` はスキップされる。`bench-accept.sh` を単体で
+（`bench-accept-exclusive.sh` を経由せず）実行する場合は従来どおり毎回ビルドする
+（`SKIP_BUILD` 未指定時の既定は `0`）。
 
 `fandhe-backend-core` は `default = []` のため、`CORE_BIN`（既定
 `target/release/examples/core-bench`）自体が webrtc-proxy・graphql 両 feature 無効構成
@@ -511,9 +517,9 @@ REPORT_MD=benches/reports/task-2.4-plugin-accept.md bash benches/bench-accept-ex
 そのまま透過する。
 
 終了コードは `bench-accept.sh` の終了コードをそのまま透過する（0 = 全項目 PASS、
-1 = 1 件以上 FAIL、2 = `CORE_BIN` 未整備で BLOCKED）。専有ロック取得不能・静穏未達で
-計測に着手できなかった場合も `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`（既定 2）で
-BLOCKED（PASS へは丸めない）。
+1 = 1 件以上 FAIL、2 = `CORE_BIN` 未整備で BLOCKED）。事前ビルド失敗・専有ロック取得
+不能・静穏未達で計測に着手できなかった場合も `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`
+（既定 2）で BLOCKED（PASS へは丸めない）。
 
 `scripts/accept/plugin-mechanism-accept.sh` 基準 5 は `benches/reports/
 task-2.4-plugin-accept.md` の「## 結論」セクション内の「総合判定」行を参照して
@@ -523,4 +529,10 @@ PASS/FAIL/SKIP を判定する（レポート不在・「## 結論」セクシ�
 追記するため、レポートを手編集しなくても再計測結果を機械的に受け入れゲートへ
 反映できる（他セクションへの過去実測の引用に埋め込まれた総合判定文言は判定対象に
 含めない。複数「## 結論」セクションが存在する場合はレポート末尾に近い方＝直近の
-再計測結果を採用する。イシュー #260 Bugbot 指摘対応）。
+再計測結果を採用する。イシュー #260 Bugbot 指摘対応）。**BLOCKED（`CORE_BIN` 未整備・
+事前ビルド失敗・専有ロック取得不能・静穏未達のいずれか）で終了する場合も、
+`bench-accept.sh` / `bench-accept-exclusive.sh` は必ず新しい「## 結論」セクションを
+（総合判定行なしで）REPORT_MD に追記する。判定ロジック（`lib/
+plugin-mechanism-conclusion-verdict.awk`）は「## 結論」セクションが見つかるたびに
+判定を無条件で上書きするため、この追記により古い PASS/FAIL がそのまま権威として
+残る事態（stale PASS）を防ぎ、正しく SKIP 扱いになる（イシュー #260 Bugbot 指摘対応）。**

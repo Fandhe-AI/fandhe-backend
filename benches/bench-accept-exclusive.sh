@@ -17,27 +17,50 @@
 # `fandhe-backend-core` の `default = []` 構成でビルドされるため、webrtc-proxy・graphql
 # 両 feature が無効な状態そのものが計測対象になる（`crates/**` の追加変更は不要）。
 #
-# 前提: axum-ref・core-bench の release ビルドは `bench-accept.sh` 内部で行われるため
-# 本 wrapper で事前ビルドは必須ではないが、専有ロック取得後にビルドが走ると静穏確認の
-# 意味が薄れるため、事前に以下を実行しておくことを推奨する:
-#   cargo build --release
-#   cargo build --release --example core-bench -p fandhe-backend-core
+# ビルド（axum-ref・core-bench の release ビルド）は本 wrapper が**専有ロック取得前**に
+# 行う。`bench-accept.sh` は `SKIP_BUILD=1` を付けて呼び出し、内部の `cargo build` を
+# 実行させない。専有ロック取得後に cargo/rustc の負荷が発生すると、静穏（quiescence）
+# 確認から計測開始までの間に 1 分間 loadavg が再び上昇し、静穏ゲートの意味が失われる
+# ため（`nfr6-exclusive.sh` が事前ビルド前提でロック取得後は一切ビルドしない設計と
+# 揃える、イシュー #260 Bugbot 指摘対応）。
 #
 # 呼び出し元: 人間が `bash benches/bench-accept-exclusive.sh` として直接実行する
 # （CI 常設ジョブへは組み込まない。self-hosted runner 負荷抑制方針、.claude/rules/ci.md）。
 #
 # 終了コード: `bench-accept.sh` の終了コードをそのまま透過する
 # （0 = 全項目 PASS、1 = 1 件以上 FAIL、2 = CORE_BIN 未整備で BLOCKED）。
-# `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`（既定 2） = 専有ロック取得不能・静穏未達で
-# 計測そのものに着手できず BLOCKED（PASS へ丸めない。フェイルクローズ）。
+# `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`（既定 2） = 専有ロック取得不能・静穏未達・
+# 事前ビルド失敗で計測そのものに着手できず BLOCKED（PASS へ丸めない。フェイルクローズ）。
 # 変数名は `lib/exclusive.sh` の既存 export をそのまま再利用する（NFR-6 専用の意味は
 # 持たず、本 wrapper でも「計測不能時の BLOCKED 終了コード」として共用する）。
+#
+# REPORT_MD 指定時、専有ロック取得不能・静穏未達・事前ビルド失敗のいずれで BLOCKED
+# 終了する場合も REPORT_MD に「## 結論」セクションを追記し、既存の古い PASS/FAIL が
+# 権威として残り続ける事態（stale PASS）を防ぐ（フェイルクローズ、イシュー #260
+# Bugbot 指摘対応。`bench-accept.sh` 側の同種処理は `write_report_conclusion` を参照）。
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=lib/exclusive.sh
 source "${SCRIPT_DIR}/lib/exclusive.sh"
+
+REPORT_MD="${REPORT_MD:-}"
+
+# `bench-accept.sh` の `write_report_conclusion` と同形式の「## 結論」セクションを
+# REPORT_MD に追記する（総合判定行を含まない BLOCKED 用。stale PASS 防止）。
+write_blocked_conclusion() {
+    local reason="$1"
+    if [ -n "${REPORT_MD}" ]; then
+        {
+            echo
+            echo "## 結論（自動記録: bench-accept-exclusive.sh 再計測、$(date -u '+%Y-%m-%dT%H:%M:%SZ')）"
+            echo
+            echo "**総合判定: BLOCKED（${reason}。既存の古い判定は無効）**"
+        } >>"${REPORT_MD}"
+    fi
+}
 
 release_exclusive_lock_on_exit() {
     release_exclusive_lock
@@ -46,9 +69,19 @@ trap release_exclusive_lock_on_exit EXIT
 
 echo "=== REQ-2 基準 5 専有計測 wrapper（bench-accept.sh） ===" >&2
 
+echo "--- 事前ビルド（専有ロック取得前。ロック取得後にビルドが走ると静穏確認の意味が薄れるため） ---" >&2
+if ! cargo build --release --manifest-path "${WORKSPACE_ROOT}/Cargo.toml" >&2 \
+    || ! cargo build --release --example core-bench -p fandhe-backend-core --manifest-path "${WORKSPACE_ROOT}/Cargo.toml" >&2; then
+    echo "BLOCKED: 事前ビルドに失敗しました" >&2
+    write_blocked_conclusion "事前ビルド失敗のため判定不能"
+    exit "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}"
+fi
+echo "事前ビルド完了" >&2
+
 echo "--- 専有ロック取得を試行（${FANDHE_BACKEND_NFR6_LOCK}） ---" >&2
 if ! acquire_exclusive_lock; then
     echo "BLOCKED: 専有ロックを取得できませんでした。他の計測プロセスが実行中の可能性があります" >&2
+    write_blocked_conclusion "専有ロック取得不能のため判定不能"
     exit "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}"
 fi
 echo "専有ロック取得済み" >&2
@@ -57,15 +90,16 @@ echo "--- 静穏確認（LOAD1_MAX=${LOAD1_MAX} QUIESCE_WAIT_SECS=${QUIESCE_WAIT
 if ! wait_for_quiescence; then
     echo "BLOCKED: ${QUIESCE_WAIT_SECS}s 待っても静穏（loadavg <= ${LOAD1_MAX}・cargo/rustc/oha 不在）が得られませんでした" >&2
     snapshot_environment blocked >&2
+    write_blocked_conclusion "静穏未達のため判定不能"
     exit "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}"
 fi
 echo "静穏確認 OK" >&2
 snapshot_environment before >&2
 
 echo "" >&2
-echo "### bench-accept.sh 実行開始 ###" >&2
+echo "### bench-accept.sh 実行開始（SKIP_BUILD=1、事前ビルド済みのため） ###" >&2
 set +e
-bash "${SCRIPT_DIR}/bench-accept.sh"
+SKIP_BUILD=1 REPORT_MD="${REPORT_MD}" bash "${SCRIPT_DIR}/bench-accept.sh"
 accept_status=$?
 set -e
 

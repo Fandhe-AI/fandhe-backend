@@ -19,6 +19,13 @@
 #   見つからない場合（example のビルド漏れ等）は「コア側計測はブロック中」として明示し、
 #   判定を実施せずに終了する（安全側に倒す）。
 #
+# `SKIP_BUILD=1` を指定すると、本スクリプト内部の `cargo build` 2 件（workspace 一括・
+# core-bench example）を実行しない（既定は毎回ビルドする）。`benches/bench-accept-exclusive.sh`
+# は専有ロック取得後にビルドが走ると静穏（quiescence）確認の意味が失われるため、ロック取得前に
+# 事前ビルドを済ませたうえで `SKIP_BUILD=1` を付けて本スクリプトを呼び出す
+# （イシュー #260 Bugbot 指摘対応）。`SKIP_BUILD=1` 指定時にバイナリが存在しない場合は
+# 通常どおり後続のバイナリ存在チェックで検出され、判定不能として扱われる。
+#
 # 使い方・パラメータは benches/README.md を参照。
 
 set -euo pipefail
@@ -51,6 +58,33 @@ STARTUP_DIFF_MAX_MS="${STARTUP_DIFF_MAX_MS:-20}"
 # 指定時、判定表を markdown 形式でも追記出力する（benches/reports/*.md 生成用）。
 REPORT_MD="${REPORT_MD:-}"
 
+# 専有ロック取得後にビルドが走ると静穏確認の意味が失われる問題（イシュー #260 Bugbot
+# 指摘）への対処。既定 0（毎回ビルドする、従来挙動）。呼び出し元が事前ビルド済みの
+# 場合のみ 1 を指定する。
+SKIP_BUILD="${SKIP_BUILD:-0}"
+
+# REPORT_MD 指定時、「## 結論」セクションを 1 つ追記する。総合判定が確定できない
+# 経路（BLOCKED 等）でも必ず新しい「## 結論」セクションを追記し、レポート末尾の
+# 「## 結論」セクションを常に「今回の再計測の結果」で上書きすることで、古い
+# PASS/FAIL がそのまま権威として残る事態（stale PASS）を防ぐ（フェイルクローズ、
+# イシュー #260 Bugbot 指摘対応。`scripts/accept/lib/plugin-mechanism-conclusion-verdict.awk`
+# は「## 結論」見出しごとに区切って判定するため、総合判定行を含まない
+# 「## 結論」セクションでも SKIP として正しく扱われ、古いセクションの PASS/FAIL には
+# フォールバックしない）。
+# 引数: $1 総合判定ラベル（"PASS" / "FAIL" 以外は SKIP 扱いとなる自由記述可、
+#         例 "BLOCKED（CORE_BIN 未整備のため判定不能）"）
+write_report_conclusion() {
+    local label="$1"
+    if [ -n "${REPORT_MD}" ]; then
+        {
+            echo
+            echo "## 結論（自動記録: bench-accept.sh 再計測、$(date -u '+%Y-%m-%dT%H:%M:%SZ')）"
+            echo
+            echo "**総合判定: ${label}**"
+        } >>"${REPORT_MD}"
+    fi
+}
+
 check_dependencies
 check_runs_minimum
 
@@ -72,15 +106,20 @@ echo
 
 # baseline（axum-ref）は TASK-1.2 の成果物として常に存在する前提。存在しない場合は
 # ビルド漏れであり、判定不能として明確にエラー終了する（ブロック扱いとは区別する）。
-echo "== ビルド =="
-cargo build --release --manifest-path "${WORKSPACE_ROOT}/Cargo.toml"
-# `cargo build --release`（workspace ビルド）は example をビルド対象に含めないため、
-# core-bench（TASK-1.6-3 / #168）は個別に明示ビルドする。
-cargo build --release --example core-bench -p fandhe-backend-core --manifest-path "${WORKSPACE_ROOT}/Cargo.toml"
+if [ "${SKIP_BUILD}" = "1" ]; then
+    echo "== ビルド: SKIP_BUILD=1 のためスキップ（呼び出し元が事前ビルド済みの前提） =="
+else
+    echo "== ビルド =="
+    cargo build --release --manifest-path "${WORKSPACE_ROOT}/Cargo.toml"
+    # `cargo build --release`（workspace ビルド）は example をビルド対象に含めないため、
+    # core-bench（TASK-1.6-3 / #168）は個別に明示ビルドする。
+    cargo build --release --example core-bench -p fandhe-backend-core --manifest-path "${WORKSPACE_ROOT}/Cargo.toml"
+fi
 echo
 
 if [ ! -x "${BASELINE_BIN}" ]; then
     echo "エラー: baseline バイナリ ${BASELINE_BIN} が見つかりません。'cargo build --release' を確認してください" >&2
+    write_report_conclusion "BLOCKED（baseline バイナリ未整備のため判定不能。既存の古い判定は無効）"
     exit 1
 fi
 
@@ -105,6 +144,9 @@ if [ ! -x "${CORE_BIN}" ]; then
             echo "成功を確認してから再実行してください。"
         } >>"${REPORT_MD}"
     fi
+    # 「## 結論」セクションを必ず追記して古い PASS/FAIL を上書きする（stale PASS 防止、
+    # イシュー #260 Bugbot 指摘対応）。
+    write_report_conclusion "BLOCKED（CORE_BIN 未整備のため判定不能。既存の古い判定は無効）"
     exit 2
 fi
 
@@ -280,17 +322,10 @@ fi
 # 末尾のセクションを採用する設計、イシュー #260 Bugbot 指摘対応）。再計測のたびに
 # 新しい「## 結論」セクションを追記することで、レポートを手編集しなくても
 # 受け入れゲートへ再計測結果を機械的に反映できるようにする。
-if [ -n "${REPORT_MD}" ]; then
-    {
-        echo
-        echo "## 結論（自動記録: bench-accept.sh 再計測、$(date -u '+%Y-%m-%dT%H:%M:%SZ')）"
-        echo
-        if [ "${OVERALL_PASS}" -eq 1 ]; then
-            echo "**総合判定: PASS**"
-        else
-            echo "**総合判定: FAIL**"
-        fi
-    } >>"${REPORT_MD}"
+if [ "${OVERALL_PASS}" -eq 1 ]; then
+    write_report_conclusion "PASS"
+else
+    write_report_conclusion "FAIL"
 fi
 
 if [ "${OVERALL_PASS}" -eq 1 ]; then

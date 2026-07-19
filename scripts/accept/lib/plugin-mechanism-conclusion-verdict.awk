@@ -16,13 +16,21 @@
 #
 # 出力: 標準出力に "PASS" / "FAIL" / 空文字（総合判定の記録なし）のいずれか 1 行。
 #
+# 「## 結論」セクションが検出されるたびに、そのセクションの判定（PASS/FAIL/空文字の
+# いずれか）で無条件に `final` を上書きする（`insec == 1` であれば `verdict` が空でも
+# 上書きする）。`benches/bench-accept.sh` は BLOCKED（CORE_BIN 未整備・専有ロック
+# 取得不能・静穏未達）等、総合判定を確定できない再計測でも必ず新しい「## 結論」
+# セクションを追記する設計のため、この無条件上書きがないと BLOCKED な再計測の後に
+# 古い「## 結論」セクションの PASS/FAIL がそのまま権威として残ってしまう
+# （stale PASS 問題、イシュー #260 Bugbot 指摘対応）。
+#
 # 呼び出し元: `scripts/accept/plugin-mechanism-accept.sh` が
 # `awk -f "${SCRIPT_DIR}/lib/plugin-mechanism-conclusion-verdict.awk" <report.md>` として
 # 呼び出す。`scripts/tests/run-plugin-mechanism-accept-tests.sh` が cargo・ネットワーク
 # 非依存のフィクスチャで単体検証する。
 
 function flush() {
-    if (insec == 1 && verdict != "") {
+    if (insec == 1) {
         final = verdict
     }
 }

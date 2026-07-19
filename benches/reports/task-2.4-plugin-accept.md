@@ -238,10 +238,12 @@ snapshot_busy_processes=none
 - **再現条件・再実行手順**: 他の並列 issue 実装ワークフローが落ち着いた（1 分 loadavg
   が `nproc`=12 に対して十分低い状態を計測完了まで維持できる）タイミングで以下を
   再実行し、クリーンな再確認結果があれば本レポートへ追記する。
+  `bench-accept-exclusive.sh` は専有ロック取得前に自動でビルドするため（イシュー #260
+  Bugbot 指摘対応。以前は手動事前ビルドを推奨していたが、`bench-accept.sh` 側が
+  ロック取得後にも無条件でビルドしてしまい静穏確認の意味が薄れる問題があった）、
+  手動の `cargo build` は不要になった。
 
   ```bash
-  cargo build --release
-  cargo build --release --example core-bench -p fandhe-backend-core
   REPORT_MD=benches/reports/task-2.4-plugin-accept.md bash benches/bench-accept-exclusive.sh
   ```
 
