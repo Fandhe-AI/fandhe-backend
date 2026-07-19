@@ -2,8 +2,9 @@
 
 ## Overview
 
-**backend-framework**（正式名称の決定候補: `wrenframe`。レビューゲート確定待ち。
-命名根拠・反映方針は [`docs/design/framework-naming.md`](docs/design/framework-naming.md)
+**backend-framework**（正式名称: `fandhe-backend` に確定（#200）。
+命名根拠・可用性証跡・反映方針は
+[`docs/design/framework-naming.md`](docs/design/framework-naming.md)
 参照）は、AI によるセキュリティ脆弱性発見リスクに備え、Rust で新規構築する
 軽量・高速・高並行なバックエンドフレームワーク。axum 級の性能を目標に、
 **最小コア + Cargo feature 駆動プラグイン** 設計で、WebSocket / GraphQL / WebRTC /
