@@ -67,6 +67,7 @@ trait 実装のまま I/O を停止し、アトミックカウンタの更新の
 - `docs/spec/04-requirements.md`（REQ-2・NFR-7、参考: REQ-10・PoC-10）
 - `docs/spec/05-tasks.md`（TASK-2.3）
 - `crates/core/src/extension.rs`（`Middleware` trait 定義・同旨の契約を doc comment に記載）
+- `docs/acceptance/nfr7-middleware-async-io.md`（NFR-7 受け入れ検証レポート、#263）
 
 ### 適用範囲と検証責務
 
