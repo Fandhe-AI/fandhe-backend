@@ -1,0 +1,88 @@
+# NFR-8 注入リグレッション検知率 実装フェーズ確定検証 — 実測レポート（#238）
+
+`docs/spec/04-requirements.md` NFR-8「AI 生成テストによる注入リグレッションの検知率が
+90% 以上」の実装フェーズ確定計測結果。ケース定義・選定基準は
+`docs/reports/nfr8-injection-case-definitions.md` を参照（本レポートは実測値の記録に
+責務を限定し、ケース定義は改変しない）。
+
+## 実施環境
+
+| 項目 | 値 |
+|------|-----|
+| 実測日 | 2026-07-19 |
+| 起点コミット（origin/main HEAD） | `54e87a7`（ケース定義コミット時点と同一） |
+| ケース定義コミット | `docs/reports/nfr8-injection-case-definitions.md` 本体（本 PR 内、実測より先行コミット） |
+| OS | Linux 7.0.0-27-generic x86_64 |
+| rustc | 1.96.0 (ac68faa20 2026-05-25) |
+| cargo | 1.96.0 (30a34c682 2026-05-25) |
+| cargo-nextest | 0.9.137 (75ddba7e9 2026-05-26) |
+| 実行コマンド | `bash scripts/regression-injection-verify.sh` |
+
+ベースライン突合（起点コミット時点で既に FAIL しているテストの除外）は今回不要だった。
+12 ケースとも起点コミットではクリーンな状態（`cargo clippy` / `cargo nextest` /
+`cargo test --doc` 全通過）から出発し、環境依存の既知 FAIL テストは対象クレート
+（`http` / `routes` / `core` / `plugin-websocket` / `plugin-graphql` /
+`plugin-hub-wiring` / `plugin-tracing` / `plugin-webrtc-proxy`）のいずれにも存在しない。
+
+## ケース別結果
+
+| ID | 結果 | 検知チャネル | 備考 |
+|----|------|-------------|------|
+| R-01 | DETECTED | `cargo nextest`（`too_many_headers`） | |
+| R-02 | DETECTED | `cargo clippy`（未使用ローカル変数 warning が `-D warnings` で検知） | 意味論的検知を狙った箇所だが、実際には該当行削除に伴う clippy warning が先に検知した（`GATE=clippy` としてログに記録）。nextest 側の `decoded_body_exceeding_max_returns_body_too_large` 系テストも本来検知しうるが、clippy が先行ゲートのため検知チャネルは clippy として記録される |
+| R-03 | DETECTED | `cargo clippy`（`clippy::overly_complex_bool_expr`、`if false && ...`） | ケース定義で想定した通り |
+| R-04 | DETECTED | `cargo nextest`（`http11_connection_close_disables_keep_alive` 等・doc test） | |
+| R-05 | DETECTED | `cargo nextest`（`match_segments_rejects_dot_and_dotdot_path_traversal`） | |
+| R-06 | DETECTED | `cargo nextest`（`crates/core/src/server.rs` の `RequestGate` 拒否系テスト） | |
+| R-07 | DETECTED | `cargo nextest`（`websocket_upgrade_disabled.rs`・`plugin_boundary*.rs`） | |
+| R-08 | DETECTED | `cargo nextest`（`validate_rejects_malformed_key_length`） | |
+| R-09 | DETECTED | `cargo nextest`（`falls_through_on_unrelated_path`・`falls_through_on_wrong_method`） | |
+| R-10 | DETECTED | `cargo clippy`（`now_unix` 未使用引数 warning） | ケース定義では nextest（`expired_token_is_401`）を主に想定していたが、`now_unix` 引数が未使用になったことで clippy が先行して検知した |
+| R-11 | DETECTED | `cargo nextest`（doc test・`interval_hundred_samples_one_in_hundred`） | |
+| R-12 | DETECTED | `cargo nextest`（`oversized_offer_is_rejected`） | |
+
+生ログ（`GATE=<clippy|nextest|doctest>` の記録を含む）は計測実行時の一時ディレクトリに
+出力されるが、全件 PASS（検知）のため `regression-injection-verify.sh` の設計どおり
+保持していない（`third-party-verify.sh` と同じ「失敗時のみログを残す」方針は本ハーネスの
+用途では逆方向 — 全件検知が成功条件のため、恒常的なログ保持は行わない。再現は下記コマンド
+で可能）。
+
+## 検知率
+
+```
+metric=injection_detection_rate pass=12 fail=0 pending=0 total=12
+```
+
+**検知率 12/12（100%）。NFR-8 の閾値（90%）を上回った。**
+
+初回計測で 90% を上回ったため、`docs/reports/nfr8-injection-case-definitions.md` に定めた
+「90% 未満ならテスト追加のうえ再計測する」手順は発動していない（テスト追加・再計測は
+不要だった）。
+
+## 再現手順
+
+```bash
+# 実測本体（起点コミットの HEAD から使い捨て worktree を作り 12 ケースを計測する）
+bash scripts/regression-injection-verify.sh
+
+# 判定ロジックのセルフテスト（cargo 非依存、スタブゲートで集計ロジックのみ検証する。
+# green であることは実測検知率そのものの保証ではない点に注意）
+bash scripts/tests/run-regression-injection-tests.sh
+```
+
+## 既知の限界
+
+- **検知ゲートの範囲**: 各ケースはパッチが変更したファイルが属するクレート
+  ディレクトリ内でのみ `clippy` / `nextest` / doc test を実行する（workspace 全体では
+  ない）。12 ケースは互いに独立したファイルへの単一注入であるため対象クレート内の
+  検知力を計測すれば十分と判断したが、クレート横断で初めて顕在化する退行の検知力は
+  本計測の対象外である（`ci-complete`（workspace 全体）が別途 PR 上で担う）
+- **検知チャネルの実態**: ケース定義時点で想定した「検知チャネル」（主に `#[test]` /
+  doc test）と実測の検知チャネル（`cargo clippy` が先行してヒットしたケースが 2 件、
+  R-02・R-10）が一部異なった。これは検知ゲートを「いずれか 1 つでも失敗すれば検知」と
+  定義した設計上の帰結であり、検知率の算出自体には影響しない（`clippy -D warnings` も
+  `.github/workflows/ci.yml` の test ジョブ相当のゲートに含まれる既存テストスイートの
+  一部のため）
+- **母数 12 件は「AI 生成テストによる検知」の代表サンプル**であり、あらゆる将来の
+  破壊的変更を代表するものではない。選定基準（ケース定義文書参照）に基づき、コア/
+  プラグイン横断・バグ分類分散・セキュリティ後退を含む 12 件を選定した

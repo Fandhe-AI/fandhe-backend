@@ -100,6 +100,7 @@ ALLOWED_METRICS="completion_rate
 feasibility_accuracy
 evidence_rate
 auto_fix_rate
+injection_detection_rate
 regression
 destruction"
 
@@ -397,6 +398,27 @@ elif [ "${e_status}" -eq 2 ]; then
     record_fail "E: NFR-8 自動修正でテストが通る修正を得られる割合 ≥70%" "台帳 ${LEDGER_FILE} の auto_fix_rate が不正な値です（フェイルクローズ）"
 else
     record_skip "E: NFR-8 自動修正でテストが通る修正を得られる割合 ≥70%" "台帳 ${LEDGER_FILE} に auto_fix_rate の記載がありません（実測 PENDING）"
+fi
+
+# ---------------------------------------------------------------------------
+# E-2: NFR-8 注入リグレッション検知率 90% 以上（#238、実装フェーズ確定検証）
+# ---------------------------------------------------------------------------
+lookup_metric injection_detection_rate
+e2_status="${LOOKUP_STATUS}"
+e2_pass="${LOOKUP_PASS}"
+e2_total="${LOOKUP_TOTAL}"
+
+if [ "${e2_status}" -eq 0 ] && [ "${e2_total}" -gt 0 ]; then
+    pct=$(rate_percent "${e2_pass}" "${e2_total}")
+    if [ "${pct}" -ge 90 ]; then
+        record_pass "E-2: NFR-8 注入リグレッション検知率 ≥90%" "台帳: ${e2_pass}/${e2_total}（${pct}%）。出典: docs/reports/nfr8-injection-detection-verification.md"
+    else
+        record_fail "E-2: NFR-8 注入リグレッション検知率 ≥90%" "台帳: ${e2_pass}/${e2_total}（${pct}%）（閾値未達）"
+    fi
+elif [ "${e2_status}" -eq 2 ]; then
+    record_fail "E-2: NFR-8 注入リグレッション検知率 ≥90%" "台帳 ${LEDGER_FILE} の injection_detection_rate が不正な値です（フェイルクローズ）"
+else
+    record_skip "E-2: NFR-8 注入リグレッション検知率 ≥90%" "台帳 ${LEDGER_FILE} に injection_detection_rate の記載がありません（実測 PENDING）"
 fi
 
 # ---------------------------------------------------------------------------
