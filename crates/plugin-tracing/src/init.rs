@@ -48,7 +48,7 @@ pub enum TracingOutput {
 /// # Examples
 ///
 /// ```no_run
-/// use bf_plugin_tracing::{init_tracing, TracingOutput};
+/// use fandhe_backend_plugin_tracing::{init_tracing, TracingOutput};
 ///
 /// // 実際のプロセスでは戻り値をプロセス終了まで保持する
 /// // （doc test はグローバルサブスクライバ登録の副作用があるため no_run）。

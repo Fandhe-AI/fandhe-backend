@@ -29,7 +29,7 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// # Examples
 ///
 /// ```
-/// use bf_plugin_websocket::WebSocketConfig;
+/// use fandhe_backend_plugin_websocket::WebSocketConfig;
 ///
 /// let config = WebSocketConfig::default();
 /// assert_eq!(config.path, "/ws");
@@ -115,7 +115,7 @@ impl WebSocketConfig {
     ///
     /// ```
     /// use std::time::Duration;
-    /// use bf_plugin_websocket::WebSocketConfig;
+    /// use fandhe_backend_plugin_websocket::WebSocketConfig;
     ///
     /// let config = WebSocketConfig::default().with_idle_timeout(Duration::from_secs(30));
     /// assert_eq!(config.idle_timeout, Some(Duration::from_secs(30)));
@@ -131,7 +131,7 @@ impl WebSocketConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_websocket::WebSocketConfig;
+    /// use fandhe_backend_plugin_websocket::WebSocketConfig;
     ///
     /// let config = WebSocketConfig::default().without_idle_timeout();
     /// assert_eq!(config.idle_timeout, None);
@@ -149,8 +149,8 @@ impl WebSocketConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_websocket::WebSocketConfig;
-    /// use bf_plugin_websocket::handler::{WsMessage, WsMessageHandler, WsOutcome};
+    /// use fandhe_backend_plugin_websocket::WebSocketConfig;
+    /// use fandhe_backend_plugin_websocket::handler::{WsMessage, WsMessageHandler, WsOutcome};
     /// use futures_util::future::BoxFuture;
     ///
     /// struct Uppercase;
@@ -163,7 +163,7 @@ impl WebSocketConfig {
     ///     fn on_message(
     ///         &self,
     ///         msg: WsMessage,
-    ///     ) -> BoxFuture<'_, Result<WsOutcome, bf_plugin_websocket::handler::WsHandlerError>> {
+    ///     ) -> BoxFuture<'_, Result<WsOutcome, fandhe_backend_plugin_websocket::handler::WsHandlerError>> {
     ///         Box::pin(async move {
     ///             let reply = match msg {
     ///                 WsMessage::Text(t) => WsMessage::Text(t.to_uppercase()),

@@ -7,7 +7,7 @@ MS-1（`docs/spec/06-roadmap.md`）。前提タスク TASK-1.4（#13）完了後
 
 `crates/core` は「最小コア + Cargo feature 駆動プラグイン」を核とする設計だが、
 本タスク着手時点では feature による着脱を実例で示した実装が存在しなかった。
-一方、プラグインクレート `bf-plugin-webrtc-proxy`（#74）はハンドラ単体では
+一方、プラグインクレート `fandhe-backend-plugin-webrtc-proxy`（#74）はハンドラ単体では
 自己完結していたが、コアの接続受理ループへ未配線だった。
 
 本ドキュメントは、`webrtc-proxy` feature を第 1 号として確立した「feature flag
@@ -17,23 +17,23 @@ MS-1（`docs/spec/06-roadmap.md`）。前提タスク TASK-1.4（#13）完了後
 
 ## 2. feature 命名規約
 
-プラグインクレート名（`bf-plugin-<name>`）から `bf-plugin-` 接頭辞を除いた
+プラグインクレート名（`fandhe-backend-plugin-<name>`）から `fandhe-backend-plugin-` 接頭辞を除いた
 `<name>` を feature 名とする。
 
 ```toml
 # crates/core/Cargo.toml
 [dependencies]
-bf-plugin-webrtc-proxy = { path = "../plugin-webrtc-proxy", optional = true }
+fandhe-backend-plugin-webrtc-proxy = { path = "../plugin-webrtc-proxy", optional = true }
 
 [features]
 default = []
-webrtc-proxy = ["dep:bf-plugin-webrtc-proxy"]
+webrtc-proxy = ["dep:fandhe-backend-plugin-webrtc-proxy"]
 ```
 
 - `optional = true` + `dep:` 構文を使う。`dep:` を使わずに `optional = true`
   だけで feature を作ると、依存クレート名と同名の **implicit feature** が
   暗黙に生えてしまい、公開 feature 名の意図しない増加・利用者からの誤参照を
-  招く。`dep:bf-plugin-webrtc-proxy` は implicit feature を作らず、
+  招く。`dep:fandhe-backend-plugin-webrtc-proxy` は implicit feature を作らず、
   `webrtc-proxy` という 1 つの feature 名だけを公開 API とする
 - `default = []` を維持する。ビルド時に何も選択しなければプラグインは
   依存・コード・`unsafe` を一切バイナリに含まない
@@ -57,7 +57,7 @@ feature 分岐が必要になった場合も、コアループ側はヘルパー
 ## 4. パスインターセプト型パターン（本タスクで確立、TASK-8.1 / #26 で 2 例目を追加）
 
 `plugin::try_intercept(server: &Server, head: &RequestHead, body: &[u8]) ->
-Option<bf_http::response::Response>` が固定シグネチャのシーム。
+Option<fandhe_backend_http::response::Response>` が固定シグネチャのシーム。
 
 ```rust,ignore
 pub(crate) async fn try_intercept(
@@ -69,7 +69,7 @@ pub(crate) async fn try_intercept(
     {
         if let Some(config) = server.webrtc_proxy_config()
             && let Some(response) =
-                bf_plugin_webrtc_proxy::try_handle_rtc_offer(head, body, config).await
+                fandhe_backend_plugin_webrtc_proxy::try_handle_rtc_offer(head, body, config).await
         {
             return Some(from_plugin_response(response));
         }
@@ -78,7 +78,7 @@ pub(crate) async fn try_intercept(
     #[cfg(feature = "webrtc")]
     {
         if let Some(config) = server.webrtc_config()
-            && let Some(response) = bf_plugin_webrtc::try_handle_rtc_offer(head, body, config).await
+            && let Some(response) = fandhe_backend_plugin_webrtc::try_handle_rtc_offer(head, body, config).await
         {
             return Some(response);
         }
@@ -125,7 +125,7 @@ REQ-9・`.claude/rules/security.md`）。
 
 ```rust,ignore
 #[cfg(feature = "webrtc-proxy")]
-pub fn webrtc_proxy(mut self, config: bf_plugin_webrtc_proxy::ProxyConfig) -> Self {
+pub fn webrtc_proxy(mut self, config: fandhe_backend_plugin_webrtc_proxy::ProxyConfig) -> Self {
     self.webrtc_proxy_config = Some(config);
     self
 }
@@ -136,15 +136,15 @@ feature 無効時はこのメソッド・対応するフィールドが構造体
 
 ### 4.3 応答の変換と Content-Type
 
-プラグイン側の中間表現（例: `bf_plugin_webrtc_proxy::Response { status,
-reason, content_type, body }`）はコアが送出する `bf_http::response::Response`
-へ変換する。`bf_http::response::Response` は任意ヘッダ API を意図的に持たない
+プラグイン側の中間表現（例: `fandhe_backend_plugin_webrtc_proxy::Response { status,
+reason, content_type, body }`）はコアが送出する `fandhe_backend_http::response::Response`
+へ変換する。`fandhe_backend_http::response::Response` は任意ヘッダ API を意図的に持たない
 （レスポンス分割対策、`crates/http/src/response.rs` の doc）ため、本タスクで
 `&'static str` 限定の `Response::with_content_type` を追加した。プラグイン側の
 `content_type` フィールドも `&'static str` に限定されているため、変換経路に
 外部入力由来の動的文字列が混入する余地はない。
 
-`reason` phrase はプラグイン側の値をそのまま使わず、`bf_http::response::Response`
+`reason` phrase はプラグイン側の値をそのまま使わず、`fandhe_backend_http::response::Response`
 内蔵の固定テーブル（`reason_phrase`）から `status` に基づいて引く。プラグインが
 新しいステータスコードを払い出す場合は、このテーブルへのエントリ追加を
 忘れないこと（本タスクでは `502 Bad Gateway` / `504 Gateway Timeout` を追加
@@ -152,18 +152,18 @@ reason, content_type, body }`）はコアが送出する `bf_http::response::Res
 劣化する。PoC-9 教訓: ステータスコードのみの検証はこの劣化を見逃す。統合
 テストは必ず reason/Content-Type/body まで含めて検証すること）。
 
-**TASK-8.1（#26）での簡素化**: `bf-plugin-webrtc-proxy` が独自の中間 `Response`
+**TASK-8.1（#26）での簡素化**: `fandhe-backend-plugin-webrtc-proxy` が独自の中間 `Response`
 型（`status`/`reason`/`content_type`/`body`）を持つのは、本パターン確立前
-（配線が未確立だった TASK-8.2-2 時点）の歴史的経緯である。`bf-plugin-webrtc`
+（配線が未確立だった TASK-8.2-2 時点）の歴史的経緯である。`fandhe-backend-plugin-webrtc`
 （TASK-8.1）は配線パターンが既に存在する状態で新設したため、この変換層を
-省き [`bf_http::response::Response`] を直接組み立てて返す（`try_intercept` は
+省き [`fandhe_backend_http::response::Response`] を直接組み立てて返す（`try_intercept` は
 `Some(response)` をそのまま返し、`from_plugin_response` 相当の変換関数を経由
 しない）。後続プラグインも、配線パターン確立後に新設する場合はこの簡素化版
-（`bf_http::response::Response` を直接返す）を優先すること。
+（`fandhe_backend_http::response::Response` を直接返す）を優先すること。
 
 ## 5. Upgrade 型パターン（TASK-4.1 / #22 で確立）
 
-`bf-plugin-websocket`（`crates/plugin-websocket`）が Upgrade 型パターンの
+`fandhe-backend-plugin-websocket`（`crates/plugin-websocket`）が Upgrade 型パターンの
 第 1 号実装。`try_intercept` と同型の設計原則を踏襲しつつ、Upgrade 型固有の
 差分が 2 点ある（5.1・5.2 節）。
 
@@ -187,9 +187,9 @@ where
     #[cfg(feature = "websocket")]
     {
         if let Some(config) = server.websocket_config()
-            && bf_plugin_websocket::matches(head, config)
+            && fandhe_backend_plugin_websocket::matches(head, config)
         {
-            let _ = bf_plugin_websocket::handle_upgrade(stream, head, leftover, config).await;
+            let _ = fandhe_backend_plugin_websocket::handle_upgrade(stream, head, leftover, config).await;
             return None;
         }
     }
@@ -208,7 +208,7 @@ where
 - `leftover`: `handle_connection` はアップグレード委譲前にコア側の読み取り
   バッファを解放する（Conditional Go 条件(1)）が、解放前に
   `RecvBuffer::unread()` で退避した残余バイト列（パイプライン済みの先行
-  フレーム等）を委譲先へ引き継ぐ必要がある。`bf_plugin_websocket::handle_upgrade`
+  フレーム等）を委譲先へ引き継ぐ必要がある。`fandhe_backend_plugin_websocket::handle_upgrade`
   はこれを `WebSocketStream::from_partially_read` へそのまま渡し、先行到着
   フレームを取りこぼさない
 - `&Server`: 複数 Upgrade 型プラグインが将来増えた場合でも、各プラグインの
@@ -219,12 +219,12 @@ where
 
 `UpgradeHandler::matches`（同期 API、委譲判定のみの契約）自体は変更して
 いない。判定は `WebSocketUpgradeAdapter`（`crates/core/src/server.rs`、
-`Server::websocket` が内部登録）が `bf_plugin_websocket::matches` へ委譲する
+`Server::websocket` が内部登録）が `fandhe_backend_plugin_websocket::matches` へ委譲する
 薄いラッパーとして担う。
 
 ### 5.2 循環依存の回避
 
-`bf-plugin-websocket` は `backend-framework-core` に依存しない（`crates/plugin-websocket/src/lib.rs`
+`fandhe-backend-plugin-websocket` は `fandhe-backend-core` に依存しない（`crates/plugin-websocket/src/lib.rs`
 の doc を参照）。コア → プラグインの optional 依存（`webrtc-proxy` と同型）
 のみを張るため、`UpgradeHandler` trait を実装するアダプタ
 （`WebSocketUpgradeAdapter`）はコア側（`crates/core/src/server.rs`）に置く。
@@ -242,8 +242,8 @@ where
    並存する場合は `UpgradeHandler::matches` の判定順にそのまま従う）
 4. `Server` ビルダーへ cfg-gated な登録メソッドを追加する
 5. `scripts/dep-direction-check.sh` の許可リストへ
-   `backend-framework-core:bf-plugin-<name>` を個別追加する（6.1 節と同じ
-   方針。`bf-plugin-*` への一般化はしない）
+   `fandhe-backend-core:fandhe-backend-plugin-<name>` を個別追加する（6.1 節と同じ
+   方針。`fandhe-backend-plugin-*` への一般化はしない）
 6. feature 無効時はコード・依存・`unsafe` が完全に消えることを
    `cargo tree` で確認する
 
@@ -252,7 +252,7 @@ where
 PoC-7（`docs/spec/03-poc/high-concurrency-scale/README.md`）実測で、WebSocket
 長時間接続の接続あたり RSS が axum 比 155.2%（Conditional Go 条件(1) の成功
 基準 110% 未達）となった。原因は、`try_handle_upgrade` が
-`bf_plugin_websocket::handle_upgrade`（ハンドシェイク + エコーループ）を
+`fandhe_backend_plugin_websocket::handle_upgrade`（ハンドシェイク + エコーループ）を
 `handle_connection` タスクの future 内で**インラインに await** していたこと。
 `handle_connection` は `read_request`・応答直列化・keep-alive 制御などを含む
 大きな tokio タスクのステートマシンであり、インライン await のままだと WS
@@ -276,14 +276,14 @@ where
     #[cfg(feature = "websocket")]
     {
         if let Some(config) = server.websocket_configs().iter()
-            .find(|config| bf_plugin_websocket::matches(head, config))
+            .find(|config| fandhe_backend_plugin_websocket::matches(head, config))
         {
             let config = config.clone();
             let head = head.clone();
             let permit = permit.take();          // permit をセッションタスクへ move
             tokio::spawn(async move {
                 let _permit = permit;             // セッション終了まで保持
-                let _ = bf_plugin_websocket::handle_upgrade(stream, &head, leftover, &config).await;
+                let _ = fandhe_backend_plugin_websocket::handle_upgrade(stream, &head, leftover, &config).await;
             });
             return None;                          // 元タスクは即 return → 大きな future を解放
         }
@@ -363,7 +363,7 @@ Upgrade 型パターン確立後もアプリケーションロジックを差し
 ## 5.6 Gate 型パターン（依存逆転型、TASK-9.1 / #61 で確立、TASK-9.2 / #62 で
 RS256 + JWKS へ差し替え）
 
-`bf-plugin-hub-wiring`（`TenantGate`、JWT 検証 → `org_id` 抽出 →
+`fandhe-backend-plugin-hub-wiring`（`TenantGate`、JWT 検証 → `org_id` 抽出 →
 フェイルクローズ）は、4・5 節の 2 パターン（コア → プラグインの optional
 依存 + feature ゲート）とは逆に、**プラグイン → コアの一方向依存**（依存
 逆転型）を取る第 3 のプラグイン様式である。
@@ -388,19 +388,19 @@ RS256 + JWKS へ差し替え）
 
 - `crates/core` の `Cargo.toml`・`server.rs`・`plugin.rs` は一切変更しない
   （`optional = true` + `dep:` 構文も、非公開シームへの分岐追加も不要）
-- 利用側サービスが `bf-plugin-hub-wiring` を依存に加え、
+- 利用側サービスが `fandhe-backend-plugin-hub-wiring` を依存に加え、
   `Server::gate(TenantGate::new(TenantGateConfig::from_jwks_json(jwks_json)?))`
   （既存の公開 API `Server::gate`、TASK-1.4）で登録するだけで配線が完結する
 - `scripts/dep-direction-check.sh` の許可リストには汎用パターン
-  `bf-plugin-*:backend-framework-core`・`bf-plugin-*:bf-http` が既に存在する
+  `fandhe-backend-plugin-*:fandhe-backend-core`・`fandhe-backend-plugin-*:fandhe-backend-http` が既に存在する
   ため、6.1 節のような個別例外追加は不要（`crates/plugin-hub-wiring/src/lib.rs`
   に依存方向宣言 `server → routes → http::*` を記載するのみでチェック 2 も通過する）
 
 ### 5.6.2 pay-for-what-you-use の成立根拠
 
 コア側に `dep:` ゲートを持たないため、feature フラグではなく
-「利用側が依存グラフに `bf-plugin-hub-wiring` を加えるか否か」で
-pay-for-what-you-use が成立する。`cargo tree -p backend-framework-core` に
+「利用側が依存グラフに `fandhe-backend-plugin-hub-wiring` を加えるか否か」で
+pay-for-what-you-use が成立する。`cargo tree -p fandhe-backend-core` に
 本クレート・その依存（`ring`/`base64`/`serde`/`serde_json`）が一切現れない
 ことで機械検証できる（コアが本クレートを依存に持たないため、そもそも現れ
 ようがない設計）。
@@ -413,7 +413,7 @@ JWT 検証は TASK-9.1（#61）の HS256（HMAC-SHA256、`hmac`/`sha2`）共有�
 `scripts/dep-audit.sh`（`deny.toml` advisories.ignore = [] のフェイルクローズ
 運用）で確実に FAIL する。`ring` は `crates/plugin-webrtc`（`webrtc`
 feature 経由）が既に依存グラフへ引き込んでいる実績依存（`deny.toml` の
-ライセンス許可リストに ISC 等が既存）であり、`bf-plugin-hub-wiring` 追加
+ライセンス許可リストに ISC 等が既存）であり、`fandhe-backend-plugin-hub-wiring` 追加
 による新規のライセンス・advisory 面のリスク増はない。
 
 ### 5.6.3 責務境界（`GateOutcome` はクレームを運ばない）
@@ -421,7 +421,7 @@ feature 経由）が既に依存グラフへ引き込んでいる実績依存（
 `RequestGate::check` の戻り値 `GateOutcome` は許可/拒否の判定結果のみを運ぶ
 契約（`crates/core/src/extension.rs` doc、`docs/spec/03-poc/hub-wiring-middleware`
 PoC-6）であり、JWT 検証で抽出した `org_id` 等のクレームはコアへ一切渡らない
-（`bf-plugin-hub-wiring` 内の `jwt::Claims` に閉じる）。この境界により、
+（`fandhe-backend-plugin-hub-wiring` 内の `jwt::Claims` に閉じる）。この境界により、
 コアは hub 固有シンボル（JWT・`org_id`・JWKS）へ一切依存しないまま、
 依存逆転型プラグインからの利用を受け付けられる。
 
@@ -452,8 +452,8 @@ Middleware>>` を保持している。そのためパスインターセプト型
 
 ### 5.7.2 依存方向・循環回避
 
-`bf-plugin-tracing` は `bf-plugin-websocket`（5.2 節）と同一の非循環パターンを
-踏襲し、`backend-framework-core` に依存しない。`Middleware` trait を実装する
+`fandhe-backend-plugin-tracing` は `fandhe-backend-plugin-websocket`（5.2 節）と同一の非循環パターンを
+踏襲し、`fandhe-backend-core` に依存しない。`Middleware` trait を実装する
 アダプタ（`TracingMiddleware`）はコア側（`crates/core/src/server.rs`、
 `tracing` feature 限定）に置く。`Middleware` は dyn 互換のため、原理的には
 プラグイン側が core に依存して順方向に `impl Middleware` する設計も選べたが、
@@ -466,7 +466,7 @@ Middleware>>` を保持している。そのためパスインターセプト型
 `Middleware` には request/response を跨いで per-request 状態を運ぶ経路が
 ないため、`on_request` と `on_response` で独立にサンプリング判定すると
 同一リクエストの記録が対にならない。`TracingMiddleware::on_request` は
-no-op とし、判定・記録は `on_response`（`bf_plugin_tracing::TracingLayer::
+no-op とし、判定・記録は `on_response`（`fandhe_backend_plugin_tracing::TracingLayer::
 record_response` への委譲）の 1 点に集約する
 （`crates/plugin-tracing/src/layer.rs` の doc を参照）。
 
@@ -481,8 +481,8 @@ record_response` への委譲）の 1 点に集約する
 `TracingLayer::record_response` 内の `tracing` マクロ呼び出し自体は同期だが、
 `tracing-subscriber` に登録するレイヤーが `tracing-appender::non_blocking`
 writer を使う限り、実際のディスク/ネットワーク I/O は非同期・バッファ済みに
-なる（`bf_plugin_tracing::init_tracing` が既定でこの構成を組み立てる）。
-サンプリング（`bf_plugin_tracing::Sampler`、決定的カウンタ方式）は
+なる（`fandhe_backend_plugin_tracing::init_tracing` が既定でこの構成を組み立てる）。
+サンプリング（`fandhe_backend_plugin_tracing::Sampler`、決定的カウンタ方式）は
 PoC-10 の知見（非同期 I/O 化だけでは RPS 劣化 31.6% を解消できない）に
 対応する追加対策であり、`Sampler::should_sample` が `false` の場合は
 `tracing` マクロ呼び出し自体を避けることで有効化コストをサンプリング間隔に
@@ -492,25 +492,25 @@ PoC-10 の知見（非同期 I/O 化だけでは RPS 劣化 31.6% を解消で�
 
 | 検証 | コマンド | 期待結果 |
 |------|---------|---------|
-| 依存除外 | `cargo tree -p backend-framework-core` | `bf-plugin-webrtc-proxy` が 0 件 |
-| 依存有効化 | `cargo tree -p backend-framework-core --features webrtc-proxy` | `bf-plugin-webrtc-proxy` が出現 |
-| 全構成ビルド | `cargo build -p backend-framework-core`（無効）／`--features webrtc-proxy`／`cargo build --workspace --all-features` | すべて成功 |
-| テスト | `cargo test -p backend-framework-core`（無効）／`--features webrtc-proxy`／`cargo test --workspace --all-features` | すべて green（`crates/core/tests/plugin_boundary.rs`・`plugin_boundary_disabled.rs`） |
-| lint | `cargo clippy -p backend-framework-core --all-targets --no-default-features -- -D warnings`／`--features webrtc-proxy`／`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 警告 0 件 |
+| 依存除外 | `cargo tree -p fandhe-backend-core` | `fandhe-backend-plugin-webrtc-proxy` が 0 件 |
+| 依存有効化 | `cargo tree -p fandhe-backend-core --features webrtc-proxy` | `fandhe-backend-plugin-webrtc-proxy` が出現 |
+| 全構成ビルド | `cargo build -p fandhe-backend-core`（無効）／`--features webrtc-proxy`／`cargo build --workspace --all-features` | すべて成功 |
+| テスト | `cargo test -p fandhe-backend-core`（無効）／`--features webrtc-proxy`／`cargo test --workspace --all-features` | すべて green（`crates/core/tests/plugin_boundary.rs`・`plugin_boundary_disabled.rs`） |
+| lint | `cargo clippy -p fandhe-backend-core --all-targets --no-default-features -- -D warnings`／`--features webrtc-proxy`／`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 警告 0 件 |
 | doc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps` | 警告 0 件 |
 | 依存監査 | `scripts/dep-audit.sh` | `webrtc-proxy`・`webrtc`・`websocket` を含む動的列挙構成で違反 0 件（`webrtc` feature 有効化に伴い `deny.toml` の許可ライセンスへ `ISC` を追加済み） |
 | pay-for-what-you-use 機械検証 | `scripts/pay-for-what-you-use-check.sh`（TASK-2.2、#19） | cargo tree/geiger・バイナリサイズ・全構成ビルドすべて PASS（`docs/design/pay-for-what-you-use-check.md` 参照） |
 
 `websocket` feature（TASK-4.1 / #22）も同一パターンで検証済み:
-`cargo tree -p backend-framework-core --features websocket` で
-`bf-plugin-websocket`・`tokio-tungstenite` が出現し、`webrtc-rs` 系は
+`cargo tree -p fandhe-backend-core --features websocket` で
+`fandhe-backend-plugin-websocket`・`tokio-tungstenite` が出現し、`webrtc-rs` 系は
 出現しない。`crates/core/tests/websocket_upgrade.rs`（feature 有効側）・
 `websocket_upgrade_disabled.rs`（feature 無効側）で green。
 
 ## 6.1 `scripts/dep-direction-check.sh` ホワイトリストの例外（TASK-1.5 との整合）
 
-`crates/core/Cargo.toml` の `bf-plugin-webrtc-proxy` optional 依存
-（2 節）は `backend-framework-core → bf-plugin-webrtc-proxy` という workspace
+`crates/core/Cargo.toml` の `fandhe-backend-plugin-webrtc-proxy` optional 依存
+（2 節）は `fandhe-backend-core → fandhe-backend-plugin-webrtc-proxy` という workspace
 内 path 依存エッジを生む。`scripts/dep-direction-check.sh`（TASK-1.5、#14）は
 本来「コアからのプラグイン依存は禁止」を既定とするホワイトリスト方式だが、
 本タスク（TASK-2.1）着手時点でこの前提と `docs/spec/04-requirements.md`
@@ -523,32 +523,32 @@ REQ-2 が要求する「feature flag + `dep:` 構文によるコンパイル時�
 （`try_handle_rtc_offer` は `async fn`）を既存拡張点経由の依存逆転
 （プラグイン側のみが core に依存する形）で表現できない。このため
 `scripts/dep-direction-check.sh` の許可リストへ
-`backend-framework-core:bf-plugin-webrtc-proxy` を明示的な例外として
-1 件のみ追加した（`bf-plugin-*` への一般化はしない。新規プラグインが
+`fandhe-backend-core:fandhe-backend-plugin-webrtc-proxy` を明示的な例外として
+1 件のみ追加した（`fandhe-backend-plugin-*` への一般化はしない。新規プラグインが
 同パターンを踏襲する場合は許可リストへの個別追加とレビューを要求する）。
 feature 無効時は本エッジ自体が未解決のまま消えるため pay-for-what-you-use
 は維持される（6 節の検証コマンドで確認済み）。詳細な例外根拠・DFS 循環
 検出との関係は `scripts/dep-direction-check.sh` の当該コメントを正とする。
 
 TASK-8.1（#26）は同一理由（3 拡張点の同期 API 限定に非同期呼び出しを持ち込め
-ない）で `backend-framework-core:bf-plugin-webrtc` を 2 件目の個別例外として
+ない）で `fandhe-backend-core:fandhe-backend-plugin-webrtc` を 2 件目の個別例外として
 許可リストへ追加した。チェック 3（プラグイン非依存検査）の除外パターンも
-`bf_plugin_webrtc\b`（`bf_plugin_webrtc_proxy` の部分文字列にならないよう
+`fandhe_backend_plugin_webrtc\b`（`fandhe_backend_plugin_webrtc_proxy` の部分文字列にならないよう
 単語境界付き）・`webrtc_config` を追加して対応済み（`scripts/dep-direction-check.sh`
 本体コメント参照）。
 
-TASK-4.1（#22）で `backend-framework-core:bf-plugin-websocket` を同一方針で
-3 件目の例外として追加した（`bf-plugin-websocket` 自体は 5.2 節のとおり
-`backend-framework-core` に依存しないため循環にはならない）。あわせて
+TASK-4.1（#22）で `fandhe-backend-core:fandhe-backend-plugin-websocket` を同一方針で
+3 件目の例外として追加した（`fandhe-backend-plugin-websocket` 自体は 5.2 節のとおり
+`fandhe-backend-core` に依存しないため循環にはならない）。あわせて
 チェック 3（プラグイン固有シンボル非依存検査）の例外シンボルパターンにも
-`bf_plugin_websocket`/`websocket` を追加している。
+`fandhe_backend_plugin_websocket`/`websocket` を追加している。
 
-TASK-10.1（#56）で `backend-framework-core:bf-plugin-tracing` を 4 件目の
+TASK-10.1（#56）で `fandhe-backend-core:fandhe-backend-plugin-tracing` を 4 件目の
 例外として追加した。`Middleware` trait は dyn 互換の同期 API のため、
 webrtc-proxy/webrtc（非同期パスインターセプト）とは異なる理由（5.6.2 節）で
 非循環パターンを選んだが、生じる workspace 内 path 依存エッジ自体は
-websocket と同型（`bf-plugin-tracing` → `backend-framework-core` の逆依存は
-発生しない）。チェック 3 の例外シンボルパターンにも `bf_plugin_tracing`/
+websocket と同型（`fandhe-backend-plugin-tracing` → `fandhe-backend-core` の逆依存は
+発生しない）。チェック 3 の例外シンボルパターンにも `fandhe_backend_plugin_tracing`/
 `TracingMiddleware` を追加している。
 
 ## 7. スコープ外（別タスクで対応）

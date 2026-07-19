@@ -1,7 +1,7 @@
 //! コンパイル時 OpenAPI 定義（TASK-3.1、REQ-3、PoC-4 の採用方式を踏襲）。
 //!
 //! # 統合方式
-//! backend-framework のルーティング（`bf-routes::Router`）は「method + target
+//! backend-framework のルーティング（`fandhe-backend-routes::Router`）は「method + target
 //! 完全一致の関数ベース」であり、axum のような属性マクロで飾れるハンドラ単位を
 //! 持たない。このため実装本体とは疎結合な「ドキュメント専用の薄い関数」に
 //! `#[utoipa::path(...)]` を付与し、`#[derive(utoipa::OpenApi)]` で 1 つの
@@ -17,7 +17,7 @@
 //!
 //! # 実装本体との契約
 //! 対象 5 エンドポイントの実サービングは `crates/routes` 側の責務であり、本
-//! クレートは関知しない。`bf-routes::Router` は現時点でパスパラメータ・クエリ
+//! クレートは関知しない。`fandhe-backend-routes::Router` は現時点でパスパラメータ・クエリ
 //! 文字列分離を持たない完全一致マッチのため、本モジュールの `path`（例:
 //! `/hello/{name}`）と実装側のルーティング定義が一致することは、実装時の
 //! レビューで担保する運用とする（実装との齟齬照合は TASK-3.3、#32 のスコープ）。
@@ -118,7 +118,7 @@ fn search_doc() {}
 ///
 /// # Examples
 /// ```
-/// use bf_plugin_openapi::ApiDoc;
+/// use fandhe_backend_plugin_openapi::ApiDoc;
 /// use utoipa::OpenApi;
 ///
 /// let doc = ApiDoc::openapi();

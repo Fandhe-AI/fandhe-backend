@@ -4,7 +4,7 @@
 //! テナントスコープ強制コード）を模した、マルチテナントの `GET /items`・
 //! `GET /items/{id}`・`POST /items` を持つ最小サーバ。JWT (RS256) 検証・
 //! `org_id` 抽出・スコープ強制のコードはハンドラに一切書かず、
-//! [`bf_plugin_hub_wiring`] が提供する [`TenantGate`]（`RequestGate` 拡張点）と
+//! [`fandhe_backend_plugin_hub_wiring`] が提供する [`TenantGate`]（`RequestGate` 拡張点）と
 //! [`Authenticator`]（ゲートと共有するキャッシュ、TASK-9.3 / #63）のみで賄う
 //! （越境クエリは全件データ層で 404、`scripts/accept/hub-wiring-accept.sh` の
 //! 判定 A・B が本ファイルを対象に検証する）。
@@ -27,7 +27,7 @@
 //! ない）。NFR-6 計測は認証を要さない `GET /`（無関係パス）のみを対象にする。
 //!
 //! ```bash
-//! cargo run --release -p bf-plugin-hub-wiring --example hub_service_demo
+//! cargo run --release -p fandhe-backend-plugin-hub-wiring --example hub_service_demo
 //! # 別ターミナルで（起動時に表示される curl コマンドをそのまま使う）:
 //! curl -i http://127.0.0.1:3100/items
 //! ```
@@ -37,13 +37,13 @@ use std::env;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use backend_framework_core::Server;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use bf_http::request::RequestHead;
-use bf_http::response::Response;
-use bf_plugin_hub_wiring::{Authenticator, TenantGate, TenantGateConfig, TokenError};
-use bf_routes::Router;
+use fandhe_backend_core::Server;
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_hub_wiring::{Authenticator, TenantGate, TenantGateConfig, TokenError};
+use fandhe_backend_routes::Router;
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
 
@@ -202,7 +202,7 @@ fn build_router(store: Store, authenticator: Authenticator, next_id: Arc<AtomicU
         }
     });
 
-    // 単件取得（`bf_routes::Router::route_param` の `{id}` パスパラメータ対応
+    // 単件取得（`fandhe_backend_routes::Router::route_param` の `{id}` パスパラメータ対応
     // （TASK-176、#176）ではなくあえて完全一致で個別登録する。越境遮断の全件検証
     // 対象になる既知 ID を列挙し尽くす意図を明示するため。`docs/design/
     // outbox-consent-integration.md` の「データ層フェイルクローズ 404」を踏襲し、

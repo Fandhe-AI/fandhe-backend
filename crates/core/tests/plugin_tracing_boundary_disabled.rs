@@ -10,9 +10,9 @@
 
 #![cfg(not(feature = "tracing"))]
 
-use backend_framework_core::{Handler, Server, handle_connection};
-use bf_http::request::RequestHead;
-use bf_http::response::Response;
+use fandhe_backend_core::{Handler, Server, handle_connection};
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 struct FixedOkHandler;

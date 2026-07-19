@@ -63,12 +63,12 @@ impl RequestHead {
     /// # Examples
     ///
     /// ```
-    /// use bf_http::request::parse_request_head;
+    /// use fandhe_backend_http::request::parse_request_head;
     ///
     /// let buf = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
     /// let outcome = parse_request_head(buf).unwrap();
     /// let head = match outcome {
-    ///     bf_http::request::ParseOutcome::Complete { head, .. } => head,
+    ///     fandhe_backend_http::request::ParseOutcome::Complete { head, .. } => head,
     ///     _ => unreachable!(),
     /// };
     /// assert_eq!(head.header("host"), Some("example.com"));
@@ -90,12 +90,12 @@ impl RequestHead {
     /// # Examples
     ///
     /// ```
-    /// use bf_http::request::parse_request_head;
+    /// use fandhe_backend_http::request::parse_request_head;
     ///
     /// let buf = b"GET / HTTP/1.1\r\nX-A: 1\r\nX-B: 2\r\nX-A: 3\r\n\r\n";
     /// let outcome = parse_request_head(buf).unwrap();
     /// let head = match outcome {
-    ///     bf_http::request::ParseOutcome::Complete { head, .. } => head,
+    ///     fandhe_backend_http::request::ParseOutcome::Complete { head, .. } => head,
     ///     _ => unreachable!(),
     /// };
     /// let all: Vec<_> = head.headers().collect();
@@ -173,7 +173,7 @@ impl std::error::Error for ParseError {}
 /// # Examples
 ///
 /// ```
-/// use bf_http::request::{parse_request_head, HttpVersion, ParseOutcome};
+/// use fandhe_backend_http::request::{parse_request_head, HttpVersion, ParseOutcome};
 ///
 /// let buf = b"POST /items HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4\r\n\r\nbody";
 /// match parse_request_head(buf).unwrap() {

@@ -3,9 +3,11 @@
 //! 既定エコー回帰・サイズ上限維持を、`handshake_e2e.rs` と同型
 //! （`tokio::io::duplex` + tokio-tungstenite クライアント）で検証する。
 
-use bf_http::request::{ParseOutcome, parse_request_head};
-use bf_plugin_websocket::handler::{WsHandlerError, WsMessage, WsMessageHandler, WsOutcome};
-use bf_plugin_websocket::{WebSocketConfig, handle_upgrade};
+use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+use fandhe_backend_plugin_websocket::handler::{
+    WsHandlerError, WsMessage, WsMessageHandler, WsOutcome,
+};
+use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade};
 use futures_util::future::BoxFuture;
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::AsyncReadExt;
@@ -133,7 +135,7 @@ async fn spawn_session(
     config: WebSocketConfig,
 ) -> (
     WebSocketStream<tokio::io::DuplexStream>,
-    tokio::task::JoinHandle<Result<(), bf_plugin_websocket::WsError>>,
+    tokio::task::JoinHandle<Result<(), fandhe_backend_plugin_websocket::WsError>>,
 ) {
     let head = match parse_request_head(handshake_request_bytes()).unwrap() {
         ParseOutcome::Complete { head, .. } => head,
@@ -269,7 +271,7 @@ async fn handler_error_closes_connection_as_handler_error() {
 
     let result = server_task.await.unwrap();
     match result {
-        Err(bf_plugin_websocket::WsError::Handler(_)) => {}
+        Err(fandhe_backend_plugin_websocket::WsError::Handler(_)) => {}
         other => panic!("expected WsError::Handler, got {other:?}"),
     }
 }

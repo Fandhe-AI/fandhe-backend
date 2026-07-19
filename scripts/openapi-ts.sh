@@ -68,7 +68,7 @@ if [ "${mode}" = "update" ]; then
 fi
 
 echo "== stage 1: gen-openapi CLI（${gen_openapi_arg}） =="
-cargo run -p bf-plugin-openapi --features gen-cli --bin gen-openapi -- "${gen_openapi_arg}"
+cargo run -p fandhe-backend-plugin-openapi --features gen-cli --bin gen-openapi -- "${gen_openapi_arg}"
 
 echo "== stage 2: npm ci --ignore-scripts（ts/ 依存の再現） =="
 (cd ts && npm ci --ignore-scripts)

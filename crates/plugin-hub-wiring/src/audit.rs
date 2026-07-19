@@ -85,7 +85,7 @@ impl AuditContext {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_hub_wiring::audit::AuditContext;
+    /// use fandhe_backend_plugin_hub_wiring::audit::AuditContext;
     ///
     /// let ctx = AuditContext::new("org-a", "GET", "/widgets/42?token=secret", "hub-tenant-gate");
     /// assert_eq!(ctx.path(), "/widgets/42");
@@ -137,7 +137,7 @@ impl AuditEvent {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_hub_wiring::audit::{AuditContext, AuditEvent};
+    /// use fandhe_backend_plugin_hub_wiring::audit::{AuditContext, AuditEvent};
     ///
     /// let ctx = AuditContext::new("org-a", "GET", "/widgets/42", "hub-tenant-gate");
     /// let event = AuditEvent::cross_tenant_attempt(&ctx, 1_700_000_000);
@@ -170,7 +170,7 @@ impl AuditEvent {
 ///
 /// # 実装契約
 ///
-/// - **非ブロッキング**: [`backend_framework_core::RequestGate::check`]
+/// - **非ブロッキング**: [`fandhe_backend_core::RequestGate::check`]
 ///   （`crates/core/src/extension.rs` doc）等の拡張点フック・ホットパスから
 ///   呼ばれ得るため、`record` の実装は
 ///   同期ブロッキング I/O を行わない契約とする（Tokio ワーカーを塞がない、
@@ -203,7 +203,7 @@ impl MemoryAuditSink {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_hub_wiring::audit::MemoryAuditSink;
+    /// use fandhe_backend_plugin_hub_wiring::audit::MemoryAuditSink;
     ///
     /// let sink = MemoryAuditSink::new();
     /// assert_eq!(sink.len(), 0);
@@ -284,7 +284,7 @@ impl<T> TenantLookupOutcome<T> {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_hub_wiring::audit::{AuditContext, AuditSink, MemoryAuditSink, TenantLookupOutcome};
+    /// use fandhe_backend_plugin_hub_wiring::audit::{AuditContext, AuditSink, MemoryAuditSink, TenantLookupOutcome};
     ///
     /// let sink = MemoryAuditSink::new();
     /// let ctx = AuditContext::new("org-b", "GET", "/widgets/1", "hub-tenant-gate");

@@ -2,7 +2,7 @@
 //!
 //! `Server::tracing` で登録した `TracingMiddleware`（`crates/core/src/server.rs`）
 //! が実際に `handle_connection` の `Middleware::on_response` フックから呼ばれ、
-//! `bf_plugin_tracing::TracingLayer` のサンプリング判定に従って応答時 1 イベント
+//! `fandhe_backend_plugin_tracing::TracingLayer` のサンプリング判定に従って応答時 1 イベント
 //! （TASK-10.2 / #57 で span+2 イベントから統合）が記録されることを、
 //! `tokio::io::duplex` で駆動する `handle_connection` + テスト専用
 //! `tracing_subscriber::Layer`（イベント件数カウンタ）で検証する。
@@ -15,10 +15,10 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use backend_framework_core::{Handler, Server, handle_connection};
-use bf_http::request::RequestHead;
-use bf_http::response::Response;
-use bf_plugin_tracing::TracingConfig;
+use fandhe_backend_core::{Handler, Server, handle_connection};
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_tracing::TracingConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::subscriber::Subscriber;
 use tracing_subscriber::Registry;

@@ -7,7 +7,7 @@
 //! のため、本モジュールはハンドラ関数単体として自己完結させる
 //! （crate ルート `lib.rs` の「コアループへの配線について」参照）。
 
-use bf_http::request::RequestHead;
+use fandhe_backend_http::request::RequestHead;
 
 use crate::client::forward_offer;
 use crate::config::ProxyConfig;
@@ -61,8 +61,8 @@ impl Response {
 /// # Examples
 ///
 /// ```
-/// use bf_http::request::{parse_request_head, ParseOutcome};
-/// use bf_plugin_webrtc_proxy::{ProxyConfig, try_handle_rtc_offer};
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+/// use fandhe_backend_plugin_webrtc_proxy::{ProxyConfig, try_handle_rtc_offer};
 ///
 /// let buf = b"GET /health HTTP/1.1\r\n\r\n";
 /// let head = match parse_request_head(buf).unwrap() {
@@ -114,7 +114,7 @@ pub async fn try_handle_rtc_offer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bf_http::request::{ParseOutcome, parse_request_head};
+    use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
 
     fn head_from(buf: &[u8]) -> RequestHead {
         match parse_request_head(buf).unwrap() {

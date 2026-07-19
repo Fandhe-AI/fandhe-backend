@@ -95,7 +95,7 @@ fi
 
 # crates/<crate_dir>/Cargo.toml の [package] name を返す（存在しない・取得不能なら
 # 何も出力せず失敗を返す）。--allow-no-tests はディレクトリ名だけでなく Cargo
-# パッケージ名（例: backend-framework-core, bf-http）でも指定できるようにするための
+# パッケージ名（例: fandhe-backend-core, fandhe-backend-http）でも指定できるようにするための
 # 補助関数（Bugbot 指摘: ディレクトリ名比較のみだとパッケージ名指定時に免除が効かない）。
 crate_package_name() {
     local crate_dir="$1"

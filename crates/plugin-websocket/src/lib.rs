@@ -1,4 +1,4 @@
-//! `bf-plugin-websocket`: WebSocket プラグイン（TASK-4.1 / #22）。
+//! `fandhe-backend-plugin-websocket`: WebSocket プラグイン（TASK-4.1 / #22）。
 //!
 //! 拡張点対応: UpgradeHandler（try_handle_upgrade）
 //! （機械可読宣言の規約・許可語彙は `docs/design/dependency-graph-contract.md` 3 節、
@@ -14,7 +14,7 @@
 //!
 //! # コアへの配線について（循環依存の回避）
 //!
-//! 本クレート単体は `backend-framework-core` に依存しない。コアが本クレート
+//! 本クレート単体は `fandhe-backend-core` に依存しない。コアが本クレート
 //! へ `optional = true` + `dep:` 構文の依存を張る（`websocket` feature 有効時
 //! のみ）ため、逆方向の依存を張ると循環依存になる
 //! （`docs/design/plugin-boundary.md` 6.1 節・`scripts/dep-direction-check.sh`
@@ -48,21 +48,21 @@
 //!
 //! `docs/spec/04-requirements.md` REQ-1 / `docs/spec/05-tasks.md` TASK-11.1 の方針に従い、
 //! workspace 全体の依存方向は次の一方向を維持する（依存方向: server → routes → http::*）。
-//! 本クレートはプラグイン層（`bf-plugin-*`）に位置し、コアの拡張点を実装する側であり、
-//! コア（`backend-framework-core`）・`bf-routes` からプラグインへの逆依存は発生しない
+//! 本クレートはプラグイン層（`fandhe-backend-plugin-*`）に位置し、コアの拡張点を実装する側であり、
+//! コア（`fandhe-backend-core`）・`fandhe-backend-routes` からプラグインへの逆依存は発生しない
 //! （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。本クレートの
-//! workspace 内 path 依存は `bf-http`（下位層の sans-IO パーサ）のみであり、
-//! `backend-framework-core` には依存しない（上記「コアへの配線について」節を参照）。
+//! workspace 内 path 依存は `fandhe-backend-http`（下位層の sans-IO パーサ）のみであり、
+//! `fandhe-backend-core` には依存しない（上記「コアへの配線について」節を参照）。
 //! 依存方向の機械検証は `scripts/dep-direction-check.sh` が担う。
 //!
 //! # pay-for-what-you-use
 //!
-//! 依存は `bf-http`（`RequestHead` 参照のみ）・`tokio`（`io-util` のみ）・
+//! 依存は `fandhe-backend-http`（`RequestHead` 参照のみ）・`tokio`（`io-util` のみ）・
 //! `tokio-tungstenite`（`handshake` feature のみ、TLS 系は無効）・
 //! `futures-util`（`WebSocketStream` の Stream/Sink 駆動用）に限定する
 //! （詳細は `Cargo.toml` のコメントを参照）。`websocket` feature 無効時は
-//! コア（`backend-framework-core`）の依存グラフから本クレート自体が除外
-//! される（`cargo tree -p backend-framework-core` で確認可能）。
+//! コア（`fandhe-backend-core`）の依存グラフから本クレート自体が除外
+//! される（`cargo tree -p fandhe-backend-core` で確認可能）。
 
 mod config;
 mod error;
@@ -75,7 +75,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 pub use config::WebSocketConfig;
 pub use error::WsError;
 
-use bf_http::request::RequestHead;
+use fandhe_backend_http::request::RequestHead;
 
 /// リクエストが `config` の指すアップグレード対象に該当するかを判定する。
 ///
@@ -104,8 +104,8 @@ pub fn matches(head: &RequestHead, config: &WebSocketConfig) -> bool {
 /// # Examples
 ///
 /// ```
-/// use bf_http::request::{ParseOutcome, parse_request_head};
-/// use bf_plugin_websocket::{WebSocketConfig, handle_upgrade, matches};
+/// use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+/// use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade, matches};
 ///
 /// # #[tokio::main(flavor = "current_thread")]
 /// # async fn main() {

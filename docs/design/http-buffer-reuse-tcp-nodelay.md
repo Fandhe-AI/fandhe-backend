@@ -1,4 +1,4 @@
-# bf-http 読み取りバッファ再利用・TCP_NODELAY 最適化
+# fandhe-backend-http 読み取りバッファ再利用・TCP_NODELAY 最適化
 
 TASK-1.3-3（#68、`docs/spec/05-tasks.md`）の実装設計。TASK-1.3-2（#67）が確立した
 `crates/http` の `read_request` 呼び出し契約（1 コネクションにつき読み取りバッファを
@@ -58,7 +58,7 @@ TASK-1.3-3（#68、`docs/spec/05-tasks.md`）の実装設計。TASK-1.3-2（#67�
 `set_nodelay(true)` を設定し、失敗は `io::Error` として呼び出し元へ伝播する
 （握りつぶさない、`.claude/rules/security.md` フェイルセーフ）。
 
-feature 無効時は `mio`/`socket2`/`libc` が `cargo tree -p bf-http` に一切出ない
+feature 無効時は `mio`/`socket2`/`libc` が `cargo tree -p fandhe-backend-http` に一切出ない
 （`--features net` を付けたときのみ増える）。
 
 ## 未実施（TASK-1.4 / #70 への引き継ぎ）
@@ -71,22 +71,22 @@ feature 無効時は `mio`/`socket2`/`libc` が `cargo tree -p bf-http` に一�
 
 #70 の accept ループ実装時に必要な変更（この設計ドキュメントを参照して実施する）:
 
-1. 接続 accept 直後、feature `net` を有効化した `bf-http` を使い
-   `bf_http::socket::configure_stream(&stream)` を呼ぶ。エラー時は当該接続のみ
+1. 接続 accept 直後、feature `net` を有効化した `fandhe-backend-http` を使い
+   `fandhe_backend_http::socket::configure_stream(&stream)` を呼ぶ。エラー時は当該接続のみ
    クローズし、accept ループ全体は継続する
-2. 1 コネクションにつき `bf_http::buffer::RecvBuffer::new()` を 1 つ保持し、
+2. 1 コネクションにつき `fandhe_backend_http::buffer::RecvBuffer::new()` を 1 つ保持し、
    `read_request` へ繰り返し渡す（旧 `Vec::new()` からの置き換え）
-3. `crates/core/Cargo.toml` に `bf-http = { path = "../http", features = ["net"] }`
+3. `crates/core/Cargo.toml` に `fandhe-backend-http = { path = "../http", features = ["net"] }`
    を追加する
 
 ## 検証
 
-- `cargo tree -p bf-http` / `cargo tree -p bf-http --features net`:
+- `cargo tree -p fandhe-backend-http` / `cargo tree -p fandhe-backend-http --features net`:
   デフォルト構成で `mio`/`socket2`/`libc` が出ないこと、`--features net` でのみ
   増えることを確認済み
 - `cargo nextest run --workspace --all-features --profile ci` /
   `cargo test --doc --workspace --all-features`: 全通過
-- `cargo test -p bf-http`（default feature、`net` 除外構成）: 全通過
+- `cargo test -p fandhe-backend-http`（default feature、`net` 除外構成）: 全通過
 - `cargo fmt --all --check` / `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
   警告なし
 - `cargo audit` / `cargo deny check`: 問題なし

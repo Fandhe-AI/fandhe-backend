@@ -239,23 +239,23 @@ if [ -n "${edges_tsv}" ]; then
 fi
 
 # レイヤ順の許可リスト（from パターン:to パターン）。fnmatch 相当の shell パターンで判定する。
-# TASK-1.5（#14）で crates/routes（bf-routes）が新設され、`server → routes → http::*`
-# の中間層としてグラフに加わった。core は bf-routes 経由でも bf-http を直接（server.rs
-# が bf_http::request/response 型を参照するため）参照し続けるため、両エッジを許可する。
+# TASK-1.5（#14）で crates/routes（fandhe-backend-routes）が新設され、`server → routes → http::*`
+# の中間層としてグラフに加わった。core は fandhe-backend-routes 経由でも fandhe-backend-http を直接（server.rs
+# が fandhe_backend_http::request/response 型を参照するため）参照し続けるため、両エッジを許可する。
 #
-# 例外: `backend-framework-core:bf-plugin-webrtc-proxy`（TASK-2.1、#18）。
+# 例外: `fandhe-backend-core:fandhe-backend-plugin-webrtc-proxy`（TASK-2.1、#18）。
 # 詳細な例外根拠は `scripts/dep-direction-check.sh`（本チェックの CI 常設版）の
 # 同名エントリの doc コメントを参照。本スクリプトは TASK-11.5 時点の一回限りの
 # 受け入れ検証であり、以後の依存方向検証は `scripts/dep-direction-check.sh` を正とする。
 allowed_edge_patterns=(
-    "backend-framework-core:bf-http"
-    "backend-framework-core:bf-routes"
-    "backend-framework-core:bf-plugin-webrtc-proxy"
-    "bf-routes:bf-http"
-    "bf-plugin-*:bf-http"
-    "bf-plugin-*:bf-routes"
-    "bf-plugin-*:backend-framework-core"
-    "*routes*:bf-http"
+    "fandhe-backend-core:fandhe-backend-http"
+    "fandhe-backend-core:fandhe-backend-routes"
+    "fandhe-backend-core:fandhe-backend-plugin-webrtc-proxy"
+    "fandhe-backend-routes:fandhe-backend-http"
+    "fandhe-backend-plugin-*:fandhe-backend-http"
+    "fandhe-backend-plugin-*:fandhe-backend-routes"
+    "fandhe-backend-plugin-*:fandhe-backend-core"
+    "*routes*:fandhe-backend-http"
 )
 
 violating_edges=()

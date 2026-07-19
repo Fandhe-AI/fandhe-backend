@@ -1,11 +1,11 @@
-//! `bf-routes`: backend-framework の最小ルータ（TASK-1.5、#14）。
+//! `fandhe-backend-routes`: backend-framework の最小ルータ（TASK-1.5、#14）。
 //!
 //! # このクレートの役割
 //!
 //! `crates/core`（`server` モジュール）が接続受理・リクエストループの本体を担い、
 //! 本クレートはその既定ハンドラとして「method + `target` の完全一致」でルートを
-//! 解決する [`Router`] を提供する。パーサ層（`bf-http`）が生成した検証済みの
-//! [`bf_http::request::RequestHead`] を受け取り、[`bf_http::response::Response`]
+//! 解決する [`Router`] を提供する。パーサ層（`fandhe-backend-http`）が生成した検証済みの
+//! [`fandhe_backend_http::request::RequestHead`] を受け取り、[`fandhe_backend_http::response::Response`]
 //! を組み立てるところまでが責務であり、ソケット I/O・接続ライフサイクル管理は
 //! 呼び出し元（`crates/core`）の責務のまま変わらない。
 //!
@@ -18,7 +18,7 @@
 //! server → routes → http::*
 //! ```
 //!
-//! 本クレートはこのグラフの中間層であり、下位層 `bf-http` にのみ依存する
+//! 本クレートはこのグラフの中間層であり、下位層 `fandhe-backend-http` にのみ依存する
 //! （`crates/routes/Cargo.toml` 参照）。`crates/core`（`server`）からのみ参照され、
 //! `crates/plugin-*` の固有シンボルには一切依存しない
 //! （pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）。
@@ -39,7 +39,7 @@
 //!    最初に一致したものへ委譲する。
 //!
 //! `{name}` は「非空の 1 セグメント」にのみマッチし、ワイルドカード・複数セグメント
-//! パラメータには対応しない（過剰マッチ防止）。`RequestHead::target` は `bf-http` の
+//! パラメータには対応しない（過剰マッチ防止）。`RequestHead::target` は `fandhe-backend-http` の
 //! パーサが SP・制御文字を含まないことを既に検証済みだが、正規化やデコードの差異は
 //! アクセス制御バイパスの典型的な経路（OWASP A01、`.claude/rules/security.md`）に
 //! なり得るため、本クレートは % デコード・末尾スラッシュ正規化を一切行わない
@@ -57,8 +57,8 @@
 
 use std::collections::HashMap;
 
-use bf_http::request::RequestHead;
-use bf_http::response::{AllowedMethods, Response};
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::{AllowedMethods, Response};
 
 mod pattern;
 
@@ -66,8 +66,8 @@ pub use pattern::{ParamRoute, PathParams, RoutePatternError, Segment};
 
 /// 登録済みルートのハンドラ型。
 ///
-/// [`bf_http::request::RequestHead`] と body（生バイト列）を受け取り
-/// [`bf_http::response::Response`] を返す。`crates/core::server::Handler::handle`
+/// [`fandhe_backend_http::request::RequestHead`] と body（生バイト列）を受け取り
+/// [`fandhe_backend_http::response::Response`] を返す。`crates/core::server::Handler::handle`
 /// と同一シグネチャだが、依存方向（`routes` は `core` に依存できない）の制約上
 /// trait は共有せず、本クレート独自の型として定義する。`Send + Sync` は複数
 /// コネクションタスクから共有参照される前提（`crates/core` のコアループ）。
@@ -95,16 +95,16 @@ pub type ParamRouteHandler =
 /// （`crates/core/examples/minimal.rs` 参照）。
 ///
 /// `RequestHead` は非公開フィールド（`headers`）を持ち構造体リテラルで直接
-/// 組み立てられないため、doc test では `bf_http::request::parse_request_head`
+/// 組み立てられないため、doc test では `fandhe_backend_http::request::parse_request_head`
 /// で生バイト列から生成する（`crates/core` のコアループが実運用で受け取る
 /// 経路と同一）。
 ///
 /// ```
-/// use bf_routes::Router;
-/// use bf_http::request::{parse_request_head, ParseOutcome};
+/// use fandhe_backend_routes::Router;
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
 ///
 /// let router = Router::new().route("GET", "/", |_head, _body| {
-///     bf_http::response::Response::new(200, b"ok".to_vec())
+///     fandhe_backend_http::response::Response::new(200, b"ok".to_vec())
 /// });
 ///
 /// let head = match parse_request_head(b"GET / HTTP/1.1\r\n\r\n").unwrap() {
@@ -131,8 +131,8 @@ impl Router {
     /// 空のルータを作る。
     ///
     /// ```
-    /// use bf_routes::Router;
-    /// use bf_http::request::{parse_request_head, ParseOutcome};
+    /// use fandhe_backend_routes::Router;
+    /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
     ///
     /// let router = Router::new();
     /// let head = match parse_request_head(b"GET / HTTP/1.1\r\n\r\n").unwrap() {
@@ -156,11 +156,11 @@ impl Router {
     /// 警告ログ等は出さない）。
     ///
     /// ```
-    /// use bf_routes::Router;
-    /// use bf_http::request::{parse_request_head, ParseOutcome};
+    /// use fandhe_backend_routes::Router;
+    /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
     ///
     /// let router = Router::new().route("GET", "/health", |_head, _body| {
-    ///     bf_http::response::Response::new(200, b"ok".to_vec())
+    ///     fandhe_backend_http::response::Response::new(200, b"ok".to_vec())
     /// });
     ///
     /// let head = match parse_request_head(b"GET /health HTTP/1.1\r\n\r\n").unwrap() {
@@ -196,13 +196,13 @@ impl Router {
     /// 「マッチング方針」節を参照。
     ///
     /// ```
-    /// use bf_routes::Router;
-    /// use bf_http::request::{parse_request_head, ParseOutcome};
+    /// use fandhe_backend_routes::Router;
+    /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
     ///
     /// let router = Router::new()
     ///     .route_param("GET", "/hello/{name}", |_head, params, _body| {
     ///         let name = params.get("name").unwrap_or("world");
-    ///         bf_http::response::Response::new(200, format!("hello, {name}").into_bytes())
+    ///         fandhe_backend_http::response::Response::new(200, format!("hello, {name}").into_bytes())
     ///     })
     ///     .unwrap();
     ///
@@ -235,19 +235,19 @@ impl Router {
     /// - `target` は一致するが `method` が一致しない場合は 405（Method Not Allowed）。
     ///   RFC 9110 §15.5.6 / §10.2.1 に従い、`target` に登録済みの全 method を
     ///   ソート済み・重複排除済みで `Allow` ヘッダに付与する（TASK-177 / #177。
-    ///   `bf_http::response::AllowedMethods` の構築時 tchar 検証により CRLF
+    ///   `fandhe_backend_http::response::AllowedMethods` の構築時 tchar 検証により CRLF
     ///   インジェクションは型レベルで排除される。登録 method に不正 token が
     ///   含まれる場合は `AllowedMethods::from_methods` が `None` を返すため、
-    ///   その分だけ除外する。パーサ（`bf-http`）は tchar のみの method しか
+    ///   その分だけ除外する。パーサ（`fandhe-backend-http`）は tchar のみの method しか
     ///   生成しないため、実運用でこの除外が発生する経路はない。全滅時は
     ///   `Allow` なしの 405 にフォールバックする、フェイルクローズ）。
     /// - 完全一致するルートがあればそのハンドラの戻り値をそのまま返す。
     ///
     /// ```
-    /// use bf_routes::Router;
-    /// use bf_http::request::{parse_request_head, ParseOutcome};
+    /// use fandhe_backend_routes::Router;
+    /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
     ///
-    /// fn head(buf: &[u8]) -> bf_http::request::RequestHead {
+    /// fn head(buf: &[u8]) -> fandhe_backend_http::request::RequestHead {
     ///     match parse_request_head(buf).unwrap() {
     ///         ParseOutcome::Complete { head, .. } => head,
     ///         ParseOutcome::Incomplete => unreachable!(),
@@ -256,10 +256,10 @@ impl Router {
     ///
     /// let router = Router::new()
     ///     .route("GET", "/", |_head, _body| {
-    ///         bf_http::response::Response::new(200, b"ok".to_vec())
+    ///         fandhe_backend_http::response::Response::new(200, b"ok".to_vec())
     ///     })
     ///     .route("POST", "/", |_head, _body| {
-    ///         bf_http::response::Response::new(201, b"created".to_vec())
+    ///         fandhe_backend_http::response::Response::new(201, b"created".to_vec())
     ///     });
     ///
     /// // 未登録パス → 404（Allow は付与されない）
@@ -322,7 +322,7 @@ impl Router {
         // 構築失敗（`None`）とする all-or-nothing 契約（`response.rs` doc 参照）。
         // Router 側は「不正 token を持つ登録ルートだけを Allow から除外し、
         // 残りの正当な method は開示する」方針のため、要素単位で妥当性を
-        // 検証してから正当なものだけをまとめて構築する（パーサ（`bf-http`）
+        // 検証してから正当なものだけをまとめて構築する（パーサ（`fandhe-backend-http`）
         // は tchar のみの method しか生成しないため、実運用でこの除外が
         // 発生する経路はない）。
         let valid_methods: Vec<String> = registered_methods
@@ -342,7 +342,7 @@ impl Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bf_http::request::{ParseOutcome, parse_request_head};
+    use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
 
     // `RequestHead` は非公開フィールドを持ち構造体リテラルで直接組み立てられない
     // ため、パーサ（`parse_request_head`）経由で生成する。他クレートのテスト

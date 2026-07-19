@@ -110,8 +110,8 @@ impl From<ChunkedError> for RequestError {
 /// # Examples
 ///
 /// ```
-/// use bf_http::connection::should_keep_alive;
-/// use bf_http::request::{parse_request_head, ParseOutcome};
+/// use fandhe_backend_http::connection::should_keep_alive;
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
 ///
 /// let buf = b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n";
 /// let head = match parse_request_head(buf).unwrap() {
@@ -158,8 +158,8 @@ pub fn should_keep_alive(head: &RequestHead) -> bool {
 /// # Examples
 ///
 /// ```
-/// use bf_http::buffer::RecvBuffer;
-/// use bf_http::connection::read_request;
+/// use fandhe_backend_http::buffer::RecvBuffer;
+/// use fandhe_backend_http::connection::read_request;
 ///
 /// # #[tokio::main(flavor = "current_thread")]
 /// # async fn main() {

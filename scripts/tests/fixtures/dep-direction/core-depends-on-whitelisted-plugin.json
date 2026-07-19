@@ -1,20 +1,20 @@
 {
   "packages": [
     {
-      "name": "backend-framework-core",
+      "name": "fandhe-backend-core",
       "dependencies": [
-        { "name": "bf-http", "path": "/workspace/crates/http", "kind": null },
-        { "name": "bf-plugin-webrtc-proxy", "path": "/workspace/crates/plugin-webrtc-proxy", "kind": null }
+        { "name": "fandhe-backend-http", "path": "/workspace/crates/http", "kind": null },
+        { "name": "fandhe-backend-plugin-webrtc-proxy", "path": "/workspace/crates/plugin-webrtc-proxy", "kind": null }
       ]
     },
     {
-      "name": "bf-http",
+      "name": "fandhe-backend-http",
       "dependencies": []
     },
     {
-      "name": "bf-plugin-webrtc-proxy",
+      "name": "fandhe-backend-plugin-webrtc-proxy",
       "dependencies": [
-        { "name": "bf-http", "path": "/workspace/crates/http", "kind": null }
+        { "name": "fandhe-backend-http", "path": "/workspace/crates/http", "kind": null }
       ]
     }
   ]

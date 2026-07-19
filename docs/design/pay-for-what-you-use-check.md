@@ -33,20 +33,20 @@ TASK-2.1 までの検証は `docs/design/plugin-boundary.md` 6 節の**手動コ
 
 ### 3.1 (a) プラグイン feature の動的列挙
 
-`cargo metadata --no-deps --format-version 1` から `backend-framework-core` の
-`[features]` を取得し、値に `dep:bf-plugin-*` を含む feature を「プラグイン feature」
+`cargo metadata --no-deps --format-version 1` から `fandhe-backend-core` の
+`[features]` を取得し、値に `dep:fandhe-backend-plugin-*` を含む feature を「プラグイン feature」
 として抽出する。feature 増加時にスクリプト変更が不要になる設計（`dep-audit.sh`・
 `dep-direction-check.sh` と同方針）。
 
 - 列挙結果が 0 件の場合は列挙ロジックの腐敗を疑い FAIL（フェイルクローズ。現時点で
   `webrtc-proxy` が必ず 1 件存在する）
-- feature 名がクレート名（`bf-plugin-<name>` の `<name>`）と一致しない場合は
+- feature 名がクレート名（`fandhe-backend-plugin-<name>` の `<name>`）と一致しない場合は
   `docs/design/plugin-boundary.md` 2 節の命名規約違反として FAIL
 
 ### 3.2 (b) cargo tree 検証（依存 0 件）
 
 - 無効構成（`--no-default-features`）: 列挙した全プラグインクレートが
-  `cargo tree -p backend-framework-core -e normal --prefix none` の出力に
+  `cargo tree -p fandhe-backend-core -e normal --prefix none` の出力に
   出現しないこと
 - 有効構成（ポジティブコントロール）: 各 feature を単独有効化した場合に当該
   プラグインクレートが出現し、かつ他プラグインのクレートが混入しないこと
@@ -91,7 +91,7 @@ cargo-geiger が誤って再利用しようとして失敗したものと判断�
 ビルドし、生成物サイズを比較する。無効構成 <= 有効構成であること、差分をログ出力
 することを検証する。補強として無効構成バイナリのシンボル表（`nm`）にプラグイン
 由来シンボル（クレート名のハイフンをアンダースコアに変換した文字列を含むシンボル、
-例 `bf_plugin_webrtc_proxy`）が出現しないことを検証する。`nm` が利用できない環境
+例 `fandhe_backend_plugin_webrtc_proxy`）が出現しないことを検証する。`nm` が利用できない環境
 ではこの補強のみ SKIP し、サイズ比較ゲートは維持する（fail-closed の例外を最小化）。
 
 再ビルドの往復で共有 `target/` を汚さないよう、専用 `--target-dir`
@@ -100,7 +100,7 @@ cargo-geiger が誤って再利用しようとして失敗したものと判断�
 ### 3.5 (e) 全構成ビルド検証
 
 無効構成・feature 単独構成（列挙した feature ごと）・`--all-features` の
-`cargo build -p backend-framework-core` がすべて成功することを検証する
+`cargo build -p fandhe-backend-core` がすべて成功することを検証する
 （`.claude/rules/pay-for-what-you-use.md` 検証表の「全構成ビルド」）。
 
 ## 4. セルフテスト
@@ -122,7 +122,7 @@ fixture を注入口（`--metadata-file`・`--tree-negative-file`・`--tree-posi
 - 新規ジョブ `pay-for-what-you-use`（`.github/workflows/ci.yml`）: release ビルド
   ×2 + cargo-geiger 実行を伴い重いため独立ジョブとする。`cargo-geiger@0.13.0` を
   バージョン固定でインストールし（未導入時のみ）、本体を実行する
-- `clippy` ジョブに `cargo clippy -p backend-framework-core --all-targets
+- `clippy` ジョブに `cargo clippy -p fandhe-backend-core --all-targets
   --no-default-features -- -D warnings` を追加し、`docs/design/plugin-boundary.md`
   6 節の検証表「無効構成 lint」を CI 化した（既存コメントの「TASK-2.2 のスコープ」を解消）
 - `unsafe-triage` ジョブへセルフテストのみを軽量ステップとして相乗り
@@ -132,10 +132,10 @@ fixture を注入口（`--metadata-file`・`--tree-negative-file`・`--tree-posi
 
 - `cargo geiger --version`: `cargo-geiger 0.13.0`（`--output-format Json` 利用可、
   `-q` 併用でビルドログを分離できることを確認）
-- `cargo build --release -p backend-framework-core --example minimal`: 無効構成
+- `cargo build --release -p fandhe-backend-core --example minimal`: 無効構成
   796808 bytes、`--all-features` 821912 bytes（差分 25104 bytes）
-- `nm` によるシンボル表チェック: 無効構成バイナリに `bf_plugin` 由来シンボル 0 件、
-  `--all-features` バイナリには `bf_plugin_webrtc_proxy` 由来シンボルが複数出現する
+- `nm` によるシンボル表チェック: 無効構成バイナリに `fandhe_backend_plugin` 由来シンボル 0 件、
+  `--all-features` バイナリには `fandhe_backend_plugin_webrtc_proxy` 由来シンボルが複数出現する
   ことを確認済み
 
 ## 7. スコープ外

@@ -1,5 +1,9 @@
 # TASK-4.4（#25）WebSocket メッセージ往復レイテンシ計測・NFR-6 計測レポート
 
+> 注記: 本レポートは 2026-07 の crate・import 一括改名（#202）以前の実測記録であり、
+> 旧クレート名（`backend-framework-core` / `bf-http` / `bf-routes` / `bf-plugin-*` 等）
+> 表記のまま保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
+
 `docs/spec/05-tasks.md` TASK-4.4「WebSocket プラグイン受け入れテスト」の成果物。
 TASK-4.3（#24、PR #164）で確立した `benches/bench-ws-load.sh` に、維持中の接続の
 メッセージ往復レイテンシ（心拍 RTT）percentile 抽出・接続数増による劣化率算出を

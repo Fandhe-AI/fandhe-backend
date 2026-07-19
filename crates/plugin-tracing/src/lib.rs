@@ -38,18 +38,18 @@
 //!
 //! # 接続契約（pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）
 //!
-//! 本クレートは `crates/core` に依存しない。`bf-plugin-websocket` と同一の
+//! 本クレートは `crates/core` に依存しない。`fandhe-backend-plugin-websocket` と同一の
 //! 非循環パターンを踏襲し（`crates/plugin-websocket/src/lib.rs` の doc を
 //! 参照）、`Middleware` trait を実装するアダプタ（`TracingMiddleware`）はコア側
 //! （`crates/core/src/server.rs`、`tracing` feature 限定）に置く。本クレートは
-//! `bf-http::request::RequestHead` の参照 + `tracing` 系クレートへの委譲のみを
-//! 提供し、`crates/core` から optional dependency（`dep:bf-plugin-tracing` +
+//! `fandhe-backend-http::request::RequestHead` の参照 + `tracing` 系クレートへの委譲のみを
+//! 提供し、`crates/core` から optional dependency（`dep:fandhe-backend-plugin-tracing` +
 //! `tracing` feature）として配線される。feature 無効時は本クレート・
 //! `tracing` / `tracing-subscriber` / `tracing-appender` のいずれも
-//! `cargo tree -p backend-framework-core` に現れない。
+//! `cargo tree -p fandhe-backend-core` に現れない。
 //!
 //! workspace 全体の依存方向は次の一方向を維持する（依存方向: server → routes → http::*）。
-//! 本クレートはプラグイン層（`bf-plugin-*`）に位置し、`crates/core` への逆依存は
+//! 本クレートはプラグイン層（`fandhe-backend-plugin-*`）に位置し、`crates/core` への逆依存は
 //! 発生しない（`scripts/dep-direction-check.sh` が機械検証する）。
 //!
 //! # セキュリティ（OWASP Top 10、`.claude/rules/security.md`）

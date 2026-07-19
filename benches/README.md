@@ -177,7 +177,7 @@ REQ-1・NFR-1・NFR-2 の基準で判定する受け入れテスト。1 件で�
 ```bash
 # ビルド（bench-accept.sh 内部でも実行するが、単体ビルド確認には以下を使う）
 cargo build --release
-cargo build --release --example core-bench -p backend-framework-core
+cargo build --release --example core-bench -p fandhe-backend-core
 
 # 既定パラメータ（RUNS=5 DURATION=15s CONNECTIONS=128）で実行
 # CORE_BIN 既定値は target/release/examples/core-bench（TASK-1.6-3 / #168）。
@@ -226,9 +226,9 @@ feature 無効）と、計測対象 feature を有効化した専用 example（`
 
 ```bash
 # 事前ビルド（各スクリプトとも自動ビルドしない）
-cargo build --release -p backend-framework-core --example minimal --no-default-features
-cargo build --release -p backend-framework-core --example webrtc_nfr6 --features webrtc
-cargo build --release -p backend-framework-core --example graphql_nfr6 --features graphql
+cargo build --release -p fandhe-backend-core --example minimal --no-default-features
+cargo build --release -p fandhe-backend-core --example webrtc_nfr6 --features webrtc
+cargo build --release -p fandhe-backend-core --example graphql_nfr6 --features graphql
 
 ./benches/webrtc-nfr6-bench.sh
 ./benches/graphql-nfr6-bench.sh
@@ -244,7 +244,7 @@ cargo build --release -p backend-framework-core --example graphql_nfr6 --feature
 
 ## hub-nfr6-bench.sh — hub 共通配線プラグインの NFR-6 計測（TASK-9.5、#65）
 
-`bf-plugin-hub-wiring`（依存逆転型プラグイン）をリンクした最小サーバが、無関係
+`fandhe-backend-plugin-hub-wiring`（依存逆転型プラグイン）をリンクした最小サーバが、無関係
 パス（`GET /`）への RPS・p95 レイテンシに与える影響を検証する。`webrtc-nfr6-bench.sh` /
 `graphql-nfr6-bench.sh` と同型だが、比較対象は feature 有効化ではなく **クレートの
 リンク**（`Server::gate` 未登録＝`BF_HUB_GATE=off`）である点が異なる（依存逆転型
@@ -257,8 +257,8 @@ cargo build --release -p backend-framework-core --example graphql_nfr6 --feature
 リンクコストの計測値へ混入するため（Cursor Bugbot review 4727552092 指摘1、PR #163）。
 
 ```bash
-cargo build --release -p backend-framework-core --example minimal --no-default-features
-cargo build --release -p bf-plugin-hub-wiring --example hub_link_only
+cargo build --release -p fandhe-backend-core --example minimal --no-default-features
+cargo build --release -p fandhe-backend-plugin-hub-wiring --example hub_link_only
 
 ./benches/hub-nfr6-bench.sh
 ```
@@ -288,8 +288,8 @@ feature 有効・`init_tracing` + `Server::tracing` 登録済み）へそれぞ�
 
 ```bash
 # 事前ビルド（自動ビルドしない）
-cargo build --release -p backend-framework-core --example minimal --no-default-features
-cargo build --release -p backend-framework-core --example tracing_nfr --features tracing
+cargo build --release -p fandhe-backend-core --example minimal --no-default-features
+cargo build --release -p fandhe-backend-core --example tracing_nfr --features tracing
 
 ./benches/tracing-nfr-bench.sh
 ```
@@ -340,7 +340,7 @@ HTTP（oha）ではなく WebSocket 長時間接続（専用クライアント�
 ### ビルド手順（自動ビルドしない）
 
 ```bash
-cargo build --release -p backend-framework-core --features websocket --example ws_echo
+cargo build --release -p fandhe-backend-core --features websocket --example ws_echo
 # axum-ref の ws feature 有効ビルドは既存の target/release/axum-ref（他ベンチの
 # baseline）を汚さないよう専用 target-dir へ分離する
 cargo build --release -p axum-ref --features ws --target-dir target/ws-bench
@@ -393,7 +393,7 @@ TASK-10.6（#90）: `tracing_appender::non_blocking`（既定 lossy=true）の�
 中央値を算出する。
 
 ```bash
-cargo build --release -p bf-plugin-tracing --example backpressure_probe
+cargo build --release -p fandhe-backend-plugin-tracing --example backpressure_probe
 RUNS=5 bash benches/tracing-backpressure-bench.sh
 
 # 動作確認用に短縮パラメータ・負荷段階で素早く回す
@@ -424,8 +424,8 @@ NFR-6 比較へ流用した際の実測で、無関係パスの RPS 比が basel
 
 ```bash
 # 事前ビルド（自動ビルドしない）
-cargo build --release -p backend-framework-core --example minimal --no-default-features
-cargo build --release -p backend-framework-core --example ws_nfr6 --features websocket
+cargo build --release -p fandhe-backend-core --example minimal --no-default-features
+cargo build --release -p fandhe-backend-core --example ws_nfr6 --features websocket
 
 ./benches/ws-nfr6-bench.sh
 ```
@@ -454,10 +454,10 @@ RPS 比が大きく振れ、NFR-6 判定が確定できない事例があった
 
 ```bash
 # 事前ビルド（自動ビルドしない、対象は既定 "webrtc graphql hub"。TARGETS で選択可）
-cargo build --release -p backend-framework-core --example minimal --no-default-features
-cargo build --release -p backend-framework-core --example webrtc_nfr6 --features webrtc
-cargo build --release -p backend-framework-core --example graphql_nfr6 --features graphql
-cargo build --release -p bf-plugin-hub-wiring --example hub_link_only
+cargo build --release -p fandhe-backend-core --example minimal --no-default-features
+cargo build --release -p fandhe-backend-core --example webrtc_nfr6 --features webrtc
+cargo build --release -p fandhe-backend-core --example graphql_nfr6 --features graphql
+cargo build --release -p fandhe-backend-plugin-hub-wiring --example hub_link_only
 
 bash benches/nfr6-exclusive.sh
 ```

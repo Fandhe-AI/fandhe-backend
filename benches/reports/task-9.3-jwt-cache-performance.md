@@ -1,5 +1,9 @@
 # TASK-9.3（#63）JWT 検証結果リクエストスコープキャッシュ コスト計測レポート
 
+> 注記: 本レポートは 2026-07 の crate・import 一括改名（#202）以前の実測記録であり、
+> 旧クレート名（`backend-framework-core` / `bf-http` / `bf-routes` / `bf-plugin-*` 等）
+> 表記のまま保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
+
 `crates/plugin-hub-wiring/examples/jwt_cache_bench.rs`（プロセス内マイクロベンチ。
 複数試行・中央値評価、`benches/README.md` の方針を踏襲）による計測結果。
 

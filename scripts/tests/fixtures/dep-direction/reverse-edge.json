@@ -1,22 +1,22 @@
 {
   "packages": [
     {
-      "name": "backend-framework-core",
+      "name": "fandhe-backend-core",
       "dependencies": [
-        { "name": "bf-http", "path": "/workspace/crates/http", "kind": null },
-        { "name": "bf-routes", "path": "/workspace/crates/routes", "kind": null }
+        { "name": "fandhe-backend-http", "path": "/workspace/crates/http", "kind": null },
+        { "name": "fandhe-backend-routes", "path": "/workspace/crates/routes", "kind": null }
       ]
     },
     {
-      "name": "bf-routes",
+      "name": "fandhe-backend-routes",
       "dependencies": [
-        { "name": "bf-http", "path": "/workspace/crates/http", "kind": null }
+        { "name": "fandhe-backend-http", "path": "/workspace/crates/http", "kind": null }
       ]
     },
     {
-      "name": "bf-http",
+      "name": "fandhe-backend-http",
       "dependencies": [
-        { "name": "bf-routes", "path": "/workspace/crates/routes", "kind": null }
+        { "name": "fandhe-backend-routes", "path": "/workspace/crates/routes", "kind": null }
       ]
     }
   ]

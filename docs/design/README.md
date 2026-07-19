@@ -46,7 +46,7 @@
 - [`fuzzing.md`](./fuzzing.md): fuzz 実行環境（nightly / 代替 fuzzer）の整備
   （TASK-15.3-1、#87、Conditional Go 条件(4)。cargo-fuzz 選定根拠・nightly pin 方針・
   fuzz target 一覧・smoke（CI 常設）と本実行（#88）の 2 段構えを記述）
-- [`http-buffer-reuse-tcp-nodelay.md`](./http-buffer-reuse-tcp-nodelay.md): `bf-http`
+- [`http-buffer-reuse-tcp-nodelay.md`](./http-buffer-reuse-tcp-nodelay.md): `fandhe-backend-http`
   読み取りバッファ再利用・`TCP_NODELAY` 最適化（TASK-1.3-3、#68。`RecvBuffer` の
   遅延コンパクション・ゼロ埋め回避・容量有界化設計と、feature `net` の
   `socket::configure_stream`。TASK-1.4 / #70（接続受理ループ）への引き継ぎ事項を記述）
@@ -76,7 +76,7 @@
   `allowed_edge_patterns` からの転記）・3 拡張点 + `try_intercept` 固定シームの契約一覧・
   `crates/plugin-*/src/lib.rs` 冒頭の機械可読宣言規約（`拡張点対応: <値>`）・拡張点への
   非該当時の理由明記運用（`scripts/extension-closure-gate.sh` による PR ゲート）・
-  `bf-plugin-openapi` の非該当理由を記述。受け入れテストは
+  `fandhe-backend-plugin-openapi` の非該当理由を記述。受け入れテストは
   `scripts/accept/req13-change-impact-accept.sh`、実行結果は
   `docs/acceptance/req13-change-impact.md`）
 - [`openapi-typescript-pipeline.md`](./openapi-typescript-pipeline.md): openapi-typescript

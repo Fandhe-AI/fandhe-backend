@@ -1,4 +1,4 @@
-//! `gen-openapi` — [`bf_plugin_openapi::ApiDoc`] を JSON にシリアライズし
+//! `gen-openapi` — [`fandhe_backend_plugin_openapi::ApiDoc`] を JSON にシリアライズし
 //! `crates/plugin-openapi/openapi.json`（`embed.rs` が `include_str!` で埋め込む実体）
 //! を生成・検証する開発用 CLI（TASK-3.2、#31、REQ-3【Must】）。
 //!
@@ -12,7 +12,7 @@
 //!
 //! # feature 前提（pay-for-what-you-use）
 //! 本バイナリは `gen-cli` feature（`required-features`）と `dep:serde_json` を必要とする。
-//! `bf-plugin-openapi` をサーバ側から lib として参照する通常経路（`gen-cli` 無効時）には
+//! `fandhe-backend-plugin-openapi` をサーバ側から lib として参照する通常経路（`gen-cli` 無効時）には
 //! 本ファイル・`serde_json` は一切ビルド対象に含まれない
 //! （`.claude/rules/pay-for-what-you-use.md`）。
 //!
@@ -26,7 +26,7 @@
 //! 未知の引数はフェイルクローズで usage を表示し非 0 終了する
 //! （OWASP A03 対策、固定引数のみ受け付け、`.claude/rules/security.md`）。
 
-use bf_plugin_openapi::{ApiDoc, OpenApi};
+use fandhe_backend_plugin_openapi::{ApiDoc, OpenApi};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -114,7 +114,7 @@ fn main() -> ExitCode {
             }
             Ok(_) => {
                 eprintln!(
-                    "{} が ApiDoc の最新定義と乖離している。`cargo run -p bf-plugin-openapi \
+                    "{} が ApiDoc の最新定義と乖離している。`cargo run -p fandhe-backend-plugin-openapi \
                      --features gen-cli --bin gen-openapi -- --update` で再生成すること",
                     output.display()
                 );

@@ -6,7 +6,7 @@
 # fuzz 専用依存が本体依存グラフ・バイナリに混入しない。pay-for-what-you-use、
 # .claude/rules/pay-for-what-you-use.md）。ビルド・実行は `scripts/fuzz.sh` 経由で
 # 本ディレクトリを独立 workspace として扱う（`cargo +<pinned-nightly> fuzz ...`）。
-name = "bf-http-fuzz"
+name = "fandhe-backend-http-fuzz"
 version = "0.0.0"
 edition = "2024"
 publish = false
@@ -29,7 +29,7 @@ cargo-fuzz = true
 # （`-Z sanitizer=address` 相当）を前提とし、stable ではビルドできない。
 libfuzzer-sys = "0.4"
 
-[dependencies.bf-http]
+[dependencies.fandhe-backend-http]
 # fuzz 対象クレート本体。本 fuzz クレートは workspace 外（exclude 済み）のため
 # path 依存として直接参照する。
 path = ".."

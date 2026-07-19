@@ -22,17 +22,17 @@
 //!
 //! 動作確認手順:
 //! ```text
-//! $ cargo run --release --example tracing_nfr -p backend-framework-core --features tracing
+//! $ cargo run --release --example tracing_nfr -p fandhe-backend-core --features tracing
 //! $ curl -v http://127.0.0.1:3006/            # 200 応答（無関係パス）
 //! $ curl -v http://127.0.0.1:3006/health       # 200 応答（計測対象パス）
 //! ```
 
 use std::num::NonZeroU64;
 
-use backend_framework_core::Server;
-use bf_http::response::Response;
-use bf_plugin_tracing::{TracingConfig, TracingOutput, init_tracing};
-use bf_routes::Router;
+use fandhe_backend_core::Server;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_tracing::{TracingConfig, TracingOutput, init_tracing};
+use fandhe_backend_routes::Router;
 
 /// `SAMPLE_INTERVAL` env を読み、不正値（非数値・`0`）は
 /// `TracingConfig::default()` と同じ既定（`100`）へフォールバックする。
@@ -58,7 +58,7 @@ fn exclude_health_from_env() -> bool {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
-    // WorkerGuard はプロセス終了まで保持する契約（bf_plugin_tracing::init_tracing
+    // WorkerGuard はプロセス終了まで保持する契約（fandhe_backend_plugin_tracing::init_tracing
     // の doc を参照）。ローカル変数として main のスコープ終了まで生かす。
     let _guard = init_tracing(TracingOutput::Stdout);
 

@@ -1,5 +1,5 @@
 [package]
-name = "bf-http"
+name = "fandhe-backend-http"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -18,14 +18,14 @@ workspace = true
 # （AsyncRead/AsyncReadExt・`read_buf` 用の内包 `bytes` BufMut 実装のみ）に限定する。
 # `net`/`rt`/`macros` は既定で有効化しない — 実ソケットへの接続・ランタイム起動は
 # TASK-1.4（#13）の接続受理ループが担い、本クレートは `AsyncRead + Unpin` の汎用実装に
-# とどめるため。`cargo tree -p bf-http` で tokio 以外の依存が増えていないことを確認する。
+# とどめるため。`cargo tree -p fandhe-backend-http` で tokio 以外の依存が増えていないことを確認する。
 [dependencies]
 tokio = { version = "1", default-features = false, features = ["io-util"] }
 
 # オプション feature `net`（既定 off）: `TCP_NODELAY` 設定（[`socket`] モジュール）に
 # 限定して tokio `net` を有効化する。feature 無効時は `socket` モジュール自体が
 # `#[cfg(feature = "net")]` でコンパイル対象外になり、`mio`/`socket2` 等の依存も
-# `cargo tree -p bf-http` に一切出ない（TASK-1.3-3 / #68）。
+# `cargo tree -p fandhe-backend-http` に一切出ない（TASK-1.3-3 / #68）。
 [features]
 net = ["tokio/net"]
 
@@ -35,7 +35,7 @@ net = ["tokio/net"]
 # feature 統一により、本クレートの `net` feature（`tokio/net`）が有効な構成
 # （`cargo test --features net`）では dev-dependencies の tokio にも自動的に
 # `net` が伝播し、feature `net` 配下の統合テスト（実 `TcpListener` での
-# `nodelay()` 検証）が動く。default 構成（`cargo tree -p bf-http`）では `net`
+# `nodelay()` 検証）が動く。default 構成（`cargo tree -p fandhe-backend-http`）では `net`
 # が有効化されないため `mio`/`socket2` は出ない
 # （.claude/rules/pay-for-what-you-use.md）。
 [dev-dependencies]

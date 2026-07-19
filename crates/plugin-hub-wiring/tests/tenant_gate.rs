@@ -7,13 +7,13 @@
 //! ことを、ユニットテスト（`crate::gate` 内 `#[cfg(test)]`）より高いレイヤで
 //! 検証する。鍵は `tests/fixtures/`（テスト専用、本番使用禁止）。
 
-use backend_framework_core::{Handler, Server, handle_connection};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use bf_http::request::RequestHead;
-use bf_http::response::Response;
-use bf_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
-use bf_plugin_hub_wiring::{Authenticator, TenantGate, TenantGateConfig};
+use fandhe_backend_core::{Handler, Server, handle_connection};
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
+use fandhe_backend_plugin_hub_wiring::{Authenticator, TenantGate, TenantGateConfig};
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

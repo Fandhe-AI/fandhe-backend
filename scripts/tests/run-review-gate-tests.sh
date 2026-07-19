@@ -229,7 +229,7 @@ fn __review_gate_test_uninit_vec(n: usize) -> Vec<u8> {
 RUST_EOF
 
 set +e
-clippy_out="$(cd "${CLONE_DIR}" && cargo clippy -p bf-http -- -D warnings 2>&1)"
+clippy_out="$(cd "${CLONE_DIR}" && cargo clippy -p fandhe-backend-http -- -D warnings 2>&1)"
 clippy_exit=$?
 set -e
 
@@ -252,7 +252,7 @@ sed -i.bak \
 rm -f "${TARGET_LIB}.bak"
 
 set +e
-clippy_allow_out="$(cd "${CLONE_DIR}" && cargo clippy -p bf-http -- -D warnings 2>&1)"
+clippy_allow_out="$(cd "${CLONE_DIR}" && cargo clippy -p fandhe-backend-http -- -D warnings 2>&1)"
 clippy_allow_exit=$?
 set -e
 

@@ -11,12 +11,12 @@ pay-for-what-you-use（[`.claude/rules/pay-for-what-you-use.md`](../../.claude/r
 > そのものは各 example のコードと [`getting-started.md`](./getting-started.md) の
 > `Server` builder 呼び出し例を参照してください。
 
-## websocket（`bf-plugin-websocket`）
+## websocket（`fandhe-backend-plugin-websocket`）
 
 RFC 6455 ハンドシェイク検証・101 応答を `UpgradeHandler` 拡張点経由で提供します。
 
 ```bash
-cargo run --release --example ws_echo -p backend-framework-core --features websocket
+cargo run --release --example ws_echo -p fandhe-backend-core --features websocket
 curl -v http://127.0.0.1:3007/health   # 200 応答
 ```
 
@@ -24,12 +24,12 @@ curl -v http://127.0.0.1:3007/health   # 200 応答
 確立します。負荷試験用の派生 example として `ws_nfr6`（`current_thread` ランタイム、
 baseline との RPS 比較専用）もあります。
 
-## graphql（`bf-plugin-graphql`）
+## graphql（`fandhe-backend-plugin-graphql`）
 
 `POST /graphql` をパスインターセプトし、`async-graphql` で実クエリを実行します。
 
 ```bash
-cargo run --release --example graphql_nfr6 -p backend-framework-core --features graphql
+cargo run --release --example graphql_nfr6 -p fandhe-backend-core --features graphql
 curl -v http://127.0.0.1:3003/                                          # 200 応答（無関係パス）
 curl -v -X POST http://127.0.0.1:3003/graphql -d '{"query":"{ hello }"}' # クエリ実行
 ```
@@ -37,7 +37,7 @@ curl -v -X POST http://127.0.0.1:3003/graphql -d '{"query":"{ hello }"}' # ク�
 `Server::graphql` にスキーマを登録した場合のみ `POST /graphql` を処理し、未登録時は
 feature 有効でもフォールスルーします（`crates/plugin-graphql` の doc を参照）。
 
-## webrtc-proxy（`bf-plugin-webrtc-proxy`、MVP 推奨）
+## webrtc-proxy（`fandhe-backend-plugin-webrtc-proxy`、MVP 推奨）
 
 WebRTC シグナリングを別プロセスに切り出すプロキシ型プラグインです。単体で完結する
 runnable example は本ガイド整備時点では未整備です（[8 章「スコープ外」](#スコープ外)
@@ -46,30 +46,30 @@ runnable example は本ガイド整備時点では未整備です（[8 章「ス
 ```rust,ignore
 let server = Server::new()
     .handler(router)
-    .webrtc_proxy(bf_plugin_webrtc_proxy::ProxyConfig::default());
+    .webrtc_proxy(fandhe_backend_plugin_webrtc_proxy::ProxyConfig::default());
 ```
 
 詳細な設計方針（別プロセス切り出し型を選ぶ理由・攻撃表面の考え方）は
 [`docs/design/webrtc-process-isolation.md`](../design/webrtc-process-isolation.md) を参照してください。
 
-## webrtc（`bf-plugin-webrtc`、in-process 型）
+## webrtc（`fandhe-backend-plugin-webrtc`、in-process 型）
 
 `webrtc-rs` に直接依存する in-process 型です。攻撃表面が大きいため、通常は
 上記 `webrtc-proxy` を推奨します（[`CLAUDE.md`](../../CLAUDE.md) Repository Structure 参照）。
 
 ```bash
-cargo build --release --example webrtc_nfr6 -p backend-framework-core --features webrtc
+cargo build --release --example webrtc_nfr6 -p fandhe-backend-core --features webrtc
 ```
 
 `POST /rtc/offer` へのシグナリングを扱います。動作確認手順は
 `crates/core/examples/webrtc_nfr6.rs` の doc comment を参照してください。
 
-## tracing（`bf-plugin-tracing`）
+## tracing（`fandhe-backend-plugin-tracing`）
 
 サンプリング付き可観測性を `Middleware` 拡張点経由で提供します。
 
 ```bash
-cargo run --release --example tracing_nfr -p backend-framework-core --features tracing
+cargo run --release --example tracing_nfr -p fandhe-backend-core --features tracing
 curl -v http://127.0.0.1:3006/           # 200 応答（無関係パス）
 curl -v http://127.0.0.1:3006/health     # 200 応答（計測対象パス）
 ```
@@ -78,14 +78,14 @@ curl -v http://127.0.0.1:3006/health     # 200 応答（計測対象パス）
 （`tracing-appender` の non-blocking writer）により、RPS への影響を抑えています
 （[`docs/design/tracing-integration.md`](../design/tracing-integration.md) 参照）。
 
-## openapi（`bf-plugin-openapi`、`gen-cli` feature）
+## openapi（`fandhe-backend-plugin-openapi`、`gen-cli` feature）
 
 OpenAPI ドキュメントは `utoipa::path` 定義から `gen-openapi` CLI で生成し、
 `crates/plugin-openapi/openapi.json` に静的埋め込みします。
 
 ```bash
 # openapi.json を再生成する
-cargo run -p bf-plugin-openapi --bin gen-openapi --features gen-cli
+cargo run -p fandhe-backend-plugin-openapi --bin gen-openapi --features gen-cli
 
 # CI と同じ 2 段階検証（--check → 全 feature ビルド）
 scripts/openapi-two-stage.sh
@@ -94,13 +94,13 @@ scripts/openapi-two-stage.sh
 TypeScript 向け型定義（`ts/src/generated/schema.d.ts`）を連携させる場合は
 [`docs/design/openapi-typescript-pipeline.md`](../design/openapi-typescript-pipeline.md) を参照してください。
 
-## hub-wiring（`bf-plugin-hub-wiring`）
+## hub-wiring（`fandhe-backend-plugin-hub-wiring`）
 
 マルチテナント JWT 検証（RS256 / JWKS）・テナント境界強制を `RequestGate` 拡張点
 （`TenantGate`）だけで実現するプラグインです。
 
 ```bash
-cargo run --release -p bf-plugin-hub-wiring --example hub_service_demo
+cargo run --release -p fandhe-backend-plugin-hub-wiring --example hub_service_demo
 ```
 
 `GET /items`・`GET /items/{id}`・`POST /items` を持つダミー hub サービスが起動します。
@@ -114,10 +114,10 @@ cargo run --release -p bf-plugin-hub-wiring --example hub_service_demo
 
 ```bash
 # 既定（feature なし）構成で plugin-* 依存が一切出ないことを確認する
-cargo tree -p backend-framework-core
+cargo tree -p fandhe-backend-core
 
 # 個別 feature を有効化した場合のみ対応する依存が現れることを確認する
-cargo tree -p backend-framework-core --features websocket
+cargo tree -p fandhe-backend-core --features websocket
 ```
 
 ## スコープ外

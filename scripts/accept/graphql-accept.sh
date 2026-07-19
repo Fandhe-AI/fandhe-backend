@@ -3,15 +3,15 @@
 #
 # `docs/spec/05-tasks.md` TASK-5.2「GraphQL 受け入れテスト」の受け入れ基準を
 # 機械検証する:
-#   A: `graphql` feature 無効時、`backend-framework-core` の依存ツリーに
-#      `async-graphql` / `bf-plugin-graphql` 系依存が一切現れない
+#   A: `graphql` feature 無効時、`fandhe-backend-core` の依存ツリーに
+#      `async-graphql` / `fandhe-backend-plugin-graphql` 系依存が一切現れない
 #      （pay-for-what-you-use の完全除外、`.claude/rules/pay-for-what-you-use.md`）。
 #      `scripts/pay-for-what-you-use-check.sh`（動的列挙のため graphql feature も
 #      自動的に検証対象へ含まれる）も併走させ、依存・unsafe・バイナリサイズ除外を
 #      二重に確認する
 #   B: 最小疎通（クエリ実行と結果 JSON の返却）が成立する。
-#      `cargo test -p backend-framework-core --features graphql`（境界テスト
-#      `plugin_graphql_boundary.rs`）・`cargo test -p bf-plugin-graphql`（契約テスト）
+#      `cargo test -p fandhe-backend-core --features graphql`（境界テスト
+#      `plugin_graphql_boundary.rs`）・`cargo test -p fandhe-backend-plugin-graphql`（契約テスト）
 #      に加え、ビルド済み `graphql_nfr6` バイナリがあれば curl で live 検証する
 #   C: NFR（無関係パスへの RPS・p95 影響が誤差範囲内）。ビルド済み計測用バイナリ
 #      （`target/release/examples/minimal`・`target/release/examples/graphql_nfr6`）と
@@ -62,29 +62,29 @@ check_dep_exclusion() {
     # release バイナリには含まれない dev 専用依存を「残留」と誤検知する
     # （`scripts/pay-for-what-you-use-check.sh` の (b) と同一のフラグ構成）。
     local tree_output disabled_count
-    if ! tree_output="$(cargo tree -p backend-framework-core -e normal --no-default-features 2>/dev/null)"; then
-        record_fail "A: graphql 無効時の依存完全除外" "cargo tree -p backend-framework-core -e normal --no-default-features 自体が失敗し測定不能（cargo 呼び出しが壊れている可能性）"
+    if ! tree_output="$(cargo tree -p fandhe-backend-core -e normal --no-default-features 2>/dev/null)"; then
+        record_fail "A: graphql 無効時の依存完全除外" "cargo tree -p fandhe-backend-core -e normal --no-default-features 自体が失敗し測定不能（cargo 呼び出しが壊れている可能性）"
         return
     fi
-    disabled_count="$(printf '%s\n' "${tree_output}" | grep -c -E 'async-graphql|bf-plugin-graphql' || true)"
+    disabled_count="$(printf '%s\n' "${tree_output}" | grep -c -E 'async-graphql|fandhe-backend-plugin-graphql' || true)"
 
     if [ "${disabled_count}" -eq 0 ]; then
-        record_pass "A: graphql 無効時の依存完全除外" "cargo tree -p backend-framework-core -e normal --no-default-features | grep -c -E 'async-graphql|bf-plugin-graphql' = 0（release ビルドの依存グラフのみを対象、dev-dependency は除外）"
+        record_pass "A: graphql 無効時の依存完全除外" "cargo tree -p fandhe-backend-core -e normal --no-default-features | grep -c -E 'async-graphql|fandhe-backend-plugin-graphql' = 0（release ビルドの依存グラフのみを対象、dev-dependency は除外）"
     else
-        record_fail "A: graphql 無効時の依存完全除外" "graphql 系依存が ${disabled_count} 件残留（cargo tree -p backend-framework-core -e normal --no-default-features）"
+        record_fail "A: graphql 無効時の依存完全除外" "graphql 系依存が ${disabled_count} 件残留（cargo tree -p fandhe-backend-core -e normal --no-default-features）"
     fi
 
     # 陽性対照: --features graphql では両者が出現すること（列挙腐敗・配線切れの検知）。
     local enabled_tree_output enabled_count
-    if ! enabled_tree_output="$(cargo tree -p backend-framework-core -e normal --no-default-features --features graphql 2>/dev/null)"; then
-        record_warn "A補足: graphql 有効時の依存インパクト（陽性対照）" "cargo tree -p backend-framework-core -e normal --no-default-features --features graphql 自体が失敗し測定不能"
+    if ! enabled_tree_output="$(cargo tree -p fandhe-backend-core -e normal --no-default-features --features graphql 2>/dev/null)"; then
+        record_warn "A補足: graphql 有効時の依存インパクト（陽性対照）" "cargo tree -p fandhe-backend-core -e normal --no-default-features --features graphql 自体が失敗し測定不能"
         return
     fi
-    enabled_count="$(printf '%s\n' "${enabled_tree_output}" | grep -c -E 'async-graphql|bf-plugin-graphql' || true)"
+    enabled_count="$(printf '%s\n' "${enabled_tree_output}" | grep -c -E 'async-graphql|fandhe-backend-plugin-graphql' || true)"
     if [ "${enabled_count}" -eq 0 ]; then
-        record_fail "A補足: graphql 有効時の依存インパクト（陽性対照）" "cargo tree -p backend-framework-core -e normal --no-default-features --features graphql に async-graphql/bf-plugin-graphql が 0 件（配線切れ・列挙腐敗の疑い）"
+        record_fail "A補足: graphql 有効時の依存インパクト（陽性対照）" "cargo tree -p fandhe-backend-core -e normal --no-default-features --features graphql に async-graphql/fandhe-backend-plugin-graphql が 0 件（配線切れ・列挙腐敗の疑い）"
     else
-        record_warn "A補足: graphql 有効時の依存インパクト（陽性対照）" "cargo tree -p backend-framework-core -e normal --no-default-features --features graphql | grep -c -E 'async-graphql|bf-plugin-graphql' = ${enabled_count}（docs/dep-impact/records.md 参照）"
+        record_warn "A補足: graphql 有効時の依存インパクト（陽性対照）" "cargo tree -p fandhe-backend-core -e normal --no-default-features --features graphql | grep -c -E 'async-graphql|fandhe-backend-plugin-graphql' = ${enabled_count}（docs/dep-impact/records.md 参照）"
     fi
 }
 
@@ -134,38 +134,38 @@ check_min_connectivity() {
     local out status
 
     set +e
-    out="$(cargo test -p backend-framework-core --features graphql 2>&1)"
+    out="$(cargo test -p fandhe-backend-core --features graphql 2>&1)"
     status=$?
     set -e
     if [ "${status}" -eq 0 ]; then
-        record_pass "B: cargo test -p backend-framework-core --features graphql" "plugin_graphql_boundary.rs（POST /graphql の実クエリ実行・200・application/json・hello:world）を含め成功"
+        record_pass "B: cargo test -p fandhe-backend-core --features graphql" "plugin_graphql_boundary.rs（POST /graphql の実クエリ実行・200・application/json・hello:world）を含め成功"
     else
-        record_fail "B: cargo test -p backend-framework-core --features graphql" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
+        record_fail "B: cargo test -p fandhe-backend-core --features graphql" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
     fi
 
     set +e
-    out="$(cargo test -p backend-framework-core --no-default-features 2>&1)"
+    out="$(cargo test -p fandhe-backend-core --no-default-features 2>&1)"
     status=$?
     set -e
     if [ "${status}" -eq 0 ]; then
-        record_pass "B補足: cargo test -p backend-framework-core --no-default-features" "graphql feature 無効時のフォールスルー（plugin_graphql_boundary_disabled.rs）を含め成功"
+        record_pass "B補足: cargo test -p fandhe-backend-core --no-default-features" "graphql feature 無効時のフォールスルー（plugin_graphql_boundary_disabled.rs）を含め成功"
     else
-        record_fail "B補足: cargo test -p backend-framework-core --no-default-features" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
+        record_fail "B補足: cargo test -p fandhe-backend-core --no-default-features" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
     fi
 
     set +e
-    out="$(cargo test -p bf-plugin-graphql 2>&1)"
+    out="$(cargo test -p fandhe-backend-plugin-graphql 2>&1)"
     status=$?
     set -e
     if [ "${status}" -eq 0 ]; then
-        record_pass "B: cargo test -p bf-plugin-graphql" "try_handle_graphql の契約テスト（クエリ実行・エラー処理・不正 JSON 拒否等）が成功"
+        record_pass "B: cargo test -p fandhe-backend-plugin-graphql" "try_handle_graphql の契約テスト（クエリ実行・エラー処理・不正 JSON 拒否等）が成功"
     else
-        record_fail "B: cargo test -p bf-plugin-graphql" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
+        record_fail "B: cargo test -p fandhe-backend-plugin-graphql" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
     fi
 
     local bin="${WORKSPACE_ROOT}/target/release/examples/graphql_nfr6"
     if [ ! -x "${bin}" ]; then
-        record_skip "B補足: graphql_nfr6 live 疎通確認" "計測用バイナリ未ビルド。'cargo build --release -p backend-framework-core --example graphql_nfr6 --features graphql' を実行後、graphql-accept.sh を再実行すること"
+        record_skip "B補足: graphql_nfr6 live 疎通確認" "計測用バイナリ未ビルド。'cargo build --release -p fandhe-backend-core --example graphql_nfr6 --features graphql' を実行後、graphql-accept.sh を再実行すること"
         return
     fi
     if ! command -v curl >/dev/null 2>&1; then
@@ -221,7 +221,7 @@ check_nfr() {
         return
     fi
     if [ ! -x "${baseline_bin}" ] || [ ! -x "${graphql_bin}" ]; then
-        record_skip "C: NFR 無関係パス影響" "計測用バイナリ未ビルド。'cargo build --release -p backend-framework-core --example minimal --no-default-features' と '... --example graphql_nfr6 --features graphql' を実行後、benches/graphql-nfr6-bench.sh を実行して再判定すること"
+        record_skip "C: NFR 無関係パス影響" "計測用バイナリ未ビルド。'cargo build --release -p fandhe-backend-core --example minimal --no-default-features' と '... --example graphql_nfr6 --features graphql' を実行後、benches/graphql-nfr6-bench.sh を実行して再判定すること"
         return
     fi
 

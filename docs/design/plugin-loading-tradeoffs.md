@@ -89,7 +89,7 @@ backend-framework が想定するユースケース（`.claude/rules/pay-for-wha
 **ビルド成果物（Cargo.toml の feature 選択・`cargo tree` の出力）から静的に読み取れる**
 という利点を持つ。これは AI ファースト保守性（CLAUDE.md の核となる 2 原則の 1 つ）とも
 整合する: レビュー担当（人間・AI いずれも）は実行時の状態を推測する必要なく、
-`cargo tree -p backend-framework-core --features <構成>` の出力だけで依存グラフの全体像を
+`cargo tree -p fandhe-backend-core --features <構成>` の出力だけで依存グラフの全体像を
 把握できる。動的ロード方式では、この情報がデプロイ時の配置ファイル（ロードするプラグイン
 一覧）に分散し、ビルド成果物だけからは判定できない。
 

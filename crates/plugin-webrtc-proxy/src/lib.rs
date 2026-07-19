@@ -1,4 +1,4 @@
-//! `bf-plugin-webrtc-proxy`: WebRTC シグナリングプロキシプラグイン（TASK-8.2-2 / #74）。
+//! `fandhe-backend-plugin-webrtc-proxy`: WebRTC シグナリングプロキシプラグイン（TASK-8.2-2 / #74）。
 //!
 //! 拡張点対応: パスインターセプト型（try_intercept）
 //! （3 拡張点 trait には非該当。固定シグネチャシームへの閉包根拠は
@@ -17,7 +17,7 @@
 //! `crates/plugin-webrtc`（TASK-8.1、in-process 実装・`webrtc-rs` 依存）とは
 //! **クレート境界で完全に分離** しており、本クレートは `webrtc-rs` に一切依存しない
 //! （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
-//! `cargo tree -p bf-plugin-webrtc-proxy` で `webrtc` 系依存が現れないことを
+//! `cargo tree -p fandhe-backend-plugin-webrtc-proxy` で `webrtc` 系依存が現れないことを
 //! 機械的に検証できる。
 //!
 //! # 動作モデル
@@ -34,22 +34,22 @@
 //!
 //! 本クレート単体では HTTP サーバのリスンループを持たない。コアの接続受理
 //! ループ（TASK-1.4-2 / #70）は、`webrtc-proxy` feature（TASK-2.1 / #18、
-//! `backend_framework_core::server::Server::webrtc_proxy` で `ProxyConfig` を
+//! `fandhe_backend_core::server::Server::webrtc_proxy` で `ProxyConfig` を
 //! 登録）を有効化した際に、既定 `Handler` より先に非公開の
 //! `plugin::try_intercept` シームから [`handler::try_handle_rtc_offer`] を
 //! 呼び出す形で配線済みである（`docs/design/plugin-boundary.md` の
 //! プラグイン境界パターン第 1 号）。`webrtc-proxy` feature 無効時（既定）は
-//! 本クレート自体が `backend-framework-core` の依存グラフから除外される
+//! 本クレート自体が `fandhe-backend-core` の依存グラフから除外される
 //! （`optional = true` + `dep:` 構文）。
 //!
 //! # workspace 内での依存方向
 //!
 //! `docs/spec/04-requirements.md` REQ-1 / `docs/spec/05-tasks.md` TASK-11.1 の方針に従い、
 //! workspace 全体の依存方向は次の一方向を維持する（依存方向: server → routes → http::*）。
-//! 本クレートはプラグイン層（`bf-plugin-*`）に位置し、コアの拡張点を実装する側であり、
-//! コア（`backend-framework-core`）・`bf-routes` からプラグインへの逆依存は発生しない
+//! 本クレートはプラグイン層（`fandhe-backend-plugin-*`）に位置し、コアの拡張点を実装する側であり、
+//! コア（`fandhe-backend-core`）・`fandhe-backend-routes` からプラグインへの逆依存は発生しない
 //! （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。本クレートの
-//! workspace 内 path 依存は `bf-http`（下位層の sans-IO パーサ）のみで、`webrtc-rs` は
+//! workspace 内 path 依存は `fandhe-backend-http`（下位層の sans-IO パーサ）のみで、`webrtc-rs` は
 //! 上述のとおり依存に含めない。依存方向の機械検証は `scripts/dep-direction-check.sh`
 //! （TASK-1.5 / TASK-11.1）が担う。
 //!
@@ -60,8 +60,8 @@
 //! 性能影響がないことを示す）。
 //!
 //! ```
-//! use bf_http::request::{parse_request_head, ParseOutcome};
-//! use bf_plugin_webrtc_proxy::{ProxyConfig, try_handle_rtc_offer};
+//! use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+//! use fandhe_backend_plugin_webrtc_proxy::{ProxyConfig, try_handle_rtc_offer};
 //!
 //! let buf = b"GET /health HTTP/1.1\r\n\r\n";
 //! let head = match parse_request_head(buf).unwrap() {

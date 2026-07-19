@@ -1,7 +1,7 @@
 //! `graphql` feature（TASK-5.1 / #38）配線の統合テスト（feature 有効側）。
 //!
 //! `crates/core/src/plugin.rs` の非公開 `try_intercept` シームが実際に
-//! `bf_plugin_graphql::try_handle_graphql` へ委譲し、`Server::graphql` で登録
+//! `fandhe_backend_plugin_graphql::try_handle_graphql` へ委譲し、`Server::graphql` で登録
 //! 済みのデモスキーマに対して `POST /graphql` が実クエリ実行され、既定
 //! `Handler` より先にインターセプトされることを、`tokio::io::duplex` で駆動する
 //! `handle_connection` を通して検証する。`webrtc-proxy`・`webrtc` と同じ
@@ -16,10 +16,10 @@
 
 use async_graphql::Value;
 use async_graphql::dynamic::{Field, FieldFuture, Object, Schema, TypeRef};
-use backend_framework_core::{Handler, Server, handle_connection};
-use bf_http::request::RequestHead;
-use bf_http::response::Response;
-use bf_plugin_graphql::GraphQlConfig;
+use fandhe_backend_core::{Handler, Server, handle_connection};
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_graphql::GraphQlConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// `Handler::handle` が呼ばれたら panic するトイハンドラ。
@@ -46,7 +46,7 @@ impl Handler for FixedOkHandler {
 /// `async_graphql::dynamic`（実行時スキーマ構築 API、`Schema::build`）で組み立てる。
 /// `#[Object]` 派生マクロは使わない（本ファイル冒頭の doc・`crates/core/Cargo.toml`
 /// の dev-dependency コメントを参照。マクロが生成コードへ付与する
-/// `#[allow(clippy::all)]` が `backend-framework-core` の継承する workspace の
+/// `#[allow(clippy::all)]` が `fandhe-backend-core` の継承する workspace の
 /// forbid lint と衝突するため）。
 fn demo_schema() -> GraphQlConfig {
     let query = Object::new("Query").field(Field::new(

@@ -16,7 +16,7 @@
 //! シグネチャの 2 種のヘルパーに閉じる:
 //! - `plugin::try_handle_upgrade`（非公開 `plugin` モジュール、TASK-4.1 / #22）:
 //!   長時間接続（WebSocket 等）への委譲。`websocket` feature 有効時は
-//!   `bf_plugin_websocket` へ完全委譲し、無効時は常に `Some(stream)` を返す
+//!   `fandhe_backend_plugin_websocket` へ完全委譲し、無効時は常に `Some(stream)` を返す
 //!   スタブ挙動を維持する
 //! - `plugin::try_intercept`（非公開 `plugin` モジュール）: リクエスト/
 //!   レスポンス完結型プラグイン（WebRTC シグナリングプロキシ等）へのパス
@@ -28,7 +28,7 @@
 //!
 //! `try_handle_upgrade`（本モジュール内の非公開シーム）は TASK-4.1（#22）で
 //! `crate::plugin` モジュールへ移設し、`websocket` feature 有効時は
-//! `bf_plugin_websocket` へ実委譲する実装に差し替えた（feature 無効時は
+//! `fandhe_backend_plugin_websocket` へ実委譲する実装に差し替えた（feature 無効時は
 //! 従来どおり常に `Some(stream)` を返すスタブ挙動を維持し、
 //! `handle_connection` 側は 501 応答を返す）。移設に伴いシグネチャを
 //! `&[Box<dyn UpgradeHandler>]` から `Vec<u8>`（残余バイト列）+ `&Server`
@@ -42,7 +42,7 @@
 //!
 //! ```text
 //! loop {
-//!   read_request（bf_http::connection、ヘッド + body 読了、タイムアウト付き）
+//!   read_request（fandhe_backend_http::connection、ヘッド + body 読了、タイムアウト付き）
 //!     Ok(None)          → 正常クローズ
 //!     Err(e)            → e に応じた 4xx/5xx（またはエラー応答なし）を返しクローズ
 //!     Ok(Some(req)) →
@@ -76,12 +76,12 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use bf_http::body::BodyError;
-use bf_http::buffer::RecvBuffer;
-use bf_http::chunked::ChunkedError;
-use bf_http::connection::{RequestError, read_request, should_keep_alive};
-use bf_http::request::{ParseError, RequestHead};
-use bf_http::response::Response;
+use fandhe_backend_http::body::BodyError;
+use fandhe_backend_http::buffer::RecvBuffer;
+use fandhe_backend_http::chunked::ChunkedError;
+use fandhe_backend_http::connection::{RequestError, read_request, should_keep_alive};
+use fandhe_backend_http::request::{ParseError, RequestHead};
+use fandhe_backend_http::response::Response;
 
 use crate::extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
 
@@ -147,8 +147,8 @@ const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(10);
 ///
 /// 3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）とは異なり
 /// 「拡張点は 3 種に集約」の対象ではなく、ルーティング結果を最終応答へ
-/// 変換する既定レスポンダの差し込み口という位置づけ。`bf_routes::Router`
-/// （TASK-1.5 / #14、下記 `impl Handler for bf_routes::Router` 参照）を
+/// 変換する既定レスポンダの差し込み口という位置づけ。`fandhe_backend_routes::Router`
+/// （TASK-1.5 / #14、下記 `impl Handler for fandhe_backend_routes::Router` 参照）を
 /// 直接登録できるほか、トイハンドラ・テスト用の固定レスポンダ等の任意実装も
 /// 引き続き受け付ける。
 pub trait Handler: Send + Sync {
@@ -156,14 +156,14 @@ pub trait Handler: Send + Sync {
     fn handle(&self, head: &RequestHead, body: &[u8]) -> Response;
 }
 
-/// `bf_routes::Router`（依存方向 `server → routes → http::*` の実体化、
+/// `fandhe_backend_routes::Router`（依存方向 `server → routes → http::*` の実体化、
 /// TASK-1.5 / #14）をそのままコアの既定ハンドラとして登録できるようにする。
 ///
-/// [`Router::dispatch`][bf_routes::Router::dispatch] へ委譲するだけの薄い
+/// [`Router::dispatch`][fandhe_backend_routes::Router::dispatch] へ委譲するだけの薄い
 /// アダプタであり、ルーティングの意味論（method + target 完全一致を最優先し、
 /// miss 時のみ `{name}` パスパラメータ（TASK-176、#176）を登録順で照合・
 /// 404/405 のフェイルクローズ）は `crates/routes` 側の責務のまま変わらない。
-impl Handler for bf_routes::Router {
+impl Handler for fandhe_backend_routes::Router {
     fn handle(&self, head: &RequestHead, body: &[u8]) -> Response {
         self.dispatch(head, body)
     }
@@ -176,7 +176,7 @@ impl Handler for bf_routes::Router {
 /// タスクから共有参照される。
 ///
 /// ```
-/// use backend_framework_core::server::Server;
+/// use fandhe_backend_core::server::Server;
 ///
 /// let server = Server::new();
 /// // bind() はソケットを開くため doctest では実行しない（`no_run` 相当）。
@@ -197,19 +197,19 @@ pub struct Server {
     /// フィールド自体が構造体から消え、依存・コードともゼロコストになる
     /// （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
     #[cfg(feature = "webrtc-proxy")]
-    webrtc_proxy_config: Option<bf_plugin_webrtc_proxy::ProxyConfig>,
+    webrtc_proxy_config: Option<fandhe_backend_plugin_webrtc_proxy::ProxyConfig>,
     /// `webrtc` feature（TASK-8.1 / #26）有効時のみ意味を持つ設定。
     /// `crate::plugin::try_intercept` がこのフィールドを参照して `POST /rtc/offer`
     /// を in-process の `RTCPeerConnection` シグナリングへ委譲するかどうかを判定
     /// する。feature 無効時はフィールド自体が構造体から消え、依存・コードとも
     /// ゼロコストになる（pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
     #[cfg(feature = "webrtc")]
-    webrtc_config: Option<bf_plugin_webrtc::WebRtcConfig>,
+    webrtc_config: Option<fandhe_backend_plugin_webrtc::WebRtcConfig>,
     /// `websocket` feature（TASK-4.1 / #22）有効時のみ意味を持つ設定群。
     /// `crate::plugin::try_handle_upgrade` がこのフィールドを参照して
-    /// `UpgradeHandler` 委譲成立後に `bf_plugin_websocket::handle_upgrade` へ
+    /// `UpgradeHandler` 委譲成立後に `fandhe_backend_plugin_websocket::handle_upgrade` へ
     /// 渡す。`Server::websocket` を複数回呼ぶと複数パスを登録でき、
-    /// 登録順に `bf_plugin_websocket::matches` を評価して最初に一致した
+    /// 登録順に `fandhe_backend_plugin_websocket::matches` を評価して最初に一致した
     /// 設定を使う（`upgrade_handlers` 側の `WebSocketUpgradeAdapter` も
     /// 同じ登録順で `matches` するため、両者は常に整合する）。単一
     /// `Option` だと 2 回目の呼び出しで 1 回目の設定が上書きされ、最初に
@@ -218,7 +218,7 @@ pub struct Server {
     /// 消え、依存・コードともゼロコストになる（pay-for-what-you-use、
     /// .claude/rules/pay-for-what-you-use.md）。
     #[cfg(feature = "websocket")]
-    websocket_configs: Vec<bf_plugin_websocket::WebSocketConfig>,
+    websocket_configs: Vec<fandhe_backend_plugin_websocket::WebSocketConfig>,
     /// `graphql` feature（TASK-5.1 / #38）有効時のみ意味を持つ、登録済み
     /// GraphQL スキーマ設定。`crate::plugin::try_intercept` がこのフィールド
     /// を参照して `POST /graphql` を実行するかどうかを判定する。`None`
@@ -228,7 +228,7 @@ pub struct Server {
     /// フィールド自体が構造体から消え、依存・コードともゼロコストになる
     /// （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
     #[cfg(feature = "graphql")]
-    graphql_config: Option<bf_plugin_graphql::GraphQlConfig>,
+    graphql_config: Option<fandhe_backend_plugin_graphql::GraphQlConfig>,
 }
 
 impl Default for Server {
@@ -339,7 +339,7 @@ impl Server {
     /// の doc を参照）。
     #[cfg(feature = "webrtc-proxy")]
     #[must_use]
-    pub fn webrtc_proxy(mut self, config: bf_plugin_webrtc_proxy::ProxyConfig) -> Self {
+    pub fn webrtc_proxy(mut self, config: fandhe_backend_plugin_webrtc_proxy::ProxyConfig) -> Self {
         self.webrtc_proxy_config = Some(config);
         self
     }
@@ -347,7 +347,9 @@ impl Server {
     /// `plugin::try_intercept` が参照する、登録済み WebRTC プロキシ設定
     /// （`webrtc-proxy` feature 限定、TASK-2.1 / #18）。
     #[cfg(feature = "webrtc-proxy")]
-    pub(crate) fn webrtc_proxy_config(&self) -> Option<&bf_plugin_webrtc_proxy::ProxyConfig> {
+    pub(crate) fn webrtc_proxy_config(
+        &self,
+    ) -> Option<&fandhe_backend_plugin_webrtc_proxy::ProxyConfig> {
         self.webrtc_proxy_config.as_ref()
     }
 
@@ -362,7 +364,7 @@ impl Server {
     /// 場合は `webrtc-proxy` が優先される（`crate::plugin::try_intercept` の doc）。
     #[cfg(feature = "webrtc")]
     #[must_use]
-    pub fn webrtc(mut self, config: bf_plugin_webrtc::WebRtcConfig) -> Self {
+    pub fn webrtc(mut self, config: fandhe_backend_plugin_webrtc::WebRtcConfig) -> Self {
         self.webrtc_config = Some(config);
         self
     }
@@ -370,7 +372,7 @@ impl Server {
     /// `plugin::try_intercept` が参照する、登録済み in-process WebRTC 設定
     /// （`webrtc` feature 限定、TASK-8.1 / #26）。
     #[cfg(feature = "webrtc")]
-    pub(crate) fn webrtc_config(&self) -> Option<&bf_plugin_webrtc::WebRtcConfig> {
+    pub(crate) fn webrtc_config(&self) -> Option<&fandhe_backend_plugin_webrtc::WebRtcConfig> {
         self.webrtc_config.as_ref()
     }
 
@@ -382,7 +384,7 @@ impl Server {
     /// [`UpgradeHandler`] 拡張点経由で検知
     /// され（`WebSocketUpgradeAdapter` を内部で自動登録する）、
     /// `crate::plugin::try_handle_upgrade` が
-    /// `bf_plugin_websocket::handle_upgrade` へ完全委譲する
+    /// `fandhe_backend_plugin_websocket::handle_upgrade` へ完全委譲する
     /// （REQ-4「コア自身の HTTP パーサでアップグレードを検知し既存拡張点
     /// 経由で委譲する」という建て付けを維持する。`crates/plugin-websocket/src/lib.rs`
     /// の doc を参照）。異なる `path` で複数回呼び出すと複数パスを登録
@@ -390,10 +392,10 @@ impl Server {
     /// `WebSocketConfig::with_handler` でユーザー定義メッセージハンドラを
     /// 登録しておけば、Text/Binary 受信ごとにそのハンドラへ委譲される
     /// （既定は `EchoHandler`、Issue #179）。コア自身はハンドラ呼び出しに
-    /// 関与せず、`bf_plugin_websocket::handle_upgrade` 以下に閉じる。
+    /// 関与せず、`fandhe_backend_plugin_websocket::handle_upgrade` 以下に閉じる。
     #[cfg(feature = "websocket")]
     #[must_use]
-    pub fn websocket(mut self, config: bf_plugin_websocket::WebSocketConfig) -> Self {
+    pub fn websocket(mut self, config: fandhe_backend_plugin_websocket::WebSocketConfig) -> Self {
         self.upgrade_handlers
             .push(Box::new(WebSocketUpgradeAdapter {
                 config: config.clone(),
@@ -407,11 +409,11 @@ impl Server {
     ///
     /// `Server::websocket` を呼んだ順に格納されており、`upgrade_handlers`
     /// 内の `WebSocketUpgradeAdapter` の登録順と一致する。呼び出し元は
-    /// 登録順に `bf_plugin_websocket::matches` を評価し、最初に一致した
+    /// 登録順に `fandhe_backend_plugin_websocket::matches` を評価し、最初に一致した
     /// 設定を使うこと（複数パス登録時に先に登録したパスが後の登録で
     /// 上書きされて失われないようにするための契約）。
     #[cfg(feature = "websocket")]
-    pub(crate) fn websocket_configs(&self) -> &[bf_plugin_websocket::WebSocketConfig] {
+    pub(crate) fn websocket_configs(&self) -> &[fandhe_backend_plugin_websocket::WebSocketConfig] {
         &self.websocket_configs
     }
 
@@ -426,7 +428,7 @@ impl Server {
     /// （404）する（`webrtc-proxy`・`webrtc` と同じ設定登録型パターン）。
     #[cfg(feature = "graphql")]
     #[must_use]
-    pub fn graphql(mut self, config: bf_plugin_graphql::GraphQlConfig) -> Self {
+    pub fn graphql(mut self, config: fandhe_backend_plugin_graphql::GraphQlConfig) -> Self {
         self.graphql_config = Some(config);
         self
     }
@@ -434,7 +436,7 @@ impl Server {
     /// `plugin::try_intercept` が参照する、登録済み GraphQL スキーマ設定
     /// （`graphql` feature 限定、TASK-5.1 / #38）。
     #[cfg(feature = "graphql")]
-    pub(crate) fn graphql_config(&self) -> Option<&bf_plugin_graphql::GraphQlConfig> {
+    pub(crate) fn graphql_config(&self) -> Option<&fandhe_backend_plugin_graphql::GraphQlConfig> {
         self.graphql_config.as_ref()
     }
 
@@ -446,7 +448,7 @@ impl Server {
     /// する必要はない。汎用 [`Server::middleware`] の薄いラッパーとして実装
     /// できる点が本プラグインの拡張点である `Middleware` の特徴。他プラグイン
     /// が使う「設定登録型」パターンとは異なる）。登録すると全リクエストの
-    /// `on_response` フックで [`bf_plugin_tracing::TracingLayer::record_response`]
+    /// `on_response` フックで [`fandhe_backend_plugin_tracing::TracingLayer::record_response`]
     /// が呼ばれ、`config.exclude_paths`（TASK-10.3 / #58）に完全一致するパス
     /// は記録・サンプリング周期の消費のいずれも行わずスキップされ、それ以外は
     /// `config.sample_interval` に従いサンプリングされたリクエストの応答時
@@ -454,11 +456,11 @@ impl Server {
     /// （`crates/plugin-tracing/src/layer.rs` の doc を参照）。ヘルスチェック等の
     /// 高頻度パスを `exclude_paths` に登録することで、TASK-10.4 の性能再検証
     /// （RPS 劣化 5% 以内）の前提を満たせる。記録先（非同期・バッファ済み I/O）は別途
-    /// `bf_plugin_tracing::init_tracing` で初期化する契約とし、本メソッドは
+    /// `fandhe_backend_plugin_tracing::init_tracing` で初期化する契約とし、本メソッドは
     /// グローバルサブスクライバの初期化には関与しない。
     #[cfg(feature = "tracing")]
     #[must_use]
-    pub fn tracing(mut self, config: bf_plugin_tracing::TracingConfig) -> Self {
+    pub fn tracing(mut self, config: fandhe_backend_plugin_tracing::TracingConfig) -> Self {
         self.middlewares
             .push(Box::new(TracingMiddleware::new(&config)));
         self
@@ -487,15 +489,15 @@ impl Server {
 ///
 /// `UpgradeHandler::matches` は「委譲判定のみ」の契約（同期 API、
 /// `crates/core/src/extension.rs` の doc）のため、本アダプタは
-/// `bf_plugin_websocket::matches`（純関数）を呼ぶだけの薄い委譲先とし、
+/// `fandhe_backend_plugin_websocket::matches`（純関数）を呼ぶだけの薄い委譲先とし、
 /// 実際のハンドシェイク検証・フレーミング委譲（非同期処理）は
-/// `crate::plugin::try_handle_upgrade` → `bf_plugin_websocket::handle_upgrade`
+/// `crate::plugin::try_handle_upgrade` → `fandhe_backend_plugin_websocket::handle_upgrade`
 /// が担う。`config` は `Server::websocket` 呼び出し時にクローンして保持する
 /// （`upgrade_handlers: Vec<Box<dyn UpgradeHandler>>` は `Server` 本体と
 /// ライフタイムを共有しないため、参照ではなく所有値として持つ）。
 #[cfg(feature = "websocket")]
 struct WebSocketUpgradeAdapter {
-    config: bf_plugin_websocket::WebSocketConfig,
+    config: fandhe_backend_plugin_websocket::WebSocketConfig,
 }
 
 #[cfg(feature = "websocket")]
@@ -505,7 +507,7 @@ impl UpgradeHandler for WebSocketUpgradeAdapter {
     }
 
     fn matches(&self, head: &RequestHead) -> bool {
-        bf_plugin_websocket::matches(head, &self.config)
+        fandhe_backend_plugin_websocket::matches(head, &self.config)
     }
 }
 
@@ -514,7 +516,7 @@ impl UpgradeHandler for WebSocketUpgradeAdapter {
 ///
 /// `Middleware` は同期 API（dyn 互換性維持、`crates/core/src/extension.rs` の
 /// doc）のため、本アダプタは `on_request` を no-op とし、`on_response` でのみ
-/// `bf_plugin_tracing::TracingLayer::record_response` へ委譲する（`crates/
+/// `fandhe_backend_plugin_tracing::TracingLayer::record_response` へ委譲する（`crates/
 /// plugin-tracing/src/layer.rs` の doc「記録は on_response の 1 点に集約する」
 /// を参照。`Middleware` trait には request/response を跨いで per-request 状態を
 /// 運ぶ経路がなく、`on_request` と `on_response` で独立にサンプリング判定すると
@@ -524,14 +526,14 @@ impl UpgradeHandler for WebSocketUpgradeAdapter {
 /// 必須化」が要求する非ブロッキング操作の要件を満たす）。
 #[cfg(feature = "tracing")]
 struct TracingMiddleware {
-    layer: bf_plugin_tracing::TracingLayer,
+    layer: fandhe_backend_plugin_tracing::TracingLayer,
 }
 
 #[cfg(feature = "tracing")]
 impl TracingMiddleware {
-    fn new(config: &bf_plugin_tracing::TracingConfig) -> Self {
+    fn new(config: &fandhe_backend_plugin_tracing::TracingConfig) -> Self {
         Self {
-            layer: bf_plugin_tracing::TracingLayer::new(config),
+            layer: fandhe_backend_plugin_tracing::TracingLayer::new(config),
         }
     }
 }
@@ -605,7 +607,7 @@ impl BoundServer {
                     // permit はここで（スコープを抜けると同時に）解放され、
                     // 次のループ先頭で再取得される。上の doc を参照。
                     drop(permit);
-                    eprintln!("backend_framework_core::server: accept に失敗しました: {err}");
+                    eprintln!("fandhe_backend_core::server: accept に失敗しました: {err}");
                     tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                     continue;
                 }
@@ -630,7 +632,7 @@ impl BoundServer {
 /// ソケット不要の統合テストを可能にするため（AI ファースト保守性、
 /// `.claude/rules/coding-rust.md`）。
 ///
-/// 接続単位で読み取りバッファ `buf` を 1 本だけ確保し、`bf_http::connection`
+/// 接続単位で読み取りバッファ `buf` を 1 本だけ確保し、`fandhe_backend_http::connection`
 /// のパイプライン契約（未消費の残余バイトを `buf` に残す）に従って
 /// 繰り返し `read_request` を呼ぶ。
 ///
@@ -770,7 +772,7 @@ pub(crate) async fn handle_connection_with_permit<S>(
             // で旧バッファ（確保済み容量ごと）を丸ごと解放する。以降このループ
             // 反復では `buf` を読まない（両分岐とも `return` する）ため、
             // 代入ではなく明示的な `drop` で意図を示す。`leftover` は
-            // `bf_plugin_websocket::handle_upgrade` が
+            // `fandhe_backend_plugin_websocket::handle_upgrade` が
             // `WebSocketStream::from_partially_read` へそのまま渡す
             // （TASK-4.1 / #22、先行到着フレームを取りこぼさないため）。
             let leftover = buf.unread().to_vec();
@@ -865,7 +867,7 @@ fn first_rejection(gates: &[Box<dyn RequestGate>], head: &RequestHead) -> Option
 /// 考慮（入力検証の全面依拠、フェイルセーフなクローズ）を参照。
 ///
 /// chunked 関連（イシュー #181）: `Transfer-Encoding: chunked` 単独指定は
-/// `bf_http::body::body_length` が受理し `RequestError` にならないため、ここ
+/// `fandhe_backend_http::body::body_length` が受理し `RequestError` にならないため、ここ
 /// では現れない（200 系として通常どおり処理される）。`gzip` 等 chunked 以外の
 /// coding・複数 TE ヘッダは従来どおり `TransferEncodingUnsupported` として
 /// 501。`Content-Length` との共存は専用エラー `ContentLengthWithChunked` として
@@ -1035,12 +1037,12 @@ mod tests {
         assert!(response.ends_with("hi"));
     }
 
-    /// TASK-1.5（#14）: `bf_routes::Router` を `Server::handler` にそのまま登録できる
-    /// （`impl Handler for bf_routes::Router` の統合確認）。200・404・405 それぞれで
+    /// TASK-1.5（#14）: `fandhe_backend_routes::Router` を `Server::handler` にそのまま登録できる
+    /// （`impl Handler for fandhe_backend_routes::Router` の統合確認）。200・404・405 それぞれで
     /// ステータス行・`Content-Length`・body・`Connection: close` まで網羅的に検証する。
     #[tokio::test]
     async fn router_registered_as_handler_dispatches_by_method_and_target() {
-        let router = bf_routes::Router::new().route("GET", "/", |_head, _body| {
+        let router = fandhe_backend_routes::Router::new().route("GET", "/", |_head, _body| {
             Response::new(200, b"root".to_vec())
         });
         let server = Server::new().handler(router);
@@ -1064,17 +1066,17 @@ mod tests {
         assert!(wrong_method.starts_with("HTTP/1.1 405 Method Not Allowed\r\n"));
         assert!(wrong_method.contains("Content-Length: 0\r\n"));
         // TASK-177 / #177: 405 ワイヤ応答に登録済み method の Allow ヘッダが
-        // コアループの直列化経路（bf_routes::Router::dispatch → Response::serialize）
+        // コアループの直列化経路（fandhe_backend_routes::Router::dispatch → Response::serialize）
         // を通しても欠落しないことを確認する。
         assert!(wrong_method.contains("Allow: GET\r\n"));
     }
 
     /// TASK-176（#176）: `Router::route_param` で登録した `{name}` パスパラメータ
-    /// ルートも `Server` 経由（`impl Handler for bf_routes::Router`）で解決できる
+    /// ルートも `Server` 経由（`impl Handler for fandhe_backend_routes::Router`）で解決できる
     /// ことを end-to-end で確認する。
     #[tokio::test]
     async fn router_registered_as_handler_dispatches_path_params() {
-        let router = bf_routes::Router::new()
+        let router = fandhe_backend_routes::Router::new()
             .route_param("GET", "/hello/{name}", |_head, params, _body| {
                 let name = params.get("name").unwrap_or("world");
                 Response::new(200, format!("hello, {name}").into_bytes())
@@ -1458,7 +1460,7 @@ GET /c HTTP/1.1\r\n\r\n",
 
     #[tokio::test]
     async fn chunked_body_too_large_returns_413() {
-        use bf_http::body::MAX_BODY_BYTES;
+        use fandhe_backend_http::body::MAX_BODY_BYTES;
 
         let server = Server::new();
         let request = format!(

@@ -9,8 +9,8 @@
 #      wiring:begin --- 〜 // --- wiring:end ---`）の LOC を PoC-6 基準（3 エンドポイント・
 #      207 行）に対して評価し、ハンドラ領域に手書き JWT 検証・JWKS パース等の配線
 #      シンボルが現れないこと（`scripts/accept/lib/hub-wiring-loc.sh`）
-#   C: 依存方向・pay-for-what-you-use。`cargo tree -p backend-framework-core` に
-#      `bf-plugin-hub-wiring` が現れないこと（依存逆転型プラグインの維持）
+#   C: 依存方向・pay-for-what-you-use。`cargo tree -p fandhe-backend-core` に
+#      `fandhe-backend-plugin-hub-wiring` が現れないこと（依存逆転型プラグインの維持）
 #   D: NFR-6（無関係パスへの RPS・p95 影響が誤差範囲内）。ビルド済み
 #      `target/release/examples/minimal`・`target/release/examples/hub_link_only`
 #      （`BF_HUB_GATE=off`、`hub_service_demo` のアプリ層オーバーヘッドを含まない
@@ -58,13 +58,13 @@ check_acceptance_tests() {
 
     local out status
     set +e
-    out="$(cargo test -p bf-plugin-hub-wiring --test hub_acceptance 2>&1)"
+    out="$(cargo test -p fandhe-backend-plugin-hub-wiring --test hub_acceptance 2>&1)"
     status=$?
     set -e
     if [ "${status}" -eq 0 ]; then
         local test_count
         test_count="$(printf '%s\n' "${out}" | grep -oE '^test result: ok\. [0-9]+ passed' | grep -oE '[0-9]+' | head -1 || true)"
-        record_pass "A: 越境遮断・フェイルクローズ受け入れテスト" "cargo test -p bf-plugin-hub-wiring --test hub_acceptance 全件 PASS（${test_count:-?} 件）"
+        record_pass "A: 越境遮断・フェイルクローズ受け入れテスト" "cargo test -p fandhe-backend-plugin-hub-wiring --test hub_acceptance 全件 PASS（${test_count:-?} 件）"
     else
         record_fail "A: 越境遮断・フェイルクローズ受け入れテスト" "cargo test が非 0 終了: $(printf '%s\n' "${out}" | tail -15 | tr '\n' ' ')"
     fi
@@ -110,15 +110,15 @@ check_wiring_reduction() {
 # ---------------------------------------------------------------------------
 check_dependency_inversion() {
     local tree_output count
-    if ! tree_output="$(cargo tree -p backend-framework-core 2>/dev/null)"; then
-        record_fail "C: 依存逆転型プラグインの維持" "cargo tree -p backend-framework-core 自体が失敗し測定不能（cargo 呼び出しが壊れている可能性）"
+    if ! tree_output="$(cargo tree -p fandhe-backend-core 2>/dev/null)"; then
+        record_fail "C: 依存逆転型プラグインの維持" "cargo tree -p fandhe-backend-core 自体が失敗し測定不能（cargo 呼び出しが壊れている可能性）"
         return
     fi
-    count="$(printf '%s\n' "${tree_output}" | grep -c 'bf-plugin-hub-wiring' || true)"
+    count="$(printf '%s\n' "${tree_output}" | grep -c 'fandhe-backend-plugin-hub-wiring' || true)"
     if [ "${count}" -eq 0 ]; then
-        record_pass "C: 依存逆転型プラグインの維持" "cargo tree -p backend-framework-core に bf-plugin-hub-wiring が現れない（プラグイン→コアの一方向依存を維持）"
+        record_pass "C: 依存逆転型プラグインの維持" "cargo tree -p fandhe-backend-core に fandhe-backend-plugin-hub-wiring が現れない（プラグイン→コアの一方向依存を維持）"
     else
-        record_fail "C: 依存逆転型プラグインの維持" "backend-framework-core の依存ツリーに bf-plugin-hub-wiring が ${count} 件残留"
+        record_fail "C: 依存逆転型プラグインの維持" "fandhe-backend-core の依存ツリーに fandhe-backend-plugin-hub-wiring が ${count} 件残留"
     fi
 }
 
@@ -134,7 +134,7 @@ check_nfr6() {
         return
     fi
     if [ ! -x "${baseline_bin}" ] || [ ! -x "${hub_bin}" ]; then
-        record_skip "D: NFR-6 無関係パス影響" "計測用バイナリ未ビルド。'cargo build --release -p backend-framework-core --example minimal --no-default-features' と 'cargo build --release -p bf-plugin-hub-wiring --example hub_link_only' を実行後、benches/hub-nfr6-bench.sh を実行して再判定すること"
+        record_skip "D: NFR-6 無関係パス影響" "計測用バイナリ未ビルド。'cargo build --release -p fandhe-backend-core --example minimal --no-default-features' と 'cargo build --release -p fandhe-backend-plugin-hub-wiring --example hub_link_only' を実行後、benches/hub-nfr6-bench.sh を実行して再判定すること"
         return
     fi
 

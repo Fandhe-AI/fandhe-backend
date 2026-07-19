@@ -19,7 +19,7 @@ TASK-12.2-1（#81）で、機能要求の実装にテスト追加が伴うこと
 TASK-12.3-2（#84）で、対応可否自律判断ガードレール（TASK-12.3-1、#83、
 `docs/design/feasibility-guardrail.md`）の判定記録バリデータ `feasibility-check.sh` と
 セルフテスト `tests/run-guardrail-tests.sh` を追加した。
-TASK-1.5（#14）で、`crates/routes`（`bf-routes`）新設に伴い `server → routes → http::*`
+TASK-1.5（#14）で、`crates/routes`（`fandhe-backend-routes`）新設に伴い `server → routes → http::*`
 の依存方向一方向性を CI 常設で機械検証する `dep-direction-check.sh` を追加した。
 TASK-2.2（#19）で、プラグイン feature 無効時の依存・`unsafe`・コード 0 件を
 cargo tree/geiger・バイナリサイズ・全構成ビルドで PASS/FAIL 判定する
@@ -52,11 +52,11 @@ req6-typescript-types.md` 参照）。
 | スクリプト | 用途 | CI との対応 |
 |-----------|------|-------------|
 | `dep-audit.sh` | 全 feature 構成で `cargo audit`（`audit-triage.sh` 経由）・`cargo deny check` を実行する依存監査 | `.github/workflows/ci.yml` の `dep-audit` ジョブから呼ばれる |
-| `openapi-two-stage.sh` | `gen-openapi` CLI（`bf-plugin-openapi` の `gen-cli` feature）を `--check` 実行し `crates/plugin-openapi/openapi.json` の鮮度を検証してから `cargo build --workspace --all-features` を実行する（`--update` で in-place 再生成も可能） | `.github/workflows/ci.yml` の `openapi-two-stage` ジョブから呼ばれる |
+| `openapi-two-stage.sh` | `gen-openapi` CLI（`fandhe-backend-plugin-openapi` の `gen-cli` feature）を `--check` 実行し `crates/plugin-openapi/openapi.json` の鮮度を検証してから `cargo build --workspace --all-features` を実行する（`--update` で in-place 再生成も可能） | `.github/workflows/ci.yml` の `openapi-two-stage` ジョブから呼ばれる |
 | `audit-triage.sh` | `cargo audit --json` の指摘を「自動更新提案」「要エスカレーション」「情報（記録・監視）」に分類し markdown レポートを生成する | `dep-audit.sh` から呼ばれる。`dep-audit` ジョブは schedule / workflow_dispatch 実行時に限り、検知結果を Issue（`audit-triage` ラベル）として起票する |
 | `unsafe-triage.sh` | workspace（`crates/*/src`・`crates/*/tests`）の `unsafe` 使用数を `unsafe-baseline.json` と比較し、増加・SAFETY コメント欠落を検知する | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `dep-impact.sh` | feature 構成ごとの依存クレート数・リリースバイナリサイズ・`unsafe` 件数を計測し markdown 表を出力する | CI からは呼ばれない。plugin 追加 PR でのローカル実行を想定（`docs/dep-impact/README.md` 参照） |
-| `coverage.sh` | コア（`backend-framework-core`・`bf-http`。`axum-ref`・`bf-plugin-*` は除外）の行カバレッジを計測し `--fail-under-lines 80` でゲートする | `.github/workflows/ci.yml` の `coverage` ジョブから呼ばれる |
+| `coverage.sh` | コア（`fandhe-backend-core`・`fandhe-backend-http`。`axum-ref`・`fandhe-backend-plugin-*` は除外）の行カバレッジを計測し `--fail-under-lines 80` でゲートする | `.github/workflows/ci.yml` の `coverage` ジョブから呼ばれる |
 | `accept-task-11-5.sh` | TASK-11.5（#37）受け入れテスト一式（カバレッジ・doc 網羅率・AGENTS.md 各節・CI タイムアウト・依存方向一方向性）を PASS/FAIL/PENDING で判定する | CI からは呼ばれない。TASK-11.5 系イシューのローカル受け入れ確認を想定 |
 | `unsafe-baseline.json` | `unsafe-triage.sh` のラチェット判定に使うクレート別ベースライン（コミット対象） | `unsafe-triage.sh --update-baseline` で再生成する |
 | `tests/run-triage-tests.sh` | `audit-triage.sh` / `unsafe-triage.sh` のセルフテスト（ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
@@ -246,7 +246,7 @@ feature 構成（no-default / default / all-features）ごとの依存クレー�
 bash scripts/pay-for-what-you-use-check.sh
 ```
 
-プラグイン feature（`crates/core/Cargo.toml` の `dep:bf-plugin-*`）を動的列挙し、
+プラグイン feature（`crates/core/Cargo.toml` の `dep:fandhe-backend-plugin-*`）を動的列挙し、
 無効時に当該プラグインの依存クレート・`unsafe`・コードが 0 件であることを (a) feature
 列挙 (b) `cargo tree` (c) `cargo geiger` (d) バイナリサイズ・シンボル表 (e) 全構成
 ビルド の 5 段で PASS/FAIL 判定する。設計判断・`dep-impact.sh` との役割分担の詳細は
@@ -276,8 +276,8 @@ FAIL_UNDER_LINES=99 bash scripts/coverage.sh
 
 - `cargo-llvm-cov nextest --workspace --all-features`（`.config/nextest.toml` の
   `profile ci`）で 1 回計測し、`cargo llvm-cov report` のパッケージフィルタ（再計測なし）
-  で「コア」（`cargo metadata` から動的決定。`axum-ref`・`bf-plugin-*` を除外した残り。
-  現状は `backend-framework-core`・`bf-http`）とワークスペース全体（プラグイン含む、
+  で「コア」（`cargo metadata` から動的決定。`axum-ref`・`fandhe-backend-plugin-*` を除外した残り。
+  現状は `fandhe-backend-core`・`fandhe-backend-http`）とワークスペース全体（プラグイン含む、
   参考情報）の両方のサマリを出し分ける。
 - コア対象の行カバレッジが既定 80%（`FAIL_UNDER_LINES` で変更可能）未満の場合は
   非 0 で終了する（退行ゲート）。lcov は `target/llvm-cov/lcov.info`（`.gitignore`

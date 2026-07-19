@@ -2,7 +2,7 @@
 # REQ-9（docs/spec/04-requirements.md）NFR-6 の empirical 計測スクリプト（TASK-9.5 / #65）。
 #
 # このスクリプトの役割:
-#   `bf-plugin-hub-wiring` をリンクした最小サーバ（`examples/hub_link_only.rs`、
+#   `fandhe-backend-plugin-hub-wiring` をリンクした最小サーバ（`examples/hub_link_only.rs`、
 #   `BF_HUB_GATE=off` で `TenantGate` 未登録＝リンクコストのみを分離計測）が、
 #   無関係パス（`GET /`）への RPS・p95 レイテンシに与える影響が誤差範囲に収まる
 #   ことを、実際にビルドした 2 バイナリ（ベースライン `examples/minimal`／
@@ -19,9 +19,9 @@
 #   hub_link_only.rs` 冒頭 doc 参照）。
 #
 # 前提:
-#   - `cargo build --release -p backend-framework-core --example minimal
+#   - `cargo build --release -p fandhe-backend-core --example minimal
 #      --no-default-features`
-#   - `cargo build --release -p bf-plugin-hub-wiring --example hub_link_only`
+#   - `cargo build --release -p fandhe-backend-plugin-hub-wiring --example hub_link_only`
 #   （本スクリプトはビルドを自動実行しない。既存バイナリの存在を検査するのみ。
 #    benches/lib/common.sh の「サプライチェーン考慮・自動取得しない」方針を踏襲）
 #
@@ -77,13 +77,13 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 if [ ! -x "${BASELINE_BIN}" ]; then
     echo "エラー: ${BASELINE_BIN} が見つかりません。先に" >&2
-    echo "  cargo build --release -p backend-framework-core --example minimal --no-default-features" >&2
+    echo "  cargo build --release -p fandhe-backend-core --example minimal --no-default-features" >&2
     echo "を実行してください" >&2
     exit 1
 fi
 if [ ! -x "${HUB_BIN}" ]; then
     echo "エラー: ${HUB_BIN} が見つかりません。先に" >&2
-    echo "  cargo build --release -p bf-plugin-hub-wiring --example hub_link_only" >&2
+    echo "  cargo build --release -p fandhe-backend-plugin-hub-wiring --example hub_link_only" >&2
     echo "を実行してください" >&2
     exit 1
 fi
@@ -149,8 +149,8 @@ measure() {
 }
 
 echo "=== NFR-6 計測（RUNS=${RUNS} DURATION=${DURATION} CONNECTIONS=${CONNECTIONS}） ===" >&2
-echo "baseline: ${BASELINE_BIN}（bf-plugin-hub-wiring 未リンク）" >&2
-echo "hub     : ${HUB_BIN}（bf-plugin-hub-wiring リンク済み・BF_HUB_GATE=off で TenantGate 未登録、GET / は無関係パス）" >&2
+echo "baseline: ${BASELINE_BIN}（fandhe-backend-plugin-hub-wiring 未リンク）" >&2
+echo "hub     : ${HUB_BIN}（fandhe-backend-plugin-hub-wiring リンク済み・BF_HUB_GATE=off で TenantGate 未登録、GET / は無関係パス）" >&2
 echo "" >&2
 
 read -r baseline_rps baseline_p95 <<<"$(measure "${BASELINE_BIN}" "${BASELINE_PORT}" baseline)"

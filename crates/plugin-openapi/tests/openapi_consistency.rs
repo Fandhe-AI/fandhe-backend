@@ -1,8 +1,8 @@
 //! TASK-3.3（#32、REQ-3【Must】）: OpenAPI 自動生成受け入れテストのうち、機械検証可能な範囲を担う。
 //!
 //! # 検証範囲（このファイルが担保すること）
-//! 生成された [`bf_plugin_openapi::OPENAPI_JSON`] の構造（path/method/パラメータ名・型・
-//! 必須有無・レスポンススキーマ）が [`bf_plugin_openapi::ApiDoc`]（`crates/plugin-openapi/src/docs.rs`
+//! 生成された [`fandhe_backend_plugin_openapi::OPENAPI_JSON`] の構造（path/method/パラメータ名・型・
+//! 必須有無・レスポンススキーマ）が [`fandhe_backend_plugin_openapi::ApiDoc`]（`crates/plugin-openapi/src/docs.rs`
 //! の `#[utoipa::path]` 宣言）と一致し続けることを、宣言側の変更を伴わない「実体側の
 //! ピン留めテスト」として固定する。`docs.rs`・`schemas.rs` の doc comment がそれぞれ想定する
 //! 5 エンドポイントの契約（パスパラメータ・クエリパラメータ・リクエスト/レスポンス body・
@@ -23,11 +23,11 @@
 //! （`.claude/rules/out-of-scope-tracking.md`）。
 //!
 //! # 呼び出し元・実行タイミング
-//! `cargo test -p bf-plugin-openapi`（CI `test` ジョブ、`--all-features` 構成に含まれる）
+//! `cargo test -p fandhe-backend-plugin-openapi`（CI `test` ジョブ、`--all-features` 構成に含まれる）
 //! から実行する。`scripts/accept/openapi-accept.sh` が本テストの実行結果を受け入れ判定の
 //! 一部として参照する。
 
-use bf_plugin_openapi::{ApiDoc, OPENAPI_JSON};
+use fandhe_backend_plugin_openapi::{ApiDoc, OPENAPI_JSON};
 use serde_json::Value;
 use utoipa::OpenApi;
 
@@ -161,7 +161,7 @@ fn component_schema_field_types_match_rust_struct_fields() {
 
 /// `ApiDoc::openapi()`（宣言側）を都度シリアライズし直しても `OPENAPI_JSON`（埋め込み実体）と
 /// 一致すること。`embed.rs` の鮮度保証テストと同一目的だが、本ファイルは齟齬照合スイート
-/// 単体で完結させるために独立して持つ（`cargo test -p bf-plugin-openapi
+/// 単体で完結させるために独立して持つ（`cargo test -p fandhe-backend-plugin-openapi
 /// openapi_consistency` のようなテスト名指定実行でも鮮度崩れを検知できるようにする）。
 #[test]
 fn embedded_json_still_matches_api_doc_declaration() {

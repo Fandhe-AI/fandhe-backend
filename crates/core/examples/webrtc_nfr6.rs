@@ -1,7 +1,7 @@
 //! TASK-8.4（#29）NFR-6 計測専用サーバ。
 //!
 //! `webrtc` feature 有効時に `Server::webrtc` へ [`WebRtcConfig`] を登録した構成で
-//! `examples/minimal.rs` と同一の `GET /`（`bf_routes::Router`）を提供する。
+//! `examples/minimal.rs` と同一の `GET /`（`fandhe_backend_routes::Router`）を提供する。
 //! `docs/acceptance/req8-webrtc-attack-surface.md`（NFR-6）が、本 example と
 //! `examples/minimal.rs`（`webrtc` feature 無効のベースライン）へそれぞれ無関係パス
 //! （`/`）へ負荷をかけ、RPS・p95 の比が誤差範囲（100.3〜100.8% 相当）に収まることを
@@ -16,15 +16,15 @@
 //!
 //! 動作確認手順:
 //! ```text
-//! $ cargo run --release --example webrtc_nfr6 -p backend-framework-core --features webrtc
+//! $ cargo run --release --example webrtc_nfr6 -p fandhe-backend-core --features webrtc
 //! $ curl -v http://127.0.0.1:3002/            # 200 応答（無関係パス）
 //! $ curl -v -X POST http://127.0.0.1:3002/rtc/offer -d '...'  # WebRTC シグナリング
 //! ```
 
-use backend_framework_core::Server;
-use bf_http::response::Response;
-use bf_plugin_webrtc::WebRtcConfig;
-use bf_routes::Router;
+use fandhe_backend_core::Server;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_webrtc::WebRtcConfig;
+use fandhe_backend_routes::Router;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {

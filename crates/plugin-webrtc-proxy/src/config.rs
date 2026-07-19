@@ -48,7 +48,7 @@ impl ProxyConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    /// use fandhe_backend_plugin_webrtc_proxy::ProxyConfig;
     ///
     /// let config = ProxyConfig::new("127.0.0.1:9000");
     /// assert_eq!(config.upstream_addr(), "127.0.0.1:9000");
@@ -66,7 +66,7 @@ impl ProxyConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    /// use fandhe_backend_plugin_webrtc_proxy::ProxyConfig;
     ///
     /// let config = ProxyConfig::new("127.0.0.1:9000").with_upstream_path("/webrtc/offer");
     /// assert_eq!(config.upstream_path(), "/webrtc/offer");
@@ -82,7 +82,7 @@ impl ProxyConfig {
     ///
     /// ```
     /// use std::time::Duration;
-    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    /// use fandhe_backend_plugin_webrtc_proxy::ProxyConfig;
     ///
     /// let config = ProxyConfig::new("127.0.0.1:9000")
     ///     .with_connect_timeout(Duration::from_millis(500));
@@ -99,7 +99,7 @@ impl ProxyConfig {
     ///
     /// ```
     /// use std::time::Duration;
-    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    /// use fandhe_backend_plugin_webrtc_proxy::ProxyConfig;
     ///
     /// let config = ProxyConfig::new("127.0.0.1:9000")
     ///     .with_request_timeout(Duration::from_millis(1500));
@@ -118,7 +118,7 @@ impl ProxyConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    /// use fandhe_backend_plugin_webrtc_proxy::ProxyConfig;
     ///
     /// let config = ProxyConfig::new("127.0.0.1:9000").with_max_offer_bytes(1024);
     /// assert_eq!(config.max_offer_bytes(), 1024);
@@ -136,7 +136,7 @@ impl ProxyConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    /// use fandhe_backend_plugin_webrtc_proxy::ProxyConfig;
     ///
     /// let config = ProxyConfig::new("127.0.0.1:9000").with_max_answer_bytes(2048);
     /// assert_eq!(config.max_answer_bytes(), 2048);
@@ -151,7 +151,7 @@ impl ProxyConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    /// use fandhe_backend_plugin_webrtc_proxy::ProxyConfig;
     ///
     /// let config = ProxyConfig::new("127.0.0.1:9000");
     /// assert_eq!(config.upstream_addr(), "127.0.0.1:9000");
@@ -165,7 +165,7 @@ impl ProxyConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    /// use fandhe_backend_plugin_webrtc_proxy::ProxyConfig;
     ///
     /// let config = ProxyConfig::new("127.0.0.1:9000");
     /// assert_eq!(config.upstream_path(), "/rtc/offer");
@@ -179,7 +179,7 @@ impl ProxyConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    /// use fandhe_backend_plugin_webrtc_proxy::ProxyConfig;
     ///
     /// let config = ProxyConfig::new("127.0.0.1:9000");
     /// assert!(config.connect_timeout().as_secs() > 0);
@@ -193,7 +193,7 @@ impl ProxyConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    /// use fandhe_backend_plugin_webrtc_proxy::ProxyConfig;
     ///
     /// let config = ProxyConfig::new("127.0.0.1:9000");
     /// assert!(config.request_timeout().as_secs() > 0);
@@ -207,7 +207,7 @@ impl ProxyConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    /// use fandhe_backend_plugin_webrtc_proxy::ProxyConfig;
     ///
     /// let config = ProxyConfig::new("127.0.0.1:9000");
     /// assert_eq!(config.max_offer_bytes(), 64 * 1024);
@@ -221,7 +221,7 @@ impl ProxyConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_webrtc_proxy::ProxyConfig;
+    /// use fandhe_backend_plugin_webrtc_proxy::ProxyConfig;
     ///
     /// let config = ProxyConfig::new("127.0.0.1:9000");
     /// assert_eq!(config.max_answer_bytes(), 64 * 1024);

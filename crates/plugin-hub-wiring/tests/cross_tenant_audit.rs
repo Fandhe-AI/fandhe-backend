@@ -8,16 +8,18 @@
 //! （`MemoryAuditSink`）のみで区別できることを検証する
 //! （受け入れ条件 1・2、docs/design/outbox-consent-integration.md 9 節）。
 
-use backend_framework_core::{Handler, Server, handle_connection};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use bf_http::request::RequestHead;
-use bf_http::response::Response;
-use bf_plugin_hub_wiring::audit::{AuditContext, AuditSink, MemoryAuditSink, TenantLookupOutcome};
-use bf_plugin_hub_wiring::auth::bearer_token;
-use bf_plugin_hub_wiring::jwks::SharedJwks;
-use bf_plugin_hub_wiring::jwt::verify_token;
-use bf_plugin_hub_wiring::{TenantGate, TenantGateConfig};
+use fandhe_backend_core::{Handler, Server, handle_connection};
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_hub_wiring::audit::{
+    AuditContext, AuditSink, MemoryAuditSink, TenantLookupOutcome,
+};
+use fandhe_backend_plugin_hub_wiring::auth::bearer_token;
+use fandhe_backend_plugin_hub_wiring::jwks::SharedJwks;
+use fandhe_backend_plugin_hub_wiring::jwt::verify_token;
+use fandhe_backend_plugin_hub_wiring::{TenantGate, TenantGateConfig};
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
 use std::sync::Arc;

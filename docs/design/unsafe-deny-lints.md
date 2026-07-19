@@ -113,7 +113,7 @@ edition 2024 では既定で deny だが、意図を明示するため workspace
        v
    }
    ```
-   `cargo clippy -p bf-http -- -D warnings` → `clippy::uninit_vec` および
+   `cargo clippy -p fandhe-backend-http -- -D warnings` → `clippy::uninit_vec` および
    `clippy::undocumented_unsafe_blocks` の 2 件でエラー（期待どおり）。
 
 2. **`#[allow]` による抑制の試行**: 上記関数に

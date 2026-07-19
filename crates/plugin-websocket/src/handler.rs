@@ -6,7 +6,7 @@
 //! `Message` 型を公開 API へ漏らさないよう、内部依存のバージョン更新から
 //! 絶縁する独自表現 [`WsMessage`] を介する（`docs/design/plugin-boundary.md`
 //! 5.2 節、依存方向はコア → 本クレートの単方向のみで、本クレートは
-//! `backend-framework-core` に依存しない制約は不変）。
+//! `fandhe-backend-core` に依存しない制約は不変）。
 //!
 //! `async fn` はトレイトオブジェクトと非互換のため、`crates/plugin-graphql`
 //! の先例（`BoxExecuteFn`）に倣い、追加の依存を増やさず既存の `futures-util`
@@ -103,7 +103,7 @@ pub trait WsMessageHandler: Send + Sync + 'static {
 /// # Examples
 ///
 /// ```
-/// use bf_plugin_websocket::handler::{EchoHandler, WsMessage, WsMessageHandler, WsOutcome};
+/// use fandhe_backend_plugin_websocket::handler::{EchoHandler, WsMessage, WsMessageHandler, WsOutcome};
 ///
 /// # #[tokio::main(flavor = "current_thread")]
 /// # async fn main() {

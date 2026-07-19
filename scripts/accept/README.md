@@ -113,7 +113,7 @@ FAIL ではなく SKIP として記録され、終了コードには影響しな
 
 検証内容:
 
-1. `webrtc-proxy`・`graphql` の 2 feature が `backend-framework-core` に存在すること
+1. `webrtc-proxy`・`graphql` の 2 feature が `fandhe-backend-core` に存在すること
    （`cargo metadata` + `jq`）
 2. `scripts/pay-for-what-you-use-check.sh`（TASK-2.2）を呼び出し、feature 無効時の
    依存・unsafe・バイナリサイズ完全除外を確認（動的列挙のため graphql 追加時も
@@ -211,13 +211,13 @@ PASS を偽らない）。手動計測手順・実行結果は
 
 検証内容:
 
-1. `webrtc` feature 無効時、`backend-framework-core` の依存ツリーに webrtc 系依存が
+1. `webrtc` feature 無効時、`fandhe-backend-core` の依存ツリーに webrtc 系依存が
    一切現れない（`cargo tree`）
 2. `crates/plugin-webrtc` 自コードの unsafe が 0 件（grep。依存側 `webrtc-rs` の
    unsafe 増分は PoC-5 実測値を参考記録として引用するのみ）
 3. 全 feature 構成で `cargo audit` / `cargo deny check` 違反 0 件（`scripts/dep-audit.sh`
    呼び出し）
-4. `webrtc`・`webrtc-proxy` の 2 feature が `backend-framework-core` に存在し、
+4. `webrtc`・`webrtc-proxy` の 2 feature が `fandhe-backend-core` に存在し、
    `crates/plugin-webrtc`・`crates/plugin-webrtc-proxy` がクレート境界で相互非依存
    であること
 5. NFR-6（無関係パスへの RPS・レイテンシ影響）。計測用バイナリ
@@ -226,7 +226,7 @@ PASS を偽らない）。手動計測手順・実行結果は
    実務許容帯 [95%, 105%]（FAIL 境界）・狭義 NFR-6 帯 [100.3%, 100.8%]（PASS/WARN 境界）
    と照合する。揃っていなければ SKIP + 実行手順を案内する
 
-前提: `cargo build --release -p backend-framework-core --example minimal
+前提: `cargo build --release -p fandhe-backend-core --example minimal
 --no-default-features` と `... --example webrtc_nfr6 --features webrtc` を事前実行
 （本スクリプトは自動ビルドしない）。
 
@@ -249,15 +249,15 @@ PASS を偽らない）。手動計測手順・実行結果は
 検証内容:
 
 1. **A: `websocket` feature 無効時の依存完全除外** — `cargo tree -p
-   backend-framework-core -e normal --no-default-features` に
-   `tokio-tungstenite` / `tungstenite` / `bf-plugin-websocket` 系依存が一切現れない
+   fandhe-backend-core -e normal --no-default-features` に
+   `tokio-tungstenite` / `tungstenite` / `fandhe-backend-plugin-websocket` 系依存が一切現れない
    こと。`scripts/pay-for-what-you-use-check.sh`（動的列挙のため websocket feature も
    自動検証対象）も併走し、依存・unsafe・バイナリサイズ完全除外を二重に確認する
 2. **A': `crates/plugin-websocket` 自コードの unsafe が 0 件**（grep）
-3. **B: 回帰テスト** — `cargo test -p backend-framework-core --features websocket`
+3. **B: 回帰テスト** — `cargo test -p fandhe-backend-core --features websocket`
    （境界テスト `websocket_upgrade.rs`・`websocket_respawn.rs`）・`cargo test -p
-   bf-plugin-websocket`（RFC 6455 ハンドシェイク契約テスト）・`cargo test -p
-   backend-framework-core --no-default-features`（フォールスルー陰性対照
+   fandhe-backend-plugin-websocket`（RFC 6455 ハンドシェイク契約テスト）・`cargo test -p
+   fandhe-backend-core --no-default-features`（フォールスルー陰性対照
    `websocket_upgrade_disabled.rs`）がすべて成功すること
 4. **C: レイテンシ計測（p95・劣化定量化）** — `WEBSOCKET_ACCEPT_RESULT_JSON` env に
    `benches/bench-ws-load.sh` の `RESULT_JSON` 出力パスを指定すると、ティア別
@@ -271,9 +271,9 @@ PASS を偽らない）。手動計測手順・実行結果は
    狭義帯 [100.3%, 100.8%]（PASS/WARN 境界）と照合する。揃っていなければ SKIP + 実行
    手順を案内する
 
-前提: `cargo build --release -p backend-framework-core --example minimal
+前提: `cargo build --release -p fandhe-backend-core --example minimal
 --no-default-features` と `... --example ws_nfr6 --features websocket` を事前実行
-（基準 D）。基準 C は追加で `cargo build --release -p backend-framework-core
+（基準 D）。基準 C は追加で `cargo build --release -p fandhe-backend-core
 --features websocket --example ws_echo`・`cargo build --release -p axum-ref --features
 ws --target-dir target/ws-bench`・`cargo build --release -p ws-load-client` の後、
 `benches/bench-ws-load.sh` を `RESULT_JSON` 指定で実行しておく（本スクリプトは自動
@@ -304,17 +304,17 @@ example である点に注意。ベースライン `examples/minimal.rs` も `cu
 
 検証内容:
 
-1. `graphql` feature 無効時、`backend-framework-core` の依存ツリーに
-   `async-graphql` / `bf-plugin-graphql` 系依存が一切現れない
-   （`cargo tree -p backend-framework-core -e normal --no-default-features`。
+1. `graphql` feature 無効時、`fandhe-backend-core` の依存ツリーに
+   `async-graphql` / `fandhe-backend-plugin-graphql` 系依存が一切現れない
+   （`cargo tree -p fandhe-backend-core -e normal --no-default-features`。
    `-e normal --no-default-features` は `crates/core` がテスト専用に持つ
    `async-graphql` dev-dependency を除外するために必須）。
    `scripts/pay-for-what-you-use-check.sh`（動的列挙のため graphql feature も自動
    検証対象）も併走し、依存・unsafe・バイナリサイズ完全除外を二重に確認する
 2. `crates/plugin-graphql` 自コードの unsafe が 0 件（grep）
-3. 最小疎通（クエリ実行と結果 JSON の返却）。`cargo test -p backend-framework-core
+3. 最小疎通（クエリ実行と結果 JSON の返却）。`cargo test -p fandhe-backend-core
    --features graphql`（境界テスト `plugin_graphql_boundary.rs`）・
-   `cargo test -p bf-plugin-graphql`（契約テスト）に加え、ビルド済み
+   `cargo test -p fandhe-backend-plugin-graphql`（契約テスト）に加え、ビルド済み
    `graphql_nfr6` バイナリがあれば curl で `POST /graphql` に実際にクエリを送り
    `data.hello == "world"` を live 検証する
 4. NFR（無関係パスへの RPS・レイテンシ影響）。計測用バイナリ
@@ -324,7 +324,7 @@ example である点に注意。ベースライン `examples/minimal.rs` も `cu
    [100.3%, 100.8%]（PASS/WARN 境界）と照合する。揃っていなければ SKIP + 実行手順を
    案内する
 
-前提: `cargo build --release -p backend-framework-core --example minimal
+前提: `cargo build --release -p fandhe-backend-core --example minimal
 --no-default-features` と `... --example graphql_nfr6 --features graphql` を事前実行
 （本スクリプトは自動ビルドしない）。
 
@@ -347,10 +347,10 @@ example である点に注意。ベースライン `examples/minimal.rs` も `cu
 検証内容:
 
 1. **A: `tracing` feature 無効時の依存完全除外** — `cargo tree -p
-   backend-framework-core -e normal --no-default-features` に `bf-plugin-tracing` /
+   fandhe-backend-core -e normal --no-default-features` に `fandhe-backend-plugin-tracing` /
    `tracing-appender` / `tracing-subscriber` が一切現れないこと（pay-for-what-you-use）
-2. **B: テスト回帰** — `cargo test -p backend-framework-core`（feature 無効/`tracing`
-   有効の両方）・`cargo test -p bf-plugin-tracing` が成功すること
+2. **B: テスト回帰** — `cargo test -p fandhe-backend-core`（feature 無効/`tracing`
+   有効の両方）・`cargo test -p fandhe-backend-plugin-tracing` が成功すること
 3. **C: NFR** — TASK-10.1〜10.3 の全緩和策適用後、`GET /health` への RPS 劣化 5% 以内
    （RPS 比 ≥95%）・p95 悪化 110% 以内（p95 比 ≤110%）を `benches/tracing-nfr-bench.sh`
    の実測（シナリオ A）で確認する。`webrtc-accept.sh` / `graphql-accept.sh` の NFR-6
@@ -360,10 +360,10 @@ example である点に注意。ベースライン `examples/minimal.rs` も `cu
    `docs/dep-impact/records.md` の plugin-tracing エントリ・`docs/design/
    tracing-integration.md` の存在を grep で機械検証する
 5. **E（TASK-10.5）: 依存クレート数増分の機械検証** — `cargo tree -p
-   backend-framework-core --features tracing` の union 展開差分件数を算出し、
+   fandhe-backend-core --features tracing` の union 展開差分件数を算出し、
    `docs/dep-impact/records.md` 記録値（+24 クレート）と許容帯（±5）で突合する
 
-前提: `cargo build --release -p backend-framework-core --example minimal
+前提: `cargo build --release -p fandhe-backend-core --example minimal
 --no-default-features` と `... --example tracing_nfr --features tracing` を事前実行
 （本スクリプトは自動ビルドしない）。
 
@@ -420,7 +420,7 @@ example である点に注意。ベースライン `examples/minimal.rs` も `cu
 検証内容:
 
 1. **A: 越境遮断・フェイルクローズ受け入れテスト** — `cargo test -p
-   bf-plugin-hub-wiring --test hub_acceptance`（PoC-6 相当の実データ入りマルチ
+   fandhe-backend-plugin-hub-wiring --test hub_acceptance`（PoC-6 相当の実データ入りマルチ
    テナントハンドラで、越境クエリ全件遮断・JWT 欠落/不正時のフェイルクローズ・
    鍵ローテーション・検証結果キャッシュ共有を固定する 16 テスト）が全件 PASS
    すること
@@ -430,16 +430,16 @@ example である点に注意。ベースライン `examples/minimal.rs` も `cu
    （`scripts/accept/lib/hub-wiring-loc.sh`）。ハンドラ領域（`build_router`）に
    手書き JWT 検証・JWKS パース等の配線シンボルが現れないことも同ライブラリで
    grep 検証する
-3. **C: 依存方向・pay-for-what-you-use** — `cargo tree -p backend-framework-core`
-   に `bf-plugin-hub-wiring` が一切現れないこと（依存逆転型プラグインの維持）
-4. **D: NFR-6** — `bf-plugin-hub-wiring` をリンクした hub サービス（`BF_HUB_GATE=off`
+3. **C: 依存方向・pay-for-what-you-use** — `cargo tree -p fandhe-backend-core`
+   に `fandhe-backend-plugin-hub-wiring` が一切現れないこと（依存逆転型プラグインの維持）
+4. **D: NFR-6** — `fandhe-backend-plugin-hub-wiring` をリンクした hub サービス（`BF_HUB_GATE=off`
    で `TenantGate` 未登録）が無関係パス（`GET /`）へ与える影響を
    `benches/hub-nfr6-bench.sh` の実測で確認する。`webrtc-accept.sh` /
    `graphql-accept.sh` と同一の NFR-6 判定帯（狭義 100.3〜100.8%・実務 [95%,105%]）を
    使う。ビルド済みバイナリ・`oha` が揃っていなければ SKIP + 実行手順を案内する
 
-前提: `cargo build --release -p backend-framework-core --example minimal
---no-default-features` と `cargo build --release -p bf-plugin-hub-wiring --example
+前提: `cargo build --release -p fandhe-backend-core --example minimal
+--no-default-features` と `cargo build --release -p fandhe-backend-plugin-hub-wiring --example
 hub_service_demo` を事前実行（本スクリプトは自動ビルドしない）。
 
 判定ロジックのオフライン・セルフテスト（cargo・ネットワーク非依存）は

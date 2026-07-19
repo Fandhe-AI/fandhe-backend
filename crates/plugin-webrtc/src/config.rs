@@ -86,7 +86,7 @@ impl WebRtcConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_webrtc::WebRtcConfig;
+    /// use fandhe_backend_plugin_webrtc::WebRtcConfig;
     ///
     /// let config = WebRtcConfig::new();
     /// assert_eq!(config.max_offer_bytes(), 64 * 1024);
@@ -102,7 +102,7 @@ impl WebRtcConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_webrtc::WebRtcConfig;
+    /// use fandhe_backend_plugin_webrtc::WebRtcConfig;
     ///
     /// let config = WebRtcConfig::new().with_max_offer_bytes(1024);
     /// assert_eq!(config.max_offer_bytes(), 1024);
@@ -118,7 +118,7 @@ impl WebRtcConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_webrtc::WebRtcConfig;
+    /// use fandhe_backend_plugin_webrtc::WebRtcConfig;
     ///
     /// let config = WebRtcConfig::new().with_max_peer_connections(4);
     /// assert_eq!(config.max_peer_connections(), 4);
@@ -135,7 +135,7 @@ impl WebRtcConfig {
     ///
     /// ```
     /// use std::time::Duration;
-    /// use bf_plugin_webrtc::WebRtcConfig;
+    /// use fandhe_backend_plugin_webrtc::WebRtcConfig;
     ///
     /// let config = WebRtcConfig::new().with_signaling_timeout(Duration::from_secs(3));
     /// assert_eq!(config.signaling_timeout(), Duration::from_secs(3));

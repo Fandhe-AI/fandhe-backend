@@ -102,8 +102,8 @@ impl std::error::Error for BodyError {}
 /// # Examples
 ///
 /// ```
-/// use bf_http::body::{body_length, BodyLength};
-/// use bf_http::request::{parse_request_head, ParseOutcome};
+/// use fandhe_backend_http::body::{body_length, BodyLength};
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
 ///
 /// let buf = b"POST /items HTTP/1.1\r\nContent-Length: 4\r\n\r\nabcd";
 /// let head = match parse_request_head(buf).unwrap() {
@@ -116,8 +116,8 @@ impl std::error::Error for BodyError {}
 /// `Transfer-Encoding: chunked` 単独指定は [`BodyLength::Chunked`] になる。
 ///
 /// ```
-/// use bf_http::body::{body_length, BodyLength};
-/// use bf_http::request::{parse_request_head, ParseOutcome};
+/// use fandhe_backend_http::body::{body_length, BodyLength};
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
 ///
 /// let buf = b"POST /items HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nabcd\r\n0\r\n\r\n";
 /// let head = match parse_request_head(buf).unwrap() {

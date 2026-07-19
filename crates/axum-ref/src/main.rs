@@ -14,7 +14,7 @@
 //!
 //! `crates/core` とは完全に独立したバイナリクレートであり、依存はここで完結する
 //! （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
-//! `cargo tree -p backend-framework-core` で axum/tokio 等が現れないことを
+//! `cargo tree -p fandhe-backend-core` で axum/tokio 等が現れないことを
 //! 検証可能にしておくことが本クレート追加の前提条件。
 //!
 //! workspace 全体の依存方向規約（依存方向: server → routes → http::*、
@@ -121,7 +121,7 @@ async fn echo(
 
 /// `GET /ws`（`ws` feature 限定、TASK-4.3 / #24）の WebSocket アップグレード入口。
 ///
-/// `bf-plugin-websocket::session::run_echo_session`（`crates/plugin-websocket`）と
+/// `fandhe-backend-plugin-websocket::session::run_echo_session`（`crates/plugin-websocket`）と
 /// 等価な意味論（Text/Binary はそのままエコー、Close 受信でループを終える）に
 /// 保つことで、`benches/bench-ws-load.sh` の fullscratch/axum 比較を機能差ではなく
 /// 実装差（RSS・CPU）のみに帰属させる。Ping/Pong は axum の内部実装

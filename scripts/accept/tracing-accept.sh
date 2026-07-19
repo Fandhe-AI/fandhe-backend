@@ -3,11 +3,11 @@
 # TASK-10.5（#60）依存インパクト記録・文書化の受け入れ検証オーケストレータ。
 #
 # `docs/spec/05-tasks.md` TASK-10.4 / TASK-10.5 の受け入れ基準を機械検証する:
-#   A: `tracing` feature 無効時、`backend-framework-core` の依存ツリーに
-#      `bf-plugin-tracing` / `tracing*` 系依存が一切現れない
+#   A: `tracing` feature 無効時、`fandhe-backend-core` の依存ツリーに
+#      `fandhe-backend-plugin-tracing` / `tracing*` 系依存が一切現れない
 #      （pay-for-what-you-use の完全除外、`.claude/rules/pay-for-what-you-use.md`）
-#   B: 全 feature 構成でのテスト回帰（`cargo test -p backend-framework-core`
-#      無効/有効の両方、`cargo test -p bf-plugin-tracing`）が成功する
+#   B: 全 feature 構成でのテスト回帰（`cargo test -p fandhe-backend-core`
+#      無効/有効の両方、`cargo test -p fandhe-backend-plugin-tracing`）が成功する
 #   C: NFR（TASK-10.1〜10.3 の全緩和策適用後、`GET /health` への RPS 劣化 5% 以内・
 #      p95 悪化 110% 以内）。ビルド済み計測用バイナリ（`target/release/examples/minimal`・
 #      `target/release/examples/tracing_nfr`）と `oha` が揃っていれば
@@ -18,7 +18,7 @@
 #      （`docs/dep-impact/records.md` の plugin-tracing エントリ・
 #      `docs/design/tracing-integration.md` の存在を grep）
 #   E（TASK-10.5）: 依存クレート数増分の機械検証（`cargo tree -p
-#      backend-framework-core --features tracing` の union 展開差分件数を算出し、
+#      fandhe-backend-core --features tracing` の union 展開差分件数を算出し、
 #      `docs/dep-impact/records.md` 記録値（+24）と突合）。バイナリサイズ・RSS は
 #      A/C チェックと同じくビルド済みバイナリが無ければフェイルクローズで SKIP
 #
@@ -63,29 +63,29 @@ check_dep_exclusion() {
     # tracing-subscriber を dev-dependency として持つため、これを含めると
     # 「残留」を誤検知する（graphql-accept.sh の check_dep_exclusion と同一対策）。
     local tree_output disabled_count
-    if ! tree_output="$(cargo tree -p backend-framework-core -e normal --no-default-features 2>/dev/null)"; then
-        record_fail "A: tracing 無効時の依存完全除外" "cargo tree -p backend-framework-core -e normal --no-default-features 自体が失敗し測定不能"
+    if ! tree_output="$(cargo tree -p fandhe-backend-core -e normal --no-default-features 2>/dev/null)"; then
+        record_fail "A: tracing 無効時の依存完全除外" "cargo tree -p fandhe-backend-core -e normal --no-default-features 自体が失敗し測定不能"
         return
     fi
-    disabled_count="$(printf '%s\n' "${tree_output}" | grep -c -E 'bf-plugin-tracing|tracing-appender|tracing-subscriber' || true)"
+    disabled_count="$(printf '%s\n' "${tree_output}" | grep -c -E 'fandhe-backend-plugin-tracing|tracing-appender|tracing-subscriber' || true)"
 
     if [ "${disabled_count}" -eq 0 ]; then
-        record_pass "A: tracing 無効時の依存完全除外" "cargo tree -p backend-framework-core -e normal --no-default-features | grep -c -E 'bf-plugin-tracing|tracing-appender|tracing-subscriber' = 0"
+        record_pass "A: tracing 無効時の依存完全除外" "cargo tree -p fandhe-backend-core -e normal --no-default-features | grep -c -E 'fandhe-backend-plugin-tracing|tracing-appender|tracing-subscriber' = 0"
     else
-        record_fail "A: tracing 無効時の依存完全除外" "tracing 系依存が ${disabled_count} 件残留（cargo tree -p backend-framework-core -e normal --no-default-features）"
+        record_fail "A: tracing 無効時の依存完全除外" "tracing 系依存が ${disabled_count} 件残留（cargo tree -p fandhe-backend-core -e normal --no-default-features）"
     fi
 
     # 陽性対照: --features tracing では出現すること（列挙腐敗・配線切れの検知）。
     local enabled_tree_output enabled_count
-    if ! enabled_tree_output="$(cargo tree -p backend-framework-core -e normal --no-default-features --features tracing 2>/dev/null)"; then
-        record_warn "A補足: tracing 有効時の依存インパクト（陽性対照）" "cargo tree -p backend-framework-core -e normal --no-default-features --features tracing 自体が失敗し測定不能"
+    if ! enabled_tree_output="$(cargo tree -p fandhe-backend-core -e normal --no-default-features --features tracing 2>/dev/null)"; then
+        record_warn "A補足: tracing 有効時の依存インパクト（陽性対照）" "cargo tree -p fandhe-backend-core -e normal --no-default-features --features tracing 自体が失敗し測定不能"
         return
     fi
-    enabled_count="$(printf '%s\n' "${enabled_tree_output}" | grep -c -E 'bf-plugin-tracing|tracing-appender|tracing-subscriber' || true)"
+    enabled_count="$(printf '%s\n' "${enabled_tree_output}" | grep -c -E 'fandhe-backend-plugin-tracing|tracing-appender|tracing-subscriber' || true)"
     if [ "${enabled_count}" -eq 0 ]; then
-        record_fail "A補足: tracing 有効時の依存インパクト（陽性対照）" "cargo tree -p backend-framework-core -e normal --no-default-features --features tracing に tracing 系依存が 0 件（配線切れ・列挙腐敗の疑い）"
+        record_fail "A補足: tracing 有効時の依存インパクト（陽性対照）" "cargo tree -p fandhe-backend-core -e normal --no-default-features --features tracing に tracing 系依存が 0 件（配線切れ・列挙腐敗の疑い）"
     else
-        record_warn "A補足: tracing 有効時の依存インパクト（陽性対照）" "cargo tree -p backend-framework-core -e normal --no-default-features --features tracing | grep -c -E 'bf-plugin-tracing|tracing-appender|tracing-subscriber' = ${enabled_count}"
+        record_warn "A補足: tracing 有効時の依存インパクト（陽性対照）" "cargo tree -p fandhe-backend-core -e normal --no-default-features --features tracing | grep -c -E 'fandhe-backend-plugin-tracing|tracing-appender|tracing-subscriber' = ${enabled_count}"
     fi
 }
 
@@ -96,33 +96,33 @@ check_regression() {
     local out status
 
     set +e
-    out="$(cargo test -p backend-framework-core --no-default-features 2>&1)"
+    out="$(cargo test -p fandhe-backend-core --no-default-features 2>&1)"
     status=$?
     set -e
     if [ "${status}" -eq 0 ]; then
-        record_pass "B: cargo test -p backend-framework-core --no-default-features" "tracing feature 無効時のフォールスルーを含め成功"
+        record_pass "B: cargo test -p fandhe-backend-core --no-default-features" "tracing feature 無効時のフォールスルーを含め成功"
     else
-        record_fail "B: cargo test -p backend-framework-core --no-default-features" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
+        record_fail "B: cargo test -p fandhe-backend-core --no-default-features" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
     fi
 
     set +e
-    out="$(cargo test -p backend-framework-core --features tracing 2>&1)"
+    out="$(cargo test -p fandhe-backend-core --features tracing 2>&1)"
     status=$?
     set -e
     if [ "${status}" -eq 0 ]; then
-        record_pass "B: cargo test -p backend-framework-core --features tracing" "plugin_tracing_boundary.rs（サンプリング判定・除外パス）を含め成功"
+        record_pass "B: cargo test -p fandhe-backend-core --features tracing" "plugin_tracing_boundary.rs（サンプリング判定・除外パス）を含め成功"
     else
-        record_fail "B: cargo test -p backend-framework-core --features tracing" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
+        record_fail "B: cargo test -p fandhe-backend-core --features tracing" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
     fi
 
     set +e
-    out="$(cargo test -p bf-plugin-tracing 2>&1)"
+    out="$(cargo test -p fandhe-backend-plugin-tracing 2>&1)"
     status=$?
     set -e
     if [ "${status}" -eq 0 ]; then
-        record_pass "B: cargo test -p bf-plugin-tracing" "Sampler / TracingConfig / TracingLayer の契約テストが成功"
+        record_pass "B: cargo test -p fandhe-backend-plugin-tracing" "Sampler / TracingConfig / TracingLayer の契約テストが成功"
     else
-        record_fail "B: cargo test -p bf-plugin-tracing" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
+        record_fail "B: cargo test -p fandhe-backend-plugin-tracing" "非 0 終了: $(echo "${out}" | tail -10 | tr '\n' ' ')"
     fi
 }
 
@@ -138,7 +138,7 @@ check_nfr() {
         return
     fi
     if [ ! -x "${baseline_bin}" ] || [ ! -x "${tracing_bin}" ]; then
-        record_skip "C: NFR サンプリング適用後の性能影響" "計測用バイナリ未ビルド。'cargo build --release -p backend-framework-core --example minimal --no-default-features' と '... --example tracing_nfr --features tracing' を実行後、benches/tracing-nfr-bench.sh を実行して再判定すること"
+        record_skip "C: NFR サンプリング適用後の性能影響" "計測用バイナリ未ビルド。'cargo build --release -p fandhe-backend-core --example minimal --no-default-features' と '... --example tracing_nfr --features tracing' を実行後、benches/tracing-nfr-bench.sh を実行して再判定すること"
         return
     fi
 
@@ -202,10 +202,10 @@ check_dep_count_increment() {
     # （records.md の既存手法、A チェックの grep -c は行出現数のみで実クレート数
     # とは一致しないため別集計とする）。
     local disabled_pkgs enabled_pkgs disabled_count enabled_count new_count
-    disabled_pkgs="$(cargo tree -p backend-framework-core -e normal --no-default-features 2>/dev/null \
+    disabled_pkgs="$(cargo tree -p fandhe-backend-core -e normal --no-default-features 2>/dev/null \
         | sed -E 's/^[│├└─ ]*//; s/ \(\*\)$//' \
         | grep -E '^[a-zA-Z0-9_-]+ v[0-9]' | sort -u)"
-    enabled_pkgs="$(cargo tree -p backend-framework-core -e normal --no-default-features --features tracing 2>/dev/null \
+    enabled_pkgs="$(cargo tree -p fandhe-backend-core -e normal --no-default-features --features tracing 2>/dev/null \
         | sed -E 's/^[│├└─ ]*//; s/ \(\*\)$//' \
         | grep -E '^[a-zA-Z0-9_-]+ v[0-9]' | sort -u)"
 
@@ -214,12 +214,12 @@ check_dep_count_increment() {
     # ハードコードされた +24 の許容帯へ偶然一致して「無効時 0 件」という虚偽の
     # PASS/WARN を出しかねない（Bugbot 指摘、PR #160 review-4727137460）。
     if [ -z "${disabled_pkgs}" ]; then
-        record_fail "E: 依存クレート数増分の機械検証" "cargo tree -p backend-framework-core -e normal --no-default-features が空・失敗（無効時ベースライン取得不可のため新規クレート数を算出不能）"
+        record_fail "E: 依存クレート数増分の機械検証" "cargo tree -p fandhe-backend-core -e normal --no-default-features が空・失敗（無効時ベースライン取得不可のため新規クレート数を算出不能）"
         return
     fi
 
     if [ -z "${enabled_pkgs}" ]; then
-        record_fail "E: 依存クレート数増分の機械検証" "cargo tree -p backend-framework-core -e normal --no-default-features --features tracing が空・失敗"
+        record_fail "E: 依存クレート数増分の機械検証" "cargo tree -p fandhe-backend-core -e normal --no-default-features --features tracing が空・失敗"
         return
     fi
 

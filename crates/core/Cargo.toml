@@ -1,5 +1,5 @@
 [package]
-name = "backend-framework-core"
+name = "fandhe-backend-core"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ description = "backend-framework の最小コア（HTTP/1.1・3 種拡張点）�
 # イシュー #94（OSS 公開準備）: 正式名称確定・リポジトリ public 化・公開対象クレートの
 # 最終選定（`docs/design/crates-io-release.md` 1 節の前提条件）が完了するまで、
 # 意図しない `cargo publish` 事故をフェイルクローズで防ぐ。他の 11 クレート
-# （`bf-http` / `bf-routes` / `bf-plugin-*` / `axum-ref` / `ws-load-client`）は
+# （`fandhe-backend-http` / `fandhe-backend-routes` / `fandhe-backend-plugin-*` / `axum-ref` / `ws-load-client`）は
 # 既に `publish = false` を設定済みで、本クレートのみ未設定だった。公開判断が
 # 下った際の解除手順は `docs/design/crates-io-release.md` 4〜5 節を参照。
 publish = false
@@ -19,48 +19,48 @@ workspace = true
 # pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）:
 # コアは重い依存を持ち込まない。workspace 内クレートのほか、コアループ
 # （接続受理・リクエストループ、TASK-1.4-2 / #70）が必要とする最小限の tokio
-# feature のみを追加する。bf-http は sans-IO な HTTP/1.1 パーサ
+# feature のみを追加する。fandhe-backend-http は sans-IO な HTTP/1.1 パーサ
 # （crates/http、TASK-1.3）を提供する下位層であり、依存方向は
 # server → routes → http::* の一方向（TASK-1.5 で機械的保証）に従う。
 #
-# tokio の feature は次の 5 つに限定する（`cargo tree -p backend-framework-core`
+# tokio の feature は次の 5 つに限定する（`cargo tree -p fandhe-backend-core`
 # でこれ以外の重い依存が増えていないことを確認する）:
 # - `rt` / `net`: TCP リスナーと非同期ランタイム（接続受理ループ本体）
-# - `io-util`: bf-http::connection::read_request が要求する AsyncRead/AsyncWrite
+# - `io-util`: fandhe-backend-http::connection::read_request が要求する AsyncRead/AsyncWrite
 # - `time`: 読み取りタイムアウト（スロークライアント対策、.claude/rules/security.md）
 # - `sync`: accept ループの同時接続数上限（`tokio::sync::Semaphore`、
 #   リソース枯渇 DoS 対策、.claude/rules/security.md）
 #
-# bf-routes（crates/routes、TASK-1.5 / #14）は依存方向グラフ上のエッジ
+# fandhe-backend-routes（crates/routes、TASK-1.5 / #14）は依存方向グラフ上のエッジ
 # `server → routes` を実体化する唯一の workspace 内依存追加。外部 crates.io
-# 依存はここでも増えない（bf-routes 自体が bf-http のみに依存する中間層）。
+# 依存はここでも増えない（fandhe-backend-routes 自体が fandhe-backend-http のみに依存する中間層）。
 [dependencies]
-bf-http = { path = "../http" }
-bf-routes = { path = "../routes" }
+fandhe-backend-http = { path = "../http" }
+fandhe-backend-routes = { path = "../routes" }
 tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time", "sync"] }
 
 # TASK-2.1（#18）: `webrtc-proxy` feature 有効時のみ依存として解決される
 # プラグイン境界の第 1 号（`optional = true` + `dep:` 構文、
-# .claude/rules/pay-for-what-you-use.md）。`dep:bf-plugin-webrtc-proxy` は
-# implicit feature（`bf-plugin-webrtc-proxy` という名前の feature が暗黙に
+# .claude/rules/pay-for-what-you-use.md）。`dep:fandhe-backend-plugin-webrtc-proxy` は
+# implicit feature（`fandhe-backend-plugin-webrtc-proxy` という名前の feature が暗黙に
 # 生えてしまう挙動）を作らず、`webrtc-proxy` feature 名だけを公開 API とする。
-# feature 無効時は `cargo tree -p backend-framework-core` に本行の依存が
+# feature 無効時は `cargo tree -p fandhe-backend-core` に本行の依存が
 # 一切現れない（`docs/design/plugin-boundary.md` の検証コマンドを参照）。
-bf-plugin-webrtc-proxy = { path = "../plugin-webrtc-proxy", optional = true }
+fandhe-backend-plugin-webrtc-proxy = { path = "../plugin-webrtc-proxy", optional = true }
 
 # TASK-8.1（#26）: in-process WebRTC プラグイン（`webrtc-rs` 直接依存）。
 # `webrtc-proxy`（上記、別プロセス切り出し型）とはクレート境界で完全に分離しており、
-# `webrtc` feature 無効時は `cargo tree -p backend-framework-core` に本行の依存が
+# `webrtc` feature 無効時は `cargo tree -p fandhe-backend-core` に本行の依存が
 # 一切現れない（TASK-2.1 と同一のプラグイン境界パターン、
 # .claude/rules/pay-for-what-you-use.md）。
-bf-plugin-webrtc = { path = "../plugin-webrtc", optional = true }
+fandhe-backend-plugin-webrtc = { path = "../plugin-webrtc", optional = true }
 
 # TASK-4.1（#22）: `websocket` feature 有効時のみ依存として解決される
-# Upgrade 型プラグインの第 1 号。`bf-plugin-websocket` は循環依存を避けるため
-# `backend-framework-core` に依存しない（`crates/plugin-websocket/src/lib.rs`
+# Upgrade 型プラグインの第 1 号。`fandhe-backend-plugin-websocket` は循環依存を避けるため
+# `fandhe-backend-core` に依存しない（`crates/plugin-websocket/src/lib.rs`
 # の doc・`docs/design/plugin-boundary.md` 6.1 節を参照）。`UpgradeHandler`
 # trait を実装するアダプタはコア側（`crates/core/src/server.rs`）に置く。
-bf-plugin-websocket = { path = "../plugin-websocket", optional = true }
+fandhe-backend-plugin-websocket = { path = "../plugin-websocket", optional = true }
 
 # TASK-2.4（#21）で確立した第 2 のパスインターセプト型プラグイン境界
 # インスタンス（REQ-2「少なくとも 2 種のプラグインを feature flag で着脱
@@ -69,32 +69,32 @@ bf-plugin-websocket = { path = "../plugin-websocket", optional = true }
 # 推移的依存（PoC 実測 +95 クレート）は本クレートの内部にのみ現れ、
 # webrtc-proxy と同じく `dep:` 構文で feature 無効時は本行ごと依存グラフ
 # から完全除外される。
-bf-plugin-graphql = { path = "../plugin-graphql", optional = true }
+fandhe-backend-plugin-graphql = { path = "../plugin-graphql", optional = true }
 
 # TASK-10.1（#56）: `tracing` feature 有効時のみ依存として解決される可観測性
-# プラグイン。`bf-plugin-websocket` と同一の非循環パターンで
-# `backend-framework-core` に依存しない（`crates/plugin-tracing/src/lib.rs`
+# プラグイン。`fandhe-backend-plugin-websocket` と同一の非循環パターンで
+# `fandhe-backend-core` に依存しない（`crates/plugin-tracing/src/lib.rs`
 # の doc・`docs/design/plugin-boundary.md` 6.1 節を参照）。`Middleware` trait を
 # 実装するアダプタ（`TracingMiddleware`）はコア側（`crates/core/src/server.rs`）
-# に置く。`tracing` feature 無効時は `cargo tree -p backend-framework-core` に
+# に置く。`tracing` feature 無効時は `cargo tree -p fandhe-backend-core` に
 # 本行の依存（および推移的な `tracing` / `tracing-subscriber` / `tracing-appender`）
 # が一切現れない。
-bf-plugin-tracing = { path = "../plugin-tracing", optional = true }
+fandhe-backend-plugin-tracing = { path = "../plugin-tracing", optional = true }
 
 # feature 命名規約（`docs/design/plugin-boundary.md`）: プラグインクレート名
-# （`bf-plugin-<name>`）から `bf-plugin-` 接頭辞を除いた `<name>` を feature 名
+# （`fandhe-backend-plugin-<name>`）から `fandhe-backend-plugin-` 接頭辞を除いた `<name>` を feature 名
 # とする。`default = []` によりビルド時に何も選択しなければプラグインは
 # コード・依存・unsafe とも一切バイナリに含まれない。
 [features]
 default = []
-webrtc-proxy = ["dep:bf-plugin-webrtc-proxy"]
+webrtc-proxy = ["dep:fandhe-backend-plugin-webrtc-proxy"]
 # TASK-8.1（#26）。`webrtc-proxy` と同時に `--all-features` で有効化されても
 # 依存グラフ上は独立（`crate::plugin::try_intercept` の doc・
 # `docs/design/plugin-boundary.md` の優先順位の記述を参照）。
-webrtc = ["dep:bf-plugin-webrtc"]
-websocket = ["dep:bf-plugin-websocket"]
-graphql = ["dep:bf-plugin-graphql"]
-tracing = ["dep:bf-plugin-tracing"]
+webrtc = ["dep:fandhe-backend-plugin-webrtc"]
+websocket = ["dep:fandhe-backend-plugin-websocket"]
+graphql = ["dep:fandhe-backend-plugin-graphql"]
+tracing = ["dep:fandhe-backend-plugin-tracing"]
 
 # テスト専用（`#[tokio::test]` / `tokio::io::duplex` / マルチスレッドランタイム）。
 # 本体ビルドの feature 集合には影響しない。`async-graphql` は
@@ -103,7 +103,7 @@ tracing = ["dep:bf-plugin-tracing"]
 # `dynamic-schema` feature（`Schema::build` による実行時スキーマ構築 API）を
 # 使い、`#[Object]` 派生マクロは使わない。`async-graphql-derive` の
 # `#[Object]` は生成コードへ `#[allow(clippy::all, ...)]` を無条件付与し、
-# `backend-framework-core`（コア crate。`.claude/rules/coding-rust.md` の
+# `fandhe-backend-core`（コア crate。`.claude/rules/coding-rust.md` の
 # 「コアに不要な `unsafe` を持ち込まない」対象そのもの）が継承する workspace
 # の forbid lint（`docs/design/unsafe-deny-lints.md` 第 1 層）と衝突して
 # `E0453` でビルド不能になるため（`crates/plugin-graphql` は自クレート限定で
@@ -123,12 +123,12 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 # TASK-1.6-3（#168）: `examples/core-bench.rs`（axum-ref 機能等価の性能計測用
 # サーバ）専用。`/users/{id}` 応答・`/echo` の JSON パース/再シリアライズに使う。
 # dev-dependencies は release ビルド・下流クレートに一切波及しないため
-# pay-for-what-you-use の対象外（`cargo tree -p backend-framework-core -e normal`
+# pay-for-what-you-use の対象外（`cargo tree -p fandhe-backend-core -e normal`
 # に現れないことで検証可能。上の async-graphql 追加時の既存コメントと同根）。
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# `examples/webrtc_nfr6.rs`（TASK-8.4 / #29）は `bf-plugin-webrtc`（optional dep）を
+# `examples/webrtc_nfr6.rs`（TASK-8.4 / #29）は `fandhe-backend-plugin-webrtc`（optional dep）を
 # 直接使うため、`webrtc` feature 無効時に `cargo build --workspace --all-targets` 等が
 # コンパイル対象へ含めて失敗しないよう `required-features` で明示的にゲートする
 # （`examples/minimal.rs` は feature 非依存のため既定の自動検出のままでよい）。
@@ -136,7 +136,7 @@ serde_json = "1"
 name = "webrtc_nfr6"
 required-features = ["webrtc"]
 
-# `examples/graphql_nfr6.rs`（TASK-5.2 / #53）は `bf-plugin-graphql`（optional dep）を
+# `examples/graphql_nfr6.rs`（TASK-5.2 / #53）は `fandhe-backend-plugin-graphql`（optional dep）を
 # 直接使うため、`graphql` feature 無効時に `cargo build --workspace --all-targets` 等が
 # コンパイル対象へ含めて失敗しないよう `required-features` で明示的にゲートする
 # （`webrtc_nfr6` と同一パターン）。
@@ -144,7 +144,7 @@ required-features = ["webrtc"]
 name = "graphql_nfr6"
 required-features = ["graphql"]
 
-# `examples/tracing_nfr.rs`（TASK-10.4 / #59）は `bf-plugin-tracing`（optional dep）を
+# `examples/tracing_nfr.rs`（TASK-10.4 / #59）は `fandhe-backend-plugin-tracing`（optional dep）を
 # 直接使うため、`tracing` feature 無効時に `cargo build --workspace --all-targets` 等が
 # コンパイル対象へ含めて失敗しないよう `required-features` で明示的にゲートする
 # （`webrtc_nfr6` / `graphql_nfr6` と同一パターン）。
@@ -152,7 +152,7 @@ required-features = ["graphql"]
 name = "tracing_nfr"
 required-features = ["tracing"]
 
-# `examples/ws_echo.rs`（TASK-4.3 / #24）は `bf-plugin-websocket::WebSocketConfig` を
+# `examples/ws_echo.rs`（TASK-4.3 / #24）は `fandhe-backend-plugin-websocket::WebSocketConfig` を
 # 直接使うため、`websocket` feature 無効時に `cargo build --workspace --all-targets` 等が
 # コンパイル対象へ含めて失敗しないよう `required-features` で明示的にゲートする
 # （`webrtc_nfr6` / `graphql_nfr6` / `tracing_nfr` と同一パターン）。
@@ -160,7 +160,7 @@ required-features = ["tracing"]
 name = "ws_echo"
 required-features = ["websocket"]
 
-# `examples/ws_nfr6.rs`（TASK-4.4 / #25）は `bf-plugin-websocket::WebSocketConfig` を
+# `examples/ws_nfr6.rs`（TASK-4.4 / #25）は `fandhe-backend-plugin-websocket::WebSocketConfig` を
 # 直接使うため、`websocket` feature 無効時に `cargo build --workspace --all-targets` 等が
 # コンパイル対象へ含めて失敗しないよう `required-features` で明示的にゲートする
 # （`webrtc_nfr6` / `graphql_nfr6` / `tracing_nfr` / `ws_echo` と同一パターン）。

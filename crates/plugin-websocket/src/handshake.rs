@@ -6,7 +6,7 @@
 //! 立てる。外部入力（`Sec-WebSocket-Key` 等）を応答ヘッダへ一切エコーしない
 //! ことで、レスポンス分割・ヘッダインジェクション経路を構造的に排除する。
 
-use bf_http::request::RequestHead;
+use fandhe_backend_http::request::RequestHead;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 
 use crate::config::WebSocketConfig;
@@ -57,7 +57,7 @@ pub(crate) fn validate(head: &RequestHead) -> Result<ValidatedHandshake, WsError
     if head.method != "GET" {
         return Err(WsError::InvalidHandshake("method must be GET"));
     }
-    if head.version != bf_http::request::HttpVersion::Http11 {
+    if head.version != fandhe_backend_http::request::HttpVersion::Http11 {
         return Err(WsError::InvalidHandshake("version must be HTTP/1.1"));
     }
     if !head
@@ -97,7 +97,7 @@ pub(crate) fn validate(head: &RequestHead) -> Result<ValidatedHandshake, WsError
 /// `Connection` ヘッダは複数出現しうる（例: `keep-alive` と `Upgrade` が別々の
 /// ヘッダ行に分かれる正当なハンドシェイクが存在する）ため、`RequestHead::header`
 /// （最初の 1 件のみ返す）ではなく [`RequestHead::headers`] で全件を走査する。
-/// `bf_http::connection::should_keep_alive` と同じ理由・同じ走査方針。
+/// `fandhe_backend_http::connection::should_keep_alive` と同じ理由・同じ走査方針。
 fn connection_contains_upgrade(head: &RequestHead) -> bool {
     head.headers()
         .filter(|(name, _)| name.eq_ignore_ascii_case("connection"))
@@ -155,7 +155,7 @@ pub(crate) fn serialize_426() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bf_http::request::{ParseOutcome, parse_request_head};
+    use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
 
     fn head_from(buf: &[u8]) -> RequestHead {
         match parse_request_head(buf).expect("parse should succeed") {

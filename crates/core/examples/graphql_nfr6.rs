@@ -1,7 +1,7 @@
 //! TASK-5.2（#53）NFR 計測専用サーバ。
 //!
 //! `graphql` feature 有効時に `Server::graphql` へ [`GraphQlConfig`] を登録した構成で
-//! `examples/minimal.rs` と同一の `GET /`（`bf_routes::Router`）を提供する。
+//! `examples/minimal.rs` と同一の `GET /`（`fandhe_backend_routes::Router`）を提供する。
 //! `docs/acceptance/req5-graphql.md`（REQ-5 受け入れ基準 2: 性能影響誤差範囲）が、
 //! 本 example と `examples/minimal.rs`（`graphql` feature 無効のベースライン）へ
 //! それぞれ無関係パス（`/`）へ負荷をかけ、RPS・p95 の比が誤差範囲に収まることを
@@ -19,22 +19,22 @@
 //! `demo_schema()` と同一構成（`{ hello }` を返すのみ）。`async_graphql::dynamic`
 //! （実行時スキーマ構築 API、`Schema::build`）で組み立てる。`#[Object]` 派生
 //! マクロは使わない（`crates/core/Cargo.toml` の dev-dependency コメントを参照。
-//! マクロが生成コードへ付与する `#[allow(clippy::all)]` が `backend-framework-core`
+//! マクロが生成コードへ付与する `#[allow(clippy::all)]` が `fandhe-backend-core`
 //! の継承する workspace の forbid lint と衝突するため）。
 //!
 //! 動作確認手順:
 //! ```text
-//! $ cargo run --release --example graphql_nfr6 -p backend-framework-core --features graphql
+//! $ cargo run --release --example graphql_nfr6 -p fandhe-backend-core --features graphql
 //! $ curl -v http://127.0.0.1:3003/                                   # 200 応答（無関係パス）
 //! $ curl -v -X POST http://127.0.0.1:3003/graphql -d '{"query":"{ hello }"}'  # クエリ実行
 //! ```
 
 use async_graphql::Value;
 use async_graphql::dynamic::{Field, FieldFuture, Object, Schema, TypeRef};
-use backend_framework_core::Server;
-use bf_http::response::Response;
-use bf_plugin_graphql::GraphQlConfig;
-use bf_routes::Router;
+use fandhe_backend_core::Server;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_graphql::GraphQlConfig;
+use fandhe_backend_routes::Router;
 
 /// `POST /graphql` の実行対象とする最小デモスキーマ（`{ hello }` を返すのみ）。
 ///

@@ -3,6 +3,11 @@
 `docs/dep-impact/README.md` の運用手順に従い、`crates/plugin-*` 追加・変更時の依存
 インパクト計測結果を追記する。エントリは新しい順に追加する。
 
+> 注記: 2026-07 の crate・import 一括改名（#202、`fandhe-backend` 体系への改名）以前の
+> エントリは旧クレート名（`backend-framework-core` / `bf-http` / `bf-routes` /
+> `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
+> （`docs/design/framework-naming.md` 7 節の推奨方針）。
+
 ## 2026-07-18 — `webrtc` feature の unsafe 増分乖離（PoC-5 比 2.2 倍→実測 4.4 倍）の原因特定（#183）
 
 TASK-8.4（#29、上記「`crates/plugin-webrtc` 攻撃表面評価・単独再評価」エントリ）が

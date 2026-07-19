@@ -47,7 +47,7 @@ impl Sampler {
     /// 全件記録（`interval = 1`）:
     ///
     /// ```
-    /// use bf_plugin_tracing::Sampler;
+    /// use fandhe_backend_plugin_tracing::Sampler;
     /// use std::num::NonZeroU64;
     ///
     /// let sampler = Sampler::new(NonZeroU64::new(1).unwrap());
@@ -59,7 +59,7 @@ impl Sampler {
     /// 3 件に 1 件のみ記録（`interval = 3`）:
     ///
     /// ```
-    /// use bf_plugin_tracing::Sampler;
+    /// use fandhe_backend_plugin_tracing::Sampler;
     /// use std::num::NonZeroU64;
     ///
     /// let sampler = Sampler::new(NonZeroU64::new(3).unwrap());

@@ -3,7 +3,7 @@
 #
 # OpenAPI 定義（crates/plugin-openapi の ApiDoc）とサーバー本体の依存関係は
 # 「gen-openapi CLI 実行 → openapi.json 生成 → openapi.json を静的埋め込みするクレート
-# （bf-plugin-openapi）を含むサーバー本体ビルド」の 2 段階になる（TASK-3.2 受け入れ基準）。
+# （fandhe-backend-plugin-openapi）を含むサーバー本体ビルド」の 2 段階になる（TASK-3.2 受け入れ基準）。
 # 本スクリプトはこの順序を CI（.github/workflows/ci.yml の openapi-two-stage ジョブ）・
 # ローカルの双方から同一コマンドで再現するための薄いラッパーであり、cargo コマンドを
 # 直列実行するのみでパースロジックを持たないため、他の scripts/*.sh と異なり
@@ -13,7 +13,7 @@
 #   が ApiDoc の最新定義から生成した内容と一致するかを `--check` で検証する
 #   （fail-closed。乖離時は非 0 終了、.claude/rules/security.md A08 対策）。
 # - stage 2: ワークスペース全体を --all-features でビルドする。埋め込み済み openapi.json を
-#   含む bf-plugin-openapi と、TASK-2.1（#18）マージ後に増える `openapi` feature 配線も
+#   含む fandhe-backend-plugin-openapi と、TASK-2.1（#18）マージ後に増える `openapi` feature 配線も
 #   --all-features で自動的にカバーする。
 #
 # 使い方:
@@ -50,7 +50,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
 echo "== stage 1: gen-openapi CLI（${gen_openapi_arg}） =="
-cargo run -p bf-plugin-openapi --features gen-cli --bin gen-openapi -- "${gen_openapi_arg}"
+cargo run -p fandhe-backend-plugin-openapi --features gen-cli --bin gen-openapi -- "${gen_openapi_arg}"
 
 echo "== stage 2: cargo build --workspace --all-features =="
 cargo build --workspace --all-features

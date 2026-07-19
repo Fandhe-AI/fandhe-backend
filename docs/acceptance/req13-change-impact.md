@@ -1,5 +1,9 @@
 # REQ-13（変更影響範囲の機械判定構造）受け入れ検証結果（TASK-13.2 / #50）
 
+> 注記: 本レポートは 2026-07 の crate・import 一括改名（#202）以前の実測記録であり、
+> 旧クレート名（`backend-framework-core` / `bf-http` / `bf-routes` / `bf-plugin-*` 等）
+> 表記のまま保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
+
 `docs/spec/04-requirements.md` REQ-13 の受け入れ基準
 (1) 新規プロトコル・機能の追加が既存 3 拡張点のいずれかに閉じるか、閉じない場合は
 その理由が設計文書に明記される、(2) モジュール境界・依存方向が `lib.rs` 等の doc

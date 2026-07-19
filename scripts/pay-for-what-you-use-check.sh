@@ -8,8 +8,8 @@
 # 「プラグイン feature 無効時に当該プラグインの依存クレート・`unsafe`・コードが 0 件で
 # 載らないこと」を次の 5 段で機械検証する:
 #
-#   (a) `cargo metadata` から `backend-framework-core` の `[features]` を動的列挙し、
-#       `dep:bf-plugin-*` を含む feature を「プラグイン feature」として抽出する
+#   (a) `cargo metadata` から `fandhe-backend-core` の `[features]` を動的列挙し、
+#       `dep:fandhe-backend-plugin-*` を含む feature を「プラグイン feature」として抽出する
 #       （feature 増加時にスクリプト変更不要。`dep-audit.sh`・`dep-direction-check.sh`
 #       と同方針）。0 件はスクリプト自体の腐敗を疑い FAIL（フェイルクローズ）
 #   (b) `cargo tree`: 無効構成（--no-default-features）に全プラグインクレートが
@@ -20,7 +20,7 @@
 #       （依存グラフに載らなければ unsafe も載らない、unsafe 0 件の検証）
 #   (d) リリースバイナリサイズ: `crates/core/examples/minimal` を無効構成／
 #       `--all-features` の 2 構成でビルドし、無効構成 <= 有効構成であること。
-#       補強としてシンボル表（nm）に `bf_plugin` 由来シンボルが出現しないことを検証
+#       補強としてシンボル表（nm）に `fandhe_backend_plugin` 由来シンボルが出現しないことを検証
 #       （コード 0 件の直接検証。nm 不在時はこの補強のみ SKIP、サイズ比較は維持）
 #   (e) 全構成ビルド: 無効構成・feature 単独構成ごと・`--all-features` がすべて成功すること
 #
@@ -46,7 +46,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${WORKSPACE_ROOT}"
 
-CORE_PACKAGE="backend-framework-core"
+CORE_PACKAGE="fandhe-backend-core"
 CORE_MANIFEST="${WORKSPACE_ROOT}/crates/core/Cargo.toml"
 TARGET_DIR="target/pay-for-what-you-use-check"
 
@@ -140,14 +140,14 @@ fi
 
 plugin_entries=()
 if [ -n "${metadata_json}" ]; then
-    # feature 名 → `dep:bf-plugin-<name>` を持つ feature のみ抽出し、
+    # feature 名 → `dep:fandhe-backend-plugin-<name>` を持つ feature のみ抽出し、
     # 「feature\tクレート名」の TSV を組み立てる（plugin-boundary.md 2 節の
-    # 命名規約: クレート名 bf-plugin-<name> から接頭辞を除いた <name> が feature 名）。
+    # 命名規約: クレート名 fandhe-backend-plugin-<name> から接頭辞を除いた <name> が feature 名）。
     plugin_features_tsv="$(printf '%s' "${metadata_json}" | jq -r --arg pkg "${CORE_PACKAGE}" '
         .packages[] | select(.name == $pkg) | .features
         | to_entries[] as $e
         | ($e.value[] | select(startswith("dep:"))) as $dep
-        | select($dep | startswith("dep:bf-plugin-"))
+        | select($dep | startswith("dep:fandhe-backend-plugin-"))
         | "\($e.key)\t\($dep | sub("^dep:";""))"
     ' 2>/tmp/pfwu-check-jq.log || true)"
 
@@ -156,12 +156,12 @@ if [ -n "${metadata_json}" ]; then
     elif [ -z "${plugin_features_tsv}" ]; then
         # 現時点で webrtc-proxy が必ず 1 件存在する。0 件は列挙ロジックの腐敗を
         # 疑い判定不能として FAIL 扱いにする（フェイルクローズ）。
-        fail "a: プラグイン feature 列挙 — ${CORE_PACKAGE} に dep:bf-plugin-* を含む feature が 1 件も見つかりませんでした（判定不能）"
+        fail "a: プラグイン feature 列挙 — ${CORE_PACKAGE} に dep:fandhe-backend-plugin-* を含む feature が 1 件も見つかりませんでした（判定不能）"
     else
         naming_violation=""
         while IFS=$'\t' read -r feature crate; do
             [ -z "${feature}" ] && continue
-            expected_feature="${crate#bf-plugin-}"
+            expected_feature="${crate#fandhe-backend-plugin-}"
             if [ "${feature}" != "${expected_feature}" ]; then
                 naming_violation="${naming_violation}${feature} (期待: ${expected_feature}, クレート: ${crate}); "
                 continue
@@ -377,7 +377,7 @@ else
     fi
 fi
 
-# self-hosted ランナーのディスク容量枯渇対策（PR #146/#29 CI 実測: bf-plugin-webrtc の
+# self-hosted ランナーのディスク容量枯渇対策（PR #146/#29 CI 実測: fandhe-backend-plugin-webrtc の
 # 全構成ビルド (e) 中に `No space left on device` で FAIL）。(c) の geiger 用
 # target-dir（cargo-geiger 自体のビルド成果物）は判定に必要な geiger_packages を
 # 既に取得済みで以降の工程では不要になるため、後続の重いビルド工程（(d)(e)）が

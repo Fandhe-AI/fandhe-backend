@@ -1,5 +1,9 @@
 # TASK-10.6（#90）計測レポート — 非同期 writer バックプレッシャー・ログ欠落検証
 
+> 注記: 本レポートは 2026-07 の crate・import 一括改名（#202）以前の実測記録であり、
+> 旧クレート名（`backend-framework-core` / `bf-http` / `bf-routes` / `bf-plugin-*` 等）
+> 表記のまま保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
+
 PoC-10（`docs/spec/03-poc/observability-tracing/README.md`「発見事項」「環境制約」）が
 未検証（推測）のまま残していた 2 点を実測で確定させる。
 

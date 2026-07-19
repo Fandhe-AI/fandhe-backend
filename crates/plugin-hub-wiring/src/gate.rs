@@ -14,8 +14,8 @@ use crate::auth::Authenticator;
 use crate::jwks::JwksKeySet;
 use crate::jwks::{JwksError, SharedJwks};
 use crate::jwt::TokenError;
-use backend_framework_core::extension::{GateOutcome, RequestGate};
-use bf_http::request::RequestHead;
+use fandhe_backend_core::extension::{GateOutcome, RequestGate};
+use fandhe_backend_http::request::RequestHead;
 
 /// [`TenantGate`] の設定。JWKS は [`SharedJwks`] ハンドル経由で保持し、
 /// 利用側サービスが再起動なしで鍵ローテーション（[`SharedJwks::set`]）を
@@ -43,8 +43,8 @@ impl TenantGateConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_hub_wiring::gate::TenantGateConfig;
-    /// use bf_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
+    /// use fandhe_backend_plugin_hub_wiring::gate::TenantGateConfig;
+    /// use fandhe_backend_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
     ///
     /// let shared = SharedJwks::new(JwksKeySet::from_json(r#"{"keys":[]}"#).unwrap());
     /// let config = TenantGateConfig::new(shared);
@@ -67,7 +67,7 @@ impl TenantGateConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_hub_wiring::gate::TenantGateConfig;
+    /// use fandhe_backend_plugin_hub_wiring::gate::TenantGateConfig;
     ///
     /// let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#).unwrap();
     /// ```
@@ -87,7 +87,7 @@ impl TenantGateConfig {
     /// # Examples
     ///
     /// ```
-    /// use bf_plugin_hub_wiring::gate::{TenantGate, TenantGateConfig};
+    /// use fandhe_backend_plugin_hub_wiring::gate::{TenantGate, TenantGateConfig};
     ///
     /// let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#).unwrap();
     /// let authenticator = config.authenticator();
@@ -132,8 +132,8 @@ impl TenantGate {
     /// # Examples
     ///
     /// ```
-    /// use backend_framework_core::extension::RequestGate;
-    /// use bf_plugin_hub_wiring::gate::{TenantGate, TenantGateConfig};
+    /// use fandhe_backend_core::extension::RequestGate;
+    /// use fandhe_backend_plugin_hub_wiring::gate::{TenantGate, TenantGateConfig};
     ///
     /// let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#).unwrap();
     /// let gate = TenantGate::new(config);
@@ -191,7 +191,7 @@ mod tests {
     use super::*;
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use bf_http::request::{ParseOutcome, parse_request_head};
+    use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
     use ring::rand::SystemRandom;
     use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
 

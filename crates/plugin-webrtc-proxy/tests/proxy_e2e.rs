@@ -1,4 +1,4 @@
-//! `bf-plugin-webrtc-proxy` の統合テスト（TASK-8.2-2 / #74）。
+//! `fandhe-backend-plugin-webrtc-proxy` の統合テスト（TASK-8.2-2 / #74）。
 //!
 //! モック上流（`tokio::net::TcpListener` で SDP Answer を固定応答する簡易サーバ）
 //! を各テスト内で起動し、[`try_handle_rtc_offer`] 経由の Offer → Answer 往復・
@@ -8,8 +8,8 @@
 
 use std::time::Duration;
 
-use bf_http::request::{ParseOutcome, RequestHead, parse_request_head};
-use bf_plugin_webrtc_proxy::{ProxyConfig, try_handle_rtc_offer};
+use fandhe_backend_http::request::{ParseOutcome, RequestHead, parse_request_head};
+use fandhe_backend_plugin_webrtc_proxy::{ProxyConfig, try_handle_rtc_offer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 

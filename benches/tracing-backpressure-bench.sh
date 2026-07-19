@@ -12,7 +12,7 @@
 #   跨ぐ範囲の負荷段階を既定とする。
 #
 # 前提:
-#   cargo build --release -p bf-plugin-tracing --example backpressure_probe
+#   cargo build --release -p fandhe-backend-plugin-tracing --example backpressure_probe
 #   （本スクリプトはビルドを自動実行しない。benches/lib/common.sh の
 #    「サプライチェーン考慮・前提ツールを自動取得しない」方針を踏襲）
 #
@@ -35,7 +35,7 @@ check_runs_minimum
 PROBE_BIN="${WORKSPACE_ROOT}/target/release/examples/backpressure_probe"
 if [ ! -x "${PROBE_BIN}" ]; then
     echo "エラー: ${PROBE_BIN} が見つかりません。先に" >&2
-    echo "  cargo build --release -p bf-plugin-tracing --example backpressure_probe" >&2
+    echo "  cargo build --release -p fandhe-backend-plugin-tracing --example backpressure_probe" >&2
     echo "を実行してください" >&2
     exit 1
 fi

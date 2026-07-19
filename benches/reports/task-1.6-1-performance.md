@@ -1,5 +1,9 @@
 # TASK-1.6-1 性能受け入れ計測レポート（axum-ref 比）
 
+> 注記: 本レポートは 2026-07 の crate・import 一括改名（#202）以前の実測記録であり、
+> 旧クレート名（`backend-framework-core` / `bf-http` / `bf-routes` / `bf-plugin-*` 等）
+> 表記のまま保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
+
 Issue #71 の成果物。`benches/bench-accept.sh` による axum-ref 比の性能受け入れ判定結果。
 
 ## 実施日時・環境

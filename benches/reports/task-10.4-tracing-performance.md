@@ -1,5 +1,9 @@
 # TASK-10.4（#59）サンプリング適用後性能再検証レポート
 
+> 注記: 本レポートは 2026-07 の crate・import 一括改名（#202）以前の実測記録であり、
+> 旧クレート名（`backend-framework-core` / `bf-http` / `bf-routes` / `bf-plugin-*` 等）
+> 表記のまま保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
+
 `benches/tracing-nfr-bench.sh`（`oha` による empirical 計測。ベースライン
 `crates/core/examples/minimal.rs`（`tracing` feature 無効） vs 比較対象
 `crates/core/examples/tracing_nfr.rs`（`tracing` feature 有効・`init_tracing` +

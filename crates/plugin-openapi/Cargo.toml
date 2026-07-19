@@ -1,5 +1,5 @@
 [package]
-name = "bf-plugin-openapi"
+name = "fandhe-backend-plugin-openapi"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -17,7 +17,7 @@ workspace = true
 # どこからも参照されない限り、utoipa 系依存は本クレートを明示的に依存に加えたときのみ
 # `cargo tree` に現れる。workspace 内クレートへの依存は持たない
 # （PoC-4 の統合方式をそのまま踏襲、docs/spec/03-poc/openapi-generation/README.md）。
-# サーバ側 feature（`openapi = ["dep:bf-plugin-openapi"]` 相当）による配線は
+# サーバ側 feature（`openapi = ["dep:fandhe-backend-plugin-openapi"]` 相当）による配線は
 # TASK-2.1（#18）に接続点を委ねる（本クレート単体では未接続）。
 [dependencies]
 utoipa = { version = "5", default-features = true }

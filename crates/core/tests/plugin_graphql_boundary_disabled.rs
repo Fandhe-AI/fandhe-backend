@@ -1,13 +1,13 @@
 //! `graphql` feature（TASK-2.4 / #21）配線の陰性対照テスト（feature 無効側）。
 //!
-//! feature を有効化していない既定構成では `bf-plugin-graphql` 自体が依存グラフに
+//! feature を有効化していない既定構成では `fandhe-backend-plugin-graphql` 自体が依存グラフに
 //! 存在せず、`POST /graphql` へのリクエストは非公開 `plugin::try_intercept` を
 //! 素通りして既定 `Handler`（未登録時は 404）へフォールスルーすることを確認する。
 //! feature 有効側のテストは `plugin_graphql_boundary.rs` を参照。
 
 #![cfg(not(feature = "graphql"))]
 
-use backend_framework_core::{Server, handle_connection};
+use fandhe_backend_core::{Server, handle_connection};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 async fn roundtrip(server: &Server, request: &[u8]) -> String {

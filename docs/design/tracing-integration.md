@@ -24,12 +24,12 @@ TASK-10.2（#57、イベント統合）・TASK-10.3（#58、高頻度パス除�
     │  init_tracing(TracingOutput::Stdout) を起動時に 1 回呼び、
     │  戻り値の WorkerGuard をプロセス終了まで保持する
     ▼
-bf-plugin-tracing::init                       tracing_subscriber::fmt() + non_blocking writer
+fandhe-backend-plugin-tracing::init                       tracing_subscriber::fmt() + non_blocking writer
     │  registry ではなく tracing_subscriber::fmt() のビルダを直接使う
     │  （TASK-10.1 時点でカスタムレイヤ合成は不要と判断。将来外部レイヤを
     │    足す場合は 6 節の拡張指針を参照）
     ▼
-bf-plugin-tracing::layer::TracingLayer         除外照合 → サンプリング判定 → 記録実行
+fandhe-backend-plugin-tracing::layer::TracingLayer         除外照合 → サンプリング判定 → 記録実行
     │  crates/core 側の TracingMiddleware（tracing feature 限定 API）から
     │  Middleware 拡張点経由で呼ばれる（拡張点定義: crates/core/src/extension.rs）
     ▼
@@ -41,10 +41,10 @@ tracing-appender::non_blocking writer           バッファ済み・非同期�
 標準出力（TracingOutput::Stdout、既定）
 ```
 
-`bf-plugin-tracing` は `crates/core` に依存しない（`bf-plugin-websocket` と同一の
+`fandhe-backend-plugin-tracing` は `crates/core` に依存しない（`fandhe-backend-plugin-websocket` と同一の
 非循環パターン）。`Middleware` trait を実装するアダプタ（`TracingMiddleware`）は
 コア側（`crates/core/src/server.rs`、`tracing` feature 限定）に置き、本クレートは
-`bf-http::request::RequestHead` の参照 + `tracing` 系クレートへの委譲のみを提供する
+`fandhe-backend-http::request::RequestHead` の参照 + `tracing` 系クレートへの委譲のみを提供する
 （`crates/plugin-tracing/src/lib.rs` 冒頭 doc、接続契約節）。
 
 ### `WorkerGuard` 保持契約
@@ -72,7 +72,7 @@ tracing-appender::non_blocking writer           バッファ済み・非同期�
 [`TracingConfig`][] が保持する `sample_interval: NonZeroU64` で切り替える。
 
 ```rust
-use bf_plugin_tracing::TracingConfig;
+use fandhe_backend_plugin_tracing::TracingConfig;
 use std::num::NonZeroU64;
 
 // 既定（100 リクエストに 1 回記録）
@@ -159,8 +159,8 @@ OWASP Top 10「可観測性」観点、`.claude/rules/security.md`）。
 | RSS（アイドル） | 2,980 KB | 7,312 KB | +145.4% | - |
 | RSS（負荷時中央値） | 3,240 KB | 7,520 KB | +132.1% | +301.4% |
 
-`tracing` feature 無効時は `bf-plugin-tracing` / `tracing` / `tracing-subscriber` /
-`tracing-appender` のいずれも `cargo tree -p backend-framework-core` に現れず、
+`tracing` feature 無効時は `fandhe-backend-plugin-tracing` / `tracing` / `tracing-subscriber` /
+`tracing-appender` のいずれも `cargo tree -p fandhe-backend-core` に現れず、
 pay-for-what-you-use の完全除外を満たす（`scripts/accept/tracing-accept.sh` A/D/E
 チェックで機械検証、6 節参照）。
 

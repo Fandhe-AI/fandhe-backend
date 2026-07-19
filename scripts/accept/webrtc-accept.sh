@@ -3,7 +3,7 @@
 #
 # `docs/spec/05-tasks.md` TASK-8.4「依存・バイナリ・unsafe を再評価し audit / deny を
 # 確認する」の受け入れ基準を機械検証する:
-#   A: `webrtc` feature 無効時、`backend-framework-core` の依存ツリーに webrtc 系依存が
+#   A: `webrtc` feature 無効時、`fandhe-backend-core` の依存ツリーに webrtc 系依存が
 #      一切現れない（pay-for-what-you-use の完全除外、
 #      `.claude/rules/pay-for-what-you-use.md`）
 #   B: `crates/plugin-webrtc` 自コードの unsafe が 0 件（`scripts/unsafe-triage.sh`
@@ -13,7 +13,7 @@
 #      として引用する（捏造しない）
 #   C: 全 feature 構成で `cargo audit` 既知脆弱性 0 件・`cargo deny check` 違反 0 件
 #      （`scripts/dep-audit.sh` 連携）
-#   D: `webrtc`・`webrtc-proxy` の 2 feature が `backend-framework-core` に存在し、
+#   D: `webrtc`・`webrtc-proxy` の 2 feature が `fandhe-backend-core` に存在し、
 #      クレート境界で分離されたまま着脱可能（REQ-8 が要求する in-process / 別プロセス
 #      切り出しの選択肢が両立していることの確認）
 #   E: NFR-6（無関係パスへの RPS・レイテンシ影響が誤差範囲内、
@@ -61,28 +61,28 @@ check_dep_exclusion() {
     # `cargo tree` の終了コードを明示的に確認し、失敗時は測定不能として FAIL
     # 扱いにする（`core-deps-unsafe-audit.sh` と同一のフェイルクローズ実装）。
     local tree_output disabled_count
-    if ! tree_output="$(cargo tree -p backend-framework-core 2>/dev/null)"; then
-        record_fail "A: webrtc 無効時の依存完全除外" "cargo tree -p backend-framework-core 自体が失敗し測定不能（cargo 呼び出しが壊れている可能性）"
+    if ! tree_output="$(cargo tree -p fandhe-backend-core 2>/dev/null)"; then
+        record_fail "A: webrtc 無効時の依存完全除外" "cargo tree -p fandhe-backend-core 自体が失敗し測定不能（cargo 呼び出しが壊れている可能性）"
         return
     fi
     disabled_count="$(printf '%s\n' "${tree_output}" | grep -c webrtc || true)"
 
     if [ "${disabled_count}" -eq 0 ]; then
-        record_pass "A: webrtc 無効時の依存完全除外" "cargo tree -p backend-framework-core | grep -c webrtc = 0"
+        record_pass "A: webrtc 無効時の依存完全除外" "cargo tree -p fandhe-backend-core | grep -c webrtc = 0"
     else
-        record_fail "A: webrtc 無効時の依存完全除外" "webrtc 系依存が ${disabled_count} 件残留（cargo tree -p backend-framework-core）"
+        record_fail "A: webrtc 無効時の依存完全除外" "webrtc 系依存が ${disabled_count} 件残留（cargo tree -p fandhe-backend-core）"
     fi
 
     # 有効時のインパクトも参考値として記録する（docs/dep-impact/records.md に転記済みの値と突合）。
     # PASS/FAIL 判定には使わない参考値だが、同一の cargo tree 失敗を握りつぶす
     # 構文を残さないよう上記 A と同じフェイルクローズパターンで測定不能を明示する。
     local enabled_tree_output enabled_count
-    if ! enabled_tree_output="$(cargo tree -p backend-framework-core --features webrtc 2>/dev/null)"; then
-        record_warn "A補足: webrtc 有効時の依存インパクト" "cargo tree -p backend-framework-core --features webrtc 自体が失敗し測定不能"
+    if ! enabled_tree_output="$(cargo tree -p fandhe-backend-core --features webrtc 2>/dev/null)"; then
+        record_warn "A補足: webrtc 有効時の依存インパクト" "cargo tree -p fandhe-backend-core --features webrtc 自体が失敗し測定不能"
         return
     fi
     enabled_count="$(printf '%s\n' "${enabled_tree_output}" | grep -c webrtc || true)"
-    record_warn "A補足: webrtc 有効時の依存インパクト" "cargo tree -p backend-framework-core --features webrtc | grep -c webrtc = ${enabled_count}（docs/dep-impact/records.md 参照）"
+    record_warn "A補足: webrtc 有効時の依存インパクト" "cargo tree -p fandhe-backend-core --features webrtc | grep -c webrtc = ${enabled_count}（docs/dep-impact/records.md 参照）"
 }
 
 # ---------------------------------------------------------------------------
@@ -168,11 +168,11 @@ check_features_present() {
     fi
 
     local has_webrtc has_proxy
-    has_webrtc="$(echo "${metadata}" | jq -r '.packages[] | select(.name == "backend-framework-core") | .features | has("webrtc")')"
-    has_proxy="$(echo "${metadata}" | jq -r '.packages[] | select(.name == "backend-framework-core") | .features | has("webrtc-proxy")')"
+    has_webrtc="$(echo "${metadata}" | jq -r '.packages[] | select(.name == "fandhe-backend-core") | .features | has("webrtc")')"
+    has_proxy="$(echo "${metadata}" | jq -r '.packages[] | select(.name == "fandhe-backend-core") | .features | has("webrtc-proxy")')"
 
     if [ "${has_webrtc}" = "true" ] && [ "${has_proxy}" = "true" ]; then
-        record_pass "D: webrtc/webrtc-proxy 2 feature の存在" "backend-framework-core に webrtc（in-process）・webrtc-proxy（別プロセス切り出し）の両 feature が存在"
+        record_pass "D: webrtc/webrtc-proxy 2 feature の存在" "fandhe-backend-core に webrtc（in-process）・webrtc-proxy（別プロセス切り出し）の両 feature が存在"
     else
         record_fail "D: webrtc/webrtc-proxy 2 feature の存在" "webrtc=${has_webrtc} webrtc-proxy=${has_proxy}"
     fi
@@ -180,15 +180,15 @@ check_features_present() {
     # クレート境界の分離: plugin-webrtc が plugin-webrtc-proxy に（逆も）依存していないこと。
     # Cargo.toml の description・コメント中には相互のクレート名への言及があるため
     # （設計上の対照説明）、`grep -l` によるファイル全体検索では誤検出する。
-    # 実際の [dependencies] テーブルの依存宣言行（`bf-plugin-webrtc(-proxy)? = ...`
+    # 実際の [dependencies] テーブルの依存宣言行（`fandhe-backend-plugin-webrtc(-proxy)? = ...`
     # 形式）のみを対象にする。
     local cross_dep=""
-    if grep -qE '^bf-plugin-webrtc-proxy[[:space:]]*=' crates/plugin-webrtc/Cargo.toml 2>/dev/null; then
-        cross_dep="${cross_dep}crates/plugin-webrtc/Cargo.toml が bf-plugin-webrtc-proxy に依存
+    if grep -qE '^fandhe-backend-plugin-webrtc-proxy[[:space:]]*=' crates/plugin-webrtc/Cargo.toml 2>/dev/null; then
+        cross_dep="${cross_dep}crates/plugin-webrtc/Cargo.toml が fandhe-backend-plugin-webrtc-proxy に依存
 "
     fi
-    if grep -qE '^bf-plugin-webrtc[[:space:]]*=' crates/plugin-webrtc-proxy/Cargo.toml 2>/dev/null; then
-        cross_dep="${cross_dep}crates/plugin-webrtc-proxy/Cargo.toml が bf-plugin-webrtc に依存
+    if grep -qE '^fandhe-backend-plugin-webrtc[[:space:]]*=' crates/plugin-webrtc-proxy/Cargo.toml 2>/dev/null; then
+        cross_dep="${cross_dep}crates/plugin-webrtc-proxy/Cargo.toml が fandhe-backend-plugin-webrtc に依存
 "
     fi
     if [ -z "${cross_dep}" ]; then
@@ -212,7 +212,7 @@ check_nfr6() {
         return
     fi
     if [ ! -x "${baseline_bin}" ] || [ ! -x "${webrtc_bin}" ]; then
-        record_skip "E: NFR-6 無関係パス影響" "計測用バイナリ未ビルド。'cargo build --release -p backend-framework-core --example minimal --no-default-features' と '... --example webrtc_nfr6 --features webrtc' を実行後、benches/webrtc-nfr6-bench.sh を実行して再判定すること"
+        record_skip "E: NFR-6 無関係パス影響" "計測用バイナリ未ビルド。'cargo build --release -p fandhe-backend-core --example minimal --no-default-features' と '... --example webrtc_nfr6 --features webrtc' を実行後、benches/webrtc-nfr6-bench.sh を実行して再判定すること"
         return
     fi
 

@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use bf_http::request::RequestHead;
+use fandhe_backend_http::request::RequestHead;
 
 use crate::config::TracingConfig;
 use crate::sampler::Sampler;
@@ -58,7 +58,7 @@ impl TracingLayer {
     /// `Debug` を経由せず、`tracing` の構造化フィールドとして値を直接渡すため、
     /// 制御文字混入によるログフォーマット崩壊のリスクがない。
     ///
-    /// `bf_http::request::RequestHead::target` は HTTP リクエストラインの
+    /// `fandhe_backend_http::request::RequestHead::target` は HTTP リクエストラインの
     /// request-target をそのまま保持しており、クエリ文字列（`?` 以降）を含みうる
     /// （例: `/login?token=SECRET`）。クエリ文字列にはトークン・API キー等の機密情報
     /// が乗ることが多いため、`path` フィールドとして記録する前に `?` 以降を必ず
@@ -113,7 +113,7 @@ impl TracingLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bf_http::request::{ParseOutcome, parse_request_head};
+    use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
     use std::num::NonZeroU64;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};

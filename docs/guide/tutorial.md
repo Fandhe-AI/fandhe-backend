@@ -9,12 +9,12 @@
 まず [`getting-started.md`](./getting-started.md) の手順で `examples/minimal.rs` を
 動かし、`Server` + `Router` の基本構成を確認してください。
 
-`backend_framework_core::lib.rs` のクレート doc にも、`cargo test --doc` で検証される
+`fandhe_backend_core::lib.rs` のクレート doc にも、`cargo test --doc` で検証される
 クイックスタートの doc test があります。ソースを直接読みたい場合は
 `crates/core/src/lib.rs` を参照してください。
 
 ```bash
-cargo test --doc -p backend-framework-core
+cargo test --doc -p fandhe-backend-core
 ```
 
 ## 2. 拡張点を実装する: `Middleware`
@@ -27,8 +27,8 @@ cargo test --doc -p backend-framework-core
 `crates/core/src/extension.rs` の `Middleware` trait doc comment にあります。要点は次のとおりです。
 
 ```rust,ignore
-use backend_framework_core::Middleware;
-use bf_http::request::RequestHead;
+use fandhe_backend_core::Middleware;
+use fandhe_backend_http::request::RequestHead;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -69,23 +69,23 @@ let server = Server::new()
 
 拡張点の実装パターンを踏まえ、実際のプラグイン（`websocket` feature）を有効化して
 動かしてみます。`UpgradeHandler` 拡張点を通じて WebSocket ハンドシェイクへ委譲する
-実装は `bf-plugin-websocket` が提供します。
+実装は `fandhe-backend-plugin-websocket` が提供します。
 
 ```bash
-cargo run --release --example ws_echo -p backend-framework-core --features websocket
+cargo run --release --example ws_echo -p fandhe-backend-core --features websocket
 curl -v http://127.0.0.1:3007/health   # 200 応答
 ```
 
 WebSocket クライアント（`wscat` 等）で `ws://127.0.0.1:3007/ws` に接続すると、
 送信した内容がそのままエコーされます。
 
-feature を無効化してビルドし直すと（`cargo build -p backend-framework-core`）、
-`bf-plugin-websocket` への依存が `cargo tree` から消えることを確認できます
+feature を無効化してビルドし直すと（`cargo build -p fandhe-backend-core`）、
+`fandhe-backend-plugin-websocket` への依存が `cargo tree` から消えることを確認できます
 （pay-for-what-you-use、[`feature-samples.md`](./feature-samples.md) の検証手順を参照）。
 
 ```bash
-cargo tree -p backend-framework-core            # websocket 依存が出ない
-cargo tree -p backend-framework-core --features websocket  # websocket 依存が出る
+cargo tree -p fandhe-backend-core            # websocket 依存が出ない
+cargo tree -p fandhe-backend-core --features websocket  # websocket 依存が出る
 ```
 
 ## 次のステップ

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// # Examples
 /// ```
-/// use bf_plugin_openapi::EchoBody;
+/// use fandhe_backend_plugin_openapi::EchoBody;
 ///
 /// let body = EchoBody { message: "hi".to_string() };
 /// let json = serde_json::to_string(&body).unwrap();
@@ -34,7 +34,7 @@ pub struct EchoBody {
 ///
 /// # Examples
 /// ```
-/// use bf_plugin_openapi::UserResponse;
+/// use fandhe_backend_plugin_openapi::UserResponse;
 ///
 /// let body = UserResponse { id: 42, name: "User 42".to_string() };
 /// assert_eq!(body.id, 42);
@@ -51,7 +51,7 @@ pub struct UserResponse {
 ///
 /// # Examples
 /// ```
-/// use bf_plugin_openapi::SearchResponse;
+/// use fandhe_backend_plugin_openapi::SearchResponse;
 ///
 /// let body = SearchResponse {
 ///     query: "rust".to_string(),
@@ -74,7 +74,7 @@ pub struct SearchResponse {
 ///
 /// # Examples
 /// ```
-/// use bf_plugin_openapi::ErrorBody;
+/// use fandhe_backend_plugin_openapi::ErrorBody;
 ///
 /// let body = ErrorBody { error: "invalid id".to_string() };
 /// assert_eq!(body.error, "invalid id");

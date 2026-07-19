@@ -1,5 +1,9 @@
 # REQ-5 受け入れ検証レポート — GraphQL 受け入れテスト（TASK-5.2、#53）
 
+> 注記: 本レポートは 2026-07 の crate・import 一括改名（#202）以前の実測記録であり、
+> 旧クレート名（`backend-framework-core` / `bf-http` / `bf-routes` / `bf-plugin-*` 等）
+> 表記のまま保持している。実測値本文は改変しない（`docs/design/framework-naming.md` 7 節）。
+
 `docs/spec/04-requirements.md` REQ-5（GraphQL）の受け入れ基準のうち TASK-5.2 が担う
 「GraphQL 受け入れテスト」を `scripts/accept/graphql-accept.sh` で検証した結果。
 TASK-2.4（#21、パスインターセプト型境界の確立）・TASK-5.1（#38、`async-graphql` に

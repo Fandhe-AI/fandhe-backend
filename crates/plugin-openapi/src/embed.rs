@@ -9,7 +9,7 @@
 //!
 //! # 接続契約（TASK-2.1 との関係）
 //! `GET /openapi.json` を実サービングする HTTP ハンドラの配線は TASK-2.1（#18、
-//! サーバ側 feature `openapi = ["dep:bf-plugin-openapi"]` 相当）のスコープであり、
+//! サーバ側 feature `openapi = ["dep:fandhe-backend-plugin-openapi"]` 相当）のスコープであり、
 //! 本クレートはハンドラを持たない。TASK-2.1 は本定数を `Content-Type:
 //! application/json` で返すだけの薄いハンドラを実装すればよい。実装との齟齬照合
 //! （宣言した path と `crates/routes` の実ルーティングの一致確認）は TASK-3.3（#32）の
@@ -32,7 +32,7 @@
 ///
 /// # Examples
 /// ```
-/// use bf_plugin_openapi::OPENAPI_JSON;
+/// use fandhe_backend_plugin_openapi::OPENAPI_JSON;
 ///
 /// assert!(OPENAPI_JSON.starts_with('{'));
 /// assert!(OPENAPI_JSON.contains("\"/health\""));
@@ -59,7 +59,7 @@ mod tests {
         }
         assert_eq!(
             OPENAPI_JSON, expected,
-            "openapi.json が ApiDoc の最新定義と乖離している。`cargo run -p bf-plugin-openapi \
+            "openapi.json が ApiDoc の最新定義と乖離している。`cargo run -p fandhe-backend-plugin-openapi \
              --features gen-cli --bin gen-openapi -- --update` で再生成すること"
         );
     }

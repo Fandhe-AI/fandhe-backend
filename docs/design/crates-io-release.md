@@ -29,8 +29,8 @@
   # または https://crates.io/crates/<crate-name> を直接確認
   ```
 
-- 確認対象は 4 節の公開予定クレート名すべて（`bf-http` / `bf-routes` /
-  `backend-framework-core` 等、正式名称確定後に改名される可能性がある）
+- 確認対象は 4 節の公開予定クレート名すべて（`fandhe-backend-http` / `fandhe-backend-routes` /
+  `fandhe-backend-core` 等、正式名称確定後に改名される可能性がある）
 
 ## 3. 所有権
 
@@ -56,10 +56,10 @@
 
 | クレート | 区分 | 理由 |
 |---------|------|------|
-| `bf-http` | 公開対象 | HTTP プリミティブ（下位層）。単体でも再利用価値がある |
-| `bf-routes` | 公開対象 | ルーティング。`bf-http` にのみ依存する中間層 |
-| `backend-framework-core`（`crates/core`） | 公開対象 | 最小コア本体 |
-| `bf-plugin-websocket` / `bf-plugin-graphql` / `bf-plugin-openapi` / `bf-plugin-webrtc` / `bf-plugin-webrtc-proxy` / `bf-plugin-tracing` / `bf-plugin-hub-wiring`（存在するもの） | 公開対象 | feature 駆動プラグイン本体 |
+| `fandhe-backend-http` | 公開対象 | HTTP プリミティブ（下位層）。単体でも再利用価値がある |
+| `fandhe-backend-routes` | 公開対象 | ルーティング。`fandhe-backend-http` にのみ依存する中間層 |
+| `fandhe-backend-core`（`crates/core`） | 公開対象 | 最小コア本体 |
+| `fandhe-backend-plugin-websocket` / `fandhe-backend-plugin-graphql` / `fandhe-backend-plugin-openapi` / `fandhe-backend-plugin-webrtc` / `fandhe-backend-plugin-webrtc-proxy` / `fandhe-backend-plugin-tracing` / `fandhe-backend-plugin-hub-wiring`（存在するもの） | 公開対象 | feature 駆動プラグイン本体 |
 | `axum-ref` | 恒久非公開 | 性能比較用参照実装。フレームワーク利用者向け成果物ではない |
 | `ws-load-client` | 恒久非公開 | WebSocket 負荷試験専用バイナリ |
 | `crates/http/fuzz` | 恒久非公開（対象外） | cargo-fuzz 専用クレート。root workspace から `exclude` 済み（TASK-15.3-1、#87）であり、`cargo publish` の対象にも入らない |
@@ -69,10 +69,10 @@
   公開対象クレートも含めて全クレートに `publish = false` を設定し publish をフェイル
   クローズで禁止する**（5 節）
 - publish 順序は依存方向（`server → routes → http::*`）に従う:
-  1. `bf-http`
-  2. `bf-routes`
-  3. `backend-framework-core`
-  4. `bf-plugin-*`（相互依存がなければ順不同。`bf-plugin-websocket` 等はコアに依存しない
+  1. `fandhe-backend-http`
+  2. `fandhe-backend-routes`
+  3. `fandhe-backend-core`
+  4. `fandhe-backend-plugin-*`（相互依存がなければ順不同。`fandhe-backend-plugin-websocket` 等はコアに依存しない
      設計のため、コアより先でも問題ない。ただし本ドキュメントでは分かりやすさのため
      コアの後に統一する）
 - 公開判断が下り、個別クレートの publish を解除する際は、当該クレートの
@@ -84,7 +84,7 @@
 - `crates/core/Cargo.toml` に `publish = false` を理由コメント付きで追加した
   （本イシュー #94 で対応済み）。名称確定・公開判断が下るまで、意図しない
   `cargo publish` 事故を機械的に防ぐ
-- 他の 11 クレート（`bf-http` / `bf-routes` / `bf-plugin-*` / `axum-ref` /
+- 他の 11 クレート（`fandhe-backend-http` / `fandhe-backend-routes` / `fandhe-backend-plugin-*` / `axum-ref` /
   `ws-load-client`）はすでに `publish = false` が設定済みであることを調査で確認済み
   （2026-07 時点）。したがって現状、全 12 クレートが `publish = false` で
   `cargo publish` 不能な状態を維持している
@@ -129,9 +129,9 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      # 依存順（bf-http → bf-routes → backend-framework-core → bf-plugin-*）で
+      # 依存順（fandhe-backend-http → fandhe-backend-routes → fandhe-backend-core → fandhe-backend-plugin-*）で
       # 各クレートに対し dry-run を実行する
-      - run: cargo publish --dry-run -p bf-http
+      - run: cargo publish --dry-run -p fandhe-backend-http
 
   publish:
     needs: dry-run
@@ -144,10 +144,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # 依存順に publish する（各クレート間で crates.io のインデックス反映待ちを挟む）
-      - run: cargo publish -p bf-http
-      - run: cargo publish -p bf-routes
-      - run: cargo publish -p backend-framework-core
-      # 以降 bf-plugin-* を順次 publish
+      - run: cargo publish -p fandhe-backend-http
+      - run: cargo publish -p fandhe-backend-routes
+      - run: cargo publish -p fandhe-backend-core
+      # 以降 fandhe-backend-plugin-* を順次 publish
 ```
 
 - **認証**: crates.io の
@@ -168,7 +168,7 @@ jobs:
 - [SemVer](https://semver.org/) に従う
 - `0.x` 系では Cargo の慣例に従い minor バージョンアップで breaking change を許容する
 - workspace 内クレートは lockstep（一括バージョン更新）方針とする。個別クレートごとに
-  バージョンを分離すると、`bf-http` → `bf-routes` → `backend-framework-core` の依存順
+  バージョンを分離すると、`fandhe-backend-http` → `fandhe-backend-routes` → `fandhe-backend-core` の依存順
   publish 時にバージョン整合の管理コストが増えるため
 
 ## 8. 公開前チェックリスト

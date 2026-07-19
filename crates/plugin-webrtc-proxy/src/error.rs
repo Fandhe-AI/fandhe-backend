@@ -14,7 +14,7 @@
 /// # Examples
 ///
 /// ```
-/// use bf_plugin_webrtc_proxy::ProxyError;
+/// use fandhe_backend_plugin_webrtc_proxy::ProxyError;
 ///
 /// assert_eq!(ProxyError::UpstreamTimeout.to_string(), "upstream request timed out");
 /// ```

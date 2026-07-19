@@ -1,5 +1,5 @@
 [package]
-name = "bf-plugin-webrtc"
+name = "fandhe-backend-plugin-webrtc"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -18,10 +18,10 @@ workspace = true
 # サイズ約 10.4 倍・`unsafe` Functions 約 2.2 倍という桁違いの依存インパクトを
 # 持つ（PoC-5、docs/spec の Conditional Go 条件(2)）ため、本クレート自体は
 # `webrtc` feature（`crates/core/Cargo.toml` の `optional = true` + `dep:` 構文）
-# 有効時にのみコアの依存グラフへ現れる（`cargo tree -p backend-framework-core`
+# 有効時にのみコアの依存グラフへ現れる（`cargo tree -p fandhe-backend-core`
 # で検証）。
 [dependencies]
-bf-http = { path = "../http" }
+fandhe-backend-http = { path = "../http" }
 webrtc = "0.17"
 serde_json = "1"
 # シグナリング全体タイムアウト（`WebRtcConfig::signaling_timeout`）のみに使う。

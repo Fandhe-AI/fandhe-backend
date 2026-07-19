@@ -1,4 +1,4 @@
-//! `bf_http::request::parse_request_head` の構文解析層のみを叩く fuzz target（TASK-15.3-1、#87）。
+//! `fandhe_backend_http::request::parse_request_head` の構文解析層のみを叩く fuzz target（TASK-15.3-1、#87）。
 //!
 //! 対象は sans-IO な純関数（`&[u8] -> Result<ParseOutcome, ParseError>`）であり、
 //! ソケット I/O・時間経過を伴わないため libFuzzer の任意バイト列をそのまま入力に
@@ -18,5 +18,5 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     // 戻り値は問わない。パニック（integer overflow・index out of bounds 等）や
     // メモリ不正（ASan 計装で検出）が起きないことのみを libFuzzer に判定させる。
-    let _ = bf_http::request::parse_request_head(data);
+    let _ = fandhe_backend_http::request::parse_request_head(data);
 });
