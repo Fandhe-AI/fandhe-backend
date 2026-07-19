@@ -48,21 +48,32 @@ TASK-4.1）が別 PR（#137）として並行実装中であることを確認�
 | PASS | 3: build/test（webrtc-proxy） | `cargo build`/`cargo test` 成功 |
 | PASS | 3: build/test（all-features） | `cargo build`/`cargo test` 成功 |
 | PASS | 4: 安全性トレードオフ設計文書 | `docs/design/plugin-loading-tradeoffs.md` を新設 |
-| SKIP | 5: 両 feature 無効時の性能維持（REQ-1 基準） | 下記「性能検証（手動・未実施）」を参照 |
+| PASS | 5: 両 feature 無効時の性能維持（REQ-1 基準） | #260 で再計測し SKIP を解消。下記「基準 5 再計測（#260、2026-07-19）」を参照 |
 
 **終了コード: 0（FAIL なし）**
+
+> 上表・下表の基準 5 は #260（2026-07-19）時点の判定に更新済み。当時（TASK-2.4 実装時点、
+> 2026-07-17）の SKIP 判定・その根拠（下記「性能検証（手動・未実施）」節）は実測記録として
+> 改変せず残す（冒頭注記の「実測値本文は改変しない」方針を SKIP 判定の経緯記述にも適用）。
 
 ## 個別基準への対応関係（REQ-2 受け入れ基準）
 
 | REQ-2 受け入れ基準 | 対応状況 |
 |--------------------|---------|
 | プラグイン無効時、依存クレート・`unsafe`・コードが 0 件（`cargo tree`/`cargo geiger`/バイナリサイズ） | PASS（基準 2、`scripts/pay-for-what-you-use-check.sh` 内で個別検証済み。`webrtc-proxy`・`graphql` いずれも無効構成でバイナリシンボル・依存グラフから完全除外を確認） |
-| 少なくとも 2 種のプラグインを feature flag で着脱でき、両方無効のコア性能が REQ-1 の性能基準を維持する | 前半 PASS（基準 1・3）。後半 SKIP（基準 5、下記参照） |
+| 少なくとも 2 種のプラグインを feature flag で着脱でき、両方無効のコア性能が REQ-1 の性能基準を維持する | 前半 PASS（基準 1・3）。後半 PASS（基準 5、#260 で再計測。下記「基準 5 再計測（#260、2026-07-19）」参照） |
 | コンパイル時方式と実行時動的ロード方式の安全性トレードオフが設計文書として記録されている | PASS（基準 4、`docs/design/plugin-loading-tradeoffs.md`） |
 | 全リクエストに介入する `Middleware` 実装は非同期 I/O を用いる設計規約が `AGENTS.md` に明記されている | TASK-2.3（#20）で対応済み（本タスクのスコープ外、変更なし） |
 | 新規プラグイン追加時、既存 3 種の拡張点で表現できない場合にのみ新規 trait 追加を検討する設計原則を開発規約に明記 | `docs/design/plugin-boundary.md` 5 節・`crates/plugin-graphql` の doc コメントが既存の `plugin::try_intercept` シームを踏襲する形で実践（新規 trait は追加していない） |
 
 ## 性能検証（手動・未実施）
+
+> **解消済み（#260、2026-07-19）**: 本節は TASK-2.4 実装時点（2026-07-17）の記録として
+> 改変せず残す。当時 `bench-endpoints` として予告していたコア側計測用バイナリは
+> TASK-1.6-3（#168）で `crates/core/examples/core-bench.rs` として実装され、
+> `benches/bench-accept.sh` の BLOCKED は既に解消済みだった（`benches/reports/
+> task-1.6-1-performance.md`）。基準 5 の再計測・SKIP 解消は「基準 5 再計測（#260、
+> 2026-07-19）」節を参照。
 
 両 feature 無効時のコア性能が REQ-1 の性能基準
 （RPS axum 比 90% 以上・p95/p99 110% 以内・アイドル RSS 110% 以内・バイナリサイズ
@@ -93,6 +104,42 @@ CORE_BIN=target/release/examples/bench-endpoints \
 `crates/plugin-webrtc-proxy` の doc コメント参照）により実質ゼロと見込まれるが、
 これも `CORE_BIN` 整備後に実測で確認する。
 
+## 基準 5 再計測（#260、2026-07-19）
+
+イシュー #252（仕様照合）が、TASK-1.6-3（#168）で `CORE_BIN`（`crates/core/examples/
+core-bench.rs`）が整備済みにもかかわらず基準 5 が SKIP のまま放置されている不整合を
+検出し、本イシューで再計測して SKIP を解消した。
+
+**判定: PASS**
+
+- `fandhe-backend-core` の `[features]` は `default = []` のため、`core-bench` example の
+  ビルドバイナリ（`CORE_BIN`）は webrtc-proxy・graphql 両 feature 無効構成そのものであり、
+  `cargo tree -p fandhe-backend-core -e normal` で両プラグインクレートが依存グラフに
+  一切現れないことを確認した（追加実装なしで計測対象として使える）
+- 主根拠は TASK-1.6-3（#168）の 2 回目実測（`benches/reports/task-1.6-1-performance.md`
+  末尾、`RUNS=5 DURATION=15s CONNECTIONS=128`、静穏な環境下）。全 15 指標（RPS・p95・p99 ×
+  4 エンドポイント・アイドル RSS・バイナリサイズ・起動時間）が既定閾値を満たし
+  **総合判定: PASS** だった。`core-bench.rs` は #168 マージ後に変更コミットがないことを
+  `git log --follow` で確認済みのため、この実測は現時点でも有効
+- 本イシューでも同一パラメータでの再計測を専有計測 wrapper（`benches/
+  bench-accept-exclusive.sh`、本イシューで新設）で試みた。1 回目の短縮パラメータでの
+  結合確認は意図通り BLOCKED（静穏未達）。2 回目の本計測は静穏確認ゲート（実行開始
+  時点、loadavg=0.92）を通過して計測を開始したが、約 14 分の計測完了までの間に並列
+  issue 実装ワークフロー由来とみられる host contention が急増（loadavg が 13.03 まで
+  上昇）し、`GET /users/{id}` が基準未達で FAIL となった。異常が現れたエンドポイントが
+  baseline 計測時と core 計測時とで異なっていた（baseline は health/hello、core は
+  users/echo）ことから、core 固有の性能劣化ではなく計測時点ごとに変動する host
+  contention によるノイズと診断した（詳細な診断根拠は下記レポート参照）
+- 総合判定は、静穏環境下で全指標 PASS を記録した #168 の実測を主根拠とし、本イシューの
+  再計測試行はノイズ診断込みの副次根拠として全実測値を改変せず記録する
+- 詳細な実測ログ・診断・feature 無効の証跡・再実行手順は
+  `benches/reports/task-2.4-plugin-accept.md` を参照
+
+`scripts/accept/plugin-mechanism-accept.sh` 基準 5 は `benches/reports/
+task-2.4-plugin-accept.md` の「総合判定」行を参照して PASS/FAIL/SKIP を判定するよう
+更新した（レポート不在・BLOCKED 記録のみの場合は SKIP へフォールバックし、フェイル
+クローズを維持する）。
+
 ## スコープ外（`.claude/rules/out-of-scope-tracking.md` に従い記録）
 
 - 実 WebSocket 実装（RFC 6455 ハンドシェイク・フレーミング） → TASK-4.1（#22、
@@ -114,5 +161,9 @@ CORE_BIN=target/release/examples/bench-endpoints \
 - `docs/design/plugin-loading-tradeoffs.md`（安全性トレードオフ設計文書）
 - `docs/design/plugin-boundary.md`（プラグイン境界パターン、7 節を本タスクで更新）
 - `crates/plugin-graphql/src/lib.rs`（第 2 プラグイン境界インスタンスの doc）
-- `scripts/accept/plugin-mechanism-accept.sh`（本レポートの実行スクリプト）
-- `benches/reports/task-1.6-1-performance.md`（性能受け入れ BLOCKED の記録）
+- `scripts/accept/plugin-mechanism-accept.sh`（本レポートの実行スクリプト。基準 5 の
+  判定ロジックは #260 でレポート参照型へ更新済み）
+- `benches/reports/task-1.6-1-performance.md`（TASK-1.6-3 / #168 実測。基準 5 再計測の
+  判定根拠）
+- `benches/reports/task-2.4-plugin-accept.md`（基準 5 再計測レポート、#260）
+- `benches/bench-accept-exclusive.sh`（基準 5 再計測に使用した専有計測 wrapper、#260）

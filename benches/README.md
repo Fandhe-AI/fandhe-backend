@@ -484,3 +484,37 @@ bash benches/nfr6-exclusive.sh
 Rust コード中にハードコードしており、`crates/**` を変更しない本イシューの方針では
 env 経由のポート上書きに対応できないため（詳細は設計ドキュメント参照）。専有性は
 flock による直列化と静穏確認で担保する。
+
+## bench-accept-exclusive.sh — REQ-2 基準 5 専有計測手順（#260）
+
+`bench-accept.sh`（axum-ref 比 REQ-1・NFR-1・NFR-2 判定オーケストレータ）も
+`nfr6-exclusive.sh` と同じ host contention 問題の影響を受ける。REQ-2 基準 5
+（`docs/acceptance/req2-plugin-mechanism.md`「両 feature（webrtc-proxy・graphql）無効時の
+コア性能が REQ-1 の性能基準を維持する」）を再計測する際は、`benches/lib/exclusive.sh` の
+専有実行枠を薄くラップした `benches/bench-accept-exclusive.sh` を使う。
+
+```bash
+# 事前ビルド（wrapper 自体は自動ビルドしない。専有ロック取得後にビルドが走ると
+# 静穏確認の意味が薄れるため、ロック取得前に済ませておく）
+cargo build --release
+cargo build --release --example core-bench -p fandhe-backend-core
+
+REPORT_MD=benches/reports/task-2.4-plugin-accept.md bash benches/bench-accept-exclusive.sh
+```
+
+`fandhe-backend-core` は `default = []` のため、`CORE_BIN`（既定
+`target/release/examples/core-bench`）自体が webrtc-proxy・graphql 両 feature 無効構成
+そのものであり、基準 5 の計測対象として追加実装なしに使える。
+
+主な env は `nfr6-exclusive.sh` と共通（`benches/lib/exclusive.sh` の既定値を再利用）。
+`RUNS` / `DURATION` / `CONNECTIONS` / `REPORT_MD` / `CORE_BIN` 等は `bench-accept.sh` に
+そのまま透過する。
+
+終了コードは `bench-accept.sh` の終了コードをそのまま透過する（0 = 全項目 PASS、
+1 = 1 件以上 FAIL、2 = `CORE_BIN` 未整備で BLOCKED）。専有ロック取得不能・静穏未達で
+計測に着手できなかった場合も `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`（既定 2）で
+BLOCKED（PASS へは丸めない）。
+
+`scripts/accept/plugin-mechanism-accept.sh` 基準 5 は `benches/reports/
+task-2.4-plugin-accept.md` の「総合判定」行を参照して PASS/FAIL/SKIP を判定する
+（レポート不在・BLOCKED 記録のみの場合は SKIP）。

@@ -12,11 +12,13 @@
 #   4. コンパイル時 vs 実行時動的ロードのトレードオフ設計文書
 #      （`docs/design/plugin-loading-tradeoffs.md`）が存在する
 #
-# 両 feature 無効時のコア性能（REQ-1 基準維持）は計測用バイナリ（axum-ref 等価
-# 4 エンドポイント）が別イシュー（#15、#71、TASK-1.6-1「BLOCKED」を参照）で
-# 未整備のため、本スクリプトの自動検証対象に含めない。手動実行手順を
-# `docs/acceptance/req2-plugin-mechanism.md` に記録する（判定不能を PASS と
-# 偽らない、.claude/rules/security.md のフェイルクローズ原則）。
+# 両 feature 無効時のコア性能（REQ-1 基準維持）は、計測用バイナリ（axum-ref 等価
+# 4 エンドポイント、TASK-1.6-3 / #168 で整備済み）を使った専有計測 wrapper
+# （`benches/bench-accept-exclusive.sh`、TASK-260 / #260）の実測レポート
+# `benches/reports/task-2.4-plugin-accept.md` の「総合判定」行を参照して判定する
+# （基準 5 の実処理は下記参照）。host contention でレポートが BLOCKED のまま・
+# 未生成の場合は SKIP とし、判定不能を PASS と偽らない
+# （.claude/rules/security.md のフェイルクローズ原則）。
 #
 # 判定不能（cargo metadata 失敗・jq 未導入・前提スクリプト不在等）はフェイルクローズで
 # FAIL とする。
@@ -101,9 +103,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5: 性能維持（手動、#15/#71 BLOCKED のため自動検証対象外）
+# 5: 性能維持（benches/reports/task-2.4-plugin-accept.md の「総合判定」行を参照。
+#    TASK-260 / #260。レポートに「総合判定: PASS」があれば PASS、「総合判定: FAIL」が
+#    あれば FAIL、レポート不在・BLOCKED 記録のみなら SKIP とする。PASS への丸め込みは
+#    行わない（フェイルクローズ）。
 # ---------------------------------------------------------------------------
-record_skip "5: 両 feature 無効時の性能維持（REQ-1 基準）" "axum-ref 等価計測用バイナリが #15/#71（TASK-1.6-1）BLOCKED のため自動検証対象外。手動手順は docs/acceptance/req2-plugin-mechanism.md を参照"
+plugin_accept_report="${WORKSPACE_ROOT}/benches/reports/task-2.4-plugin-accept.md"
+if [ ! -f "${plugin_accept_report}" ]; then
+    record_skip "5: 両 feature 無効時の性能維持（REQ-1 基準）" "benches/reports/task-2.4-plugin-accept.md が見つかりません。benches/bench-accept-exclusive.sh を実行して再計測してください"
+elif grep -q '^\*\*総合判定: PASS\*\*' "${plugin_accept_report}"; then
+    record_pass "5: 両 feature 無効時の性能維持（REQ-1 基準）" "benches/reports/task-2.4-plugin-accept.md の総合判定が PASS（詳細はレポート本文を参照）"
+elif grep -q '^\*\*総合判定: FAIL\*\*' "${plugin_accept_report}"; then
+    record_fail "5: 両 feature 無効時の性能維持（REQ-1 基準）" "benches/reports/task-2.4-plugin-accept.md の総合判定が FAIL（詳細はレポート本文を参照）"
+else
+    record_skip "5: 両 feature 無効時の性能維持（REQ-1 基準）" "benches/reports/task-2.4-plugin-accept.md に総合判定 PASS/FAIL の記録がありません（BLOCKED 等、判定不能）。host contention が落ち着いたタイミングで benches/bench-accept-exclusive.sh を再実行してください"
+fi
 
 print_summary "REQ-2、TASK-2.4 / #21"
 exit "$(summary_exit_code)"
