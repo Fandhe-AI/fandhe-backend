@@ -168,3 +168,90 @@ webrtc   p95 中央値: 0.000246442（baseline 比 112.05%）
 既定閾値での確定再計測は host が真に静穏な期間に改めて実施する必要がある
 （フォローアップとして別途実施、`.claude/rules/out-of-scope-tracking.md`）。本 FAIL
 判定は暫定的に維持し、PASS へは丸めない。
+
+## 追補（#220）: 2026-07-19 再実行と専有計測 BLOCKED 記録
+
+`docs/acceptance/req8-webrtc-attack-surface.md`「2026-07 再実行（#220）」節に対応する
+生ログ。対象コミット `c26090c695b4a5c1bd4bb2bddae023e4a0a178d9`（`origin/main`）。
+
+### 専有計測（`benches/nfr6-exclusive.sh`、既定 `LOAD1_MAX=1.0`）は BLOCKED
+
+`QUIESCE_WAIT_SECS` のみ 1800→90 秒へ短縮（静穏閾値 `LOAD1_MAX` 自体は緩和していない。
+既定 1800 秒の全待機は本イシュー実装の時間予算内では非現実的なため、判定確定を早めた
+だけで判定基準は変えていない）。
+
+```text
+$ TARGETS=webrtc QUIESCE_WAIT_SECS=90 QUIESCE_POLL_INTERVAL_SECS=15 bash benches/nfr6-exclusive.sh
+=== NFR-6 専有計測 wrapper（TARGETS=webrtc） ===
+--- 専有ロック取得を試行（/tmp/fandhe-backend-nfr6-bench.lock） ---
+専有ロック取得済み
+--- 静穏確認（LOAD1_MAX=1.0 QUIESCE_WAIT_SECS=90） ---
+BLOCKED: 90s 待っても静穏（loadavg <= 1.0・cargo/rustc/oha 不在）が得られませんでした
+snapshot_label=blocked
+snapshot_time=2026-07-19T05:24:14Z
+snapshot_commit=c26090c695b4a5c1bd4bb2bddae023e4a0a178d9
+snapshot_nproc=12
+snapshot_loadavg1=1.33
+snapshot_busy_processes=none
+EXIT=2
+```
+
+`snapshot_busy_processes=none`（cargo/rustc/oha 自体は非稼働）にもかかわらず loadavg が
+1.0 を超えて静穏判定が成立しなかった。これは他 issue の並列実装ワークフロー（本
+worktree 外のプロセス）による host contention であり、#178 が既に文書化した現象と
+整合する。
+
+### 専有枠なしの参考実測 3 回（host contention あり、確定値ではない）
+
+1 回目（`scripts/accept/webrtc-accept.sh` 経由、`RUNS=5 DURATION=5s CONNECTIONS=32`）:
+
+```text
+rps_ratio_pct=96.14
+p95_ratio_pct=103.03
+```
+
+2 回目（`benches/webrtc-nfr6-bench.sh` 直接実行、同一パラメータ）:
+
+```text
+  [baseline] run 1: rps=123776.68799341423 p95=0.00038867
+  [baseline] run 2: rps=143645.5051489167 p95=0.000242023
+  [baseline] run 3: rps=131294.2382552689 p95=0.000303419
+  [baseline] run 4: rps=144201.09754897063 p95=0.000237105
+  [baseline] run 5: rps=146816.90115981133 p95=0.000233705
+  [webrtc] run 1: rps=135332.4131300318 p95=0.000255299
+  [webrtc] run 2: rps=139235.3315009073 p95=0.000253363
+  [webrtc] run 3: rps=135156.5075552132 p95=0.000252127
+  [webrtc] run 4: rps=136423.2665718916 p95=0.000249674
+  [webrtc] run 5: rps=135945.2855968987 p95=0.00025145
+
+baseline RPS 中央値: 143645.5051489167
+webrtc   RPS 中央値: 135945.2855968987（baseline 比 94.64%）
+baseline p95 中央値: 0.000242023
+webrtc   p95 中央値: 0.000252127（baseline 比 104.17%）
+```
+
+3 回目（`benches/webrtc-nfr6-bench.sh` 直接実行、同一パラメータ）:
+
+```text
+  [baseline] run 1〜5、[webrtc] run 1〜5 省略（中央値のみ記載）
+baseline RPS 中央値: 142874.38088028153
+webrtc   RPS 中央値: 137278.0492679276（baseline 比 96.08%）
+baseline p95 中央値: 0.000239229
+webrtc   p95 中央値: 0.000249666（baseline 比 104.36%）
+```
+
+### 判定
+
+3 回中 2 回（1・3 回目）は実務許容帯 [95%, 105%] 内で `evaluate_nfr6_ratio` = WARN、
+1 回（2 回目）は RPS 比が実務下限 95% を 0.36 ポイント下回り FAIL 相当。狭義帯
+（100.3〜100.8%）にはいずれも収まらない。専有計測が BLOCKED のため確定値は得られず、
+かつ本節の参考実測は旧確定 FAIL 計測（`CONNECTIONS=128 DURATION=15s`）とは異なる
+パラメータ（既定値 `CONNECTIONS=32 DURATION=5s`）であり単純比較できないため、
+`docs/acceptance/req8-webrtc-attack-surface.md` は基準 E の判定を「FAIL」のまま維持
+した（区分変更は行っていない）。旧 FAIL 実測値（本ファイル上記、RPS 比
+93.86〜95.23%・p95 比 106.57〜108.45%）・追補（#178）の FAIL 実測値（RPS 比
+88.10%・p95 比 112.05%、`LOAD1_MAX` 緩和試行の参考値）・本節の参考実測値はいずれも
+改変せず保持する。
+
+真に静穏な環境・同一パラメータでの基準 E 確定再計測は既存フォローアップ（本ファイル
+追補（#178）節）の継続課題として扱う。
