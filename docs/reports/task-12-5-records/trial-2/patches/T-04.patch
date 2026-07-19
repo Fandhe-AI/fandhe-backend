@@ -1,0 +1,32 @@
+diff --git a/crates/http/src/request.rs b/crates/http/src/request.rs
+index 6c2862c..861fa04 100644
+--- a/crates/http/src/request.rs
++++ b/crates/http/src/request.rs
+@@ -36,6 +36,27 @@ pub enum HttpVersion {
+     Http11,
+ }
+ 
++/// ワイヤーフォーマットの文字列表現（例: `HTTP/1.1`）を返す。
++///
++/// ログ出力・エラーメッセージ整形など、リクエストラインと同じ表記が
++/// 必要な箇所から利用する想定。
++///
++/// ```
++/// use fandhe_backend_http::request::HttpVersion;
++///
++/// assert_eq!(HttpVersion::Http10.to_string(), "HTTP/1.0");
++/// assert_eq!(HttpVersion::Http11.to_string(), "HTTP/1.1");
++/// ```
++impl std::fmt::Display for HttpVersion {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        let s = match self {
++            HttpVersion::Http10 => "HTTP/1.0",
++            HttpVersion::Http11 => "HTTP/1.1",
++        };
++        f.write_str(s)
++    }
++}
++
+ /// パース済みリクエストヘッド（body は含まない）。
+ ///
+ /// body の読み取りは呼び出し元（ソケット I/O 層、TASK-1.3-2 / #67）の責務。

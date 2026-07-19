@@ -1,0 +1,8 @@
+# TASK-12.5 試行 1 サマリ（v1 タスクセット、2026-07-18 実測、起点 ddc348e）
+# 出典: docs/reports/task-12-4-1-completion-rate-verification.md（完遂率）
+#       docs/reports/task-12-4-2-feasibility-judgment-verification.md（可否判定・根拠・破壊）
+# 形式: scripts/third-party-stability-aggregate.sh 3 節のトライアルサマリファイル形式
+metric=completion_rate pass=8 fail=2 pending=0 total=10
+metric=feasibility_accuracy pass=8 fail=2 pending=0 total=10
+metric=evidence_rate pass=6 fail=0 pending=0 total=6
+metric=destruction count=0

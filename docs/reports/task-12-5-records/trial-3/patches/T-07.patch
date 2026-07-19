@@ -1,0 +1,65 @@
+diff --git a/crates/http/src/connection.rs b/crates/http/src/connection.rs
+index c1893a3..d5de2ec 100644
+--- a/crates/http/src/connection.rs
++++ b/crates/http/src/connection.rs
+@@ -605,4 +605,60 @@ mod tests {
+         let err = read_request(&mut socket, &mut buf).await.unwrap_err();
+         assert!(matches!(err, RequestError::Parse(_)));
+     }
++
++    #[test]
++    fn http10_explicit_connection_close_disables_keep_alive() {
++        // HTTP/1.0 のデフォルト（false）と結果は同じだが、`close` を明示指定
++        // した経路（has_close で true を返す分岐）を固定する回帰テスト。
++        let head = head_of(b"GET / HTTP/1.0\r\nConnection: close\r\n\r\n");
++        assert!(!should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http10_connection_keep_alive_mixed_case() {
++        // HTTP/1.0 側でも `keep-alive` トークン比較が大小文字混在を無視する
++        // ことを固定する（HTTP/1.1 側は既存テストで確認済み）。
++        let head = head_of(b"GET / HTTP/1.0\r\nConnection: Keep-Alive\r\n\r\n");
++        assert!(should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http11_explicit_connection_keep_alive_stays_keep_alive() {
++        // HTTP/1.1 のデフォルト（true）と結果は同じだが、`keep-alive` を明示
++        // 指定した経路（has_close で false を返す分岐）を固定する回帰テスト。
++        let head = head_of(b"GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n");
++        assert!(should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http10_connection_token_trims_surrounding_ows() {
++        // トークン前後の OWS（optional whitespace）が trim され、`close` が
++        // 単独指定でも正しく検出されることを固定する（HTTP/1.0）。
++        let head = head_of(b"GET / HTTP/1.0\r\nConnection:  close  \r\n\r\n");
++        assert!(!should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http11_connection_token_trims_surrounding_ows_in_list() {
++        // カンマ区切りリストの各トークン前後の OWS が trim され、`close` が
++        // 検出されることを固定する（HTTP/1.1）。
++        let head = head_of(b"GET / HTTP/1.1\r\nConnection: keep-alive ,  close\r\n\r\n");
++        assert!(!should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http10_connection_header_without_keep_alive_or_close_token() {
++        // `Connection` ヘッダは存在するが keep-alive・close いずれのトークンも
++        // 含まない場合、デフォルト（false）と同じ結果になる経路を固定する。
++        let head = head_of(b"GET / HTTP/1.0\r\nConnection: upgrade\r\n\r\n");
++        assert!(!should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http11_connection_header_without_close_token() {
++        // `Connection` ヘッダは存在するが close トークンを含まない場合、
++        // デフォルト（true）と同じ結果になる経路を固定する。
++        let head = head_of(b"GET / HTTP/1.1\r\nConnection: upgrade\r\n\r\n");
++        assert!(should_keep_alive(&head));
++    }
+ }

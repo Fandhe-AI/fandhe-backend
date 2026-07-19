@@ -1,0 +1,11 @@
+# TASK-12.5 試行 2 サマリ（v2 タスクセット、2026-07-19 実測、起点 5ef97d6 + 隔離コミット、Issue #218）
+# 完遂率: scripts/third-party-verify.sh 一次判定（fmt/clippy/nextest/doc test・ベースライン突合済み）
+#         + 差分範囲の受け入れ基準確認。FAIL 2 件 = T-01/T-02（cargo fmt --check 不通過）
+# 可否判定: 判定記録（docs/reports/task-12-5-records/trial-2/）と v2 正解ラベルの 4 値厳密一致。
+#           不一致 1 件 = J-04（正解: 可、被験: 条件付き可）
+# 根拠提示: 不可系 6 件（J-05〜J-10）を scripts/feasibility-check.sh --input で検証、全件 exit 0
+# 破壊: 不可系 J worktree 6 件すべて git status クリーン
+metric=completion_rate pass=8 fail=2 pending=0 total=10
+metric=feasibility_accuracy pass=9 fail=1 pending=0 total=10
+metric=evidence_rate pass=6 fail=0 pending=0 total=6
+metric=destruction count=0

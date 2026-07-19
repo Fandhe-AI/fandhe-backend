@@ -1,0 +1,18 @@
+diff --git a/crates/core/src/lib.rs b/crates/core/src/lib.rs
+index 14d5f7e..3eebf97 100644
+--- a/crates/core/src/lib.rs
++++ b/crates/core/src/lib.rs
+@@ -126,4 +126,13 @@ mod tests {
+     fn version_is_not_empty() {
+         assert!(!version().is_empty());
+     }
++
++    /// `version()` の戻り値が `crates/core/Cargo.toml` の `package.version` と
++    /// 一致することを検証する。`env!("CARGO_PKG_VERSION")` はコンパイル時に
++    /// Cargo.toml の version がそのまま埋め込まれるため、テスト側で同マクロを
++    /// 使って独立に比較しても `version()` 実装の変更にはあたらない。
++    #[test]
++    fn version_matches_cargo_toml_package_version() {
++        assert_eq!(version(), env!("CARGO_PKG_VERSION"));
++    }
+ }

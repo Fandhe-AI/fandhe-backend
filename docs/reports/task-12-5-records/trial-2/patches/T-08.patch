@@ -1,0 +1,51 @@
+diff --git a/crates/core/src/server.rs b/crates/core/src/server.rs
+index 7d2244b..c094739 100644
+--- a/crates/core/src/server.rs
++++ b/crates/core/src/server.rs
+@@ -151,6 +151,46 @@ const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(10);
+ /// （TASK-1.5 / #14、下記 `impl Handler for fandhe_backend_routes::Router` 参照）を
+ /// 直接登録できるほか、トイハンドラ・テスト用の固定レスポンダ等の任意実装も
+ /// 引き続き受け付ける。
++///
++/// # 契約
++///
++/// - [`Server::handler`] で登録した実装は、`RequestGate` → `UpgradeHandler` →
++///   パスインターセプト型プラグイン（`crate::plugin::try_intercept`）のいずれも
++///   処理を完結させなかった場合にのみ [`Handler::handle`] が呼ばれる
++///   （本モジュール冒頭「1 接続あたりの処理フロー」を参照）。未登録の場合は
++///   コアが 404 を返し `Handler::handle` は呼ばれない
++///   （本モジュールのコアループ実装（`handle_connection_with_permit`）を参照）
++/// - `Middleware` / `UpgradeHandler` / `RequestGate` と同じく同期 API とする
++///   （`Box<dyn Handler>` として保持する dyn 互換性維持のため、
++///   `crates/core/src/extension.rs` 冒頭「非同期・I/O に関する規約」と同じ理由）。
++///   実装内で同期ブロッキング I/O を行ってはならない
++/// - `head` / `body` を変更してはならない（読み取り専用の入力として扱う）
++///
++/// # Examples
++///
++/// ```
++/// use fandhe_backend_core::server::Handler;
++/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
++/// use fandhe_backend_http::response::Response;
++///
++/// /// 常に固定レスポンスを返すトイ実装。
++/// struct FixedHandler;
++///
++/// impl Handler for FixedHandler {
++///     fn handle(&self, _head: &fandhe_backend_http::request::RequestHead, _body: &[u8]) -> Response {
++///         Response::new(200, b"hello".to_vec())
++///     }
++/// }
++///
++/// let handler = FixedHandler;
++/// let buf = b"GET / HTTP/1.1\r\n\r\n";
++/// let head = match parse_request_head(buf).unwrap() {
++///     ParseOutcome::Complete { head, .. } => head,
++///     ParseOutcome::Incomplete => unreachable!(),
++/// };
++/// let response = handler.handle(&head, b"");
++/// assert_eq!(response.serialize(false), Response::new(200, b"hello".to_vec()).serialize(false));
++/// ```
+ pub trait Handler: Send + Sync {
+     /// リクエストヘッドと body からレスポンスを組み立てる。
+     fn handle(&self, head: &RequestHead, body: &[u8]) -> Response;

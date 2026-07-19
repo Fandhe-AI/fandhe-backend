@@ -1,0 +1,34 @@
+diff --git a/crates/http/src/buffer.rs b/crates/http/src/buffer.rs
+index d74f0e9..137fbbe 100644
+--- a/crates/http/src/buffer.rs
++++ b/crates/http/src/buffer.rs
+@@ -81,6 +81,16 @@ impl RecvBuffer {
+     /// 縮小ポリシー（クレート内部の `shrink_if_oversized`）を観測・テストする
+     /// ための補助 API。[`crate::body::MAX_BODY_BYTES`] 分のバッファ確保が
+     /// 過剰でないことの監視や、統合テストでの容量再利用アサーションに使う。
++    ///
++    /// # Examples
++    ///
++    /// ```
++    /// use fandhe_backend_http::buffer::RecvBuffer;
++    ///
++    /// let buf = RecvBuffer::new();
++    /// // 生成直後は内部 `Vec` を確保していないため容量はゼロ。
++    /// assert_eq!(buf.capacity(), 0);
++    /// ```
+     pub fn capacity(&self) -> usize {
+         self.buf.capacity()
+     }
+@@ -302,4 +312,12 @@ mod tests {
+         let n = buf.read_chunk(&mut socket).await.unwrap();
+         assert_eq!(n, 0);
+     }
++
++    #[test]
++    fn capacity_reflects_reserved_bytes() {
++        let mut buf = RecvBuffer::new();
++        assert_eq!(buf.capacity(), 0);
++        buf.buf = Vec::with_capacity(1024);
++        assert_eq!(buf.capacity(), 1024);
++    }
+ }

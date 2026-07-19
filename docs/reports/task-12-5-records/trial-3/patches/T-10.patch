@@ -1,0 +1,39 @@
+diff --git a/crates/core/src/lib.rs b/crates/core/src/lib.rs
+index 14d5f7e..f4f56ff 100644
+--- a/crates/core/src/lib.rs
++++ b/crates/core/src/lib.rs
+@@ -112,6 +112,13 @@ pub use server::{BoundServer, Handler, Server, handle_connection};
+ /// ```
+ /// let version = fandhe_backend_core::version();
+ /// assert!(!version.is_empty());
++///
++/// // `crates/core/Cargo.toml` の `package.version` と一致することを保証する。
++/// // `version()` は `env!("CARGO_PKG_VERSION")` を返す実装であり、この値は
++/// // cargo がビルド時に `Cargo.toml` から埋め込むため、本来ズレようがない
++/// // 契約だが、実装が誤って別の値（ハードコード等）に置き換わった場合に
++/// // 検知できるよう、Cargo.toml の値を直接埋め込んで独立に比較する。
++/// assert_eq!(version, "0.1.0");
+ /// ```
+ #[must_use]
+ pub fn version() -> &'static str {
+@@ -126,4 +133,20 @@ mod tests {
+     fn version_is_not_empty() {
+         assert!(!version().is_empty());
+     }
++
++    /// `version()` の戻り値が `crates/core/Cargo.toml` の `package.version`
++    /// と一致することを確認する。`env!("CARGO_PKG_VERSION")` はコンパイル時に
++    /// 同一の `Cargo.toml` から埋め込まれる値であり、実装上ズレは生じない契約
++    /// だが、`version()` の実装が将来変わっても Cargo.toml の値との一致を機械的に
++    /// 検知できるようにするための回帰テスト（TASK-12.2 機能改修フロー、
++    /// .claude/rules/feature-modification.md）。
++    #[test]
++    fn version_matches_cargo_toml_package_version() {
++        // `CARGO_PKG_VERSION` はビルド元の Cargo.toml の package.version を
++        // cargo が直接埋め込む環境変数であり、`Cargo.toml` の値そのもの。
++        assert_eq!(version(), env!("CARGO_PKG_VERSION"));
++        // Cargo.toml 記載の値（0.1.0）とも独立に比較し、ハードコード等による
++        // 実装の意図しない置き換えを検知できるようにする。
++        assert_eq!(version(), "0.1.0");
++    }
+ }

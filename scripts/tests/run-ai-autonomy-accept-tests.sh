@@ -13,6 +13,14 @@ SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 FIXTURES_DIR="${SCRIPT_DIR}/fixtures/ai-autonomy-accept"
 ACCEPT_SCRIPT="${SCRIPTS_DIR}/accept/ai-autonomy-accept.sh"
 
+# ケース 1・5 の終了コード検証を workspace の実データ（D-2 人手評価台帳・F の
+# trial-*.summary / task-12-6-records）から切り離すための隔離入力。実測進行に伴い
+# 実データ側が FAIL を含むようになっても、台帳パース経路のセルフテストが影響を
+# 受けないようにする（Issue #218 で D-2/F が実測 FAIL 確定した際のハーミシティ修正）。
+EMPTY_REPORTS_DIR="$(mktemp -d)"
+trap 'rm -rf "${EMPTY_REPORTS_DIR}"' EXIT
+HERMETIC_ARGS=(--acceptance-doc "${FIXTURES_DIR}/acceptance-doc-pending.md" --reports-dir "${EMPTY_REPORTS_DIR}")
+
 PASS_COUNT=0
 FAIL_COUNT=0
 
@@ -50,9 +58,10 @@ assert_exit_code() {
 
 echo "=== ai-autonomy-accept.sh セルフテスト ==="
 
-# --- ケース 1: 全指標充足の台帳は A・B・C・E が PASS、終了コード 0 ---
+# --- ケース 1: 全指標充足の台帳は A・B・C・E が PASS、終了コード 0
+#     （D-2/F は隔離入力で SKIP に固定し、workspace 実データの実測結果に依存しない） ---
 set +e
-output="$(bash "${ACCEPT_SCRIPT}" --ledger "${FIXTURES_DIR}/ledger-ok.summary" 2>&1)"
+output="$(bash "${ACCEPT_SCRIPT}" --ledger "${FIXTURES_DIR}/ledger-ok.summary" "${HERMETIC_ARGS[@]}" 2>&1)"
 status=$?
 set -e
 assert_contains "台帳充足は基準 A が PASS" "${output}" "[PASS] A:"
@@ -90,9 +99,10 @@ assert_contains "不正値は基準 A が FAIL（フェイルクローズ）" "$
 assert_contains "不正値は基準 B が FAIL（フェイルクローズ）" "${output}" "[FAIL] B:"
 assert_contains "記載なし metric（evidence_rate）は SKIP のまま" "${output}" "[SKIP] C:"
 
-# --- ケース 5: 台帳ファイル不在は全指標 SKIP（PASS と偽らない）、終了コード 0 ---
+# --- ケース 5: 台帳ファイル不在は全指標 SKIP（PASS と偽らない）、終了コード 0
+#     （D-2/F は隔離入力で SKIP に固定し、workspace 実データの実測結果に依存しない） ---
 set +e
-output="$(bash "${ACCEPT_SCRIPT}" --ledger "${FIXTURES_DIR}/does-not-exist.summary" 2>&1)"
+output="$(bash "${ACCEPT_SCRIPT}" --ledger "${FIXTURES_DIR}/does-not-exist.summary" "${HERMETIC_ARGS[@]}" 2>&1)"
 status=$?
 set -e
 assert_contains "台帳不在は基準 A が SKIP" "${output}" "[SKIP] A:"
@@ -221,16 +231,19 @@ if [ -f "${GRAY_TASK_DEFS_FOR_F_TESTS}" ]; then
     assert_contains "F の SKIP 詳細にグレーゾーン採点 PASS を記録する" "${output}" "グレーゾーン採点 PASS"
 fi
 
-# --- ケース 14: フル実行（workspace の実データ、確定値台帳・実レポート含む）は
-#     現時点で FAIL 0 件（未実施項目は SKIP）を維持する（回帰確認） ---
+# --- ケース 14: フル実行（workspace の実データ、確定値台帳・実レポート含む）が
+#     クラッシュせずサマリーまで完走することを確認する（回帰確認）。
+#     exit 0（FAIL なし）/ exit 1（実測 FAIL あり）はいずれも正当な判定結果であり、
+#     workspace の実測状態（Issue #218 で D-2/F が実測 FAIL 確定）に依存させない。
+#     exit 2 以上（引数・パースエラー等の異常終了）とサマリー欠落のみを失敗とする ---
 set +e
 bash "${ACCEPT_SCRIPT}" >/tmp/ai-autonomy-accept-selftest-full-run.log 2>&1
 full_status=$?
 set -e
-if [ "${full_status}" -eq 0 ]; then
-    pass "フル実行（workspace 実データ）は exit 0（詳細: /tmp/ai-autonomy-accept-selftest-full-run.log）"
+if [ "${full_status}" -le 1 ] && grep -q "受け入れ検証サマリー" /tmp/ai-autonomy-accept-selftest-full-run.log; then
+    pass "フル実行（workspace 実データ）がサマリーまで完走（exit ${full_status}。詳細: /tmp/ai-autonomy-accept-selftest-full-run.log）"
 else
-    fail "フル実行（workspace 実データ）が exit ${full_status}（詳細: /tmp/ai-autonomy-accept-selftest-full-run.log）"
+    fail "フル実行（workspace 実データ）が異常終了またはサマリー欠落（exit ${full_status}。詳細: /tmp/ai-autonomy-accept-selftest-full-run.log）"
 fi
 
 echo ""

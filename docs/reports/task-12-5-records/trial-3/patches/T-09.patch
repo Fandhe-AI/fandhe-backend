@@ -1,0 +1,59 @@
+diff --git a/crates/http/src/request.rs b/crates/http/src/request.rs
+index 6c2862c..d95fea0 100644
+--- a/crates/http/src/request.rs
++++ b/crates/http/src/request.rs
+@@ -537,6 +537,54 @@ mod tests {
+         assert_eq!(parse_request_head(&buf), Err(ParseError::TooManyHeaders));
+     }
+ 
++    #[test]
++    fn header_count_at_boundary_is_accepted() {
++        // ヘッダ本数がちょうど MAX_HEADER_COUNT（境界値）であれば拒否されず成功する
++        // ことを固定する。too_many_headers（MAX_HEADER_COUNT + 1 で失敗）との対で
++        // 境界の両側を検証する。
++        let mut buf = b"GET / HTTP/1.1\r\n".to_vec();
++        for i in 0..MAX_HEADER_COUNT {
++            buf.extend_from_slice(format!("X-{i}: v\r\n").as_bytes());
++        }
++        buf.extend_from_slice(b"\r\n");
++        let (head, consumed) = complete(&buf);
++        assert_eq!(head.headers().count(), MAX_HEADER_COUNT);
++        assert_eq!(consumed, buf.len());
++    }
++
++    #[test]
++    fn header_count_one_over_boundary_is_rejected() {
++        // ヘッダ本数が MAX_HEADER_COUNT + 1（境界値 + 1）の場合に確実に
++        // ParseError::TooManyHeaders を返すことを固定する（too_many_headers と
++        // 同趣旨だが、境界値ちょうど成功ケースと対にして明示的に検証する）。
++        let mut buf = b"GET / HTTP/1.1\r\n".to_vec();
++        for i in 0..(MAX_HEADER_COUNT + 1) {
++            buf.extend_from_slice(format!("X-{i}: v\r\n").as_bytes());
++        }
++        buf.extend_from_slice(b"\r\n");
++        let result = parse_request_head(&buf);
++        assert!(matches!(result, Err(ParseError::TooManyHeaders)));
++    }
++
++    #[test]
++    fn blank_line_only_buffer_is_rejected() {
++        // リクエストラインが存在せず、CRLF のみで即座にヘッダ終端に到達する
++        // 不正入力（空行のみのバッファ）を ParseError::InvalidRequestLine として
++        // 拒否することを固定する。
++        let buf = b"\r\n\r\n";
++        let result = parse_request_head(buf);
++        assert!(matches!(result, Err(ParseError::InvalidRequestLine)));
++    }
++
++    #[test]
++    fn empty_request_line_before_single_header_terminator_is_rejected() {
++        // 空行の直後にヘッダ様の行が続いてもリクエストラインが空である限り
++        // 拒否されることを固定する（空行のみバッファの派生ケース）。
++        let buf = b"\r\nHost: example.com\r\n\r\n";
++        let result = parse_request_head(buf);
++        assert!(matches!(result, Err(ParseError::InvalidRequestLine)));
++    }
++
+     #[test]
+     fn invalid_method_character() {
+         let buf = b"G@T / HTTP/1.1\r\n\r\n";
