@@ -37,6 +37,13 @@
   セルフ実験バイアスを排除するための 3 役分離・タスクセット N=10・機械採点ハーネスの
   設計を記述。「可」「不可・要エスカレーション」「不可（明確な拒否）」の 3 値のみを対象と
   し「条件付き可」は意図的にスコープ外。自律完遂率の再検証は TASK-12.4-1／#85 のスコープ）
+- [`third-party-model-diversity-reverification.md`](./third-party-model-diversity-reverification.md):
+  第三者検証のモデル多様性制約の恒久追跡（イシュー #262、REQ-12、Conditional Go 条件(3)。
+  TASK-12.4 の実測定が Claude ファミリー内（別セッション・別 Claude モデル）に留まる制約を
+  イシュー #241 で明記・サインオフした後、恒久追跡先がクローズ済みイシューのみだった問題
+  （イシュー #252 検出）を受け、別ベンダー LLM・人間被験による再検証の実施条件と現行
+  サインオフの有効範囲（暫定運用）を整理し、open な追跡先として #262 を関連文書から
+  相互参照する）
 - [`gray-zone-feasibility-verification.md`](./gray-zone-feasibility-verification.md):
   グレーゾーン（条件付き可）タスクを含めた可否判定再検証プロトコル（TASK-12.6、#47、
   REQ-12、Conditional Go 条件(3)。`third-party-feasibility-verification.md` が除外した
