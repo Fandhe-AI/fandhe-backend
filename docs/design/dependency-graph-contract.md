@@ -357,6 +357,90 @@ E（閉包違反候補）と判定された。
    `crates/core/examples/*` の扱い見直し（分類規則の是正）は同節と同一の別 Issue
    対象のまま据え置く
 
+### 4.9 記載例（#202 / PR #209、パッケージ名一括改名）
+
+イシュー #202「全 crate の package 名・import 名を `fandhe-backend` 体系へ一括改名」
+（PR #209、HEAD sha `6add5ce12679faedcf16edcc7742b87a5d77121a`）は、workspace 全体の
+`bf-*` パッケージ名・`bf_http` 等の import パスを `fandhe-backend-*` /
+`fandhe_backend_*` へ機械的に置換する改名専用コミットである。新規プロトコル・機能の
+追加や拡張点契約の変更を一切伴わないが、`extension-closure-check.sh` は「変更ファイル
+一覧」を機械的に A〜D 分類するのみで「変更の性質（改名か機能追加か）」を判定しないため、
+`crates/http/**`・`crates/routes/**`・`crates/axum-ref/**` 等（4.7 節と同一の運用上の
+ギャップ。中間層・比較専用クレートが A〜D いずれにも割り当てられていない）や
+`crates/http/fuzz/**`・`benches/*.sh` 等の周辺資産が機械的に E 判定となった。このうち
+以下 21 件は他節の記載例と偶然一致する記載がなく未記載のまま FAIL していた
+（`scripts/extension-closure-gate.sh --base origin/main` 実行結果、`unsafe-triage` ジョブ
+run https://github.com/Fandhe-AI/backend-framework/actions/runs/29668822330）。
+
+1. **対象コミット/PR**: PR #209（#202、HEAD sha
+   `6add5ce12679faedcf16edcc7742b87a5d77121a`）
+2. **E ファイルパス**（未記載だった 21 件。48 件の E 判定全体のうち、他節既存記載と
+   文字列一致していなかった残り）:
+   - `benches/bench-accept.sh`
+   - `benches/bench-ws-load.sh`
+   - `benches/reports/task-1.6-1-performance.md`
+   - `benches/reports/task-3.3-openapi-performance.md`
+   - `benches/reports/task-4.3-ws-load-rss.md`
+   - `benches/reports/task-4.4-ws-latency.md`
+   - `benches/reports/task-8.4-webrtc-nfr6.md`
+   - `benches/ws-nfr6-bench.sh`
+   - `crates/axum-ref/Cargo.toml`
+   - `crates/axum-ref/src/main.rs`
+   - `crates/core/examples/core-bench.rs`
+   - `crates/core/examples/graphql_nfr6.rs`
+   - `crates/core/examples/webrtc_nfr6.rs`
+   - `crates/core/examples/ws_nfr6.rs`
+   - `crates/http/Cargo.toml`
+   - `crates/http/fuzz/fuzz_targets/chunked_decoder.rs`
+   - `crates/http/fuzz/fuzz_targets/head_semantics.rs`
+   - `crates/http/fuzz/fuzz_targets/parse_request_head.rs`
+   - `crates/http/src/body.rs`
+   - `crates/http/src/chunked.rs`
+   - `crates/routes/Cargo.toml`
+
+   （残り 27 件 — `benches/README.md`・`benches/graphql-nfr6-bench.sh`・
+   `benches/hub-nfr6-bench.sh`・`benches/nfr6-exclusive.sh`・
+   `benches/reports/task-10.4-tracing-performance.md`・
+   `benches/reports/task-10.6-tracing-backpressure.md`・
+   `benches/reports/task-9.3-jwt-cache-performance.md`・
+   `benches/reports/task-9.5-hub-wiring-performance.md`・
+   `benches/tracing-backpressure-bench.sh`・`benches/tracing-nfr-bench.sh`・
+   `benches/webrtc-nfr6-bench.sh`・`crates/core/examples/minimal.rs`・
+   `crates/core/examples/tracing_nfr.rs`・`crates/core/examples/ws_echo.rs`・
+   `crates/core/src/extension.rs`・`crates/http/fuzz/Cargo.toml`・
+   `crates/http/src/buffer.rs`・`crates/http/src/connection.rs`・
+   `crates/http/src/lib.rs`・`crates/http/src/request.rs`・
+   `crates/http/src/response.rs`・`crates/http/src/socket.rs`・
+   `crates/http/tests/http_flow.rs`・`crates/routes/src/lib.rs`・
+   `crates/routes/src/pattern.rs`・`crates/routes/tests/path_params.rs`・
+   `ts/src/generated/schema.d.ts` — は 4.3 節〜4.8 節の既存記載パスと文字列一致して
+   おり、本 PR 時点で `extension-closure-gate.sh` の理由記載照合をすでに満たしていた。
+   本節はこれらも含め、48 件全件が「改名専用コミットであり閉包違反ではない」ことを
+   記録として明記する）
+3. **閉じない理由**: `extension-closure-check.sh` の分類規則（A: `crates/plugin-*/**`、
+   B: `crates/core` の 4 ファイルのみ、C: `crates/core/tests/**`・
+   `crates/plugin-*/tests/**` のみ、D: `docs/*`・`scripts/*` 等）は、中間層・参照専用
+   クレート（`crates/http`・`crates/routes`・`crates/axum-ref`）や `crates/core/examples/*`・
+   `benches/*`・`crates/http/fuzz/**`・`ts/src/generated/schema.d.ts` を走査対象に
+   含めていない（4.3 節〜4.7 節と同一の運用上のギャップ）。加えて本コミットは
+   これら周辺資産すべてに対し `bf-*` → `fandhe-backend-*` の package/import 名置換を
+   一括で行っているため、対象範囲が 4.3 節〜4.8 節のいずれよりも広く、機械的に
+   E 判定となるファイルが 48 件に達した
+4. **正当性根拠**: 本コミットの差分は package 名・import パス文字列の置換のみに限定
+   される（例: `crates/http/src/body.rs` の doc test 内 `use bf_http::body::...` →
+   `use fandhe_backend_http::body::...`、`crates/routes/Cargo.toml` の
+   `name = "bf-routes"` → `name = "fandhe-backend-routes"`）。3 拡張点 trait
+   （`Middleware` / `UpgradeHandler` / `RequestGate`）・`try_intercept` 固定シームの
+   契約・シグネチャ・実装ロジックはいずれも変更しておらず、依存方向
+   （`server → routes → http::*`、1 節）にも変更はない（`scripts/dep-direction-check.sh`
+   で検証可能）。したがって本件は拡張点設計の閉包漏れ（プラグイン実装ロジックの
+   拡張点外への漏出）ではなく、`extension-closure-check.sh` の分類規則が改名のような
+   workspace 全体一括変更・中間層クレート・周辺資産（`benches/*`・
+   `crates/core/examples/*`・`crates/http/fuzz/**` 等）を想定していないことに起因する
+   運用上のギャップである。分類規則自体の見直し（中間層クレート・`benches/*`・
+   `examples/*` の A〜D への追加）は 4.3 節〜4.7 節と同一の別 Issue 対象として据え置く
+   （`.claude/rules/out-of-scope-tracking.md`）
+
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 
 `fandhe-backend-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも
