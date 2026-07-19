@@ -1,0 +1,38 @@
+diff --git a/crates/http/src/buffer.rs b/crates/http/src/buffer.rs
+index d74f0e9..3e7d910 100644
+--- a/crates/http/src/buffer.rs
++++ b/crates/http/src/buffer.rs
+@@ -81,6 +81,16 @@ impl RecvBuffer {
+     /// 縮小ポリシー（クレート内部の `shrink_if_oversized`）を観測・テストする
+     /// ための補助 API。[`crate::body::MAX_BODY_BYTES`] 分のバッファ確保が
+     /// 過剰でないことの監視や、統合テストでの容量再利用アサーションに使う。
++    ///
++    /// # Examples
++    ///
++    /// ```
++    /// use fandhe_backend_http::buffer::RecvBuffer;
++    ///
++    /// let buf = RecvBuffer::new();
++    /// // 新規バッファは内部 Vec が未確保のため容量 0。
++    /// assert_eq!(buf.capacity(), 0);
++    /// ```
+     pub fn capacity(&self) -> usize {
+         self.buf.capacity()
+     }
+@@ -295,6 +305,16 @@ mod tests {
+         assert_eq!(buf.unread(), b"hello world");
+     }
+ 
++    #[test]
++    fn capacity_reflects_reserved_spare_capacity() {
++        let mut buf = RecvBuffer::new();
++        assert_eq!(buf.capacity(), 0);
++        buf.reserve_for_read();
++        // capacity() は内部 Vec の容量をそのまま公開する API であることを、
++        // 内部フィールドではなく公開メソッド呼び出しで直接検証する。
++        assert!(buf.capacity() >= READ_CHUNK_BYTES);
++    }
++
+     #[tokio::test]
+     async fn read_chunk_returns_zero_on_eof() {
+         let mut socket: &[u8] = b"";

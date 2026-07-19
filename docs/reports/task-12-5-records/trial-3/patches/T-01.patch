@@ -1,0 +1,58 @@
+diff --git a/crates/core/src/extension.rs b/crates/core/src/extension.rs
+index a0679ca..d0a3f45 100644
+--- a/crates/core/src/extension.rs
++++ b/crates/core/src/extension.rs
+@@ -94,6 +94,53 @@ pub trait Middleware: Send + Sync {
+     fn on_response(&self, head: &RequestHead, elapsed: Duration);
+ }
+ 
++/// 何も観測しない [`Middleware`] のトイ実装。
++///
++/// [`no_op_middleware`] が返す既定実装であり、`on_request` / `on_response` は
++/// いずれも何もしない。「観測専用フックであり `head` を変更してはならない」
++/// 「実装内で同期ブロッキング I/O を行ってはならない」という [`Middleware`]
++/// の契約は、何も行わないことで自明に満たす。
++struct NoopMiddleware;
++
++impl Middleware for NoopMiddleware {
++    fn name(&self) -> &'static str {
++        "noop-middleware"
++    }
++
++    fn on_request(&self, _head: &RequestHead) {}
++
++    fn on_response(&self, _head: &RequestHead, _elapsed: Duration) {}
++}
++
++/// 何も観測しない [`Middleware`] 実装を返すファクトリ関数。
++///
++/// テストやコアループの配線時に「とりあえず 1 つ拡張点を挟みたいが観測は
++/// 不要」というケース向けのプレースホルダ。返す実装は [`Middleware`] の
++/// 契約（`head` を変更しない・同期ブロッキング I/O を行わない）を、
++/// 何も行わないことで自明に満たす。
++///
++/// # Examples
++///
++/// ```
++/// use fandhe_backend_core::extension::{no_op_middleware, Middleware};
++/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
++/// use std::time::Duration;
++///
++/// let mw = no_op_middleware();
++/// assert_eq!(mw.name(), "noop-middleware");
++///
++/// let buf = b"GET / HTTP/1.1\r\n\r\n";
++/// let head = match parse_request_head(buf).unwrap() {
++///     ParseOutcome::Complete { head, .. } => head,
++///     ParseOutcome::Incomplete => unreachable!(),
++/// };
++/// mw.on_request(&head);
++/// mw.on_response(&head, Duration::from_millis(1));
++/// ```
++pub fn no_op_middleware() -> impl Middleware {
++    NoopMiddleware
++}
++
+ /// 長時間接続（WebSocket・WebRTC シグナリング等）への**委譲判定のみ**を
+ /// コアに公開する拡張点。
+ ///

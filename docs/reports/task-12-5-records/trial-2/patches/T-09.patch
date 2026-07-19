@@ -1,0 +1,46 @@
+diff --git a/crates/http/src/request.rs b/crates/http/src/request.rs
+index 6c2862c..9e6fa0e 100644
+--- a/crates/http/src/request.rs
++++ b/crates/http/src/request.rs
+@@ -537,6 +537,41 @@ mod tests {
+         assert_eq!(parse_request_head(&buf), Err(ParseError::TooManyHeaders));
+     }
+ 
++    #[test]
++    fn header_count_at_max_is_accepted() {
++        // MAX_HEADER_COUNT 丁度のヘッダ数は許容境界であり拒否されないことを固定する。
++        let mut buf = b"GET / HTTP/1.1\r\n".to_vec();
++        for i in 0..MAX_HEADER_COUNT {
++            buf.extend_from_slice(format!("X-{i}: v\r\n").as_bytes());
++        }
++        buf.extend_from_slice(b"\r\n");
++        let (head, consumed) = complete(&buf);
++        assert_eq!(head.headers().count(), MAX_HEADER_COUNT);
++        assert_eq!(consumed, buf.len());
++    }
++
++    #[test]
++    fn header_count_over_max_by_one_is_rejected() {
++        // MAX_HEADER_COUNT + 1 本で初めて TooManyHeaders になる境界を固定する
++        // （too_many_headers は境界より十分大きい本数での確認に留まるため）。
++        let mut buf = b"GET / HTTP/1.1\r\n".to_vec();
++        for i in 0..(MAX_HEADER_COUNT + 1) {
++            buf.extend_from_slice(format!("X-{i}: v\r\n").as_bytes());
++        }
++        buf.extend_from_slice(b"\r\n");
++        assert_eq!(parse_request_head(&buf), Err(ParseError::TooManyHeaders));
++    }
++
++    #[test]
++    fn blank_line_only_buffer_is_invalid_request_line() {
++        // リクエストラインが存在せず、いきなりヘッダ終端の空行のみのバッファは
++        // InvalidRequestLine として拒否されることを固定する。
++        assert_eq!(
++            parse_request_head(b"\r\n\r\n"),
++            Err(ParseError::InvalidRequestLine)
++        );
++    }
++
+     #[test]
+     fn invalid_method_character() {
+         let buf = b"G@T / HTTP/1.1\r\n\r\n";

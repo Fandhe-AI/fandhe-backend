@@ -1,0 +1,82 @@
+diff --git a/crates/http/src/request.rs b/crates/http/src/request.rs
+index 6c2862c..7fbd4b3 100644
+--- a/crates/http/src/request.rs
++++ b/crates/http/src/request.rs
+@@ -106,6 +106,35 @@ impl RequestHead {
+     }
+ }
+ 
++/// `names` に列挙した候補ヘッダ名を先頭から順に [`RequestHead::header`] で
++/// 検索し、最初に見つかった値を返す。
++///
++/// 同一の意味を持つヘッダに複数の名称（例: 別名・大文字小文字表記ゆれ）が
++/// あり得る場合の呼び出し元（プラグイン等）向けヘルパー。大文字小文字の
++/// 区別をしない挙動は内部で使う [`RequestHead::header`] にすべて委譲し、
++/// 本関数自身は `names` の走査順序のみを制御する。既存の
++/// [`RequestHead::header`] / [`RequestHead::headers`] の挙動・シグネチャは
++/// 変更しない。
++///
++/// # Examples
++///
++/// ```
++/// use fandhe_backend_http::request::{find_header_any, parse_request_head};
++///
++/// let buf = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
++/// let outcome = parse_request_head(buf).unwrap();
++/// let head = match outcome {
++///     fandhe_backend_http::request::ParseOutcome::Complete { head, .. } => head,
++///     _ => unreachable!(),
++/// };
++/// // 候補名は大文字小文字を区別せず、出現順に評価される。
++/// assert_eq!(find_header_any(&head, &["X-Missing", "HOST"]), Some("example.com"));
++/// assert_eq!(find_header_any(&head, &["X-Missing", "X-Also-Missing"]), None);
++/// ```
++pub fn find_header_any<'a>(head: &'a RequestHead, names: &[&str]) -> Option<&'a str> {
++    names.iter().find_map(|name| head.header(name))
++}
++
+ /// [`parse_request_head`] の成功時の結果。
+ #[derive(Debug, PartialEq, Eq)]
+ pub enum ParseOutcome {
+@@ -483,6 +512,41 @@ mod tests {
+         assert_eq!(all, vec![("X-A", "1"), ("X-B", "2"), ("X-A", "3")]);
+     }
+ 
++    #[test]
++    fn find_header_any_matches_case_insensitively_regardless_of_candidate_order() {
++        let buf = b"GET / HTTP/1.1\r\nX-Real-Name: example.com\r\n\r\n";
++        let (head, _) = complete(buf);
++        // 候補名の大文字小文字が実ヘッダ名（X-Real-Name）と混在していても一致する。
++        assert_eq!(
++            find_header_any(&head, &["x-missing", "X-REAL-NAME"]),
++            Some("example.com")
++        );
++        assert_eq!(
++            find_header_any(&head, &["X-Real-Name", "x-missing"]),
++            Some("example.com")
++        );
++    }
++
++    #[test]
++    fn find_header_any_returns_first_matching_candidate_in_names_order() {
++        let buf = b"GET / HTTP/1.1\r\nX-A: first\r\nX-B: second\r\n\r\n";
++        let (head, _) = complete(buf);
++        // names の走査順が優先される（X-B が先に列挙されれば X-B が優先）。
++        assert_eq!(find_header_any(&head, &["x-b", "x-a"]), Some("second"));
++        assert_eq!(find_header_any(&head, &["x-a", "x-b"]), Some("first"));
++    }
++
++    #[test]
++    fn find_header_any_returns_none_when_no_candidate_matches() {
++        let buf = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
++        let (head, _) = complete(buf);
++        assert_eq!(
++            find_header_any(&head, &["x-missing", "x-also-missing"]),
++            None
++        );
++        assert_eq!(find_header_any(&head, &[]), None);
++    }
++
+     #[test]
+     fn incomplete_on_empty_input() {
+         assert_eq!(parse_request_head(b""), Ok(ParseOutcome::Incomplete));

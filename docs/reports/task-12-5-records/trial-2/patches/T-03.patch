@@ -1,0 +1,70 @@
+diff --git a/crates/http/src/request.rs b/crates/http/src/request.rs
+index 6c2862c..265423f 100644
+--- a/crates/http/src/request.rs
++++ b/crates/http/src/request.rs
+@@ -104,6 +104,36 @@ impl RequestHead {
+     pub fn headers(&self) -> impl Iterator<Item = (&str, &str)> {
+         self.headers.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+     }
++
++    /// 大文字小文字を無視して `name` に一致する全ヘッダ値を出現順で取得する。
++    ///
++    /// [`RequestHead::header`] は最初の 1 件しか返さないため、同名ヘッダが
++    /// 複数存在しうる文脈（例: `Cookie` の分割送出や、大小文字違いの重複
++    /// ヘッダを取りこぼさず検査したい呼び出し元）向けに全件を返す。
++    /// 大文字小文字の比較方式は [`RequestHead::header`] と同一
++    /// （`str::eq_ignore_ascii_case`）で統一する。
++    ///
++    /// # Examples
++    ///
++    /// ```
++    /// use fandhe_backend_http::request::parse_request_head;
++    ///
++    /// let buf = b"GET / HTTP/1.1\r\nX-A: 1\r\nx-a: 2\r\nX-B: 3\r\n\r\n";
++    /// let outcome = parse_request_head(buf).unwrap();
++    /// let head = match outcome {
++    ///     fandhe_backend_http::request::ParseOutcome::Complete { head, .. } => head,
++    ///     _ => unreachable!(),
++    /// };
++    /// assert_eq!(head.headers_by_name("x-a"), vec!["1", "2"]);
++    /// assert!(head.headers_by_name("missing").is_empty());
++    /// ```
++    pub fn headers_by_name(&self, name: &str) -> Vec<&str> {
++        self.headers
++            .iter()
++            .filter(|(k, _)| k.eq_ignore_ascii_case(name))
++            .map(|(_, v)| v.as_str())
++            .collect()
++    }
+ }
+ 
+ /// [`parse_request_head`] の成功時の結果。
+@@ -483,6 +513,28 @@ mod tests {
+         assert_eq!(all, vec![("X-A", "1"), ("X-B", "2"), ("X-A", "3")]);
+     }
+ 
++    #[test]
++    fn headers_by_name_collects_case_insensitive_duplicates_in_order() {
++        let buf =
++            b"GET / HTTP/1.1\r\nContent-Type: text/plain\r\ncontent-type: text/html\r\nX-Other: z\r\n\r\n";
++        let (head, _) = complete(buf);
++        assert_eq!(
++            head.headers_by_name("content-type"),
++            vec!["text/plain", "text/html"]
++        );
++        assert_eq!(
++            head.headers_by_name("CONTENT-TYPE"),
++            vec!["text/plain", "text/html"]
++        );
++    }
++
++    #[test]
++    fn headers_by_name_returns_empty_for_missing_header() {
++        let buf = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
++        let (head, _) = complete(buf);
++        assert!(head.headers_by_name("x-missing").is_empty());
++    }
++
+     #[test]
+     fn incomplete_on_empty_input() {
+         assert_eq!(parse_request_head(b""), Ok(ParseOutcome::Incomplete));

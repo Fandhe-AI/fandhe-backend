@@ -1,0 +1,53 @@
+diff --git a/crates/http/src/body.rs b/crates/http/src/body.rs
+index 3810a5f..64d9cba 100644
+--- a/crates/http/src/body.rs
++++ b/crates/http/src/body.rs
+@@ -41,6 +41,28 @@ pub enum BodyLength {
+     Chunked,
+ }
+ 
++impl BodyLength {
++    /// 事前に既知の長さを持つかを判定する。
++    ///
++    /// [`BodyLength::Fixed`] は `Content-Length` から確定したバイト数を
++    /// 持つため `true`。[`BodyLength::None`] は長さ 0 として確定している
++    /// ため既知として扱い `true` を返す。[`BodyLength::Chunked`] は
++    /// 終端チャンクを読むまで総バイト数が定まらないため `false`。
++    ///
++    /// # Examples
++    ///
++    /// ```
++    /// use fandhe_backend_http::body::BodyLength;
++    ///
++    /// assert!(BodyLength::None.is_known());
++    /// assert!(BodyLength::Fixed(4).is_known());
++    /// assert!(!BodyLength::Chunked.is_known());
++    /// ```
++    pub fn is_known(&self) -> bool {
++        !matches!(self, BodyLength::Chunked)
++    }
++}
++
+ /// [`body_length`] が返しうるエラー。
+ #[derive(Debug, PartialEq, Eq)]
+ pub enum BodyError {
+@@ -378,4 +400,19 @@ mod tests {
+         fn assert_error<E: std::error::Error>() {}
+         assert_error::<BodyError>();
+     }
++
++    #[test]
++    fn is_known_true_for_none() {
++        assert!(BodyLength::None.is_known());
++    }
++
++    #[test]
++    fn is_known_true_for_fixed() {
++        assert!(BodyLength::Fixed(4).is_known());
++    }
++
++    #[test]
++    fn is_known_false_for_chunked() {
++        assert!(!BodyLength::Chunked.is_known());
++    }
+ }

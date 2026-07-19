@@ -1,0 +1,71 @@
+diff --git a/crates/core/src/extension.rs b/crates/core/src/extension.rs
+index a0679ca..e4fee35 100644
+--- a/crates/core/src/extension.rs
++++ b/crates/core/src/extension.rs
+@@ -162,6 +162,36 @@ pub enum GateOutcome {
+     },
+ }
+ 
++impl GateOutcome {
++    /// 判定結果が `Allow`（許可）かどうかを返す。
++    ///
++    /// # Examples
++    ///
++    /// ```
++    /// use fandhe_backend_core::extension::GateOutcome;
++    ///
++    /// assert!(GateOutcome::Allow.is_allowed());
++    /// assert!(!GateOutcome::Reject { status: 401, body: Vec::new() }.is_allowed());
++    /// ```
++    pub fn is_allowed(&self) -> bool {
++        matches!(self, GateOutcome::Allow)
++    }
++
++    /// 判定結果が `Reject`（拒否）かどうかを返す。[`GateOutcome::is_allowed`] の否定。
++    ///
++    /// # Examples
++    ///
++    /// ```
++    /// use fandhe_backend_core::extension::GateOutcome;
++    ///
++    /// assert!(!GateOutcome::Allow.is_rejected());
++    /// assert!(GateOutcome::Reject { status: 401, body: Vec::new() }.is_rejected());
++    /// ```
++    pub fn is_rejected(&self) -> bool {
++        !self.is_allowed()
++    }
++}
++
+ /// 早期拒否可能な拡張点。認証・認可・同意ゲート等、ルーティング前に
+ /// リクエストを弾く判断をコアに提供する。
+ ///
+@@ -223,7 +253,7 @@ pub trait RequestGate: Send + Sync {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
++    use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+ 
+     /// 3 trait すべてが object safe（dyn 互換）であることをコンパイル時に検証する。
+     ///
+@@ -417,4 +447,20 @@ mod tests {
+         };
+         assert_ne!(a, b);
+     }
++
++    #[test]
++    fn gate_outcome_allow_is_allowed() {
++        assert!(GateOutcome::Allow.is_allowed());
++        assert!(!GateOutcome::Allow.is_rejected());
++    }
++
++    #[test]
++    fn gate_outcome_reject_is_not_allowed() {
++        let reject = GateOutcome::Reject {
++            status: 403,
++            body: Vec::new(),
++        };
++        assert!(!reject.is_allowed());
++        assert!(reject.is_rejected());
++    }
+ }

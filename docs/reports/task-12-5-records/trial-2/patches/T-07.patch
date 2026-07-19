@@ -1,0 +1,69 @@
+diff --git a/crates/http/src/connection.rs b/crates/http/src/connection.rs
+index c1893a3..fb09d88 100644
+--- a/crates/http/src/connection.rs
++++ b/crates/http/src/connection.rs
+@@ -348,6 +348,64 @@ mod tests {
+         assert!(!should_keep_alive(&head));
+     }
+ 
++    // `should_keep_alive` 境界値テスト（HTTP バージョン × `Connection` ヘッダ
++    // 有無の組み合わせ）。上の既存テスト群でカバー済みの組み合わせ
++    // （1.1 ヘッダなし/close/CLOSE、1.0 ヘッダなし/keep-alive/keep-alive+close、
++    // 複数トークン・複数ヘッダ）とは重複しない境界を補う。
++
++    #[test]
++    fn http11_explicit_keep_alive_token_is_keep_alive() {
++        // HTTP/1.1 は既定で keep-alive だが、明示的な `keep-alive` トークンでも
++        // 引き続き keep-alive であることを固定する。
++        let head = head_of(b"GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n");
++        assert!(should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http10_connection_close_only_disables_keep_alive() {
++        // HTTP/1.0 で `close` 単独指定（`keep-alive` トークンなし）でも
++        // close 判定になることを固定する。
++        let head = head_of(b"GET / HTTP/1.0\r\nConnection: close\r\n\r\n");
++        assert!(!should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http10_connection_non_keep_alive_token_stays_closed() {
++        // HTTP/1.0 は `keep-alive` トークンが含まれない限り既定 close。
++        // `keep-alive`/`close` 以外のトークン（`upgrade`）だけでは keep-alive
++        // にならないことを固定する。
++        let head = head_of(b"GET / HTTP/1.0\r\nConnection: upgrade\r\n\r\n");
++        assert!(!should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http10_connection_keep_alive_case_insensitive() {
++        // `should_keep_alive` の doc comment が明記する大小文字無視比較を
++        // HTTP/1.0 側でも固定する（既存の大小文字テストは HTTP/1.1 の
++        // `close` のみを対象にしている）。
++        let head = head_of(b"GET / HTTP/1.0\r\nConnection: KEEP-ALIVE\r\n\r\n");
++        assert!(should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http10_connection_keep_alive_with_surrounding_ows_is_trimmed() {
++        // token 前後の OWS（optional whitespace）が trim されることを固定する。
++        let head = head_of(b"GET / HTTP/1.0\r\nConnection:  keep-alive \r\n\r\n");
++        assert!(should_keep_alive(&head));
++    }
++
++    #[test]
++    fn http10_multiple_connection_headers_are_all_considered() {
++        // HTTP/1.1 側は既存の `multiple_connection_headers_are_all_considered`
++        // でカバー済み。HTTP/1.0 側では複数 `Connection` ヘッダのうち一方に
++        // `keep-alive`、他方に `close` がある場合、close が優先されることを
++        // 固定する（単一ヘッダ内の `keep-alive, close` 優先ロジックと同じ
++        // 契約が複数ヘッダ間でも成立することの確認）。
++        let head =
++            head_of(b"GET / HTTP/1.0\r\nConnection: keep-alive\r\nConnection: close\r\n\r\n");
++        assert!(!should_keep_alive(&head));
++    }
++
+     #[tokio::test]
+     async fn reads_request_without_body() {
+         let mut socket: &[u8] = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";

@@ -1,0 +1,55 @@
+diff --git a/crates/core/src/server.rs b/crates/core/src/server.rs
+index 7d2244b..673e07e 100644
+--- a/crates/core/src/server.rs
++++ b/crates/core/src/server.rs
+@@ -151,6 +151,50 @@ const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(10);
+ /// （TASK-1.5 / #14、下記 `impl Handler for fandhe_backend_routes::Router` 参照）を
+ /// 直接登録できるほか、トイハンドラ・テスト用の固定レスポンダ等の任意実装も
+ /// 引き続き受け付ける。
++///
++/// [`Server::handler`] で登録すると、[`handle_connection`] の処理フロー
++/// （本モジュール冒頭の doc「1 接続あたりの処理フロー」を参照）の最終段で
++/// 呼ばれる。`Middleware::on_request` → `RequestGate::check` →
++/// `UpgradeHandler::matches` → `crate::plugin::try_intercept` をすべて
++/// 通過した（拒否されず・アップグレードにもパスインターセプトにも
++/// 該当しなかった）リクエストのみが到達する。未登録の場合、コアは
++/// 常に 404 を返す（`Server::handler` の doc を参照）。
++///
++/// 3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）は同期 API・
++/// dyn 互換性維持の契約を持つが（`crates/core/src/extension.rs` の doc）、
++/// 本 trait も同様に同期 API として定義しており、`Box<dyn Handler>` として
++/// 保持される（[`Server`] の `handler` フィールド）。実装内で同期ブロッキング
++/// I/O を行わないこと（`Middleware` と同じ理由、`extension` モジュールの
++/// doc・`.claude/rules/coding-rust.md` の並行性規約を参照）。
++///
++/// # Examples
++///
++/// ```
++/// use fandhe_backend_core::server::Handler;
++/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
++/// use fandhe_backend_http::response::Response;
++///
++/// /// 常に固定ステータス・body を返すトイ実装。
++/// struct FixedHandler {
++///     status: u16,
++///     body: &'static [u8],
++/// }
++///
++/// impl Handler for FixedHandler {
++///     fn handle(&self, _head: &fandhe_backend_http::request::RequestHead, _body: &[u8]) -> Response {
++///         Response::new(self.status, self.body.to_vec())
++///     }
++/// }
++///
++/// let handler = FixedHandler { status: 200, body: b"ok" };
++/// let buf = b"GET / HTTP/1.1\r\n\r\n";
++/// let head = match parse_request_head(buf).unwrap() {
++///     ParseOutcome::Complete { head, .. } => head,
++///     ParseOutcome::Incomplete => unreachable!(),
++/// };
++/// let response = handler.handle(&head, b"");
++/// assert_eq!(response.serialize(false), Response::new(200, b"ok".to_vec()).serialize(false));
++/// ```
+ pub trait Handler: Send + Sync {
+     /// リクエストヘッドと body からレスポンスを組み立てる。
+     fn handle(&self, head: &RequestHead, body: &[u8]) -> Response;
