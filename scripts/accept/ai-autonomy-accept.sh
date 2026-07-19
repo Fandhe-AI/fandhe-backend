@@ -72,6 +72,27 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# F 基準の詳細ログ出力先。共有 /tmp の固定パスはシンボリックリンク攻撃・情報漏えいの
+# 理論的リスクがあるため mktemp（予測不能名・0600）で生成する（#229、#218 監査指摘）。
+# 失敗時（exit 非 0）はログを残し、FAIL/SKIP メッセージが指すパスを事後に確認できる
+# ようにする（third-party-verify.sh の cleanup 方針を踏襲、Issue #85）。
+#
+# 1 回目の mktemp 直後に空変数で trap を仮登録してから値を設定する。2 回目の
+# mktemp（GRAY_LOG）が /tmp 枯渇等ごく稀な事情で失敗した場合でも、1 回目に作成
+# 済みの STABILITY_LOG が cleanup 対象から漏れないようにするため（Review 指摘、#229）。
+GRAY_LOG=""
+STABILITY_LOG=""
+cleanup() {
+    local rc=$?
+    if [ "${rc}" -eq 0 ]; then
+        [ -n "${STABILITY_LOG}" ] && rm -f "${STABILITY_LOG}"
+        [ -n "${GRAY_LOG}" ] && rm -f "${GRAY_LOG}"
+    fi
+}
+trap cleanup EXIT
+STABILITY_LOG="$(mktemp)"
+GRAY_LOG="$(mktemp)"
+
 # ---------------------------------------------------------------------------
 # 台帳パーサ（fail-closed、third-party-stability-aggregate.sh のパーサ設計を踏襲）
 # ---------------------------------------------------------------------------
@@ -421,19 +442,19 @@ else
 
     if [ "${f_trials_found}" -eq 1 ]; then
         stability_ok=1
-        if ! bash "${WORKSPACE_ROOT}/scripts/third-party-stability-aggregate.sh" --trials-dir "${REPORTS_DIR}" >/tmp/ai-autonomy-accept-stability.log 2>&1; then
+        if ! bash "${WORKSPACE_ROOT}/scripts/third-party-stability-aggregate.sh" --trials-dir "${REPORTS_DIR}" >"${STABILITY_LOG}" 2>&1; then
             stability_ok=0
         fi
-        if grep -qF "未充足" /tmp/ai-autonomy-accept-stability.log; then
+        if grep -qF "未充足" "${STABILITY_LOG}"; then
             stability_ok=0
         fi
-        if grep -qF "PENDING（本指標のデータを含む試行がありません）" /tmp/ai-autonomy-accept-stability.log; then
+        if grep -qF "PENDING（本指標のデータを含む試行がありません）" "${STABILITY_LOG}"; then
             stability_ok=0
         fi
         if [ "${stability_ok}" -eq 1 ]; then
-            f_detail="${f_detail}安定性試行集計 PASS（詳細: /tmp/ai-autonomy-accept-stability.log）; "
+            f_detail="${f_detail}安定性試行集計 PASS（詳細: ${STABILITY_LOG}）; "
         else
-            f_detail="${f_detail}安定性試行集計 FAIL（閾値未充足・データ欠落・parse error のいずれか。詳細: /tmp/ai-autonomy-accept-stability.log）; "
+            f_detail="${f_detail}安定性試行集計 FAIL（閾値未充足・データ欠落・parse error のいずれか。詳細: ${STABILITY_LOG}）; "
             f_ok=0
             f_side_fail=1
         fi
@@ -448,7 +469,7 @@ else
             --task-definitions "${REPORTS_DIR}/task-12-6-task-definitions.md" \
             --records-dir "${gray_records_dir}" \
             --task-ids "G-01 G-02 G-03 G-04 G-05 G-06 G-07 G-08 G-09 G-10" \
-            >/tmp/ai-autonomy-accept-gray.log 2>&1; then
+            >"${GRAY_LOG}" 2>&1; then
             gray_ok=0
         fi
         # third-party-feasibility-verify.sh の出力表から実測パーセンテージを直接
@@ -460,8 +481,8 @@ else
         # gray_ok が強制的に 0 になり F が誤って FAIL 判定されていた（Cursor Bugbot
         # 指摘、PR #174 review 4728544552）。dep-audit-accept.sh と同様に `sed` の
         # 後方参照（BRE、POSIX 標準）に置き換えて GNU/BSD 両対応にする。
-        accuracy_pct="$(sed -n 's/.*可否判定正解率（4 値厳密一致） | [0-9]*\/[0-9]*（\([0-9]*\)%）.*/\1/p' /tmp/ai-autonomy-accept-gray.log | head -n1)"
-        basis_pct="$(sed -n 's/.*判断根拠提示割合 | [0-9]*\/[0-9]*（\([0-9]*\)%）.*/\1/p' /tmp/ai-autonomy-accept-gray.log | head -n1)"
+        accuracy_pct="$(sed -n 's/.*可否判定正解率（4 値厳密一致） | [0-9]*\/[0-9]*（\([0-9]*\)%）.*/\1/p' "${GRAY_LOG}" | head -n1)"
+        basis_pct="$(sed -n 's/.*判断根拠提示割合 | [0-9]*\/[0-9]*（\([0-9]*\)%）.*/\1/p' "${GRAY_LOG}" | head -n1)"
         if [ -z "${accuracy_pct}" ] || [ -z "${basis_pct}" ]; then
             gray_ok=0
         else
@@ -470,9 +491,9 @@ else
             fi
         fi
         if [ "${gray_ok}" -eq 1 ]; then
-            f_detail="${f_detail}グレーゾーン採点 PASS（正解率 ${accuracy_pct}%・根拠提示 ${basis_pct}%。詳細: /tmp/ai-autonomy-accept-gray.log）"
+            f_detail="${f_detail}グレーゾーン採点 PASS（正解率 ${accuracy_pct}%・根拠提示 ${basis_pct}%。詳細: ${GRAY_LOG}）"
         else
-            f_detail="${f_detail}グレーゾーン採点 FAIL（閾値未充足・値取得不可・誤判定破壊のいずれか。詳細: /tmp/ai-autonomy-accept-gray.log）"
+            f_detail="${f_detail}グレーゾーン採点 FAIL（閾値未充足・値取得不可・誤判定破壊のいずれか。詳細: ${GRAY_LOG}）"
             f_ok=0
             f_side_fail=1
         fi
