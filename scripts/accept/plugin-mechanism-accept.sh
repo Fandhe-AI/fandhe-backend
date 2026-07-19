@@ -28,12 +28,15 @@
 #   4. コンパイル時 vs 実行時動的ロードのトレードオフ設計文書
 #      （`docs/design/plugin-loading-tradeoffs.md`）が存在する
 #
-# 両 feature 無効時のコア性能（REQ-1 基準維持、基準 5）は専有計測枠
-# （benches/nfr6-exclusive.sh、#178）が必要なため本スクリプトの自動検証対象に
-# 含めない（並列実行下の host contention により判定不確定になるため）。
-# 実測証跡・手動再現手順は `benches/reports/task-1.6-1-performance.md`・
-# `benches/README.md`・`docs/acceptance/req2-plugin-mechanism.md` を参照する
-# （判定不能を PASS と偽らない、.claude/rules/security.md のフェイルクローズ原則）。
+# 両 feature 無効時のコア性能（REQ-1 基準維持、基準 5）は、計測用バイナリ
+# （axum-ref 等価 4 エンドポイント、TASK-1.6-3 / #168 で整備済み）を使った専有計測
+# wrapper（`benches/bench-accept-exclusive.sh`、TASK-260 / #260）の実測レポート
+# `benches/reports/task-2.4-plugin-accept.md` の「## 結論」セクション内の「総合判定」
+# 行（他セクションへの引用は無視し、複数存在時はレポート末尾に近い方＝最新の
+# 再計測結果を採用する。基準 5 の実処理・判定ロジックは
+# `lib/plugin-mechanism-conclusion-verdict.awk` 参照）を参照して判定する。
+# host contention でレポートが BLOCKED のまま・未生成の場合は SKIP とし、
+# 判定不能を PASS と偽らない（.claude/rules/security.md のフェイルクローズ原則）。
 #
 # 判定不能（cargo metadata 失敗・jq 未導入・前提スクリプト不在・未知の
 # feature 名等）はフェイルクローズで FAIL とする。
@@ -200,9 +203,43 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5: 性能維持（手動、専有計測枠が必要なため自動検証対象外）
+# 5: 性能維持（benches/reports/task-2.4-plugin-accept.md の「## 結論」セクション内の
+#    「総合判定」行を参照。TASK-260 / #260。
+#
+#    単純な `grep -q '総合判定: PASS'` はレポート中に埋め込まれた過去実測の引用
+#    （例:「## 判定根拠 1」節に転記された #168 レポートの「総合判定: PASS」）にも
+#    ヒットしてしまい、トップレベルの結論を FAIL に変更しても引用側の PASS が先に
+#    マッチして誤って PASS 判定になりうる（イシュー #260 Bugbot 指摘）。そのため
+#    判定対象を「## 結論」見出し配下の行に限定し、他セクションへの引用は無視する。
+#    「## 結論」セクションが複数存在する場合（`benches/bench-accept.sh` が
+#    REPORT_MD 指定時に再計測のたびに新しい「## 結論（自動記録: ...）」セクションを
+#    追記する設計）は、レポート末尾に最も近いセクションを最新の判定として採用し、
+#    レポートを手編集しなくても再計測結果を機械的にゲートへ反映できるようにする
+#    （同一セクション内で PASS・FAIL が両方現れる異常系は FAIL を優先し丸め込まない）。
+#
+#    「## 結論」セクション自体が存在しない・総合判定行が 1 件もない場合や、レポート
+#    不在・BLOCKED 記録のみの場合は SKIP とする。PASS への丸め込みは行わない
+#    （フェイルクローズ）。判定ロジック本体は `lib/plugin-mechanism-conclusion-verdict.awk`
+#    に切り出し、`scripts/tests/run-plugin-mechanism-accept-tests.sh` で
+#    cargo・ネットワーク非依存のフィクスチャによる回帰検証を行う。
 # ---------------------------------------------------------------------------
-record_skip "5: 両 feature 無効時の性能維持（REQ-1 基準）" "専有計測枠（benches/nfr6-exclusive.sh、#178）が必要なため自動検証対象外（並列実行下の host contention で判定不確定になるため）。実測証跡は benches/reports/task-1.6-1-performance.md、手動再現手順は benches/README.md・docs/acceptance/req2-plugin-mechanism.md を参照"
+plugin_accept_report="${WORKSPACE_ROOT}/benches/reports/task-2.4-plugin-accept.md"
+if [ ! -f "${plugin_accept_report}" ]; then
+    record_skip "5: 両 feature 無効時の性能維持（REQ-1 基準）" "benches/reports/task-2.4-plugin-accept.md が見つかりません。benches/bench-accept-exclusive.sh を実行して再計測してください"
+else
+    conclusion_verdict="$(awk -f "${SCRIPT_DIR}/lib/plugin-mechanism-conclusion-verdict.awk" "${plugin_accept_report}")"
+    case "${conclusion_verdict}" in
+        PASS)
+            record_pass "5: 両 feature 無効時の性能維持（REQ-1 基準）" "benches/reports/task-2.4-plugin-accept.md の「## 結論」セクションの総合判定が PASS（詳細はレポート本文を参照）"
+            ;;
+        FAIL)
+            record_fail "5: 両 feature 無効時の性能維持（REQ-1 基準）" "benches/reports/task-2.4-plugin-accept.md の「## 結論」セクションの総合判定が FAIL（詳細はレポート本文を参照）"
+            ;;
+        *)
+            record_skip "5: 両 feature 無効時の性能維持（REQ-1 基準）" "benches/reports/task-2.4-plugin-accept.md の「## 結論」セクションに総合判定 PASS/FAIL の記録がありません（BLOCKED 等、判定不能）。host contention が落ち着いたタイミングで benches/bench-accept-exclusive.sh を再実行してください"
+            ;;
+    esac
+fi
 
 print_summary "REQ-2、TASK-2.4 / #21（再検証 #261）"
 exit "$(summary_exit_code)"

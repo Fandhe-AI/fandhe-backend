@@ -484,3 +484,55 @@ bash benches/nfr6-exclusive.sh
 Rust コード中にハードコードしており、`crates/**` を変更しない本イシューの方針では
 env 経由のポート上書きに対応できないため（詳細は設計ドキュメント参照）。専有性は
 flock による直列化と静穏確認で担保する。
+
+## bench-accept-exclusive.sh — REQ-2 基準 5 専有計測手順（#260）
+
+`bench-accept.sh`（axum-ref 比 REQ-1・NFR-1・NFR-2 判定オーケストレータ）も
+`nfr6-exclusive.sh` と同じ host contention 問題の影響を受ける。REQ-2 基準 5
+（`docs/acceptance/req2-plugin-mechanism.md`「両 feature（webrtc-proxy・graphql）無効時の
+コア性能が REQ-1 の性能基準を維持する」）を再計測する際は、`benches/lib/exclusive.sh` の
+専有実行枠を薄くラップした `benches/bench-accept-exclusive.sh` を使う。
+
+```bash
+REPORT_MD=benches/reports/task-2.4-plugin-accept.md bash benches/bench-accept-exclusive.sh
+```
+
+`bench-accept-exclusive.sh` は `nfr6-exclusive.sh` と同様、**専有ロック取得後は
+一切ビルドを行わない**設計にしている（`cargo build --release` /
+`cargo build --release --example core-bench -p fandhe-backend-core` は本 wrapper が
+専有ロック取得前に自動実行する）。専有ロック取得後に cargo/rustc の負荷が発生すると、
+静穏（quiescence）確認から計測開始までの間に 1 分間 loadavg が再び上昇し、静穏ゲートの
+意味が失われるため（イシュー #260 Bugbot 指摘対応。以前は `bench-accept.sh` が
+ロック取得後も無条件にビルドしていた）。`bench-accept.sh` は `SKIP_BUILD=1` を付けて
+呼び出され、内部の `cargo build` はスキップされる。`bench-accept.sh` を単体で
+（`bench-accept-exclusive.sh` を経由せず）実行する場合は従来どおり毎回ビルドする
+（`SKIP_BUILD` 未指定時の既定は `0`）。
+
+`fandhe-backend-core` は `default = []` のため、`CORE_BIN`（既定
+`target/release/examples/core-bench`）自体が webrtc-proxy・graphql 両 feature 無効構成
+そのものであり、基準 5 の計測対象として追加実装なしに使える。
+
+主な env は `nfr6-exclusive.sh` と共通（`benches/lib/exclusive.sh` の既定値を再利用）。
+`RUNS` / `DURATION` / `CONNECTIONS` / `REPORT_MD` / `CORE_BIN` 等は `bench-accept.sh` に
+そのまま透過する。
+
+終了コードは `bench-accept.sh` の終了コードをそのまま透過する（0 = 全項目 PASS、
+1 = 1 件以上 FAIL、2 = `CORE_BIN` 未整備で BLOCKED）。事前ビルド失敗・専有ロック取得
+不能・静穏未達で計測に着手できなかった場合も `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`
+（既定 2）で BLOCKED（PASS へは丸めない）。
+
+`scripts/accept/plugin-mechanism-accept.sh` 基準 5 は `benches/reports/
+task-2.4-plugin-accept.md` の「## 結論」セクション内の「総合判定」行を参照して
+PASS/FAIL/SKIP を判定する（レポート不在・「## 結論」セクションに総合判定の記録が
+ない・BLOCKED 記録のみの場合は SKIP）。`REPORT_MD` 指定時、`bench-accept.sh` は
+再計測のたびに「## 結論（自動記録: ...）」セクションと総合判定行を REPORT_MD に
+追記するため、レポートを手編集しなくても再計測結果を機械的に受け入れゲートへ
+反映できる（他セクションへの過去実測の引用に埋め込まれた総合判定文言は判定対象に
+含めない。複数「## 結論」セクションが存在する場合はレポート末尾に近い方＝直近の
+再計測結果を採用する。イシュー #260 Bugbot 指摘対応）。**BLOCKED（`CORE_BIN` 未整備・
+事前ビルド失敗・専有ロック取得不能・静穏未達のいずれか）で終了する場合も、
+`bench-accept.sh` / `bench-accept-exclusive.sh` は必ず新しい「## 結論」セクションを
+（総合判定行なしで）REPORT_MD に追記する。判定ロジック（`lib/
+plugin-mechanism-conclusion-verdict.awk`）は「## 結論」セクションが見つかるたびに
+判定を無条件で上書きするため、この追記により古い PASS/FAIL がそのまま権威として
+残る事態（stale PASS）を防ぎ、正しく SKIP 扱いになる（イシュー #260 Bugbot 指摘対応）。**
