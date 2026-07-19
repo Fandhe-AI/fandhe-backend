@@ -18,7 +18,17 @@ ACCEPT_SCRIPT="${SCRIPTS_DIR}/accept/ai-autonomy-accept.sh"
 # 実データ側が FAIL を含むようになっても、台帳パース経路のセルフテストが影響を
 # 受けないようにする（Issue #218 で D-2/F が実測 FAIL 確定した際のハーミシティ修正）。
 EMPTY_REPORTS_DIR="$(mktemp -d)"
-trap 'rm -rf "${EMPTY_REPORTS_DIR}"' EXIT
+
+# bash の EXIT trap は単一ハンドラのため、後続ケースが個別に trap を張ると先の
+# 登録が上書きされて一時ディレクトリが残留する（PR #230 review 4730615163 指摘）。
+# trap 経由で消す一時ディレクトリはすべてこの関数に集約し、登録は 1 回に限る。
+cleanup_temp_dirs() {
+    rm -rf "${EMPTY_REPORTS_DIR}"
+    if [ -n "${TRIALS_OK_DIR:-}" ]; then
+        rm -rf "${TRIALS_OK_DIR}"
+    fi
+}
+trap cleanup_temp_dirs EXIT
 HERMETIC_ARGS=(--acceptance-doc "${FIXTURES_DIR}/acceptance-doc-pending.md" --reports-dir "${EMPTY_REPORTS_DIR}")
 
 PASS_COUNT=0
@@ -151,8 +161,7 @@ assert_contains "F の SKIP は実施手順を案内する" "${output}" "multi-t
 # --- ケース 12: F 試行サマリのみ揃っていても、グレーゾーン記録が不在（片側のみ）
 #     なら PASS と断定せず SKIP とする（PR #174 review 4728502197 指摘 #2 の
 #     回帰テスト。安定性試行集計自体は PASS した旨は詳細に残す） ---
-TRIALS_OK_DIR="$(mktemp -d)"
-trap 'rm -rf "${TRIALS_OK_DIR}"' EXIT
+TRIALS_OK_DIR="$(mktemp -d)"  # 後始末は冒頭の cleanup_temp_dirs（EXIT trap）に集約
 cp "${SCRIPT_DIR}/fixtures/third-party-stability/trial-normal-1.summary" "${TRIALS_OK_DIR}/"
 cp "${SCRIPT_DIR}/fixtures/third-party-stability/trial-normal-2.summary" "${TRIALS_OK_DIR}/"
 set +e
