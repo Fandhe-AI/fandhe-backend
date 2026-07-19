@@ -1,6 +1,6 @@
 # pay-for-what-you-use 原則
 
-backend-framework の設計の核。**使わない機能のコストを一切払わせない**。
+fandhe-backend の設計の核。**使わない機能のコストを一切払わせない**。
 feature を無効化したら、その依存・コード・`unsafe`・バイナリサイズ増をすべてゼロにする。
 
 ## 守ること

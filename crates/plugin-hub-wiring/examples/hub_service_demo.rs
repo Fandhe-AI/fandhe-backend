@@ -173,10 +173,7 @@ fn build_router(store: Store, authenticator: Authenticator, next_id: Arc<AtomicU
     let mut router = Router::new();
 
     router = router.route("GET", "/", |_head, _body| {
-        Response::new(
-            200,
-            b"backend-framework: hub_service_demo example\n".to_vec(),
-        )
+        Response::new(200, b"fandhe-backend: hub_service_demo example\n".to_vec())
     });
 
     router = router.route("GET", "/items", {

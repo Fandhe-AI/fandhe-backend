@@ -1,6 +1,6 @@
 # 利用者向けガイド
 
-`docs/guide/` は backend-framework を**使う**ための入口です。
+`docs/guide/` は fandhe-backend を**使う**ための入口です。
 `docs/design/`（どう作るか＝実装設計判断の記録）・`docs/spec/`（何を作るか＝要件・
 ロードマップの submodule）とは責務が異なり、本ディレクトリは「どう使うか」だけを扱います。
 

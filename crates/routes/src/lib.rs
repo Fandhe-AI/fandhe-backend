@@ -1,4 +1,4 @@
-//! `fandhe-backend-routes`: backend-framework の最小ルータ（TASK-1.5、#14）。
+//! `fandhe-backend-routes`: fandhe-backend の最小ルータ（TASK-1.5、#14）。
 //!
 //! # このクレートの役割
 //!

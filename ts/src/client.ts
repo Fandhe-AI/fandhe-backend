@@ -16,7 +16,7 @@ import createClient from "openapi-fetch";
 import type { paths } from "./generated/schema";
 
 /**
- * backend-framework サーバーへの型安全クライアント。
+ * fandhe-backend サーバーへの型安全クライアント。
  *
  * `baseUrl` は呼び出し側（統合先アプリケーション）が用途に応じて指定する前提のため、
  * ここでは固定値を持たずファクトリ関数として公開する（シークレット・環境依存値を

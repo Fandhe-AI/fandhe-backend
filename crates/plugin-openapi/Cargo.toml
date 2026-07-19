@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "backend-framework の OpenAPI ドキュメント生成プラグイン（TASK-3.1）。実装本体（crates/routes 等）とは疎結合な「ドキュメント専用関数」に utoipa::path を付与し ApiDoc に集約する（docs/spec/03-poc/openapi-generation の PoC-4 で検証・採用した方式）。"
+description = "fandhe-backend の OpenAPI ドキュメント生成プラグイン（TASK-3.1）。実装本体（crates/routes 等）とは疎結合な「ドキュメント専用関数」に utoipa::path を付与し ApiDoc に集約する（docs/spec/03-poc/openapi-generation の PoC-4 で検証・採用した方式）。"
 publish = false
 
 # workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する

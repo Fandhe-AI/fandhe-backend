@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "backend-framework の最小ルータ（method + target 完全一致）。TASK-1.5 で server→routes→http::* の依存方向を実体化する。"
+description = "fandhe-backend の最小ルータ（method + target 完全一致）。TASK-1.5 で server→routes→http::* の依存方向を実体化する。"
 publish = false
 
 [lints]

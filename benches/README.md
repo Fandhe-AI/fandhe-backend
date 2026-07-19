@@ -466,7 +466,7 @@ bash benches/nfr6-exclusive.sh
 
 | env | 既定値 | 意味 |
 |-----|--------|------|
-| `FANDHE_BACKEND_NFR6_LOCK` | `/tmp/backend-framework-nfr6-bench.lock` | 専有ロックファイルパス（symlink は拒否） |
+| `FANDHE_BACKEND_NFR6_LOCK` | `/tmp/fandhe-backend-nfr6-bench.lock` | 専有ロックファイルパス（symlink は拒否） |
 | `LOAD1_MAX` | `1.0` | 静穏とみなす 1 分 loadavg の上限 |
 | `QUIESCE_WAIT_SECS` | `1800` | 静穏待機・ロック待機の上限秒数（超過で BLOCKED、終了コード 2） |
 | `QUIESCE_POLL_INTERVAL_SECS` | `30` | 静穏ポーリング間隔秒数 |

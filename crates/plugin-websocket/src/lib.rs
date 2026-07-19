@@ -24,7 +24,7 @@
 //! のみを公開する。コア側の配線は `crates/core/src/plugin.rs`（Upgrade 型
 //! シーム `try_handle_upgrade`）が担う。
 //!
-//! [core-upgrade-handler]: https://github.com/Fandhe-AI/backend-framework/blob/main/crates/core/src/extension.rs
+//! [core-upgrade-handler]: https://github.com/Fandhe-AI/fandhe-backend/blob/main/crates/core/src/extension.rs
 //!
 //! # 処理フロー
 //!

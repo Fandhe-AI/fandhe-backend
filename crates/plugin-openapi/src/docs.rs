@@ -1,7 +1,7 @@
 //! コンパイル時 OpenAPI 定義（TASK-3.1、REQ-3、PoC-4 の採用方式を踏襲）。
 //!
 //! # 統合方式
-//! backend-framework のルーティング（`fandhe-backend-routes::Router`）は「method + target
+//! fandhe-backend のルーティング（`fandhe-backend-routes::Router`）は「method + target
 //! 完全一致の関数ベース」であり、axum のような属性マクロで飾れるハンドラ単位を
 //! 持たない。このため実装本体とは疎結合な「ドキュメント専用の薄い関数」に
 //! `#[utoipa::path(...)]` を付与し、`#[derive(utoipa::OpenApi)]` で 1 つの
@@ -109,7 +109,7 @@ fn echo_doc() {}
 )]
 fn search_doc() {}
 
-/// backend-framework の全対象エンドポイントを束ねる OpenAPI 定義。
+/// fandhe-backend の全対象エンドポイントを束ねる OpenAPI 定義。
 ///
 /// `ApiDoc::openapi()` で `utoipa::openapi::OpenApi` を構築し、
 /// `to_pretty_json()` / `to_yaml()`（`yaml` feature 有効時）でシリアライズできる。
@@ -127,7 +127,7 @@ fn search_doc() {}
 #[derive(OpenApi)]
 #[openapi(
     info(
-        title = "backend-framework OpenAPI",
+        title = "fandhe-backend OpenAPI",
         version = env!("CARGO_PKG_VERSION"),
         description = "TASK-3.1（REQ-3）: ドキュメント専用関数 + utoipa 統合による OpenAPI 自動生成の最小エンドポイント定義"
     ),

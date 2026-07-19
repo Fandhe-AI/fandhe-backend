@@ -17,7 +17,7 @@
 //! micro-service-hub PoC-13 標準とのフィールド厳密整合の最終確認は実 hub との
 //! E2E 統合検証（[#97]）で行う。
 //!
-//! [#97]: https://github.com/Fandhe-AI/backend-framework/issues/97
+//! [#97]: https://github.com/Fandhe-AI/fandhe-backend/issues/97
 //!
 //! # `TenantGate`（401/403）との境界
 //!

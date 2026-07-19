@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "backend-framework の最小 HTTP/1.1 コア（自前パーサ）。pay-for-what-you-use の起点として外部依存を持たない。"
+description = "fandhe-backend の最小 HTTP/1.1 コア（自前パーサ）。pay-for-what-you-use の起点として外部依存を持たない。"
 publish = false
 
 # workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する。

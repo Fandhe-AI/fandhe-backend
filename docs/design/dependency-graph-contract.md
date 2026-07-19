@@ -370,7 +370,7 @@ E（閉包違反候補）と判定された。
 `crates/http/fuzz/**`・`benches/*.sh` 等の周辺資産が機械的に E 判定となった。このうち
 以下 21 件は他節の記載例と偶然一致する記載がなく未記載のまま FAIL していた
 （`scripts/extension-closure-gate.sh --base origin/main` 実行結果、`unsafe-triage` ジョブ
-run https://github.com/Fandhe-AI/backend-framework/actions/runs/29668822330）。
+run https://github.com/Fandhe-AI/fandhe-backend/actions/runs/29668822330）。
 
 1. **対象コミット/PR**: PR #209（#202、HEAD sha
    `6add5ce12679faedcf16edcc7742b87a5d77121a`）
@@ -440,6 +440,73 @@ run https://github.com/Fandhe-AI/backend-framework/actions/runs/29668822330）�
    運用上のギャップである。分類規則自体の見直し（中間層クレート・`benches/*`・
    `examples/*` の A〜D への追加）は 4.3 節〜4.7 節と同一の別 Issue 対象として据え置く
    （`.claude/rules/out-of-scope-tracking.md`）
+
+### 4.10 記載例（#205 / PR #211、ドキュメント・CI・スクリプト表記の一括改名）
+
+イシュー #205「全ドキュメント・CI・スクリプトの `backend-framework` 表記を
+`fandhe-backend` へ更新」（PR #211、対象コミット sha
+`354357ef007c3a75ce5fac8afec0e07ea82c9f86`）は、4.9 節（#202 / PR #209）で完了した
+package/import 名の改名に続き、リポジトリ名・ドキュメント本文・CI 設定・運用
+スクリプト・エージェント定義中の `backend-framework` という**文字列表記**を
+`fandhe-backend` へ置換する改名専用コミットである。新規プロトコル・機能の追加や
+拡張点契約の変更を一切伴わないが、変更が `crates/plugin-*` 配下のドキュメント
+コメント・README 等にも及んだため `scripts/extension-closure-gate.sh` の
+`plugin_related` 判定（`crates/plugin-*` への変更を含む PR は判定対象）に該当し、
+`extension-closure-check.sh` の分類規則（A〜D）がいずれも対象外とする以下 19 件が
+機械的に E（閉包違反候補）と判定された。
+
+1. **対象コミット/PR**: PR #211（#205、対象コミット sha
+   `354357ef007c3a75ce5fac8afec0e07ea82c9f86`）
+2. **E ファイルパス**（19 件全件。`.claude/*`・`CONTRIBUTING.md`・`LICENSE-MIT`
+   4 件は他節と文字列一致せず未記載のまま FAIL していたため、本節で 19 件全件を
+   明示的に記載し、他節の偶然の文字列一致に依存する脆さを解消する）:
+   - `.claude/agents/research/explorer.md`
+   - `.claude/rules/coding-rust.md`
+   - `.claude/rules/pay-for-what-you-use.md`
+   - `.claude/settings.json`
+   - `CONTRIBUTING.md`
+   - `Cargo.toml`
+   - `LICENSE-MIT`
+   - `README.md`
+   - `benches/README.md`
+   - `benches/lib/exclusive.sh`
+   - `crates/core/examples/graphql_nfr6.rs`
+   - `crates/core/examples/minimal.rs`
+   - `crates/core/examples/tracing_nfr.rs`
+   - `crates/core/examples/webrtc_nfr6.rs`
+   - `crates/http/Cargo.toml`
+   - `crates/http/src/lib.rs`
+   - `crates/routes/Cargo.toml`
+   - `crates/routes/src/lib.rs`
+   - `ts/src/client.ts`
+3. **閉じない理由**: `extension-closure-check.sh` の分類規則（A: `crates/plugin-*/**`、
+   B: `crates/core` の 4 ファイルのみ、C: `crates/core/tests/**`・
+   `crates/plugin-*/tests/**` のみ、D: `docs/*`・`scripts/*`・`CLAUDE.md`・
+   `AGENTS.md`・`.github/*`・`deny.toml` のみ）は、`.claude/**`（`CLAUDE.md`・
+   `AGENTS.md` 以外）・リポジトリ直下のライセンス/貢献ガイド（`CONTRIBUTING.md`・
+   `LICENSE-MIT`・`README.md`）・workspace ルート `Cargo.toml`・中間層クレート
+   （`crates/http`・`crates/routes`）・`benches/*`・`crates/core/examples/*`・
+   `ts/src/client.ts` のいずれも走査対象に含めていない（4.3 節〜4.9 節と同一の
+   運用上のギャップ）。本コミットはこれら周辺資産・ドキュメント・設定ファイル中の
+   `backend-framework` 表記全件を `fandhe-backend` へ一括置換しているため、
+   対象範囲が上記ギャップに広く該当し、19 件が機械的に E 判定となった
+4. **正当性根拠**: 本コミットの差分は文字列表記の置換のみに限定される（例:
+   `README.md`・`CONTRIBUTING.md`・`.claude/rules/coding-rust.md` 等の説明文中
+   「backend-framework」→「fandhe-backend」、`Cargo.toml`・`crates/http/Cargo.toml`・
+   `crates/routes/Cargo.toml` のコメント・メタデータ表記、`crates/http/src/lib.rs`・
+   `crates/routes/src/lib.rs` の冒頭 doc comment 中の名称表記、
+   `crates/core/examples/*.rs` のコメント中の名称表記、`ts/src/client.ts` の
+   コメント中の名称表記、`.claude/settings.json` のフック説明文字列）。3 拡張点
+   trait（`Middleware` / `UpgradeHandler` / `RequestGate`）・`try_intercept`
+   固定シームの契約・シグネチャ・実装ロジックはいずれも変更しておらず、依存方向
+   （`server → routes → http::*`、1 節）にも変更はない（`scripts/dep-direction-check.sh`
+   で検証可能）。`LICENSE-MIT` はライセンス本文中の著作権表記対象の名称表記のみを
+   更新し、ライセンス条項自体は変更していない。したがって本件は拡張点設計の閉包漏れ
+   （プラグイン実装ロジックの拡張点外への漏出）ではなく、`extension-closure-check.sh`
+   の分類規則がリポジトリ名・表記の一括改名のような workspace 全体の非コード変更を
+   想定していないことに起因する運用上のギャップである。分類規則自体の見直し
+   （`.claude/**`・中間層クレート・`benches/*`・`examples/*` 等の A〜D への追加）は
+   4.3 節〜4.9 節と同一の別 Issue 対象として据え置く（`.claude/rules/out-of-scope-tracking.md`）
 
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 

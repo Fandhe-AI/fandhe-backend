@@ -44,7 +44,7 @@ async fn main() -> std::io::Result<()> {
     // （ベースラインとの差分がリンクコストのみになるようにするための前提、
     // `hub_service_demo.rs` の同種コメントと同じ理由）。
     let router = Router::new().route("GET", "/", |_head, _body| {
-        Response::new(200, b"backend-framework: minimal example\n".to_vec())
+        Response::new(200, b"fandhe-backend: minimal example\n".to_vec())
     });
 
     // --- wiring:begin ---

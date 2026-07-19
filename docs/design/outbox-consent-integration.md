@@ -10,11 +10,11 @@ TASK-9.4（#64、REQ-9）対応。`fandhe-backend-plugin-hub-wiring` が概念�
 
 - **タスク**: `docs/spec/05-tasks.md` TASK-9.4「Outbox・同意ゲートの micro-service-hub
   実データモデルとの統合設計」
-- **Issue**: [#64](https://github.com/Fandhe-AI/backend-framework/issues/64)
+- **Issue**: [#64](https://github.com/Fandhe-AI/fandhe-backend/issues/64)
 - **要件**: `docs/spec/04-requirements.md` REQ-9（hub 共通配線ミドルウェア、Should）。
   特に L225〜227（Outbox・同意ゲートを PoC-6 のスパイクに留め、MVP では実データモデル
   との統合設計を TASK-9.4 で行うと定めた記述）
-- **前提タスク**: TASK-9.1（[#61](https://github.com/Fandhe-AI/backend-framework/issues/61)、
+- **前提タスク**: TASK-9.1（[#61](https://github.com/Fandhe-AI/fandhe-backend/issues/61)、
   PR #152 で main にマージ済み）。`crates/plugin-hub-wiring` に依存逆転型プラグインとして
   `TenantGate`（`RequestGate` 拡張点）が存在する
 
@@ -37,7 +37,7 @@ TASK-9.4（#64、REQ-9）対応。`fandhe-backend-plugin-hub-wiring` が概念�
 | 段階 | 内容 | 完了条件 | 状態 |
 |------|------|---------|------|
 | 設計完了 | 本ドキュメントによる統合設計の確定 | PR がレビュー通過・main へマージされること | 本 Issue（#64）のスコープ |
-| E2E 統合検証完了 | 実 PostgreSQL・実 `micro-service-hub` Outbox Relay/同意管理サービスとの結線検証 | 越境 0 行・同意フィルタ・Relay 配送の実測確認 | [#97](https://github.com/Fandhe-AI/backend-framework/issues/97)（`micro-service-hub` Outbox Relay 完了、目標 2026-09-30 以降に実施） |
+| E2E 統合検証完了 | 実 PostgreSQL・実 `micro-service-hub` Outbox Relay/同意管理サービスとの結線検証 | 越境 0 行・同意フィルタ・Relay 配送の実測確認 | [#97](https://github.com/Fandhe-AI/fandhe-backend/issues/97)（`micro-service-hub` Outbox Relay 完了、目標 2026-09-30 以降に実施） |
 
 MS-6 完了基準「Outbox・同意ゲートの実データモデルとの統合設計が TASK-9.4 で完了し、
 `micro-service-hub` 側の E2E 検証タイミングが明記されている」は、本ドキュメントの提出
@@ -250,11 +250,11 @@ PoC-6 の不変条件（テナントコンテキスト欠落時は常に空集�
 
 | タスク/Issue | 責務 | 本ドキュメントとの関係 |
 |---|---|---|
-| TASK-9.2（[#62](https://github.com/Fandhe-AI/backend-framework/issues/62)） | JWT 検証を RS256 + JWKS 連携へ差し替える | 参照のみ。本ドキュメントは `TenantGate` の認証方式自体を変更しない |
-| TASK-9.3（[#63](https://github.com/Fandhe-AI/backend-framework/issues/63)） | JWT 検証結果のリクエストスコープキャッシュ最適化 | 参照のみ。8 節の同意ゲートキャッシュとは対象が異なる（認証結果 vs 同意状態） |
-| TASK-9.5（[#65](https://github.com/Fandhe-AI/backend-framework/issues/65)） | hub 共通配線受け入れテスト | 本ドキュメントが定めた trait 境界・拒否表現設計を前提に、越境遮断率・削減率を検証する |
-| TASK-9.6（[#89](https://github.com/Fandhe-AI/backend-framework/issues/89)） | `cross_tenant_attempt` 監査ログ実装（実装済み: `crates/plugin-hub-wiring/src/audit.rs`） | 境界のみ。越境試行の監査ログ記録は本ドキュメントのスコープ外（10 節で規約参照のみ言及）。フィールド詳細は本タスク時点で確認可能な最小スキーマとして定義し、実 micro-service-hub PoC-13 標準との厳密整合の最終確認は E2E 統合検証（#97）で行う |
-| E2E 統合検証（[#97](https://github.com/Fandhe-AI/backend-framework/issues/97)） | 実 PostgreSQL・実 `micro-service-hub` サービスとの結線検証 | 本ドキュメントの設計を前提に、`micro-service-hub` Outbox Relay 完了（2026-09-30 以降）後に実施 |
+| TASK-9.2（[#62](https://github.com/Fandhe-AI/fandhe-backend/issues/62)） | JWT 検証を RS256 + JWKS 連携へ差し替える | 参照のみ。本ドキュメントは `TenantGate` の認証方式自体を変更しない |
+| TASK-9.3（[#63](https://github.com/Fandhe-AI/fandhe-backend/issues/63)） | JWT 検証結果のリクエストスコープキャッシュ最適化 | 参照のみ。8 節の同意ゲートキャッシュとは対象が異なる（認証結果 vs 同意状態） |
+| TASK-9.5（[#65](https://github.com/Fandhe-AI/fandhe-backend/issues/65)） | hub 共通配線受け入れテスト | 本ドキュメントが定めた trait 境界・拒否表現設計を前提に、越境遮断率・削減率を検証する |
+| TASK-9.6（[#89](https://github.com/Fandhe-AI/fandhe-backend/issues/89)） | `cross_tenant_attempt` 監査ログ実装（実装済み: `crates/plugin-hub-wiring/src/audit.rs`） | 境界のみ。越境試行の監査ログ記録は本ドキュメントのスコープ外（10 節で規約参照のみ言及）。フィールド詳細は本タスク時点で確認可能な最小スキーマとして定義し、実 micro-service-hub PoC-13 標準との厳密整合の最終確認は E2E 統合検証（#97）で行う |
+| E2E 統合検証（[#97](https://github.com/Fandhe-AI/fandhe-backend/issues/97)） | 実 PostgreSQL・実 `micro-service-hub` サービスとの結線検証 | 本ドキュメントの設計を前提に、`micro-service-hub` Outbox Relay 完了（2026-09-30 以降）後に実施 |
 
 `OutboxStore` / `ConsentStore` trait の実コード実装自体は、本ドキュメントでは方針確定に
 留める。実装が必要になる場合は TASK-9.5（#65）または後続タスクで判断する
@@ -298,7 +298,7 @@ PoC-6 の不変条件（テナントコンテキスト欠落時は常に空集�
 2026-08-31。Outbox Relay: MS-5、目標 2026-09-30）の進捗確認を経て確定する
 （roadmap MS-6 節の運用に従う）。
 
-### 11.2 E2E 統合検証計画（[#97](https://github.com/Fandhe-AI/backend-framework/issues/97)）
+### 11.2 E2E 統合検証計画（[#97](https://github.com/Fandhe-AI/fandhe-backend/issues/97)）
 
 `micro-service-hub` Outbox Relay 完了（2026-09-30 以降）後に、以下を実 PostgreSQL・実
 `micro-service-hub` サービスとの結線で検証する。
@@ -314,9 +314,9 @@ PoC-6 の不変条件（テナントコンテキスト欠落時は常に空集�
 
 以下は本ドキュメント・対応 PR のスコープに含めない（いずれも既存 Issue で追跡済み）。
 
-- 実データモデルとの E2E 統合検証 → [#97](https://github.com/Fandhe-AI/backend-framework/issues/97)（`micro-service-hub` Outbox Relay 完了待ち）
-- RS256 + JWKS への差し替え → [#62](https://github.com/Fandhe-AI/backend-framework/issues/62)（TASK-9.2）
-- JWT 検証結果キャッシュ → [#63](https://github.com/Fandhe-AI/backend-framework/issues/63)（TASK-9.3）
-- `cross_tenant_attempt` 監査ログ実装 → [#89](https://github.com/Fandhe-AI/backend-framework/issues/89)（TASK-9.6）
+- 実データモデルとの E2E 統合検証 → [#97](https://github.com/Fandhe-AI/fandhe-backend/issues/97)（`micro-service-hub` Outbox Relay 完了待ち）
+- RS256 + JWKS への差し替え → [#62](https://github.com/Fandhe-AI/fandhe-backend/issues/62)（TASK-9.2）
+- JWT 検証結果キャッシュ → [#63](https://github.com/Fandhe-AI/fandhe-backend/issues/63)（TASK-9.3）
+- `cross_tenant_attempt` 監査ログ実装 → [#89](https://github.com/Fandhe-AI/fandhe-backend/issues/89)（TASK-9.6）
 - `OutboxStore` / `ConsentStore` trait の実コード実装（本書は方針のみを確定。実装は
   TASK-9.5（#65）または後続タスクで判断する）

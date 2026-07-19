@@ -6,7 +6,7 @@
 - **ステータス**: ドラフト（担当は `docs/spec/05-tasks.md` 上「人間」。自動運転モードでの実装であるため、
   本ドキュメントは安全側の保守的推奨として作成したドラフトであり、**最終承認は人間レビュー（本タスクの PR レビュー）で行う**）
 
-本フレームワークの名称は仮称（未確定）のため、本ドキュメントでは「本フレームワーク（backend-framework、仮称）」と表記する。
+本フレームワークの正式名称は `fandhe-backend`（#200 で確定）のため、本ドキュメントでは「本フレームワーク（fandhe-backend）」と表記する。
 
 ## 1. 背景
 
@@ -115,9 +115,9 @@
 
 ## 6. 関連タスク・スコープ外
 
-- **TASK-8.4**（[#29](https://github.com/Fandhe-AI/backend-framework/issues/29)）: 本バージョン戦略を前提に
+- **TASK-8.4**（[#29](https://github.com/Fandhe-AI/fandhe-backend/issues/29)）: 本バージョン戦略を前提に
   WebRTC プラグインの攻撃表面を再評価し、受け入れテストを実施する
-- **[#96](https://github.com/Fandhe-AI/backend-framework/issues/96)**（フレームワーク本体の semver・破壊的変更
+- **[#96](https://github.com/Fandhe-AI/fandhe-backend/issues/96)**（フレームワーク本体の semver・破壊的変更
   ポリシー）: 本ドキュメントは独立 WebRTC サービス側が依存する `webrtc-rs` のバージョン戦略であり、
   フレームワーク本体の semver とは**別軸**。参照のみに留め、判断内容を混在させない
 - **独立 WebRTC サービスの実装・Sans-I/O 系への実移行作業**: 「3. 決定事項」の移行トリガー成立時に、

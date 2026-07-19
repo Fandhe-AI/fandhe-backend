@@ -1,6 +1,6 @@
 # feature 構成別サンプルガイド
 
-backend-framework は「最小コア + Cargo feature 駆動プラグイン」で構成されます。
+fandhe-backend は「最小コア + Cargo feature 駆動プラグイン」で構成されます。
 本文書は feature ごとに、有効化方法・実行可能なサンプル・動作確認手順・
 pay-for-what-you-use（[`.claude/rules/pay-for-what-you-use.md`](../../.claude/rules/pay-for-what-you-use.md)）の
 検証方法を一覧します。実行できる example は `crates/core/examples/*` にある

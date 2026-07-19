@@ -29,7 +29,7 @@ use fandhe_backend_routes::Router;
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
     let router = Router::new().route("GET", "/", |_head, _body| {
-        Response::new(200, b"backend-framework: webrtc nfr6 example\n".to_vec())
+        Response::new(200, b"fandhe-backend: webrtc nfr6 example\n".to_vec())
     });
 
     let server = Server::new().handler(router).webrtc(WebRtcConfig::new());

@@ -1,7 +1,7 @@
 # docs/design/ について
 
 `docs/design/` は、本リポジトリ側で管理する実装フェーズの設計ドキュメント置き場である。
-`docs/spec/`（submodule、[Fandhe-AI/backend-framework-spec](https://github.com/Fandhe-AI/backend-framework-spec)）
+`docs/spec/`（submodule、[Fandhe-AI/fandhe-backend-spec](https://github.com/Fandhe-AI/fandhe-backend-spec)）
 が要件定義・タスク一覧・ロードマップ・PoC 結果という「何を作るか・なぜ作るか」を扱う仕様書であるのに対し、
 `docs/design/` は個別タスクの実装着手時に確定させる「どう作るか」の設計判断を記録する。
 
