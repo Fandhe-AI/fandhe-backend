@@ -26,6 +26,11 @@
 //!    [`request::RequestHead::query`] が返す生文字列を受け取り、`&`/`=` へ
 //!    分解する sans-IO 純関数。呼び出し元（`crates/routes` のハンドラ・
 //!    `crates/plugin-*`）が個別実装していた同型コードの重複を解消する。
+//! 7. `Set-Cookie` ヘッダの構築時検証済みヘルパ（[`cookie`]、イシュー #303）。
+//!    [`response::Response::with_header`] の汎用検証（CR/LF/NUL 拒否）だけでは
+//!    カバーしない RFC 6265 cookie-name / cookie-value の文法検証を、
+//!    構築時検証済み専用型 [`cookie::SetCookie`] として提供する
+//!    （認証・セッション実装、親イシュー #296 の前提整備）。
 //!
 //! 本クレートの実行時依存は tokio の `io-util`（`AsyncRead`/`AsyncReadExt`）
 //! のみであり、それ以外の依存は持たない（pay-for-what-you-use。
@@ -39,6 +44,7 @@ pub mod body;
 pub mod buffer;
 pub mod chunked;
 pub mod connection;
+pub mod cookie;
 pub mod query;
 pub mod request;
 pub mod response;
