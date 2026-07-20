@@ -167,6 +167,20 @@ else
             # `docs/design/plugin-boundary.md` 6.1 節を参照）。本エッジは他の
             # レスポンス後処理型プラグインへ一般化せず、新規プラグインは本リストへの
             # 明示追加とレビューを要求する。
+            #
+            # 例外 5: `fandhe-backend-core:fandhe-backend-plugin-static`（イシュー #318）。
+            # `crates/routes` の `Router` ハンドラは同期シグネチャのため
+            # `spawn_blocking` を伴うファイル I/O を Router 経由で表現できず、
+            # `graphql`・`openapi` と同型のパスインターセプト型（設定登録型）
+            # プラグインとして `plugin::try_intercept` 内の cfg-gated 分岐で
+            # 配線する。`fandhe-backend-plugin-websocket`・`fandhe-backend-plugin-cors`
+            # と同一の非循環パターン（プラグインクレートは core に依存せず、
+            # コア側が `optional = true` + `dep:` 構文で本クレートへ依存する）を
+            # 踏襲し、`cargo build -p fandhe-backend-plugin-static` が
+            # `fandhe-backend-core` の全依存を引き込まずに完結する
+            # （`crates/plugin-static/src/lib.rs` の doc を参照）。本エッジは他の
+            # パスインターセプト型プラグインへ一般化せず、新規プラグインは本
+            # リストへの明示追加とレビューを要求する。
             allowed_edge_patterns=(
                 "fandhe-backend-core:fandhe-backend-http"
                 "fandhe-backend-core:fandhe-backend-routes"
@@ -175,6 +189,7 @@ else
                 "fandhe-backend-core:fandhe-backend-plugin-websocket"
                 "fandhe-backend-core:fandhe-backend-plugin-tracing"
                 "fandhe-backend-core:fandhe-backend-plugin-cors"
+                "fandhe-backend-core:fandhe-backend-plugin-static"
                 # TASK-2.4（#21）: REQ-2「少なくとも 2 種のプラグインを feature
                 # flag で着脱できる」受け入れ基準の第 2 インスタンス（パス
                 # インターセプト型）。根拠は上記
@@ -364,7 +379,15 @@ webrtc_proxy_exception_file="crates/core/src/plugin.rs"
 # イシュー #305: `fandhe_backend_plugin_cors`（`crates/core/src/plugin.rs` の
 # レスポンス後処理型シーム `finalize_response`・`crates/core/src/server.rs` の
 # `cors`/`cors_config` 系ビルダー/フィールド）を同一方針で例外対象に加える。
-webrtc_proxy_exception_symbol_pattern='fandhe_backend_plugin_webrtc_proxy|fandhe_backend_plugin_webrtc\b|webrtc_proxy|webrtc_config|fandhe_backend_plugin_websocket|websocket|fandhe_backend_plugin_graphql|fandhe_backend_plugin_tracing|TracingMiddleware|fandhe_backend_plugin_openapi|openapi|fandhe_backend_plugin_cors|fandhe_backend_plugin_compression|compression_config|crate::plugin::|pub\(crate\) mod plugin;'
+# イシュー #321: `fandhe_backend_plugin_compression`（`crates/core/src/plugin.rs` の
+# レスポンス後処理型シーム `finalize_response`（CORS の後に逐次適用）・
+# `crates/core/src/server.rs` の `compression`/`compression_config` 系
+# ビルダー/フィールド）を同一方針で例外対象に加える。
+# イシュー #318: `fandhe_backend_plugin_static`（`crates/core/src/plugin.rs` の
+# パスインターセプト型分岐・`crates/core/src/server.rs` の
+# `static_files`/`static_files_config` 系ビルダー/フィールド）を同一方針で
+# 例外対象に加える。
+webrtc_proxy_exception_symbol_pattern='fandhe_backend_plugin_webrtc_proxy|fandhe_backend_plugin_webrtc\b|webrtc_proxy|webrtc_config|fandhe_backend_plugin_websocket|websocket|fandhe_backend_plugin_graphql|fandhe_backend_plugin_tracing|TracingMiddleware|fandhe_backend_plugin_openapi|openapi|fandhe_backend_plugin_cors|fandhe_backend_plugin_compression|compression_config|fandhe_backend_plugin_static|static_files|crate::plugin::|pub\(crate\) mod plugin;'
 
 plugin_hits_all=""
 for dir in crates/core crates/http crates/routes; do
@@ -402,7 +425,11 @@ for dir in crates/core crates/http crates/routes; do
             # `dep:fandhe-backend-plugin-openapi` の feature 宣言も同様に許可する。
             # イシュー #305: `fandhe-backend-plugin-cors =` の依存宣言・
             # `dep:fandhe-backend-plugin-cors` の feature 宣言も同様に許可する。
-            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v -E 'fandhe-backend-plugin-webrtc(-proxy)?|fandhe-backend-plugin-websocket|fandhe-backend-plugin-graphql|fandhe-backend-plugin-tracing|fandhe-backend-plugin-openapi|fandhe-backend-plugin-cors|fandhe-backend-plugin-compression' || true)"
+            # イシュー #321: `fandhe-backend-plugin-compression =` の依存宣言・
+            # `dep:fandhe-backend-plugin-compression` の feature 宣言も同様に許可する。
+            # イシュー #318: `fandhe-backend-plugin-static =` の依存宣言・
+            # `dep:fandhe-backend-plugin-static` の feature 宣言も同様に許可する。
+            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v -E 'fandhe-backend-plugin-webrtc(-proxy)?|fandhe-backend-plugin-websocket|fandhe-backend-plugin-graphql|fandhe-backend-plugin-tracing|fandhe-backend-plugin-openapi|fandhe-backend-plugin-cors|fandhe-backend-plugin-compression|fandhe-backend-plugin-static' || true)"
         fi
         if [ -n "${cargo_toml_hits}" ]; then
             plugin_hits_all="${plugin_hits_all}${dir}/Cargo.toml に plugin- 依存あり: ${cargo_toml_hits}

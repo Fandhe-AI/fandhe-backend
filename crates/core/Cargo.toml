@@ -109,6 +109,14 @@ fandhe-backend-plugin-cors = { path = "../plugin-cors", optional = true }
 # 本行の依存（`flate2` 系推移的依存を含む）が一切現れない。
 fandhe-backend-plugin-compression = { path = "../plugin-compression", optional = true }
 
+# イシュー #318: `static` feature 有効時のみ依存として解決される、パス
+# インターセプト型の静的ファイル配信プラグイン。`graphql`・`openapi` と同じ
+# 設定登録型パターン（`Server::static_files()` 明示登録時のみ応答）。
+# `fandhe-backend-plugin-websocket`・`fandhe-backend-plugin-cors` と同一の
+# 非循環パターンで `fandhe-backend-core` に依存しない。feature 無効時は
+# `cargo tree -p fandhe-backend-core` に本行の依存が一切現れない。
+fandhe-backend-plugin-static = { path = "../plugin-static", optional = true }
+
 # feature 命名規約（`docs/design/plugin-boundary.md`）: プラグインクレート名
 # （`fandhe-backend-plugin-<name>`）から `fandhe-backend-plugin-` 接頭辞を除いた `<name>` を feature 名
 # とする。`default = []` によりビルド時に何も選択しなければプラグインは
@@ -134,6 +142,9 @@ cors = ["dep:fandhe-backend-plugin-cors"]
 # 明示登録した場合のみ実リクエスト応答を圧縮する opt-in、`cors` と同一の
 # 「未登録時はフォールスルー」パターン）。
 compression = ["dep:fandhe-backend-plugin-compression"]
+# イシュー #318: 静的ファイル配信（`Server::static_files()` で明示登録した
+# 場合のみ応答する opt-in、他の設定登録型プラグインと同一パターン）。
+static = ["dep:fandhe-backend-plugin-static"]
 
 # テスト専用（`#[tokio::test]` / `tokio::io::duplex` / マルチスレッドランタイム）。
 # 本体ビルドの feature 集合には影響しない。`async-graphql` は
@@ -251,6 +262,14 @@ required-features = ["cors"]
 [[example]]
 name = "compression_demo"
 required-features = ["compression"]
+
+# `examples/static_demo.rs`（イシュー #318）は `fandhe-backend-plugin-static`（optional dep）を
+# 直接使うため、`static` feature 無効時に `cargo build --workspace --all-targets` 等が
+# コンパイル対象へ含めて失敗しないよう `required-features` で明示的にゲートする
+# （`webrtc_nfr6` / `graphql_nfr6` / `tracing_nfr` / `ws_echo` / `ws_nfr6` / `cors_demo` と同一パターン）。
+[[example]]
+name = "static_demo"
+required-features = ["static"]
 
 # TASK-1.6-3（#168）: `examples/core-bench.rs`（axum-ref 機能等価の性能計測用
 # サーバ）。`test = true` により `cargo test` / nextest が本 example 内の

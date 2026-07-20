@@ -655,7 +655,65 @@ TLS 上の圧縮応答で秘密情報と攻撃者制御入力が混在すると�
 （`fandhe-backend-http` + `flate2` にのみ依存する下位層）。`crates/plugin-cors`
 と同一の非循環パターンであり、コア側が `optional = true` + `dep:` 構文で
 本クレートへ依存する（6.1 節の `scripts/dep-direction-check.sh` ホワイト
-リスト例外を参照）。
+リスト例外 6 を参照）。
+
+## 5.11 パスインターセプト型の `spawn_blocking` ファイル I/O 変種（イシュー #318 で確立）
+
+`fandhe-backend-plugin-static`（静的ファイル配信プラグイン）は `try_intercept`
+（4 節）を使う設定登録型プラグインだが、他の `try_intercept` 実装（GraphQL・
+WebRTC 中継）が非同期の上流通信を要するのに対し、本プラグインは同期的な
+ファイルシステム I/O（`canonicalize`・`metadata`・`read`）を要する点が異なる。
+
+### 5.11.1 なぜ `Router` ハンドラ（同期シグネチャ）に載せられないか
+
+`fandhe_backend_routes::Router` へ登録するハンドラは
+`Fn(&RequestHead, &[u8]) -> Response` という同期シグネチャに固定されている
+（`crates/routes` の設計）。ファイル読み込みは（大きなファイル・低速ストレージ
+下で）ブロッキング I/O であり、`.claude/rules/coding-rust.md` の「Tokio 上で
+ブロッキング処理を await スレッドで実行しない」規約により `spawn_blocking` へ
+逃がす必要があるが、同期ハンドラの内部から非同期 `spawn_blocking().await` を
+呼ぶことはできない。そのため `Router` 経由ではなく、`try_intercept`
+（非同期シーム）へ `Server::static_files(config)` の設定登録型として配線する。
+
+### 5.11.2 `spawn_blocking` の隔離範囲
+
+`fandhe_backend_plugin_static::try_handle_static`（非同期）はメソッド・
+マウントプレフィックス判定・字句検証（`.`/`..`/空/NUL/`\`/先頭ドット
+セグメント拒否）までを同期で行い、実際のファイルシステム呼び出し（`canonicalize`・
+`metadata`・`read`）のみを単一の `tokio::task::spawn_blocking` クロージャへ
+まとめて委譲する（`crates/plugin-static/src/lib.rs` の `resolve_and_read`）。
+`spawn_blocking` 自体が失敗する（内部で panic した）場合もフェイルクローズで
+404 を返し、`try_intercept` 呼び出し元（`handle_connection` の非同期タスク）を
+ブロックしない。
+
+### 5.11.3 フェイルクローズ設計（二層防御）
+
+1. **I/O 前の字句検証**: 末尾パスをセグメント分割し、空・`.`・`..`・NUL・
+   `\`・先頭が `.` のセグメント（ドットファイル・ドットディレクトリ）を
+   含むセグメントを拒否する。パーセントデコードは行わない
+   （`crates/routes/src/pattern.rs` の `is_safe_segment_value` と同一の
+   「正規化しない」方針を踏襲）。先頭ドット拒否は、公開 root 配下に
+   `.env`・`.git/config`・`.htpasswd` 等の機密ファイルが置かれた場合の
+   意図しない配信（OWASP A01/A05）を防ぐフェイルクローズ判断で、イシュー
+   #318 のレビュー指摘（`.` 始まり通常ファイル名が拒否対象から漏れていた）
+   を受けて追加した
+2. **`canonicalize` 後の実パス検証**: 正規化済み実パスが正規化済み root
+   配下（`starts_with`）であることを確認し、シンボリックリンク経由の
+   root 脱出を拒否する
+
+ファイル未検出・検証失敗・権限エラー・サイズ超過（`max_file_bytes`）は
+一律 404（存在オラクル・列挙を作らないフェイルクローズ、
+`.claude/rules/security.md`）。ディレクトリリスティングは実装しない。
+
+### 5.11.4 循環依存の回避・依存関係
+
+`crates/plugin-static` 自体は `fandhe-backend-core` に依存しない
+（`fandhe-backend-http` のみに依存する下位層）。`fandhe-backend-plugin-websocket`・
+`fandhe-backend-plugin-cors` と同一の非循環パターンであり、コア側が
+`optional = true` + `dep:` 構文で本クレートへ依存する（6.1 節の
+`scripts/dep-direction-check.sh` ホワイトリスト例外 7 を参照）。MIME 推定は
+crate 内蔵の静的テーブル（`src/mime.rs`）で行うため、外部 crates.io 依存
+（`mime_guess` 等）は追加しない。
 
 ## 6. 検証コマンド
 
@@ -740,6 +798,14 @@ websocket/tracing と同型で `fandhe-backend-core` に依存しない非循環
 tracing と同型で `fandhe-backend-core` に依存しない非循環パターン。
 チェック 3 の例外シンボルパターンにも `fandhe_backend_plugin_compression`/
 `compression_config` を追加している。
+
+イシュー #318 で `fandhe-backend-core:fandhe-backend-plugin-static` を 7 件目の
+例外として追加した。5.11 節のとおりパスインターセプト型 `try_intercept`
+（4 節）の `spawn_blocking` ファイル I/O 変種であり、
+`fandhe-backend-plugin-static` 自体は cors/compression/websocket/tracing と
+同型で `fandhe-backend-core` に依存しない非循環パターン。チェック 3 の
+例外シンボルパターンにも `fandhe_backend_plugin_static`/`static_files` を
+追加している。
 
 ## 7. スコープ外（別タスクで対応）
 

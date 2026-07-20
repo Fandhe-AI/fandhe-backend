@@ -140,13 +140,13 @@ gzip でレスポンスを圧縮するプラグインです（[`docs/design/plug
 cargo run --example compression_demo -p fandhe-backend-core --features compression
 
 # 閾値以上の text/plain・Accept-Encoding: gzip → Content-Encoding: gzip
-curl -si localhost:3005/large -H 'Accept-Encoding: gzip' | head -20
+curl -si localhost:3008/large -H 'Accept-Encoding: gzip' | head -20
 
 # Accept-Encoding なし → 無圧縮のまま
-curl -si localhost:3005/large
+curl -si localhost:3008/large
 
 # 閾値未満の応答（既定 1024 バイト未満）→ 無圧縮のまま
-curl -si localhost:3005/small -H 'Accept-Encoding: gzip'
+curl -si localhost:3008/small -H 'Accept-Encoding: gzip'
 ```
 
 配線は 1 点のみです（`crates/core/examples/compression_demo.rs` を参照）:
@@ -161,6 +161,42 @@ gzip 圧縮します（未登録なら feature が有効でも完全フォール
 レスポンスは BREACH 類似の情報漏洩リスクがあるため、対象 `Content-Type` から
 除外することを推奨します（`crates/plugin-compression/src/lib.rs` の crate
 doc を参照）。
+
+## static（`fandhe-backend-plugin-static`）
+
+SPA フロントエンド等の静的ファイルを配信するプラグインです
+（[`docs/design/plugin-boundary.md`](../design/plugin-boundary.md)
+5.11 節「パスインターセプト型の `spawn_blocking` ファイル I/O 変種」参照）。
+
+```bash
+cargo run --example static_demo -p fandhe-backend-core --features static
+
+# index.html（mount そのまま）
+curl -si localhost:3005/static
+
+# 通常ファイル（Content-Type 推定 + X-Content-Type-Options: nosniff を確認）
+curl -si localhost:3005/static/app.js
+
+# パストラバーサル試行（404 を確認）
+curl -si --path-as-is localhost:3005/static/../Cargo.toml
+```
+
+配線は `Server::new().static_files(config)` の 1 点のみです（未登録なら feature が
+有効でも完全フォールスルー、opt-in）。`StaticFilesConfig::builder(mount, root)` は
+`root` を構築時に `canonicalize` し、不在・非ディレクトリを `Err` で早期拒否します。
+
+- パストラバーサル対策は二層防御（I/O 前の字句検証 + `canonicalize` 後の実パスが
+  正規化済み root 配下であることの確認）で行い、シンボリックリンク経由の脱出も
+  拒否します
+- 字句検証では先頭が `.` のセグメント（ドットファイル・ドットディレクトリ）も
+  一律拒否します。`root` 配下に `.env`・`.git/config` 等の機密ファイルが誤って
+  置かれていても配信されません
+- ファイル未検出・検証失敗・サイズ超過（`max_file_bytes`、既定 8 MiB）は一律 404
+  （存在オラクルを作らないフェイルクローズ）
+- ディレクトリはインデックス（`index.html`）を試行し、それ以外はディレクトリ
+  リスティングを実装しません
+- ファイル I/O は `tokio::task::spawn_blocking` に閉じ、非同期ランタイム
+  スレッドをブロックしません
 
 ## hub-wiring（`fandhe-backend-plugin-hub-wiring`）
 

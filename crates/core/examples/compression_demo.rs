@@ -11,13 +11,13 @@
 //! $ cargo run --example compression_demo -p fandhe-backend-core --features compression
 //!
 //! # 閾値以上の text/plain・Accept-Encoding: gzip → Content-Encoding: gzip
-//! $ curl -si localhost:3005/large -H 'Accept-Encoding: gzip' | head -20
+//! $ curl -si localhost:3008/large -H 'Accept-Encoding: gzip' | head -20
 //!
 //! # Accept-Encoding なし → 無圧縮のまま
-//! $ curl -si localhost:3005/large | head -20
+//! $ curl -si localhost:3008/large | head -20
 //!
 //! # 閾値未満の応答 → 無圧縮のまま（min_size 未満）
-//! $ curl -si localhost:3005/small -H 'Accept-Encoding: gzip'
+//! $ curl -si localhost:3008/small -H 'Accept-Encoding: gzip'
 //! ```
 
 use fandhe_backend_http::response::Response;
@@ -47,7 +47,7 @@ fn build_router() -> Router {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
-    let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3005".to_string());
+    let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3008".to_string());
     let router = build_router();
     // `Server::compression` 未登録なら feature 有効でも完全フォールスルー
     // する（`Server::compression` の doc を参照）。
