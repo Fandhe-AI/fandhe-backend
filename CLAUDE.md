@@ -66,7 +66,11 @@ fandhe-backend/
 │   │                                    # `Router::options_fallback` で OPTIONS
 │   │                                    # プリフライトを opt-in フックへ委譲可能にし、明示登録された
 │   │                                    # OPTIONS ルートを常に優先しつつ未登録なら従来どおり
-│   │                                    # 405 + `Allow` を維持（CORS プラグイン前提整備、イシュー #304）
+│   │                                    # 405 + `Allow` を維持（CORS プラグイン前提整備、イシュー #304）。
+│   │                                    # `cookie::parse_cookie_header` で RFC 6265 準拠の
+│   │                                    # Cookie ヘッダ読み取りパーサを提供（cookie-pair 構文検証・
+│   │                                    # DoS 上限内蔵・非デコード。`RequestHead::cookies` が複数
+│   │                                    # `Cookie` ヘッダの結合・累積上限適用を担う、イシュー #309）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）

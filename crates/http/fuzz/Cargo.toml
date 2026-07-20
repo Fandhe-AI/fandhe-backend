@@ -75,3 +75,10 @@ path = "fuzz_targets/parse_form.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "cookie_header"
+path = "fuzz_targets/cookie_header.rs"
+test = false
+doc = false
+bench = false
