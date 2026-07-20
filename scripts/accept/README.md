@@ -20,7 +20,7 @@
 | # | 基準 | 検証手段 |
 |---|------|---------|
 | A | コアの推移的依存クレート数が axum ベース実装の 50% 以下 | `cargo tree` の同一手法比較 |
-| B | 自コード `unsafe` 0 件、または各箇所に `// SAFETY:` 根拠 100% 記述 | grep + workspace lint 確認 + `cargo geiger`（導入済みなら参考値） |
+| B | 自コード `unsafe` 0 件、または各箇所に `// SAFETY:` 根拠 100% 記述 | grep + workspace lint 確認 + `cargo geiger`（独立ツールによる二重検証。#284。成功時は PASS/FAIL 判定、実行失敗時のみ WARN） |
 | C | `cargo audit` 既知脆弱性 0 件・`cargo deny check` ライセンス/出所違反 0 件 | cargo-audit / cargo-deny 実行 |
 | D | コア実質コード行数 5,000 行以内 | 空行・コメント行を除いた行数集計 |
 | E | 3 種拡張点（`Middleware`/`UpgradeHandler`/`RequestGate`）が trait 定義され、コアループ本体が feature 有無で分岐しない | trait 存在の grep + `crates/core/src/server.rs` のコアループ 3 関数（`BoundServer::run`・`handle_connection`・`handle_connection_with_permit`）を awk で範囲抽出し、コメント除外付きで `#[cfg(feature` 不在を grep（#169 是正） |
@@ -35,7 +35,8 @@
 |--------|------|-------------|
 | `cargo-audit` | 基準 C（既知脆弱性） | `cargo install cargo-audit` |
 | `cargo-deny` | 基準 C（ライセンス・出所） | `cargo install cargo-deny` |
-| `cargo-geiger`（任意） | 基準 B の参考値 | `cargo install cargo-geiger` |
+| `cargo-geiger`（任意） | 基準 B の二重検証（#284） | `cargo install --locked cargo-geiger@0.13.0` |
+| `jq`（任意） | 基準 B の geiger JSON 出力解析（#284。未導入時は geiger 二重検証のみ SKIP） | 各 OS のパッケージマネージャ（例: `apt install jq`） |
 | `tokei`（任意） | 基準 D の参考値 | 各 OS のパッケージマネージャ等 |
 
 `cargo audit` / `cargo deny check` はネットワークアクセス（advisory DB 取得・
@@ -90,6 +91,43 @@ FAIL ではなく SKIP として記録され、終了コードには影響しな
 - **基準 B/D（既存、#72 由来）と同様の限界**: 行頭 `//`（`///`・`//!` 含む）の除外
   のみ対応し、`/* ... */` ブロックコメント内の記述は除外できない。基準 E も同一の
   行頭 `//` 除外手法のため同じ限界を持つ
+
+## 基準 B の cargo geiger 二重検証（#284）
+
+従来は workspace ルート（仮想マニフェスト）に対して `cargo geiger -p
+fandhe-backend-core` を実行しており、cargo-geiger 0.13.0 が仮想マニフェスト越しの
+`-p` パッケージ選択に対応しないため常に失敗し、`2>/dev/null` で stderr が握り潰され
+「B補足: cargo geiger」が参考値 WARN のまま固定化していた（`docs/acceptance/
+req1-deps-unsafe-audit.md` 既知 WARN）。`--manifest-path crates/core/Cargo.toml` で
+実パッケージを起点に指定すれば workspace 内の推移的依存（core → routes → http）を
+含めて解決できる（`scripts/pay-for-what-you-use-check.sh` と同じ呼び出し方）。
+
+- **`--manifest-path` は絶対パスで渡す**: cargo-geiger 0.13.0 は `--manifest-path`
+  に相対パスを渡すと `manifest_path:"..." is not an absolute path` で確定的に
+  失敗する（プレーンな `cargo` コマンドは相対パスを許容するため cargo-geiger
+  固有の制約。リトライしても回復しない、#212 の非決定的 panic とは別種の失敗。
+  `docs/acceptance/req1-deps-unsafe-audit.md` 再検証節で実測確認）。
+  `${WORKSPACE_ROOT}`（`scripts/dep-impact.sh` では `${REPO_ROOT}`）を前置した
+  絶対パスを渡すこと
+- 専用 `CARGO_TARGET_DIR`（`target/accept-geiger`）で共有 `target/` のビルド
+  キャッシュ破損・並列実行中の他ジョブとの競合を避ける
+- イシュー #212（cargo-geiger の非決定的 panic、`docs/design/
+  cargo-geiger-flakiness.md`）を踏まえ、最大 3 回の簡易リトライを行う
+- 判定: geiger 出力（JSON、`jq` で解析）から対象コアクレート（`fandhe-backend-core`・
+  `fandhe-backend-http`・存在すれば `fandhe-backend-routes`）の used unsafe
+  （`functions`/`exprs`/`item_impls`/`item_traits`/`methods` の `unsafe_` 合算）が
+  全て 0 なら PASS。対象クレートが出力に現れない（判定不能）なら FAIL（フェイル
+  クローズ）。リトライ後も geiger 実行自体が失敗した場合のみ WARN とし、stderr
+  要約を詳細に残す（基準 B 本体（grep + workspace lint）が主判定を担うため、geiger
+  実行失敗そのものは FAIL にしない）
+- **unsafe が非 0 の場合の扱い（PR #292 Bugbot 指摘、#284）**: 基準 B 本体は
+  「unsafe 0 件」または「全箇所に `// SAFETY:` 根拠明記」のいずれかで合格する
+  （grep ベース判定、上記「基準 B: 自コード unsafe 0 件〜」節参照）。geiger が
+  unsafe を検出した場合でも、grep ベース判定が既に「全箇所根拠あり」で合格して
+  いれば同一実態を別ツールが確認しただけで矛盾ではないため PASS とする。grep
+  ベース判定で unsafe 0 件と判定したのに geiger が非 0 を検出した場合、または
+  grep ベース判定で根拠欠落（基準 B 本体が既に FAIL）の unsafe が含まれる場合の
+  み grep ベースの基準 B 本体と矛盾する状態として FAIL（フェイルクローズ）
 
 ## 出力の読み方
 

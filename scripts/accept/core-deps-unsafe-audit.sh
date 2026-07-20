@@ -142,11 +142,115 @@ check_unsafe() {
         record_warn "B補足: workspace lint" "ルート Cargo.toml で unsafe_code=\"warn\" を設定済み。CI の clippy -D warnings と組み合わせ実質 deny として機能（.claude/rules/security.md）"
     fi
 
-    # cargo geiger は導入済みの場合のみ参考値として実行する（自動導入しない）。
-    if check_tool cargo-geiger "cargo install cargo-geiger"; then
-        record_warn "B補足: cargo geiger" "$(cargo geiger --output-format Ascii -p fandhe-backend-core 2>/dev/null | tail -5 | tr '\n' ' ' || echo '実行に失敗（参考値のため受け入れ判定に影響しない）')"
+    # cargo geiger による独立ツール二重検証（#284）。
+    #
+    # 従来は `cargo geiger --output-format Ascii -p fandhe-backend-core` を
+    # workspace ルート（仮想マニフェスト）で実行しており、cargo-geiger 0.13.0 は
+    # 仮想マニフェスト越しの `-p` パッケージ選択に対応しないため
+    # 「is a virtual manifest, but this command requires running against an
+    # actual package in this workspace」で即失敗していた。`2>/dev/null` で stderr
+    # を握り潰し `set -o pipefail` 経由でコマンド置換全体が失敗 → WARN 固定化して
+    # いたのが本来の失敗原因（バージョン・edition 互換の問題ではない）。
+    # `--manifest-path crates/core/Cargo.toml` で実パッケージを起点に指定すれば
+    # workspace 内の推移的依存（core → routes → http）を含めて解決できる
+    # （scripts/pay-for-what-you-use-check.sh と同じ呼び出し方に統一）。
+    # なお cargo-geiger 0.13.0 は `--manifest-path` に相対パスを渡すと
+    # 「manifest_path:"..." is not an absolute path」で失敗する（プレーンな
+    # `cargo` コマンドとは異なる cargo-geiger 固有の制約）。実行時に `cd
+    # "${WORKSPACE_ROOT}"` 済みであっても不十分なため、`${WORKSPACE_ROOT}` を
+    # 明示的に前置した絶対パスを渡す（pay-for-what-you-use-check.sh の
+    # `CORE_MANIFEST="${WORKSPACE_ROOT}/crates/core/Cargo.toml"` と同一方式）。
+    if check_tool cargo-geiger "cargo install --locked cargo-geiger@0.13.0"; then
+        if ! check_tool jq "jq の導入（例: apt install jq）"; then
+            record_skip "B補足: cargo geiger（二重検証）" "jq 未導入のため geiger JSON 出力を解析できず二重検証を実行できない（導入: jq）"
+        else
+            # 専用 CARGO_TARGET_DIR で共有 target/ のビルドキャッシュ破損・並列実行中の
+            # 他 issue worktree のビルド成果物との競合を避ける
+            # （pay-for-what-you-use-check.sh の release ビルド隔離と同じ方針）。
+            local geiger_target_dir="${WORKSPACE_ROOT}/target/accept-geiger"
+            local geiger_log="/tmp/accept-geiger.$$.log"
+            local geiger_json="" geiger_attempt geiger_max_attempts=3
+
+            # イシュー #212（cargo-geiger の非決定的 panic、
+            # docs/design/cargo-geiger-flakiness.md）を踏まえた簡易リトライ。
+            # stderr は握り潰さず一時ログへ残し、全試行失敗時のみ WARN の詳細に含める。
+            for geiger_attempt in $(seq 1 "${geiger_max_attempts}"); do
+                geiger_json="$(CARGO_TARGET_DIR="${geiger_target_dir}" cargo geiger \
+                    --manifest-path "${WORKSPACE_ROOT}/crates/core/Cargo.toml" --no-default-features \
+                    --output-format Json -q 2>"${geiger_log}" || true)"
+                if [ -n "${geiger_json}" ]; then
+                    break
+                fi
+                sleep "$((geiger_attempt * 2))"
+            done
+
+            if [ -z "${geiger_json}" ]; then
+                # geiger 実行失敗は基準 B 本体（grep + workspace lint）を主判定として
+                # 持つため FAIL にはせず WARN とする。ただし従来と異なり原因を握り潰さず
+                # stderr 要約を詳細へ残す（今回の WARN 長期放置の再発防止）。
+                record_warn "B補足: cargo geiger（二重検証）" "cargo geiger の実行に${geiger_max_attempts}回失敗しました（#212 の既知 flaky panic 等）。stderr 末尾: $(tail -5 "${geiger_log}" 2>/dev/null | tr '\n' ' ')"
+            else
+                # 対象は基準 A/B と同じ 3 コアクレート。crates/routes は TASK-1.5
+                # （#14）マージ前は存在せず geiger 出力にも現れないため、その場合は
+                # CORE_DIRS 由来の対象クレート一覧のみを検証する（判定不能を PASS に
+                # 倒さないため、存在するはずのクレートが欠落していれば FAIL）。
+                local geiger_crates=("fandhe-backend-core" "fandhe-backend-http")
+                if [ "${ROUTES_PRESENT}" -eq 1 ]; then
+                    geiger_crates+=("fandhe-backend-routes")
+                fi
+
+                local missing_crates="" unsafe_total=0 crate unsafe_count
+                for crate in "${geiger_crates[@]}"; do
+                    if ! printf '%s' "${geiger_json}" | jq -e --arg name "${crate}" \
+                        '.packages[] | select(.package.id.name == $name)' >/dev/null 2>&1; then
+                        missing_crates="${missing_crates}${crate} "
+                        continue
+                    fi
+                    # used（実コードで使用された unsafe）の 5 分類（functions/exprs/
+                    # item_impls/item_traits/methods）を合算する。未知フィールドは
+                    # `// 0` で欠落扱いにせず判定不能をゼロ加算に丸める（フェイル
+                    # クローズより過検出を避ける目的だが、対象クレート自体の欠落は
+                    # 上の missing_crates で別途 FAIL 扱いにする）。
+                    unsafe_count="$(printf '%s' "${geiger_json}" | jq --arg name "${crate}" \
+                        '[.packages[] | select(.package.id.name == $name) | .unsafety.used |
+                          (.functions.unsafe_ // 0), (.exprs.unsafe_ // 0),
+                          (.item_impls.unsafe_ // 0), (.item_traits.unsafe_ // 0),
+                          (.methods.unsafe_ // 0)] | add' 2>/dev/null || echo '')"
+                    if [ -z "${unsafe_count}" ]; then
+                        missing_crates="${missing_crates}${crate}(解析失敗) "
+                        continue
+                    fi
+                    unsafe_total=$((unsafe_total + unsafe_count))
+                done
+
+                if [ -n "${missing_crates}" ]; then
+                    record_fail "B補足: cargo geiger（二重検証）" "geiger 出力から対象クレートの unsafe 計測を取得できませんでした（判定不能）: ${missing_crates}"
+                elif [ "${unsafe_total}" -eq 0 ]; then
+                    record_pass "B補足: cargo geiger（二重検証）" "対象コアクレート（${geiger_crates[*]}）の used unsafe（functions/exprs/item_impls/item_traits/methods 合算）が全て 0"
+                elif [ -n "${unsafe_lines_all}" ] && [ "${missing_safety}" -eq 0 ]; then
+                    # 基準 B は「unsafe 0 件」または「全箇所に // SAFETY: 根拠明記」の
+                    # いずれかで合格する（本関数冒頭の grep ベース判定、missing_safety
+                    # フラグを参照）。geiger が unsafe を検出しても、grep ベース判定が
+                    # 既に「全箇所根拠あり」で PASS している場合は同じ実態（正当な
+                    # documented unsafe）を別ツールが確認しただけであり矛盾ではない
+                    # （PR #292 Bugbot 指摘、イシュー #284。以前は unsafe_total>0 を
+                    # 無条件で基準 B との矛盾として FAIL 扱いしており、根拠明記された
+                    # 正当な unsafe を持つ構成が二重検証を通過できなかった）。
+                    record_pass "B補足: cargo geiger（二重検証）" "対象コアクレートの used unsafe 合計が ${unsafe_total} 件検出されたが、grep ベースの基準 B 本体で全箇所に // SAFETY: 根拠明記済みと確認済み（矛盾なし）"
+                else
+                    # grep ベースの基準 B 本体（unsafe 0 件 or 全箇所根拠あり）と geiger の
+                    # 判定が矛盾する状態（フェイルクローズ、.claude/rules/security.md）。
+                    # grep 側で unsafe 0 件と判定したのに geiger が非 0 を検出した場合、
+                    # または grep 側で根拠欠落（missing_safety=1、基準 B 本体は既に FAIL）
+                    # の場合にここへ到達する。
+                    record_fail "B補足: cargo geiger（二重検証）" "対象コアクレートの used unsafe 合計が ${unsafe_total} 件（0 件ではない）。grep ベースの基準 B 本体と矛盾する、または根拠欠落の unsafe が含まれるため要調査"
+                fi
+            fi
+
+            rm -f "${geiger_log}"
+        fi
     else
-        record_skip "B補足: cargo geiger" "cargo-geiger 未導入のため参考値なし（導入: cargo install cargo-geiger）"
+        record_skip "B補足: cargo geiger（二重検証）" "cargo-geiger 未導入のため二重検証をスキップ（導入: cargo install --locked cargo-geiger@0.13.0）"
     fi
 }
 
