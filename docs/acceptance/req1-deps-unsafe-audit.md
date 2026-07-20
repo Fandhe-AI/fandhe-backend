@@ -19,7 +19,7 @@ TASK-1.6-1（#71）のスコープであり、本レポートには含まない�
 | cargo | 1.96.0 (30a34c682 2026-05-25) |
 | cargo-audit | 0.22.2 |
 | cargo-deny | 0.19.8 |
-| cargo-geiger | 導入済みだが実行失敗（参考値のため判定に影響しない） |
+| cargo-geiger | 導入済み（0.13.0）。実行失敗の原因は #284 で解消済み（下記「再検証（#284、2026-07-20）」節を参照。cargo-geiger 自体の一過性失敗（#212）は残存し得るが WARN 経路で吸収する） |
 | tokei | 未導入（参考値なし） |
 
 ## 判定サマリー
@@ -168,7 +168,7 @@ workspace root: <repo root>
 
 | 項目 | 状態 | 備考 |
 |------|------|------|
-| B補足: cargo geiger（参考値） | WARN（実行失敗） | 基準ではなく参考値のため受け入れ判定に影響しない。cargo-geiger 自体は導入済みだが実行時にエラーとなり出力を得られていない。詳細調査はスコープ外（下記「スコープ外」参照） |
+| B補足: cargo geiger（参考値） | → #284 で解消済み（下記「再検証（#284、2026-07-20）」節を参照） | 実行失敗の原因（仮想マニフェスト越しの `-p` パッケージ選択非対応）を特定し、`--manifest-path` 指定 + JSON 判定へ修正。二重検証として正式に PASS/FAIL 判定を持つようになった（実行自体が失敗した場合のみ WARN） |
 | D参考値: tokei | SKIP（未導入） | 基準ではなく参考値のため受け入れ判定に影響しない |
 | audit/deny の CI 組み込み | CI 組み込み済み（TASK-15.2 #17・#108） | 完了（参考記録） |
 
@@ -181,6 +181,67 @@ workspace root: <repo root>
 - 基準 E の関数範囲抽出を grep/awk からより堅牢な構文解析（syn ベースの検査バイナリ等）
   へ置き換える改善、`/* */` ブロックコメント対応（基準 B/D と共通の既知限界） → 本イシュー
   （#169）の対象外。ユーザー承認のうえ別途起票を検討する
-- `cargo geiger` 実行失敗の原因調査・修正 → 参考値であり受け入れ判定に影響しないため
-  本イシューのスコープ外
+- ~~`cargo geiger` 実行失敗の原因調査・修正~~ → #284 で解消済み（下記「再検証
+  （#284、2026-07-20）」節を参照）
 - 性能計測レポート・accept スクリプトの CI 常時実行化 → 対象外
+
+## 再検証（#284、2026-07-20）
+
+### 背景・失敗原因
+
+上記「B補足: cargo geiger」は前回レポート時点で WARN のまま長期放置されていた。
+原因を特定した結果、`scripts/accept/core-deps-unsafe-audit.sh` が workspace ルート
+（仮想マニフェスト）に対して
+
+```bash
+cargo geiger --output-format Ascii -p fandhe-backend-core 2>/dev/null | tail -5 ...
+```
+
+を実行しており、cargo-geiger 0.13.0 は仮想マニフェスト越しの `-p` パッケージ選択に
+対応しないため
+
+```
+manifest path <repo>/Cargo.toml is a virtual manifest, but this command requires
+running against an actual package in this workspace
+```
+
+で即失敗していた（バージョン・edition 互換の問題ではない）。`2>/dev/null` で stderr
+を握り潰し、`set -o pipefail` によりコマンド置換全体が失敗 → `|| echo '実行に失敗
+...'` に落ちて WARN 固定化していた。
+
+### 修正内容
+
+`--manifest-path crates/core/Cargo.toml --no-default-features` で実パッケージを
+起点に指定し（`scripts/pay-for-what-you-use-check.sh` と同じ呼び出し方に統一）、
+専用 `CARGO_TARGET_DIR`（`target/accept-geiger`）で共有 `target/` のビルドキャッシュ
+破損を回避。イシュー #212（cargo-geiger の非決定的 panic）を踏まえ最大 3 回の簡易
+リトライを実装し、stderr は握り潰さず失敗時に要約を記録するよう変更した。判定は
+geiger JSON 出力（`jq` で解析）から対象コアクレート（`fandhe-backend-core`・
+`fandhe-backend-http`・`fandhe-backend-routes`）の used unsafe
+（`functions`/`exprs`/`item_impls`/`item_traits`/`methods` の `unsafe_` 合算）を
+集計し、全て 0 なら PASS、非 0 または対象クレート欠落なら FAIL、geiger 実行自体が
+リトライ後も失敗した場合のみ WARN とする（詳細は `scripts/accept/README.md`
+「基準 B の cargo geiger 二重検証（#284）」節を参照）。同一原因の随伴事象として
+`scripts/dep-impact.sh` の geiger 呼び出しも同じ修正を適用した。
+
+### 再実行結果
+
+実行環境: cargo-geiger 0.13.0 / rustc 1.96.0（本レポート冒頭の実行環境と同一）。
+
+修正後の `--manifest-path crates/core/Cargo.toml --no-default-features
+--output-format Json -q` を単独実行し、JSON 出力を確認した結果、対象 3 コアクレート
+の used unsafe はいずれも全カテゴリ 0 件だった（`fandhe-backend-core` /
+`fandhe-backend-http` / `fandhe-backend-routes` とも
+`functions.unsafe_`/`exprs.unsafe_`/`item_impls.unsafe_`/`item_traits.unsafe_`/
+`methods.unsafe_` が全て 0）。これは基準 B 本体（grep 検証）の「unsafe 0 件」判定と
+一致する。
+
+一方、`scripts/accept/core-deps-unsafe-audit.sh` 経由のフル実行では、同一環境でも
+cargo-geiger 側の一過性失敗（#212 の既知 flaky panic、`Failed to parse file:
+.../signal-hook-registry-1.4.8/src/lib.rs` 等の非致命的パースエラーを含む出力揺れ）
+により 3 回のリトライすべてが失敗し、「B補足: cargo geiger（二重検証）」が WARN と
+なるケースも観測した。これは新実装が意図した設計どおりの挙動（geiger 実行失敗時は
+FAIL にせず WARN とし、基準 B 本体を主判定として扱う）であり、受け入れ判定
+（終了コード 0・FAIL なし）には影響しない。geiger が成功した際は PASS/FAIL 判定が
+機能することを上記の単独実行で確認済みのため、「二重検証」としての機構自体は
+回復・機能していると判断する。

@@ -109,13 +109,23 @@ else
 fi
 echo
 
-echo "## unsafe 件数（cargo-geiger）"
+echo "## unsafe 件数（cargo-geiger、crates/core 起点）"
 echo
 if [ "${GEIGER_AVAILABLE}" -eq 1 ]; then
-    cargo geiger --output-format Utf8 2>/dev/null || echo "cargo geiger の実行に失敗しました（詳細は標準エラー出力を確認してください）"
+    # workspace ルート（仮想マニフェスト）に対して cargo geiger を実行すると
+    # cargo-geiger 0.13.0 は「is a virtual manifest, but this command requires
+    # running against an actual package in this workspace」で常に失敗する
+    # （仮想マニフェスト越しのパッケージ選択に非対応。#284 で特定した
+    # scripts/accept/core-deps-unsafe-audit.sh と同一の根本原因）。
+    # `--manifest-path crates/core/Cargo.toml` で実パッケージを起点に指定し、
+    # 専用 CARGO_TARGET_DIR で共有 target/ のビルドキャッシュ破損を避ける
+    # （scripts/pay-for-what-you-use-check.sh と同じ呼び出し方に統一）。
+    CARGO_TARGET_DIR="${REPO_ROOT}/target/dep-impact-geiger" cargo geiger \
+        --manifest-path crates/core/Cargo.toml --no-default-features --output-format Utf8 2>/dev/null \
+        || echo "cargo geiger の実行に失敗しました（詳細は標準エラー出力を確認してください）"
 else
     echo "cargo-geiger が未導入のためスキップしました。導入する場合:"
     echo '```'
-    echo "cargo install --locked cargo-geiger"
+    echo "cargo install --locked cargo-geiger@0.13.0"
     echo '```'
 fi
