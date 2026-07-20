@@ -56,7 +56,10 @@ fandhe-backend/
 │   │                                    # DoS 上限・fuzz target 追加、イシュー #181）。`RequestHead::path`
 │   │                                    # / `query` でクエリ文字列を分離し `Router::dispatch` の
 │   │                                    # パス照合をクエリ付きリクエストに対応させる（/search 前提整備、
-│   │                                    # イシュー #258）。`Router::options_fallback` で OPTIONS
+│   │                                    # イシュー #258）。`query::parse_query` でクエリ文字列
+│   │                                    # key-value 分解を sans-IO 純関数として提供（ゼロコピー・
+│   │                                    # DoS 上限内蔵・非デコード、イシュー #306）。
+│   │                                    # `Router::options_fallback` で OPTIONS
 │   │                                    # プリフライトを opt-in フックへ委譲可能にし、明示登録された
 │   │                                    # OPTIONS ルートを常に優先しつつ未登録なら従来どおり
 │   │                                    # 405 + `Allow` を維持（CORS プラグイン前提整備、イシュー #304）
