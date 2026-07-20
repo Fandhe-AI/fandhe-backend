@@ -116,10 +116,18 @@ req1-deps-unsafe-audit.md` 既知 WARN）。`--manifest-path crates/core/Cargo.t
 - 判定: geiger 出力（JSON、`jq` で解析）から対象コアクレート（`fandhe-backend-core`・
   `fandhe-backend-http`・存在すれば `fandhe-backend-routes`）の used unsafe
   （`functions`/`exprs`/`item_impls`/`item_traits`/`methods` の `unsafe_` 合算）が
-  全て 0 なら PASS。非 0（grep ベースの基準 B 本体と矛盾）または対象クレートが出力に
-  現れない（判定不能）なら FAIL（フェイルクローズ）。リトライ後も geiger 実行自体が
-  失敗した場合のみ WARN とし、stderr 要約を詳細に残す（基準 B 本体（grep + workspace
-  lint）が主判定を担うため、geiger 実行失敗そのものは FAIL にしない）
+  全て 0 なら PASS。対象クレートが出力に現れない（判定不能）なら FAIL（フェイル
+  クローズ）。リトライ後も geiger 実行自体が失敗した場合のみ WARN とし、stderr
+  要約を詳細に残す（基準 B 本体（grep + workspace lint）が主判定を担うため、geiger
+  実行失敗そのものは FAIL にしない）
+- **unsafe が非 0 の場合の扱い（PR #292 Bugbot 指摘、#284）**: 基準 B 本体は
+  「unsafe 0 件」または「全箇所に `// SAFETY:` 根拠明記」のいずれかで合格する
+  （grep ベース判定、上記「基準 B: 自コード unsafe 0 件〜」節参照）。geiger が
+  unsafe を検出した場合でも、grep ベース判定が既に「全箇所根拠あり」で合格して
+  いれば同一実態を別ツールが確認しただけで矛盾ではないため PASS とする。grep
+  ベース判定で unsafe 0 件と判定したのに geiger が非 0 を検出した場合、または
+  grep ベース判定で根拠欠落（基準 B 本体が既に FAIL）の unsafe が含まれる場合の
+  み grep ベースの基準 B 本体と矛盾する状態として FAIL（フェイルクローズ）
 
 ## 出力の読み方
 

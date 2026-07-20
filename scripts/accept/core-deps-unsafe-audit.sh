@@ -227,10 +227,23 @@ check_unsafe() {
                     record_fail "B補足: cargo geiger（二重検証）" "geiger 出力から対象クレートの unsafe 計測を取得できませんでした（判定不能）: ${missing_crates}"
                 elif [ "${unsafe_total}" -eq 0 ]; then
                     record_pass "B補足: cargo geiger（二重検証）" "対象コアクレート（${geiger_crates[*]}）の used unsafe（functions/exprs/item_impls/item_traits/methods 合算）が全て 0"
+                elif [ -n "${unsafe_lines_all}" ] && [ "${missing_safety}" -eq 0 ]; then
+                    # 基準 B は「unsafe 0 件」または「全箇所に // SAFETY: 根拠明記」の
+                    # いずれかで合格する（本関数冒頭の grep ベース判定、missing_safety
+                    # フラグを参照）。geiger が unsafe を検出しても、grep ベース判定が
+                    # 既に「全箇所根拠あり」で PASS している場合は同じ実態（正当な
+                    # documented unsafe）を別ツールが確認しただけであり矛盾ではない
+                    # （PR #292 Bugbot 指摘、イシュー #284。以前は unsafe_total>0 を
+                    # 無条件で基準 B との矛盾として FAIL 扱いしており、根拠明記された
+                    # 正当な unsafe を持つ構成が二重検証を通過できなかった）。
+                    record_pass "B補足: cargo geiger（二重検証）" "対象コアクレートの used unsafe 合計が ${unsafe_total} 件検出されたが、grep ベースの基準 B 本体で全箇所に // SAFETY: 根拠明記済みと確認済み（矛盾なし）"
                 else
-                    # grep ベースの基準 B 本体と geiger の判定が矛盾する状態
-                    # （フェイルクローズ、.claude/rules/security.md）。
-                    record_fail "B補足: cargo geiger（二重検証）" "対象コアクレートの used unsafe 合計が ${unsafe_total} 件（0 件ではない）。grep ベースの基準 B 本体と矛盾するため要調査"
+                    # grep ベースの基準 B 本体（unsafe 0 件 or 全箇所根拠あり）と geiger の
+                    # 判定が矛盾する状態（フェイルクローズ、.claude/rules/security.md）。
+                    # grep 側で unsafe 0 件と判定したのに geiger が非 0 を検出した場合、
+                    # または grep 側で根拠欠落（missing_safety=1、基準 B 本体は既に FAIL）
+                    # の場合にここへ到達する。
+                    record_fail "B補足: cargo geiger（二重検証）" "対象コアクレートの used unsafe 合計が ${unsafe_total} 件（0 件ではない）。grep ベースの基準 B 本体と矛盾する、または根拠欠落の unsafe が含まれるため要調査"
                 fi
             fi
 
