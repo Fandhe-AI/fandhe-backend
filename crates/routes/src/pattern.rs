@@ -42,7 +42,10 @@ impl<'a> PathParams<'a> {
     ///     ParseOutcome::Complete { head, .. } => head,
     ///     ParseOutcome::Incomplete => unreachable!(),
     /// };
-    /// assert_eq!(router.dispatch(&head, &[]).status, 200);
+    /// // doc test は crate の dev-dependencies（tokio、イシュー #315）を利用できる。
+    /// let res = tokio::runtime::Builder::new_current_thread().build().unwrap()
+    ///     .block_on(router.dispatch(&head, &[]));
+    /// assert_eq!(res.status, 200);
     /// ```
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&str> {

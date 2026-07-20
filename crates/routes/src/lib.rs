@@ -79,6 +79,8 @@
 //! 流さない安全側（情報量の少ない `Allow` 開示を維持する側）に倒す。
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::{AllowedMethods, Response};
@@ -87,14 +89,34 @@ mod pattern;
 
 pub use pattern::{ParamRoute, PathParams, RoutePatternError, Segment};
 
+/// ハンドラ実行の戻り値となる boxed future（イシュー #315、
+/// `docs/design/async-handler.md` 採用案 (c)「拡張点は同期のまま、ハンドラのみ
+/// async 化」）。
+///
+/// 型消去に `async-trait` 等の外部依存を追加せず、std のみで表現する
+/// （pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）。ライフタイム
+/// パラメータを持たない（常に `'static`）契約とする: [`Router::route`] /
+/// [`Router::route_param`] の同期アダプタは `head` / `body` を借用したまま
+/// `Response` を同期的に組み立て、その結果を所有する `std::future::ready` で
+/// 包むため借用を future に持ち越さない。[`Router::route_async`] /
+/// [`Router::route_param_async`] は利用者に `Fut: 'static`（引数の借用を
+/// 持ち越さない）契約を要求することで、同じく `'static` に揃える。
+/// この設計により `dispatch` 自体は同期関数のまま「ルーティング解決は同期・
+/// ハンドラ本体の実行のみ非同期」を保てる（HRTB 不要、`docs/design/
+/// async-handler.md` 6 節の実装ノート）。
+pub type HandlerFuture = Pin<Box<dyn Future<Output = Response> + Send>>;
+
 /// 登録済みルートのハンドラ型。
 ///
 /// [`fandhe_backend_http::request::RequestHead`] と body（生バイト列）を受け取り
-/// [`fandhe_backend_http::response::Response`] を返す。`crates/core::server::Handler::handle`
+/// [`HandlerFuture`] を返す boxed-future 契約（イシュー #315。旧契約は
+/// `Response` を直接返す同期関数だったが、`route`/`route_param` 経由で登録
+/// する同期ハンドラは内部で `std::future::ready` にラップされ後方互換を保つ、
+/// 詳細は [`HandlerFuture`] の doc）。`crates/core::server::Handler::handle`
 /// と同一シグネチャだが、依存方向（`routes` は `core` に依存できない）の制約上
 /// trait は共有せず、本クレート独自の型として定義する。`Send + Sync` は複数
 /// コネクションタスクから共有参照される前提（`crates/core` のコアループ）。
-pub type RouteHandler = Box<dyn Fn(&RequestHead, &[u8]) -> Response + Send + Sync>;
+pub type RouteHandler = Box<dyn Fn(&RequestHead, &[u8]) -> HandlerFuture + Send + Sync>;
 
 /// `{name}` パスパラメータを含むルート（[`Router::route_param`]）のハンドラ型。
 ///
@@ -104,7 +126,7 @@ pub type RouteHandler = Box<dyn Fn(&RequestHead, &[u8]) -> Response + Send + Syn
 /// 引数で明示的に受け取る流儀と揃えるため（`RequestHead` にルーティング概念を
 /// 持ち込まない、`.claude/rules/coding-rust.md` のレイヤ責務分離）。
 pub type ParamRouteHandler =
-    Box<dyn Fn(&RequestHead, &PathParams<'_>, &[u8]) -> Response + Send + Sync>;
+    Box<dyn Fn(&RequestHead, &PathParams<'_>, &[u8]) -> HandlerFuture + Send + Sync>;
 
 /// OPTIONS プリフライトのフォールバックハンドラ型（[`Router::options_fallback`]、
 /// イシュー #304）。
@@ -163,7 +185,8 @@ pub enum FallbackPolicy {
 ///     ParseOutcome::Complete { head, .. } => head,
 ///     ParseOutcome::Incomplete => unreachable!(),
 /// };
-/// let res = router.dispatch(&head, &[]);
+/// let res = tokio::runtime::Builder::new_current_thread().build().unwrap()
+///     .block_on(router.dispatch(&head, &[]));
 /// assert_eq!(res.status, 200);
 /// ```
 #[derive(Default)]
@@ -201,7 +224,9 @@ impl Router {
     ///     ParseOutcome::Complete { head, .. } => head,
     ///     ParseOutcome::Incomplete => unreachable!(),
     /// };
-    /// assert_eq!(router.dispatch(&head, &[]).status, 404);
+    /// let res = tokio::runtime::Builder::new_current_thread().build().unwrap()
+    ///     .block_on(router.dispatch(&head, &[]));
+    /// assert_eq!(res.status, 404);
     /// ```
     #[must_use]
     pub fn new() -> Self {
@@ -236,7 +261,9 @@ impl Router {
     ///     ParseOutcome::Complete { head, .. } => head,
     ///     ParseOutcome::Incomplete => unreachable!(),
     /// };
-    /// assert_eq!(router.dispatch(&head, &[]).status, 200);
+    /// let res = tokio::runtime::Builder::new_current_thread().build().unwrap()
+    ///     .block_on(router.dispatch(&head, &[]));
+    /// assert_eq!(res.status, 200);
     /// ```
     #[must_use]
     pub fn route(
@@ -245,8 +272,66 @@ impl Router {
         path: impl Into<String>,
         handler: impl Fn(&RequestHead, &[u8]) -> Response + Send + Sync + 'static,
     ) -> Self {
+        // 同期ハンドラを [`RouteHandler`]（boxed-future 契約）へ適合させる
+        // アダプタ（イシュー #315）。`handler` を `head`/`body` の借用付きで
+        // 同期実行し、結果の `Response`（所有値）だけを `std::future::ready`
+        // で包むため、返す future は借用を一切持ち越さない（`'static`）。
+        let adapted = move |head: &RequestHead, body: &[u8]| -> HandlerFuture {
+            Box::pin(std::future::ready(handler(head, body)))
+        };
         self.routes
-            .insert((method.into(), path.into()), Box::new(handler));
+            .insert((method.into(), path.into()), Box::new(adapted));
+        self
+    }
+
+    /// `method` + `path` に完全一致するリクエストを async ハンドラ `handler` へ
+    /// 委譲するよう登録する（イシュー #315、`docs/design/async-handler.md`）。
+    ///
+    /// [`Router::route`] の非同期版。`handler` は `Future` を返す関数で、
+    /// `sqlx` 等の非同期 I/O をハンドラ本体で直接 `.await` できる。
+    /// `Fut: 'static` 契約のため、ハンドラは `head` / `body` から必要な値を
+    /// 同期部で `clone` してから `async move` ブロックへ渡す設計にすること
+    /// （引数の借用をそのまま future へ持ち越せない。axum/warp と同系の
+    /// トレードオフ、詳細は `docs/design/async-handler.md` 6 節）。
+    ///
+    /// ```
+    /// use fandhe_backend_routes::Router;
+    /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// let router = Router::new().route_async("GET", "/slow", |_head, _body| async {
+    ///     // 実利用では tokio::time::sleep や DB クエリ等の非同期 I/O をここで await する。
+    ///     Response::new(200, b"ok".to_vec())
+    /// });
+    ///
+    /// let head = match parse_request_head(b"GET /slow HTTP/1.1\r\n\r\n").unwrap() {
+    ///     ParseOutcome::Complete { head, .. } => head,
+    ///     ParseOutcome::Incomplete => unreachable!(),
+    /// };
+    /// // doc test は crate の dev-dependencies（tokio、イシュー #315）を利用できる。
+    /// // 実運用では `crates/core` のコアループが同じ future を `.await` する。
+    /// let res = tokio::runtime::Builder::new_current_thread()
+    ///     .build()
+    ///     .unwrap()
+    ///     .block_on(router.dispatch(&head, &[]));
+    /// assert_eq!(res.status, 200);
+    /// ```
+    #[must_use]
+    pub fn route_async<F, Fut>(
+        mut self,
+        method: impl Into<String>,
+        path: impl Into<String>,
+        handler: F,
+    ) -> Self
+    where
+        F: Fn(&RequestHead, &[u8]) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Response> + Send + 'static,
+    {
+        let adapted = move |head: &RequestHead, body: &[u8]| -> HandlerFuture {
+            Box::pin(handler(head, body))
+        };
+        self.routes
+            .insert((method.into(), path.into()), Box::new(adapted));
         self
     }
 
@@ -286,7 +371,8 @@ impl Router {
     ///     ParseOutcome::Complete { head, .. } => head,
     ///     ParseOutcome::Incomplete => unreachable!(),
     /// };
-    /// let res = router.dispatch(&head, &[]);
+    /// let res = tokio::runtime::Builder::new_current_thread().build().unwrap()
+    ///     .block_on(router.dispatch(&head, &[]));
     /// assert_eq!(res.status, 200);
     /// assert_eq!(res.body, b"hello, alice".to_vec());
     /// ```
@@ -309,7 +395,8 @@ impl Router {
     ///     ParseOutcome::Complete { head, .. } => head,
     ///     ParseOutcome::Incomplete => unreachable!(),
     /// };
-    /// let res = router.dispatch(&head, &[]);
+    /// let res = tokio::runtime::Builder::new_current_thread().build().unwrap()
+    ///     .block_on(router.dispatch(&head, &[]));
     /// assert_eq!(res.status, 200);
     /// assert_eq!(res.body, b"css/app.css".to_vec());
     /// ```
@@ -320,10 +407,67 @@ impl Router {
         handler: impl Fn(&RequestHead, &PathParams<'_>, &[u8]) -> Response + Send + Sync + 'static,
     ) -> Result<Self, RoutePatternError> {
         let segments = pattern::parse_pattern(&pattern.into())?;
+        // [`Router::route`] と同じ同期→boxed-future アダプタ（イシュー #315）。
+        let adapted =
+            move |head: &RequestHead, params: &PathParams<'_>, body: &[u8]| -> HandlerFuture {
+                Box::pin(std::future::ready(handler(head, params, body)))
+            };
         self.param_routes.push(ParamRoute {
             method: method.into(),
             segments,
-            handler: Box::new(handler),
+            handler: Box::new(adapted),
+        });
+        Ok(self)
+    }
+
+    /// `method` + `pattern`（`{name}` セグメントを含む）に一致するリクエストを
+    /// async ハンドラ `handler` へ委譲するよう登録する（イシュー #315）。
+    ///
+    /// [`Router::route_param`] の非同期版。`Fut: 'static` 契約は
+    /// [`Router::route_async`] と同じ（借用を持ち越さず、必要な値は同期部で
+    /// `clone` してから `async move` へ渡す）。
+    ///
+    /// ```
+    /// use fandhe_backend_routes::Router;
+    /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// let router = Router::new()
+    ///     .route_param_async("GET", "/hello/{name}", |_head, params, _body| {
+    ///         let name = params.get("name").unwrap_or("world").to_string();
+    ///         async move { Response::new(200, format!("hello, {name}").into_bytes()) }
+    ///     })
+    ///     .unwrap();
+    ///
+    /// let head = match parse_request_head(b"GET /hello/alice HTTP/1.1\r\n\r\n").unwrap() {
+    ///     ParseOutcome::Complete { head, .. } => head,
+    ///     ParseOutcome::Incomplete => unreachable!(),
+    /// };
+    /// let res = tokio::runtime::Builder::new_current_thread()
+    ///     .build()
+    ///     .unwrap()
+    ///     .block_on(router.dispatch(&head, &[]));
+    /// assert_eq!(res.body, b"hello, alice".to_vec());
+    /// ```
+    pub fn route_param_async<F, Fut>(
+        mut self,
+        method: impl Into<String>,
+        pattern: impl Into<String>,
+        handler: F,
+    ) -> Result<Self, RoutePatternError>
+    where
+        F: Fn(&RequestHead, &PathParams<'_>, &[u8]) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Response> + Send + 'static,
+    {
+        let segments = pattern::parse_pattern(&pattern.into())?;
+        let adapted = move |head: &RequestHead,
+                            params: &PathParams<'_>,
+                            body: &[u8]|
+              -> HandlerFuture { Box::pin(handler(head, params, body)) };
+        self.param_routes.push(ParamRoute {
+            method: method.into(),
+            segments,
+            handler: Box::new(adapted),
         });
         Ok(self)
     }
@@ -366,7 +510,8 @@ impl Router {
     ///     ParseOutcome::Complete { head, .. } => head,
     ///     ParseOutcome::Incomplete => unreachable!(),
     /// };
-    /// let res = router.dispatch(&head, &[]);
+    /// let res = tokio::runtime::Builder::new_current_thread().build().unwrap()
+    ///     .block_on(router.dispatch(&head, &[]));
     /// assert_eq!(res.status, 204);
     /// let text = String::from_utf8(res.serialize(false)).unwrap();
     /// assert!(text.contains("Allow: GET, POST\r\n"));
@@ -411,14 +556,15 @@ impl Router {
     /// let router = Router::new()
     ///     .route("GET", "/", |_h, _b| Response::empty(200))
     ///     .fallback(|_head, _body| Response::new(404, b"not found here".to_vec()));
+    /// let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
     ///
     /// // 未登録パス → fallback ハンドラの応答。
-    /// let res = router.dispatch(&head(b"GET /missing HTTP/1.1\r\n\r\n"), &[]);
+    /// let res = rt.block_on(router.dispatch(&head(b"GET /missing HTTP/1.1\r\n\r\n"), &[]));
     /// assert_eq!(res.status, 404);
     /// assert_eq!(res.body, b"not found here".to_vec());
     ///
     /// // 既定ポリシーではメソッド不一致は fallback を経由せず 405 + Allow のまま。
-    /// let res = router.dispatch(&head(b"POST / HTTP/1.1\r\n\r\n"), &[]);
+    /// let res = rt.block_on(router.dispatch(&head(b"POST / HTTP/1.1\r\n\r\n"), &[]));
     /// assert_eq!(res.status, 405);
     /// let text = String::from_utf8(res.serialize(false)).unwrap();
     /// assert!(text.contains("Allow: GET\r\n"));
@@ -452,9 +598,10 @@ impl Router {
     ///     .fallback_with(FallbackPolicy::IncludeMethodNotAllowed, |_head, _body| {
     ///         Response::new(404, b"catch-all".to_vec())
     ///     });
+    /// let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
     ///
     /// // メソッド不一致も fallback に委譲され、Allow ヘッダは付与されない。
-    /// let res = router.dispatch(&head(b"POST / HTTP/1.1\r\n\r\n"), &[]);
+    /// let res = rt.block_on(router.dispatch(&head(b"POST / HTTP/1.1\r\n\r\n"), &[]));
     /// assert_eq!(res.status, 404);
     /// assert_eq!(res.body, b"catch-all".to_vec());
     /// let text = String::from_utf8(res.serialize(false)).unwrap();
@@ -466,11 +613,27 @@ impl Router {
         policy: FallbackPolicy,
         handler: impl Fn(&RequestHead, &[u8]) -> Response + Send + Sync + 'static,
     ) -> Self {
-        self.fallback = Some((policy, Box::new(handler)));
+        // `Router::route` と同一の同期→非同期アダプタ（イシュー #315）。fallback
+        // ハンドラは A05（アクセス制御バイパス）対策上 CORS/404 本文組み立て
+        // のみを想定した軽量処理であり、同期契約のまま `HandlerFuture` へ包む。
+        let adapted = move |head: &RequestHead, body: &[u8]| -> HandlerFuture {
+            Box::pin(std::future::ready(handler(head, body)))
+        };
+        self.fallback = Some((policy, Box::new(adapted)));
         self
     }
 
-    /// `head` の method + `target` に一致するハンドラへ委譲し、[`Response`] を返す。
+    /// `head` の method + `target` に一致するハンドラへ委譲し、[`HandlerFuture`] を
+    /// 返す（イシュー #315。旧契約は同期関数で `Response` を直接返していたが、
+    /// ルーティング解決（優先順位判定・404/405/`Allow` 集約・OPTIONS フォールバック・
+    /// 未マッチ共通フォールバック判定、イシュー #316）はすべて同期のまま行い、
+    /// ハンドラ本体の実行のみを呼び出し元に委ねる future として返す。`dispatch`
+    /// 自体を `async fn` にする必要はない（[`HandlerFuture`] の doc・
+    /// `docs/design/async-handler.md` 6 節）。[`Router::fallback`] /
+    /// [`Router::fallback_with`] の登録 API 自体は同期関数（`Response` を直接
+    /// 返す）のまま公開するが、[`Router::route`] と同一の同期→非同期アダプタで
+    /// `Box::pin(std::future::ready(..))` に包んでから内部に保持するため、
+    /// `dispatch` からの委譲時は追加のラップなしで返せる。
     ///
     /// - `target` に一致するルートが 1 件もない場合は 404（Not Found）。
     /// - `target` は一致するが `method` が一致しない場合は 405（Method Not Allowed）。
@@ -504,20 +667,21 @@ impl Router {
     ///     .route("POST", "/", |_head, _body| {
     ///         fandhe_backend_http::response::Response::new(201, b"created".to_vec())
     ///     });
+    /// let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
     ///
     /// // 未登録パス → 404（Allow は付与されない）
     /// let miss = head(b"GET /missing HTTP/1.1\r\n\r\n");
-    /// assert_eq!(router.dispatch(&miss, &[]).status, 404);
+    /// assert_eq!(rt.block_on(router.dispatch(&miss, &[])).status, 404);
     ///
     /// // 登録済みパスだがメソッド不一致 → 405 + Allow: GET, POST
     /// let wrong_method = head(b"DELETE / HTTP/1.1\r\n\r\n");
-    /// let res = router.dispatch(&wrong_method, &[]);
+    /// let res = rt.block_on(router.dispatch(&wrong_method, &[]));
     /// assert_eq!(res.status, 405);
     /// let text = String::from_utf8(res.serialize(false)).unwrap();
     /// assert!(text.contains("Allow: GET, POST\r\n"));
     /// ```
     #[must_use]
-    pub fn dispatch(&self, head: &RequestHead, body: &[u8]) -> Response {
+    pub fn dispatch(&self, head: &RequestHead, body: &[u8]) -> HandlerFuture {
         // 1. 静的ルート（完全一致）を最優先で照合する。既存の HashMap ルックアップに
         //    手を加えていないため、パラメータルート追加前後でこの経路の挙動・性能は
         //    変わらない（後方互換、モジュール doc「マッチング方針」節）。
@@ -570,7 +734,7 @@ impl Router {
             // （404 側は両ポリシー共通で fallback 対象）。
             return match &self.fallback {
                 Some((_, handler)) => handler(head, body),
-                None => Response::empty(404),
+                None => Box::pin(std::future::ready(Response::empty(404))),
             };
         }
 
@@ -584,7 +748,7 @@ impl Router {
             // 検証せず登録するため利用者の自己登録次第で理論上到達しうる）。
             return match &self.fallback {
                 Some((FallbackPolicy::IncludeMethodNotAllowed, handler)) => handler(head, body),
-                _ => Response::empty(405),
+                _ => Box::pin(std::future::ready(Response::empty(405))),
             };
         };
 
@@ -595,10 +759,12 @@ impl Router {
         // フォールバックが常に明示登録より劣後する（`options_fallback` doc
         // comment の A05 対策）。`Router::fallback` の `IncludeMethodNotAllowed`
         // より `options_fallback` を優先する（OPTIONS 専用の既存挙動を横取りしない）。
+        // `options_fallback` ハンドラ自体は同期契約のまま（CORS ヘッダ組み立てのみで
+        // 非同期 I/O を要しないため、既存 API を async 化しない、pay-for-what-you-use）。
         if head.method == "OPTIONS"
             && let Some(fallback) = &self.options_fallback
         {
-            return fallback(head, &allow, body);
+            return Box::pin(std::future::ready(fallback(head, &allow, body)));
         }
 
         // メソッド不一致（従来 405）を未マッチ共通フォールバックへ流すかは
@@ -608,7 +774,7 @@ impl Router {
             return handler(head, body);
         }
 
-        Response::empty(405).with_allow(allow)
+        Box::pin(std::future::ready(Response::empty(405).with_allow(allow)))
     }
 
     /// 405 応答・OPTIONS フォールバックの双方が共有する `Allow` 構築ロジック
@@ -647,123 +813,129 @@ mod tests {
         }
     }
 
-    #[test]
-    fn exact_match_dispatches_to_registered_handler() {
+    #[tokio::test]
+    async fn exact_match_dispatches_to_registered_handler() {
         let router = Router::new().route("GET", "/", |_h, _b| Response::new(200, b"root".to_vec()));
-        let res = router.dispatch(&head("GET", "/"), &[]);
+        let res = router.dispatch(&head("GET", "/"), &[]).await;
         assert_eq!(res.status, 200);
         assert_eq!(res.body, b"root".to_vec());
     }
 
-    #[test]
-    fn unregistered_target_returns_404() {
+    #[tokio::test]
+    async fn unregistered_target_returns_404() {
         let router = Router::new().route("GET", "/", |_h, _b| Response::empty(200));
-        let res = router.dispatch(&head("GET", "/nope"), &[]);
+        let res = router.dispatch(&head("GET", "/nope"), &[]).await;
         assert_eq!(res.status, 404);
         assert!(res.body.is_empty());
     }
 
-    #[test]
-    fn registered_target_with_wrong_method_returns_405() {
+    #[tokio::test]
+    async fn registered_target_with_wrong_method_returns_405() {
         let router = Router::new().route("GET", "/", |_h, _b| Response::empty(200));
-        let res = router.dispatch(&head("POST", "/"), &[]);
+        let res = router.dispatch(&head("POST", "/"), &[]).await;
         assert_eq!(res.status, 405);
     }
 
-    #[test]
-    fn empty_router_returns_404_for_any_request() {
+    #[tokio::test]
+    async fn empty_router_returns_404_for_any_request() {
         let router = Router::new();
-        let res = router.dispatch(&head("GET", "/"), &[]);
+        let res = router.dispatch(&head("GET", "/"), &[]).await;
         assert_eq!(res.status, 404);
     }
 
-    #[test]
-    fn multiple_routes_are_independent_and_registration_order_does_not_matter() {
+    #[tokio::test]
+    async fn multiple_routes_are_independent_and_registration_order_does_not_matter() {
         let router = Router::new()
             .route("GET", "/a", |_h, _b| Response::new(200, b"a".to_vec()))
             .route("POST", "/b", |_h, _b| Response::new(201, b"b".to_vec()))
             .route("GET", "/b", |_h, _b| Response::new(200, b"b-get".to_vec()));
 
-        assert_eq!(router.dispatch(&head("GET", "/a"), &[]).body, b"a".to_vec());
-        assert_eq!(router.dispatch(&head("POST", "/b"), &[]).status, 201);
         assert_eq!(
-            router.dispatch(&head("GET", "/b"), &[]).body,
+            router.dispatch(&head("GET", "/a"), &[]).await.body,
+            b"a".to_vec()
+        );
+        assert_eq!(router.dispatch(&head("POST", "/b"), &[]).await.status, 201);
+        assert_eq!(
+            router.dispatch(&head("GET", "/b"), &[]).await.body,
             b"b-get".to_vec()
         );
         // /a に登録されていない DELETE は 405（/a 自体は存在するため）。
-        assert_eq!(router.dispatch(&head("DELETE", "/a"), &[]).status, 405);
+        assert_eq!(
+            router.dispatch(&head("DELETE", "/a"), &[]).await.status,
+            405
+        );
     }
 
-    #[test]
-    fn handler_receives_body_bytes() {
+    #[tokio::test]
+    async fn handler_receives_body_bytes() {
         let router = Router::new().route("POST", "/echo", |_h, body| {
             Response::new(200, body.to_vec())
         });
-        let res = router.dispatch(&head("POST", "/echo"), b"payload");
+        let res = router.dispatch(&head("POST", "/echo"), b"payload").await;
         assert_eq!(res.body, b"payload".to_vec());
     }
 
-    #[test]
-    fn method_is_case_sensitive_and_not_normalized() {
+    #[tokio::test]
+    async fn method_is_case_sensitive_and_not_normalized() {
         // RFC 9110 上メソッド token は大文字小文字を区別する。独自の正規化を
         // 持ち込まないという設計方針（本モジュール doc）を固定化するテスト。
         let router = Router::new().route("GET", "/", |_h, _b| Response::empty(200));
-        let res = router.dispatch(&head("get", "/"), &[]);
+        let res = router.dispatch(&head("get", "/"), &[]).await;
         assert_eq!(res.status, 405);
     }
 
-    #[test]
-    fn re_registering_same_method_and_path_overwrites_previous_handler() {
+    #[tokio::test]
+    async fn re_registering_same_method_and_path_overwrites_previous_handler() {
         let router = Router::new()
             .route("GET", "/", |_h, _b| Response::new(200, b"first".to_vec()))
             .route("GET", "/", |_h, _b| Response::new(200, b"second".to_vec()));
-        let res = router.dispatch(&head("GET", "/"), &[]);
+        let res = router.dispatch(&head("GET", "/"), &[]).await;
         assert_eq!(res.body, b"second".to_vec());
     }
 
-    #[test]
-    fn method_mismatch_405_includes_sorted_allow_header() {
+    #[tokio::test]
+    async fn method_mismatch_405_includes_sorted_allow_header() {
         // TASK-177 / #177: 405 応答に RFC 9110 §15.5.6 の Allow ヘッダを付与する。
         // 登録済み method（DELETE, GET）はソート済みで出力される。
         let router = Router::new()
             .route("GET", "/", |_h, _b| Response::empty(200))
             .route("DELETE", "/", |_h, _b| Response::empty(204));
-        let res = router.dispatch(&head("POST", "/"), &[]);
+        let res = router.dispatch(&head("POST", "/"), &[]).await;
         assert_eq!(res.status, 405);
         let text = String::from_utf8(res.serialize(false)).unwrap();
         assert!(text.contains("Allow: DELETE, GET\r\n"));
     }
 
-    #[test]
-    fn method_mismatch_405_aggregates_multiple_registered_methods_for_same_target() {
+    #[tokio::test]
+    async fn method_mismatch_405_aggregates_multiple_registered_methods_for_same_target() {
         let router = Router::new()
             .route("GET", "/a", |_h, _b| Response::empty(200))
             .route("POST", "/a", |_h, _b| Response::empty(201))
             .route("PUT", "/a", |_h, _b| Response::empty(200));
-        let res = router.dispatch(&head("DELETE", "/a"), &[]);
+        let res = router.dispatch(&head("DELETE", "/a"), &[]).await;
         assert_eq!(res.status, 405);
         let text = String::from_utf8(res.serialize(false)).unwrap();
         assert!(text.contains("Allow: GET, POST, PUT\r\n"));
     }
 
-    #[test]
-    fn unregistered_target_404_has_no_allow_header() {
+    #[tokio::test]
+    async fn unregistered_target_404_has_no_allow_header() {
         let router = Router::new().route("GET", "/", |_h, _b| Response::empty(200));
-        let res = router.dispatch(&head("GET", "/missing"), &[]);
+        let res = router.dispatch(&head("GET", "/missing"), &[]).await;
         assert_eq!(res.status, 404);
         let text = String::from_utf8(res.serialize(false)).unwrap();
         assert!(!text.contains("Allow:"));
     }
 
-    #[test]
-    fn method_mismatch_405_allow_header_injection_regression() {
+    #[tokio::test]
+    async fn method_mismatch_405_allow_header_injection_regression() {
         // ヘッダインジェクション回帰テスト（TASK-177 / #177）: 不正な method
         // token（CRLF を含む文字列）が登録されていても、`AllowedMethods` の
         // 構築時検証で除外され、直列化バイト列に絶対に現れない。
         let router = Router::new()
             .route("GET\r\nX-Evil: 1", "/", |_h, _b| Response::empty(200))
             .route("GET", "/", |_h, _b| Response::empty(200));
-        let res = router.dispatch(&head("DELETE", "/"), &[]);
+        let res = router.dispatch(&head("DELETE", "/"), &[]).await;
         assert_eq!(res.status, 405);
         let bytes = res.serialize(false);
         let text = String::from_utf8(bytes).unwrap();
@@ -777,59 +949,59 @@ mod tests {
 
     // --- OPTIONS プリフライトフォールバック（イシュー #304） ---
 
-    #[test]
-    fn options_without_fallback_registered_returns_405_and_allow_unchanged() {
+    #[tokio::test]
+    async fn options_without_fallback_registered_returns_405_and_allow_unchanged() {
         // フック未登録時は従来どおり 405 + Allow（後方互換の固定化）。
         let router = Router::new()
             .route("GET", "/", |_h, _b| Response::empty(200))
             .route("POST", "/", |_h, _b| Response::empty(201));
-        let res = router.dispatch(&head("OPTIONS", "/"), &[]);
+        let res = router.dispatch(&head("OPTIONS", "/"), &[]).await;
         assert_eq!(res.status, 405);
         let text = String::from_utf8(res.serialize(false)).unwrap();
         assert!(text.contains("Allow: GET, POST\r\n"));
     }
 
-    #[test]
-    fn options_with_fallback_registered_delegates_with_sorted_allowed_methods() {
+    #[tokio::test]
+    async fn options_with_fallback_registered_delegates_with_sorted_allowed_methods() {
         let router = Router::new()
             .route("GET", "/todos", |_h, _b| Response::empty(200))
             .route("POST", "/todos", |_h, _b| Response::empty(201))
             .route("DELETE", "/todos", |_h, _b| Response::empty(204))
             .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
 
-        let res = router.dispatch(&head("OPTIONS", "/todos"), &[]);
+        let res = router.dispatch(&head("OPTIONS", "/todos"), &[]).await;
         assert_eq!(res.status, 204);
         let text = String::from_utf8(res.serialize(false)).unwrap();
         assert!(text.contains("Allow: DELETE, GET, POST\r\n"));
     }
 
-    #[test]
-    fn options_with_fallback_registered_but_unregistered_path_returns_404() {
+    #[tokio::test]
+    async fn options_with_fallback_registered_but_unregistered_path_returns_404() {
         // 未登録パスへの OPTIONS はフックを発火させず 404 のまま
         // （フェイルクローズ・パス列挙攻撃表面の非拡大）。
         let router = Router::new()
             .route("GET", "/todos", |_h, _b| Response::empty(200))
             .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
 
-        let res = router.dispatch(&head("OPTIONS", "/missing"), &[]);
+        let res = router.dispatch(&head("OPTIONS", "/missing"), &[]).await;
         assert_eq!(res.status, 404);
     }
 
-    #[test]
-    fn options_with_fallback_registered_other_method_mismatch_still_returns_405() {
+    #[tokio::test]
+    async fn options_with_fallback_registered_other_method_mismatch_still_returns_405() {
         // OPTIONS 以外の method 不一致はフックを発火させず従来どおり 405 + Allow。
         let router = Router::new()
             .route("GET", "/todos", |_h, _b| Response::empty(200))
             .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
 
-        let res = router.dispatch(&head("DELETE", "/todos"), &[]);
+        let res = router.dispatch(&head("DELETE", "/todos"), &[]).await;
         assert_eq!(res.status, 405);
         let text = String::from_utf8(res.serialize(false)).unwrap();
         assert!(text.contains("Allow: GET\r\n"));
     }
 
-    #[test]
-    fn explicit_options_route_takes_priority_over_fallback() {
+    #[tokio::test]
+    async fn explicit_options_route_takes_priority_over_fallback() {
         // 明示登録された OPTIONS ルートは常にフォールバックより優先される
         // （利用者定義のプリフライト処理を横取りしない、A05 対策）。
         let router = Router::new()
@@ -839,13 +1011,13 @@ mod tests {
             })
             .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
 
-        let res = router.dispatch(&head("OPTIONS", "/todos"), &[]);
+        let res = router.dispatch(&head("OPTIONS", "/todos"), &[]).await;
         assert_eq!(res.status, 200);
         assert_eq!(res.body, b"explicit".to_vec());
     }
 
-    #[test]
-    fn options_with_fallback_registered_matches_param_route_methods() {
+    #[tokio::test]
+    async fn options_with_fallback_registered_matches_param_route_methods() {
         // パラメータルートのみ一致するパスへの OPTIONS でもフックが発火し、
         // param route の method が一覧に含まれる。
         let router = Router::new()
@@ -855,14 +1027,14 @@ mod tests {
             .unwrap()
             .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
 
-        let res = router.dispatch(&head("OPTIONS", "/hello/alice"), &[]);
+        let res = router.dispatch(&head("OPTIONS", "/hello/alice"), &[]).await;
         assert_eq!(res.status, 204);
         let text = String::from_utf8(res.serialize(false)).unwrap();
         assert!(text.contains("Allow: GET\r\n"));
     }
 
-    #[test]
-    fn options_fallback_allow_header_injection_regression() {
+    #[tokio::test]
+    async fn options_fallback_allow_header_injection_regression() {
         // `method_mismatch_405_allow_header_injection_regression` の OPTIONS 版:
         // 不正 token（CRLF 入り method）はフック経由でも直列化バイト列に現れない。
         let router = Router::new()
@@ -870,7 +1042,7 @@ mod tests {
             .route("GET", "/", |_h, _b| Response::empty(200))
             .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
 
-        let res = router.dispatch(&head("OPTIONS", "/"), &[]);
+        let res = router.dispatch(&head("OPTIONS", "/"), &[]).await;
         assert_eq!(res.status, 204);
         let bytes = res.serialize(false);
         let text = String::from_utf8(bytes).unwrap();
@@ -881,40 +1053,43 @@ mod tests {
 
     // --- fallback ハンドラ登録（イシュー #316） ---
 
-    #[test]
-    fn fallback_unregistered_preserves_existing_404_405_behavior() {
+    #[tokio::test]
+    async fn fallback_unregistered_preserves_existing_404_405_behavior() {
         // 受け入れ条件 1: fallback 未登録時は既存挙動を完全維持する。
         let router = Router::new().route("GET", "/", |_h, _b| Response::empty(200));
-        assert_eq!(router.dispatch(&head("GET", "/missing"), &[]).status, 404);
-        assert_eq!(router.dispatch(&head("POST", "/"), &[]).status, 405);
+        assert_eq!(
+            router.dispatch(&head("GET", "/missing"), &[]).await.status,
+            404
+        );
+        assert_eq!(router.dispatch(&head("POST", "/"), &[]).await.status, 405);
     }
 
-    #[test]
-    fn fallback_default_policy_handles_404_only() {
+    #[tokio::test]
+    async fn fallback_default_policy_handles_404_only() {
         let router = Router::new()
             .route("GET", "/", |_h, _b| Response::empty(200))
             .fallback(|_h, _b| Response::new(404, b"fallback".to_vec()));
 
-        let res = router.dispatch(&head("GET", "/missing"), &[]);
+        let res = router.dispatch(&head("GET", "/missing"), &[]).await;
         assert_eq!(res.status, 404);
         assert_eq!(res.body, b"fallback".to_vec());
     }
 
-    #[test]
-    fn fallback_default_policy_does_not_intercept_method_mismatch() {
+    #[tokio::test]
+    async fn fallback_default_policy_does_not_intercept_method_mismatch() {
         // 受け入れ条件 2: 既定ポリシー（NotFoundOnly）は 405 を fallback に流さない。
         let router = Router::new()
             .route("GET", "/", |_h, _b| Response::empty(200))
             .fallback(|_h, _b| Response::new(404, b"fallback".to_vec()));
 
-        let res = router.dispatch(&head("POST", "/"), &[]);
+        let res = router.dispatch(&head("POST", "/"), &[]).await;
         assert_eq!(res.status, 405);
         let text = String::from_utf8(res.serialize(false)).unwrap();
         assert!(text.contains("Allow: GET\r\n"));
     }
 
-    #[test]
-    fn fallback_include_method_not_allowed_policy_intercepts_405() {
+    #[tokio::test]
+    async fn fallback_include_method_not_allowed_policy_intercepts_405() {
         // 受け入れ条件 2: IncludeMethodNotAllowed 明示指定時は 405 も fallback へ。
         let router = Router::new()
             .route("GET", "/", |_h, _b| Response::empty(200))
@@ -922,15 +1097,15 @@ mod tests {
                 Response::new(404, b"fallback".to_vec())
             });
 
-        let res = router.dispatch(&head("POST", "/"), &[]);
+        let res = router.dispatch(&head("POST", "/"), &[]).await;
         assert_eq!(res.status, 404);
         assert_eq!(res.body, b"fallback".to_vec());
         let text = String::from_utf8(res.serialize(false)).unwrap();
         assert!(!text.contains("Allow:"));
     }
 
-    #[test]
-    fn fallback_include_method_not_allowed_also_covers_param_route_shape_match() {
+    #[tokio::test]
+    async fn fallback_include_method_not_allowed_also_covers_param_route_shape_match() {
         // パラメータルート形状一致・メソッド不一致でも IncludeMethodNotAllowed なら
         // fallback へ委譲される。
         let router = Router::new()
@@ -940,13 +1115,13 @@ mod tests {
                 Response::new(404, b"fallback".to_vec())
             });
 
-        let res = router.dispatch(&head("POST", "/hello/alice"), &[]);
+        let res = router.dispatch(&head("POST", "/hello/alice"), &[]).await;
         assert_eq!(res.status, 404);
         assert_eq!(res.body, b"fallback".to_vec());
     }
 
-    #[test]
-    fn fallback_priority_static_then_param_then_fallback() {
+    #[tokio::test]
+    async fn fallback_priority_static_then_param_then_fallback() {
         // 受け入れ条件 3: 静的 → パラメータ → fallback の優先順位を単一テストで固定化する。
         let router = Router::new()
             .route("GET", "/hello/world", |_h, _b| {
@@ -960,52 +1135,58 @@ mod tests {
             .fallback(|_h, _b| Response::new(404, b"fallback".to_vec()));
 
         assert_eq!(
-            router.dispatch(&head("GET", "/hello/world"), &[]).body,
+            router
+                .dispatch(&head("GET", "/hello/world"), &[])
+                .await
+                .body,
             b"static".to_vec()
         );
         assert_eq!(
-            router.dispatch(&head("GET", "/hello/alice"), &[]).body,
+            router
+                .dispatch(&head("GET", "/hello/alice"), &[])
+                .await
+                .body,
             b"param:alice".to_vec()
         );
         assert_eq!(
-            router.dispatch(&head("GET", "/other"), &[]).body,
+            router.dispatch(&head("GET", "/other"), &[]).await.body,
             b"fallback".to_vec()
         );
     }
 
-    #[test]
-    fn fallback_receives_head_and_body() {
+    #[tokio::test]
+    async fn fallback_receives_head_and_body() {
         let router = Router::new().fallback(|head, body| {
             Response::new(
                 200,
                 format!("{}:{}", head.method, String::from_utf8_lossy(body)).into_bytes(),
             )
         });
-        let res = router.dispatch(&head("PUT", "/anything"), b"payload");
+        let res = router.dispatch(&head("PUT", "/anything"), b"payload").await;
         assert_eq!(res.body, b"PUT:payload".to_vec());
     }
 
-    #[test]
-    fn fallback_re_registering_overwrites_previous_handler() {
+    #[tokio::test]
+    async fn fallback_re_registering_overwrites_previous_handler() {
         let router = Router::new()
             .fallback(|_h, _b| Response::new(404, b"first".to_vec()))
             .fallback(|_h, _b| Response::new(404, b"second".to_vec()));
-        let res = router.dispatch(&head("GET", "/missing"), &[]);
+        let res = router.dispatch(&head("GET", "/missing"), &[]).await;
         assert_eq!(res.body, b"second".to_vec());
     }
 
-    #[test]
-    fn fallback_on_empty_router_handles_all_requests() {
+    #[tokio::test]
+    async fn fallback_on_empty_router_handles_all_requests() {
         // SPA ユースケース: 空 Router + fallback で全リクエストが fallback へ。
         let router =
             Router::new().fallback(|_h, _b| Response::new(200, b"<html>spa</html>".to_vec()));
-        let res = router.dispatch(&head("GET", "/any/path"), &[]);
+        let res = router.dispatch(&head("GET", "/any/path"), &[]).await;
         assert_eq!(res.status, 200);
         assert_eq!(res.body, b"<html>spa</html>".to_vec());
     }
 
-    #[test]
-    fn fallback_include_method_not_allowed_intercepts_even_when_allow_build_fails() {
+    #[tokio::test]
+    async fn fallback_include_method_not_allowed_intercepts_even_when_allow_build_fails() {
         // レビュー指摘（イシュー #316）: 対象パスに登録済みの method が全て不正
         // token（tchar 外）で `build_allow` が `None` を返す場合でも、
         // `IncludeMethodNotAllowed` の「405 も委譲する」契約は破られない。
@@ -1018,13 +1199,13 @@ mod tests {
                 Response::new(404, b"fallback".to_vec())
             });
 
-        let res = router.dispatch(&head("GET", "/x"), &[]);
+        let res = router.dispatch(&head("GET", "/x"), &[]).await;
         assert_eq!(res.status, 404);
         assert_eq!(res.body, b"fallback".to_vec());
     }
 
-    #[test]
-    fn fallback_default_policy_still_405_when_allow_build_fails() {
+    #[tokio::test]
+    async fn fallback_default_policy_still_405_when_allow_build_fails() {
         // 上記と対をなす対照実験: 既定ポリシー（NotFoundOnly）では `Allow`
         // 構築失敗時も従来どおり `Allow` なしの 405 を返す（安全側デフォルト維持）。
         //
@@ -1039,15 +1220,15 @@ mod tests {
             .fallback_with(FallbackPolicy::NotFoundOnly, |_h, _b| {
                 Response::new(404, b"fallback".to_vec())
             });
-        let res = router.dispatch(&head("GET", "/x"), &[]);
+        let res = router.dispatch(&head("GET", "/x"), &[]).await;
         assert_eq!(res.status, 405);
         assert_ne!(res.body, b"fallback".to_vec());
     }
 
     // --- ワイルドカードパスパラメータ `{*name}`（イシュー #317） ---
 
-    #[test]
-    fn wildcard_route_binds_multi_segment_tail_with_slashes() {
+    #[tokio::test]
+    async fn wildcard_route_binds_multi_segment_tail_with_slashes() {
         let router = Router::new()
             .route_param("GET", "/static/{*path}", |_h, params, _b| {
                 let path = params.get("path").unwrap_or("");
@@ -1055,13 +1236,15 @@ mod tests {
             })
             .unwrap();
 
-        let res = router.dispatch(&head("GET", "/static/css/app.css"), &[]);
+        let res = router
+            .dispatch(&head("GET", "/static/css/app.css"), &[])
+            .await;
         assert_eq!(res.status, 200);
         assert_eq!(res.body, b"css/app.css".to_vec());
     }
 
-    #[test]
-    fn wildcard_route_does_not_match_zero_segments() {
+    #[tokio::test]
+    async fn wildcard_route_does_not_match_zero_segments() {
         // 受け入れ条件: `{*path}` は 1 個以上のセグメントを要求し、0 セグメント
         // （`/static` 単体）には一致しない（末尾スラッシュなしは 404）。
         let router = Router::new()
@@ -1070,12 +1253,12 @@ mod tests {
             })
             .unwrap();
 
-        let res = router.dispatch(&head("GET", "/static"), &[]);
+        let res = router.dispatch(&head("GET", "/static"), &[]).await;
         assert_eq!(res.status, 404);
     }
 
-    #[test]
-    fn wildcard_route_static_exact_route_takes_priority() {
+    #[tokio::test]
+    async fn wildcard_route_static_exact_route_takes_priority() {
         // 受け入れ条件 3: 静的ルート（完全一致）がワイルドカードパラメータルート
         // より常に優先される。
         let router = Router::new()
@@ -1089,17 +1272,23 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            router.dispatch(&head("GET", "/static/exact"), &[]).body,
+            router
+                .dispatch(&head("GET", "/static/exact"), &[])
+                .await
+                .body,
             b"static-exact".to_vec()
         );
         assert_eq!(
-            router.dispatch(&head("GET", "/static/other"), &[]).body,
+            router
+                .dispatch(&head("GET", "/static/other"), &[])
+                .await
+                .body,
             b"wildcard:other".to_vec()
         );
     }
 
-    #[test]
-    fn wildcard_route_falls_through_from_earlier_registered_single_segment_param() {
+    #[tokio::test]
+    async fn wildcard_route_falls_through_from_earlier_registered_single_segment_param() {
         // 受け入れ条件 3: 登録順意味論の固定化。先に登録した 1 セグメント
         // パラメータルートが 1 セグメントリクエストでは勝ち、複数セグメントの
         // リクエストはそのパラメータルートに一致しないため後続のワイルドカード
@@ -1117,33 +1306,39 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            router.dispatch(&head("GET", "/static/app.css"), &[]).body,
+            router
+                .dispatch(&head("GET", "/static/app.css"), &[])
+                .await
+                .body,
             b"single:app.css".to_vec()
         );
         assert_eq!(
             router
                 .dispatch(&head("GET", "/static/css/app.css"), &[])
+                .await
                 .body,
             b"wildcard:css/app.css".to_vec()
         );
     }
 
-    #[test]
-    fn wildcard_route_method_mismatch_returns_405_with_allow() {
+    #[tokio::test]
+    async fn wildcard_route_method_mismatch_returns_405_with_allow() {
         let router = Router::new()
             .route_param("GET", "/static/{*path}", |_h, _params, _b| {
                 Response::empty(200)
             })
             .unwrap();
 
-        let res = router.dispatch(&head("POST", "/static/css/app.css"), &[]);
+        let res = router
+            .dispatch(&head("POST", "/static/css/app.css"), &[])
+            .await;
         assert_eq!(res.status, 405);
         let text = String::from_utf8(res.serialize(false)).unwrap();
         assert!(text.contains("Allow: GET\r\n"));
     }
 
-    #[test]
-    fn wildcard_route_non_origin_form_target_does_not_match() {
+    #[tokio::test]
+    async fn wildcard_route_non_origin_form_target_does_not_match() {
         // `*`（asterisk-form）はセグメント分割対象外のため一致しない
         // （`request_target_segments` が `None` を返す、モジュール doc参照）。
         let router = Router::new()
@@ -1153,12 +1348,12 @@ mod tests {
             })
             .unwrap();
 
-        let res = router.dispatch(&head("OPTIONS", "*"), &[]);
+        let res = router.dispatch(&head("OPTIONS", "*"), &[]).await;
         assert_eq!(res.status, 200);
     }
 
-    #[test]
-    fn wildcard_route_unmatched_zero_segment_falls_through_to_fallback() {
+    #[tokio::test]
+    async fn wildcard_route_unmatched_zero_segment_falls_through_to_fallback() {
         // fallback（イシュー #316）とのマージ地点回帰: 0 セグメント不一致は
         // 404 として fallback へ委譲される。
         let router = Router::new()
@@ -1168,7 +1363,7 @@ mod tests {
             .unwrap()
             .fallback(|_h, _b| Response::new(404, b"fallback".to_vec()));
 
-        let res = router.dispatch(&head("GET", "/static"), &[]);
+        let res = router.dispatch(&head("GET", "/static"), &[]).await;
         assert_eq!(res.status, 404);
         assert_eq!(res.body, b"fallback".to_vec());
     }

@@ -16,8 +16,8 @@ fn head(method: &str, target: &str) -> RequestHead {
     }
 }
 
-#[test]
-fn param_route_binds_single_segment() {
+#[tokio::test]
+async fn param_route_binds_single_segment() {
     let router = Router::new()
         .route_param("GET", "/hello/{name}", |_h, params, _b| {
             let name = params.get("name").unwrap_or("world");
@@ -25,13 +25,13 @@ fn param_route_binds_single_segment() {
         })
         .unwrap();
 
-    let res = router.dispatch(&head("GET", "/hello/alice"), &[]);
+    let res = router.dispatch(&head("GET", "/hello/alice"), &[]).await;
     assert_eq!(res.status, 200);
     assert_eq!(res.body, b"hello, alice".to_vec());
 }
 
-#[test]
-fn param_route_binds_multiple_segments() {
+#[tokio::test]
+async fn param_route_binds_multiple_segments() {
     let router = Router::new()
         .route_param("GET", "/users/{id}/posts/{post_id}", |_h, params, _b| {
             let id = params.get("id").unwrap_or("?");
@@ -40,13 +40,15 @@ fn param_route_binds_multiple_segments() {
         })
         .unwrap();
 
-    let res = router.dispatch(&head("GET", "/users/7/posts/99"), &[]);
+    let res = router
+        .dispatch(&head("GET", "/users/7/posts/99"), &[])
+        .await;
     assert_eq!(res.status, 200);
     assert_eq!(res.body, b"7:99".to_vec());
 }
 
-#[test]
-fn static_route_takes_priority_over_param_route() {
+#[tokio::test]
+async fn static_route_takes_priority_over_param_route() {
     // 静的ルート（完全一致）が常にパラメータルートより優先される
     // （後方互換・モジュール doc「マッチング方針」節）。
     let router = Router::new()
@@ -58,16 +60,16 @@ fn static_route_takes_priority_over_param_route() {
         })
         .unwrap();
 
-    let res = router.dispatch(&head("GET", "/hello/alice"), &[]);
+    let res = router.dispatch(&head("GET", "/hello/alice"), &[]).await;
     assert_eq!(res.body, b"static".to_vec());
 
     // 静的一致しない別の名前はパラメータルートへフォールスルーする。
-    let res2 = router.dispatch(&head("GET", "/hello/bob"), &[]);
+    let res2 = router.dispatch(&head("GET", "/hello/bob"), &[]).await;
     assert_eq!(res2.body, b"param".to_vec());
 }
 
-#[test]
-fn param_routes_are_matched_in_registration_order() {
+#[tokio::test]
+async fn param_routes_are_matched_in_registration_order() {
     let router = Router::new()
         .route_param("GET", "/a/{x}", |_h, _params, _b| {
             Response::new(200, b"first".to_vec())
@@ -80,47 +82,12 @@ fn param_routes_are_matched_in_registration_order() {
 
     // "/a/b" は両パターンの segment 形状に一致し得るが、登録順で最初に
     // マッチした "/a/{x}" が採用される。
-    let res = router.dispatch(&head("GET", "/a/b"), &[]);
+    let res = router.dispatch(&head("GET", "/a/b"), &[]).await;
     assert_eq!(res.body, b"first".to_vec());
 }
 
-#[test]
-fn segment_count_mismatch_does_not_match() {
-    let router = Router::new()
-        .route_param("GET", "/hello/{name}", |_h, _params, _b| {
-            Response::new(200, b"param".to_vec())
-        })
-        .unwrap();
-
-    assert_eq!(router.dispatch(&head("GET", "/hello/a/b"), &[]).status, 404);
-    assert_eq!(router.dispatch(&head("GET", "/hello"), &[]).status, 404);
-}
-
-#[test]
-fn empty_segment_does_not_match() {
-    let router = Router::new()
-        .route_param("GET", "/hello/{name}", |_h, _params, _b| {
-            Response::new(200, b"param".to_vec())
-        })
-        .unwrap();
-
-    assert_eq!(router.dispatch(&head("GET", "/hello//"), &[]).status, 404);
-}
-
-#[test]
-fn dot_and_dotdot_segments_are_rejected_for_path_traversal_defense() {
-    let router = Router::new()
-        .route_param("GET", "/files/{name}", |_h, _params, _b| {
-            Response::new(200, b"param".to_vec())
-        })
-        .unwrap();
-
-    assert_eq!(router.dispatch(&head("GET", "/files/."), &[]).status, 404);
-    assert_eq!(router.dispatch(&head("GET", "/files/.."), &[]).status, 404);
-}
-
-#[test]
-fn method_mismatch_on_param_route_returns_405() {
+#[tokio::test]
+async fn segment_count_mismatch_does_not_match() {
     let router = Router::new()
         .route_param("GET", "/hello/{name}", |_h, _params, _b| {
             Response::new(200, b"param".to_vec())
@@ -128,13 +95,69 @@ fn method_mismatch_on_param_route_returns_405() {
         .unwrap();
 
     assert_eq!(
-        router.dispatch(&head("POST", "/hello/alice"), &[]).status,
+        router
+            .dispatch(&head("GET", "/hello/a/b"), &[])
+            .await
+            .status,
+        404
+    );
+    assert_eq!(
+        router.dispatch(&head("GET", "/hello"), &[]).await.status,
+        404
+    );
+}
+
+#[tokio::test]
+async fn empty_segment_does_not_match() {
+    let router = Router::new()
+        .route_param("GET", "/hello/{name}", |_h, _params, _b| {
+            Response::new(200, b"param".to_vec())
+        })
+        .unwrap();
+
+    assert_eq!(
+        router.dispatch(&head("GET", "/hello//"), &[]).await.status,
+        404
+    );
+}
+
+#[tokio::test]
+async fn dot_and_dotdot_segments_are_rejected_for_path_traversal_defense() {
+    let router = Router::new()
+        .route_param("GET", "/files/{name}", |_h, _params, _b| {
+            Response::new(200, b"param".to_vec())
+        })
+        .unwrap();
+
+    assert_eq!(
+        router.dispatch(&head("GET", "/files/."), &[]).await.status,
+        404
+    );
+    assert_eq!(
+        router.dispatch(&head("GET", "/files/.."), &[]).await.status,
+        404
+    );
+}
+
+#[tokio::test]
+async fn method_mismatch_on_param_route_returns_405() {
+    let router = Router::new()
+        .route_param("GET", "/hello/{name}", |_h, _params, _b| {
+            Response::new(200, b"param".to_vec())
+        })
+        .unwrap();
+
+    assert_eq!(
+        router
+            .dispatch(&head("POST", "/hello/alice"), &[])
+            .await
+            .status,
         405
     );
 }
 
-#[test]
-fn method_mismatch_on_param_route_includes_allow_header() {
+#[tokio::test]
+async fn method_mismatch_on_param_route_includes_allow_header() {
     // main 側で追加された 405 の Allow ヘッダ方針（TASK-177、#177）を
     // パラメータルートにマージする際、param_route の method が Allow 候補に
     // 正しく集約されることの回帰テスト（TASK-176 と TASK-177 のマージ地点）。
@@ -144,14 +167,14 @@ fn method_mismatch_on_param_route_includes_allow_header() {
         })
         .unwrap();
 
-    let res = router.dispatch(&head("POST", "/hello/alice"), &[]);
+    let res = router.dispatch(&head("POST", "/hello/alice"), &[]).await;
     assert_eq!(res.status, 405);
     let text = String::from_utf8(res.serialize(false)).unwrap();
     assert!(text.contains("Allow: GET\r\n"));
 }
 
-#[test]
-fn method_mismatch_allow_header_combines_static_and_param_routes() {
+#[tokio::test]
+async fn method_mismatch_allow_header_combines_static_and_param_routes() {
     // 静的ルートとパラメータルートが同じ target 形状に対して別 method を
     // 登録している場合、405 の Allow ヘッダは両方の method をソート済み・
     // 重複排除済みで含む必要がある。
@@ -164,14 +187,14 @@ fn method_mismatch_allow_header_combines_static_and_param_routes() {
         })
         .unwrap();
 
-    let res = router.dispatch(&head("DELETE", "/hello/alice"), &[]);
+    let res = router.dispatch(&head("DELETE", "/hello/alice"), &[]).await;
     assert_eq!(res.status, 405);
     let text = String::from_utf8(res.serialize(false)).unwrap();
     assert!(text.contains("Allow: GET, PUT\r\n"));
 }
 
-#[test]
-fn unmatched_shape_returns_404() {
+#[tokio::test]
+async fn unmatched_shape_returns_404() {
     let router = Router::new()
         .route_param("GET", "/hello/{name}", |_h, _params, _b| {
             Response::new(200, b"param".to_vec())
@@ -179,13 +202,16 @@ fn unmatched_shape_returns_404() {
         .unwrap();
 
     assert_eq!(
-        router.dispatch(&head("GET", "/other/path"), &[]).status,
+        router
+            .dispatch(&head("GET", "/other/path"), &[])
+            .await
+            .status,
         404
     );
 }
 
-#[test]
-fn percent_encoded_value_is_passed_through_without_decoding() {
+#[tokio::test]
+async fn percent_encoded_value_is_passed_through_without_decoding() {
     // 非デコード契約（モジュール doc「マッチング方針」節）。呼び出し側で
     // デコード・再検証する責務であることを end-to-end で固定化する。
     let router = Router::new()
@@ -194,13 +220,13 @@ fn percent_encoded_value_is_passed_through_without_decoding() {
         })
         .unwrap();
 
-    let res = router.dispatch(&head("GET", "/files/%2e%2e"), &[]);
+    let res = router.dispatch(&head("GET", "/files/%2e%2e"), &[]).await;
     assert_eq!(res.status, 200);
     assert_eq!(res.body, b"%2e%2e".to_vec());
 }
 
-#[test]
-fn registering_pattern_with_bad_syntax_returns_error_not_panic() {
+#[tokio::test]
+async fn registering_pattern_with_bad_syntax_returns_error_not_panic() {
     let err = Router::new().route_param("GET", "hello/{name}", |_h, _params, _b| {
         Response::empty(200)
     });
@@ -212,24 +238,24 @@ fn registering_pattern_with_bad_syntax_returns_error_not_panic() {
 // 拒否されるべきで、受理すると同じ空セグメントが要求されるため通常のパス
 // （`/hello/alice` 等）が誤って 404 になっていた。
 
-#[test]
-fn registering_pattern_with_consecutive_slash_returns_error_not_panic() {
+#[tokio::test]
+async fn registering_pattern_with_consecutive_slash_returns_error_not_panic() {
     let err = Router::new().route_param("GET", "/hello//{name}", |_h, _params, _b| {
         Response::empty(200)
     });
     assert!(err.is_err());
 }
 
-#[test]
-fn registering_pattern_with_trailing_slash_returns_error_not_panic() {
+#[tokio::test]
+async fn registering_pattern_with_trailing_slash_returns_error_not_panic() {
     let err = Router::new().route_param("GET", "/hello/{name}/", |_h, _params, _b| {
         Response::empty(200)
     });
     assert!(err.is_err());
 }
 
-#[test]
-fn normal_path_still_matches_after_rejecting_empty_segment_patterns() {
+#[tokio::test]
+async fn normal_path_still_matches_after_rejecting_empty_segment_patterns() {
     // 空セグメントを含むパターンの登録が拒否された後も、正規のパターン登録・
     // 通常パスへのマッチングが影響を受けないことを確認する。
     let router = Router::new()
@@ -239,15 +265,15 @@ fn normal_path_still_matches_after_rejecting_empty_segment_patterns() {
         })
         .unwrap();
 
-    let res = router.dispatch(&head("GET", "/hello/alice"), &[]);
+    let res = router.dispatch(&head("GET", "/hello/alice"), &[]).await;
     assert_eq!(res.status, 200);
     assert_eq!(res.body, b"hello, alice".to_vec());
 }
 
 // --- 既存の完全一致ルートとの後方互換テスト ---
 
-#[test]
-fn existing_exact_match_routes_are_unaffected_by_param_routes() {
+#[tokio::test]
+async fn existing_exact_match_routes_are_unaffected_by_param_routes() {
     let router = Router::new()
         .route("GET", "/", |_h, _b| Response::new(200, b"root".to_vec()))
         .route_param("GET", "/hello/{name}", |_h, _params, _b| {
@@ -255,30 +281,32 @@ fn existing_exact_match_routes_are_unaffected_by_param_routes() {
         })
         .unwrap();
 
-    let res = router.dispatch(&head("GET", "/"), &[]);
+    let res = router.dispatch(&head("GET", "/"), &[]).await;
     assert_eq!(res.status, 200);
     assert_eq!(res.body, b"root".to_vec());
 }
 
-#[test]
-fn literal_braces_in_route_target_remain_exact_match_only() {
+#[tokio::test]
+async fn literal_braces_in_route_target_remain_exact_match_only() {
     // route() に `{` を含む文字列を渡してもパターン解釈はされず、従来どおり
     // 完全一致のリテラルとして扱われる（route() の意味論を一切変更しない）。
     let router = Router::new().route("GET", "/literal/{not-a-param}", |_h, _b| {
         Response::new(200, b"literal".to_vec())
     });
 
-    let res = router.dispatch(&head("GET", "/literal/{not-a-param}"), &[]);
+    let res = router
+        .dispatch(&head("GET", "/literal/{not-a-param}"), &[])
+        .await;
     assert_eq!(res.status, 200);
     assert_eq!(res.body, b"literal".to_vec());
 
     // 実際のパスセグメント値としての "actual" には一致しない（パターン扱いされていない証跡）。
-    let miss = router.dispatch(&head("GET", "/literal/actual"), &[]);
+    let miss = router.dispatch(&head("GET", "/literal/actual"), &[]).await;
     assert_eq!(miss.status, 404);
 }
 
-#[test]
-fn non_origin_form_target_does_not_match_param_route() {
+#[tokio::test]
+async fn non_origin_form_target_does_not_match_param_route() {
     // Cursor Bugbot 指摘（PR #191）: `target` が origin-form（先頭 `/`）でない場合、
     // セグメント数の偶然の一致だけでパラメータルートに一致してはならない
     // （fail-closed・無正規化契約、`pattern` モジュール doc「request_target_segments」参照）。
@@ -289,17 +317,17 @@ fn non_origin_form_target_does_not_match_param_route() {
         .unwrap();
 
     // asterisk-form（OPTIONS * 相当）。1 セグメント相当に見えるが origin-form ではない。
-    let asterisk = router.dispatch(&head("GET", "*"), &[]);
+    let asterisk = router.dispatch(&head("GET", "*"), &[]).await;
     assert_eq!(asterisk.status, 404);
 
     // 先頭 `/` を欠く不正な request-target。`/{name}` と偶然セグメント数が一致するが
     // origin-form ではないため一致してはならない。
-    let no_leading_slash = router.dispatch(&head("GET", "hello"), &[]);
+    let no_leading_slash = router.dispatch(&head("GET", "hello"), &[]).await;
     assert_eq!(no_leading_slash.status, 404);
 }
 
-#[test]
-fn non_origin_form_target_does_not_match_multi_segment_param_route() {
+#[tokio::test]
+async fn non_origin_form_target_does_not_match_multi_segment_param_route() {
     let router = Router::new()
         .route_param("GET", "/hello/{name}", |_h, params, _b| {
             Response::new(200, params.get("name").unwrap_or("?").as_bytes().to_vec())
@@ -307,11 +335,11 @@ fn non_origin_form_target_does_not_match_multi_segment_param_route() {
         .unwrap();
 
     // 先頭 `/` を欠くが `split('/')` すると偶然 2 セグメントになる不正 target。
-    let no_leading_slash = router.dispatch(&head("GET", "hello/alice"), &[]);
+    let no_leading_slash = router.dispatch(&head("GET", "hello/alice"), &[]).await;
     assert_eq!(no_leading_slash.status, 404);
 
     // 正規の origin-form は引き続き一致する（回帰確認）。
-    let ok = router.dispatch(&head("GET", "/hello/alice"), &[]);
+    let ok = router.dispatch(&head("GET", "/hello/alice"), &[]).await;
     assert_eq!(ok.status, 200);
     assert_eq!(ok.body, b"alice".to_vec());
 }
@@ -320,8 +348,8 @@ fn non_origin_form_target_does_not_match_multi_segment_param_route() {
 // 「ルーティング照合へ影響しないことをテストで担保（照合前デコードを行わない）」
 // を `Router` 経由の end-to-end で実証する。
 
-#[test]
-fn percent_encoded_slash_does_not_bypass_static_segment_boundary() {
+#[tokio::test]
+async fn percent_encoded_slash_does_not_bypass_static_segment_boundary() {
     // `%2F` は `/` の percent-encoding だが、照合はデコード前の生文字列で行われる
     // （OWASP A01 正規化バイパス防止、REQ-1）ため、静的ルート `/items/a/b` には
     // 一致せず、`{name}` 単一セグメントパラメータルートにも一致しない
@@ -336,14 +364,14 @@ fn percent_encoded_slash_does_not_bypass_static_segment_boundary() {
         })
         .unwrap();
 
-    let res = router.dispatch(&head("GET", "/items/a%2Fb"), &[]);
+    let res = router.dispatch(&head("GET", "/items/a%2Fb"), &[]).await;
     assert_eq!(res.status, 200);
     // 静的ルートには一致せず、`{name}` が生のエンコード済み文字列を捕捉する。
     assert_eq!(res.body, b"a%2Fb".to_vec());
 }
 
-#[test]
-fn handler_opt_in_decodes_captured_param_after_routing_match() {
+#[tokio::test]
+async fn handler_opt_in_decodes_captured_param_after_routing_match() {
     // ルーティング照合は非デコードのまま行われ、ハンドラが明示的に
     // `fandhe_backend_http::percent::decode_str` を呼んで初めて日本語値へ
     // 復元される（opt-in 契約、受け入れ条件 4 の実利用パターン）。
@@ -358,12 +386,14 @@ fn handler_opt_in_decodes_captured_param_after_routing_match() {
         .unwrap();
 
     // 日本語タイトル「日本語」を percent-encoding した経路パラメータ。
-    let res = router.dispatch(&head("GET", "/titles/%E6%97%A5%E6%9C%AC%E8%AA%9E"), &[]);
+    let res = router
+        .dispatch(&head("GET", "/titles/%E6%97%A5%E6%9C%AC%E8%AA%9E"), &[])
+        .await;
     assert_eq!(res.status, 200);
     assert_eq!(res.body, "日本語".as_bytes().to_vec());
 
     // 不正シーケンスはハンドラ内で opt-in デコードした際にエラーとして検出できる
     // （ルーティング自体は生文字列のまま一致するため 404 にはならない）。
-    let bad = router.dispatch(&head("GET", "/titles/%ZZ"), &[]);
+    let bad = router.dispatch(&head("GET", "/titles/%ZZ"), &[]).await;
     assert_eq!(bad.status, 400);
 }

@@ -87,6 +87,29 @@ trait 実装のまま I/O を停止し、アトミックカウンタの更新の
   扱いは、標準ロギング／トレーシング実装（REQ-10・`plugin-tracing` 系タスク）側
   の設計事項として別途定める。本規約はこの論点を暗黙に決定しない。
 
+## 規約: ハンドラ契約は async・3 拡張点は同期のまま（イシュー #315）
+
+`docs/design/async-handler.md`（採用案 (c)）対応。**既定ハンドラ**（`crates/core/
+src/server.rs` の `Handler` trait、`fandhe_backend_routes::Router` の `route_async` /
+`route_param_async`）と、上記「ミドルウェア非同期 I/O 必須化」規約が対象とする
+**3 拡張点**（`Middleware` / `UpgradeHandler` / `RequestGate`）とでは、非同期化の
+扱いが非対称である点に注意する:
+
+- **`Handler::handle`**: `fandhe_backend_routes::HandlerFuture`（`Pin<Box<dyn
+  Future<Output = Response> + Send>>`、`async-trait` 等の外部依存なし・std のみで
+  型消去）を返す **async 契約**。実装者はハンドラ本体で `sqlx` 等の非同期 I/O を
+  直接 `.await` できる。既存の同期登録 API（`Router::route` / `route_param`）は
+  内部で `std::future::ready` に適合させ後方互換を維持する
+- **3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）**: 意図的に**同期の
+  まま据え置く**（`dyn` 互換性・呼び出しコストの単純さを優先、`docs/design/
+  async-handler.md` 2 節）。I/O が必要な場合は上記「ミドルウェア非同期 I/O
+  必須化」規約（非同期チャネル送信・別タスクへの委譲）に従う
+
+この非対称性は意図的な設計判断であり、3 拡張点を「ハンドラに揃えて async 化する」
+提案は本規約と衝突する。3 拡張点の async 化を検討する場合は
+`docs/design/async-handler.md` の再評価条件（8 節）に従い設計文書を更新してから
+着手すること。
+
 ## AI エージェント向け変更ガイド
 
 TASK-11.3（#35、`docs/spec/05-tasks.md` Phase 3 / MS-3、`docs/spec/04-requirements.md`

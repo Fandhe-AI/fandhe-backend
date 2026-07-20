@@ -98,7 +98,7 @@ struct TenantAwareHandler {
 const NOT_FOUND_BODY: &[u8] = b"not found";
 
 impl Handler for TenantAwareHandler {
-    fn handle(&self, head: &RequestHead, _body: &[u8]) -> Response {
+    fn handle(&self, head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
         // `TenantGate` を通過済み（`Authorization: Bearer <valid JWT>`）である
         // 前提だが、`org_id` はゲート層から渡されないため本ハンドラで再検証する。
         // 抽出には `TenantGate` と同一の RFC 6750 準拠パーサ（`auth::bearer_token`、
@@ -123,14 +123,15 @@ impl Handler for TenantAwareHandler {
             .split_once('?')
             .map_or(head.target.as_str(), |(path, _query)| path);
 
-        match self.store.lookup(path, &claims.org_id).resolve(
+        let response = match self.store.lookup(path, &claims.org_id).resolve(
             self.sink.as_ref() as &dyn AuditSink,
             &ctx,
             0,
         ) {
             Some(payload) => Response::new(200, payload.as_bytes().to_vec()),
             None => Response::new(404, NOT_FOUND_BODY.to_vec()),
-        }
+        };
+        Box::pin(std::future::ready(response))
     }
 }
 

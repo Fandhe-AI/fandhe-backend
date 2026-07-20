@@ -102,7 +102,16 @@ fandhe-backend/
 │   │                                    # 一致しなかったリクエストの共通処理（カスタム 404・SPA の
 │   │                                    # index.html 返却等）を登録可能にし、`FallbackPolicy` で
 │   │                                    # 405（メソッド不一致）も委譲するかを個別選択（既定は 404
-│   │                                    # のみ委譲する安全側、イシュー #316）
+│   │                                    # のみ委譲する安全側、イシュー #316）。`Router::route_async` /
+│   │                                    # `route_param_async` で async ハンドラを登録可能にし、
+│   │                                    # 既定ハンドラ契約（`crates/core` の `Handler::handle`）を
+│   │                                    # `fandhe_backend_routes::HandlerFuture`（boxed future）
+│   │                                    # 返却へ移行（`Router::route`/`route_param` の同期登録 API は
+│   │                                    # 内部アダプタで非破壊のまま維持。3 拡張点
+│   │                                    # （`Middleware`/`UpgradeHandler`/`RequestGate`）は意図的に
+│   │                                    # 同期のまま据え置き、`sqlx` 等の非同期 I/O をハンドラ本体で
+│   │                                    # 直接 await 可能にする、イシュー #315、
+│   │                                    # `docs/design/async-handler.md`）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
