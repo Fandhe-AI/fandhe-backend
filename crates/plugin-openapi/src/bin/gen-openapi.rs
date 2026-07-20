@@ -13,11 +13,14 @@
 //!   [`ApiDoc`] を単一のスキーマ源とするため、どちらか一方だけの再生成漏れも検知する。
 //!
 //! # feature 前提（pay-for-what-you-use）
-//! 本バイナリは `gen-cli` feature（`required-features`）と `dep:serde_json` /
-//! `utoipa/yaml`（serde_norway 経由）を必要とする。`fandhe-backend-plugin-openapi` を
-//! サーバ側から lib として参照する通常経路（`gen-cli` 無効時）には本ファイル・
-//! `serde_json`・serde_norway は一切ビルド対象に含まれない
-//! （`.claude/rules/pay-for-what-you-use.md`）。
+//! 本バイナリは `gen-cli` feature（`required-features`）と `utoipa/yaml`
+//! （serde_norway 経由）を必要とする。`serde_json` はイシュー #320
+//! （`custom.rs::OpenApiDoc::from_json`）で通常依存へ変更済みのため
+//! `gen-cli` 無効時にも本クレートには残るが、`utoipa` が推移的に引き込む
+//! ため `cargo tree` 上の推移依存差はゼロ（`Cargo.toml` の doc comment を
+//! 参照）。`fandhe-backend-plugin-openapi` をサーバ側から lib として参照する
+//! 通常経路（`gen-cli` 無効時）には、本ファイル・serde_norway は一切ビルド
+//! 対象に含まれない（`.claude/rules/pay-for-what-you-use.md`）。
 //!
 //! # 引数
 //! - （引数なし）: `openapi.json` / `openapi.yaml` を生成し既定の出力先へ書き込む

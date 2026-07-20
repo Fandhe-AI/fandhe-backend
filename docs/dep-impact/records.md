@@ -8,6 +8,47 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-07-21 — `crates/plugin-openapi` に利用者アプリ独自 OpenAPI スキーマ登録
+API を追加（イシュー #320）
+
+`Server::openapi_with(doc)` / `fandhe_backend_plugin_openapi::OpenApiDoc` を追加し、
+`crates/plugin-openapi/Cargo.toml` の `serde_json` を `gen-cli` feature 限定の
+optional 依存から通常依存へ変更した（`OpenApiDoc::from_json` の JSON 構文検証に
+使う）。
+
+### 依存の残留確認（pay-for-what-you-use）
+
+`serde_json` は変更前から `utoipa`（本クレートの常時有効な依存）が推移的に
+引き込んでいたため、通常依存化しても `cargo tree` 上の推移依存差はゼロ。
+
+```
+$ cargo tree -p fandhe-backend-plugin-openapi --no-default-features -e normal
+fandhe-backend-plugin-openapi v0.1.0
+├── serde v1.0.229 (...)
+├── serde_json v1.0.151 (...)   # 変更前は utoipa の推移依存としてのみ出現していた版と同一
+└── utoipa v5.5.0
+    ├── ...
+    └── serde_json v1.0.151 (*)  # 通常依存化前からここに存在（同一バージョン解決）
+```
+
+`crates/core` 側（`openapi` feature 有効時）の依存クレート数にも変化なし
+（`cargo tree -p fandhe-backend-core --features openapi` の `serde_json` 出現数は
+変更前後とも 2 箇所＝`utoipa` 経由と `fandhe-backend-plugin-openapi` 直接の union）。
+`openapi` feature 無効時（既定構成）は `fandhe-backend-plugin-openapi` 自体が
+`cargo tree` から消えるため、本変更は無効時の依存グラフに一切影響しない。
+
+### 新規追加型・API
+
+`OpenApiDoc` / `OpenApiDocError`（`crates/plugin-openapi/src/custom.rs`）は
+`std` のみで実装（`serde_json::Value` の妥当性検証を除き外部依存なし）。
+`Server::openapi_with` は `crates/core` 側に新規依存を追加しない（既存の
+`fandhe-backend-plugin-openapi`（optional dep）が公開する型を受け取るのみ）。
+
+### unsafe 件数
+
+`unsafe` は 0 件（`custom.rs` 全体で `unsafe` ブロックなし。`unsafe-triage.sh` の
+テキストベース走査でも 0 件を確認）。
+
 ## 2026-07-20 — `crates/plugin-cors` 追加（イシュー #305）
 
 CORS プラグイン（`cors` feature）を新設した。「レスポンス後処理型」という
