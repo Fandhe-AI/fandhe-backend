@@ -89,7 +89,7 @@ pub struct StreamingResponse {
 
 impl StreamingResponse {
     /// `status` の chunked ストリーミング応答と、データ送出用の [`BodyWriter`] を
-    /// 既定容量（[`DEFAULT_CHANNEL_CAPACITY`]）で組み立てる。
+    /// 既定容量（`DEFAULT_CHANNEL_CAPACITY`）で組み立てる。
     ///
     /// `Content-Type` を付けたい場合は [`Self::channel`] を使う。
     #[must_use]

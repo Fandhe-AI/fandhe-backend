@@ -241,7 +241,7 @@ pub trait Handler: Send + Sync {
     ///
     /// # チャンク間隔の制約（30 秒以内）
     ///
-    /// producer からの次チャンク待ちには [`DEFAULT_WRITE_TIMEOUT`]（30 秒）が
+    /// producer からの次チャンク待ちには `DEFAULT_WRITE_TIMEOUT`（30 秒）が
     /// 適用され、超過すると正常に稼働している producer でも接続が強制
     /// クローズされる（スロークライアント・スロープロデューサ対策、
     /// `.claude/rules/security.md` のリソース枯渇観点）。SSE
