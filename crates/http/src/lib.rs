@@ -22,6 +22,10 @@
 //! 5. chunked transfer-coding のデコード（[`chunked`]、イシュー #181）。
 //!    [`body`] が `Transfer-Encoding: chunked` を受理した場合にのみ
 //!    [`connection::read_request`] から呼ばれる sans-IO 状態機械。
+//! 6. クエリ文字列 key-value パーサ（[`query`]、イシュー #306）。
+//!    [`request::RequestHead::query`] が返す生文字列を受け取り、`&`/`=` へ
+//!    分解する sans-IO 純関数。呼び出し元（`crates/routes` のハンドラ・
+//!    `crates/plugin-*`）が個別実装していた同型コードの重複を解消する。
 //!
 //! 本クレートの実行時依存は tokio の `io-util`（`AsyncRead`/`AsyncReadExt`）
 //! のみであり、それ以外の依存は持たない（pay-for-what-you-use。
@@ -35,6 +39,7 @@ pub mod body;
 pub mod buffer;
 pub mod chunked;
 pub mod connection;
+pub mod query;
 pub mod request;
 pub mod response;
 #[cfg(feature = "net")]
