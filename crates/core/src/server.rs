@@ -847,6 +847,48 @@ where
     .await
 }
 
+/// [`JoinSet`] をラップし、外部キャンセルによる `Drop` 時は `abort_all` では
+/// なく `detach_all` する（Bugbot 指摘、review comment 3615287445）。
+///
+/// `tokio::task::JoinSet::drop` は保持中の未完了タスクを全て `abort` する。
+/// `BoundServer::run_until` 内部では、grace 超過時に明示的な
+/// [`JoinSet::shutdown`] 呼び出しで意図的に abort する（フェイルクローズ、
+/// `run_until` の doc「上限超過時は強制クローズ」）が、それ以外の経路では
+/// `join_set` は使い切られて空になってから関数を抜ける（`join_next` で
+/// 全件回収済み）ため、通常完了時の `Drop` は無 op になる。
+///
+/// 問題になるのは、`run_until` が返す `Future` 自体が呼び出し側の
+/// `tokio::select!` 等で外部キャンセルされ、accept ループや in-flight 完了
+/// 待ちの途中で打ち切られるケースである。この場合 `join_set` にはまだ
+/// 未完了タスクが残っており、素の `JoinSet::drop` だと全 in-flight
+/// コネクションを即座に abort してしまう。これは「`run()` の cancel は
+/// accept 停止のみで、処理中のリクエストは継続する」という従来（detached
+/// `tokio::spawn` 時代）の挙動からの退行になるため、本ラッパーで `Drop` を
+/// `detach_all`（タスクを JoinSet の追跡から外すだけで abort しない）に
+/// 差し替え、外部キャンセル時も in-flight 接続をそのまま独立タスクとして
+/// 完走させる。
+struct CancelSafeJoinSet(JoinSet<()>);
+
+impl std::ops::Deref for CancelSafeJoinSet {
+    type Target = JoinSet<()>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for CancelSafeJoinSet {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for CancelSafeJoinSet {
+    fn drop(&mut self) {
+        self.0.detach_all();
+    }
+}
+
 impl BoundServer {
     /// バインドしたローカルアドレスを返す。`0` ポート指定時の実ポート確認に使う。
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -916,12 +958,28 @@ impl BoundServer {
     /// どちらの経路でも `run_until` は `Server::shutdown_grace_period` + ε
     /// 以内に必ず `Ok(())` で戻る。
     ///
+    /// shutdown_flag 受信後（`Raced::Shutdown` に到達する前でも、accept
+    /// 済みの各コネクションタスクからは shutdown シグナル発火直後に見える）
+    /// は、`UpgradeHandler` がマッチする新規リクエストであっても Upgrade
+    /// へ委譲せず 503 で拒否する（`handle_connection_with_permit` の
+    /// Upgrade 分岐 doc を参照。Bugbot 指摘 review comment 3615144815、
+    /// "Upgrade ignores shutdown flag" の是正）。
+    ///
+    /// `run_until` が返す `Future` 自体が呼び出し側の `tokio::select!` 等で
+    /// 外部キャンセルされた場合（一般的な shutdown パターン）は、
+    /// `CancelSafeJoinSet`（本モジュールの型 doc を参照）により in-flight
+    /// 接続は abort されず、独立タスクとして完走する（Bugbot 指摘 review
+    /// comment 3615287445、"Cancel aborts in-flight connections" の是正。
+    /// 従来の detached `tokio::spawn` 時代の挙動を維持）。
+    ///
     /// # 既知の限界
     ///
-    /// WebSocket 委譲後の専用タスク（`fandhe_backend_plugin_websocket` 側の
-    /// `tokio::spawn`）は本関数が管理する `JoinSet` の外にあるため、grace
-    /// 超過時の強制 abort 対象にはならない。ただし in-flight 完了待ちは
-    /// permit 回収のタイムアウトで実装されており、WS セッションが
+    /// 上記の 503 拒否は shutdown_flag 受信「後」に到着した Upgrade
+    /// リクエストにのみ適用される。shutdown_flag 受信前に既に Upgrade へ
+    /// 委譲済みの WebSocket 専用タスク（`fandhe_backend_plugin_websocket`
+    /// 側の `tokio::spawn`）は本関数が管理する `JoinSet` の外にあるため、
+    /// grace 超過時の強制 abort 対象にはならない。ただし in-flight 完了
+    /// 待ちは permit 回収のタイムアウトで実装されており、WS セッションが
     /// permit を握ったまま生き続けても `run_until` 自体は grace + ε 以内に
     /// 必ず戻る（WS セッションへの明示的キャンセル伝播は本イシューの
     /// スコープ外）。
@@ -938,7 +996,11 @@ impl BoundServer {
         } = self;
 
         let mut shutdown = std::pin::pin!(shutdown);
-        let mut join_set: JoinSet<()> = JoinSet::new();
+        // `CancelSafeJoinSet` でラップし、`run_until` の Future 自体が外部
+        // キャンセルされた場合に in-flight 接続が abort されるのを防ぐ
+        // （`CancelSafeJoinSet` の doc・Bugbot 指摘 review comment
+        // 3615287445 を参照）。
+        let mut join_set = CancelSafeJoinSet(JoinSet::new());
 
         loop {
             // 完了済みタスクを反復のたびに全件回収する（1 件だけ回収すると
@@ -1189,6 +1251,22 @@ pub(crate) async fn handle_connection_with_permit<S>(
             .iter()
             .any(|handler| handler.matches(&request.head))
         {
+            // graceful shutdown（イシュー #313）: shutdown_flag は元々 HTTP
+            // の keep-alive 判定にしか影響せず、Upgrade 分岐はこれを一切
+            // 参照していなかった（Bugbot 指摘 review comment 3615144815）。
+            // shutdown 後に Upgrade を許すと、その permit は
+            // `crate::plugin::try_handle_upgrade` 内で JoinSet 外の
+            // detached セッションタスクへ move され、grace force-close
+            // （`BoundServer::run_until` の doc「上限超過時は強制クローズ」）
+            // を過ぎても動き続けうる。shutdown 後の新規 Upgrade は 503 で
+            // 明示的に拒否し、`Connection: close` で確実に閉じる。
+            if shutdown_flag.load(Ordering::Relaxed) {
+                let _ = stream
+                    .write_all(&Response::empty(503).serialize(false))
+                    .await;
+                return;
+            }
+
             // 長時間接続へ委譲する前に、パイプライン済みの可能性がある残余
             // バイト列（次リクエストの先頭・WebSocket の先行フレーム等）を
             // 退避してからコア側の読み取りバッファを明示的に解放する
@@ -1263,8 +1341,16 @@ pub(crate) async fn handle_connection_with_permit<S>(
         // 超過していれば `Connection: close` を確実に付与する
         // （`should_keep_alive` と `requests_served` 側の判定は `handle` の
         // 呼び出しで変化しないため再評価不要）。
-        let keep_alive =
-            keep_alive && connection_started_at.elapsed() < server.max_connection_lifetime;
+        //
+        // 同じ理由で `shutdown_flag` も再チェックする（Bugbot 指摘 review
+        // comment 3615144800）: 最初の `keep_alive` 算出（`on_request` 直後）
+        // より後、`try_intercept` / `Handler::handle` の非同期処理中に
+        // shutdown が入ると、初回算出時点の `false` のまま応答してしまい
+        // keep-alive を広告し続ける。送信直前に再読み込みして
+        // `Connection: close` へ確実に倒す。
+        let keep_alive = keep_alive
+            && connection_started_at.elapsed() < server.max_connection_lifetime
+            && !shutdown_flag.load(Ordering::Relaxed);
 
         if stream
             .write_all(&response.serialize(keep_alive))
@@ -1449,6 +1535,24 @@ mod tests {
         String::from_utf8(out).unwrap()
     }
 
+    /// [`roundtrip`] の shutdown_flag 版。`BoundServer::run_until` を経由せず
+    /// `handle_connection_with_permit` を直接叩き、`shutdown_flag=true`
+    /// （graceful shutdown シグナル受信後）の挙動を単体テストする（Bugbot
+    /// 指摘 review comment 3615144800 / 3615144815 の回帰防止）。
+    async fn roundtrip_with_shutdown_flag(server: &Server, request: &[u8]) -> String {
+        let (mut client, server_stream) = tokio::io::duplex(8192);
+        use tokio::io::AsyncWriteExt as _;
+        client.write_all(request).await.unwrap();
+        client.shutdown().await.unwrap();
+
+        let shutdown_flag = Arc::new(AtomicBool::new(true));
+        handle_connection_with_permit(server, server_stream, None, &shutdown_flag).await;
+
+        let mut out = Vec::new();
+        client.read_to_end(&mut out).await.unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
     #[tokio::test]
     async fn no_handler_registered_returns_404() {
         let server = Server::new();
@@ -1625,6 +1729,57 @@ mod tests {
             .handler(handler);
         let response = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    }
+
+    /// Bugbot 指摘（review comment 3615144815、"Upgrade ignores shutdown
+    /// flag"）の回帰防止テスト。graceful shutdown シグナル受信後
+    /// （`shutdown_flag=true`）は `UpgradeHandler` がマッチしても Upgrade を
+    /// 許可せず、503 で明示的に拒否して接続を閉じることを確認する。
+    #[tokio::test]
+    async fn upgrade_match_returns_503_when_shutdown_flag_is_set() {
+        let handler = FixedHandler {
+            status: 200,
+            body: b"should-not-be-called",
+            calls: AtomicUsize::new(0),
+        };
+        let server = Server::new()
+            .upgrade_handler(WebSocketUpgrade)
+            .handler(handler);
+        let response = roundtrip_with_shutdown_flag(
+            &server,
+            b"GET /ws HTTP/1.1\r\nUpgrade: websocket\r\nConnection: keep-alive\r\n\r\n",
+        )
+        .await;
+        assert!(
+            response.starts_with("HTTP/1.1 503 Service Unavailable\r\n"),
+            "shutdown 後の Upgrade は 503 で拒否されるはず（実際: {response}）"
+        );
+    }
+
+    /// Bugbot 指摘（review comment 3615144800、"Stale keep-alive after
+    /// shutdown"）の回帰防止テスト。`on_request` 直後の `keep_alive` 算出
+    /// 時点では見えていなかった shutdown_flag を送信直前に再チェックし、
+    /// クライアントが `keep-alive` を要求していても応答に必ず
+    /// `Connection: close` を付与することを確認する。
+    #[tokio::test]
+    async fn keep_alive_request_gets_connection_close_when_shutdown_flag_is_set() {
+        let handler = FixedHandler {
+            status: 200,
+            body: b"ok",
+            calls: AtomicUsize::new(0),
+        };
+        let server = Server::new().handler(handler);
+        let response = roundtrip_with_shutdown_flag(
+            &server,
+            b"GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n",
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(
+            response.to_lowercase().contains("connection: close"),
+            "shutdown 後は keep-alive 要求でも Connection: close を返すはず\
+             （実際: {response}）"
+        );
     }
 
     #[tokio::test]

@@ -108,16 +108,54 @@ grace 超過時は `join_set.shutdown().await` で残タスクを abort する�
 により保持中の `TcpStream` が drop され、ソケットは即時クローズされる
 （half-open 残留・fd リークなし）。
 
+### 6.1 `run_until` 自体の外部キャンセルからの保護（PR #336 レビュー是正）
+
+`JoinSet::drop` は保持中の未完了タスクを全 abort する。`run_until` が返す
+`Future` 自体が呼び出し側の `tokio::select!` 等で外部キャンセルされ
+Future が drop されるケース（一般的な shutdown パターン）では、素の
+`JoinSet` だと accept 済みの in-flight 接続まで即座に abort されてしまい、
+「`run()` の cancel は accept 停止のみで処理中のリクエストは継続する」と
+いう従来（detached `tokio::spawn` 時代）の挙動から退行する（Bugbot 指摘、
+review comment 3615287445, PR #336）。
+
+`CancelSafeJoinSet`（`server.rs` 内のラッパー型）で `JoinSet` を包み、
+`Drop` を `abort_all` ではなく `detach_all`（タスクを追跡から外すだけで
+abort しない）に差し替えて是正した。内部の grace 超過時強制クローズは
+`join_set.shutdown().await` を明示的に呼ぶ経路であり `Drop` を経由しない
+ため、この変更後も強制クローズの挙動自体は変わらない。
+
 ## 7. keep-alive 接続の早期クローズ
 
 shutdown シグナル受信を `Arc<AtomicBool>` で `handle_connection_with_permit`
 へ伝える。既存の keep-alive 判定（`should_keep_alive(&request.head) && ...`）
-に `&& !shutdown_flag` を加えるだけで、処理中のリクエストは完走させつつ
+に `&& !shutdown_flag` を加えることで、処理中のリクエストは完走させつつ
 応答に `Connection: close` を付与して接続を閉じる既存機構へ自然に合流する。
+
+`keep_alive` はリクエスト受信直後（`on_request` 直後）に一度算出するが、
+`try_intercept` / `Handler::handle` の呼び出しが非同期に長引く間に
+shutdown が入ると、算出時点の値のまま古い判定で応答してしまう
+（`max_connection_lifetime` の再チェックと同型の問題）。これを防ぐため、
+応答送信直前にも `!shutdown_flag` を再チェックし、`Connection: close` を
+確実に付与する（Bugbot 指摘、review comment 3615144800, PR #336
+"Stale keep-alive after shutdown" の是正）。
 
 公開 API の `handle_connection(&Server, S)` はシグネチャ不変（内部で
 「シャットダウンなし」の固定 `false` フラグを渡す）。`pub(crate)` の
 `handle_connection_with_permit` のみ引数を追加した。
+
+### 7.1 Upgrade 分岐への shutdown_flag 適用（PR #336 レビュー是正）
+
+`shutdown_flag` は元々 HTTP の keep-alive 判定にしか影響せず、Upgrade
+（WebSocket 等）分岐はこれを一切参照していなかった。shutdown 後に
+Upgrade を許すと、その permit は `crate::plugin::try_handle_upgrade`
+内で `JoinSet` 外の detached セッションタスクへ move され、grace
+force-close を過ぎても動き続けうる（Bugbot 指摘、review comment
+3615144815, PR #336 "Upgrade ignores shutdown flag" の是正）。
+
+`UpgradeHandler` がマッチした直後・`try_handle_upgrade` 呼び出し前に
+`shutdown_flag` をチェックし、`true` なら 503 で明示的に拒否して
+`Connection: close` で接続を閉じるよう是正した（shutdown_flag 受信前に
+既に委譲済みのセッションは対象外、8 節参照）。
 
 ## 8. 既知の限界・スコープ外
 
@@ -125,13 +163,15 @@ shutdown シグナル受信を `Arc<AtomicBool>` で `handle_connection_with_per
   keep-alive 接続はこのフラグに即応しない（次の read タイムアウト、または
   grace 超過の強制クローズで確実に閉じる）。`tokio::sync::Notify` 等による
   即時中断は本イシューのスコープ外
-- **WebSocket 専用タスクへのキャンセル伝播**: WebSocket 委譲後の専用タスク
-  （`fandhe_backend_plugin_websocket` 側の `tokio::spawn`）は `run_until` が
-  管理する `JoinSet` の外にあるため、grace 超過時の強制 abort 対象には
-  ならない。ただし in-flight 完了待ちは permit 回収のタイムアウトで実装
-  されており、WS セッションが permit を握ったまま生き続けても `run_until`
-  自体は grace + ε 以内に必ず戻る（`BoundServer::run_until` の doc「既知の
-  限界」を参照）
+- **WebSocket 専用タスクへのキャンセル伝播**: shutdown_flag 受信前に
+  既に Upgrade へ委譲済みの WebSocket 専用タスク（`fandhe_backend_plugin_websocket`
+  側の `tokio::spawn`）は `run_until` が管理する `JoinSet` の外にあるため、
+  grace 超過時の強制 abort 対象にはならない（shutdown_flag 受信後の
+  「新規」Upgrade は 7.1 節の是正で 503 拒否されるようになったが、既存の
+  委譲済みセッションには遡及しない）。ただし in-flight 完了待ちは permit
+  回収のタイムアウトで実装されており、WS セッションが permit を握った
+  まま生き続けても `run_until` 自体は grace + ε 以内に必ず戻る
+  （`BoundServer::run_until` の doc「既知の限界」を参照）
 - **OS シグナル（SIGTERM/SIGINT）ヘルパーのコア提供**: 現状は利用者側で
   Future を用意する設計とし、コアはシグナルハンドラを持たない（4 節）
 

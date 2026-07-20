@@ -11,11 +11,18 @@
 //!   `run_until` が有界時間内に戻る
 //! - `run_backward_compatible_after_run_until_delegation`: 既存 `run()` が
 //!   `run_until` へ委譲した後も後方互換の挙動を保つ
+//! - `run_until_future_cancelled_externally_lets_in_flight_connection_complete`:
+//!   `run_until` の Future 自体が外部（`tokio::select!` 等）からキャンセル
+//!   された場合でも、in-flight 接続は abort されず完走できる（Bugbot 指摘
+//!   review comment 3615287445 の回帰防止、"Cancel aborts in-flight
+//!   connections"）
 
 use fandhe_backend_core::{Handler, Server};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
 use std::io::ErrorKind;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -26,6 +33,21 @@ use tokio::time::timeout;
 struct FixedHandler;
 impl Handler for FixedHandler {
     fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
+        Response::empty(200)
+    }
+}
+
+/// 呼び出しごとに一定時間だけ「処理中」をシミュレートしてから応答する
+/// トイハンドラ。`Handler::handle` は同期契約（[[coding-rust]] の 3 拡張点）
+/// のため、実際の遅延は `std::thread::sleep` ではなく、呼び出し回数を
+/// カウントするだけに留め、遅延は接続側（クライアントがリクエストを分割
+/// 送信する）で作る。ここでは応答完了をカウントする用途にのみ使う。
+struct CountingHandler {
+    handled: Arc<AtomicUsize>,
+}
+impl Handler for CountingHandler {
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
+        self.handled.fetch_add(1, Ordering::SeqCst);
         Response::empty(200)
     }
 }
@@ -244,4 +266,66 @@ async fn run_backward_compatible_after_run_until_delegation() {
     );
 
     run_task.abort();
+}
+
+/// Bugbot 指摘（review comment 3615287445、"Cancel aborts in-flight
+/// connections"）の回帰防止テスト。
+///
+/// `run_until` の Future 自体が呼び出し側の `tokio::select!` で敗退し
+/// drop される（一般的な shutdown パターン）と、内部の `JoinSet` が素の
+/// `Drop` だと全 in-flight 接続を abort してしまう。`CancelSafeJoinSet`
+/// （`server.rs` の doc を参照）でこれを防ぎ、accept 済みだが未完結の接続は
+/// `run_until` が打ち切られた後も独立タスクとして完走できることを確認する。
+#[tokio::test]
+async fn run_until_future_cancelled_externally_lets_in_flight_connection_complete() {
+    let handled = Arc::new(AtomicUsize::new(0));
+    let server = Server::new().handler(CountingHandler {
+        handled: Arc::clone(&handled),
+    });
+    let bound = server.bind("127.0.0.1:0").await.unwrap();
+    let addr = bound.local_addr().unwrap();
+
+    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+    let run_task = tokio::spawn(async move {
+        tokio::select! {
+            _ = bound.run_until(std::future::pending::<()>()) => {}
+            _ = cancel_rx => {}
+        }
+    });
+
+    // リクエストの先頭のみを送信し、TCP 接続・permit を確実に確立させる
+    // （accept 済み＝in-flight にする）。
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
+
+    // 接続が accept ループ側で受理されタスクへ渡る猶予を与えてから、
+    // `run_until` の Future 自体を外部キャンセルする（`select!` の
+    // `cancel_rx` 分岐を勝たせる）。
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    cancel_tx.send(()).unwrap();
+    timeout(Duration::from_secs(5), run_task)
+        .await
+        .expect("外部キャンセル後の select! は速やかに戻るはず")
+        .expect("run_task が panic しないこと");
+
+    // run_until 自体は打ち切られたが、既に accept 済みだった in-flight
+    // 接続は abort されず、残りのリクエストを送ればそのまま完走できる
+    // はず（`CancelSafeJoinSet` により abort ではなく detach される）。
+    stream
+        .write_all(b"Host: example.com\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let response = timeout(Duration::from_secs(5), read_response(&mut stream))
+        .await
+        .expect("外部キャンセル後も in-flight 接続は完走し応答を受け取れるはず");
+    let text = String::from_utf8_lossy(&response);
+    assert!(
+        text.starts_with("HTTP/1.1 200 OK\r\n"),
+        "abort ではなく detach され、正常応答が返るはず（実際: {text}）"
+    );
+    assert_eq!(
+        handled.load(Ordering::SeqCst),
+        1,
+        "ハンドラは 1 回だけ呼ばれ、in-flight 接続が完走したはず"
+    );
 }
