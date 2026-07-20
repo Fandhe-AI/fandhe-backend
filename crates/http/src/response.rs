@@ -46,6 +46,12 @@
 //! 上記 3 例外（静的リテラル・構築時検証済み専用型・検証付き動的 API）を
 //! 除き、**検証なしで**動的な値をヘッダとして送出する経路は今後も
 //! 追加しない方針を維持する。
+//!
+//! [`Response::redirect`]（イシュー #302）は新たな送出経路を増やすものでは
+//! なく、上記 3 つ目の例外である [`Response::with_header`] を薄くラップし、
+//! POST-Redirect-GET 等の 3xx リダイレクトパターンを 1 呼び出しで組み立てる
+//! ヘルパに過ぎない。Location 値の検証は `with_header` の検証経路をそのまま
+//! 再利用する（検証基準の重複・将来的な乖離を防ぐ）。
 
 /// `Allow` ヘッダ用の検証済みメソッド集合（TASK-177 / #177）。
 ///
@@ -152,6 +158,45 @@ impl std::fmt::Display for HeaderError {
 }
 
 impl std::error::Error for HeaderError {}
+
+/// [`Response::redirect`] の構築失敗理由（フェイルクローズ、イシュー #302）。
+///
+/// `HeaderError` と同様、いずれの variant も `Display` は拒否理由のみを述べ、
+/// 拒否対象の値そのもの（Location 文字列）は含めない（ログインジェクション・
+/// 機密混入防止、`.claude/rules/security.md`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RedirectError {
+    /// 301 / 302 / 303 / 307 / 308 以外のステータスコードを渡した。
+    /// リダイレクト非対応ステータスでの `Location` 付与は意味を成さないため、
+    /// `AllowedMethods::from_methods` と同じくフェイルクローズで拒否する。
+    UnsupportedStatus,
+    /// `location` が空文字列。リダイレクト先未指定は意味を成さない。
+    EmptyLocation,
+    /// `location` が [`Response::with_header`] の検証（CR / LF / NUL・HTAB
+    /// 以外の制御文字拒否）に落ちた。レスポンス分割対策をそのまま継承する。
+    InvalidLocation(HeaderError),
+}
+
+impl std::fmt::Display for RedirectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedStatus => {
+                f.write_str("301/302/303/307/308 以外のステータスはリダイレクトに使えない")
+            }
+            Self::EmptyLocation => f.write_str("Location が空文字列（リダイレクト先未指定）"),
+            Self::InvalidLocation(inner) => write!(f, "Location の値が不正: {inner}"),
+        }
+    }
+}
+
+impl std::error::Error for RedirectError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidLocation(inner) => Some(inner),
+            _ => None,
+        }
+    }
+}
 
 /// 直列化対象の 1 レスポンス。
 ///
@@ -356,6 +401,61 @@ impl Response {
         Ok(self)
     }
 
+    /// 3xx リダイレクト応答を組み立てる（イシュー #302）。
+    ///
+    /// `status` を 301 / 302 / 303 / 307 / 308 のいずれかに限定し、body なし
+    /// の [`Response`] に `Location` ヘッダを設定して返す。それ以外の
+    /// ステータスやリダイレクト先未指定・不正な値は `Err` で拒否する
+    /// （フェイルクローズ。`AllowedMethods::from_methods` と同一設計方針）。
+    ///
+    /// `location` の検証は [`Response::with_header`] の検証経路をそのまま
+    /// 再利用する（CR / LF / NUL・HTAB 以外の制御文字拒否。本モジュール
+    /// 冒頭 doc のレスポンス分割対策を参照）。検証に失敗した場合は
+    /// [`RedirectError::InvalidLocation`] で理由を包んで返す。
+    ///
+    /// # 呼び出し元の責務（オープンリダイレクト対策）
+    ///
+    /// このメソッドはワイヤフォーマット上の妥当性（CRLF 混入がないか等）
+    /// のみを検証し、リダイレクト先の意味的妥当性は判定できない。外部入力
+    /// （クエリパラメータ・フォーム値等）に由来する `location` をそのまま
+    /// 渡すと、任意サイトへ誘導されるオープンリダイレクト脆弱性
+    /// （OWASP Top 10、`.claude/rules/security.md`）につながる。呼び出し元
+    /// で許可リスト（相対パスのみ許可する等）による検証を行うこと。
+    ///
+    /// # 例（POST-Redirect-GET パターン）
+    ///
+    /// フォーム送信（POST）処理完了後、303 See Other で GET へ誘導する
+    /// 典型的な PRG パターン:
+    ///
+    /// ```
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// // POST /todos の処理完了後、303 See Other で GET /todos へリダイレクトする。
+    /// let res = Response::redirect(303, "/todos").unwrap();
+    /// let text = String::from_utf8(res.serialize(true)).unwrap();
+    /// assert!(text.starts_with("HTTP/1.1 303 See Other\r\n"));
+    /// assert!(text.contains("Location: /todos\r\n"));
+    /// assert!(text.ends_with("\r\n\r\n"));
+    ///
+    /// // CRLF を含む Location は拒否される（レスポンス分割対策）。
+    /// assert!(Response::redirect(303, "/x\r\nSet-Cookie: evil=1").is_err());
+    ///
+    /// // リダイレクト系以外のステータスは拒否される（フェイルクローズ）。
+    /// assert!(Response::redirect(200, "/x").is_err());
+    /// ```
+    pub fn redirect(status: u16, location: impl Into<String>) -> Result<Self, RedirectError> {
+        if !matches!(status, 301 | 302 | 303 | 307 | 308) {
+            return Err(RedirectError::UnsupportedStatus);
+        }
+        let location = location.into();
+        if location.is_empty() {
+            return Err(RedirectError::EmptyLocation);
+        }
+        Self::empty(status)
+            .with_header("Location", location)
+            .map_err(RedirectError::InvalidLocation)
+    }
+
     /// HTTP/1.1 ワイヤフォーマットへ直列化する。
     ///
     /// `keep_alive` が `false` の場合のみ `Connection: close` を付与する
@@ -454,12 +554,18 @@ impl Response {
 /// 払い出す）・`crates/plugin-webrtc-proxy`（TASK-2.1 / #18 の配線経由で
 /// 502/504 を払い出す。上流中継失敗時のフォールバックステータス）・
 /// `crates/plugin-webrtc`（TASK-8.1 / #26 の `try_handle_rtc_offer` が同時接続数
-/// 上限到達時に 503 を払い出す）が実際に払い出すステータスコードに合わせて
-/// 選定している。
+/// 上限到達時に 503 を払い出す）・[`Response::redirect`]（イシュー #302 の
+/// 301/302/303/307/308。PRG パターン等の 3xx リダイレクト用）が実際に払い出す
+/// ステータスコードに合わせて選定している。
 fn reason_phrase(status: u16) -> &'static str {
     match status {
         200 => "OK",
         204 => "No Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        303 => "See Other",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",
@@ -778,5 +884,76 @@ mod tests {
         let res = Response::new(200, b"hi".to_vec());
         let text = String::from_utf8(res.serialize(true)).unwrap();
         assert_eq!(text, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
+    }
+
+    // --- redirect（イシュー #302） ---
+
+    #[test]
+    fn serialize_redirect_statuses_have_reason_phrase() {
+        // reason phrase が空に劣化しないことを 5 コードすべてで確認する
+        // （PoC-9 教訓、`serialize_bad_gateway_and_gateway_timeout_have_reason_phrase` と同型）。
+        let cases = [
+            (301, "Moved Permanently"),
+            (302, "Found"),
+            (303, "See Other"),
+            (307, "Temporary Redirect"),
+            (308, "Permanent Redirect"),
+        ];
+        for (status, reason) in cases {
+            let text = String::from_utf8(Response::empty(status).serialize(true)).unwrap();
+            assert!(
+                text.starts_with(&format!("HTTP/1.1 {status} {reason}\r\n")),
+                "status {status} の reason phrase が想定と異なる: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn redirect_sets_status_and_location() {
+        let res = Response::redirect(303, "/todos").unwrap();
+        assert_eq!(res.status, 303);
+        assert!(res.body.is_empty());
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert!(text.starts_with("HTTP/1.1 303 See Other\r\n"));
+        assert!(text.contains("Location: /todos\r\n"));
+        assert!(text.contains("Content-Length: 0\r\n"));
+    }
+
+    #[test]
+    fn redirect_rejects_crlf_in_location() {
+        // レスポンス分割回帰テスト: `with_header` の検証経路を再利用しているため
+        // CRLF を含む Location は構築段階で拒否される。
+        let err = Response::redirect(303, "/x\r\nSet-Cookie: evil=1").unwrap_err();
+        assert_eq!(
+            err,
+            RedirectError::InvalidLocation(HeaderError::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn redirect_rejects_unsupported_status() {
+        for status in [200, 404, 300, 304] {
+            assert_eq!(
+                Response::redirect(status, "/x").unwrap_err(),
+                RedirectError::UnsupportedStatus,
+                "status {status} は UnsupportedStatus で拒否されるべき"
+            );
+        }
+    }
+
+    #[test]
+    fn redirect_rejects_empty_location() {
+        assert_eq!(
+            Response::redirect(302, "").unwrap_err(),
+            RedirectError::EmptyLocation
+        );
+    }
+
+    #[test]
+    fn redirect_accepts_all_supported_statuses() {
+        for status in [301, 302, 303, 307, 308] {
+            let res = Response::redirect(status, "/ok").unwrap();
+            assert_eq!(res.status, status);
+        }
     }
 }
