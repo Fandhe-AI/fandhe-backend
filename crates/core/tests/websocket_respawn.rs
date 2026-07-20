@@ -17,7 +17,6 @@
 
 use fandhe_backend_core::{Handler, Server, handle_connection};
 use fandhe_backend_http::request::RequestHead;
-use fandhe_backend_http::response::Response;
 use fandhe_backend_plugin_websocket::WebSocketConfig;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -29,7 +28,7 @@ use tokio::time::timeout;
 /// `websocket_upgrade.rs` と同一パターン）。
 struct NotCalledHandler;
 impl Handler for NotCalledHandler {
-    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
         panic!("UpgradeHandler がマッチしたのに既定 Handler が呼ばれた");
     }
 }

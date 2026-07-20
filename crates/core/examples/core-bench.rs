@@ -152,43 +152,52 @@ impl BenchHandler {
 }
 
 impl Handler for BenchHandler {
-    fn handle(&self, head: &RequestHead, body: &[u8]) -> Response {
-        let method = head.method.as_str();
-        let target = head.target.as_str();
+    // イシュー #315: `Handler::handle` は boxed-future 契約。本ハンドラの本体は
+    // 純粋な同期処理（ルーティング分岐 + JSON 直列化のみ）のため、`Response` を
+    // 同期的に組み立ててから `std::future::ready` で包む（ベンチ対象のロジック・
+    // 計測条件は変更しない、`docs/design/async-handler.md` 6 節の移行方針）。
+    // `return` を含む既存のルーティング分岐をそのまま保つため、即時呼び出し
+    // クロージャ（IIFE）で `Response` を組み立ててから包む。
+    fn handle(&self, head: &RequestHead, body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
+        let response = (|| {
+            let method = head.method.as_str();
+            let target = head.target.as_str();
 
-        if target == "/health" {
-            return if method == "GET" {
-                Self::health()
-            } else {
-                Response::empty(405)
-            };
-        }
+            if target == "/health" {
+                return if method == "GET" {
+                    Self::health()
+                } else {
+                    Response::empty(405)
+                };
+            }
 
-        if let Some(name) = Self::single_segment_after(target, "/hello/") {
-            return if method == "GET" {
-                Self::hello(name)
-            } else {
-                Response::empty(405)
-            };
-        }
+            if let Some(name) = Self::single_segment_after(target, "/hello/") {
+                return if method == "GET" {
+                    Self::hello(name)
+                } else {
+                    Response::empty(405)
+                };
+            }
 
-        if let Some(id_str) = Self::single_segment_after(target, "/users/") {
-            return if method == "GET" {
-                Self::users(id_str)
-            } else {
-                Response::empty(405)
-            };
-        }
+            if let Some(id_str) = Self::single_segment_after(target, "/users/") {
+                return if method == "GET" {
+                    Self::users(id_str)
+                } else {
+                    Response::empty(405)
+                };
+            }
 
-        if target == "/echo" {
-            return if method == "POST" {
-                Self::echo(body)
-            } else {
-                Response::empty(405)
-            };
-        }
+            if target == "/echo" {
+                return if method == "POST" {
+                    Self::echo(body)
+                } else {
+                    Response::empty(405)
+                };
+            }
 
-        Response::empty(404)
+            Response::empty(404)
+        })();
+        Box::pin(std::future::ready(response))
     }
 }
 
@@ -228,70 +237,70 @@ mod tests {
         String::from_utf8(response.body.clone()).unwrap()
     }
 
-    #[test]
-    fn health_returns_200_ok() {
+    #[tokio::test]
+    async fn health_returns_200_ok() {
         let head = head_of("GET /health HTTP/1.1\r\n\r\n");
-        let response = BenchHandler.handle(&head, b"");
+        let response = BenchHandler.handle(&head, b"").await;
         assert_eq!(status_of(&response), 200);
         assert_eq!(body_str(&response), "OK");
     }
 
-    #[test]
-    fn health_wrong_method_returns_405() {
+    #[tokio::test]
+    async fn health_wrong_method_returns_405() {
         let head = head_of("POST /health HTTP/1.1\r\n\r\n");
-        let response = BenchHandler.handle(&head, b"");
+        let response = BenchHandler.handle(&head, b"").await;
         assert_eq!(status_of(&response), 405);
     }
 
-    #[test]
-    fn hello_returns_greeting() {
+    #[tokio::test]
+    async fn hello_returns_greeting() {
         let head = head_of("GET /hello/world HTTP/1.1\r\n\r\n");
-        let response = BenchHandler.handle(&head, b"");
+        let response = BenchHandler.handle(&head, b"").await;
         assert_eq!(status_of(&response), 200);
         assert_eq!(body_str(&response), "Hello, world!");
     }
 
-    #[test]
-    fn users_valid_id_returns_200_json() {
+    #[tokio::test]
+    async fn users_valid_id_returns_200_json() {
         let head = head_of("GET /users/42 HTTP/1.1\r\n\r\n");
-        let response = BenchHandler.handle(&head, b"");
+        let response = BenchHandler.handle(&head, b"").await;
         assert_eq!(status_of(&response), 200);
         let parsed: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(parsed["id"], 42);
         assert_eq!(parsed["name"], "User 42");
     }
 
-    #[test]
-    fn users_invalid_id_returns_400_json() {
+    #[tokio::test]
+    async fn users_invalid_id_returns_400_json() {
         let head = head_of("GET /users/abc HTTP/1.1\r\n\r\n");
-        let response = BenchHandler.handle(&head, b"");
+        let response = BenchHandler.handle(&head, b"").await;
         assert_eq!(status_of(&response), 400);
         let parsed: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(parsed["error"], "invalid id");
     }
 
-    #[test]
-    fn echo_valid_json_roundtrips() {
+    #[tokio::test]
+    async fn echo_valid_json_roundtrips() {
         let head = head_of("POST /echo HTTP/1.1\r\n\r\n");
-        let response = BenchHandler.handle(&head, br#"{"message":"hi"}"#);
+        let response = BenchHandler.handle(&head, br#"{"message":"hi"}"#).await;
         assert_eq!(status_of(&response), 200);
         let parsed: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(parsed["message"], "hi");
     }
 
-    #[test]
-    fn echo_invalid_json_returns_400() {
+    #[tokio::test]
+    async fn echo_invalid_json_returns_400() {
         let head = head_of("POST /echo HTTP/1.1\r\n\r\n");
-        let response = BenchHandler.handle(&head, b"not json");
+        let response = BenchHandler.handle(&head, b"not json").await;
         assert_eq!(status_of(&response), 400);
         let parsed: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(parsed["error"], "invalid json body");
     }
 
-    #[test]
-    fn unknown_path_returns_404() {
+    #[tokio::test]
+    async fn unknown_path_returns_404() {
         let head = head_of("GET /nope HTTP/1.1\r\n\r\n");
-        let response = BenchHandler.handle(&head, b"");
+        let response = BenchHandler.handle(&head, b"").await;
         assert_eq!(status_of(&response), 404);
     }
 }

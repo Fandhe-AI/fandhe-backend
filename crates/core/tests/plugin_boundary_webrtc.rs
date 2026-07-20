@@ -30,7 +30,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// ことの直接的な確認になる。
 struct NotCalledHandler;
 impl Handler for NotCalledHandler {
-    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
         panic!("plugin::try_intercept が Some を返したのに既定 Handler が呼ばれた");
     }
 }
@@ -38,8 +38,8 @@ impl Handler for NotCalledHandler {
 /// 固定 200 応答を返すだけのトイハンドラ（フォールスルー確認用）。
 struct FixedOkHandler;
 impl Handler for FixedOkHandler {
-    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
-        Response::new(200, b"ok".to_vec())
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
+        Box::pin(std::future::ready(Response::new(200, b"ok".to_vec())))
     }
 }
 

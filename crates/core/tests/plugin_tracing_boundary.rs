@@ -27,8 +27,8 @@ use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 /// 固定 200 応答を返すだけのトイハンドラ。
 struct FixedOkHandler;
 impl Handler for FixedOkHandler {
-    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
-        Response::new(200, b"ok".to_vec())
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
+        Box::pin(std::future::ready(Response::new(200, b"ok".to_vec())))
     }
 }
 

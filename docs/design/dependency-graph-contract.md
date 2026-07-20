@@ -583,6 +583,49 @@ package/import 名の改名に続き、リポジトリ名・ドキュメント�
    A〜D に含めていないことに起因する運用上のギャップである（分類規則自体の見直しは
    4.3 節〜4.11 節と同一の別 Issue 対象として据え置く。`.claude/rules/out-of-scope-tracking.md`）
 
+### 4.13 記載例（#315 / PR #339、async ハンドラ対応の main 統合）
+
+イシュー #315「async ハンドラ対応を実装する」（PR #339、`docs/design/async-handler.md`
+6.1 節の実装対応）を main へ追随させるコンフリクト解消コミットで、`crates/routes`・
+`crates/core/examples/**` 配下に以下 5 件が E（閉包違反候補）と判定された
+（`crates/plugin-hub-wiring/tests/**` への変更を含むため
+`scripts/extension-closure-gate.sh` の判定対象となった）。
+
+1. **対象コミット/PR**: PR #339（#315、HEAD sha `061885b`＋main 統合コミット）
+2. **E ファイルパス**:
+   - `crates/core/examples/openapi_endpoints.rs`
+   - `crates/core/examples/todo_async.rs`
+   - `crates/routes/tests/fallback.rs`
+   - `crates/routes/tests/options_fallback.rs`
+   - `crates/routes/tests/query_string.rs`
+3. **閉じない理由**: `extension-closure-check.sh` の分類規則は `crates/core/examples/**`
+   （4.9 節・4.10 節・4.12 節で既に指摘済みの運用上のギャップ）・中間層クレート
+   `fandhe-backend-routes` の `tests/**`（4.7 節で既に指摘済みの運用上のギャップ）の
+   いずれも走査対象に含めていない。本コミットはこの両方に該当する変更を同時に含む
+   ため、5 件すべてが機械的に E 判定となった
+4. **正当性根拠**:
+   - `crates/routes/tests/fallback.rs`・`options_fallback.rs`・`query_string.rs` は、
+     `docs/design/async-handler.md` 6.1 節のとおり `Router::dispatch` が
+     `HandlerFuture`（boxed future）を返す契約へ移行したことに伴う、既存テストの
+     `#[test]` → `#[tokio::test]` + `.await` への機械的な追随のみで、検証内容
+     （fallback・OPTIONS プリフライト・クエリ文字列の既存契約）自体は無変更である。
+     3 拡張点 trait（`Middleware` / `UpgradeHandler` / `RequestGate`）・
+     `try_intercept` 固定シームのいずれにも触れていない
+   - `crates/core/examples/openapi_endpoints.rs` は同様に内部 `#[cfg(test)]` を
+     新契約へ追随させたのみで、example 本体（OpenAPI ルーティング構成）は無変更
+   - `crates/core/examples/todo_async.rs` は新規 example だが、`async-handler.md`
+     6 節の実装対応で追加された公開 API `Router::route_async` /
+     `Router::route_param_async`（4.7 節で既に E 判定・正当化済みの
+     `fandhe-backend-routes` 自体の機能を呼び出すのみ）の利用例であり、4.12 節の
+     `cors_demo.rs` と同一パターン（プラグイン実装ロジックの拡張点外への漏出ではなく、
+     公開 API の呼び出し側コード）である
+
+   したがって 5 件はいずれも拡張点設計の閉包漏れではなく、`extension-closure-check.sh`
+   の分類規則が中間層クレートの `tests/**` と `crates/core/examples/**` を A〜D の
+   いずれにも割り当てていない、4.7 節・4.9 節・4.10 節・4.12 節と同一の運用上の
+   ギャップに起因する。分類規則自体の見直しは 4.3 節〜4.12 節と同一の別 Issue 対象
+   として据え置く（`.claude/rules/out-of-scope-tracking.md`）
+
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 
 `fandhe-backend-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも

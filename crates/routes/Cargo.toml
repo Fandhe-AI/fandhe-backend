@@ -17,3 +17,11 @@ workspace = true
 # fandhe-backend-http 以外の依存が増えていないことを確認する。
 [dependencies]
 fandhe-backend-http = { path = "../http" }
+
+# dev-only（イシュー #315）: async ハンドラ契約（`Router::route_async` /
+# `route_param_async`）の doc test・統合テストで `Future` を駆動するためだけに
+# 使う。normal 依存グラフには一切現れないため pay-for-what-you-use に反しない
+# （`cargo tree -p fandhe-backend-routes -e normal` で確認）。`rt` + `macros` の
+# みに絞り、`crates/core` の tokio 依存（本体機能）とは独立。
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["rt", "macros"] }

@@ -73,8 +73,8 @@ fn make_token(
 /// `check()` を通過したリクエストのみがここへ到達することの証跡に使う。
 struct FixedOkHandler;
 impl Handler for FixedOkHandler {
-    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
-        Response::new(200, b"ok".to_vec())
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
+        Box::pin(std::future::ready(Response::new(200, b"ok".to_vec())))
     }
 }
 
@@ -319,7 +319,7 @@ struct CachedAuthHandler {
 }
 
 impl Handler for CachedAuthHandler {
-    fn handle(&self, head: &RequestHead, _body: &[u8]) -> Response {
+    fn handle(&self, head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
         // `check()`（RequestGate）が既に検証を済ませ `Allow` を返した後にのみ
         // ハンドラへ到達するため、ここでの `authenticate` は必ず成功する
         // （フェイルクローズ経路を通過済みのリクエストのみが到達する契約）。
@@ -327,7 +327,10 @@ impl Handler for CachedAuthHandler {
             .authenticator
             .authenticate(head)
             .expect("gate already allowed this request");
-        Response::new(200, claims.org_id.into_bytes())
+        Box::pin(std::future::ready(Response::new(
+            200,
+            claims.org_id.into_bytes(),
+        )))
     }
 }
 

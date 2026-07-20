@@ -20,6 +20,7 @@
 use fandhe_backend_core::{Handler, Server};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
+use fandhe_backend_routes::HandlerFuture;
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -29,26 +30,27 @@ use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
-/// 固定 200 応答を返すだけのトイハンドラ。
+/// 固定 200 応答を返すだけのトイハンドラ。`Handler::handle` はイシュー #315
+/// で async 契約（`HandlerFuture` 返却）へ移行済みのため、ここでは同期処理を
+/// `std::future::ready` で包むだけの薄いアダプタとする。
 struct FixedHandler;
 impl Handler for FixedHandler {
-    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
-        Response::empty(200)
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> HandlerFuture {
+        Box::pin(std::future::ready(Response::empty(200)))
     }
 }
 
 /// 呼び出しごとに一定時間だけ「処理中」をシミュレートしてから応答する
-/// トイハンドラ。`Handler::handle` は同期契約（[[coding-rust]] の 3 拡張点）
-/// のため、実際の遅延は `std::thread::sleep` ではなく、呼び出し回数を
+/// トイハンドラ。実際の遅延は `std::thread::sleep` ではなく、呼び出し回数を
 /// カウントするだけに留め、遅延は接続側（クライアントがリクエストを分割
 /// 送信する）で作る。ここでは応答完了をカウントする用途にのみ使う。
 struct CountingHandler {
     handled: Arc<AtomicUsize>,
 }
 impl Handler for CountingHandler {
-    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> HandlerFuture {
         self.handled.fetch_add(1, Ordering::SeqCst);
-        Response::empty(200)
+        Box::pin(std::future::ready(Response::empty(200)))
     }
 }
 
