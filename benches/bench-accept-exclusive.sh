@@ -135,6 +135,21 @@ if [ "${accept_status}" -eq 0 ]; then
     echo "=== 総合: PASS（bench-accept.sh 終了コード 0） ===" >&2
 elif [ "${accept_status}" -eq 2 ]; then
     echo "=== 総合: BLOCKED（終了コード 2。bench-accept.sh 側の CORE_BIN 未整備、または再試行前の静穏確認未達のいずれか） ===" >&2
+    # PR #291 Bugbot 指摘対応: `nfr6_run_with_fail_retry` が再試行前の静穏未達で
+    # BLOCKED（終了コード 2）を返した場合、直前の FAIL 実行が REPORT_MD に書き込んだ
+    # 「## 結論: FAIL」がそのまま残ってしまう（stale FAIL）。BLOCKED を返す他の経路
+    # （専有ロック取得不能・ビルド失敗・初回静穏未達）と同様に、ここでも
+    # `write_blocked_conclusion` を呼び最新の「## 結論」を BLOCKED で追記し直し、
+    # 古い FAIL が権威として残らないようにする。
+    #
+    # reason は上の echo（137 行目）と同じ二択のまま特定しない汎用文言にする:
+    # ここで観測できるのは `accept_status == 2` のみで、`bench-accept.sh` 自身の
+    # BLOCKED（CORE_BIN 未整備、既に `bench-accept.sh` 側の `write_report_conclusion`
+    # で正しい理由が書き込み済み）か、再試行前の静穏未達（`nfr6_run_with_fail_retry`
+    # 由来）かをこの時点の終了コードだけからは判別できない。前者ケースで
+    # 「再試行前の静穏未達」と誤指定すると、`bench-accept.sh` が書いた正しい理由を
+    # 誤った理由で上書きしてしまうため、両方の可能性を含む文言にする。
+    write_blocked_conclusion "再計測不能（bench-accept.sh 側の BLOCKED、または再試行前の静穏未達のいずれか）のため判定不能"
 else
     echo "=== 総合: FAIL（bench-accept.sh 終了コード ${accept_status}。FAIL_RETRIES=${FAIL_RETRIES} を使い切っても FAIL。判定は丸めない） ===" >&2
 fi
