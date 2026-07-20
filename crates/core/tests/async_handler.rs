@@ -79,7 +79,7 @@ async fn async_handler_awaits_sleep_before_responding() {
 async fn slow_async_handler_does_not_block_other_connections() {
     let router = Router::new()
         .route_async("GET", "/slow", |_head, _body| async {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
             Response::new(200, b"slow-ok".to_vec())
         })
         .route_async("GET", "/fast", |_head, _body| async {
@@ -94,13 +94,16 @@ async fn slow_async_handler_does_not_block_other_connections() {
         .unwrap();
 
     // /slow の応答を待たずに /fast へ接続し、短いタイムアウト内に応答が
-    // 返ることを確認する（/slow の 500ms より十分短い 200ms 上限）。
+    // 返ることを確認する（/slow の 2s より十分短い 1s 上限。並列 issue
+    // 実装ワークフロー下の host contention による flake を避けるため、
+    // 判別に必要な最小限を超えて余裕を持たせる、`.claude/rules/ci.md` の
+    // host contention への配慮と同旨）。
     let mut fast_stream = TcpStream::connect(addr).await.unwrap();
     fast_stream
         .write_all(b"GET /fast HTTP/1.1\r\nConnection: close\r\n\r\n")
         .await
         .unwrap();
-    let fast_text = timeout(Duration::from_millis(200), read_response(&mut fast_stream))
+    let fast_text = timeout(Duration::from_secs(1), read_response(&mut fast_stream))
         .await
         .expect(
             "/fast は /slow の sleep をブロックせず短時間で応答するはず\
@@ -109,8 +112,9 @@ async fn slow_async_handler_does_not_block_other_connections() {
     assert!(fast_text.starts_with("HTTP/1.1 200"));
     assert!(fast_text.ends_with("fast-ok"));
 
-    // /slow 側もいずれ正常応答することを確認し、後片付けする。
-    let slow_text = timeout(Duration::from_secs(2), read_response(&mut slow_stream))
+    // /slow 側もいずれ正常応答することを確認し、後片付けする（sleep 2s より
+    // 十分な余裕を持たせる）。
+    let slow_text = timeout(Duration::from_secs(5), read_response(&mut slow_stream))
         .await
         .expect("/slow も最終的には応答するはず");
     assert!(slow_text.starts_with("HTTP/1.1 200"));
