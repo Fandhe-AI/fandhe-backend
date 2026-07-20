@@ -135,7 +135,7 @@ impl std::error::Error for CookieError {}
 /// ため、混入するとヘッダ構造が壊れる（レスポンス分割ではないが cookie 属性の
 /// 意図しない注入経路になりうる）。空値（cookie-value は RFC 6265 上省略可）
 /// は呼び出し元の `bytes().all(...)` が空イテレータに対し `true` を返すため
-/// 別途許可している。読み取り側（[`parse_cookie_pair`]）・書き込み側
+/// 別途許可している。読み取り側（`parse_cookie_pair`）・書き込み側
 /// （[`SetCookie::new`]）の両方が共有する。
 fn is_cookie_octet(b: u8) -> bool {
     matches!(b, 0x21 | 0x23..=0x2b | 0x2d..=0x3a | 0x3c..=0x5b | 0x5d..=0x7e)
@@ -169,7 +169,7 @@ pub(crate) fn parse_cookie_pair(pair: &str) -> Result<(&str, &str), CookieError>
 /// 単一 `Cookie` ヘッダ値を cookie-pair の列へ分解する sans-IO 純関数（読み取り側）。
 ///
 /// `;` 区切りで pair を分割し、各 pair 前後の OWS を trim してから
-/// [`parse_cookie_pair`] で検証する。区切りは `"; "`（RFC 6265 §5.4 の
+/// `parse_cookie_pair` で検証する。区切りは `"; "`（RFC 6265 §5.4 の
 /// サーバ側寛容化）・`";"` 単独のいずれも受理する。
 ///
 /// 上限超過・構文違反時は `Vec` を一切構築せず `Err` を返す（fail-closed。
