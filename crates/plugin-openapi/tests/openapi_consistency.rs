@@ -26,6 +26,13 @@
 //! `cargo test -p fandhe-backend-plugin-openapi`（CI `test` ジョブ、`--all-features` 構成に含まれる）
 //! から実行する。`scripts/accept/openapi-accept.sh` が本テストの実行結果を受け入れ判定の
 //! 一部として参照する。
+//!
+//! # `OPENAPI_YAML`（#279）との関係
+//! `GET /openapi.yaml` 配信で埋め込まれる [`fandhe_backend_plugin_openapi::OPENAPI_YAML`] は
+//! `OPENAPI_JSON` と同一 [`ApiDoc`] を単一のスキーマ源として `gen-openapi` CLI が生成する
+//! ため、本ファイルが担う「path/method/パラメータ構造のピン留め」は JSON 側で検証すれば
+//! YAML 側にも及ぶ。YAML 固有の検証（埋め込み定数がスキーマ源から乖離していないこと）は
+//! `crates/plugin-openapi/src/embed.rs` の `embedded_yaml_matches_current_api_doc` が担う。
 
 use fandhe_backend_plugin_openapi::{ApiDoc, OPENAPI_JSON};
 use serde_json::Value;

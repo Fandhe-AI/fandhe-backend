@@ -1,0 +1,221 @@
+openapi: 3.1.0
+info:
+  title: fandhe-backend OpenAPI
+  description: 'TASK-3.1（REQ-3）: ドキュメント専用関数 + utoipa 統合による OpenAPI 自動生成の最小エンドポイント定義'
+  license:
+    name: MIT OR Apache-2.0
+    identifier: MIT OR Apache-2.0
+  version: 0.1.0
+paths:
+  /echo:
+    post:
+      tags: []
+      summary: '`POST /echo`（ドキュメント専用の宣言。リクエスト/レスポンス body）。'
+      operationId: echo_doc
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EchoBody'
+        required: true
+      responses:
+        '200':
+          description: 受け取ったメッセージをそのまま返す
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EchoBody'
+        '400':
+          description: リクエストボディが JSON として不正
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /health:
+    get:
+      tags: []
+      summary: '`GET /health`（ドキュメント専用の宣言。パラメータなし）。'
+      operationId: health_doc
+      responses:
+        '200':
+          description: サーバーが正常に稼働している（本文は固定文字列 `OK`）
+          content:
+            text/plain:
+              schema:
+                type: string
+  /hello/{name}:
+    get:
+      tags: []
+      summary: '`GET /hello/{name}`（ドキュメント専用の宣言。パスパラメータ 1 件）。'
+      operationId: hello_doc
+      parameters:
+      - name: name
+        in: path
+        description: 挨拶対象の名前
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: '挨拶メッセージ（例: `Hello, world!`）'
+          content:
+            text/plain:
+              schema:
+                type: string
+  /search:
+    get:
+      tags: []
+      summary: '`GET /search`（ドキュメント専用の宣言。クエリパラメータ 2 件）。'
+      operationId: search_doc
+      parameters:
+      - name: q
+        in: query
+        description: 検索クエリ（必須）
+        required: true
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: 最大件数（省略時 10）
+        required: false
+        schema:
+          type: integer
+          format: int32
+          minimum: 0
+      responses:
+        '200':
+          description: 検索結果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: q 未指定、または limit が非負整数としてパースできない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /users/{id}:
+    get:
+      tags: []
+      summary: '`GET /users/{id}`（ドキュメント専用の宣言。パスパラメータ + 400 応答定義）。'
+      operationId: users_doc
+      parameters:
+      - name: id
+        in: path
+        description: ユーザー ID（非負整数）
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 0
+      responses:
+        '200':
+          description: ユーザー情報
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          description: id が非負整数としてパースできない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+components:
+  schemas:
+    EchoBody:
+      type: object
+      description: |-
+        `POST /echo` のリクエスト/レスポンスボディ。
+
+        # Examples
+        ```
+        use fandhe_backend_plugin_openapi::EchoBody;
+
+        let body = EchoBody { message: "hi".to_string() };
+        let json = serde_json::to_string(&body).unwrap();
+        assert_eq!(json, r#"{"message":"hi"}"#);
+        ```
+      required:
+      - message
+      properties:
+        message:
+          type: string
+          description: エコー対象のメッセージ本文。
+    ErrorBody:
+      type: object
+      description: |-
+        エラーレスポンス共通ボディ。
+
+        # Examples
+        ```
+        use fandhe_backend_plugin_openapi::ErrorBody;
+
+        let body = ErrorBody { error: "invalid id".to_string() };
+        assert_eq!(body.error, "invalid id");
+        ```
+      required:
+      - error
+      properties:
+        error:
+          type: string
+          description: エラー内容を表す人間可読な短い文字列。
+    SearchResponse:
+      type: object
+      description: |-
+        `GET /search` のレスポンスボディ（クエリパラメータを受け取るエンドポイントの例）。
+
+        # Examples
+        ```
+        use fandhe_backend_plugin_openapi::SearchResponse;
+
+        let body = SearchResponse {
+            query: "rust".to_string(),
+            limit: 10,
+            results: vec!["rust-result-0".to_string()],
+        };
+        assert_eq!(body.limit, 10);
+        ```
+      required:
+      - query
+      - limit
+      - results
+      properties:
+        limit:
+          type: integer
+          format: int32
+          description: 適用された最大件数（`limit`。省略時は既定値 `10`）。
+          minimum: 0
+        query:
+          type: string
+          description: 検索に使ったクエリ文字列（`q`）。
+        results:
+          type: array
+          items:
+            type: string
+          description: 検索結果。
+    UserResponse:
+      type: object
+      description: |-
+        `GET /users/{id}` のレスポンスボディ。
+
+        # Examples
+        ```
+        use fandhe_backend_plugin_openapi::UserResponse;
+
+        let body = UserResponse { id: 42, name: "User 42".to_string() };
+        assert_eq!(body.id, 42);
+        ```
+      required:
+      - id
+      - name
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: リクエストされたユーザー ID。
+          minimum: 0
+        name:
+          type: string
+          description: 表示名。

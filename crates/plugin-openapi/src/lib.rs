@@ -21,10 +21,14 @@
 //! - サーバ側 feature（`openapi = ["dep:fandhe-backend-plugin-openapi"]`）による配線は
 //!   TASK-2.1（#256）で完了した。`crates/core` の `openapi` feature 有効時、
 //!   `Server::openapi()` を明示登録すると `GET /openapi.json` が
-//!   `crate::plugin::try_intercept` 経由で [`OPENAPI_JSON`] を返す。
+//!   `crate::plugin::try_intercept` 経由で [`OPENAPI_JSON`] を、`GET /openapi.yaml`
+//!   （#279、仕様が明記する「json と同等に yaml も提供」への対応）が同様に
+//!   [`OPENAPI_YAML`] を返す。
 //! - `GET /openapi.json` の静的埋め込み（[`OPENAPI_JSON`]）・生成 CLI（`gen-openapi`、
-//!   `gen-cli` feature）は TASK-3.2（#31）で実装済み。埋め込み実体の鮮度保証・
-//!   TASK-2.1 との接続契約は `embed.rs` の doc comment を参照。
+//!   `gen-cli` feature）は TASK-3.2（#31）で実装済み。`GET /openapi.yaml` の静的埋め込み
+//!   （[`OPENAPI_YAML`]）は #279 で追加し、同一 CLI・同一 [`ApiDoc`] スキーマ源から生成
+//!   する。埋め込み実体の鮮度保証・TASK-2.1 との接続契約は `embed.rs` の doc comment
+//!   を参照。
 //!
 //! # 実行時コスト
 //! [`ApiDoc::openapi()`] はコンパイル時に構築されたメタデータから実行時に
@@ -46,7 +50,7 @@ mod embed;
 mod schemas;
 
 pub use docs::ApiDoc;
-pub use embed::OPENAPI_JSON;
+pub use embed::{OPENAPI_JSON, OPENAPI_YAML};
 pub use schemas::{EchoBody, ErrorBody, SearchResponse, UserResponse};
 
 // doc test 内で `utoipa::OpenApi` トレイトの `openapi()` を呼べるようにするため、

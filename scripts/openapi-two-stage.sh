@@ -10,17 +10,20 @@
 # scripts/tests/ 配下の専用セルフテストは設けない（本ファイル冒頭コメントで明記）。
 #
 # - stage 1: gen-openapi CLI をビルド・実行し、コミット済み crates/plugin-openapi/openapi.json
-#   が ApiDoc の最新定義から生成した内容と一致するかを `--check` で検証する
-#   （fail-closed。乖離時は非 0 終了、.claude/rules/security.md A08 対策）。
-# - stage 2: ワークスペース全体を --all-features でビルドする。埋め込み済み openapi.json を
-#   含む fandhe-backend-plugin-openapi と、TASK-2.1（#18）マージ後に増える `openapi` feature 配線も
-#   --all-features で自動的にカバーする。
+#   と openapi.yaml（YAML 対応は #279、仕様「json と同等に yaml も提供」への対応）の
+#   両方が ApiDoc の最新定義から生成した内容と一致するかを `--check` で検証する
+#   （fail-closed。乖離時は非 0 終了、.claude/rules/security.md A08 対策。gen-openapi CLI 側
+#   が json/yaml 両対象化を担うため、本スクリプトは呼び出し引数の変更を要しない）。
+# - stage 2: ワークスペース全体を --all-features でビルドする。埋め込み済み openapi.json /
+#   openapi.yaml を含む fandhe-backend-plugin-openapi と、TASK-2.1（#18）マージ後に増える
+#   `openapi` feature 配線も --all-features で自動的にカバーする。
 #
 # 使い方:
-#   bash scripts/openapi-two-stage.sh            # stage 1（--check）+ stage 2（既定）
+#   bash scripts/openapi-two-stage.sh            # stage 1（--check、json/yaml 両方）+ stage 2（既定）
 #   bash scripts/openapi-two-stage.sh --update    # stage 1 を --check ではなく --update で
-#                                                  # 実行し、openapi.json を in-place 再生成
-#                                                  # してから stage 2 を実行する（開発者向け）
+#                                                  # 実行し、openapi.json / openapi.yaml を
+#                                                  # in-place 再生成してから stage 2 を実行する
+#                                                  # （開発者向け）
 set -euo pipefail
 
 usage() {
