@@ -31,8 +31,21 @@
 //! の `is_tchar` を共有）のみで構成される非空文字列として検証し、1 件でも
 //! 不正な token があれば構築自体を失敗させる（フェイルクローズ）。
 //!
-//! 外部入力（リクエストヘッダ・body 等）に由来する動的な値を**検証なしで**
-//! ヘッダとして送出する任意ヘッダ API は今後も追加しない方針を維持する。
+//! 3 つ目が [`Response::with_header`] である（イシュー #301）。CORS
+//! （`Access-Control-Allow-Origin`）・`Set-Cookie`・`Location`・
+//! `Cache-Control` のように、名前・値の両方が呼び出し元の実行時状態に
+//! 依存し `&'static str` にも専用型にも収まらないヘッダが Phase 1 後続
+//! 機能（CORS・リダイレクト・Set-Cookie）で必要になった。この API は
+//! **静的リテラル限定を撤廃する代わりに構築時検証 + `Result` によるフェイル
+//! クローズ**で同じ安全性水準を保つ: ヘッダ名は `is_tchar` 検証、値は
+//! CR・LF・NUL に加え HTAB 以外の制御文字を拒否、`Content-Length` /
+//! `Connection` / `Transfer-Encoding` はフレームワークがフレーミングを
+//! 管理するため上書きを拒否する。検証失敗時は `Response` を変更せず
+//! `Err` を返すため、CRLF を含む値がワイヤに出る経路は存在しない。
+//!
+//! 上記 3 例外（静的リテラル・構築時検証済み専用型・検証付き動的 API）を
+//! 除き、**検証なしで**動的な値をヘッダとして送出する経路は今後も
+//! 追加しない方針を維持する。
 
 /// `Allow` ヘッダ用の検証済みメソッド集合（TASK-177 / #177）。
 ///
@@ -108,13 +121,45 @@ impl AllowedMethods {
     }
 }
 
+/// [`Response::with_header`] の検証失敗理由（フェイルクローズ、イシュー #301）。
+///
+/// いずれの variant も `Response` を変更せずに `Err` を返す契約であり、
+/// 呼び出し元は検証済みでない値がヘッダとして送出される心配をせずに
+/// `?` で伝播できる。`Display` は拒否理由のみを述べ、拒否対象の値そのもの
+/// は含めない（ログインジェクション・機密混入防止、`.claude/rules/security.md`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeaderError {
+    /// ヘッダ名が空、または RFC 9110 tchar 以外の文字を含む。
+    InvalidName,
+    /// ヘッダ値が CR / LF / NUL、または HTAB 以外の制御文字を含む。
+    InvalidValue,
+    /// フレームワークがフレーミングを管理するヘッダ（`Content-Length` /
+    /// `Connection` / `Transfer-Encoding`）を上書きしようとした。
+    ReservedName,
+}
+
+impl std::fmt::Display for HeaderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self {
+            Self::InvalidName => "ヘッダ名が空、または RFC 9110 tchar 以外の文字を含む",
+            Self::InvalidValue => "ヘッダ値が CR/LF/NUL、または制御文字を含む",
+            Self::ReservedName => {
+                "Content-Length / Connection / Transfer-Encoding はフレームワーク管理のため上書きできない"
+            }
+        };
+        f.write_str(reason)
+    }
+}
+
+impl std::error::Error for HeaderError {}
+
 /// 直列化対象の 1 レスポンス。
 ///
 /// `status` は HTTP ステータスコード、`body` はレスポンスボディの生バイト列。
 /// ヘッダは `Content-Length`（常時）・`Connection`（`serialize` の
-/// `keep_alive` 引数に応じて）・`Allow`（[`Response::with_allow`] 設定時）の
-/// みを自動付与し、それ以外のヘッダを持たない最小構成とする
-/// （本モジュールの doc を参照）。
+/// `keep_alive` 引数に応じて）・`Allow`（[`Response::with_allow`] 設定時）・
+/// [`Response::with_header`] で追加した任意ヘッダのみを自動付与し、
+/// それ以外のヘッダを持たない最小構成とする（本モジュールの doc を参照）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Response {
     /// HTTP ステータスコード。
@@ -128,6 +173,10 @@ pub struct Response {
     /// `Allow` ヘッダ値。`None` の場合はヘッダ自体を出力しない。
     /// [`Response::with_allow`] の doc を参照（TASK-177 / #177）。
     allow: Option<AllowedMethods>,
+    /// [`Response::with_header`] で追加した検証済み任意ヘッダ（挿入順）。
+    /// 構築経路は `with_header` のみのため、ここに入る値は常に検証済み
+    /// （`AllowedMethods` と同一の不変条件パターン、イシュー #301）。
+    extra_headers: Vec<(String, String)>,
 }
 
 impl Response {
@@ -147,6 +196,7 @@ impl Response {
             body,
             content_type: None,
             allow: None,
+            extra_headers: Vec::new(),
         }
     }
 
@@ -215,6 +265,97 @@ impl Response {
         self
     }
 
+    /// 検証付きで任意ヘッダを追加する（イシュー #301）。
+    ///
+    /// CORS・`Set-Cookie`・`Location`・`Cache-Control` のように名前・値の
+    /// 両方が実行時状態に依存するヘッダを送出するための拡張点。
+    /// [`Response::with_content_type`] / [`Response::with_allow`] が
+    /// カバーしない汎用ケースを埋める（本モジュール冒頭 doc の 3 つ目の
+    /// 例外）。
+    ///
+    /// # 検証（フェイルクローズ）
+    ///
+    /// - ヘッダ名: 非空かつ RFC 9110 tchar（`request.rs` の `is_tchar` と
+    ///   同一基準）のみで構成されること。違反は [`HeaderError::InvalidName`]
+    /// - ヘッダ値: CR（`\r`）・LF（`\n`）・NUL（`\0`）を含まないこと。
+    ///   加えて HTAB（`\t`）を除く制御文字（0x00–0x1F, 0x7F）も拒否する
+    ///   （受け入れ基準の CR/LF/NUL 拒否を包含する保守的な強化）。
+    ///   違反は [`HeaderError::InvalidValue`]
+    /// - 予約名: `Content-Length` / `Connection` / `Transfer-Encoding`
+    ///   は大文字小文字を無視して照合し拒否する（`Content-Length` は body
+    ///   長と、`Connection` は `serialize` の `keep_alive` 引数と、
+    ///   `Transfer-Encoding` はフレーミングと本クレートが一元管理する
+    ///   ため）。違反は [`HeaderError::ReservedName`]
+    ///
+    /// 検証に失敗した場合は `Response` を変更せず `Err` を返す
+    /// （`AllowedMethods::from_methods` と同一のフェイルクローズ設計）。
+    ///
+    /// # 同名ヘッダの複数回設定
+    ///
+    /// 上書きではなく**追記**する。挿入順に複数行出力するため、
+    /// `Set-Cookie` のように複数値を送出する用途に対応する。
+    ///
+    /// # 専用フィールドとの優先順位
+    ///
+    /// [`Response::with_content_type`] / [`Response::with_allow`] で
+    /// 専用フィールドが設定済みの場合、同名（大文字小文字無視）の
+    /// `with_header` 呼び出しは直列化時にスキップされ、専用フィールドが
+    /// 優先される（重複ヘッダ行の出力を防ぐ）。
+    ///
+    /// # 呼び出し元の責務
+    ///
+    /// 外部入力（リクエストヘッダ・body 等）に由来する値をそのまま渡す
+    /// 場合、ヘッダ数・値長の上限はこの API では設けないため、呼び出し元
+    /// でサイズ制限すること（DoS 対策、`.claude/rules/security.md`）。
+    ///
+    /// ```
+    /// use fandhe_backend_http::response::{HeaderError, Response};
+    ///
+    /// // 正常系。
+    /// let res = Response::empty(302).with_header("Location", "/login").unwrap();
+    /// let text = String::from_utf8(res.serialize(true)).unwrap();
+    /// assert!(text.contains("Location: /login\r\n"));
+    ///
+    /// // CRLF を含む値は拒否される（レスポンス分割対策）。
+    /// let err = Response::empty(200).with_header("X-Test", "v\r\nX-Evil: 1").unwrap_err();
+    /// assert_eq!(err, HeaderError::InvalidValue);
+    ///
+    /// // フレームワーク管理ヘッダの上書きは拒否される。
+    /// let err = Response::empty(200).with_header("content-length", "0").unwrap_err();
+    /// assert_eq!(err, HeaderError::ReservedName);
+    ///
+    /// // 専用 API（with_content_type）が設定済みなら with_header 側は出力されない。
+    /// let res = Response::new(200, b"{}".to_vec())
+    ///     .with_content_type("application/json")
+    ///     .with_header("content-type", "text/html")
+    ///     .unwrap();
+    /// let text = String::from_utf8(res.serialize(true)).unwrap();
+    /// assert!(text.contains("Content-Type: application/json\r\n"));
+    /// assert!(!text.contains("text/html"));
+    /// ```
+    pub fn with_header(
+        mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<Self, HeaderError> {
+        let name = name.into();
+        let value = value.into();
+
+        if name.is_empty() || !name.bytes().all(crate::request::is_tchar) {
+            return Err(HeaderError::InvalidName);
+        }
+        if value.bytes().any(|b| (b < 0x20 && b != b'\t') || b == 0x7f) {
+            return Err(HeaderError::InvalidValue);
+        }
+        const RESERVED: [&str; 3] = ["content-length", "connection", "transfer-encoding"];
+        if RESERVED.iter().any(|r| name.eq_ignore_ascii_case(r)) {
+            return Err(HeaderError::ReservedName);
+        }
+
+        self.extra_headers.push((name, value));
+        Ok(self)
+    }
+
     /// HTTP/1.1 ワイヤフォーマットへ直列化する。
     ///
     /// `keep_alive` が `false` の場合のみ `Connection: close` を付与する
@@ -228,6 +369,14 @@ impl Response {
     /// body を省略しつつ `Content-Length` は `GET` 相当の値を保つ必要がある
     /// ため、本メソッドにメソッド情報を渡すか呼び出し元で body 省略を
     /// 制御する拡張が必要になる点に注意する。
+    ///
+    /// # ヘッダ出力順（イシュー #301）
+    ///
+    /// status line → `Content-Type`（[`Response::with_content_type`]）→
+    /// `Allow`（[`Response::with_allow`]）→ [`Response::with_header`] で
+    /// 追加した任意ヘッダ（挿入順。ただし専用フィールドが設定済みの同名
+    /// ヘッダは重複出力を避けるためスキップする）→ `Content-Length` →
+    /// `Connection`（必要時）→ 空行 → body。
     ///
     /// ```
     /// use fandhe_backend_http::response::Response;
@@ -267,6 +416,21 @@ impl Response {
         if let Some(allow) = &self.allow {
             out.extend_from_slice(b"Allow: ");
             out.extend_from_slice(allow.to_header_value().as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
+        for (name, value) in &self.extra_headers {
+            // 専用フィールド（Content-Type / Allow）が設定済みの同名ヘッダは
+            // 重複出力を避けるためスキップし、専用フィールド側を優先する
+            // （`with_header` doc の「専用フィールドとの優先順位」を参照）。
+            if self.content_type.is_some() && name.eq_ignore_ascii_case("content-type") {
+                continue;
+            }
+            if self.allow.is_some() && name.eq_ignore_ascii_case("allow") {
+                continue;
+            }
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(b": ");
+            out.extend_from_slice(value.as_bytes());
             out.extend_from_slice(b"\r\n");
         }
         out.extend_from_slice(b"Content-Length: ");
@@ -445,5 +609,174 @@ mod tests {
         let text = String::from_utf8(bytes).unwrap();
         let header_body_split = text.split_once("\r\n\r\n").expect("blank line separator");
         assert_eq!(header_body_split.1, "body");
+    }
+
+    // --- with_header（イシュー #301） ---
+
+    #[test]
+    fn with_header_serializes_the_given_name_and_value() {
+        let res = Response::empty(302)
+            .with_header("Location", "/login")
+            .unwrap();
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert!(text.contains("Location: /login\r\n"));
+    }
+
+    #[test]
+    fn with_header_appends_repeated_calls_in_insertion_order() {
+        // Set-Cookie のような複数値ヘッダは追記（上書きしない）。
+        let res = Response::empty(200)
+            .with_header("Set-Cookie", "a=1")
+            .unwrap()
+            .with_header("Set-Cookie", "b=2")
+            .unwrap();
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        let first = text
+            .find("Set-Cookie: a=1\r\n")
+            .expect("first cookie present");
+        let second = text
+            .find("Set-Cookie: b=2\r\n")
+            .expect("second cookie present");
+        assert!(first < second, "挿入順に出力されること");
+    }
+
+    #[test]
+    fn with_header_rejects_empty_name() {
+        assert_eq!(
+            Response::empty(200).with_header("", "v").unwrap_err(),
+            HeaderError::InvalidName
+        );
+    }
+
+    #[test]
+    fn with_header_rejects_names_with_space_colon_or_non_ascii() {
+        assert_eq!(
+            Response::empty(200).with_header("X Test", "v").unwrap_err(),
+            HeaderError::InvalidName
+        );
+        assert_eq!(
+            Response::empty(200)
+                .with_header("X-Test:", "v")
+                .unwrap_err(),
+            HeaderError::InvalidName
+        );
+        assert_eq!(
+            Response::empty(200)
+                .with_header("X-Caf\u{e9}", "v")
+                .unwrap_err(),
+            HeaderError::InvalidName
+        );
+    }
+
+    #[test]
+    fn with_header_rejects_crlf_injection_in_value() {
+        // レスポンス分割回帰テスト: CRLF を含む値は構築段階で拒否され、
+        // 追加ヘッダとしてワイヤに出てくることは絶対にない。
+        assert_eq!(
+            Response::empty(200)
+                .with_header("X-Test", "v\r\nX-Evil: injected")
+                .unwrap_err(),
+            HeaderError::InvalidValue
+        );
+        assert_eq!(
+            Response::empty(200)
+                .with_header("X-Test", "v\ronly-cr")
+                .unwrap_err(),
+            HeaderError::InvalidValue
+        );
+        assert_eq!(
+            Response::empty(200)
+                .with_header("X-Test", "v\nonly-lf")
+                .unwrap_err(),
+            HeaderError::InvalidValue
+        );
+    }
+
+    #[test]
+    fn with_header_rejects_nul_and_other_control_chars_but_allows_htab() {
+        assert_eq!(
+            Response::empty(200)
+                .with_header("X-Test", "v\u{0}nul")
+                .unwrap_err(),
+            HeaderError::InvalidValue
+        );
+        assert_eq!(
+            Response::empty(200)
+                .with_header("X-Test", "v\u{1}ctrl")
+                .unwrap_err(),
+            HeaderError::InvalidValue
+        );
+        // HTAB・SP は制御文字扱いせず許可する。
+        assert!(Response::empty(200).with_header("X-Test", "v\tw x").is_ok());
+    }
+
+    #[test]
+    fn with_header_rejects_reserved_names_case_insensitively() {
+        assert_eq!(
+            Response::empty(200)
+                .with_header("Content-Length", "0")
+                .unwrap_err(),
+            HeaderError::ReservedName
+        );
+        assert_eq!(
+            Response::empty(200)
+                .with_header("content-length", "0")
+                .unwrap_err(),
+            HeaderError::ReservedName
+        );
+        assert_eq!(
+            Response::empty(200)
+                .with_header("Connection", "keep-alive")
+                .unwrap_err(),
+            HeaderError::ReservedName
+        );
+        assert_eq!(
+            Response::empty(200)
+                .with_header("Transfer-Encoding", "chunked")
+                .unwrap_err(),
+            HeaderError::ReservedName
+        );
+    }
+
+    #[test]
+    fn with_header_yields_to_dedicated_content_type_field() {
+        let res = Response::new(200, b"{}".to_vec())
+            .with_content_type("application/json")
+            .with_header("content-type", "text/html")
+            .unwrap();
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert!(text.contains("Content-Type: application/json\r\n"));
+        assert!(!text.contains("text/html"));
+    }
+
+    #[test]
+    fn with_header_yields_to_dedicated_allow_field() {
+        let allowed = AllowedMethods::from_methods(["GET".to_string()]).unwrap();
+        let res = Response::empty(405)
+            .with_allow(allowed)
+            .with_header("allow", "POST")
+            .unwrap();
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(text.contains("Allow: GET\r\n"));
+        assert!(!text.contains("POST"));
+    }
+
+    #[test]
+    fn with_header_is_used_when_dedicated_field_is_unset() {
+        // 専用フィールド未設定時は with_header 側がそのまま出力される。
+        let res = Response::empty(200)
+            .with_header("Content-Type", "text/plain")
+            .unwrap();
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert!(text.contains("Content-Type: text/plain\r\n"));
+    }
+
+    #[test]
+    fn serialize_without_with_header_is_unchanged_from_baseline() {
+        // 後方互換回帰: extra_headers 未設定時の出力は現行仕様と同一
+        // （既存フィールドのみのレスポンスが無修正で通ることを兼ねる）。
+        let res = Response::new(200, b"hi".to_vec());
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert_eq!(text, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
     }
 }
