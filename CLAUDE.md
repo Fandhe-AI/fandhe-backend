@@ -59,6 +59,10 @@ fandhe-backend/
 │   │                                    # イシュー #258）。`query::parse_query` でクエリ文字列
 │   │                                    # key-value 分解を sans-IO 純関数として提供（ゼロコピー・
 │   │                                    # DoS 上限内蔵・非デコード、イシュー #306）。
+│   │                                    # `form::parse_form` で `application/x-www-form-urlencoded`
+│   │                                    # ボディパーサを提供（`query`/`percent` を合成し `+` → 空白
+│   │                                    # 変換等のフォーム固有デコード仕様・DoS 上限・Content-Type
+│   │                                    # 検証ヘルパを内蔵、イシュー #308）。
 │   │                                    # `Router::options_fallback` で OPTIONS
 │   │                                    # プリフライトを opt-in フックへ委譲可能にし、明示登録された
 │   │                                    # OPTIONS ルートを常に優先しつつ未登録なら従来どおり
