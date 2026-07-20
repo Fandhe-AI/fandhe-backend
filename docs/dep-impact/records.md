@@ -8,6 +8,46 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-07-20 — `GET /openapi.yaml` 配信・gen-openapi YAML 生成の追加（#279）
+
+仕様（`docs/spec/04-requirements.md`）が明記する「GET /openapi.json（GET /openapi.yaml
+も同等に提供）」との不一致を解消するため、`crates/plugin-openapi` の `gen-cli`
+feature に `utoipa/yaml`（serde_norway 経由）を追加し、`openapi.yaml` の静的埋め込み
+（`OPENAPI_YAML`）・`GET /openapi.yaml` 配信を実装した。
+
+### 依存の残留確認（pay-for-what-you-use）
+
+`utoipa/yaml`（serde_norway・unsafe-libyaml-norway）は `gen-cli` feature（開発用 CLI、
+`required-features` によりサーバービルド対象外）に限定して有効化した。
+
+```
+$ cargo tree -p fandhe-backend-core --no-default-features | grep -i "yaml\|norway"
+（該当なし）
+$ cargo tree -p fandhe-backend-core --features openapi | grep -i "yaml\|norway"
+（該当なし）
+$ cargo tree -p fandhe-backend-plugin-openapi --features gen-cli | grep -i "yaml\|norway"
+    ├── serde_norway v0.9.42
+    │   └── unsafe-libyaml-norway v0.2.15
+```
+
+サーバー側（`openapi` feature 有効・`gen-cli` 無効の通常経路）の依存クレート数・
+`fandhe-backend-core` の依存ツリーには変化なし。`gen-cli` feature（開発ツール専用、
+CI の `openapi-two-stage` ジョブ・ローカル再生成時のみビルド対象）でのみ
+serde_norway・unsafe-libyaml-norway が新規に加わる。
+
+### unmaintained crate（serde_yaml）を避けた理由
+
+仕様本文が挙げる「serde_yaml 等」は unmaintained（RUSTSEC 情報勧告あり）のため直接
+依存に加えず、utoipa 公式の `yaml` feature が使う保守フォーク serde_norway を採用した
+（`.claude/rules/security.md` A06 依存の脆弱性対策）。
+
+### unsafe 件数
+
+`gen-cli` feature（開発ツール限定）にのみ影響し、サーバー本体の実行時経路・
+既存 unsafe 件数には影響しない（`cargo-geiger` 未導入のため厳密計測は未実施。
+`unsafe-triage.sh` のテキストベース走査で本クレートの `.rs` ソース側 unsafe 件数は
+変化なし（0 件）を確認）。
+
 ## 2026-07-19 — REQ-8 webrtc unsafe 増分の削減策評価とリスク受容判断確定（#242）
 
 `docs/acceptance/req8-webrtc-attack-surface.md` の基準 B補足（依存側 unsafe 増分、WARN）に

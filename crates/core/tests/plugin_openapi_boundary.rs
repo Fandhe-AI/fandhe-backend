@@ -3,8 +3,9 @@
 //! `crates/core/src/plugin.rs` の非公開 `try_intercept` シームが `Server::openapi()`
 //! で明示登録済みの場合のみ `GET /openapi.json` へ
 //! `fandhe_backend_plugin_openapi::OPENAPI_JSON`（コンパイル時埋め込みの静的
-//! JSON）を `Content-Type: application/json` で返し、既定 `Handler` より先に
-//! インターセプトされることを、`tokio::io::duplex` で駆動する
+//! JSON）を `Content-Type: application/json` で、`GET /openapi.yaml`（#279）へ
+//! `OPENAPI_YAML` を `Content-Type: application/yaml` で返し、既定 `Handler` より
+//! 先にインターセプトされることを、`tokio::io::duplex` で駆動する
 //! `handle_connection` を通して検証する。`webrtc-proxy`・`graphql` と同じ
 //! 「設定登録型」パターンのため、**未登録時は feature が有効でもフォール
 //! スルー（404）する**ことも併せて確認する（`Server::openapi` の doc・
@@ -18,7 +19,7 @@
 use fandhe_backend_core::{Handler, Server, handle_connection};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
-use fandhe_backend_plugin_openapi::OPENAPI_JSON;
+use fandhe_backend_plugin_openapi::{OPENAPI_JSON, OPENAPI_YAML};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// `Handler::handle` が呼ばれたら panic するトイハンドラ。
@@ -69,6 +70,44 @@ async fn registered_openapi_serves_embedded_json_and_bypasses_default_handler() 
     assert!(response.contains("Content-Type: application/json\r\n"));
     assert!(response.contains(&format!("Content-Length: {}\r\n", OPENAPI_JSON.len())));
     assert!(response.ends_with(OPENAPI_JSON));
+}
+
+#[tokio::test]
+async fn registered_openapi_serves_embedded_yaml_and_bypasses_default_handler() {
+    // JSON 側と同じ opt-in トグル（`Server::openapi()`）を共有する（#279、
+    // `Server::openapi` の doc を参照）。
+    let server = Server::new().handler(NotCalledHandler).openapi();
+
+    let request = b"GET /openapi.yaml HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.contains("Content-Type: application/yaml\r\n"));
+    assert!(response.contains(&format!("Content-Length: {}\r\n", OPENAPI_YAML.len())));
+    assert!(response.ends_with(OPENAPI_YAML));
+}
+
+#[tokio::test]
+async fn unregistered_openapi_yaml_falls_through_to_404() {
+    // json 側と同じ設定登録型パターン: `Server::openapi` 未登録時は feature が
+    // 有効でも既定 `Handler`（未登録時 404）へフォールスルーする。
+    let server = Server::new();
+
+    let request = b"GET /openapi.yaml HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+    assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+}
+
+#[tokio::test]
+async fn wrong_method_openapi_yaml_falls_through_to_404() {
+    let server = Server::new().openapi();
+
+    let request = b"POST /openapi.yaml HTTP/1.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+    assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
 }
 
 #[tokio::test]

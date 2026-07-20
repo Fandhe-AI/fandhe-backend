@@ -497,18 +497,20 @@ PoC-10 の知見（非同期 I/O 化だけでは RPS 劣化 31.6% を解消で�
 - **プラグイン側に非同期ハンドラがない**: `webrtc-proxy`/`webrtc`/`graphql`
   は `fandhe_backend_plugin_*::try_handle_*(head, body, config).await` という
   非同期関数へ委譲するが、`fandhe-backend-plugin-openapi` は定数
-  `OPENAPI_JSON`（`include_str!` によるコンパイル時埋め込み、`embed.rs`）を
-  公開するのみでハンドラを持たない（`crates/plugin-openapi/src/lib.rs` の
-  「拡張点対応: 非該当」宣言はこのため変更していない。実行時拡張点の契約では
-  なくコンパイル時 feature 着脱に閉じる、`docs/design/dependency-graph-contract.md`
-  5 節）。`plugin::try_intercept` 側は `server.openapi_enabled() &&
-  head.method == "GET" && head.target == "/openapi.json"` を判定するだけの
+  `OPENAPI_JSON` / `OPENAPI_YAML`（`include_str!` によるコンパイル時埋め込み、
+  `embed.rs`。YAML 対応は #279）を公開するのみでハンドラを持たない
+  （`crates/plugin-openapi/src/lib.rs` の「拡張点対応: 非該当」宣言はこのため
+  変更していない。実行時拡張点の契約ではなくコンパイル時 feature 着脱に閉じる、
+  `docs/design/dependency-graph-contract.md` 5 節）。`plugin::try_intercept`
+  側は `server.openapi_enabled() && head.method == "GET" &&
+  head.target == "/openapi.json"`（YAML は `/openapi.yaml`）を判定するだけの
   同期分岐で完結し、`.await` を挟まない
 - **設定登録型（`bool` トグル）**: `webrtc_proxy_config`/`graphql_config` の
   ような設定値ではなく、`Server::openapi()` は `openapi_enabled: bool` を
-  `true` にするだけの opt-in トグル。API 構造の開示（`GET /openapi.json` が
-  内部エンドポイント構成を露出する）を利用者の明示登録なしに既定公開しない
-  ため（`.claude/rules/security.md` A01/A05 観点、`Server::openapi` の doc
+  `true` にするだけの opt-in トグル（json/yaml 共通）。API 構造の開示
+  （`GET /openapi.json` / `GET /openapi.yaml` が内部エンドポイント構成を
+  露出する）を利用者の明示登録なしに既定公開しないため
+  （`.claude/rules/security.md` A01/A05 観点、`Server::openapi` の doc
   comment を参照）。未登録時は feature が有効でも常にフォールスルー（404）
   する点は他の設定登録型プラグイン（`webrtc-proxy`・`graphql`）と同じ
 

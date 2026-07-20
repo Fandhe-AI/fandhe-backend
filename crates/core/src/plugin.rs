@@ -94,15 +94,19 @@ pub(crate) async fn try_intercept(
         }
     }
 
-    // TASK-2.1（#256）: `GET /openapi.json` の静的サービング。プラグイン側
-    // （`crates/plugin-openapi`）はハンドラを持たず定数 `OPENAPI_JSON` を
-    // 公開するのみのため（`embed.rs` の接続契約）、他の設定登録型プラグイン
-    // と異なり `fandhe_backend_plugin_openapi::try_handle_*` のような非同期
+    // TASK-2.1（#256）: `GET /openapi.json` の静的サービング。`GET /openapi.yaml`
+    // （#279、仕様（docs/spec/04-requirements.md）が「json と同等に yaml も提供」と
+    // 明記することへの対応）も同一パターンで追加した。プラグイン側
+    // （`crates/plugin-openapi`）はハンドラを持たず定数 `OPENAPI_JSON` /
+    // `OPENAPI_YAML` を公開するのみのため（`embed.rs` の接続契約）、他の設定登録型
+    // プラグインと異なり `fandhe_backend_plugin_openapi::try_handle_*` のような非同期
     // 委譲関数は呼ばない。`server.openapi_enabled()` が `true`（明示登録済み）
     // かつメソッド・パスが完全一致した場合のみ、コンパイル時埋め込みの静的
-    // JSON をそのまま返す薄い分岐（実行時生成コストゼロ、PoC-4 成功基準 3）。
+    // JSON/YAML をそのまま返す薄い分岐（実行時生成コストゼロ、PoC-4 成功基準 3）。
     // 未登録時は feature が有効でもフォールスルーする（`webrtc-proxy`・
     // `graphql` と同じ設定登録型パターン、`Server::openapi` の doc を参照）。
+    // json/yaml は `head.target` の完全一致（クエリ付きはフォールスルー）で
+    // 排他的に分岐し、両方とも同一の opt-in トグル（`openapi_enabled`）を共有する。
     #[cfg(feature = "openapi")]
     {
         if server.openapi_enabled() && head.method == "GET" && head.target == "/openapi.json" {
@@ -114,6 +118,19 @@ pub(crate) async fn try_intercept(
                         .to_vec(),
                 )
                 .with_content_type("application/json"),
+            );
+        }
+        if server.openapi_enabled() && head.method == "GET" && head.target == "/openapi.yaml" {
+            return Some(
+                Response::new(
+                    200,
+                    fandhe_backend_plugin_openapi::OPENAPI_YAML
+                        .as_bytes()
+                        .to_vec(),
+                )
+                // RFC 9512 が定める YAML の正式メディアタイプ。MIME スニッフィング
+                // の余地を残さないため常に明示する（`.claude/rules/security.md` A05）。
+                .with_content_type("application/yaml"),
             );
         }
     }

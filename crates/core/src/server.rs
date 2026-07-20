@@ -453,13 +453,15 @@ impl Server {
     }
 
     /// OpenAPI ドキュメント配信プラグイン（`crates/plugin-openapi`）を
-    /// 有効化する（`openapi` feature 限定 API、TASK-2.1 / #256）。
+    /// 有効化する（`openapi` feature 限定 API、TASK-2.1 / #256。`GET /openapi.yaml`
+    /// 配信の追加は #279）。
     ///
-    /// 登録すると `GET /openapi.json` が `RequestGate` → `UpgradeHandler` の
-    /// 評価を通過した後、既定 [`Handler`] より先にパスインターセプトされ、
-    /// `fandhe_backend_plugin_openapi::OPENAPI_JSON`（コンパイル時埋め込みの
-    /// 静的 JSON）を `Content-Type: application/json` で返す（対象外パス・
-    /// メソッドは素通りし、既定 `Handler` へフォールスルーする。
+    /// 登録すると `GET /openapi.json` と `GET /openapi.yaml` の両方が
+    /// `RequestGate` → `UpgradeHandler` の評価を通過した後、既定 [`Handler`] より
+    /// 先にパスインターセプトされ、`fandhe_backend_plugin_openapi::OPENAPI_JSON` /
+    /// `OPENAPI_YAML`（いずれもコンパイル時埋め込みの静的文字列、同一スキーマ源）を
+    /// それぞれ `Content-Type: application/json` / `application/yaml` で返す
+    /// （対象外パス・メソッドは素通りし、既定 `Handler` へフォールスルーする。
     /// `crate::plugin::try_intercept` の doc を参照）。**未登録の場合は
     /// feature が有効でも常にフォールスルー**（404）する（`webrtc-proxy`・
     /// `graphql` と同じ設定登録型パターン）。API 構造の開示となるため、既定

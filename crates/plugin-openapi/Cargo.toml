@@ -33,12 +33,22 @@ serde_json = { version = "1", optional = true }
 [dev-dependencies]
 serde_json = "1"
 
-# gen-openapi CLI（TASK-3.2、#31）: `ApiDoc::openapi()` を JSON にシリアライズし
-# crates/plugin-openapi/openapi.json（embed.rs から include_str! で埋め込む実体）を
-# 生成・検証する開発用バイナリ。サーバー本体ビルドの通常経路には一切含まれない
-# （required-features によりデフォルトでは cargo build 対象外）。
+# gen-openapi CLI（TASK-3.2、#31。YAML 生成は #279）: `ApiDoc::openapi()` を
+# JSON/YAML にシリアライズし crates/plugin-openapi/openapi.json・openapi.yaml
+# （embed.rs から include_str! で埋め込む実体）を生成・検証する開発用バイナリ。
+# サーバー本体ビルドの通常経路には一切含まれない（required-features に
+# よりデフォルトでは cargo build 対象外）。
+#
+# `utoipa/yaml`（serde_norway 依存を引き込む）は本 feature に限定して有効化する。
+# 仕様が名指しする YAML 変換手段の候補には serde_yaml もあったが、serde_yaml は
+# unmaintained（RUSTSEC 情報勧告あり）のため、utoipa 公式の `yaml` feature が
+# 使う保守フォーク serde_norway を採用した（`.claude/rules/security.md` A06）。
+# `gen-cli` 無効時（サーバ側から lib として参照される通常経路）は `dep:` /
+# feature 依存構文により utoipa/yaml も serde_norway も Cargo.lock 解決対象・
+# `cargo tree` のいずれにも一切現れない
+# （pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）。
 [features]
-gen-cli = ["dep:serde_json"]
+gen-cli = ["dep:serde_json", "utoipa/yaml"]
 
 [[bin]]
 name = "gen-openapi"

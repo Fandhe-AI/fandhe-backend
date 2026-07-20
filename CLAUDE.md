@@ -48,7 +48,8 @@ fandhe-backend/
 │   │                                    # の 5 feature で `dep:` 構文により各プラグインを
 │   │                                    # 着脱可能に配線済み（`webrtc-proxy` 優先評価）。
 │   │                                    # `openapi` は `Server::openapi()` の明示登録
-│   │                                    # （opt-in）時のみ `GET /openapi.json` を返す
+│   │                                    # （opt-in）時のみ `GET /openapi.json` と
+│   │                                    # `GET /openapi.yaml`（#279）を返す
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。chunked
 │   │                                    # Transfer-Encoding 対応（sans-IO `ChunkedDecoder`、
@@ -73,7 +74,10 @@ fandhe-backend/
 │   ├── plugin-openapi                 # OpenAPI ドキュメント生成プラグイン（ApiDoc + utoipa::path 定義、TASK-3.1、#30。
 │   │                                   # gen-openapi CLI・openapi.json 静的埋め込み、TASK-3.2、#31。
 │   │                                   # `crates/core` の `openapi` feature 経由で配線、TASK-2.1、#256。
-│   │                                   # `Server::openapi()` 登録時のみ `GET /openapi.json` を配信）
+│   │                                   # `Server::openapi()` 登録時のみ `GET /openapi.json` を配信。
+│   │                                   # `GET /openapi.yaml` も同一 opt-in・同一スキーマ源
+│   │                                   # （ApiDoc）で配信（#279。YAML 変換依存は開発用
+│   │                                   # `gen-cli` feature に閉じ、サーバ経路には現れない））
 │   ├── plugin-websocket                # WebSocket プラグイン（RFC 6455 ハンドシェイク検証・101 応答・
 │   │                                    # tokio-tungstenite へのフレーミング委譲、TASK-4.1、#22。
 │   │                                    # `crates/core` の `websocket` feature 経由で `UpgradeHandler`
