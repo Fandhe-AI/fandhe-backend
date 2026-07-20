@@ -113,7 +113,7 @@ impl SetCookie {
     /// `name` と `value` から検証済みの [`SetCookie`] を構築する。
     ///
     /// - `name`: 非空かつ全バイトが RFC 9110 tchar（RFC 6265 の
-    ///   cookie-name = token と同一。[`crate::request::is_tchar`] を共有）。
+    ///   cookie-name = token と同一。`crate::request::is_tchar` を共有）。
     ///   違反は [`CookieError::InvalidName`]
     /// - `value`: 全バイトが RFC 6265 cookie-octet
     ///   （`is_cookie_octet` 参照）。空値は許可する（RFC 6265 上
