@@ -160,14 +160,14 @@ task-12-4-third-party-scope-feasibility.md` が記録した「未定義依存」
 
 | 項目 | 内容 |
 |------|------|
-| 判断日 | PENDING（判断待ち。判断者・日付・裏付け URL は人間判断確定時に記入） |
-| 判断者（GitHub アカウント） | PENDING |
-| 判断区分 | PENDING（受容 / 追加検証指示 のいずれか） |
-| 判断内容 | PENDING |
-| 受容根拠 または 追加検証の指示 | PENDING |
-| 裏付けイベント URL | PENDING |
+| 判断日 | 2026-07-20 |
+| 判断者（GitHub アカウント） | aLiz-Nancy（リポジトリ管理者、admin@fandhe.com） |
+| 判断区分 | 受容 |
+| 判断内容 | TASK-12.4 第三者検証が Claude ファミリー内（別セッション・別 Claude モデル）に限定され、別ベンダー LLM・人間被験による再検証が未実施であるという限界を受容し、Conditional Go 条件 (3) の追跡をクローズする |
+| 受容根拠 または 追加検証の指示 | REQ-12・NFR-8・NFR-9 の受け入れ基準数値は実装フェーズの再検証で全件確定済みであり、追加のモデル多様性検証は費用対効果の観点から現時点では実施しない（[`../reports/task-12-4-third-party-scope-feasibility.md`](../reports/task-12-4-third-party-scope-feasibility.md)「要人間判断事項」への回答） |
+| 裏付けイベント URL | <https://github.com/Fandhe-AI/fandhe-backend/issues/281#issuecomment-5020816319> |
 
-現在のステータス: **PENDING**（イシュー #281 で判断待ち）。
+現在のステータス: **受容（確定）**（2026-07-20、イシュー #281 コメントで表明・転記済み）。
 
 ### 6.2 記入手順
 
