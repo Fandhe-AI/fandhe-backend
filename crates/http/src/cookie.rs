@@ -39,7 +39,7 @@
 //! - DQUOTE で囲んだ値は両端の引用符を除去した内側を返す（除去する契約）
 //! - pair 前後の OWS（RFC 9110 §5.6.3、SP `0x20` / HTAB `0x09` のみ）は trim する。
 //!   `str::trim()` の Unicode 空白全般 trim は使わない（NBSP・BOM 等を誤って除去し
-//!   fail-closed 契約を弱めるため、[`crate::request::trim_ows_str`] を使う）
+//!   fail-closed 契約を弱めるため、`crate::request::trim_ows_str`（private ヘルパ）を使う）
 //!
 //! # 読み取り側: 不正組の扱い（fail-closed。受け入れ条件 1）
 //!
