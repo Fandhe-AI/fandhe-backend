@@ -97,6 +97,38 @@ scripts/openapi-two-stage.sh
 TypeScript 向け型定義（`ts/src/generated/schema.d.ts`）を連携させる場合は
 [`docs/design/openapi-typescript-pipeline.md`](../design/openapi-typescript-pipeline.md) を参照してください。
 
+## cors（`fandhe-backend-plugin-cors`）
+
+CORS（Cross-Origin Resource Sharing）を「プリフライト」と「実リクエストへの
+ヘッダ付与」の 2 点で配線するプラグインです（[`docs/design/plugin-boundary.md`](../design/plugin-boundary.md)
+5.9 節「レスポンス後処理型パターン」参照）。
+
+```bash
+cargo run --example cors_demo -p fandhe-backend-core --features cors
+
+# プリフライト（204 + Access-Control-Allow-* を確認）
+curl -si -X OPTIONS localhost:3004/todos \
+  -H 'Origin: https://app.example.com' \
+  -H 'Access-Control-Request-Method: POST'
+
+# 実リクエスト（許可オリジン、不許可オリジンでヘッダ有無を比較）
+curl -si localhost:3004/todos -H 'Origin: https://app.example.com'
+curl -si localhost:3004/todos -H 'Origin: https://evil.example'
+```
+
+配線は 2 点のみです（`crates/core/examples/cors_demo.rs` を参照）:
+
+1. `Router::options_fallback(|head, allow, _body| preflight_response(head, allow, &config))`
+   でプリフライトを CORS プラグインへ委譲する
+2. `Server::new().handler(router).cors(config)` で実リクエスト応答への
+   ヘッダ付与を有効化する（未登録なら feature が有効でも完全フォールスルー、
+   opt-in）
+
+`CorsConfig::builder()` は許可オリジンの完全一致リスト（既定）・明示 opt-in の
+`allow_any_origin()`・`allow_credentials`・`allow_headers`・`max_age` 等を
+提供します。`allow_any_origin()` と `allow_credentials(true)` の併用は
+`build()` が `Err` を返します（フェイルクローズ、credentials 付き全開放の防止）。
+
 ## hub-wiring（`fandhe-backend-plugin-hub-wiring`）
 
 マルチテナント JWT 検証（RS256 / JWKS）・テナント境界強制を `RequestGate` 拡張点

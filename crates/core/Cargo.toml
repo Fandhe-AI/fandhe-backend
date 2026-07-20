@@ -91,6 +91,15 @@ fandhe-backend-plugin-tracing = { path = "../plugin-tracing", optional = true }
 # 推移的な `utoipa` 系）が一切現れない。
 fandhe-backend-plugin-openapi = { path = "../plugin-openapi", optional = true }
 
+# イシュー #305（REQ-3 の CORS 実証）: `cors` feature 有効時のみ依存として
+# 解決される「レスポンス後処理型」プラグイン境界の第 1 号（`Middleware` /
+# `UpgradeHandler` / `RequestGate` のいずれにも載らない新パターン、
+# `docs/design/plugin-boundary.md` の新節・`crates/plugin-cors/src/lib.rs`
+# の doc を参照）。`fandhe-backend-plugin-websocket` と同一の非循環パターンで
+# `fandhe-backend-core` に依存しない。feature 無効時は
+# `cargo tree -p fandhe-backend-core` に本行の依存が一切現れない。
+fandhe-backend-plugin-cors = { path = "../plugin-cors", optional = true }
+
 # feature 命名規約（`docs/design/plugin-boundary.md`）: プラグインクレート名
 # （`fandhe-backend-plugin-<name>`）から `fandhe-backend-plugin-` 接頭辞を除いた `<name>` を feature 名
 # とする。`default = []` によりビルド時に何も選択しなければプラグインは
@@ -108,6 +117,10 @@ tracing = ["dep:fandhe-backend-plugin-tracing"]
 # TASK-2.1（#256）: `GET /openapi.json` 静的サービング（設定登録型、
 # `Server::openapi()` で明示登録した場合のみ応答する opt-in）。
 openapi = ["dep:fandhe-backend-plugin-openapi"]
+# イシュー #305: CORS ヘッダ付与（`Server::cors()` で明示登録した場合のみ
+# 実リクエスト応答へヘッダを付与する opt-in、他の設定登録型プラグインと
+# 同一の「未登録時はフォールスルー」パターン）。
+cors = ["dep:fandhe-backend-plugin-cors"]
 
 # テスト専用（`#[tokio::test]` / `tokio::io::duplex` / マルチスレッドランタイム）。
 # 本体ビルドの feature 集合には影響しない。`async-graphql` は
@@ -187,6 +200,14 @@ required-features = ["websocket"]
 [[example]]
 name = "ws_nfr6"
 required-features = ["websocket"]
+
+# `examples/cors_demo.rs`（イシュー #305）は `fandhe-backend-plugin-cors`（optional dep）を
+# 直接使うため、`cors` feature 無効時に `cargo build --workspace --all-targets` 等が
+# コンパイル対象へ含めて失敗しないよう `required-features` で明示的にゲートする
+# （`webrtc_nfr6` / `graphql_nfr6` / `tracing_nfr` / `ws_echo` / `ws_nfr6` と同一パターン）。
+[[example]]
+name = "cors_demo"
+required-features = ["cors"]
 
 # TASK-1.6-3（#168）: `examples/core-bench.rs`（axum-ref 機能等価の性能計測用
 # サーバ）。`test = true` により `cargo test` / nextest が本 example 内の

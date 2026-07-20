@@ -87,10 +87,12 @@ graph LR
 | 2 | `UpgradeHandler` | 同上（`try_handle_upgrade`） | dyn 互換 | 同期（委譲判定のみ）+ 実処理は非同期委譲 | `fandhe-backend-plugin-websocket` | 「委譲判定のみ」を担い、ハンドシェイク検証・101 応答送出・フレーミングはプラグイン側に閉じる契約（REQ-4） |
 | 3 | `RequestGate` | 同上 | dyn 互換 | 同期 | （現状該当実装なし、将来用） | リクエスト可否判定 |
 | 4 | `try_intercept`（固定シーム） | `crates/core/src/plugin.rs` | — | 非同期 | `fandhe-backend-plugin-graphql`・`fandhe-backend-plugin-webrtc`・`fandhe-backend-plugin-webrtc-proxy` | 3 trait はいずれも dyn 互換性のため同期 API 限定であり、非同期の上流中継・クエリ実行を要するプラグインは既存拡張点経由の依存逆転で表現できない（`dep-direction-check.sh` 該当コメント）。パスインターセプト型は cfg-gated 分岐として `try_intercept` に集約され、`Option` フォールスルーで次のプラグインへ委譲する（`docs/design/plugin-boundary.md` 4 節） |
+| 5 | `finalize_response`（固定シーム） | `crates/core/src/plugin.rs` | — | 同期 | `fandhe-backend-plugin-cors` | `Middleware::on_response` がレスポンスへの参照を持たない観測専用契約のため、応答内容自体を書き換える必要があるプラグインは既存 3 trait のいずれでも表現できない（イシュー #305）。`try_intercept` 応答・既定 `Handler` 応答の双方に対する単一の後処理合流点として機能する（`docs/design/plugin-boundary.md` 5.9 節） |
 
-3 拡張点 trait（`Middleware` / `UpgradeHandler` / `RequestGate`）+ `try_intercept`
-固定シームの計 4 つが「変更影響範囲を機械判定できる閉じたシーム」の全体集合である
-（`docs/design/extension-closure-verification.md` 3.4 節）。
+3 拡張点 trait（`Middleware` / `UpgradeHandler` / `RequestGate`）+ `try_intercept` +
+`finalize_response` の固定シーム計 5 つが「変更影響範囲を機械判定できる閉じたシーム」の
+全体集合である（`docs/design/extension-closure-verification.md` 3.4 節・
+`docs/design/plugin-boundary.md` 5.9 節）。
 
 ## 3. 機械可読宣言の規約
 
@@ -112,6 +114,7 @@ graph LR
 | `Middleware` | （現状該当なし、将来用） | 新規実装時にこの語彙で宣言する |
 | `RequestGate` | （現状該当なし、将来用） | 同上 |
 | `非該当（<理由の参照: docs/design/*.md>）` | `fandhe-backend-plugin-openapi` | ビルド時生成でランタイム拡張点を使わない。理由の実体は本書 5 節。参照先ファイルの存在を機械検査する |
+| `レスポンス後処理型（finalize_response）` | `fandhe-backend-plugin-cors` | 3 trait 非該当だがシグネチャ固定シームに閉じる（イシュー #305）。宣言直後に `docs/design/plugin-boundary.md` 5.9 節への参照を必須とする |
 
 `core` / `http` / `routes` / `axum-ref` は本宣言の対象外とする（プラグイン境界の
 宣言であるため）。これらは既存の依存方向宣言（`server → routes → http::*`、
@@ -548,6 +551,37 @@ package/import 名の改名に続き、リポジトリ名・ドキュメント�
    ランナー設定（`.config/*`）を D に含めていないことに起因する運用上のギャップ
    である（分類規則見直しは 4.3 節〜4.10 節と同一の別 Issue 対象として据え置く。
    `.claude/rules/out-of-scope-tracking.md`）
+
+### 4.12 記載例（#305 / PR #330、CORS プラグイン example の新設）
+
+イシュー #305「CORS プラグイン（feature 着脱）を実装する」（PR #330）は、新規プラグイン
+`fandhe-backend-plugin-cors` を追加し、`crates/core/examples/cors_demo.rs` として
+2 点配線（`Router::options_fallback` へのプリフライト委譲・`Server::cors(config)` 登録）の
+動作確認用サンプルを新設するコミットである。`crates/plugin-cors/**` への変更を含むため
+`scripts/extension-closure-gate.sh` の判定対象となり、以下 1 件が E（閉包違反候補）と
+判定された。
+
+1. **対象コミット/PR**: PR #330（#305）
+2. **E ファイルパス**:
+   - `crates/core/examples/cors_demo.rs`
+3. **閉じない理由**: `extension-closure-check.sh` の分類規則（A: `crates/plugin-*/**`、
+   B: `crates/core` の 4 ファイルのみ、C: `crates/core/tests/**`・
+   `crates/plugin-*/tests/**` のみ、D: `docs/*`・`scripts/*`・`CLAUDE.md`・
+   `AGENTS.md`・`.github/*`・`deny.toml` のみ）は、`crates/core/examples/**` を
+   走査対象に含めていない（4.9 節・4.10 節で既に指摘済みの運用上のギャップと同一）。
+   本コミットは `cors` feature 有効時の動作確認用 example を新設したため、機械的に
+   E 判定となった
+4. **正当性根拠**: `cors_demo.rs` はバイナリを生成しない `[[example]]` ターゲット
+   （`cargo run --example cors_demo --features cors` でのみビルド・実行される）であり、
+   `crates/core` のライブラリコード・3 拡張点 trait（`Middleware` / `UpgradeHandler` /
+   `RequestGate`）・`try_intercept` / `finalize_response` 固定シームの契約・シグネチャは
+   一切変更していない。内容も `fandhe_backend_plugin_cors::preflight_response` を
+   `Router::options_fallback`（#304）へ、`CorsConfig` を `Server::cors`（4 節冒頭の表 5 行目、
+   「レスポンス後処理型」固定シーム）へ配線する既存 公開 API の呼び出しに留まり、
+   プラグイン実装ロジックが拡張点外へ漏出する変更ではない。したがって本件は拡張点設計の
+   閉包漏れではなく、`extension-closure-check.sh` の分類規則が `crates/core/examples/**` を
+   A〜D に含めていないことに起因する運用上のギャップである（分類規則自体の見直しは
+   4.3 節〜4.11 節と同一の別 Issue 対象として据え置く。`.claude/rules/out-of-scope-tracking.md`）
 
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 

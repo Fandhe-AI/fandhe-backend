@@ -1,0 +1,30 @@
+[package]
+name = "fandhe-backend-plugin-cors"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "fandhe-backend の CORS プラグイン（イシュー #305）。プリフライト応答の組み立てと実リクエストへのヘッダ付与を提供する。"
+publish = false
+
+# workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
+# （.claude/rules/coding-rust.md・.claude/rules/security.md）。
+[lints]
+workspace = true
+
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）: 本クレートは
+# `fandhe-backend-core` に依存しない（コア → 本クレートの optional 依存という
+# 単方向のエッジのみを許すため、循環依存を避ける設計上の要件。
+# `crates/plugin-websocket`・`crates/plugin-tracing` と同一の非循環パターン、
+# `docs/design/plugin-boundary.md` 6.1 節・5.7.2 節を参照）。
+#
+# 依存は `fandhe-backend-http` のみ（`RequestHead` の参照・`Response` /
+# `AllowedMethods` / `HeaderError` の利用）。`fandhe-backend-routes` の
+# `OptionsFallbackHandler` 型は素の
+# `Fn(&RequestHead, &AllowedMethods, &[u8]) -> Response` 互換クロージャで
+# 満たせるため、本クレートは `fandhe-backend-routes` にも依存しない
+# （利用者側が `router.options_fallback(|head, allow, body| ...)` の中で
+# `fandhe_backend_plugin_cors::preflight_response` を呼び出す構成）。
+# 外部 crates.io 依存はゼロ（std のみで実装）。
+[dependencies]
+fandhe-backend-http = { path = "../http" }
