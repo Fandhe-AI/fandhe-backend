@@ -186,8 +186,22 @@ async fn datachannel_roundtrip_over_local_loopback() {
 /// 遷移するのは ICE/DTLS 経由の非同期検知のため、猶予を長めに取りポーリングする
 /// （`handler::tests::close_handler_releases_slot_when_state_becomes_closed` が
 /// クローズ検知そのものをより直接的に検証する）。
+///
+/// ポーリング予算は回数ベースではなく `SLOT_RELEASE_BUDGET`（120 秒）の経過時間ベースで
+/// 判定する（イシュー #276）。クライアント側 `close()` の通知がサーバへ届かず、サーバ側
+/// 検知が ICE failed タイムアウト（webrtc-rs 既定で 30 秒級）へ倒れるケースがあり、
+/// 負荷のある self-hosted runner ではさらに遅延しうる。1 周あたりのコスト（PeerConnection
+/// 生成 + ICE gathering 完了待ち + HTTP シグナリング）も変動するため、回数固定では実質
+/// 予算が読めない。環境要因による残余のばらつきは `.config/nextest.toml` の
+/// `profile.ci` 側でこのテストに限定した retry が吸収し、実装側の回帰（枠解放漏れ）の
+/// 決定的な検知は `handler::tests::close_handler_releases_slot_when_state_becomes_closed`
+/// が担う。
 #[tokio::test]
 async fn peer_connection_slot_is_released_after_close_allowing_reuse() {
+    /// 2 件目のシグナリングが 200 を返す（= 枠解放が検知される）までのポーリング予算。
+    /// ICE failed タイムアウト検知（30 秒級）への倒れ込みを見込んだ余裕を含む。
+    const SLOT_RELEASE_BUDGET: Duration = Duration::from_secs(120);
+
     let addr = spawn_server(WebRtcConfig::new().with_max_peer_connections(1)).await;
 
     // 1 件目: 確立してからクローズする（データチャネルを 1 つ持たせないと SDP に
@@ -219,9 +233,8 @@ async fn peer_connection_slot_is_released_after_close_allowing_reuse() {
 
     // クローズ通知（サーバ側 RTCPeerConnectionState の Closed/Failed への遷移）が
     // 届くまで、ICE/DTLS の非同期検知の猶予を持たせつつポーリングする。
-    let mut second_status = String::new();
-    let mut second_body = String::new();
-    for _ in 0..150 {
+    let poll_start = tokio::time::Instant::now();
+    let (second_status, second_body) = loop {
         let second_client = build_client_peer_connection().await;
         let _second_dc = second_client
             .create_data_channel("slot-release-2", None)
@@ -240,15 +253,13 @@ async fn peer_connection_slot_is_released_after_close_allowing_reuse() {
                 .unwrap();
         let _ = second_client.close().await;
 
-        if status_line.starts_with("HTTP/1.1 200 OK") {
-            second_status = status_line;
-            second_body = body;
-            break;
+        let succeeded = status_line.starts_with("HTTP/1.1 200 OK");
+        let budget_exceeded = poll_start.elapsed() >= SLOT_RELEASE_BUDGET;
+        if succeeded || budget_exceeded {
+            break (status_line, body);
         }
-        second_status = status_line;
-        second_body = body;
         tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    };
 
     assert!(
         second_status.starts_with("HTTP/1.1 200 OK"),
