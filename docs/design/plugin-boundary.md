@@ -514,6 +514,82 @@ PoC-10 の知見（非同期 I/O 化だけでは RPS 劣化 31.6% を解消で�
   comment を参照）。未登録時は feature が有効でも常にフォールスルー（404）
   する点は他の設定登録型プラグイン（`webrtc-proxy`・`graphql`）と同じ
 
+## 5.9 レスポンス後処理型パターン（イシュー #305 で確立）
+
+`crates/plugin-cors`（`cors` feature）は既存 4 パターン（パスインターセプト型 /
+Upgrade 型 / Gate 型 / Middleware 型）のいずれにも載らない、5 番目のプラグイン
+境界パターン。
+
+### 5.9.1 なぜ既存の `Middleware` 拡張点で表現できないか
+
+`Middleware::on_response(&self, head, elapsed)` は「観測専用」契約であり、
+レスポンスへの参照・可変参照のいずれも持たない（`crates/core/src/extension.rs`
+の `Middleware` doc）。CORS ヘッダ付与は応答内容そのものを変更する処理で
+あり、この契約に収まらない。5.7 節の Middleware 型パターン（`plugin-tracing`）
+はログ出力・カウンタ更新という副作用に閉じていたため問題化しなかったが、
+CORS で初めてこの制約に突き当たった。
+
+### 5.9.2 2 層構成での解決
+
+CORS を「プリフライト」と「実リクエストへのヘッダ付与」の 2 つに分解し、
+それぞれ既存の異なる仕組みへ配線する:
+
+1. **プリフライト**（`OPTIONS` + `Origin` + `Access-Control-Request-Method`）:
+   `fandhe_backend_routes::Router::options_fallback`（イシュー #304 で
+   先行整備した opt-in フック）へ、利用者が
+   `fandhe_backend_plugin_cors::preflight_response` を直接配線する。
+   `Router` 側は対象パスの実登録メソッド一覧（`AllowedMethods`）を渡せる
+   ため、`Access-Control-Allow-Methods` の既定値を設定と実体の乖離なく
+   導出できる（明示登録 OPTIONS ルートは常に優先される #304 の契約もそのまま
+   維持される）
+2. **実リクエストへのヘッダ付与**: コア側に固定シグネチャの新シーム
+   `crate::plugin::finalize_response(server, head, response) -> Response`
+   を新設し、`handle_connection_with_permit`
+   （`crates/core/src/server.rs`）が `try_intercept` 応答・既定 `Handler`
+   応答のいずれかを確定させた直後、keep-alive 再判定・`serialize` の直前に
+   呼ぶ。3 種の既存シーム（`try_intercept`・`try_handle_upgrade`）と同じく
+   `#[cfg(feature = "...")]` を本シーム内部に閉じ、`handle_connection` 本体
+   の cfg-free 原則（3 節）を維持する
+
+### 5.9.3 `try_intercept` 応答にも既定 `Handler` 応答にも同一適用できる利点
+
+`finalize_response` は `try_intercept`（graphql・openapi 等のパスインター
+セプト型プラグイン応答）と既定 `Handler` 応答の**両方**が確定した後の、
+単一の合流点で呼ばれる。`Handler` をラップして CORS ヘッダを注入する設計
+（`Server::handler` に渡す前にラッパーで包む）だと `try_intercept` が
+`Some` を返した経路（既定 `Handler` を呼ばない経路）にはヘッダが乗らず、
+graphql/openapi 応答が CORS 対象外になってしまう。「レスポンス確定後の
+単一合流点」という設計判断はこの不整合を避けるための必然。
+
+### 5.9.4 `RequestGate` 拒否応答・パースエラー応答を通さない設計判断
+
+`finalize_response` は `handle_connection_with_permit` 内の
+`RequestGate` 拒否応答・パースエラー応答（400 等）の送出経路には接続しない
+（呼び出し箇所は `try_intercept`/`Handler::handle` の結果確定後のみ）。
+拒否応答は最小情報で返すフェイルクローズ方針（`.claude/rules/security.md`）
+を CORS ヘッダ付与によって後退させないための意図的な設計であり、5.6 節
+（Gate 型パターン）の「`GateOutcome` はクレームを運ばない」という責務境界
+の判断と同根。
+
+### 5.9.5 プリフライトとの二重付与防止
+
+`finalize_response` は `fandhe_backend_plugin_cors::is_preflight(head)` が
+`true` を返すリクエストには何もしない。プリフライト応答は 1. の
+`options_fallback` 経路で既に完結しているため、同一リクエストに実リクエスト
+用の CORS ヘッダ付与ロジックを重ねて適用しないための判定。
+
+### 5.9.6 循環依存の回避・依存関係
+
+`crates/plugin-cors` 自体は `fandhe-backend-core` に依存しない
+（`fandhe-backend-http` のみに依存する下位層）。`fandhe-backend-plugin-websocket`・
+`fandhe-backend-plugin-tracing` と同一の非循環パターンであり、コア側が
+`optional = true` + `dep:` 構文で本クレートへ依存する（6.1 節の
+`scripts/dep-direction-check.sh` ホワイトリスト例外 4 を参照）。
+`fandhe_backend_routes::Router::options_fallback` の型
+（`Fn(&RequestHead, &AllowedMethods, &[u8]) -> Response` 互換クロージャ）は
+素の関数ポインタで満たせるため、`crates/plugin-cors` は
+`fandhe-backend-routes` にも依存しない。
+
 ## 6. 検証コマンド
 
 | 検証 | コマンド | 期待結果 |
@@ -583,6 +659,13 @@ webrtc-proxy/webrtc（非同期パスインターセプト）とは異なる理�
 websocket と同型（`fandhe-backend-plugin-tracing` → `fandhe-backend-core` の逆依存は
 発生しない）。チェック 3 の例外シンボルパターンにも `fandhe_backend_plugin_tracing`/
 `TracingMiddleware` を追加している。
+
+イシュー #305 で `fandhe-backend-core:fandhe-backend-plugin-cors` を 5 件目の
+例外として追加した。5.9 節のとおり `Middleware` 拡張点では表現できないため
+新設したレスポンス後処理型シーム（`crate::plugin::finalize_response`）が
+生む workspace 内 path 依存エッジであり、`fandhe-backend-plugin-cors` 自体は
+websocket/tracing と同型で `fandhe-backend-core` に依存しない非循環パターン。
+チェック 3 の例外シンボルパターンにも `fandhe_backend_plugin_cors` を追加している。
 
 ## 7. スコープ外（別タスクで対応）
 

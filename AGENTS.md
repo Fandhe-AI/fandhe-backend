@@ -129,6 +129,7 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
 | `plugin-openapi` | OpenAPI ドキュメント生成 |
 | `plugin-webrtc` | in-process WebRTC（`webrtc-rs` 直接依存） |
 | `plugin-webrtc-proxy` | WebRTC シグナリングプロキシ（別プロセス切り出し型） |
+| `plugin-cors` | CORS（プリフライトは `Router::options_fallback` 経由・実リクエストへのヘッダ付与は新設のレスポンス後処理型シーム `crate::plugin::finalize_response` 経由。3 拡張点いずれにも載らない 5 番目のプラグイン境界パターン、`docs/design/plugin-boundary.md` 5.9 節） |
 | `plugin-hub-wiring` | hub 共通配線（`RequestGate` 上の `TenantGate`。JWT (RS256 + JWKS) 検証 → `org_id` 抽出 → フェイルクローズ。依存逆転型プラグイン、`docs/design/plugin-boundary.md` 5.6 節）。越境アクセス監査ログ（`audit` モジュール、`cross_tenant_attempt` カテゴリ。「正当な 404」と「越境 404」を外部応答同一のまま監査ログのみで区別、TASK-9.6・#89） |
 | `axum-ref` | 性能比較用参照実装 |
 
@@ -139,6 +140,12 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
 （[coding-rust.md](.claude/rules/coding-rust.md)）。feature の新規追加・変更は
 [pay-for-what-you-use.md](.claude/rules/pay-for-what-you-use.md) と
 [feature-modification-flow.md](docs/design/feature-modification-flow.md) に従う。
+**3 種 trait のいずれにも載らない場合**（例: CORS のようにレスポンス内容自体を
+書き換える必要があり `Middleware::on_response` の観測専用契約に収まらないケース）
+は、`crates/core/src/plugin.rs` に `try_intercept` / `try_handle_upgrade` と
+同型の固定シグネチャ・cfg-gated な新シームを追加できるか検討する
+（`docs/design/plugin-boundary.md` 5.9 節「レスポンス後処理型パターン」を参照。
+安易な新パターン追加は避け、既存 3 種で表現できないことを確認してから導入する）。
 
 #### 新規エンドポイント追加手順
 

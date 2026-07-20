@@ -17,6 +17,12 @@
 //! プラグインを配線する際は、本モジュールへ cfg-gated な分岐を追加する形で
 //! 拡張する（`docs/design/plugin-boundary.md` のプラグイン境界パターン・
 //! 適用指針を参照）。
+//!
+//! イシュー #305（CORS プラグイン）で 3 つ目のシーム [`finalize_response`]
+//! を追加した。`Middleware::on_response` はレスポンスへの参照を持たない
+//! 観測専用契約のため CORS ヘッダ付与に使えず、「レスポンス後処理型」という
+//! 新パターンが必要になった（`crates/plugin-cors/src/lib.rs` の crate doc・
+//! `docs/design/plugin-boundary.md` の該当節を参照）。
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::OwnedSemaphorePermit;
@@ -266,4 +272,62 @@ where
 #[cfg(feature = "graphql")]
 fn from_graphql_response(response: fandhe_backend_plugin_graphql::Response) -> Response {
     Response::new(response.status, response.body).with_content_type(response.content_type)
+}
+
+/// レスポンス後処理型シーム（イシュー #305、CORS プラグイン）。
+///
+/// `handle_connection_with_permit`（`crates/core/src/server.rs`）が
+/// `try_intercept` 応答・既定 `Handler` 応答のいずれかを確定させた直後、
+/// keep-alive 再判定・`serialize` の前に呼ぶ（モジュール冒頭の処理フロー
+/// doc・本モジュール冒頭 doc の「3 つ目のシーム」を参照）。`try_intercept`
+/// 応答（graphql・openapi 等のパスインターセプト型プラグイン応答）にも
+/// 既定 `Handler` 応答にも同一の後処理を適用できる、`Handler` ラッパー方式
+/// にはない利点を持つ（`docs/design/plugin-boundary.md` の設計比較を参照）。
+///
+/// `cors` feature 無効時、または `Server::cors` 未登録時は `response` を
+/// 無改変で返す（他のプラグインと同じ「設定登録型」のフォールスルー、
+/// pay-for-what-you-use）。
+///
+/// # プリフライトとの二重付与防止
+///
+/// CORS プリフライト（`OPTIONS` + `Origin` + `Access-Control-Request-Method`）
+/// は `fandhe_backend_routes::Router::options_fallback`
+/// （利用者が `fandhe_backend_plugin_cors::preflight_response` を直接配線、
+/// イシュー #304）で完結済みのため、本シームは
+/// `fandhe_backend_plugin_cors::is_preflight` が `true` を返すリクエストには
+/// 何もしない（プリフライト応答へ実リクエスト用のヘッダを重ねて付与しない
+/// ようにするための判定）。
+///
+/// # `RequestGate` 拒否応答・パースエラー応答を通さない設計判断
+///
+/// 本関数は `handle_connection_with_permit` の中で `RequestGate` 拒否応答・
+/// パースエラー応答（400 等）の送出経路とは別の、`try_intercept` /
+/// `Handler::handle` の結果にのみ適用される（呼び出し箇所を参照）。拒否
+/// 応答は最小情報で返すフェイルクローズ方針を維持するための意図的な設計
+/// （`docs/design/plugin-boundary.md` の該当節・`.claude/rules/security.md`
+/// を参照）。
+///
+/// 同期・`.await` なし（ヘッダ検査と `with_header` 呼び出しのみ）で
+/// `Middleware` の非同期 I/O 禁止規約（`.claude/rules/coding-rust.md`）とは
+/// 独立にコストを抑える。
+pub(crate) fn finalize_response(
+    server: &Server,
+    head: &RequestHead,
+    response: Response,
+) -> Response {
+    #[cfg(feature = "cors")]
+    {
+        if let Some(config) = server.cors_config()
+            && !fandhe_backend_plugin_cors::is_preflight(head)
+        {
+            return fandhe_backend_plugin_cors::apply_cors_headers(head, config, response);
+        }
+    }
+
+    #[cfg(not(feature = "cors"))]
+    {
+        let _ = (server, head);
+    }
+
+    response
 }

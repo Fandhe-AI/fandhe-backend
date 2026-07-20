@@ -120,6 +120,12 @@ else
                     ref_missing+=("${entrypoint}（パスインターセプト型宣言だが extension-closure-verification.md への参照なし）")
                 fi
                 ;;
+            "レスポンス後処理型（finalize_response）")
+                # 3.2 節（イシュー #305 で追加）: 宣言直後に plugin-boundary.md 5.9 節への参照が必須
+                if ! grep -q 'plugin-boundary\.md' "${entrypoint}"; then
+                    ref_missing+=("${entrypoint}（レスポンス後処理型宣言だが plugin-boundary.md への参照なし）")
+                fi
+                ;;
             非該当*)
                 # 非該当（<理由の参照: docs/design/*.md>）形式。参照先ファイルパスを抽出して存在確認する。
                 ref_path="$(printf '%s' "${decl_value}" | grep -oE 'docs/design/[A-Za-z0-9_.-]+\.md' | head -n1 || true)"

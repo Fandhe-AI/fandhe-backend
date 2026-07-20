@@ -13,7 +13,7 @@
 //!
 //! `handle_connection` 内に `#[cfg(feature = "...")]` を一切持たない
 //! （`docs/spec/03-poc` PoC-3 の設計規約）。プラグインの介入余地は一定
-//! シグネチャの 2 種のヘルパーに閉じる:
+//! シグネチャの 3 種のヘルパーに閉じる:
 //! - `plugin::try_handle_upgrade`（非公開 `plugin` モジュール、TASK-4.1 / #22）:
 //!   長時間接続（WebSocket 等）への委譲。`websocket` feature 有効時は
 //!   `fandhe_backend_plugin_websocket` へ完全委譲し、無効時は常に `Some(stream)` を返す
@@ -22,6 +22,9 @@
 //!   レスポンス完結型プラグイン（WebRTC シグナリングプロキシ等）へのパス
 //!   インターセプト。TASK-2.1（#18）で確立した feature flag + `dep:` 構文の
 //!   プラグイン境界パターンの実装（`docs/design/plugin-boundary.md`）
+//! - `plugin::finalize_response`（非公開 `plugin` モジュール、イシュー #305）:
+//!   レスポンス後処理型プラグイン（CORS 等）への委譲。`Middleware::on_response`
+//!   がレスポンスへの参照を持たない観測専用契約のため使えない場合の受け皿
 //!
 //! いずれも feature 分岐はヘルパー内部に閉じ、`handle_connection` 側は
 //! ヘルパーのシグネチャを変えずに済む。
@@ -54,6 +57,8 @@
 //!          Some(response) なら以降の Handler::handle をスキップ）
 //!       5. Handler::handle（未登録時、または try_intercept が None の場合。
 //!          未登録時は 404）
+//!       5.5. plugin::finalize_response（レスポンス後処理型プラグイン。
+//!          try_intercept 応答・Handler::handle 応答の双方に適用）
 //!       6. レスポンス書き込み → Middleware::on_response
 //!       7. should_keep_alive(head) が false なら接続を閉じる
 //! }
@@ -239,6 +244,18 @@ pub struct Server {
     /// 依存・コードともゼロコストになる（pay-for-what-you-use）。
     #[cfg(feature = "openapi")]
     openapi_enabled: bool,
+    /// `cors` feature（イシュー #305）有効時のみ意味を持つ、登録済み CORS
+    /// 設定。`crate::plugin::finalize_response`（レスポンス後処理型シーム）が
+    /// このフィールドを参照して実リクエスト応答へ CORS ヘッダを付与する
+    /// かどうかを判定する。`None`（未登録、既定）の場合は feature が有効でも
+    /// レスポンスを一切変更しない（`graphql`・`openapi` と同じ「設定登録型」
+    /// パターン）。プリフライト応答は本フィールドを介さず、利用者が
+    /// `fandhe_backend_plugin_cors::preflight_response` を直接
+    /// `Router::options_fallback` へ配線する（`crates/plugin-cors/src/lib.rs`
+    /// の doc を参照）。feature 無効時はフィールド自体が構造体から消え、
+    /// 依存・コードともゼロコストになる（pay-for-what-you-use）。
+    #[cfg(feature = "cors")]
+    cors_config: Option<fandhe_backend_plugin_cors::CorsConfig>,
 }
 
 impl Default for Server {
@@ -261,6 +278,8 @@ impl Default for Server {
             graphql_config: None,
             #[cfg(feature = "openapi")]
             openapi_enabled: false,
+            #[cfg(feature = "cors")]
+            cors_config: None,
         }
     }
 }
@@ -487,6 +506,49 @@ impl Server {
     #[cfg(feature = "openapi")]
     pub(crate) fn openapi_enabled(&self) -> bool {
         self.openapi_enabled
+    }
+
+    /// CORS プラグイン（`crates/plugin-cors`）を有効化する（`cors` feature
+    /// 限定 API、イシュー #305）。
+    ///
+    /// 登録すると `crate::plugin::finalize_response`（レスポンス後処理型
+    /// シーム）が全レスポンス（`try_intercept` 応答・既定 `Handler` 応答の
+    /// 双方）に対して `fandhe_backend_plugin_cors::apply_cors_headers` を適用し、
+    /// 許可オリジンからの実リクエストへ CORS ヘッダを付与する。**未登録の
+    /// 場合は feature が有効でも常にレスポンスを変更しない**
+    /// （`webrtc-proxy`・`graphql`・`openapi` と同じ設定登録型パターン）。
+    ///
+    /// プリフライト（`OPTIONS` + `Origin` + `Access-Control-Request-Method`）は
+    /// 本メソッドの登録対象外。利用者が
+    /// `fandhe_backend_plugin_cors::preflight_response` を
+    /// `fandhe_backend_routes::Router::options_fallback`（イシュー #304）へ
+    /// 直接配線する 2 点構成とする（`crates/plugin-cors/src/lib.rs` の
+    /// crate doc・`crates/core/examples/cors_demo.rs` を参照）。
+    ///
+    /// # Examples
+    /// ```
+    /// use fandhe_backend_core::Server;
+    /// use fandhe_backend_plugin_cors::CorsConfig;
+    ///
+    /// let config = CorsConfig::builder()
+    ///     .allow_origin("https://app.example.com")
+    ///     .build()
+    ///     .unwrap();
+    /// let server = Server::new().cors(config);
+    /// let _ = server;
+    /// ```
+    #[cfg(feature = "cors")]
+    #[must_use]
+    pub fn cors(mut self, config: fandhe_backend_plugin_cors::CorsConfig) -> Self {
+        self.cors_config = Some(config);
+        self
+    }
+
+    /// `crate::plugin::finalize_response` が参照する、登録済み CORS 設定
+    /// （`cors` feature 限定、イシュー #305）。
+    #[cfg(feature = "cors")]
+    pub(crate) fn cors_config(&self) -> Option<&fandhe_backend_plugin_cors::CorsConfig> {
+        self.cors_config.as_ref()
     }
 
     /// トレーシングプラグイン（`crates/plugin-tracing`）を有効化する
@@ -869,6 +931,13 @@ pub(crate) async fn handle_connection_with_permit<S>(
                     None => Response::empty(404),
                 },
             };
+
+        // レスポンス後処理型シーム（イシュー #305、CORS プラグイン）。
+        // `try_intercept` 応答・既定 `Handler` 応答のどちらが確定した場合でも
+        // 同一の後処理を適用する（`crate::plugin::finalize_response` の doc を
+        // 参照）。`RequestGate` 拒否応答・パースエラー応答（本関数内の別の
+        // 送出経路）は意図的に通さない。
+        let response = crate::plugin::finalize_response(server, &request.head, response);
 
         // #70 Bugbot 指摘（Stale keep-alive after lifetime）: 上の `keep_alive` は
         // `Handler::handle` 呼び出し前、`on_request` 直後の経過時間で決定している。

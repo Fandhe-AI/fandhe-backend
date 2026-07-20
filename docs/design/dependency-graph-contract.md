@@ -87,10 +87,12 @@ graph LR
 | 2 | `UpgradeHandler` | 同上（`try_handle_upgrade`） | dyn 互換 | 同期（委譲判定のみ）+ 実処理は非同期委譲 | `fandhe-backend-plugin-websocket` | 「委譲判定のみ」を担い、ハンドシェイク検証・101 応答送出・フレーミングはプラグイン側に閉じる契約（REQ-4） |
 | 3 | `RequestGate` | 同上 | dyn 互換 | 同期 | （現状該当実装なし、将来用） | リクエスト可否判定 |
 | 4 | `try_intercept`（固定シーム） | `crates/core/src/plugin.rs` | — | 非同期 | `fandhe-backend-plugin-graphql`・`fandhe-backend-plugin-webrtc`・`fandhe-backend-plugin-webrtc-proxy` | 3 trait はいずれも dyn 互換性のため同期 API 限定であり、非同期の上流中継・クエリ実行を要するプラグインは既存拡張点経由の依存逆転で表現できない（`dep-direction-check.sh` 該当コメント）。パスインターセプト型は cfg-gated 分岐として `try_intercept` に集約され、`Option` フォールスルーで次のプラグインへ委譲する（`docs/design/plugin-boundary.md` 4 節） |
+| 5 | `finalize_response`（固定シーム） | `crates/core/src/plugin.rs` | — | 同期 | `fandhe-backend-plugin-cors` | `Middleware::on_response` がレスポンスへの参照を持たない観測専用契約のため、応答内容自体を書き換える必要があるプラグインは既存 3 trait のいずれでも表現できない（イシュー #305）。`try_intercept` 応答・既定 `Handler` 応答の双方に対する単一の後処理合流点として機能する（`docs/design/plugin-boundary.md` 5.9 節） |
 
-3 拡張点 trait（`Middleware` / `UpgradeHandler` / `RequestGate`）+ `try_intercept`
-固定シームの計 4 つが「変更影響範囲を機械判定できる閉じたシーム」の全体集合である
-（`docs/design/extension-closure-verification.md` 3.4 節）。
+3 拡張点 trait（`Middleware` / `UpgradeHandler` / `RequestGate`）+ `try_intercept` +
+`finalize_response` の固定シーム計 5 つが「変更影響範囲を機械判定できる閉じたシーム」の
+全体集合である（`docs/design/extension-closure-verification.md` 3.4 節・
+`docs/design/plugin-boundary.md` 5.9 節）。
 
 ## 3. 機械可読宣言の規約
 
@@ -112,6 +114,7 @@ graph LR
 | `Middleware` | （現状該当なし、将来用） | 新規実装時にこの語彙で宣言する |
 | `RequestGate` | （現状該当なし、将来用） | 同上 |
 | `非該当（<理由の参照: docs/design/*.md>）` | `fandhe-backend-plugin-openapi` | ビルド時生成でランタイム拡張点を使わない。理由の実体は本書 5 節。参照先ファイルの存在を機械検査する |
+| `レスポンス後処理型（finalize_response）` | `fandhe-backend-plugin-cors` | 3 trait 非該当だがシグネチャ固定シームに閉じる（イシュー #305）。宣言直後に `docs/design/plugin-boundary.md` 5.9 節への参照を必須とする |
 
 `core` / `http` / `routes` / `axum-ref` は本宣言の対象外とする（プラグイン境界の
 宣言であるため）。これらは既存の依存方向宣言（`server → routes → http::*`、
