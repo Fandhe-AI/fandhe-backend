@@ -92,6 +92,17 @@ pub type RouteHandler = Box<dyn Fn(&RequestHead, &[u8]) -> Response + Send + Syn
 pub type ParamRouteHandler =
     Box<dyn Fn(&RequestHead, &PathParams<'_>, &[u8]) -> Response + Send + Sync>;
 
+/// OPTIONS プリフライトのフォールバックハンドラ型（[`Router::options_fallback`]、
+/// イシュー #304）。
+///
+/// 対象パスに登録済みの method 一覧（`AllowedMethods` 構築時 tchar 検証済み）と
+/// body を受け取り、応答を組み立てる。CORS プラグイン（後続イシュー）が
+/// `Access-Control-Allow-Methods` 等の CORS ヘッダを含む応答を組み立てる委譲先
+/// として使う想定だが、本クレートは CORS ヘッダの意味論を一切知らない
+/// （関心の分離、`.claude/rules/coding-rust.md` の拡張点方針）。
+pub type OptionsFallbackHandler =
+    Box<dyn Fn(&RequestHead, &AllowedMethods, &[u8]) -> Response + Send + Sync>;
+
 /// method + `target` の完全一致、および `{name}` パスパラメータ（TASK-176、#176）
 /// でハンドラを解決する最小ルータ。
 ///
@@ -134,6 +145,10 @@ pub struct Router {
     // `HashMap` ではなく `Vec` で保持する。静的 `routes` の完全一致が常に優先され、
     // ここへは静的ルートが miss したときのみ到達する。
     param_routes: Vec<ParamRoute>,
+    // OPTIONS プリフライトの opt-in フォールバックフック（イシュー #304）。
+    // 未登録（`None`）なら追加コストは `dispatch` 内の `Option` 参照 1 回のみで、
+    // 既定動作（405 + `Allow`）を完全に維持する（後方互換、pay-for-what-you-use）。
+    options_fallback: Option<OptionsFallbackHandler>,
 }
 
 impl Router {
@@ -155,6 +170,7 @@ impl Router {
         Self {
             routes: HashMap::new(),
             param_routes: Vec::new(),
+            options_fallback: None,
         }
     }
 
@@ -241,6 +257,58 @@ impl Router {
             handler: Box::new(handler),
         });
         Ok(self)
+    }
+
+    /// OPTIONS プリフライトの opt-in フォールバックを登録する（イシュー #304）。
+    ///
+    /// `dispatch` が OPTIONS リクエストを静的・パラメータいずれのルートにも
+    /// 解決できず（かつ対象パスに 1 件以上のルートが登録されている）場合、
+    /// 従来の 405 + `Allow` 応答の代わりに `handler` へ委譲する。`handler` には
+    /// 対象パスの登録済み method 一覧（[`fandhe_backend_http::response::AllowedMethods`]、
+    /// tchar 検証済み）が渡され、CORS プラグイン（後続イシュー）等が
+    /// `Access-Control-Allow-Methods` を含む応答を組み立てる委譲先として使える。
+    ///
+    /// 明示的に `route("OPTIONS", ...)` / `route_param("OPTIONS", ...)` で
+    /// 登録されたルートは常にこのフォールバックより優先される（利用者が
+    /// 意図的に定義した OPTIONS ハンドラを横取りしない、`.claude/rules/security.md`
+    /// A05 設定ミス対策）。対象パスが未登録（登録メソッド集約が空）の場合は
+    /// フォールバックを呼ばず 404 を返す（フェイルクローズ、パス列挙攻撃表面を
+    /// 拡大しない。既存の 405 + `Allow` で開示済みの情報以上を新規開示しない）。
+    /// `OPTIONS *`（asterisk-form）はスコープ外で、常に 404 のまま（`request_target_segments`
+    /// が `None` を返しパラメータルート・405 集約のいずれにも到達しないため）。
+    ///
+    /// 未登録（デフォルト）なら `dispatch` の追加コストは `Option` 参照 1 回のみで、
+    /// 既定動作（405 + `Allow`）を完全に維持する（後方互換、pay-for-what-you-use）。
+    ///
+    /// ```
+    /// use fandhe_backend_routes::Router;
+    /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// let router = Router::new()
+    ///     .route("GET", "/todos", |_h, _b| Response::empty(200))
+    ///     .route("POST", "/todos", |_h, _b| Response::empty(201))
+    ///     .options_fallback(|_head, allow, _body| {
+    ///         // CORS プラグイン相当の最小実装例: 204 + Allow のみを返す。
+    ///         Response::empty(204).with_allow(allow.clone())
+    ///     });
+    ///
+    /// let head = match parse_request_head(b"OPTIONS /todos HTTP/1.1\r\n\r\n").unwrap() {
+    ///     ParseOutcome::Complete { head, .. } => head,
+    ///     ParseOutcome::Incomplete => unreachable!(),
+    /// };
+    /// let res = router.dispatch(&head, &[]);
+    /// assert_eq!(res.status, 204);
+    /// let text = String::from_utf8(res.serialize(false)).unwrap();
+    /// assert!(text.contains("Allow: GET, POST\r\n"));
+    /// ```
+    #[must_use]
+    pub fn options_fallback(
+        mut self,
+        handler: impl Fn(&RequestHead, &AllowedMethods, &[u8]) -> Response + Send + Sync + 'static,
+    ) -> Self {
+        self.options_fallback = Some(Box::new(handler));
+        self
     }
 
     /// `head` の method + `target` に一致するハンドラへ委譲し、[`Response`] を返す。
@@ -332,27 +400,50 @@ impl Router {
             .collect();
 
         if registered_methods.is_empty() {
+            // 対象パスが 1 件も登録されていない。OPTIONS でもフォールバックを
+            // 発火させず 404 のまま（イシュー #304、フェイルクローズ・パス列挙
+            // 攻撃表面の非拡大。`options_fallback` doc comment 参照）。
             return Response::empty(404);
         }
 
-        // `AllowedMethods::from_methods` は 1 件でも不正 token があれば全体を
-        // 構築失敗（`None`）とする all-or-nothing 契約（`response.rs` doc 参照）。
-        // Router 側は「不正 token を持つ登録ルートだけを Allow から除外し、
-        // 残りの正当な method は開示する」方針のため、要素単位で妥当性を
-        // 検証してから正当なものだけをまとめて構築する（パーサ（`fandhe-backend-http`）
-        // は tchar のみの method しか生成しないため、実運用でこの除外が
-        // 発生する経路はない）。
+        let Some(allow) = Self::build_allow(registered_methods) else {
+            // 登録 method が全て不正 token だった場合のフェイルクローズ
+            // フォールバック。`Allow` は省略するが 405 自体は変わらない。
+            return Response::empty(405);
+        };
+
+        // OPTIONS プリフライトかつフォールバック登録済みなら委譲する
+        // （イシュー #304）。明示登録された OPTIONS ルートは手順 1・2 で
+        // 既に応答済みのため、ここに到達するのは「OPTIONS が明示登録されて
+        // いないが対象パスに他 method は登録されている」場合のみであり、
+        // フォールバックが常に明示登録より劣後する（`options_fallback` doc
+        // comment の A05 対策）。
+        if head.method == "OPTIONS"
+            && let Some(fallback) = &self.options_fallback
+        {
+            return fallback(head, &allow, body);
+        }
+
+        Response::empty(405).with_allow(allow)
+    }
+
+    /// 405 応答・OPTIONS フォールバックの双方が共有する `Allow` 構築ロジック
+    /// （イシュー #304 でリファクタ抽出、TASK-177 / #177 の tchar 検証方針を
+    /// そのまま踏襲）。
+    ///
+    /// `AllowedMethods::from_methods` は 1 件でも不正 token があれば全体を
+    /// 構築失敗（`None`）とする all-or-nothing 契約（`response.rs` doc 参照）。
+    /// 本ヘルパーは「不正 token を持つ登録ルートだけを Allow から除外し、
+    /// 残りの正当な method は開示する」方針のため、要素単位で妥当性を
+    /// 検証してから正当なものだけをまとめて構築する（パーサ（`fandhe-backend-http`）
+    /// は tchar のみの method しか生成しないため、実運用でこの除外が
+    /// 発生する経路はない）。全滅時は `None`（呼び出し元がフェイルクローズを判断する）。
+    fn build_allow(registered_methods: Vec<String>) -> Option<AllowedMethods> {
         let valid_methods: Vec<String> = registered_methods
             .into_iter()
             .filter(|m| AllowedMethods::from_methods([m.clone()]).is_some())
             .collect();
-
-        match AllowedMethods::from_methods(valid_methods) {
-            Some(allow) => Response::empty(405).with_allow(allow),
-            // 登録 method が全て不正 token だった場合のフェイルクローズ
-            // フォールバック。`Allow` は省略するが 405 自体は変わらない。
-            None => Response::empty(405),
-        }
+        AllowedMethods::from_methods(valid_methods)
     }
 }
 
@@ -497,6 +588,110 @@ mod tests {
         assert!(text.contains("Allow: GET\r\n"));
         // ヘッダ数が増えていない（インジェクションによる余分な行が無い）こと
         // を、ヘッダ/ボディ境界の空行が 1 箇所のみであることで確認する。
+        assert_eq!(text.matches("\r\n\r\n").count(), 1);
+    }
+
+    // --- OPTIONS プリフライトフォールバック（イシュー #304） ---
+
+    #[test]
+    fn options_without_fallback_registered_returns_405_and_allow_unchanged() {
+        // フック未登録時は従来どおり 405 + Allow（後方互換の固定化）。
+        let router = Router::new()
+            .route("GET", "/", |_h, _b| Response::empty(200))
+            .route("POST", "/", |_h, _b| Response::empty(201));
+        let res = router.dispatch(&head("OPTIONS", "/"), &[]);
+        assert_eq!(res.status, 405);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(text.contains("Allow: GET, POST\r\n"));
+    }
+
+    #[test]
+    fn options_with_fallback_registered_delegates_with_sorted_allowed_methods() {
+        let router = Router::new()
+            .route("GET", "/todos", |_h, _b| Response::empty(200))
+            .route("POST", "/todos", |_h, _b| Response::empty(201))
+            .route("DELETE", "/todos", |_h, _b| Response::empty(204))
+            .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
+
+        let res = router.dispatch(&head("OPTIONS", "/todos"), &[]);
+        assert_eq!(res.status, 204);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(text.contains("Allow: DELETE, GET, POST\r\n"));
+    }
+
+    #[test]
+    fn options_with_fallback_registered_but_unregistered_path_returns_404() {
+        // 未登録パスへの OPTIONS はフックを発火させず 404 のまま
+        // （フェイルクローズ・パス列挙攻撃表面の非拡大）。
+        let router = Router::new()
+            .route("GET", "/todos", |_h, _b| Response::empty(200))
+            .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
+
+        let res = router.dispatch(&head("OPTIONS", "/missing"), &[]);
+        assert_eq!(res.status, 404);
+    }
+
+    #[test]
+    fn options_with_fallback_registered_other_method_mismatch_still_returns_405() {
+        // OPTIONS 以外の method 不一致はフックを発火させず従来どおり 405 + Allow。
+        let router = Router::new()
+            .route("GET", "/todos", |_h, _b| Response::empty(200))
+            .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
+
+        let res = router.dispatch(&head("DELETE", "/todos"), &[]);
+        assert_eq!(res.status, 405);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(text.contains("Allow: GET\r\n"));
+    }
+
+    #[test]
+    fn explicit_options_route_takes_priority_over_fallback() {
+        // 明示登録された OPTIONS ルートは常にフォールバックより優先される
+        // （利用者定義のプリフライト処理を横取りしない、A05 対策）。
+        let router = Router::new()
+            .route("GET", "/todos", |_h, _b| Response::empty(200))
+            .route("OPTIONS", "/todos", |_h, _b| {
+                Response::new(200, b"explicit".to_vec())
+            })
+            .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
+
+        let res = router.dispatch(&head("OPTIONS", "/todos"), &[]);
+        assert_eq!(res.status, 200);
+        assert_eq!(res.body, b"explicit".to_vec());
+    }
+
+    #[test]
+    fn options_with_fallback_registered_matches_param_route_methods() {
+        // パラメータルートのみ一致するパスへの OPTIONS でもフックが発火し、
+        // param route の method が一覧に含まれる。
+        let router = Router::new()
+            .route_param("GET", "/hello/{name}", |_h, _params, _b| {
+                Response::empty(200)
+            })
+            .unwrap()
+            .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
+
+        let res = router.dispatch(&head("OPTIONS", "/hello/alice"), &[]);
+        assert_eq!(res.status, 204);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(text.contains("Allow: GET\r\n"));
+    }
+
+    #[test]
+    fn options_fallback_allow_header_injection_regression() {
+        // `method_mismatch_405_allow_header_injection_regression` の OPTIONS 版:
+        // 不正 token（CRLF 入り method）はフック経由でも直列化バイト列に現れない。
+        let router = Router::new()
+            .route("GET\r\nX-Evil: 1", "/", |_h, _b| Response::empty(200))
+            .route("GET", "/", |_h, _b| Response::empty(200))
+            .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
+
+        let res = router.dispatch(&head("OPTIONS", "/"), &[]);
+        assert_eq!(res.status, 204);
+        let bytes = res.serialize(false);
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(!text.contains("X-Evil"));
+        assert!(text.contains("Allow: GET\r\n"));
         assert_eq!(text.matches("\r\n\r\n").count(), 1);
     }
 }
