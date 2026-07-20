@@ -38,7 +38,7 @@ fandhe-backend/
 │   │                        # 責務分離、「どう使うか」を扱う
 │   ├── dep-impact/         # 依存インパクト（依存数・バイナリサイズ・unsafe 件数）記録台帳（TASK-15.2）
 │   └── acceptance/         # REQ-1 等・NFR-7 等の受け入れ検証結果レポート（TASK-1.6-2 で追加、
-│                            # NFR-7 分は #263 で追加）
+│                            # NFR-7 分は #263、NFR-6 分は #282 で追加）
 ├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）
 ├── rust-toolchain.toml    # stable + rustfmt/clippy
 ├── crates/                # cargo workspace
