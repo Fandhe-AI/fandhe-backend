@@ -51,7 +51,7 @@ pub const OPENAPI_JSON: &str = include_str!("../openapi.json");
 ///
 /// `crates/plugin-openapi/openapi.yaml` の内容そのもの。仕様
 /// （`docs/spec/04-requirements.md`）が「GET /openapi.json（GET /openapi.yaml も
-/// 同等に提供）」と明記することを受け、[`OPENAPI_JSON`] と同一の [`ApiDoc`] を
+/// 同等に提供）」と明記することを受け、[`OPENAPI_JSON`] と同一の [`crate::ApiDoc`] を
 /// スキーマ源として `gen-openapi` CLI（`gen-cli` feature、TASK-3.2、#31。YAML 対応は
 /// #279）が生成する。本クレートの通常ビルド（`gen-cli` 無効）には YAML 変換依存
 /// （`utoipa/yaml` 経由の serde_norway）を一切含まない
