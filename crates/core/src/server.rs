@@ -1839,6 +1839,20 @@ where
             return None;
         }
 
+        // RFC 9112 §6.3: 1xx・204・304 は body を持ち得ないため、ハンドラが
+        // これらのステータスを `handle_streaming` から返しても body 送出
+        // ループへ入らずヘッド送出のみで応答を完了させる（レビュー指摘、
+        // イシュー #319。`Response::is_bodyless_status` の doc を参照）。
+        // HTTP/1.0 は本来 body を EOF 終端するため、ここで body を送出
+        // しないことがそのまま「応答完了」を意味する（追加のフレーミング
+        // ヘッダを持たないため誤終端の余地がない）。keep-alive は HTTP/1.0
+        // では常に無効。応答は完走しているため `on_response` を呼ぶ
+        // `Some` を返す（`None` は打ち切り・エラー専用の契約、上の doc の
+        // 「戻り値」節を参照）。
+        if Response::is_bodyless_status(streaming.status) {
+            return Some(false);
+        }
+
         loop {
             let recv_timeout = DEFAULT_WRITE_TIMEOUT.min(remaining_lifetime(connection_started_at));
             let outcome = tokio::time::timeout(recv_timeout, streaming.recv())
@@ -1898,6 +1912,23 @@ where
         .is_err()
     {
         return None;
+    }
+
+    // RFC 9112 §6.3: 1xx・204・304 は body を持ち得ないため
+    // `Transfer-Encoding: chunked` を出力しない（`serialize_chunked_head`
+    // 側の抑制）のと対で、body 送出ループ・終端チャンク（`0\r\n\r\n`）の
+    // 送出自体もスキップする（レビュー指摘、イシュー #319）。ヘッダのみ
+    // 抑制して終端チャンクを送ると、strict なクライアントは空行直後で
+    // 応答終了と解釈するため、続けて書いた終端チャンクのバイト列が次の
+    // 応答の先頭と誤読されるレスポンス分割（キープアライブ接続上の
+    // スマグリング）を招く。応答自体は完走しているため、通常の `End` と
+    // 同じく `on_response` を発火させる `Some` を返す。
+    if Response::is_bodyless_status(streaming.status) {
+        return Some(
+            keep_alive
+                && connection_started_at.elapsed() < server.max_connection_lifetime
+                && !shutdown_flag.load(Ordering::Relaxed),
+        );
     }
 
     loop {
@@ -3084,6 +3115,96 @@ GET /c HTTP/1.1\r\n\r\n",
             occurrences, 2,
             "keep-alive 継続によりパイプライン済み 2 リクエスト目にも応答するはず: {text:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn streaming_bodyless_status_omits_transfer_encoding_and_terminator() {
+        // レビュー指摘（イシュー #319）: `handle_streaming` が 204 を返した
+        // 場合、RFC 9112 §6.3 により body を持ち得ないため
+        // `Transfer-Encoding: chunked` も終端チャンク（`0\r\n\r\n`）も
+        // 出力してはならない。producer が誤って chunk を送信しようとしても
+        // （`chunks` に非空データを積んでいる）、それがワイヤへ漏れないこと
+        // も合わせて確認する。
+        let handler = StreamingHandler {
+            status: 204,
+            content_type: None,
+            chunks: vec![b"leaked"],
+        };
+        let server = Server::new().handler(handler);
+        let response = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+
+        assert!(response.starts_with("HTTP/1.1 204 No Content\r\n"));
+        assert!(!response.contains("Transfer-Encoding"));
+        assert!(!response.contains("Content-Length"));
+        assert!(
+            !response.contains("leaked"),
+            "body を持ち得ないステータスでは producer が送った chunk が \
+             ワイヤへ漏れてはならない: {response:?}"
+        );
+        // ヘッド送出のみで終わる: 空行の直後に何も続かない。
+        assert!(response.ends_with("\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn streaming_bodyless_status_keeps_keep_alive_without_desync() {
+        // レビュー指摘（イシュー #319）の核心: 204 応答後も keep-alive を
+        // 継続でき、かつパイプライン済みの次リクエストが正しくパースできる
+        // ことを確認する（ヘッダ抑制のみで終端チャンクを送っていた場合、
+        // 次リクエストの手前に `0\r\n\r\n` が混入し応答分割・スマグリングを
+        // 招く。本テストはそれが起きていないことの直接的な回帰防止）。
+        let handler = StreamingHandler {
+            status: 204,
+            content_type: None,
+            chunks: vec![],
+        };
+        let server = Server::new().handler(handler);
+        let (mut client, server_stream) = tokio::io::duplex(8192);
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        client
+            .write_all(b"GET / HTTP/1.1\r\n\r\nGET / HTTP/1.1\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+
+        handle_connection(&server, server_stream).await;
+
+        let mut out = Vec::new();
+        client.read_to_end(&mut out).await.unwrap();
+        let text = String::from_utf8(out).unwrap();
+
+        // 2 回分の応答がそのまま連結され、いずれも 204 のステータス行から
+        // 始まること（desync していれば 2 回目の応答が別のバイト列から
+        // 始まり "HTTP/1.1 204" に一致しなくなる）。
+        let expected =
+            "HTTP/1.1 204 No Content\r\n\r\nHTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+        assert_eq!(
+            text, expected,
+            "204 応答 2 連続はヘッド 2 個のみで構成され、チャンク終端の \
+             混入による desync があってはならない"
+        );
+    }
+
+    #[tokio::test]
+    async fn http10_streaming_bodyless_status_omits_body_and_framing_headers() {
+        // HTTP/1.0 経路でも同様に body・フレーミングヘッダを出力しない。
+        let handler = StreamingHandler {
+            status: 304,
+            content_type: None,
+            chunks: vec![b"leaked"],
+        };
+        let server = Server::new().handler(handler);
+        let response = roundtrip(&server, b"GET / HTTP/1.0\r\n\r\n").await;
+
+        assert!(response.starts_with("HTTP/1.1 304 Not Modified\r\n"));
+        assert!(response.contains("Connection: close\r\n"));
+        assert!(!response.contains("Transfer-Encoding"));
+        assert!(!response.contains("Content-Length"));
+        assert!(
+            !response.contains("leaked"),
+            "body を持ち得ないステータスでは producer が送った chunk が \
+             ワイヤへ漏れてはならない: {response:?}"
+        );
+        assert!(response.ends_with("\r\n\r\n"));
     }
 
     #[tokio::test]
