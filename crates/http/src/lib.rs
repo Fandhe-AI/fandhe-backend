@@ -26,6 +26,9 @@
 //!    [`request::RequestHead::query`] が返す生文字列を受け取り、`&`/`=` へ
 //!    分解する sans-IO 純関数。呼び出し元（`crates/routes` のハンドラ・
 //!    `crates/plugin-*`）が個別実装していた同型コードの重複を解消する。
+//! 7. percent-decode ヘルパ（[`percent`]、イシュー #307）。ルーティング照合の
+//!    非デコード契約（[`request::RequestHead::path`]）は変えず、ハンドラが
+//!    照合確定後に明示的に呼ぶ場合のみデコードする opt-in 純関数。
 //!
 //! 本クレートの実行時依存は tokio の `io-util`（`AsyncRead`/`AsyncReadExt`）
 //! のみであり、それ以外の依存は持たない（pay-for-what-you-use。
@@ -39,6 +42,7 @@ pub mod body;
 pub mod buffer;
 pub mod chunked;
 pub mod connection;
+pub mod percent;
 pub mod query;
 pub mod request;
 pub mod response;
