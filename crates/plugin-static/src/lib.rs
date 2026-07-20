@@ -29,8 +29,12 @@
 //! # フェイルクローズ設計（OWASP A01/A03/A04/A05、`.claude/rules/security.md`）
 //!
 //! - **二層防御**: (1) I/O 前の字句検証（末尾パスをセグメント分割し、空・
-//!   `.`・`..`・NUL・`\` を含むセグメントを拒否。パーセントデコードは行わず
-//!   `Router` のパス照合方針と同じ「正規化しない」判断を踏襲する）、
+//!   `.`・`..`・NUL・`\`・先頭が `.` のセグメント（ドットファイル・
+//!   ドットディレクトリ、`.env`・`.git/config`・`.htpasswd` 等の機密
+//!   ファイルが公開 root 配下に置かれた場合の意図しない配信を一律拒否する。
+//!   イシュー #318 レビュー指摘対応）を含むセグメントを拒否。パーセント
+//!   デコードは行わず `Router` のパス照合方針と同じ「正規化しない」判断を
+//!   踏襲する）、
 //!   (2) `std::fs::canonicalize` 後の正規化済み実パスが正規化済み root 配下
 //!   （`starts_with`）であることの検証（シンボリックリンク経由の脱出を拒否）
 //! - ファイル未検出・検証失敗・権限エラー・サイズ超過は**一律 404**
@@ -235,11 +239,17 @@ fn strip_mount<'a>(path: &'a str, mount: &str) -> Option<&'a str> {
 /// `crates/routes/src/pattern.rs` の `is_safe_segment_value` と同一方針
 /// （非空・`.`/`..` 不一致）に加え、本クレートはファイルシステムパスへ
 /// 直接連結するため NUL・`\`（Windows パス区切り誤用対策）も拒否する
-/// （計画書 5 節の拒否テスト一覧に対応）。
+/// （計画書 5 節の拒否テスト一覧に対応）。さらに先頭が `.` のセグメント
+/// （ドットファイル・ドットディレクトリ）も一律拒否する。`.` と `..` は
+/// この条件に包含されるが可読性のため明示判定も残す。公開 root 配下に
+/// `.env`・`.git/config`・`.htpasswd` 等の機密ファイルが置かれた場合の
+/// 意図しない配信（OWASP A01/A05）を防ぐフェイルクローズ判断（イシュー
+/// #318 レビュー指摘対応、`docs/design/plugin-boundary.md` 5.10 節）。
 fn is_safe_segment(segment: &str) -> bool {
     !segment.is_empty()
         && segment != "."
         && segment != ".."
+        && !segment.starts_with('.')
         && !segment.contains('\0')
         && !segment.contains('\\')
 }
@@ -660,6 +670,37 @@ mod tests {
         assert!(!is_safe_segment("a\\b"));
         assert!(!is_safe_segment("a\0b"));
         assert!(is_safe_segment("normal-file.txt"));
+    }
+
+    #[test]
+    fn is_safe_segment_rejects_leading_dot() {
+        assert!(!is_safe_segment(".env"));
+        assert!(!is_safe_segment(".git"));
+        assert!(!is_safe_segment(".htpasswd"));
+    }
+
+    #[tokio::test]
+    async fn rejects_dotfile_at_root() {
+        // 公開 root 直下に `.env` が置かれた設定ミスがあっても配信しない
+        // （OWASP A01/A05、イシュー #318 レビュー指摘対応）。
+        let dir = TempDir::new();
+        dir.write(".env", b"SECRET=leak");
+        let config = config_for(&dir);
+        let head = head_from(b"GET /static/.env HTTP/1.1\r\n\r\n");
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 404);
+    }
+
+    #[tokio::test]
+    async fn rejects_dotdir_nested_file() {
+        // `.git/config` のようにドットディレクトリ配下のファイルも同様に
+        // 一律 404 とする（先頭セグメントで拒否するため到達しない）。
+        let dir = TempDir::new();
+        dir.write(".git/config", b"[core]\n");
+        let config = config_for(&dir);
+        let head = head_from(b"GET /static/.git/config HTTP/1.1\r\n\r\n");
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 404);
     }
 
     #[tokio::test]

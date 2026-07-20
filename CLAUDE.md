@@ -150,10 +150,12 @@ fandhe-backend/
 │   │                                    # インターセプト型（`try_intercept`）+ `spawn_blocking`
 │   │                                    # 変種。`crates/core` の `static` feature 経由で
 │   │                                    # `Server::static_files(config)` 登録時のみ `GET` を
-│   │                                    # 配信。二層防御（I/O 前の字句検証 + canonicalize 後の
-│   │                                    # root 配下検証）でパストラバーサル・シンボリック
-│   │                                    # リンク脱出を拒否し、未検出・検証失敗・サイズ超過は
-│   │                                    # 一律 404。外部依存ゼロ（`fandhe-backend-http` + `tokio`
+│   │                                    # 配信。二層防御（I/O 前の字句検証（先頭ドット
+│   │                                    # セグメント拒否で `.env`・`.git/config` 等の機密
+│   │                                    # ファイル配信も遮断）+ canonicalize 後の root 配下
+│   │                                    # 検証）でパストラバーサル・シンボリックリンク脱出を
+│   │                                    # 拒否し、未検出・検証失敗・サイズ超過は一律 404。
+│   │                                    # 外部依存ゼロ（`fandhe-backend-http` + `tokio`
 │   │                                    # の `rt` feature のみ）、`docs/design/plugin-boundary.md`
 │   │                                    # 5.10 節を参照）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
