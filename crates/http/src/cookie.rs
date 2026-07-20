@@ -26,7 +26,12 @@ pub enum CookieError {
     InvalidName,
     /// cookie 値が RFC 6265 cookie-octet の範囲外の文字を含む。
     InvalidValue,
-    /// `Path` 属性値が RFC 6265 path-value の範囲外の文字を含む。
+    /// `Path` 属性値が RFC 6265 path-value の範囲外の文字を含む、または
+    /// `/` で始まらない（後者は文法上は path-value として許容されうるが、
+    /// RFC 6265 5.2.4 のクッキーパス抽出アルゴリズムによりユーザーエージェント
+    /// 側でデフォルトパスへフォールバックし黙って無視される。呼び出し元が
+    /// cookie スコープを絞ったつもりでも実際には絞られない不整合を招くため、
+    /// 構築時点でフェイルクローズに拒否する）。
     InvalidPath,
 }
 
@@ -35,7 +40,9 @@ impl std::fmt::Display for CookieError {
         let reason = match self {
             Self::InvalidName => "cookie 名が空、または RFC 9110 tchar 以外の文字を含む",
             Self::InvalidValue => "cookie 値が RFC 6265 cookie-octet の範囲外の文字を含む",
-            Self::InvalidPath => "Path 属性値が RFC 6265 path-value の範囲外の文字を含む",
+            Self::InvalidPath => {
+                "Path 属性値が RFC 6265 path-value の範囲外の文字を含む、または '/' で始まらない"
+            }
         };
         f.write_str(reason)
     }
@@ -222,7 +229,14 @@ impl SetCookie {
     /// `Path` 属性を設定する。
     ///
     /// `path` は RFC 6265 path-value（CTL と `;` を除く `%x20`–`%x7E`）で
-    /// 検証する。違反は [`CookieError::InvalidPath`]。
+    /// 検証し、加えて `/` で始まることを要求する。違反は
+    /// [`CookieError::InvalidPath`]。
+    ///
+    /// `/` で始まらない値を文法上は path-value として許容してしまうと、
+    /// RFC 6265 5.2.4 のクッキーパス抽出アルゴリズムによりユーザーエージェント
+    /// がその `Path` 属性を無視してデフォルトパスへフォールバックする
+    /// （ブラウザからは指定した `Path` が効いていないように見える不整合が
+    /// 生じる）ため、構築時点でフェイルクローズに拒否する。
     ///
     /// ```
     /// use fandhe_backend_http::cookie::{CookieError, SetCookie};
@@ -233,10 +247,14 @@ impl SetCookie {
     /// // `;` を含む path は構築段階で拒否される。
     /// let err = SetCookie::new("session", "abc").unwrap().path("/a;b").unwrap_err();
     /// assert_eq!(err, CookieError::InvalidPath);
+    ///
+    /// // `/` で始まらない path はユーザーエージェント側で無視されうるため拒否される。
+    /// let err = SetCookie::new("session", "abc").unwrap().path("api").unwrap_err();
+    /// assert_eq!(err, CookieError::InvalidPath);
     /// ```
     pub fn path(mut self, path: impl Into<String>) -> Result<Self, CookieError> {
         let path = path.into();
-        if path.is_empty() || !path.bytes().all(is_path_value) {
+        if path.is_empty() || !path.starts_with('/') || !path.bytes().all(is_path_value) {
             return Err(CookieError::InvalidPath);
         }
         self.path = Some(path);
@@ -449,6 +467,26 @@ mod tests {
     fn path_accepts_root_and_nested_path() {
         assert!(SetCookie::new("s", "v").unwrap().path("/").is_ok());
         assert!(SetCookie::new("s", "v").unwrap().path("/api/v1").is_ok());
+    }
+
+    /// RFC 6265 5.2.4 のクッキーパス抽出アルゴリズムにより、`/` で始まらない
+    /// `Path` 属性値はユーザーエージェント側でデフォルトパスへフォールバック
+    /// され黙って無視される（Cursor Bugbot 指摘、PR #328）。呼び出し側が
+    /// cookie スコープを絞ったつもりでも実際には絞られない不整合を防ぐため、
+    /// 構築時点で拒否することを確認する。
+    #[test]
+    fn path_rejects_values_not_starting_with_slash() {
+        assert_eq!(
+            SetCookie::new("s", "v").unwrap().path("api").unwrap_err(),
+            CookieError::InvalidPath
+        );
+        assert_eq!(
+            SetCookie::new("s", "v")
+                .unwrap()
+                .path("api/v1")
+                .unwrap_err(),
+            CookieError::InvalidPath
+        );
     }
 
     // --- 属性直列化 ---
