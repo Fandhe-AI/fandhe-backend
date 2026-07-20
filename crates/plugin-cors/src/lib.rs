@@ -297,7 +297,10 @@ pub fn is_preflight(head: &RequestHead) -> bool {
 ///
 /// # 判定・応答
 ///
-/// - `Origin` 不許可、または `Access-Control-Request-Method` が
+/// - `Origin` ヘッダがない素の `OPTIONS`（CORS プリフライトではない
+///   ディスカバリ目的の `OPTIONS`）は、`Router` の登録済みパスに対する
+///   通常の未マッチ `OPTIONS` 応答と同じ `405` + `Allow`（`allow` を反映）
+///   を返す。`Origin` 不許可、または `Access-Control-Request-Method` が
 ///   `config.allow_methods` 相当（未指定時は `allow`）に含まれない場合は
 ///   CORS ヘッダなしの `403`
 /// - 許可された場合は `204` + `Access-Control-Allow-Origin`
@@ -305,7 +308,11 @@ pub fn is_preflight(head: &RequestHead) -> bool {
 ///   `Vary: Origin` も付与）+ `Access-Control-Allow-Methods`
 ///   （`config` 未指定時は `allow` を反映）+ `Access-Control-Allow-Headers`
 ///   （`config.allow_headers` 設定時のみ）+ `Access-Control-Max-Age`
-///   （`config.max_age` 設定時のみ）
+///   （`config.max_age` 設定時のみ）+（`config.credentials` が `true` の
+///   場合）`Access-Control-Allow-Credentials: true`（ブラウザは credential
+///   付きクロスオリジンリクエストを進める前にプリフライト応答へこの
+///   ヘッダーを要求するため、`apply_cors_headers` の実リクエスト応答と
+///   同じ付与が必須）
 ///
 /// ```
 /// use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
@@ -332,6 +339,14 @@ pub fn is_preflight(head: &RequestHead) -> bool {
 /// };
 /// let res = preflight_response(&head, &allow, &config);
 /// assert_eq!(res.status, 403);
+///
+/// // Origin ヘッダのない素の OPTIONS は Router 既定と同じ 405 + Allow。
+/// let buf = b"OPTIONS /todos HTTP/1.1\r\n\r\n";
+/// let ParseOutcome::Complete { head, .. } = parse_request_head(buf).unwrap() else {
+///     unreachable!()
+/// };
+/// let res = preflight_response(&head, &allow, &config);
+/// assert_eq!(res.status, 405);
 /// ```
 #[must_use]
 pub fn preflight_response(
@@ -339,8 +354,13 @@ pub fn preflight_response(
     allow: &AllowedMethods,
     config: &CorsConfig,
 ) -> Response {
+    // `Origin` ヘッダがない場合は CORS プリフライトではなく、CORS 目的でない
+    // 素の OPTIONS ディスカバリと解釈する。`Router::options_fallback` 未配線時の
+    // 既定挙動（405 + `Allow`、`crates/routes/src/lib.rs`）と一致させ、
+    // このハンドラを配線しただけで素の OPTIONS が壊れないようにする
+    // （Cursor Bugbot 指摘、PR #330）。
     let Some(origin) = head.header("origin") else {
-        return Response::empty(403);
+        return Response::empty(405).with_allow(allow.clone());
     };
     let req_method = head.header("access-control-request-method").unwrap_or("");
 
@@ -381,6 +401,13 @@ pub fn preflight_response(
     }
     if let Some(max_age) = config.max_age {
         response = try_add_header(response, "Access-Control-Max-Age", max_age.to_string());
+    }
+    // credentials 付きクロスオリジンリクエストはブラウザがプリフライト応答に
+    // このヘッダーを要求する（`apply_cors_headers` と同一条件、Cursor Bugbot
+    // 指摘、PR #330）。付与し忘れると許可 origin・method でも credential 付き
+    // fetch/cookie フローがブラウザ側でブロックされる。
+    if config.credentials {
+        response = try_add_header(response, "Access-Control-Allow-Credentials", "true");
     }
     response
 }
@@ -570,6 +597,64 @@ mod tests {
 
         let res = preflight_response(&head, &allow, &config);
         assert_eq!(res.status, 403);
+    }
+
+    #[test]
+    fn preflight_response_includes_credentials_header_when_configured() {
+        // Cursor Bugbot 指摘（PR #330、High）: allow_credentials(true) 時、
+        // apply_cors_headers と同様に preflight_response も
+        // Access-Control-Allow-Credentials を付与しなければ、ブラウザは
+        // credential 付きクロスオリジンリクエストを進めない。
+        let config = CorsConfig::builder()
+            .allow_origin("https://app.example.com")
+            .allow_credentials(true)
+            .build()
+            .unwrap();
+        let allow = AllowedMethods::from_methods(["GET".to_string()]).unwrap();
+        let head = head_from(
+            b"OPTIONS /todos HTTP/1.1\r\nOrigin: https://app.example.com\r\nAccess-Control-Request-Method: GET\r\n\r\n",
+        );
+
+        let res = preflight_response(&head, &allow, &config);
+        assert_eq!(res.status, 204);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(text.contains("Access-Control-Allow-Credentials: true\r\n"));
+    }
+
+    #[test]
+    fn preflight_response_omits_credentials_header_when_not_configured() {
+        let config = CorsConfig::builder()
+            .allow_origin("https://app.example.com")
+            .build()
+            .unwrap();
+        let allow = AllowedMethods::from_methods(["GET".to_string()]).unwrap();
+        let head = head_from(
+            b"OPTIONS /todos HTTP/1.1\r\nOrigin: https://app.example.com\r\nAccess-Control-Request-Method: GET\r\n\r\n",
+        );
+
+        let res = preflight_response(&head, &allow, &config);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(!text.contains("Access-Control-Allow-Credentials"));
+    }
+
+    #[test]
+    fn preflight_response_without_origin_returns_405_with_allow() {
+        // Cursor Bugbot 指摘（PR #330、Medium）: Origin ヘッダのない素の
+        // OPTIONS（CORS 目的でないディスカバリ）は、preflight_response を
+        // Router::options_fallback へ配線しても Router 既定の 405 + Allow を
+        // 維持しなければならない（403 にすると素の OPTIONS が壊れる）。
+        let config = CorsConfig::builder()
+            .allow_origin("https://app.example.com")
+            .build()
+            .unwrap();
+        let allow = AllowedMethods::from_methods(["GET".to_string(), "POST".to_string()]).unwrap();
+        let head = head_from(b"OPTIONS /todos HTTP/1.1\r\n\r\n");
+
+        let res = preflight_response(&head, &allow, &config);
+        assert_eq!(res.status, 405);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(text.contains("Allow: GET, POST\r\n"));
+        assert!(!text.contains("Access-Control-Allow-Origin"));
     }
 
     #[test]
