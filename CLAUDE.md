@@ -71,7 +71,13 @@ fandhe-backend/
 │   │                                    # `cookie::SetCookie` で `Set-Cookie` ヘッダを安全に構築
 │   │                                    # （RFC 6265 cookie-name/cookie-value/path-value 検証、
 │   │                                    # `HttpOnly`/`Secure`/`SameSite`/`Path`/`Max-Age` 属性対応、
-│   │                                    # 認証・セッション実装前提整備、イシュー #303）
+│   │                                    # 認証・セッション実装前提整備、イシュー #303）。
+│   │                                    # `error::IntoResponse` / `error::error_response` で
+│   │                                    # エラーレスポンス共通化ヘルパを提供（serde 非依存、
+│   │                                    # JSON エラーボディ標準形 `{"error":"..."}` を手実装
+│   │                                    # エスケープで直列化、`message` は `&'static str` 限定で
+│   │                                    # スタックトレース・内部情報の流出経路を型レベルで排除、
+│   │                                    # イシュー #310）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
