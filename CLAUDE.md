@@ -111,7 +111,10 @@ fandhe-backend/
 │   ├── bench-accept-exclusive.sh       # 専有実行枠で bench-accept.sh（REQ-1/NFR-1/NFR-2 判定）を
 │   │                                    # 実行する wrapper。REQ-2 基準 5（両 feature 無効時のコア
 │   │                                    # 性能維持）の再計測に使用（#260、benches/reports/
-│   │                                    # task-2.4-plugin-accept.md）
+│   │                                    # task-2.4-plugin-accept.md）。`FAIL_RETRIES`（既定 0）で
+│   │                                    # 単発 FAIL の限定再試行に対応（#285、`.github/workflows/
+│   │                                    # bench-schedule.yml` から週次 + workflow_dispatch で定期
+│   │                                    # 実行し、REQ-1/NFR-1 の性能退行を継続検知する）
 │   └── bench-http.sh / bench-rss.sh / bench-footprint.sh  # RPS・負荷時 RSS・起動時間/バイナリサイズ計測
 ├── scripts/               # CI・運用スクリプト（TASK-15.2 で追加）
 │   ├── README.md                      # 使い方・前提ツール・CI との対応

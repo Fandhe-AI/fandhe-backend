@@ -218,6 +218,74 @@ else
     fail "snapshot_busy_processes が期待どおりでない: ${snapshot_out}"
 fi
 
+echo "===== nfr6_run_with_fail_retry: 単発 FAIL 限定再試行（イシュー #285） ====="
+# wait_for_quiescence / snapshot_environment が即座に成立するようモック化する
+# （再試行ロジックそのものの検証が目的で、静穏判定・環境スナップショットの
+# 中身は上のテストで別途検証済み）。
+get_loadavg1() { echo "0.10"; }
+list_busy_process_names() { :; }
+QUIESCE_WAIT_SECS=5
+QUIESCE_POLL_INTERVAL_SECS=1
+
+# 呼び出し回数はプロセス内グローバル変数で数える（`nfr6_run_with_fail_retry` は
+# 同一プロセス内で関数を直接呼ぶため、サブシェル化してファイルへ書き出す必要が
+# ない。実行環境の一時ディレクトリ容量に依存しない安定したテストにするため）。
+
+# ケース 1: 初回 0（PASS）→ 再試行なしでそのまま 0
+CALL_COUNT=0
+always_pass() {
+    CALL_COUNT=$((CALL_COUNT + 1))
+    return 0
+}
+nfr6_run_with_fail_retry 1 always_pass
+retry_status=$?
+assert_eq "初回 PASS（0）は再試行せず終了コード 0" "0" "${retry_status}"
+assert_eq "初回 PASS 時の呼び出し回数は 1 回のみ" "1" "${CALL_COUNT}"
+
+# ケース 2: 1 → 0（初回 FAIL、再試行で PASS）
+CALL_COUNT=0
+fail_then_pass() {
+    CALL_COUNT=$((CALL_COUNT + 1))
+    if [ "${CALL_COUNT}" -eq 1 ]; then
+        return 1
+    fi
+    return 0
+}
+nfr6_run_with_fail_retry 1 fail_then_pass
+retry_status=$?
+assert_eq "1 回目 FAIL・2 回目 PASS は最終的に終了コード 0" "0" "${retry_status}"
+assert_eq "1→0 ケースの呼び出し回数は 2 回（初回 + 再試行 1 回）" "2" "${CALL_COUNT}"
+
+# ケース 3: 1 → 1（2 連続 FAIL で退行確定、再試行は 1 回まで）
+CALL_COUNT=0
+always_fail() {
+    CALL_COUNT=$((CALL_COUNT + 1))
+    return 1
+}
+nfr6_run_with_fail_retry 1 always_fail
+retry_status=$?
+assert_eq "2 連続 FAIL は最終的に終了コード 1（退行確定）" "1" "${retry_status}"
+assert_eq "2 連続 FAIL ケースの呼び出し回数は 2 回（再試行は 1 回のみ）" "2" "${CALL_COUNT}"
+
+# ケース 4: BLOCKED（終了コード 2）は再試行しない
+CALL_COUNT=0
+always_blocked() {
+    CALL_COUNT=$((CALL_COUNT + 1))
+    return 2
+}
+nfr6_run_with_fail_retry 1 always_blocked
+retry_status=$?
+assert_eq "BLOCKED（2）は終了コードをそのまま透過する" "2" "${retry_status}"
+assert_eq "BLOCKED ケースは再試行せず呼び出し回数 1 回のみ" "1" "${CALL_COUNT}"
+
+# ケース 5: FAIL_RETRIES=0（再試行回数 0）指定時は初回 FAIL がそのまま最終結果になる
+# （既定値・従来挙動の回帰防止）
+CALL_COUNT=0
+nfr6_run_with_fail_retry 0 always_fail
+retry_status=$?
+assert_eq "再試行回数 0 指定時は初回 FAIL がそのまま終了コード 1" "1" "${retry_status}"
+assert_eq "再試行回数 0 指定時は呼び出し回数 1 回のみ（従来挙動と同一）" "1" "${CALL_COUNT}"
+
 echo ""
 echo "===== 結果: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} ====="
 if [ "${FAIL_COUNT}" -gt 0 ]; then

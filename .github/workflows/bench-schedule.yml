@@ -1,0 +1,169 @@
+name: bench-schedule
+
+# イシュー #285（REQ-1/NFR-1、docs/spec/04-requirements.md）:
+# `benches/bench-accept-exclusive.sh`（axum-ref 比 REQ-1・NFR-1・NFR-2 判定、
+# TASK-1.6-1/#71・#260）は手動実行前提で CI に常設されておらず、2026-07-18 の
+# 再計測 PASS 以降の性能退行を継続検知する体制がなかった
+# （`benches/reports/task-1.6-1-performance.md` 申し送り）。
+# 本 workflow はこれを週次 schedule + workflow_dispatch で定期実行する。
+#
+# なぜ ci.yml へ相乗りさせず別 workflow にするか（設計比較・詳細は
+# docs/design/bench-scheduled-run.md 参照）:
+#   ci.yml の日次 schedule は「dep-audit のみ走らせ、ビルドを伴うジョブは除外する」
+#   という既存方針（.claude/rules/ci.md）を持つ。ベンチ計測はビルド + 専有計測を
+#   伴い重いため、この方針と衝突させず別 workflow・週次実行に分離する。
+#
+# cron 配置（.claude/rules/ci.md「schedule 系ワークフロー同士は cron をずらして
+# 負荷を分散する」）: update-external.yml（00:00 UTC 日次）・ci.yml（00:30 UTC
+# 日次）と重ならない `0 2 * * 0`（日曜 02:00 UTC = 11:00 JST、週次）を使う。
+#
+# 判定の頑健化（単発 FAIL の限定再試行）: `benches/lib/exclusive.sh` の
+# `nfr6_run_with_fail_retry` を `benches/bench-accept-exclusive.sh` 経由で使い、
+# FAIL_RETRIES=1 を指定する。「単発 FAIL は 1 回のみ再試行可、2 連続 FAIL で
+# 退行確定」という規約は `benches/README.md`「定期実行（bench-schedule.yml）」節・
+# 本ファイル冒頭コメントを正とする。BLOCKED（終了コード 2）は再試行しない
+# （フェイルクローズ、計測不能自体を退行検知の対象として起票する）。
+#
+# 退行検知時の扱い（フェイルクローズ）: ジョブを失敗（赤）させ、かつ schedule /
+# workflow_dispatch 実行時は `bench-regression` ラベルで Issue を自動起票する
+# （ci.yml dep-audit ジョブの audit-triage 起票ステップと同一パターン。
+# improvement-proposal 規約の「自動レイヤ（承認不要）」に該当）。
+
+on:
+  schedule:
+    - cron: "0 2 * * 0"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-schedule
+  cancel-in-progress: false
+
+jobs:
+  bench-accept:
+    name: REQ-1/NFR-1 性能ベンチ（専有計測・週次）
+    runs-on: self-hosted
+    # Issue 起票のみジョブ単位で issues: write を付与する（workflow 全体は
+    # contents: read を維持、最小権限。ci.yml dep-audit ジョブと同一パターン）。
+    permissions:
+      contents: read
+      issues: write
+    # ビルド（release ×2）+ 静穏待機（既定上限 1800s）+ 計測 2 試行（FAIL_RETRIES=1）を
+    # 包含する上限。.claude/rules/ci.md の「全ジョブに timeout-minutes を設定する」を
+    # 満たす（多層防御、ハングした専有計測が self-hosted runner を無期限占有しない）。
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        # 他ジョブ（ci.yml fmt/clippy/test 等）と同一コミット SHA で固定する
+        # （サプライチェーン考慮、.claude/rules/security.md）。
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      # self-hosted runner に rustup が未導入/欠落している場合に備え、
+      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
+      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
+      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
+      # ci.yml 各ジョブと同一パターン。
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      # oha（HTTP 負荷生成、benches/README.md 前提ツール）を冪等・バージョン固定で
+      # インストールする（サプライチェーン考慮: crates.io からバージョン固定で取得。
+      # 既存 cargo-nextest/cargo-deny 等の導入ステップと同じ方針）。
+      - name: Ensure oha 1.9.1
+        run: |
+          if ! oha --version 2>/dev/null | grep -qE ' 1\.9\.1($| )'; then
+            cargo install --locked oha@1.9.1
+          fi
+
+      # `benches/bench-accept-exclusive.sh` は専有ロック取得後にビルド → 静穏確認 →
+      # 計測の順で実行する（doc comment 参照）。本ステップ自体は事前ビルドを
+      # 行わない（wrapper が内部で cargo build する）。
+      - name: bench-accept-exclusive.sh（FAIL_RETRIES=1 で単発ノイズを吸収）
+        id: bench
+        # 終了コード: 0=PASS、1=FAIL（退行確定）、2=BLOCKED（計測不能）。
+        # フェイルクローズのため `set -e` は使わず、終了コードを捕捉してから
+        # ジョブを明示的に失敗させる（次の起票ステップを確実に実行するため）。
+        run: |
+          set +e
+          FAIL_RETRIES=1 REPORT_MD="${RUNNER_TEMP}/bench-report.md" bash benches/bench-accept-exclusive.sh
+          echo "status=$?" >> "${GITHUB_OUTPUT}"
+
+      - name: 退行・計測不能検知時の Issue 起票
+        # improvement-proposal 規約（.claude/rules/improvement-proposal.md）の
+        # 「自動レイヤ（承認不要）」: フレームワーク自身の自動監査機構による能動的な
+        # 提示であり、ci.yml dep-audit ジョブの audit-triage 起票と同一レイヤ。
+        # schedule / workflow_dispatch 実行時のみ（本 workflow はこの 2 トリガーしか
+        # 持たないため実質常に真だが、他ジョブとの記述一貫性のため明示する）。
+        if: always() && steps.bench.outputs.status != '0' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BENCH_STATUS: ${{ steps.bench.outputs.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          if [ "${BENCH_STATUS}" = "1" ]; then
+            title_prefix="bench-regression: REQ-1/NFR-1 性能退行を検知"
+            verdict="FAIL（退行確定。FAIL_RETRIES=1 を使い切っても 2 連続 FAIL）"
+          else
+            title_prefix="bench-regression: REQ-1/NFR-1 計測が BLOCKED（計測不能）"
+            verdict="BLOCKED（専有ロック取得不能・ビルド失敗・静穏未達のいずれか。計測不能自体も継続検証体制の喪失として扱う）"
+          fi
+
+          # ラベルは冪等に作成する（既存でも失敗させない。ci.yml dep-audit ジョブと同型）。
+          gh label create bench-regression --color B60205 \
+            --description "週次ベンチ（bench-schedule.yml）の REQ-1/NFR-1 退行・計測不能検知（イシュー #285）" \
+            --force || echo "警告: bench-regression ラベルの作成に失敗しました（gh 障害でも判定結果は変えない）" >&2
+
+          # 重複起票防止（同一ラベルの open Issue が既にあればスキップ）。
+          existing="$(gh issue list --search "bench-regression" --state open --label bench-regression --json number --jq 'length' || echo "0")"
+          if [ "${existing}" != "0" ]; then
+            echo "既存 open Issue（bench-regression ラベル）があるためスキップします"
+            exit 0
+          fi
+
+          report_body="$(mktemp)"
+          {
+            echo "## 検知内容"
+            echo
+            echo "- 判定: ${verdict}"
+            echo "- 実行: ${RUN_URL}"
+            echo "- ワークフロー: bench-schedule.yml（週次 schedule または workflow_dispatch）"
+            echo
+            echo "## 一次対応"
+            echo
+            echo "1. \`REPORT_MD=... FAIL_RETRIES=1 bash benches/bench-accept-exclusive.sh\` を手動再実行し、退行の再現を確認する"
+            echo "2. 再現しない場合は環境ノイズと判断し、本 Issue をクローズする"
+            echo "3. 再現する場合は .claude/rules/improvement-proposal.md に従い対応方針を検討する"
+            echo
+            echo "## 計測レポート"
+            echo
+            if [ -s "${RUNNER_TEMP}/bench-report.md" ]; then
+              cat "${RUNNER_TEMP}/bench-report.md"
+            else
+              echo "（レポートファイルが生成されませんでした）"
+            fi
+          } >"${report_body}"
+
+          gh issue create \
+            --title "${title_prefix}" \
+            --label bench-regression \
+            --body-file "${report_body}" \
+            || echo "警告: Issue 起票に失敗しました（gh 障害でも判定結果は変えない）" >&2
+
+      - name: 判定結果でジョブを終了（フェイルクローズ）
+        if: always()
+        env:
+          BENCH_STATUS: ${{ steps.bench.outputs.status }}
+        run: |
+          echo "bench-accept-exclusive.sh 終了コード: ${BENCH_STATUS}"
+          exit "${BENCH_STATUS}"

@@ -536,3 +536,64 @@ PASS/FAIL/SKIP を判定する（レポート不在・「## 結論」セクシ�
 plugin-mechanism-conclusion-verdict.awk`）は「## 結論」セクションが見つかるたびに
 判定を無条件で上書きするため、この追記により古い PASS/FAIL がそのまま権威として
 残る事態（stale PASS）を防ぎ、正しく SKIP 扱いになる（イシュー #260 Bugbot 指摘対応）。**
+
+## 定期実行（bench-schedule.yml、イシュー #285）
+
+REQ-1/NFR-1（`docs/spec/04-requirements.md`）の判定は `bench-accept.sh` /
+`bench-accept-exclusive.sh` として整備済みだったが、手動実行前提で CI に常設されて
+おらず、2026-07-18 の再計測 PASS 以降の性能退行を継続検知する体制がなかった
+（本節冒頭の申し送り、上記「現状」節参照）。`.github/workflows/bench-schedule.yml` は
+これを **週次 schedule（`0 2 * * 0`、日曜 02:00 UTC = 11:00 JST）+ workflow_dispatch**
+で定期実行する。
+
+### なぜ週次・別 workflow なのか
+
+- `ci.yml` の日次 schedule は「dep-audit のみを走らせ、ビルドを伴うジョブは除外する」
+  という既存方針（`.claude/rules/ci.md`）を持つ。ベンチ計測はビルド + 専有計測を
+  伴い重いため、この方針とは衝突させず**別 workflow・週次実行**に切り出す
+  （設計比較の詳細は `docs/design/bench-scheduled-run.md` を参照）。
+- cron は `update-external.yml`（00:00 UTC 日次）・`ci.yml`（00:30 UTC 日次）と
+  重ならない `0 2 * * 0` を使い、self-hosted runner の負荷を分散する
+  （`.claude/rules/ci.md`「schedule 系ワークフロー同士は cron をずらす」）。
+
+### 単発 FAIL の限定再試行規約（フェイルクローズ）
+
+計測は `benches/bench-accept-exclusive.sh` を `FAIL_RETRIES=1` 付きで呼ぶ
+（`benches/lib/exclusive.sh` の `nfr6_run_with_fail_retry`）。単発の keep-alive
+再接続ノイズ等（本節冒頭の申し送り、初回計測が FAIL → 再実行 PASS と振れた実績）を
+退行と誤認しないための頑健化であり、次の規約に従う。
+
+- **FAIL（終了コード 1）のときのみ再試行する**: 同一専有ロックを保持したまま
+  `wait_for_quiescence` で静穏確認をやり直し、1 回だけ再計測する。
+- **単発 FAIL は 1 回のみ再試行可、2 連続 FAIL で退行確定**。再試行後も FAIL なら
+  最終結果として FAIL を確定し、それ以上は再試行しない。
+- **PASS（0）は再試行しない**（偶然の 1 回 PASS を過大評価しないため、初回 PASS を
+  そのまま採用する）。
+- **BLOCKED（終了コード 2）は再試行しない**。計測環境自体が壊れている（専有ロック
+  取得不能・ビルド失敗・静穏未達）ため再試行しても意味がなく、フェイルクローズで
+  即座に BLOCKED を返す。
+- `FAIL_RETRIES` 既定値は `0`（再試行なし、導入前と同一挙動）。手動実行
+  （`bash benches/bench-accept-exclusive.sh`）では既定のまま使ってよい。
+
+### 退行検知時の扱い（フェイルクローズ・Issue 自動起票）
+
+`bench-accept-exclusive.sh` が非 0（FAIL または BLOCKED）で終了した場合、
+`bench-accept` ジョブ自体を失敗（赤）させたうえで、`bench-regression` ラベルの
+Issue を自動起票する（`ci.yml` dep-audit ジョブの `audit-triage` 起票と同一
+パターン。`.claude/rules/improvement-proposal.md` の「自動レイヤ（承認不要）」に
+該当する自動監査機構）。FAIL（退行確定）と BLOCKED（計測不能）はタイトルで区別
+する。計測不能の黙殺も「継続検証体制の喪失」であるため、握りつぶさず起票する。
+重複起票は `bench-regression` ラベルの既存 open Issue 有無で防止する。
+
+### 手動での再実行手順
+
+```bash
+# GitHub CLI で workflow_dispatch を起動する
+gh workflow run bench-schedule.yml
+
+# 実行状況の確認
+gh run list --workflow bench-schedule.yml --limit 5
+```
+
+詳細な方式比較（相乗り案・別 workflow 案・外部起動案）・退行検知時の通知・一次対応
+フローは `docs/design/bench-scheduled-run.md` を参照。

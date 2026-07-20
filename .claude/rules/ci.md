@@ -18,7 +18,13 @@ GitHub ホステッドランナー（`ubuntu-latest` / `macos-latest` / `windows
   ビルドを伴うジョブ（fmt/clippy/test/openapi 系）は `if: github.event_name != 'schedule'`
   で除外して runner の負荷を抑える
 - schedule 系ワークフロー同士は cron をずらして負荷を分散する
-  （例: ci.yml 00:30 UTC / update-external.yml 00:00 UTC）
+  （例: ci.yml 00:30 UTC / update-external.yml 00:00 UTC / bench-schedule.yml
+  週次 02:00 UTC 日曜）
+- **週次ベンチ workflow（`bench-schedule.yml`、イシュー #285）は「日次 schedule は
+  dep-audit のみ」方針の例外ではない**。REQ-1/NFR-1 性能ベンチ（`benches/
+  bench-accept-exclusive.sh`）はビルド + 専有計測を伴い重いため、ci.yml の日次
+  schedule には相乗りさせず、別 workflow・週次実行に切り出すことで両立させる
+  （設計比較は `docs/design/bench-scheduled-run.md` 参照）
 - **セキュリティ**: self-hosted runner は永続環境のため、ワークフローの `permissions` は
   最小権限（原則 `contents: read`）とし、fork からの PR に対してシークレットを露出する
   トリガー（`pull_request_target` 等）を追加しない（[[security]]）

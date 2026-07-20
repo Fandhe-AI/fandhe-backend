@@ -248,4 +248,64 @@ snapshot_environment() {
     printf 'snapshot_busy_processes=%s\n' "${busy:-none}"
 }
 
+# 単発 FAIL を退行と誤認しないための限定再試行ラッパー（イシュー #285、
+# `benches/bench-accept-exclusive.sh` の定期実行化で導入）。
+#
+# 背景: `benches/reports/task-1.6-1-performance.md` の申し送りどおり、初回計測が
+# keep-alive 再接続ノイズ等で FAIL → 再実行 PASS と振れた実績がある。専有ロック
+# （flock）・静穏確認だけでは「計測開始直後の一過性ノイズ」までは吸収できないため、
+# 呼び出し元コマンドが終了コード 1（FAIL）を返した場合に限り、同一ロック保持中に
+# 静穏確認をやり直してから 1 回だけ再実行する。
+#
+# 終了コード 0（PASS）・2（BLOCKED）はノイズ起因ではなく確定的な結果として扱い、
+# 再試行しない（0 を再試行すると偶然の 1 回 PASS を過大評価しうる。2 は計測環境
+# 自体が壊れているため再試行しても無意味、フェイルクローズで即座に BLOCKED を返す）。
+#
+# 引数:
+#   $1          残り再試行回数（0 以上の整数。呼び出し元の `FAIL_RETRIES` をそのまま渡す）
+#   $2 以降     実行するコマンドとその引数（例: bash bench-accept.sh ...）
+# 標準エラー出力: 再試行の発生有無を人間可読ログとして出す（呼び出し元がログへ
+# 転記しやすいよう終了コードとは独立に記録する）。
+# 戻り値: 最終試行のコマンド終了コードをそのまま返す（PASS/FAIL/BLOCKED の意味を
+# 呼び出し元スクリプトの doc comment から変えない）。
+#
+# 呼び出し元: `benches/bench-accept-exclusive.sh`（`FAIL_RETRIES` 既定 0 で導入前と
+# 同一挙動を維持し、週次 schedule ワークフロー（`.github/workflows/bench-schedule.yml`）
+# からは `FAIL_RETRIES=1` を指定する）。
+# セルフテスト: `scripts/tests/run-nfr6-exclusive-tests.sh` が `wait_for_quiescence` /
+# `snapshot_environment` をモック化した上で本関数のみを検証する
+# （既存の「副作用のある呼び出し元本体は対象にしない」方針を踏襲）。
+nfr6_run_with_fail_retry() {
+    local retries_left="$1"
+    shift
+    if ! [[ "${retries_left}" =~ ^[0-9]+$ ]]; then
+        echo "エラー: 再試行回数は 0 以上の整数である必要があります（現在: ${retries_left}）" >&2
+        return 1
+    fi
+
+    "$@"
+    local status=$?
+
+    # PASS（0）・BLOCKED（2）は再試行しない。FAIL（1）のみが再試行対象。
+    if [ "${status}" -ne 1 ] || [ "${retries_left}" -le 0 ]; then
+        return "${status}"
+    fi
+
+    echo "FAIL（終了コード 1）を検知。単発ノイズの可能性があるため、静穏確認をやり直して 1 回だけ再試行します（残り再試行回数: ${retries_left} → $((retries_left - 1))）" >&2
+    if ! wait_for_quiescence; then
+        echo "エラー: 再試行前の静穏確認が ${QUIESCE_WAIT_SECS}s 待っても得られませんでした。再試行せず最初の FAIL 結果を採用します" >&2
+        return "${status}"
+    fi
+    snapshot_environment retry >&2
+
+    "$@"
+    local retry_status=$?
+    if [ "${retry_status}" -eq 1 ]; then
+        echo "再試行後も FAIL（終了コード 1）。2 連続 FAIL のため退行として確定します" >&2
+    else
+        echo "再試行の結果: 終了コード ${retry_status}（初回 FAIL はノイズと判断）" >&2
+    fi
+    return "${retry_status}"
+}
+
 export FANDHE_BACKEND_NFR6_LOCK LOAD1_MAX QUIESCE_WAIT_SECS QUIESCE_POLL_INTERVAL_SECS FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE

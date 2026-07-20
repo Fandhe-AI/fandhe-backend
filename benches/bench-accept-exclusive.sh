@@ -27,8 +27,21 @@
 # ロック保持中に行うため、ビルド完了直後に静穏確認（`wait_for_quiescence`）で
 # cargo/rustc 由来の負荷が収まるのを待ってから計測に入る。
 #
-# 呼び出し元: 人間が `bash benches/bench-accept-exclusive.sh` として直接実行する
-# （CI 常設ジョブへは組み込まない。self-hosted runner 負荷抑制方針、.claude/rules/ci.md）。
+# 呼び出し元: 週次 schedule（`.github/workflows/bench-schedule.yml`、イシュー #285）
+# から `FAIL_RETRIES=1` 付きで呼ばれるほか、人間が `bash
+# benches/bench-accept-exclusive.sh` として直接実行することもできる（手動実行時は
+# `FAIL_RETRIES` 既定 0 のまま。REQ-1/NFR-1 の PR/push 常設ゲート化は行わない。
+# self-hosted runner 負荷抑制方針、.claude/rules/ci.md）。
+#
+# FAIL_RETRIES（既定 0）: `bench-accept.sh` が終了コード 1（FAIL）を返した場合に
+# 限り、同一専有ロック保持中に静穏確認をやり直して指定回数だけ再計測する
+# （`benches/lib/exclusive.sh` の `nfr6_run_with_fail_retry`）。
+# `benches/reports/task-1.6-1-performance.md` の申し送りどおり、初回計測が
+# keep-alive 再接続ノイズ等で単発 FAIL になった実績があるための頑健化。
+# 「単発 FAIL は 1 回のみ再試行可、2 連続 FAIL で退行確定」という規約は
+# `benches/README.md`「定期実行（bench-schedule.yml）」節を参照。0（既定）は
+# 再試行なしの従来挙動のまま。BLOCKED（終了コード 2）は再試行しない
+# （計測環境自体が壊れているため意味がなく、フェイルクローズで即座に BLOCKED を返す）。
 #
 # 終了コード: `bench-accept.sh` の終了コードをそのまま透過する
 # （0 = 全項目 PASS、1 = 1 件以上 FAIL、2 = CORE_BIN 未整備で BLOCKED）。
@@ -50,6 +63,12 @@ WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/lib/exclusive.sh"
 
 REPORT_MD="${REPORT_MD:-}"
+# 単発 FAIL の限定再試行回数（既定 0 = 再試行なし、従来挙動と同一）。
+FAIL_RETRIES="${FAIL_RETRIES:-0}"
+if ! [[ "${FAIL_RETRIES}" =~ ^[0-9]+$ ]]; then
+    echo "エラー: FAIL_RETRIES は 0 以上の整数である必要があります（現在: ${FAIL_RETRIES}）" >&2
+    exit 1
+fi
 
 # `bench-accept.sh` の `write_report_conclusion` と同形式の「## 結論」セクションを
 # REPORT_MD に追記する（総合判定行を含まない BLOCKED 用。stale PASS 防止）。
@@ -100,9 +119,9 @@ echo "静穏確認 OK" >&2
 snapshot_environment before >&2
 
 echo "" >&2
-echo "### bench-accept.sh 実行開始（SKIP_BUILD=1、事前ビルド済みのため） ###" >&2
+echo "### bench-accept.sh 実行開始（SKIP_BUILD=1、事前ビルド済みのため。FAIL_RETRIES=${FAIL_RETRIES}） ###" >&2
 set +e
-SKIP_BUILD=1 REPORT_MD="${REPORT_MD}" bash "${SCRIPT_DIR}/bench-accept.sh"
+nfr6_run_with_fail_retry "${FAIL_RETRIES}" env SKIP_BUILD=1 REPORT_MD="${REPORT_MD}" bash "${SCRIPT_DIR}/bench-accept.sh"
 accept_status=$?
 set -e
 
@@ -114,7 +133,7 @@ if [ "${accept_status}" -eq 0 ]; then
 elif [ "${accept_status}" -eq 2 ]; then
     echo "=== 総合: BLOCKED（bench-accept.sh 終了コード 2。CORE_BIN 未整備） ===" >&2
 else
-    echo "=== 総合: FAIL（bench-accept.sh 終了コード ${accept_status}。判定は丸めない） ===" >&2
+    echo "=== 総合: FAIL（bench-accept.sh 終了コード ${accept_status}。FAIL_RETRIES=${FAIL_RETRIES} を使い切っても FAIL。判定は丸めない） ===" >&2
 fi
 
 # bench-accept.sh の終了コードをそのまま透過する（0/1/2 の意味は同スクリプトの
