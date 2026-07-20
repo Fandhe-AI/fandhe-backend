@@ -37,6 +37,10 @@
 //!    従来と変わらない（後方互換）。
 //! 2. 静的ルートが miss した場合のみ、パラメータルートを**登録順**に線形走査し、
 //!    最初に一致したものへ委譲する。
+//! 3. 静的・パラメータいずれのルートにも一致しなかった場合、[`Router::fallback`] /
+//!    [`Router::fallback_with`] で登録済みの共通ハンドラへ委譲する（イシュー #316）。
+//!    未登録時は従来どおり 404 / 405 + `Allow` を返す（後方互換、詳細は
+//!    「フェイルクローズ」節・[`FallbackPolicy`] の doc comment を参照）。
 //!
 //! `{name}` は「非空の 1 セグメント」にのみマッチし、ワイルドカード・複数セグメント
 //! パラメータには対応しない（過剰マッチ防止）。`RequestHead::target` は `fandhe-backend-http` の
@@ -62,7 +66,10 @@
 //!
 //! 登録されたルート（静的・パラメータいずれも）に method + target が一致しない
 //! 場合は 404、target（またはパターン形状）は一致するが method が一致しない場合は
-//! 405 を返す。デフォルト許可の経路は存在しない。
+//! 405 を返す。デフォルト許可の経路は存在しない。[`Router::fallback`] /
+//! [`Router::fallback_with`] を登録しない限りこの挙動は完全に維持され、fallback
+//! 登録済みでも既定ポリシー（[`FallbackPolicy::NotFoundOnly`]）は 405 を fallback へ
+//! 流さない安全側（情報量の少ない `Allow` 開示を維持する側）に倒す。
 
 use std::collections::HashMap;
 
@@ -102,6 +109,24 @@ pub type ParamRouteHandler =
 /// （関心の分離、`.claude/rules/coding-rust.md` の拡張点方針）。
 pub type OptionsFallbackHandler =
     Box<dyn Fn(&RequestHead, &AllowedMethods, &[u8]) -> Response + Send + Sync>;
+
+/// [`Router::fallback_with`] が 405（メソッド不一致）を fallback ハンドラへ流すかを
+/// 選択するポリシー（イシュー #316）。
+///
+/// 既定は [`FallbackPolicy::NotFoundOnly`]（`Default` 実装）。405 を fallback に
+/// 委譲するのは [`FallbackPolicy::IncludeMethodNotAllowed`] を明示指定した場合のみで、
+/// 既定は情報量の少ない安全側（`Allow` ヘッダで登録済み method を開示する 405 を
+/// 維持する側）に倒す（`.claude/rules/security.md` A04 フェイルクローズ方針）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FallbackPolicy {
+    /// 404（未登録パス）のみ fallback へ委譲する。メソッド不一致（従来 405）は
+    /// 引き続き `405 + Allow` を返す（既定）。
+    #[default]
+    NotFoundOnly,
+    /// 404 に加え、メソッド不一致（従来 405）も fallback へ委譲する。この場合
+    /// `Allow` ヘッダは付与されない（method 開示の有無がハンドラ側の責務に移る）。
+    IncludeMethodNotAllowed,
+}
 
 /// method + `target` の完全一致、および `{name}` パスパラメータ（TASK-176、#176）
 /// でハンドラを解決する最小ルータ。
@@ -149,6 +174,12 @@ pub struct Router {
     // 未登録（`None`）なら追加コストは `dispatch` 内の `Option` 参照 1 回のみで、
     // 既定動作（405 + `Allow`）を完全に維持する（後方互換、pay-for-what-you-use）。
     options_fallback: Option<OptionsFallbackHandler>,
+    // 静的・パラメータいずれのルートにも一致しなかった場合の共通フォールバック
+    // （イシュー #316）。未登録（`None`）なら `dispatch` の追加コストは `Option`
+    // 参照 1 回のみで、既定動作（404 / 405 + `Allow`）を完全に維持する
+    // （後方互換、pay-for-what-you-use）。ポリシーは `FallbackPolicy` で 405 を
+    // fallback に流すか個別に選択できる。
+    fallback: Option<(FallbackPolicy, RouteHandler)>,
 }
 
 impl Router {
@@ -171,6 +202,7 @@ impl Router {
             routes: HashMap::new(),
             param_routes: Vec::new(),
             options_fallback: None,
+            fallback: None,
         }
     }
 
@@ -311,6 +343,96 @@ impl Router {
         self
     }
 
+    /// 静的・パラメータいずれのルートにも一致しなかったリクエストの共通処理を登録する
+    /// （イシュー #316）。ポリシーは既定の [`FallbackPolicy::NotFoundOnly`]（404 のみ
+    /// 委譲、405 は従来どおり `Allow` 付きで返す）。405 も委譲したい場合は
+    /// [`Router::fallback_with`] を使う。
+    ///
+    /// `handler` は `RequestHead` は受け取るが `PathParams` は渡されない
+    /// （未マッチのためパラメータ束縛は存在しない）。`target` が origin-form
+    /// （先頭 `/`）でない場合（`OPTIONS *` 等）もパラメータルート照合をスキップして
+    /// 404 経路に入り fallback に到達しうるため、fallback ハンドラは「先頭 `/` の
+    /// origin-form」を前提にしてはならない。本クレートの既存方針（% デコード・
+    /// 正規化を行わない）は fallback にも踏襲され、デコードはハンドラ側の責務のまま
+    /// になる。
+    ///
+    /// 複数回登録した場合は最後の登録が有効になる（[`Router::route`] と同一の
+    /// 上書き意味論）。
+    ///
+    /// ```
+    /// use fandhe_backend_routes::Router;
+    /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// fn head(buf: &[u8]) -> fandhe_backend_http::request::RequestHead {
+    ///     match parse_request_head(buf).unwrap() {
+    ///         ParseOutcome::Complete { head, .. } => head,
+    ///         ParseOutcome::Incomplete => unreachable!(),
+    ///     }
+    /// }
+    ///
+    /// let router = Router::new()
+    ///     .route("GET", "/", |_h, _b| Response::empty(200))
+    ///     .fallback(|_head, _body| Response::new(404, b"not found here".to_vec()));
+    ///
+    /// // 未登録パス → fallback ハンドラの応答。
+    /// let res = router.dispatch(&head(b"GET /missing HTTP/1.1\r\n\r\n"), &[]);
+    /// assert_eq!(res.status, 404);
+    /// assert_eq!(res.body, b"not found here".to_vec());
+    ///
+    /// // 既定ポリシーではメソッド不一致は fallback を経由せず 405 + Allow のまま。
+    /// let res = router.dispatch(&head(b"POST / HTTP/1.1\r\n\r\n"), &[]);
+    /// assert_eq!(res.status, 405);
+    /// let text = String::from_utf8(res.serialize(false)).unwrap();
+    /// assert!(text.contains("Allow: GET\r\n"));
+    /// ```
+    #[must_use]
+    pub fn fallback(
+        self,
+        handler: impl Fn(&RequestHead, &[u8]) -> Response + Send + Sync + 'static,
+    ) -> Self {
+        self.fallback_with(FallbackPolicy::NotFoundOnly, handler)
+    }
+
+    /// [`Router::fallback`] のポリシー明示版（イシュー #316）。`policy` に
+    /// [`FallbackPolicy::IncludeMethodNotAllowed`] を指定すると、405（メソッド不一致）
+    /// も `handler` へ委譲する（`Allow` ヘッダは付与されない）。
+    ///
+    /// ```
+    /// use fandhe_backend_routes::{FallbackPolicy, Router};
+    /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// fn head(buf: &[u8]) -> fandhe_backend_http::request::RequestHead {
+    ///     match parse_request_head(buf).unwrap() {
+    ///         ParseOutcome::Complete { head, .. } => head,
+    ///         ParseOutcome::Incomplete => unreachable!(),
+    ///     }
+    /// }
+    ///
+    /// let router = Router::new()
+    ///     .route("GET", "/", |_h, _b| Response::empty(200))
+    ///     .fallback_with(FallbackPolicy::IncludeMethodNotAllowed, |_head, _body| {
+    ///         Response::new(404, b"catch-all".to_vec())
+    ///     });
+    ///
+    /// // メソッド不一致も fallback に委譲され、Allow ヘッダは付与されない。
+    /// let res = router.dispatch(&head(b"POST / HTTP/1.1\r\n\r\n"), &[]);
+    /// assert_eq!(res.status, 404);
+    /// assert_eq!(res.body, b"catch-all".to_vec());
+    /// let text = String::from_utf8(res.serialize(false)).unwrap();
+    /// assert!(!text.contains("Allow:"));
+    /// ```
+    #[must_use]
+    pub fn fallback_with(
+        mut self,
+        policy: FallbackPolicy,
+        handler: impl Fn(&RequestHead, &[u8]) -> Response + Send + Sync + 'static,
+    ) -> Self {
+        self.fallback = Some((policy, Box::new(handler)));
+        self
+    }
+
     /// `head` の method + `target` に一致するハンドラへ委譲し、[`Response`] を返す。
     ///
     /// - `target` に一致するルートが 1 件もない場合は 404（Not Found）。
@@ -400,10 +522,16 @@ impl Router {
             .collect();
 
         if registered_methods.is_empty() {
-            // 対象パスが 1 件も登録されていない。OPTIONS でもフォールバックを
-            // 発火させず 404 のまま（イシュー #304、フェイルクローズ・パス列挙
-            // 攻撃表面の非拡大。`options_fallback` doc comment 参照）。
-            return Response::empty(404);
+            // 対象パスが 1 件も登録されていない。OPTIONS プリフライト用
+            // `options_fallback`（イシュー #304）はここでは発火させず 404 のまま
+            // （フェイルクローズ・パス列挙攻撃表面の非拡大。`options_fallback`
+            // doc comment 参照）。未マッチ共通フォールバック（`Router::fallback`、
+            // イシュー #316）は登録済みならポリシーによらず常に委譲する
+            // （404 側は両ポリシー共通で fallback 対象）。
+            return match &self.fallback {
+                Some((_, handler)) => handler(head, body),
+                None => Response::empty(404),
+            };
         }
 
         let Some(allow) = Self::build_allow(registered_methods) else {
@@ -417,11 +545,19 @@ impl Router {
         // 既に応答済みのため、ここに到達するのは「OPTIONS が明示登録されて
         // いないが対象パスに他 method は登録されている」場合のみであり、
         // フォールバックが常に明示登録より劣後する（`options_fallback` doc
-        // comment の A05 対策）。
+        // comment の A05 対策）。`Router::fallback` の `IncludeMethodNotAllowed`
+        // より `options_fallback` を優先する（OPTIONS 専用の既存挙動を横取りしない）。
         if head.method == "OPTIONS"
             && let Some(fallback) = &self.options_fallback
         {
             return fallback(head, &allow, body);
+        }
+
+        // メソッド不一致（従来 405）を未マッチ共通フォールバックへ流すかは
+        // `FallbackPolicy` の明示選択に従う。既定（`NotFoundOnly`）では従来どおり
+        // `405 + Allow` を維持する（安全側、`FallbackPolicy` doc comment 参照）。
+        if let Some((FallbackPolicy::IncludeMethodNotAllowed, handler)) = &self.fallback {
+            return handler(head, body);
         }
 
         Response::empty(405).with_allow(allow)
@@ -693,5 +829,130 @@ mod tests {
         assert!(!text.contains("X-Evil"));
         assert!(text.contains("Allow: GET\r\n"));
         assert_eq!(text.matches("\r\n\r\n").count(), 1);
+    }
+
+    // --- fallback ハンドラ登録（イシュー #316） ---
+
+    #[test]
+    fn fallback_unregistered_preserves_existing_404_405_behavior() {
+        // 受け入れ条件 1: fallback 未登録時は既存挙動を完全維持する。
+        let router = Router::new().route("GET", "/", |_h, _b| Response::empty(200));
+        assert_eq!(router.dispatch(&head("GET", "/missing"), &[]).status, 404);
+        assert_eq!(router.dispatch(&head("POST", "/"), &[]).status, 405);
+    }
+
+    #[test]
+    fn fallback_default_policy_handles_404_only() {
+        let router = Router::new()
+            .route("GET", "/", |_h, _b| Response::empty(200))
+            .fallback(|_h, _b| Response::new(404, b"fallback".to_vec()));
+
+        let res = router.dispatch(&head("GET", "/missing"), &[]);
+        assert_eq!(res.status, 404);
+        assert_eq!(res.body, b"fallback".to_vec());
+    }
+
+    #[test]
+    fn fallback_default_policy_does_not_intercept_method_mismatch() {
+        // 受け入れ条件 2: 既定ポリシー（NotFoundOnly）は 405 を fallback に流さない。
+        let router = Router::new()
+            .route("GET", "/", |_h, _b| Response::empty(200))
+            .fallback(|_h, _b| Response::new(404, b"fallback".to_vec()));
+
+        let res = router.dispatch(&head("POST", "/"), &[]);
+        assert_eq!(res.status, 405);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(text.contains("Allow: GET\r\n"));
+    }
+
+    #[test]
+    fn fallback_include_method_not_allowed_policy_intercepts_405() {
+        // 受け入れ条件 2: IncludeMethodNotAllowed 明示指定時は 405 も fallback へ。
+        let router = Router::new()
+            .route("GET", "/", |_h, _b| Response::empty(200))
+            .fallback_with(FallbackPolicy::IncludeMethodNotAllowed, |_h, _b| {
+                Response::new(404, b"fallback".to_vec())
+            });
+
+        let res = router.dispatch(&head("POST", "/"), &[]);
+        assert_eq!(res.status, 404);
+        assert_eq!(res.body, b"fallback".to_vec());
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(!text.contains("Allow:"));
+    }
+
+    #[test]
+    fn fallback_include_method_not_allowed_also_covers_param_route_shape_match() {
+        // パラメータルート形状一致・メソッド不一致でも IncludeMethodNotAllowed なら
+        // fallback へ委譲される。
+        let router = Router::new()
+            .route_param("GET", "/hello/{name}", |_h, _p, _b| Response::empty(200))
+            .unwrap()
+            .fallback_with(FallbackPolicy::IncludeMethodNotAllowed, |_h, _b| {
+                Response::new(404, b"fallback".to_vec())
+            });
+
+        let res = router.dispatch(&head("POST", "/hello/alice"), &[]);
+        assert_eq!(res.status, 404);
+        assert_eq!(res.body, b"fallback".to_vec());
+    }
+
+    #[test]
+    fn fallback_priority_static_then_param_then_fallback() {
+        // 受け入れ条件 3: 静的 → パラメータ → fallback の優先順位を単一テストで固定化する。
+        let router = Router::new()
+            .route("GET", "/hello/world", |_h, _b| {
+                Response::new(200, b"static".to_vec())
+            })
+            .route_param("GET", "/hello/{name}", |_h, params, _b| {
+                let name = params.get("name").unwrap_or("");
+                Response::new(200, format!("param:{name}").into_bytes())
+            })
+            .unwrap()
+            .fallback(|_h, _b| Response::new(404, b"fallback".to_vec()));
+
+        assert_eq!(
+            router.dispatch(&head("GET", "/hello/world"), &[]).body,
+            b"static".to_vec()
+        );
+        assert_eq!(
+            router.dispatch(&head("GET", "/hello/alice"), &[]).body,
+            b"param:alice".to_vec()
+        );
+        assert_eq!(
+            router.dispatch(&head("GET", "/other"), &[]).body,
+            b"fallback".to_vec()
+        );
+    }
+
+    #[test]
+    fn fallback_receives_head_and_body() {
+        let router = Router::new().fallback(|head, body| {
+            Response::new(
+                200,
+                format!("{}:{}", head.method, String::from_utf8_lossy(body)).into_bytes(),
+            )
+        });
+        let res = router.dispatch(&head("PUT", "/anything"), b"payload");
+        assert_eq!(res.body, b"PUT:payload".to_vec());
+    }
+
+    #[test]
+    fn fallback_re_registering_overwrites_previous_handler() {
+        let router = Router::new()
+            .fallback(|_h, _b| Response::new(404, b"first".to_vec()))
+            .fallback(|_h, _b| Response::new(404, b"second".to_vec()));
+        let res = router.dispatch(&head("GET", "/missing"), &[]);
+        assert_eq!(res.body, b"second".to_vec());
+    }
+
+    #[test]
+    fn fallback_on_empty_router_handles_all_requests() {
+        // SPA ユースケース: 空 Router + fallback で全リクエストが fallback へ。
+        let router =
+            Router::new().fallback(|_h, _b| Response::new(200, b"<html>spa</html>".to_vec()));
+        let res = router.dispatch(&head("GET", "/any/path"), &[]);
+        assert_eq!(res.status, 200);
+        assert_eq!(res.body, b"<html>spa</html>".to_vec());
     }
 }

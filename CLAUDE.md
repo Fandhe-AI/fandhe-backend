@@ -86,7 +86,12 @@ fandhe-backend/
 │   │                                    # JSON エラーボディ標準形 `{"error":"..."}` を手実装
 │   │                                    # エスケープで直列化、`message` は `&'static str` 限定で
 │   │                                    # スタックトレース・内部情報の流出経路を型レベルで排除、
-│   │                                    # イシュー #310）
+│   │                                    # イシュー #310）。`Router::fallback` /
+│   │                                    # `Router::fallback_with` で静的・パラメータいずれのルートにも
+│   │                                    # 一致しなかったリクエストの共通処理（カスタム 404・SPA の
+│   │                                    # index.html 返却等）を登録可能にし、`FallbackPolicy` で
+│   │                                    # 405（メソッド不一致）も委譲するかを個別選択（既定は 404
+│   │                                    # のみ委譲する安全側、イシュー #316）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
