@@ -1,0 +1,39 @@
+[package]
+name = "fandhe-backend-plugin-static"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "fandhe-backend の静的ファイル配信プラグイン（イシュー #318）。パストラバーサル対策・spawn_blocking I/O を備えたディレクトリ配信を提供する。"
+publish = false
+
+# workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
+# （.claude/rules/coding-rust.md・.claude/rules/security.md）。
+[lints]
+workspace = true
+
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）: 本クレートは
+# `fandhe-backend-core` に依存しない（コア → 本クレートの optional 依存という
+# 単方向のエッジのみを許すため、循環依存を避ける設計上の要件。
+# `crates/plugin-websocket`・`crates/plugin-cors` と同一の非循環パターン、
+# `docs/design/plugin-boundary.md` 6.1 節を参照）。
+#
+# 依存は `fandhe-backend-http`（`RequestHead` の参照・`Response` の構築）と、
+# ファイル I/O を await スレッドで実行しない（`.claude/rules/coding-rust.md`）
+# ために必要な `tokio` の `spawn_blocking` のみ。`rt` feature のみを有効化し、
+# ネットワーク・タイマー等の他機能は要求しない。MIME 推定は crate 内蔵の
+# 静的テーブル（`src/mime.rs`）で行うため、外部 crates.io 依存（mime_guess 等）
+# は追加しない。
+[dependencies]
+fandhe-backend-http = { path = "../http" }
+tokio = { version = "1", default-features = false, features = ["rt"] }
+
+# 単体テスト（`#[cfg(test)] mod tests`）で `#[tokio::test]` マクロ・
+# `spawn_blocking` を要求するマルチスレッドランタイムを使うためのみ。
+# 本体ビルド（`[dependencies]` の `rt` feature のみ）には影響しない
+# （`crates/plugin-websocket/Cargo.toml` と同一パターン）。
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = [
+  "macros",
+  "rt-multi-thread",
+] }

@@ -42,10 +42,11 @@ use crate::server::Server;
 /// 無効」であり、呼び出し元は既定 `Handler::handle`（未登録時 404）へ
 /// フォールスルーする。
 ///
-/// `webrtc-proxy`・`webrtc`・`graphql`・`openapi` のいずれの feature も無効時は
-/// `server`/`head`/`body` を一切参照せず即座に `None` を返す（`cargo tree` で
-/// `fandhe-backend-plugin-webrtc-proxy`・`fandhe-backend-plugin-webrtc`・`fandhe-backend-plugin-graphql`・
-/// `fandhe-backend-plugin-openapi` のいずれも現れないことに加え、本関数自体もコード上
+/// `webrtc-proxy`・`webrtc`・`graphql`・`openapi`・`static` のいずれの feature も
+/// 無効時は `server`/`head`/`body` を一切参照せず即座に `None` を返す
+/// （`cargo tree` で `fandhe-backend-plugin-webrtc-proxy`・`fandhe-backend-plugin-webrtc`・
+/// `fandhe-backend-plugin-graphql`・`fandhe-backend-plugin-openapi`・
+/// `fandhe-backend-plugin-static` のいずれも現れないことに加え、本関数自体もコード上
 /// ゼロコストであることの根拠）。
 /// `graphql` feature は TASK-2.4（#21）で追加した第 2 のプラグイン境界
 /// インスタンスであり、TASK-5.1（#38）で実 GraphQL 実行へ差し替えた
@@ -150,6 +151,23 @@ pub(crate) async fn try_intercept(
                         .with_content_type("application/yaml"),
                 );
             }
+        }
+    }
+
+    // イシュー #318: 静的ファイル配信プラグイン。`server.static_files_config()`
+    // が `Some`（明示登録済み）の場合のみ `fandhe_backend_plugin_static::try_handle_static`
+    // へ委譲する（`graphql`・`openapi` と同じ設定登録型パターン、未登録時は
+    // feature が有効でもフォールスルー）。ファイル I/O は
+    // `fandhe_backend_plugin_static` 側の `spawn_blocking` に閉じており、
+    // 本関数（ひいては `handle_connection` の非同期タスク）を直接ブロック
+    // しない（`.claude/rules/coding-rust.md`）。
+    #[cfg(feature = "static")]
+    {
+        if let Some(config) = server.static_files_config()
+            && let Some(response) =
+                fandhe_backend_plugin_static::try_handle_static(head, config).await
+        {
+            return Some(response);
         }
     }
 

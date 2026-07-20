@@ -321,6 +321,15 @@ pub struct Server {
     /// 依存・コードともゼロコストになる（pay-for-what-you-use）。
     #[cfg(feature = "cors")]
     cors_config: Option<fandhe_backend_plugin_cors::CorsConfig>,
+    /// `static` feature（イシュー #318）有効時のみ意味を持つ、登録済み静的
+    /// ファイル配信設定。`crate::plugin::try_intercept` がこのフィールドを
+    /// 参照して `GET` リクエストを配信するかどうかを判定する。`None`
+    /// （未登録、既定）の場合は feature が有効でもフォールスルーする
+    /// （`graphql`・`openapi`・`cors` と同じ「設定登録型」パターン）。
+    /// feature 無効時はフィールド自体が構造体から消え、依存・コードとも
+    /// ゼロコストになる（pay-for-what-you-use）。
+    #[cfg(feature = "static")]
+    static_files_config: Option<fandhe_backend_plugin_static::StaticFilesConfig>,
 }
 
 impl Default for Server {
@@ -349,6 +358,8 @@ impl Default for Server {
             openapi_registration: OpenApiRegistration::Disabled,
             #[cfg(feature = "cors")]
             cors_config: None,
+            #[cfg(feature = "static")]
+            static_files_config: None,
         }
     }
 }
@@ -781,6 +792,43 @@ impl Server {
     #[cfg(feature = "cors")]
     pub(crate) fn cors_config(&self) -> Option<&fandhe_backend_plugin_cors::CorsConfig> {
         self.cors_config.as_ref()
+    }
+
+    /// 静的ファイル配信プラグイン（`crates/plugin-static`）を有効化する
+    /// （`static` feature 限定 API、イシュー #318）。
+    ///
+    /// 登録すると `crate::plugin::try_intercept` が `config.mount()`
+    /// プレフィックスに一致する `GET` リクエストを
+    /// `fandhe_backend_plugin_static::try_handle_static` へパスインター
+    /// セプトし、`config.root()`（構築時に canonicalize 済み）配下のファイルを
+    /// 返す。**未登録の場合は feature が有効でも常にフォールスルーする**
+    /// （`graphql`・`openapi`・`cors` と同じ設定登録型パターン）。
+    ///
+    /// # Examples
+    /// ```
+    /// use fandhe_backend_core::Server;
+    /// use fandhe_backend_plugin_static::StaticFilesConfig;
+    ///
+    /// let config = StaticFilesConfig::builder("/static", std::env::temp_dir())
+    ///     .build()
+    ///     .unwrap();
+    /// let server = Server::new().static_files(config);
+    /// let _ = server;
+    /// ```
+    #[cfg(feature = "static")]
+    #[must_use]
+    pub fn static_files(mut self, config: fandhe_backend_plugin_static::StaticFilesConfig) -> Self {
+        self.static_files_config = Some(config);
+        self
+    }
+
+    /// `crate::plugin::try_intercept` が参照する、登録済み静的ファイル配信
+    /// 設定（`static` feature 限定、イシュー #318）。
+    #[cfg(feature = "static")]
+    pub(crate) fn static_files_config(
+        &self,
+    ) -> Option<&fandhe_backend_plugin_static::StaticFilesConfig> {
+        self.static_files_config.as_ref()
     }
 
     /// トレーシングプラグイン（`crates/plugin-tracing`）を有効化する
