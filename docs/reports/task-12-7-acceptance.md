@@ -230,7 +230,8 @@ FAIL 理由そのものの解消を人間レビュアーが同一評価軸で確
 
 - 被験 AI は Claude ファミリー（`claude-sonnet-5`）に限られ、別ベンダー LLM・人間の
   被験者による追加実施は本タスクのスコープ外（TASK-12.4-1／TASK-12.4-2／TASK-12.5／
-  TASK-12.6 と同一の既知の限界）。制約解消までの恒久追跡先はイシュー #262
+  TASK-12.6 と同一の既知の限界）。制約解消までの恒久追跡先はイシュー #262（2026-07-19
+  クローズ済み。後継の open 追跡先はイシュー #281）
   （[`../design/third-party-model-diversity-reverification.md`](../design/third-party-model-diversity-reverification.md)）。
 - 被験 worktree からの正解ラベル・レポート隔離はファイル削除＋指示による運用であり、
   サンドボックスによる強制ではない（同上）。

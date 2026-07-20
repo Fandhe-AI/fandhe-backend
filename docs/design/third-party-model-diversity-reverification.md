@@ -57,8 +57,9 @@ task-12-7-acceptance.md` の「既知の限界」節が明記するとおり、�
 - 制約解消（3 節の実施条件充足）まで、**新規の第三者検証も現行と同一の Claude ファミリー内
   構成で実施してよい**（実施不能な依存を待って検証自体を止めない）。
 - ただしその場合、レポート（`docs/reports/task-12-*.md`）へ「既知の限界」として本制約と
-  イシュー #262 への参照を必ず記載する（`.claude/rules/security.md` の「握りつぶし禁止」・
-  `.claude/rules/improvement-proposal.md` のフェイルクローズ原則と同一趣旨）。
+  open な追跡先イシュー #281（旧 #262。4 節参照）への参照を必ず記載する
+  （`.claude/rules/security.md` の「握りつぶし禁止」・`.claude/rules/improvement-proposal.md`
+  のフェイルクローズ原則と同一趣旨）。
 - **限界受容の最終判断は人間に留保する**。AI 実装セッションが「この限界は無視してよい」
   「別モデル要求は事実上満たされたとみなす」と自己確定しない。要人間判断事項は
   `docs/reports/task-12-4-third-party-scope-feasibility.md`「要人間判断事項」1〜3 を正とし、
@@ -116,6 +117,16 @@ task-12-4-third-party-scope-feasibility.md` が記録した「未定義依存」
 - **フェイルセーフ**: 万一 #262 が上記条件を満たさないまま先にクローズされた場合は、
   後継の open イシューへ追跡を引き継ぎ、本書および 5 節の関連文書の参照を新イシュー番号へ
   更新する。追跡の断絶を防ぐため、クローズ時は必ず後継先の有無を確認する運用とする。
+- **フェイルセーフ発動の記録（2026-07-20）**: イシュー #262 は 2026-07-19 に、上記
+  クローズ条件 (a)（再検証実施完了）・(b)（人間による限界受容の確定判断記録）のいずれも
+  満たさないまま **COMPLETED としてクローズされた**。本条項に従い、後継の open 追跡先を
+  **イシュー #281**（「docs(global): Conditional Go 条件(3) 第三者検証の人間による限界
+  受容判断を記録する」）へ引き継ぐ。本書 5 節および関連文書（`docs/design/README.md`・
+  `third-party-verification.md`・`third-party-feasibility-verification.md`・
+  `docs/reports/task-12-4-1-completion-rate-verification.md`・`task-12-4-2-feasibility-
+  judgment-verification.md`・`task-12-7-acceptance.md`・`docs/acceptance/
+  req12-ai-autonomy.md`）の参照を #281 へ更新済み。クローズ条件 (b) の判断そのものは
+  未確定であり、6 節に記録枠を設けて人間判断を待つ（PENDING）。
 
 ## 5. 関連ドキュメント
 
@@ -134,4 +145,46 @@ task-12-4-third-party-scope-feasibility.md` が記録した「未定義依存」
 - 対応可否自律判断ガードレール規約: [`../../.claude/rules/feasibility-guardrail.md`](../../.claude/rules/feasibility-guardrail.md)
 - セキュリティ規約: [`../../.claude/rules/security.md`](../../.claude/rules/security.md)
 - 根拠要件: `docs/spec/04-requirements.md` REQ-12・Conditional Go 条件 (3)
-- 恒久追跡先: イシュー #262（本書の起票元。クローズ条件は 4 節）
+- 恒久追跡先: イシュー #262（本書の起票元。**2026-07-19 に COMPLETED でクローズ済み**。
+  クローズ条件未充足のままのクローズであり、4 節のフェイルセーフ条項により後継の open
+  追跡先はイシュー #281。判断記録は 6 節参照）
+
+## 6. 人間判断の記録（Conditional Go 条件 (3) 限界受容）
+
+2.2 節が定める「限界受容の最終判断は人間に留保する。AI 実装セッションが自己確定しない」
+という原則に基づき、判断そのものを記録する枠を本節に設ける。要人間判断事項は
+[`../reports/task-12-4-third-party-scope-feasibility.md`](../reports/task-12-4-third-party-scope-feasibility.md)
+「要人間判断事項」1〜3 を正とし、本節では再定義しない。
+
+### 6.1 記録表
+
+| 項目 | 内容 |
+|------|------|
+| 判断日 | PENDING（判断待ち。判断者・日付・裏付け URL は人間判断確定時に記入） |
+| 判断者（GitHub アカウント） | PENDING |
+| 判断区分 | PENDING（受容 / 追加検証指示 のいずれか） |
+| 判断内容 | PENDING |
+| 受容根拠 または 追加検証の指示 | PENDING |
+| 裏付けイベント URL | PENDING |
+
+現在のステータス: **PENDING**（イシュー #281 で判断待ち）。
+
+### 6.2 記入手順
+
+1. 人間レビュアーが、本件に対応する PR の GitHub review approval、またはイシュー #281 への
+   コメントで判断（受容 / 追加検証指示のいずれか）を表明する。
+2. 表明された内容を 6.1 節の記録表へ転記し、**裏付けイベント URL**（review approval の URL
+   またはイシューコメントの URL）で根拠を明示する。
+3. AI 実装セッションは判断者欄・判断内容欄を代筆・自己確定しない。イシュー #247 で確立
+   した「AI 実装/マージセッションが記録した自己サインオフ」と「独立した外部人間ユーザー
+   による review 承認」の区別運用をそのまま踏襲する（[`../../.claude/rules/security.md`](../../.claude/rules/security.md)
+   の完全性要件と同一原則）。
+
+### 6.3 判断確定後の後続処理
+
+- **受容**の場合: `docs/acceptance/req12-ai-autonomy.md` の該当記述を PENDING から最終
+  ステータスへ更新し、本イシュー #281 を「クローズ条件 (b) 充足」としてクローズする。
+- **追加検証指示**の場合: 3 節の実施条件（別ベンダー LLM 被験または人間被験）に基づき、
+  追検証を実施する新規イシューを [`../../.claude/rules/out-of-scope-tracking.md`](../../.claude/rules/out-of-scope-tracking.md)
+  に従って別途切り出す。#281 は当該イシューへの参照を追記したうえで、クローズ条件 (a)
+  （再検証実施完了）の充足を待って別途クローズする。
