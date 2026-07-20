@@ -45,7 +45,8 @@ fandhe-backend/
 │   ├── core                           # 最小コア。`webrtc-proxy`（TASK-2.1、#18）・`webrtc`
 │   │                                    # （TASK-8.1、#26）・`websocket`（TASK-4.1、#22）・
 │   │                                    # `graphql`（TASK-2.4、#21）・`openapi`（TASK-2.1、#256）・
-│   │                                    # `cors`（イシュー #305）の 6 feature で `dep:` 構文により
+│   │                                    # `cors`（イシュー #305）・`compression`
+│   │                                    # （イシュー #321）の 7 feature で `dep:` 構文により
 │   │                                    # 各プラグインを着脱可能に配線済み（`webrtc-proxy` 優先評価）。
 │   │                                    # `openapi` は `Server::openapi()` の明示登録
 │   │                                    # （opt-in）時のみ `GET /openapi.json` と
@@ -55,6 +56,10 @@ fandhe-backend/
 │   │                                    # リクエストへ CORS ヘッダを付与し、プリフライトは利用者が
 │   │                                    # `fandhe_backend_plugin_cors::preflight_response` を
 │   │                                    # `Router::options_fallback`（#304）へ直接配線する 2 点構成。
+│   │                                    # `compression` は `Server::compression(config)` 登録時のみ
+│   │                                    # 同一シーム（CORS の後、逐次適用）経由で条件充足レスポンスを
+│   │                                    # gzip 圧縮する（`fandhe-backend-plugin-compression`、
+│   │                                    # 外部依存は `flate2` のみ）。
 │   │                                    # `BoundServer::run_until(shutdown)` で graceful shutdown
 │   │                                    # （accept 停止 → in-flight 完了待ち → grace 超過時強制
 │   │                                    # クローズ）に対応（既存 `run()` は `run_until` への薄い
@@ -154,6 +159,16 @@ fandhe-backend/
 │   │                                    # `crates/core` の `cors` feature 経由で `Server::cors(config)`
 │   │                                    # 登録時のみ実リクエストへ CORS ヘッダを付与。外部依存ゼロ、
 │   │                                    # `docs/design/plugin-boundary.md` の該当節を参照）
+│   ├── plugin-compression             # レスポンス圧縮プラグイン（イシュー #321。`plugin-cors` が
+│   │                                    # 確立した「レスポンス後処理型」シームの第 2 インスタンス、
+│   │                                    # `finalize_response` で CORS の後に逐次適用）。gzip のみ実装
+│   │                                    # （br はスコープ外）、外部依存は `flate2`（`rust_backend`、
+│   │                                    # 純 Rust の miniz_oxide 実装に固定）のみ。ステータス・
+│   │                                    # `Content-Type`・body サイズ・`Accept-Encoding` を判定基準に
+│   │                                    # フェイルセーフに圧縮可否を決定。`crates/core` の
+│   │                                    # `compression` feature 経由で `Server::compression(config)`
+│   │                                    # 登録時のみ動作。BREACH 類似の情報漏洩リスクを doc に明記、
+│   │                                    # `docs/design/plugin-boundary.md` 5.10 節を参照）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
 ├── ts/                     # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）。

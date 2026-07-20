@@ -412,6 +412,48 @@ impl Response {
         Ok(self)
     }
 
+    /// 設定済みヘッダの値を読み取る（大文字小文字無視、イシュー #321）。
+    ///
+    /// レスポンス後処理型プラグイン（`crates/core/src/plugin.rs` の
+    /// `finalize_response`）が、既に確定した他プラグイン・ハンドラの応答を
+    /// 検査してから振る舞いを決める用途を想定する（例:
+    /// `fandhe-backend-plugin-compression` が実効 `Content-Type` を見て
+    /// 圧縮対象か判定し、`Content-Encoding` の有無で二重圧縮を避ける）。
+    ///
+    /// [`Response::serialize`] のヘッダ出力優先順位（専用フィールドが
+    /// 設定済みの同名ヘッダは `extra_headers` 側をスキップする）と同じ解決
+    /// 順序で返す: `Content-Type` は専用フィールドを優先し、それ以外は
+    /// `with_header` で追加した `extra_headers` から探す（挿入順で最初に
+    /// 一致した値。複数値を持ちうる `Set-Cookie` 等の全件列挙には使えない）。
+    /// `Allow` は [`AllowedMethods`] が `&str` を保持しない（直列化のたびに
+    /// `String` を構築する）ため本メソッドの対象外とし、`extra_headers` にも
+    /// 積まれない値のため一致せず `None` を返す。一致するヘッダがなければ
+    /// `None`。
+    ///
+    /// ```
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// let res = Response::new(200, b"{}".to_vec()).with_content_type("application/json");
+    /// assert_eq!(res.header("content-type"), Some("application/json"));
+    ///
+    /// let res = Response::empty(302).with_header("Location", "/login").unwrap();
+    /// assert_eq!(res.header("LOCATION"), Some("/login"));
+    ///
+    /// assert_eq!(Response::empty(200).header("X-Missing"), None);
+    /// ```
+    #[must_use]
+    pub fn header(&self, name: &str) -> Option<&str> {
+        if name.eq_ignore_ascii_case("content-type")
+            && let Some(content_type) = self.content_type
+        {
+            return Some(content_type);
+        }
+        self.extra_headers
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+
     /// 検証済みの `Set-Cookie` を追加する（イシュー #303）。
     ///
     /// [`crate::cookie::SetCookie`] は構築時に RFC 6265 の cookie-name /

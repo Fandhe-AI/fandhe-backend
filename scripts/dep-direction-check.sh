@@ -192,6 +192,15 @@ else
                 # プラグインと同じ「コア → プラグインの optional 依存」で表現する
                 # ため、上記 webrtc-proxy 等の許可根拠と同一のエッジとして明示追加する。
                 "fandhe-backend-core:fandhe-backend-plugin-openapi"
+                # イシュー #321: `compression` feature 有効時のみ、
+                # 「レスポンス後処理型」プラグインの第 2 インスタンスとして
+                # `crates/plugin-compression` へ配線する。根拠は上記
+                # fandhe-backend-core:fandhe-backend-plugin-cors の例外コメントと
+                # 同一（`Middleware::on_response` が使えず新パターンが必要、
+                # プラグインクレートは core に依存しない非循環パターン）。
+                # `crates/plugin-compression/src/lib.rs` の doc・
+                # `docs/design/plugin-boundary.md` 6.1 節を参照。
+                "fandhe-backend-core:fandhe-backend-plugin-compression"
                 "fandhe-backend-routes:fandhe-backend-http"
                 "fandhe-backend-plugin-*:fandhe-backend-http"
                 "fandhe-backend-plugin-*:fandhe-backend-routes"
@@ -355,7 +364,7 @@ webrtc_proxy_exception_file="crates/core/src/plugin.rs"
 # イシュー #305: `fandhe_backend_plugin_cors`（`crates/core/src/plugin.rs` の
 # レスポンス後処理型シーム `finalize_response`・`crates/core/src/server.rs` の
 # `cors`/`cors_config` 系ビルダー/フィールド）を同一方針で例外対象に加える。
-webrtc_proxy_exception_symbol_pattern='fandhe_backend_plugin_webrtc_proxy|fandhe_backend_plugin_webrtc\b|webrtc_proxy|webrtc_config|fandhe_backend_plugin_websocket|websocket|fandhe_backend_plugin_graphql|fandhe_backend_plugin_tracing|TracingMiddleware|fandhe_backend_plugin_openapi|openapi|fandhe_backend_plugin_cors|crate::plugin::|pub\(crate\) mod plugin;'
+webrtc_proxy_exception_symbol_pattern='fandhe_backend_plugin_webrtc_proxy|fandhe_backend_plugin_webrtc\b|webrtc_proxy|webrtc_config|fandhe_backend_plugin_websocket|websocket|fandhe_backend_plugin_graphql|fandhe_backend_plugin_tracing|TracingMiddleware|fandhe_backend_plugin_openapi|openapi|fandhe_backend_plugin_cors|fandhe_backend_plugin_compression|compression_config|crate::plugin::|pub\(crate\) mod plugin;'
 
 plugin_hits_all=""
 for dir in crates/core crates/http crates/routes; do
@@ -393,7 +402,7 @@ for dir in crates/core crates/http crates/routes; do
             # `dep:fandhe-backend-plugin-openapi` の feature 宣言も同様に許可する。
             # イシュー #305: `fandhe-backend-plugin-cors =` の依存宣言・
             # `dep:fandhe-backend-plugin-cors` の feature 宣言も同様に許可する。
-            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v -E 'fandhe-backend-plugin-webrtc(-proxy)?|fandhe-backend-plugin-websocket|fandhe-backend-plugin-graphql|fandhe-backend-plugin-tracing|fandhe-backend-plugin-openapi|fandhe-backend-plugin-cors' || true)"
+            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v -E 'fandhe-backend-plugin-webrtc(-proxy)?|fandhe-backend-plugin-websocket|fandhe-backend-plugin-graphql|fandhe-backend-plugin-tracing|fandhe-backend-plugin-openapi|fandhe-backend-plugin-cors|fandhe-backend-plugin-compression' || true)"
         fi
         if [ -n "${cargo_toml_hits}" ]; then
             plugin_hits_all="${plugin_hits_all}${dir}/Cargo.toml に plugin- 依存あり: ${cargo_toml_hits}

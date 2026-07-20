@@ -129,6 +129,39 @@ curl -si localhost:3004/todos -H 'Origin: https://evil.example'
 提供します。`allow_any_origin()` と `allow_credentials(true)` の併用は
 `build()` が `Err` を返します（フェイルクローズ、credentials 付き全開放の防止）。
 
+## compression（`fandhe-backend-plugin-compression`）
+
+gzip でレスポンスを圧縮するプラグインです（[`docs/design/plugin-boundary.md`](../design/plugin-boundary.md)
+5.10 節「レスポンス後処理型パターンの第 2 インスタンス」参照）。CORS と同じ
+「レスポンス後処理型」シームで配線し、複数登録時は CORS → 圧縮の順に適用
+されます。
+
+```bash
+cargo run --example compression_demo -p fandhe-backend-core --features compression
+
+# 閾値以上の text/plain・Accept-Encoding: gzip → Content-Encoding: gzip
+curl -si localhost:3005/large -H 'Accept-Encoding: gzip' | head -20
+
+# Accept-Encoding なし → 無圧縮のまま
+curl -si localhost:3005/large
+
+# 閾値未満の応答（既定 1024 バイト未満）→ 無圧縮のまま
+curl -si localhost:3005/small -H 'Accept-Encoding: gzip'
+```
+
+配線は 1 点のみです（`crates/core/examples/compression_demo.rs` を参照）:
+
+`Server::new().handler(router).compression(config)` で登録すると、ステータス・
+`Content-Type`・body サイズ・`Accept-Encoding` の判定基準を満たすレスポンスを
+gzip 圧縮します（未登録なら feature が有効でも完全フォールスルー、opt-in）。
+
+`CompressionConfig::builder()` は最小圧縮対象サイズ `min_size`（既定 1024
+バイト）・圧縮対象 `Content-Type` リスト `compressible_types`
+（既定 `text/*`・`application/json` 等）を提供します。秘密情報を含みやすい
+レスポンスは BREACH 類似の情報漏洩リスクがあるため、対象 `Content-Type` から
+除外することを推奨します（`crates/plugin-compression/src/lib.rs` の crate
+doc を参照）。
+
 ## hub-wiring（`fandhe-backend-plugin-hub-wiring`）
 
 マルチテナント JWT 検証（RS256 / JWKS）・テナント境界強制を `RequestGate` 拡張点

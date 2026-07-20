@@ -36,6 +36,8 @@ graph LR
     server -.->|optional dep, feature 有効時のみ| rtc[fandhe-backend-plugin-webrtc]
     server -.->|optional dep, feature 有効時のみ| rtcproxy[fandhe-backend-plugin-webrtc-proxy]
     server -.->|optional dep, feature 有効時のみ| openapi[fandhe-backend-plugin-openapi<br/>拡張点対応: 非該当]
+    server -.->|optional dep, feature 有効時のみ| cors[fandhe-backend-plugin-cors]
+    server -.->|optional dep, feature 有効時のみ| compression[fandhe-backend-plugin-compression]
 
     subgraph "プラグイン（feature 着脱、pay-for-what-you-use）"
         ws
@@ -43,6 +45,8 @@ graph LR
         rtc
         rtcproxy
         openapi
+        cors
+        compression
     end
 ```
 
@@ -67,6 +71,8 @@ graph LR
 | `fandhe-backend-core` | `fandhe-backend-plugin-websocket` | プラグイン依存逆転（Upgrade 型） |
 | `fandhe-backend-core` | `fandhe-backend-plugin-graphql` | プラグイン依存逆転（パスインターセプト型） |
 | `fandhe-backend-core` | `fandhe-backend-plugin-openapi` | プラグイン依存逆転（パスインターセプト型の静的サービング変種、TASK-2.1 / #256） |
+| `fandhe-backend-core` | `fandhe-backend-plugin-cors` | プラグイン依存逆転（レスポンス後処理型、イシュー #305） |
+| `fandhe-backend-core` | `fandhe-backend-plugin-compression` | プラグイン依存逆転（レスポンス後処理型の第 2 インスタンス、イシュー #321） |
 | `fandhe-backend-routes` | `fandhe-backend-http` | コア一方向依存 |
 | `fandhe-backend-plugin-*` | `fandhe-backend-http` | プラグイン→コア基盤層参照（許可） |
 | `fandhe-backend-plugin-*` | `fandhe-backend-routes` | プラグイン→コア基盤層参照（許可） |
@@ -87,7 +93,7 @@ graph LR
 | 2 | `UpgradeHandler` | 同上（`try_handle_upgrade`） | dyn 互換 | 同期（委譲判定のみ）+ 実処理は非同期委譲 | `fandhe-backend-plugin-websocket` | 「委譲判定のみ」を担い、ハンドシェイク検証・101 応答送出・フレーミングはプラグイン側に閉じる契約（REQ-4） |
 | 3 | `RequestGate` | 同上 | dyn 互換 | 同期 | （現状該当実装なし、将来用） | リクエスト可否判定 |
 | 4 | `try_intercept`（固定シーム） | `crates/core/src/plugin.rs` | — | 非同期 | `fandhe-backend-plugin-graphql`・`fandhe-backend-plugin-webrtc`・`fandhe-backend-plugin-webrtc-proxy` | 3 trait はいずれも dyn 互換性のため同期 API 限定であり、非同期の上流中継・クエリ実行を要するプラグインは既存拡張点経由の依存逆転で表現できない（`dep-direction-check.sh` 該当コメント）。パスインターセプト型は cfg-gated 分岐として `try_intercept` に集約され、`Option` フォールスルーで次のプラグインへ委譲する（`docs/design/plugin-boundary.md` 4 節） |
-| 5 | `finalize_response`（固定シーム） | `crates/core/src/plugin.rs` | — | 同期 | `fandhe-backend-plugin-cors` | `Middleware::on_response` がレスポンスへの参照を持たない観測専用契約のため、応答内容自体を書き換える必要があるプラグインは既存 3 trait のいずれでも表現できない（イシュー #305）。`try_intercept` 応答・既定 `Handler` 応答の双方に対する単一の後処理合流点として機能する（`docs/design/plugin-boundary.md` 5.9 節） |
+| 5 | `finalize_response`（固定シーム） | `crates/core/src/plugin.rs` | — | 同期 | `fandhe-backend-plugin-cors`・`fandhe-backend-plugin-compression` | `Middleware::on_response` がレスポンスへの参照を持たない観測専用契約のため、応答内容自体を書き換える必要があるプラグインは既存 3 trait のいずれでも表現できない（イシュー #305、圧縮は #321 で第 2 インスタンスとして追加）。`try_intercept` 応答・既定 `Handler` 応答の双方に対する単一の後処理合流点として機能し、複数登録時は CORS → 圧縮の順で逐次適用する（`docs/design/plugin-boundary.md` 5.9・5.10 節） |
 
 3 拡張点 trait（`Middleware` / `UpgradeHandler` / `RequestGate`）+ `try_intercept` +
 `finalize_response` の固定シーム計 5 つが「変更影響範囲を機械判定できる閉じたシーム」の
@@ -625,6 +631,34 @@ package/import 名の改名に続き、リポジトリ名・ドキュメント�
    いずれにも割り当てていない、4.7 節・4.9 節・4.10 節・4.12 節と同一の運用上の
    ギャップに起因する。分類規則自体の見直しは 4.3 節〜4.12 節と同一の別 Issue 対象
    として据え置く（`.claude/rules/out-of-scope-tracking.md`）
+
+### 4.14 記載例（#321、圧縮プラグイン example の新設）
+
+イシュー #321「レスポンス圧縮プラグインを実装する」は、新規プラグイン
+`fandhe-backend-plugin-compression` を追加し、`crates/core/examples/compression_demo.rs`
+として `Server::compression(config)` 登録の動作確認用サンプルを新設するコミット
+である。`crates/plugin-compression/**` への変更を含むため
+`scripts/extension-closure-gate.sh` の判定対象となり、以下 1 件が E（閉包違反候補）と
+判定される（4.12 節の `cors_demo.rs` と同一構造）。
+
+1. **対象コミット/PR**: イシュー #321 実装コミット
+2. **E ファイルパス**:
+   - `crates/core/examples/compression_demo.rs`
+3. **閉じない理由**: 4.12 節・4.13 節で既に指摘済みの運用上のギャップと同一。
+   `extension-closure-check.sh` の分類規則（A〜D）は `crates/core/examples/**` を
+   走査対象に含めていない。本コミットは `compression` feature 有効時の動作確認用
+   example を新設したため、機械的に E 判定となった
+4. **正当性根拠**: `compression_demo.rs` はバイナリを生成しない `[[example]]`
+   ターゲット（`cargo run --example compression_demo --features compression` でのみ
+   ビルド・実行される）であり、`crates/core` のライブラリコード・3 拡張点 trait
+   （`Middleware` / `UpgradeHandler` / `RequestGate`）・`try_intercept` /
+   `finalize_response` 固定シームの契約・シグネチャは一切変更していない。内容も
+   `CompressionConfig` を `Server::compression`（4 節冒頭の表、「レスポンス後処理型」
+   固定シーム、5.10 節）へ配線する既存公開 API の呼び出しに留まり、プラグイン実装
+   ロジックが拡張点外へ漏出する変更ではない。したがって本件は拡張点設計の閉包漏れ
+   ではなく、分類規則が `crates/core/examples/**` を A〜D に含めていないことに
+   起因する運用上のギャップである（分類規則自体の見直しは 4.3 節〜4.13 節と同一の
+   別 Issue 対象として据え置く。`.claude/rules/out-of-scope-tracking.md`）
 
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 
