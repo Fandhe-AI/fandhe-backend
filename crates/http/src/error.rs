@@ -125,6 +125,17 @@ impl IntoResponse for HttpError {
     }
 }
 
+impl std::fmt::Display for HttpError {
+    /// `<status> <message>` 形式で表示する。`message` は `&'static str`
+    /// 限定（モジュール冒頭 doc のセキュリティ設計）のため、実行時の
+    /// スタックトレース・内部情報がここに混入することはない。
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.status, self.message)
+    }
+}
+
+impl std::error::Error for HttpError {}
+
 /// `Result<T, E>` を境界で一様に `Response` 化する blanket impl。
 ///
 /// `Ok` / `Err` いずれの型も [`IntoResponse`] を実装していればよく、
@@ -254,6 +265,18 @@ mod tests {
             res.body,
             br#"{"error":"null:\u0000bell:\u0007"}"#.as_slice()
         );
+    }
+
+    #[test]
+    fn http_error_implements_display_and_error() {
+        // Bugbot 指摘対応（PR #332）: `HttpError` は `?` 演算での伝播を前提とした
+        // Result エラー型としてドキュメント化されているにもかかわらず
+        // `Display` / `std::error::Error` を欠いていた。他の公開エラー型
+        // （`BodyError` 等）との一貫性を回帰させないためのテスト。
+        let err = HttpError::new(404, "item not found");
+        assert_eq!(err.to_string(), "404 item not found");
+        let dyn_err: &dyn std::error::Error = &err;
+        assert_eq!(dyn_err.to_string(), "404 item not found");
     }
 
     #[test]
