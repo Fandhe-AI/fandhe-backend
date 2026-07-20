@@ -162,6 +162,104 @@ impl RequestHead {
     pub fn query(&self) -> Option<&str> {
         self.target.split_once('?').map(|(_, query)| query)
     }
+
+    /// 全 `Cookie` ヘッダ（大小文字無視）を出現順に結合し、cookie-pair の列へ
+    /// 分解する。
+    ///
+    /// RFC 6265 は UA に単一 `Cookie` ヘッダ送出を求めるが、複数到達時は
+    /// `"; "` で結合してから分解した場合と同一の結果を返す仕様とする
+    /// （RFC 6265bis の想定に整合、イシュー #309 受け入れ条件 2）。
+    ///
+    /// [`crate::cookie::MAX_COOKIE_COUNT`] / [`crate::cookie::MAX_COOKIE_STRING_BYTES`]
+    /// の 2 上限は**複数ヘッダに跨る累積値**へ適用する。ヘッダを分割して
+    /// 送ることで上限を迂回できてしまう抜け道を防ぐため（fail-closed、
+    /// `.claude/rules/security.md`）。
+    ///
+    /// `Cookie` ヘッダが 1 本も無い場合は空の `Vec` を返す（エラーにしない。
+    /// 未送信は構文違反ではないため [`crate::cookie::parse_cookie_header`]
+    /// の「空文字列はエラー」契約とは区別する）。
+    ///
+    /// 不正な cookie-pair を含む場合は明示スキップではなく
+    /// [`crate::cookie::CookieError::InvalidCookiePair`] を返す（fail-closed。
+    /// [`crate::cookie`] モジュール doc の「不正組の扱い」節を参照）。
+    ///
+    /// # Examples
+    ///
+    /// 単一 `Cookie` ヘッダを分解する:
+    ///
+    /// ```
+    /// use fandhe_backend_http::request::parse_request_head;
+    ///
+    /// let buf = b"GET / HTTP/1.1\r\nHost: h\r\nCookie: a=1; b=2\r\n\r\n";
+    /// let outcome = parse_request_head(buf).unwrap();
+    /// let head = match outcome {
+    ///     fandhe_backend_http::request::ParseOutcome::Complete { head, .. } => head,
+    ///     _ => unreachable!(),
+    /// };
+    /// assert_eq!(head.cookies().unwrap(), vec![("a", "1"), ("b", "2")]);
+    /// ```
+    ///
+    /// 複数 `Cookie` ヘッダは `"; "` 結合と等価に扱う:
+    ///
+    /// ```
+    /// use fandhe_backend_http::request::parse_request_head;
+    ///
+    /// let buf = b"GET / HTTP/1.1\r\nHost: h\r\nCookie: a=1\r\nCookie: b=2\r\n\r\n";
+    /// let outcome = parse_request_head(buf).unwrap();
+    /// let head = match outcome {
+    ///     fandhe_backend_http::request::ParseOutcome::Complete { head, .. } => head,
+    ///     _ => unreachable!(),
+    /// };
+    /// assert_eq!(head.cookies().unwrap(), vec![("a", "1"), ("b", "2")]);
+    /// ```
+    ///
+    /// `Cookie` ヘッダが無ければ空を返す:
+    ///
+    /// ```
+    /// use fandhe_backend_http::request::parse_request_head;
+    ///
+    /// let buf = b"GET / HTTP/1.1\r\nHost: h\r\n\r\n";
+    /// let outcome = parse_request_head(buf).unwrap();
+    /// let head = match outcome {
+    ///     fandhe_backend_http::request::ParseOutcome::Complete { head, .. } => head,
+    ///     _ => unreachable!(),
+    /// };
+    /// assert_eq!(head.cookies().unwrap(), Vec::<(&str, &str)>::new());
+    /// ```
+    pub fn cookies(&self) -> Result<Vec<(&str, &str)>, crate::cookie::CookieError> {
+        let raw_headers: Vec<&str> = self
+            .headers()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("cookie"))
+            .map(|(_, value)| value)
+            .collect();
+        if raw_headers.is_empty() {
+            return Ok(Vec::new());
+        }
+        // `"; "` で結合してから分解した場合と同一の結果にするが、実際に
+        // 文字列を連結すると戻り値の借用元がこの関数のローカル変数になり
+        // `&self` ライフタイムへ結び付けられなくなる（借用エラー）。
+        // そこで連結済みバイト長・組数のみを計算して累積上限を検証し
+        // （迂回防止、`crate::cookie` モジュール doc「DoS 耐性」節）、
+        // 各ヘッダは個別に `crate::cookie::parse_cookie_pair` へ通す。
+        // pair は `;` 区切りセグメント単位で完結し境界を跨がないため、
+        // 個別ヘッダ処理と一括連結処理の結果は同一になる。
+        let joined_len =
+            raw_headers.iter().map(|h| h.len()).sum::<usize>() + (raw_headers.len() - 1) * 2;
+        if joined_len > crate::cookie::MAX_COOKIE_STRING_BYTES {
+            return Err(crate::cookie::CookieError::CookieStringTooLarge);
+        }
+        let segments: Vec<&str> = raw_headers
+            .iter()
+            .flat_map(|h| h.split(';').map(trim_ows_str))
+            .collect();
+        if segments.len() > crate::cookie::MAX_COOKIE_COUNT {
+            return Err(crate::cookie::CookieError::TooManyCookies);
+        }
+        segments
+            .into_iter()
+            .map(crate::cookie::parse_cookie_pair)
+            .collect()
+    }
 }
 
 /// [`parse_request_head`] の成功時の結果。
@@ -473,6 +571,21 @@ fn trim_ows(bytes: &[u8]) -> &[u8] {
         .rposition(|b| !is_ows(b))
         .map_or(start, |p| p + 1);
     &bytes[start..end]
+}
+
+/// `&str` 版の OWS（SP `0x20` / HTAB `0x09`）trim。
+///
+/// `str::trim()` は Unicode の空白文字全般（NBSP・BOM 等）を除去してしまい、
+/// HTTP OWS（RFC 9110 §5.6.3 の SP/HTAB のみ）の定義より広くトリムしてしまう。
+/// `Cookie` ヘッダの pair 分割（[`crate::cookie::parse_cookie_header`]・
+/// [`RequestHead::cookies`]）では OWS 以外の Unicode 空白を trim してはならない
+/// （trim 後の値が意図せず変化し、本来 `InvalidCookiePair` になるべき pair が
+/// 誤って受理される fail-closed 契約の後退を防ぐ）。
+///
+/// SP/HTAB は ASCII の 1 バイト文字であり UTF-8 の継続バイト（`0x80..=0xBF`）とは
+/// 重ならないため、バイト境界での trim は UTF-8 境界を破壊しない。
+pub(crate) fn trim_ows_str(s: &str) -> &str {
+    s.trim_matches(|c: char| c == ' ' || c == '\t')
 }
 
 #[cfg(test)]
@@ -793,5 +906,95 @@ mod tests {
         // （リクエストスマグリング対策の一環）。
         let buf = b"GET / HTTP/1.1\r\nHost: example.com\nX-A: 1\r\n\r\n";
         assert_eq!(parse_request_head(buf), Err(ParseError::InvalidHeader));
+    }
+
+    #[test]
+    fn cookies_header_name_lookup_is_case_insensitive() {
+        // ヘッダ名の大文字小文字混在（`cookie` / `Cookie`）でも同一ヘッダ集合
+        // として拾えることを固定する（`RequestHead::cookies` の `headers()`
+        // フィルタは `eq_ignore_ascii_case` を使う契約）。
+        let buf = b"GET / HTTP/1.1\r\nHost: h\r\ncookie: a=1\r\nCOOKIE: b=2\r\n\r\n";
+        let (head, _) = complete(buf);
+        assert_eq!(head.cookies().unwrap(), vec![("a", "1"), ("b", "2")]);
+    }
+
+    #[test]
+    fn cookies_unicode_whitespace_around_pair_is_not_trimmed() {
+        // NBSP（U+00A0）は HTTP OWS（SP/HTAB）ではないため `RequestHead::cookies`
+        // でも trim してはならない（`crate::cookie` の同名テストと対の固定、
+        // `str::trim()` の Unicode 空白全般 trim を使わない契約の回帰防止）。
+        let buf = "GET / HTTP/1.1\r\nHost: h\r\ncookie: a=1;\u{a0}b=2\r\n\r\n".as_bytes();
+        let (head, _) = complete(buf);
+        assert_eq!(
+            head.cookies().unwrap_err(),
+            crate::cookie::CookieError::InvalidCookiePair
+        );
+    }
+
+    #[test]
+    fn cookies_pair_count_cumulative_across_headers_exactly_at_max_is_accepted() {
+        // 複数 `Cookie` ヘッダに跨って組数がちょうど上限に達する場合は受理する
+        // （累積上限の境界値。`crate::cookie::MAX_COOKIE_COUNT` 参照）。
+        let half = crate::cookie::MAX_COOKIE_COUNT / 2;
+        let rest = crate::cookie::MAX_COOKIE_COUNT - half;
+        let header_a = (0..half)
+            .map(|i| format!("a{i}=v"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let header_b = (0..rest)
+            .map(|i| format!("b{i}=v"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let buf = format!(
+            "GET / HTTP/1.1\r\nHost: h\r\nCookie: {header_a}\r\nCookie: {header_b}\r\n\r\n"
+        );
+        let (head, _) = complete(buf.as_bytes());
+        assert_eq!(
+            head.cookies().unwrap().len(),
+            crate::cookie::MAX_COOKIE_COUNT
+        );
+    }
+
+    #[test]
+    fn cookies_pair_count_cumulative_across_headers_exceeding_max_is_rejected() {
+        // 単一ヘッダでは上限を超えないが、複数 `Cookie` ヘッダを合算すると
+        // 超過するケース。ヘッダ分割による上限迂回を防ぐ契約を固定する。
+        let half = crate::cookie::MAX_COOKIE_COUNT / 2;
+        let rest = crate::cookie::MAX_COOKIE_COUNT - half + 1;
+        let header_a = (0..half)
+            .map(|i| format!("a{i}=v"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let header_b = (0..rest)
+            .map(|i| format!("b{i}=v"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let buf = format!(
+            "GET / HTTP/1.1\r\nHost: h\r\nCookie: {header_a}\r\nCookie: {header_b}\r\n\r\n"
+        );
+        let (head, _) = complete(buf.as_bytes());
+        assert_eq!(
+            head.cookies().unwrap_err(),
+            crate::cookie::CookieError::TooManyCookies
+        );
+    }
+
+    #[test]
+    fn cookies_byte_length_cumulative_across_headers_exceeding_max_is_rejected() {
+        // 単一ヘッダでは上限バイト数を超えないが、複数 `Cookie` ヘッダの
+        // 結合後の長さ（`"; "` 結合込み）で超過するケースを固定する。
+        let half_len = crate::cookie::MAX_COOKIE_STRING_BYTES / 2;
+        let value_a = "a".repeat(half_len - 2);
+        let value_b = "b".repeat(half_len);
+        let header_a = format!("k={value_a}");
+        let header_b = format!("k={value_b}");
+        let buf = format!(
+            "GET / HTTP/1.1\r\nHost: h\r\nCookie: {header_a}\r\nCookie: {header_b}\r\n\r\n"
+        );
+        let (head, _) = complete(buf.as_bytes());
+        assert_eq!(
+            head.cookies().unwrap_err(),
+            crate::cookie::CookieError::CookieStringTooLarge
+        );
     }
 }
