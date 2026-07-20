@@ -133,10 +133,14 @@ pub struct ChunkedDecoder {
     /// 行ベースの状態（`ChunkSizeLine` / `ChunkDataCrlf` / `TrailerLine`）で
     /// CRLF を跨いで蓄積する行バッファ。CRLF 到達ごとに空になる。
     line_buf: Vec<u8>,
-    /// これまでに復号した body の総バイト数（[`MAX_BODY_BYTES`] 有界化用）。
+    /// これまでに復号した body の総バイト数（[`Self::max_body_bytes`] 有界化用）。
     total_decoded: u64,
     /// これまでに読んだチャンク数（[`MAX_CHUNK_COUNT`] 有界化用）。
     chunk_count: u64,
+    /// 復号後総量の上限。既定は [`MAX_BODY_BYTES`]、
+    /// [`Self::with_max_body_bytes`] で上書き可（`Server::max_body_bytes`、
+    /// イシュー #311）。
+    max_body_bytes: u64,
 }
 
 impl Default for ChunkedDecoder {
@@ -146,13 +150,38 @@ impl Default for ChunkedDecoder {
 }
 
 impl ChunkedDecoder {
-    /// 新規デコーダを作る（`ChunkSizeLine` 状態から開始）。
+    /// 新規デコーダを作る（`ChunkSizeLine` 状態から開始、上限は既定の
+    /// [`MAX_BODY_BYTES`]）。
     pub fn new() -> Self {
+        Self::with_max_body_bytes(MAX_BODY_BYTES)
+    }
+
+    /// 復号後総量の上限を `max_body_bytes` にした新規デコーダを作る。
+    ///
+    /// `Server::max_body_bytes`（イシュー #311）で上限を上書きした場合に、
+    /// `read_body_chunked`（`crates/http/src/connection.rs`）がこのコンストラクタ
+    /// 経由でデコーダを生成する。`max_body_bytes == 0` は「chunk-data を一切
+    /// 含まないチャンク列」のみを受理する（`0\r\n\r\n` は受理、それ以外の
+    /// chunk-size 宣言は即座に [`ChunkedError::BodyTooLarge`]）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_http::chunked::{ChunkedDecoder, DecodeOutcome};
+    ///
+    /// let mut decoder = ChunkedDecoder::with_max_body_bytes(4);
+    /// let mut out = Vec::new();
+    /// let outcome = decoder.decode(b"4\r\nWiki\r\n0\r\n\r\n", &mut out).unwrap();
+    /// assert_eq!(outcome, DecodeOutcome::Complete { consumed: 14 });
+    /// assert_eq!(out, b"Wiki");
+    /// ```
+    pub fn with_max_body_bytes(max_body_bytes: u64) -> Self {
         Self {
             state: State::ChunkSizeLine,
             line_buf: Vec::new(),
             total_decoded: 0,
             chunk_count: 0,
+            max_body_bytes,
         }
     }
 
@@ -188,7 +217,7 @@ impl ChunkedDecoder {
                                 .total_decoded
                                 .checked_add(size)
                                 .ok_or(ChunkedError::BodyTooLarge)?;
-                            if new_total > MAX_BODY_BYTES {
+                            if new_total > self.max_body_bytes {
                                 return Err(ChunkedError::BodyTooLarge);
                             }
                             self.state = State::ChunkData { remaining: size };
@@ -519,5 +548,53 @@ mod tests {
     fn chunked_error_implements_std_error() {
         fn assert_error<E: std::error::Error>() {}
         assert_error::<ChunkedError>();
+    }
+
+    #[test]
+    fn with_max_body_bytes_custom_limit_accepts_at_boundary() {
+        let mut decoder = ChunkedDecoder::with_max_body_bytes(4);
+        let mut out = Vec::new();
+        let outcome = decoder.decode(b"4\r\nWiki\r\n0\r\n\r\n", &mut out).unwrap();
+        assert!(matches!(outcome, DecodeOutcome::Complete { .. }));
+        assert_eq!(out, b"Wiki");
+    }
+
+    #[test]
+    fn with_max_body_bytes_custom_limit_rejects_over_boundary() {
+        let mut decoder = ChunkedDecoder::with_max_body_bytes(4);
+        let mut out = Vec::new();
+        let err = decoder
+            .decode(b"5\r\nWikip\r\n0\r\n\r\n", &mut out)
+            .unwrap_err();
+        assert_eq!(err, ChunkedError::BodyTooLarge);
+    }
+
+    #[test]
+    fn with_max_body_bytes_zero_rejects_any_chunk_data() {
+        let mut decoder = ChunkedDecoder::with_max_body_bytes(0);
+        let mut out = Vec::new();
+        let err = decoder
+            .decode(b"1\r\nA\r\n0\r\n\r\n", &mut out)
+            .unwrap_err();
+        assert_eq!(err, ChunkedError::BodyTooLarge);
+    }
+
+    #[test]
+    fn with_max_body_bytes_zero_accepts_empty_body() {
+        let mut decoder = ChunkedDecoder::with_max_body_bytes(0);
+        let mut out = Vec::new();
+        let outcome = decoder.decode(b"0\r\n\r\n", &mut out).unwrap();
+        assert!(matches!(outcome, DecodeOutcome::Complete { .. }));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn new_uses_default_max_body_bytes() {
+        // ChunkedDecoder::new() が MAX_BODY_BYTES を既定値として使う wrapper
+        // であることの固定（body.rs body_length_with_limit_matches_default_wrapper
+        // と同一方針）。
+        let value = format!("{:X}\r\n", MAX_BODY_BYTES + 1);
+        let err = decode_all(value.as_bytes()).unwrap_err();
+        assert_eq!(err, ChunkedError::BodyTooLarge);
     }
 }

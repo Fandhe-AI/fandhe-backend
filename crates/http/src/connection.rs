@@ -22,7 +22,7 @@
 
 use tokio::io::AsyncRead;
 
-use crate::body::{BodyError, BodyLength, body_length};
+use crate::body::{BodyError, BodyLength, MAX_BODY_BYTES, body_length_with_limit};
 use crate::buffer::RecvBuffer;
 use crate::chunked::{ChunkedDecoder, ChunkedError, DecodeOutcome};
 use crate::request::{HttpVersion, ParseError, ParseOutcome, RequestHead, parse_request_head};
@@ -174,16 +174,48 @@ pub async fn read_request<R: AsyncRead + Unpin>(
     reader: &mut R,
     buf: &mut RecvBuffer,
 ) -> Result<Option<Request>, RequestError> {
+    read_request_with_limit(reader, buf, MAX_BODY_BYTES).await
+}
+
+/// [`read_request`] の一般化版。body 上限を `max_body_bytes` で指定する。
+///
+/// [`read_request`] は本関数へ [`crate::body::MAX_BODY_BYTES`] を渡す薄い
+/// wrapper。`Server::max_body_bytes`（イシュー #311）で利用者が上限を上書き
+/// した場合、コアの `handle_connection_with_permit`（`crates/core/src/server.rs`）
+/// が本関数を直接呼ぶ。固定長・chunked 双方の経路へ同一の `max_body_bytes` を
+/// 伝搬する（[`crate::body::body_length_with_limit`] / [`ChunkedDecoder::with_max_body_bytes`]）。
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_http::buffer::RecvBuffer;
+/// use fandhe_backend_http::connection::{read_request_with_limit, RequestError};
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() {
+/// let mut socket: &[u8] = b"POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nabcde";
+/// let mut buf = RecvBuffer::new();
+/// let err = read_request_with_limit(&mut socket, &mut buf, 4)
+///     .await
+///     .unwrap_err();
+/// assert!(matches!(err, RequestError::Body(_)));
+/// # }
+/// ```
+pub async fn read_request_with_limit<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    buf: &mut RecvBuffer,
+    max_body_bytes: u64,
+) -> Result<Option<Request>, RequestError> {
     let (head, consumed) = match read_head(reader, buf).await? {
         Some(head_and_consumed) => head_and_consumed,
         None => return Ok(None),
     };
     buf.consume(consumed);
 
-    let body = match body_length(&head)? {
+    let body = match body_length_with_limit(&head, max_body_bytes)? {
         BodyLength::None => Vec::new(),
         BodyLength::Fixed(n) => read_body(reader, buf, n).await?,
-        BodyLength::Chunked => read_body_chunked(reader, buf).await?,
+        BodyLength::Chunked => read_body_chunked(reader, buf, max_body_bytes).await?,
     };
 
     // keep-alive 接続は同じ RecvBuffer を繰り返し使うため、大 body 処理後の
@@ -219,18 +251,23 @@ async fn read_head<R: AsyncRead + Unpin>(
     }
 }
 
-/// `body_length` で確定した `n` バイトちょうどの body を読み取る。
+/// `body_length_with_limit` で確定した `n` バイトちょうどの body を読み取る。
 ///
-/// `n` は事前に [`crate::body::MAX_BODY_BYTES`] 以下であることが
-/// [`body_length`] により検証済みのため、無制限のバッファ成長は発生しない。
-/// 未読領域が body ちょうど（パイプライン残余なし）の典型ケースでは
-/// `RecvBuffer` のコピー回避専用ヘルパーでコピーを回避する。
+/// `n` は事前に呼び出し元の `max_body_bytes` 以下であることが
+/// [`body_length_with_limit`] により検証済みのため、通常は無制限のバッファ
+/// 成長は発生しない。ただし `max_body_bytes` は利用者が `Server::max_body_bytes`
+/// （イシュー #311）で任意の `u64` 値へ上書きできるため、32-bit ターゲット等
+/// `usize` が `u64` より狭い環境では `n` が `usize` に収まらない場合がある。
+/// 旧実装（`unwrap_or(usize::MAX)`）は変換失敗を「上限なし」に読み替えて
+/// しまい安全側に倒れないため、変換失敗はメモリ確保前に
+/// [`RequestError::Body`]`(`[`BodyError::BodyTooLarge`]`)` として拒否する
+/// （フェイルクローズ、.claude/rules/security.md）。
 async fn read_body<R: AsyncRead + Unpin>(
     reader: &mut R,
     buf: &mut RecvBuffer,
     n: u64,
 ) -> Result<Vec<u8>, RequestError> {
-    let n = usize::try_from(n).unwrap_or(usize::MAX);
+    let n = usize::try_from(n).map_err(|_| RequestError::Body(BodyError::BodyTooLarge))?;
 
     while buf.unread().len() < n {
         let read = buf.read_chunk(reader).await.map_err(RequestError::Io)?;
@@ -251,19 +288,20 @@ async fn read_body<R: AsyncRead + Unpin>(
 
 /// chunked transfer-coding の body を [`ChunkedDecoder`] へ委譲して読み取る。
 ///
-/// [`body_length`] が `BodyLength::Chunked` を返した場合にのみ呼ばれる。
-/// `buf.unread()` を毎回デコーダへ渡し、消費できた分だけ `buf.consume` で
-/// カーソルを前進させる。終端（`0` チャンク + 空 trailer + CRLF）まで正確に
-/// 消費するため、パイプライン済み次リクエストの先頭バイトは
+/// [`body_length_with_limit`] が `BodyLength::Chunked` を返した場合にのみ
+/// 呼ばれる。`buf.unread()` を毎回デコーダへ渡し、消費できた分だけ
+/// `buf.consume` でカーソルを前進させる。終端（`0` チャンク + 空 trailer +
+/// CRLF）まで正確に消費するため、パイプライン済み次リクエストの先頭バイトは
 /// [`crate::buffer::RecvBuffer`] に残ったまま返る（本モジュール冒頭の
-/// keep-alive 契約を維持）。復号総量はデコーダ内部で
-/// [`crate::body::MAX_BODY_BYTES`] に有界化済みのため、無制限のバッファ
-/// 成長は発生しない。
+/// keep-alive 契約を維持）。復号総量はデコーダ内部で `max_body_bytes`
+/// （呼び出し元 [`read_request_with_limit`] から伝搬）に有界化済みのため、
+/// 無制限のバッファ成長は発生しない。
 async fn read_body_chunked<R: AsyncRead + Unpin>(
     reader: &mut R,
     buf: &mut RecvBuffer,
+    max_body_bytes: u64,
 ) -> Result<Vec<u8>, RequestError> {
-    let mut decoder = ChunkedDecoder::new();
+    let mut decoder = ChunkedDecoder::with_max_body_bytes(max_body_bytes);
     let mut body = Vec::new();
     loop {
         let outcome = decoder.decode(buf.unread(), &mut body)?;
@@ -604,5 +642,72 @@ mod tests {
 
         let err = read_request(&mut socket, &mut buf).await.unwrap_err();
         assert!(matches!(err, RequestError::Parse(_)));
+    }
+
+    #[tokio::test]
+    async fn read_request_with_limit_accepts_fixed_body_at_boundary() {
+        let mut socket: &[u8] = b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\nabcd";
+        let mut buf = RecvBuffer::new();
+        let req = read_request_with_limit(&mut socket, &mut buf, 4)
+            .await
+            .unwrap()
+            .expect("request should be present");
+        assert_eq!(req.body, b"abcd");
+    }
+
+    #[tokio::test]
+    async fn read_request_with_limit_rejects_fixed_body_over_boundary() {
+        let mut socket: &[u8] = b"POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nabcde";
+        let mut buf = RecvBuffer::new();
+        let err = read_request_with_limit(&mut socket, &mut buf, 4)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RequestError::Body(BodyError::BodyTooLarge)));
+    }
+
+    #[tokio::test]
+    async fn read_request_with_limit_propagates_limit_to_chunked_decoder() {
+        // カスタム上限が固定長経路だけでなく chunked 経路にも伝搬することを
+        // 固定する（読み取りステップ 3「chunked 経路への limit 伝搬」）。
+        let mut socket: &[u8] =
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nabcde\r\n0\r\n\r\n";
+        let mut buf = RecvBuffer::new();
+        let err = read_request_with_limit(&mut socket, &mut buf, 4)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            RequestError::Chunked(ChunkedError::BodyTooLarge)
+        ));
+    }
+
+    #[tokio::test]
+    async fn read_request_with_limit_zero_rejects_body_but_accepts_bodyless() {
+        let mut socket: &[u8] = b"POST / HTTP/1.1\r\nContent-Length: 1\r\n\r\nx";
+        let mut buf = RecvBuffer::new();
+        let err = read_request_with_limit(&mut socket, &mut buf, 0)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RequestError::Body(BodyError::BodyTooLarge)));
+
+        let mut socket: &[u8] = b"GET / HTTP/1.1\r\n\r\n";
+        let mut buf = RecvBuffer::new();
+        let req = read_request_with_limit(&mut socket, &mut buf, 0)
+            .await
+            .unwrap()
+            .expect("bodyless request should be present");
+        assert!(req.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_request_default_matches_max_body_bytes_limit() {
+        // read_request が MAX_BODY_BYTES を渡す薄い wrapper であることの固定
+        // （body.rs / chunked.rs の同種テストと同一方針）。
+        let value = (MAX_BODY_BYTES + 1).to_string();
+        let payload = format!("POST / HTTP/1.1\r\nContent-Length: {value}\r\n\r\n");
+        let mut socket: &[u8] = payload.as_bytes();
+        let mut buf = RecvBuffer::new();
+        let err = read_request(&mut socket, &mut buf).await.unwrap_err();
+        assert!(matches!(err, RequestError::Body(BodyError::BodyTooLarge)));
     }
 }

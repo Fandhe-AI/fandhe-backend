@@ -17,12 +17,13 @@
 
 use crate::request::{HttpVersion, RequestHead};
 
-/// body として許容する最大バイト数（暫定上限）。
+/// body として許容する最大バイト数（既定値）。
 ///
 /// リソース枯渇（DoS）対策。`Content-Length` がこの値を超える場合は
-/// [`BodyError::BodyTooLarge`] として拒否する。この上限を設定可能にすることは
-/// サーバビルダー設計（TASK-1.4 以降）のスコープであり、本モジュールでは
-/// 固定値として扱う。
+/// [`BodyError::BodyTooLarge`] として拒否する。[`body_length`] はこの既定値を
+/// 使うが、`Server::max_body_bytes`（イシュー #311）で上限を上書きした場合は
+/// [`body_length_with_limit`] が呼び出し元
+/// （[`crate::connection::read_request_with_limit`]）から渡された値を使う。
 pub const MAX_BODY_BYTES: u64 = 1024 * 1024;
 
 /// ヘッドから決定した body のフレーミング。
@@ -64,7 +65,8 @@ pub enum BodyError {
     /// `Content-Length` の値が ASCII digit のみで構成される非負整数でない
     /// （符号・空白・カンマ区切り・空文字列・オーバーフロー等）。
     InvalidContentLength,
-    /// `Content-Length` が [`MAX_BODY_BYTES`] を超過した。
+    /// `Content-Length` が上限（既定は [`MAX_BODY_BYTES`]、
+    /// `Server::max_body_bytes` で上書き可）を超過した。
     BodyTooLarge,
 }
 
@@ -126,7 +128,70 @@ impl std::error::Error for BodyError {}
 /// };
 /// assert_eq!(body_length(&head), Ok(BodyLength::Chunked));
 /// ```
+///
+/// 既定の上限は [`MAX_BODY_BYTES`] と一致する（薄い wrapper であることの固定）。
+///
+/// ```
+/// use fandhe_backend_http::body::{body_length, body_length_with_limit, MAX_BODY_BYTES};
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+///
+/// let buf = b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\nabcd";
+/// let head = match parse_request_head(buf).unwrap() {
+///     ParseOutcome::Complete { head, .. } => head,
+///     ParseOutcome::Incomplete => unreachable!(),
+/// };
+/// assert_eq!(body_length(&head), body_length_with_limit(&head, MAX_BODY_BYTES));
+/// ```
 pub fn body_length(head: &RequestHead) -> Result<BodyLength, BodyError> {
+    body_length_with_limit(head, MAX_BODY_BYTES)
+}
+
+/// `head` から body フレーミングを、`max_body_bytes` を上限として決定する。
+///
+/// [`body_length`] の一般化版。`Server::max_body_bytes`（イシュー #311）で
+/// 利用者が上限を上書きした場合に、コアの `handle_connection_with_permit`
+/// （`crates/core/src/server.rs`）経由でこの上限が渡される。判定ロジック自体は
+/// [`body_length`] と同一で、`MAX_BODY_BYTES` 参照箇所のみ引数化している。
+///
+/// # 上限値の扱い
+///
+/// - `max_body_bytes == 0`: body を持つリクエストを一律拒否する
+///   （`Content-Length` が 1 以上ならすべて [`BodyError::BodyTooLarge`]）。
+///   `Content-Length: 0` またはヘッダ不在は body なしの正常系
+///   （[`BodyLength::None`]）として引き続き受理する。「より厳しい側」への
+///   設定でありフェイルクローズ方向のため許容する
+/// - 極端な大値（例 `u64::MAX`）: 拒否せずそのまま上限として使う。
+///   上限緩和はリソース枯渇（DoS）耐性の後退であり、`Server::max_body_bytes`
+///   の呼び出し元（利用者）の責務とする
+///
+/// # Examples
+///
+/// 上限 `0` は body を持たないリクエストのみ受理する。
+///
+/// ```
+/// use fandhe_backend_http::body::{body_length_with_limit, BodyError, BodyLength};
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+///
+/// fn head_of(buf: &[u8]) -> fandhe_backend_http::request::RequestHead {
+///     match parse_request_head(buf).unwrap() {
+///         ParseOutcome::Complete { head, .. } => head,
+///         ParseOutcome::Incomplete => unreachable!(),
+///     }
+/// }
+///
+/// let with_body = head_of(b"POST / HTTP/1.1\r\nContent-Length: 1\r\n\r\nx");
+/// assert_eq!(
+///     body_length_with_limit(&with_body, 0),
+///     Err(BodyError::BodyTooLarge)
+/// );
+///
+/// let without_body = head_of(b"GET / HTTP/1.1\r\n\r\n");
+/// assert_eq!(body_length_with_limit(&without_body, 0), Ok(BodyLength::None));
+/// ```
+pub fn body_length_with_limit(
+    head: &RequestHead,
+    max_body_bytes: u64,
+) -> Result<BodyLength, BodyError> {
     let has_content_length = head
         .headers()
         .any(|(name, _)| name.eq_ignore_ascii_case("content-length"));
@@ -160,7 +225,7 @@ pub fn body_length(head: &RequestHead) -> Result<BodyLength, BodyError> {
 
     match content_length {
         None | Some(0) => Ok(BodyLength::None),
-        Some(n) if n > MAX_BODY_BYTES => Err(BodyError::BodyTooLarge),
+        Some(n) if n > max_body_bytes => Err(BodyError::BodyTooLarge),
         Some(n) => Ok(BodyLength::Fixed(n)),
     }
 }
@@ -377,5 +442,62 @@ mod tests {
     fn body_error_implements_std_error() {
         fn assert_error<E: std::error::Error>() {}
         assert_error::<BodyError>();
+    }
+
+    #[test]
+    fn body_length_with_limit_matches_default_wrapper() {
+        let head = head_of(b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\nabcd");
+        assert_eq!(
+            body_length(&head),
+            body_length_with_limit(&head, MAX_BODY_BYTES)
+        );
+    }
+
+    #[test]
+    fn body_length_with_limit_custom_limit_accepts_at_boundary() {
+        let head = head_of(b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\nabcd");
+        assert_eq!(body_length_with_limit(&head, 4), Ok(BodyLength::Fixed(4)));
+    }
+
+    #[test]
+    fn body_length_with_limit_custom_limit_rejects_over_boundary() {
+        let head = head_of(b"POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nabcde");
+        assert_eq!(
+            body_length_with_limit(&head, 4),
+            Err(BodyError::BodyTooLarge)
+        );
+    }
+
+    #[test]
+    fn body_length_with_limit_zero_rejects_any_body() {
+        let head = head_of(b"POST / HTTP/1.1\r\nContent-Length: 1\r\n\r\nx");
+        assert_eq!(
+            body_length_with_limit(&head, 0),
+            Err(BodyError::BodyTooLarge)
+        );
+    }
+
+    #[test]
+    fn body_length_with_limit_zero_accepts_no_body() {
+        let head = head_of(b"GET / HTTP/1.1\r\n\r\n");
+        assert_eq!(body_length_with_limit(&head, 0), Ok(BodyLength::None));
+
+        let head = head_of(b"POST / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+        assert_eq!(body_length_with_limit(&head, 0), Ok(BodyLength::None));
+    }
+
+    #[test]
+    fn body_length_with_limit_extreme_large_limit_is_accepted() {
+        // 極端な大値は拒否せずそのまま上限として使う（利用者責務、doc 明記済み）。
+        // 既定 MAX_BODY_BYTES（1_048_576）を明確に超える値を使い、「引き上げた上限が
+        // 実際に効いている」ことを検証する（既定値のままでも通ってしまう値だと
+        // max_body_bytes 引数が無視されていても検知できないため）。
+        let value = MAX_BODY_BYTES + 1;
+        let buf = format!("POST / HTTP/1.1\r\nContent-Length: {value}\r\n\r\n");
+        let head = head_of(buf.as_bytes());
+        assert_eq!(
+            body_length_with_limit(&head, u64::MAX),
+            Ok(BodyLength::Fixed(value))
+        );
     }
 }
