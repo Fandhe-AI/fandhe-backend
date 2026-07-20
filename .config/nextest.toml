@@ -20,11 +20,15 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # イシュー #276: `peer_connection_slot_is_released_after_close_allowing_reuse`
 # （crates/plugin-webrtc）はテスト内部でポーリング予算 120 秒（`SLOT_RELEASE_BUDGET`）を
 # 持つため、既定の slow-timeout（60s × terminate-after 2 = 120s で SIGTERM）とほぼ衝突し、
-# ローカル実行でも TIMEOUT キルが発生しうる。このテストに限定して period を延長する
-# （テスト内予算 120 秒 + セットアップ・後処理の余裕）。
+# ローカル実行でも TIMEOUT キルが発生しうる。このテストに限定して period を延長する。
+# 240 秒の内訳: slow-timeout はテスト全体（1 件目の接続確立・ICE gathering 等の
+# セットアップ含む）に及ぶ一方、テスト内予算 120 秒はクローズ後のポーリングにのみ
+# かかるため、負荷のある runner でのセットアップ + 予算超過判定後の最終周回
+# （post_offer の 10 秒タイムアウト含む）を吸収する余裕を予算と同額（120 秒）確保する
+# （PR #277 Bugbot 指摘への対応）。
 [[profile.default.overrides]]
 filter = 'package(fandhe-backend-plugin-webrtc) and test(=peer_connection_slot_is_released_after_close_allowing_reuse)'
-slow-timeout = { period = "150s", terminate-after = 1 }
+slow-timeout = { period = "240s", terminate-after = 1 }
 
 # CI 実行用プロファイル（[profile.default] を継承）。
 # 本設定の目的はハング型退行の検知であり、1 件のテスト失敗で残りのテスト結果が
@@ -42,4 +46,4 @@ fail-fast = false
 [[profile.ci.overrides]]
 filter = 'package(fandhe-backend-plugin-webrtc) and test(=peer_connection_slot_is_released_after_close_allowing_reuse)'
 retries = 2
-slow-timeout = { period = "150s", terminate-after = 1 }
+slow-timeout = { period = "240s", terminate-after = 1 }
