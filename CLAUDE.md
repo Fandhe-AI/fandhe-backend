@@ -64,10 +64,19 @@ fandhe-backend/
 │   │                                    # イシュー #258）。`query::parse_query` でクエリ文字列
 │   │                                    # key-value 分解を sans-IO 純関数として提供（ゼロコピー・
 │   │                                    # DoS 上限内蔵・非デコード、イシュー #306）。
+│   │                                    # `form::parse_form` で `application/x-www-form-urlencoded`
+│   │                                    # ボディパーサを提供（`query`/`percent` を合成し `+` → 空白
+│   │                                    # 変換等のフォーム固有デコード仕様・DoS 上限・Content-Type
+│   │                                    # 検証ヘルパを内蔵、イシュー #308）。
 │   │                                    # `Router::options_fallback` で OPTIONS
 │   │                                    # プリフライトを opt-in フックへ委譲可能にし、明示登録された
 │   │                                    # OPTIONS ルートを常に優先しつつ未登録なら従来どおり
-│   │                                    # 405 + `Allow` を維持（CORS プラグイン前提整備、イシュー #304）
+│   │                                    # 405 + `Allow` を維持（CORS プラグイン前提整備、イシュー #304）。
+│   │                                    # `Response::with_set_cookie` + 構築時検証済み専用型
+│   │                                    # `cookie::SetCookie` で `Set-Cookie` ヘッダを安全に構築
+│   │                                    # （RFC 6265 cookie-name/cookie-value/path-value 検証、
+│   │                                    # `HttpOnly`/`Secure`/`SameSite`/`Path`/`Max-Age` 属性対応、
+│   │                                    # 認証・セッション実装前提整備、イシュー #303）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
