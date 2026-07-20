@@ -514,6 +514,41 @@ package/import 名の改名に続き、リポジトリ名・ドキュメント�
    （`.claude/**`・中間層クレート・`benches/*`・`examples/*` 等の A〜D への追加）は
    4.3 節〜4.9 節と同一の別 Issue 対象として据え置く（`.claude/rules/out-of-scope-tracking.md`）
 
+### 4.11 記載例（#276 / PR #277、flaky テスト安定化の nextest 設定変更）
+
+イシュー #276「`peer_connection_slot_is_released_after_close_allowing_reuse` の flaky を
+解消する」（PR #277、対象コミット sha `839e4ce1449ae7f52807a54daf8eac1fcc9257d9`）は、
+`crates/plugin-webrtc/tests/webrtc_datachannel.rs` のポーリングを経過時間ベース
+（120 秒予算）へ変更し、`.config/nextest.toml` に当該 1 テスト限定の slow-timeout
+延長・`profile.ci` 限定 retry を追加する CI 安定化コミットである。テスト変更が
+`crates/plugin-*/tests/**` に該当するため `scripts/extension-closure-gate.sh` の
+判定対象となり、以下 1 件が E（閉包違反候補）と判定された。
+
+1. **対象コミット/PR**: PR #277（#276、対象コミット sha
+   `839e4ce1449ae7f52807a54daf8eac1fcc9257d9`）
+2. **E ファイルパス**:
+   - `.config/nextest.toml`
+3. **閉じない理由**: `extension-closure-check.sh` の分類規則（A: `crates/plugin-*/**`、
+   B: `crates/core` の 4 ファイルのみ、C: `crates/core/tests/**`・
+   `crates/plugin-*/tests/**` のみ、D: `docs/*`・`scripts/*`・`CLAUDE.md`・
+   `AGENTS.md`・`.github/*`・`deny.toml` のみ）は、cargo-nextest のリポジトリ横断
+   設定である `.config/*` を走査対象に含めていない（4.3 節〜4.10 節と同一の
+   運用上のギャップ）。本コミットは当該テスト限定の slow-timeout・retry 設定を
+   `.config/nextest.toml` に追加するため、機械的に E 判定となった
+4. **正当性根拠**: `.config/nextest.toml` はテストランナー（cargo-nextest）の
+   実行時設定であり、プラグイン実装ロジック・3 拡張点 trait（`Middleware` /
+   `UpgradeHandler` / `RequestGate`）・`try_intercept` 固定シームの契約・
+   シグネチャ・依存方向（`server → routes → http::*`、1 節）のいずれにも影響
+   しない。追加した override は `package(fandhe-backend-plugin-webrtc) and
+   test(=peer_connection_slot_is_released_after_close_allowing_reuse)` の完全一致
+   filter で対象 1 テストに限定され、実装回帰（枠解放漏れ）の決定的検知は
+   retry 対象外の `handler::tests::close_handler_releases_slot_when_state_becomes_closed`
+   が担うため、retry による回帰の握りつぶしも生じない。したがって本件は拡張点
+   設計の閉包漏れではなく、`extension-closure-check.sh` の分類規則が CI・テスト
+   ランナー設定（`.config/*`）を D に含めていないことに起因する運用上のギャップ
+   である（分類規則見直しは 4.3 節〜4.10 節と同一の別 Issue 対象として据え置く。
+   `.claude/rules/out-of-scope-tracking.md`）
+
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 
 `fandhe-backend-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも
