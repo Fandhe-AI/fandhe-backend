@@ -1487,14 +1487,29 @@ pub(crate) async fn handle_connection_with_permit<S>(
                 keep_alive,
                 server,
                 connection_started_at,
+                shutdown_flag,
             )
             .await;
-            for middleware in &server.middlewares {
-                middleware.on_response(&request.head, started_at.elapsed());
-            }
+            // `on_response` は「応答が完走した場合にのみ呼ぶ」契約に統一する
+            // （通常応答経路の write_all 失敗時に on_response を呼ばずに
+            // return するのと同一の契約）。`write_streaming_response` の
+            // `None`（タイムアウト・書き込みエラー・producer 打ち切り）は
+            // 応答未完走であり、plugin-tracing 等の Middleware が
+            // 「on_response は完了した応答を表す」と仮定して観測している
+            // 場合にタイムアウト・打ち切りを成功応答としてカウントしない
+            // ようにする（レビュー指摘、`crate::streaming` モジュール doc の
+            // 「応答完全性」節と同じ fail-closed 方針）。
             match keep_alive_after {
-                Some(true) => continue,
-                _ => return,
+                Some(keep_alive_after) => {
+                    for middleware in &server.middlewares {
+                        middleware.on_response(&request.head, started_at.elapsed());
+                    }
+                    if keep_alive_after {
+                        continue;
+                    }
+                    return;
+                }
+                None => return,
             }
         }
 
@@ -1597,6 +1612,7 @@ async fn write_streaming_response<S>(
     keep_alive: bool,
     server: &Server,
     connection_started_at: Instant,
+    shutdown_flag: &Arc<AtomicBool>,
 ) -> Option<bool>
 where
     S: AsyncWrite + Unpin,
@@ -1656,6 +1672,18 @@ where
     }
 
     // HTTP/1.1: Transfer-Encoding: chunked。
+    //
+    // `keep_alive` 引数は `handle_connection_with_permit` が `on_request`
+    // 直後（`try_intercept`・`Handler::handle_streaming` 呼び出し前）に算出
+    // したスナップショットであり、その後の非同期処理中に生存期間超過・
+    // shutdown が入っても反映されない（レビュー指摘）。通常応答経路の
+    // 「送信直前に生存期間・shutdown_flag を再チェックする」（#70 Bugbot
+    // 指摘、上の非 streaming 経路のコメントを参照）と同じ理由で、chunked
+    // ヘッド（`Connection` ヘッダ）を確定する直前にここで再評価する。
+    let keep_alive = keep_alive
+        && connection_started_at.elapsed() < server.max_connection_lifetime
+        && !shutdown_flag.load(Ordering::Relaxed);
+
     let mut head_response = Response::empty(streaming.status);
     if let Some(content_type) = streaming.content_type {
         head_response = head_response.with_content_type(content_type);
@@ -1709,12 +1737,22 @@ where
                 }
                 // プラン「完了後に max_connection_lifetime を再チェックし、
                 // 超過時はヘッダが keep-alive でも接続を閉じる」を実装する。
-                // shutdown_flag はここでは参照しない（handle_connection_with_permit
-                // 側が呼び出し前に決定した `keep_alive` に既に反映済み。長時間の
-                // ストリーミング中に新規 shutdown が入っても、既に送出済みの
-                // ヘッドを覆せないため、生存期間超過のみを終端後に再確認する）。
+                // `shutdown_flag` も同じ理由で再チェックする（レビュー指摘）:
+                // 上の `keep_alive` 再評価はヘッド送出「直前」時点のもので
+                // あり、ストリーム本体の送信中（producer からの chunk 待ち・
+                // 各 `write_all`）に新規 shutdown が入ってもここまで反映
+                // されない。ヘッダは送出済みのため `Connection: close` を
+                // 今から追加送信することはできないが（keep-alive を広告した
+                // 後にサーバ都合で閉じる非対称は構造上避けられない、上の
+                // `keep_alive` 再評価コメントを参照）、少なくとも「この接続で
+                // 次のリクエストを読みに行くかどうか」の判定には最新の
+                // shutdown_flag を反映し、shutdown 後も新規リクエストを
+                // 受け付け続けることは避ける（`max_connection_lifetime` の
+                // 扱いと同一パターン）。
                 return Some(
-                    keep_alive && connection_started_at.elapsed() < server.max_connection_lifetime,
+                    keep_alive
+                        && connection_started_at.elapsed() < server.max_connection_lifetime
+                        && !shutdown_flag.load(Ordering::Relaxed),
                 );
             }
             // producer が finish を呼ばずに drop された（打ち切り）。応答
@@ -2860,5 +2898,71 @@ GET /c HTTP/1.1\r\n\r\n",
         assert!(!response.contains("Content-Length"));
         // chunk framing を使わない生データがそのまま body として出力される。
         assert!(response.ends_with("hello"));
+    }
+
+    /// レビュー指摘（イシュー #319）の回帰防止テスト。streaming 応答経路
+    /// でも通常応答経路（`keep_alive_request_gets_connection_close_when_shutdown_flag_is_set`）
+    /// と同様、`shutdown_flag=true`（graceful shutdown シグナル受信後）で
+    /// あれば、クライアントが keep-alive を要求していても chunked ヘッドを
+    /// `Connection: close` で送出することを確認する。
+    #[tokio::test]
+    async fn streaming_keep_alive_request_gets_connection_close_when_shutdown_flag_is_set() {
+        let handler = StreamingHandler {
+            status: 200,
+            content_type: None,
+            chunks: vec![b"ok"],
+        };
+        let server = Server::new().handler(handler);
+        let response = roundtrip_with_shutdown_flag(
+            &server,
+            b"GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n",
+        )
+        .await;
+
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(
+            response.contains("Connection: close\r\n"),
+            "shutdown_flag が立っていれば chunked ヘッドも Connection: close を \
+             広告するはず（実際: {response:?}）"
+        );
+    }
+
+    /// レビュー指摘（イシュー #319）の回帰防止テスト。`write_streaming_response`
+    /// が `None`（producer が `finish` を呼ばずに drop、= 打ち切り）を返した
+    /// 場合、通常応答経路の write_all 失敗時と同様に `on_response` を呼ばない
+    /// ことを確認する（「on_response は完走した応答にのみ対応する」契約の
+    /// streaming/非 streaming 経路間での統一）。
+    #[tokio::test]
+    async fn streaming_abort_does_not_invoke_on_response() {
+        let handler = AbortingStreamingHandler {
+            chunks: vec![b"partial"],
+        };
+        let mw = Arc::new(RecordingMiddleware {
+            events: Mutex::new(Vec::new()),
+        });
+        struct MwProxy(Arc<RecordingMiddleware>);
+        impl Middleware for MwProxy {
+            fn name(&self) -> &'static str {
+                "proxy"
+            }
+            fn on_request(&self, head: &RequestHead) {
+                self.0.on_request(head);
+            }
+            fn on_response(&self, head: &RequestHead, elapsed: Duration) {
+                self.0.on_response(head, elapsed);
+            }
+        }
+        let server = Server::new()
+            .handler(handler)
+            .middleware(MwProxy(Arc::clone(&mw)));
+
+        let _ = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n").await;
+
+        let events = mw.events.lock().unwrap();
+        assert_eq!(
+            *events,
+            vec!["on_request"],
+            "打ち切り（finish なし drop）では on_response を呼ばないはず: {events:?}"
+        );
     }
 }
