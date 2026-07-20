@@ -54,7 +54,13 @@ fandhe-backend/
 │   │                                    # シーム（`crate::plugin::finalize_response`）経由で実
 │   │                                    # リクエストへ CORS ヘッダを付与し、プリフライトは利用者が
 │   │                                    # `fandhe_backend_plugin_cors::preflight_response` を
-│   │                                    # `Router::options_fallback`（#304）へ直接配線する 2 点構成
+│   │                                    # `Router::options_fallback`（#304）へ直接配線する 2 点構成。
+│   │                                    # `BoundServer::run_until(shutdown)` で graceful shutdown
+│   │                                    # （accept 停止 → in-flight 完了待ち → grace 超過時強制
+│   │                                    # クローズ）に対応（既存 `run()` は `run_until` への薄い
+│   │                                    # 委譲として後方互換を維持、`Server::shutdown_grace_period`
+│   │                                    # で待機上限を設定可能、イシュー #313。
+│   │                                    # `docs/design/graceful-shutdown.md` 参照）
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。chunked
 │   │                                    # Transfer-Encoding 対応（sans-IO `ChunkedDecoder`、
