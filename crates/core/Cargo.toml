@@ -100,6 +100,15 @@ fandhe-backend-plugin-openapi = { path = "../plugin-openapi", optional = true }
 # `cargo tree -p fandhe-backend-core` に本行の依存が一切現れない。
 fandhe-backend-plugin-cors = { path = "../plugin-cors", optional = true }
 
+# イシュー #321（レスポンス圧縮）: `compression` feature 有効時のみ依存として
+# 解決される「レスポンス後処理型」プラグイン境界の第 2 インスタンス
+# （`plugin-cors` が確立したパターンを踏襲、`docs/design/plugin-boundary.md`
+# の該当節・`crates/plugin-compression/src/lib.rs` の doc を参照）。
+# `fandhe-backend-plugin-cors` と同一の非循環パターンで `fandhe-backend-core`
+# に依存しない。feature 無効時は `cargo tree -p fandhe-backend-core` に
+# 本行の依存（`flate2` 系推移的依存を含む）が一切現れない。
+fandhe-backend-plugin-compression = { path = "../plugin-compression", optional = true }
+
 # イシュー #318: `static` feature 有効時のみ依存として解決される、パス
 # インターセプト型の静的ファイル配信プラグイン。`graphql`・`openapi` と同じ
 # 設定登録型パターン（`Server::static_files()` 明示登録時のみ応答）。
@@ -129,6 +138,10 @@ openapi = ["dep:fandhe-backend-plugin-openapi"]
 # 実リクエスト応答へヘッダを付与する opt-in、他の設定登録型プラグインと
 # 同一の「未登録時はフォールスルー」パターン）。
 cors = ["dep:fandhe-backend-plugin-cors"]
+# イシュー #321: レスポンス gzip 圧縮（`Server::compression(config)` で
+# 明示登録した場合のみ実リクエスト応答を圧縮する opt-in、`cors` と同一の
+# 「未登録時はフォールスルー」パターン）。
+compression = ["dep:fandhe-backend-plugin-compression"]
 # イシュー #318: 静的ファイル配信（`Server::static_files()` で明示登録した
 # 場合のみ応答する opt-in、他の設定登録型プラグインと同一パターン）。
 static = ["dep:fandhe-backend-plugin-static"]
@@ -177,6 +190,14 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 # に現れないことで検証可能。上の async-graphql 追加時の既存コメントと同根）。
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# `crates/core/tests/plugin_compression_boundary.rs`（`#![cfg(feature =
+# "compression")]` でコンパイル自体を feature ゲート）が、gzip 圧縮された
+# レスポンス body を解凍して元 body との同一性（応答同一性、受け入れ基準）
+# を検証するためだけに使う。`fandhe-backend-plugin-compression` の
+# `[dependencies]` に含まれるバージョンと揃える。dev-dependencies は
+# release ビルドに一切含まれないため pay-for-what-you-use の対象外
+# （上の async-graphql 追加時の既存コメントと同根）。
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 # `examples/webrtc_nfr6.rs`（TASK-8.4 / #29）は `fandhe-backend-plugin-webrtc`（optional dep）を
 # 直接使うため、`webrtc` feature 無効時に `cargo build --workspace --all-targets` 等が
@@ -232,6 +253,15 @@ required-features = ["websocket"]
 [[example]]
 name = "cors_demo"
 required-features = ["cors"]
+
+# `examples/compression_demo.rs`（イシュー #321）は `fandhe-backend-plugin-compression`
+# （optional dep）を直接使うため、`compression` feature 無効時に
+# `cargo build --workspace --all-targets` 等がコンパイル対象へ含めて失敗
+# しないよう `required-features` で明示的にゲートする（`cors_demo` 等と
+# 同一パターン）。
+[[example]]
+name = "compression_demo"
+required-features = ["compression"]
 
 # `examples/static_demo.rs`（イシュー #318）は `fandhe-backend-plugin-static`（optional dep）を
 # 直接使うため、`static` feature 無効時に `cargo build --workspace --all-targets` 等が

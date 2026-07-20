@@ -22,7 +22,11 @@
 //! を追加した。`Middleware::on_response` はレスポンスへの参照を持たない
 //! 観測専用契約のため CORS ヘッダ付与に使えず、「レスポンス後処理型」という
 //! 新パターンが必要になった（`crates/plugin-cors/src/lib.rs` の crate doc・
-//! `docs/design/plugin-boundary.md` の該当節を参照）。
+//! `docs/design/plugin-boundary.md` の該当節を参照）。イシュー #321
+//! （圧縮プラグイン）で本シームの第 2 インスタンスを追加し、複数プラグイン
+//! を逐次適用（CORS → 圧縮の順、body を確定させる圧縮を必ず最後に適用）
+//! できるよう構成した（`crates/plugin-compression/src/lib.rs` の crate doc
+//! を参照）。
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::OwnedSemaphorePermit;
@@ -304,7 +308,8 @@ fn from_graphql_response(response: fandhe_backend_plugin_graphql::Response) -> R
     Response::new(response.status, response.body).with_content_type(response.content_type)
 }
 
-/// レスポンス後処理型シーム（イシュー #305、CORS プラグイン）。
+/// レスポンス後処理型シーム（イシュー #305、CORS プラグインで新設。
+/// イシュー #321 で圧縮プラグインの第 2 インスタンスを追加）。
 ///
 /// `handle_connection_with_permit`（`crates/core/src/server.rs`）が
 /// `try_intercept` 応答・既定 `Handler` 応答のいずれかを確定させた直後、
@@ -314,9 +319,13 @@ fn from_graphql_response(response: fandhe_backend_plugin_graphql::Response) -> R
 /// 既定 `Handler` 応答にも同一の後処理を適用できる、`Handler` ラッパー方式
 /// にはない利点を持つ（`docs/design/plugin-boundary.md` の設計比較を参照）。
 ///
-/// `cors` feature 無効時、または `Server::cors` 未登録時は `response` を
-/// 無改変で返す（他のプラグインと同じ「設定登録型」のフォールスルー、
-/// pay-for-what-you-use）。
+/// 登録済みプラグインへ**逐次適用**する（CORS → 圧縮の順固定。圧縮は
+/// body を確定させる後処理のため必ず最後、`crates/plugin-compression/
+/// src/lib.rs` の crate doc を参照）。`cors` / `compression` いずれの
+/// feature も無効、または対応する `Server::cors` / `Server::compression`
+/// が未登録の場合はそれぞれの適用をスキップし、両方スキップ時は
+/// `response` を無改変で返す（他のプラグインと同じ「設定登録型」の
+/// フォールスルー、pay-for-what-you-use）。
 ///
 /// # プリフライトとの二重付与防止
 ///
@@ -345,19 +354,34 @@ pub(crate) fn finalize_response(
     head: &RequestHead,
     response: Response,
 ) -> Response {
+    #[allow(unused_mut)]
+    let mut response = response;
+
     #[cfg(feature = "cors")]
     {
         if let Some(config) = server.cors_config()
             && !fandhe_backend_plugin_cors::is_preflight(head)
         {
-            return fandhe_backend_plugin_cors::apply_cors_headers(head, config, response);
+            response = fandhe_backend_plugin_cors::apply_cors_headers(head, config, response);
         }
     }
 
-    #[cfg(not(feature = "cors"))]
+    // イシュー #321: 圧縮は「最終 body を確定させる後処理」のため、他の
+    // レスポンス後処理型プラグイン（現状は CORS のみ）より必ず後に適用する
+    // （CORS はヘッダのみで body に触れないため実害はないが、規約として
+    // 明文化する。`crates/plugin-compression/src/lib.rs` の crate doc を
+    // 参照）。
+    #[cfg(feature = "compression")]
     {
-        let _ = (server, head);
+        if let Some(config) = server.compression_config() {
+            response = fandhe_backend_plugin_compression::apply_compression(head, config, response);
+        }
     }
+
+    // feature 構成によっては上の cfg ブロックの一部・全部が消え、引数が
+    // 未使用になりうる（`try_intercept` と同じ理由。冒頭の doc を参照）。
+    // 参照型（`Copy`）の再読み込みは各分岐での使用有無に関わらず安全。
+    let _ = (server, head);
 
     response
 }

@@ -321,6 +321,17 @@ pub struct Server {
     /// 依存・コードともゼロコストになる（pay-for-what-you-use）。
     #[cfg(feature = "cors")]
     cors_config: Option<fandhe_backend_plugin_cors::CorsConfig>,
+    /// `compression` feature（イシュー #321）有効時のみ意味を持つ、登録済み
+    /// レスポンス圧縮設定。`crate::plugin::finalize_response`（レスポンス
+    /// 後処理型シーム）がこのフィールドを参照し、`Some` の場合のみ
+    /// `fandhe_backend_plugin_compression::apply_compression` を呼んで
+    /// 実リクエスト応答へ gzip 圧縮を適用するかどうかを判定する。
+    /// `None`（未登録、既定）の場合は feature が有効でもレスポンスを一切
+    /// 変更しない（`cors`・`graphql`・`openapi` と同じ「設定登録型」
+    /// パターン）。feature 無効時はフィールド自体が構造体から消え、
+    /// 依存・コードともゼロコストになる（pay-for-what-you-use）。
+    #[cfg(feature = "compression")]
+    compression_config: Option<fandhe_backend_plugin_compression::CompressionConfig>,
     /// `static` feature（イシュー #318）有効時のみ意味を持つ、登録済み静的
     /// ファイル配信設定。`crate::plugin::try_intercept` がこのフィールドを
     /// 参照して `GET` リクエストを配信するかどうかを判定する。`None`
@@ -358,6 +369,8 @@ impl Default for Server {
             openapi_registration: OpenApiRegistration::Disabled,
             #[cfg(feature = "cors")]
             cors_config: None,
+            #[cfg(feature = "compression")]
+            compression_config: None,
             #[cfg(feature = "static")]
             static_files_config: None,
         }
@@ -792,6 +805,51 @@ impl Server {
     #[cfg(feature = "cors")]
     pub(crate) fn cors_config(&self) -> Option<&fandhe_backend_plugin_cors::CorsConfig> {
         self.cors_config.as_ref()
+    }
+
+    /// 圧縮プラグイン（`crates/plugin-compression`）を有効化する
+    /// （`compression` feature 限定 API、イシュー #321）。
+    ///
+    /// 登録すると `crate::plugin::finalize_response`（レスポンス後処理型
+    /// シーム）が全レスポンス（`try_intercept` 応答・既定 `Handler` 応答の
+    /// 双方）に対して `fandhe_backend_plugin_compression::apply_compression`
+    /// を適用し、`fandhe_backend_plugin_compression::CompressionConfig` の
+    /// 判定基準（ステータス・`Content-Type`・body サイズ・
+    /// `Accept-Encoding`）を満たすレスポンスを gzip 圧縮する。**未登録の
+    /// 場合は feature が有効でも常にレスポンスを変更しない**
+    /// （`cors`・`graphql`・`openapi` と同じ設定登録型パターン）。
+    ///
+    /// `cors` feature も同時に有効な場合、`finalize_response` は CORS
+    /// ヘッダ付与を先に適用してから圧縮を適用する（body を確定させる
+    /// 後処理は必ず最後、`crates/plugin-compression/src/lib.rs` の
+    /// crate doc を参照）。
+    ///
+    /// # Examples
+    /// ```
+    /// use fandhe_backend_core::Server;
+    /// use fandhe_backend_plugin_compression::CompressionConfig;
+    ///
+    /// let config = CompressionConfig::builder().build();
+    /// let server = Server::new().compression(config);
+    /// let _ = server;
+    /// ```
+    #[cfg(feature = "compression")]
+    #[must_use]
+    pub fn compression(
+        mut self,
+        config: fandhe_backend_plugin_compression::CompressionConfig,
+    ) -> Self {
+        self.compression_config = Some(config);
+        self
+    }
+
+    /// `crate::plugin::finalize_response` が参照する、登録済み圧縮設定
+    /// （`compression` feature 限定、イシュー #321）。
+    #[cfg(feature = "compression")]
+    pub(crate) fn compression_config(
+        &self,
+    ) -> Option<&fandhe_backend_plugin_compression::CompressionConfig> {
+        self.compression_config.as_ref()
     }
 
     /// 静的ファイル配信プラグイン（`crates/plugin-static`）を有効化する

@@ -54,7 +54,7 @@ fandhe-backend-plugin-openapi v0.1.0
 静的ファイル配信プラグイン（`static` feature）を新設した。`graphql`・`openapi` と
 同じパスインターセプト型（`try_intercept`、設定登録型）で配線し、外部 crates.io
 依存はゼロ（`fandhe-backend-http` + `tokio`（`rt` feature、`spawn_blocking` 用）
-のみ、`docs/design/plugin-boundary.md` 5.10 節）。
+のみ、`docs/design/plugin-boundary.md` 5.11 節）。
 
 ### 依存の残留確認（pay-for-what-you-use）
 
@@ -76,6 +76,46 @@ $ cargo tree -p fandhe-backend-core --no-default-features --features static | gr
 `unsafe` は 0 件（`crates/plugin-static/src/lib.rs`・`src/mime.rs` 全体で `unsafe`
 ブロックなし。`cargo-geiger` 未導入のため厳密計測は未実施、`unsafe-triage.sh` の
 テキストベース走査でも 0 件を確認）。
+
+## 2026-07-20 — `crates/plugin-compression` 追加（イシュー #321）
+
+レスポンス圧縮プラグイン（`compression` feature）を新設した。`crates/plugin-cors`
+（#305）が確立した「レスポンス後処理型」シーム（`docs/design/plugin-boundary.md`
+5.9 節）の第 2 インスタンスとして配線し、外部 crates.io 依存は `flate2`
+（`default-features = false` + `rust_backend`、純 Rust の miniz_oxide 実装に固定
+し C 実装＝zlib へのリンクを排除）のみ。
+
+### 依存の残留確認（pay-for-what-you-use）
+
+```
+$ cargo tree -p fandhe-backend-core --no-default-features -e normal | grep -c -E "plugin-compression|flate2|miniz_oxide"
+0
+$ cargo tree -p fandhe-backend-core --no-default-features --features compression | grep -E "plugin-compression|flate2|miniz_oxide|crc32fast|adler2"
+├── fandhe-backend-plugin-compression v0.1.0 (crates/plugin-compression)
+│   └── flate2 v1.1.9
+│       ├── crc32fast v1.5.0
+│       └── miniz_oxide v0.8.9
+│           ├── adler2 v2.0.1
+├── flate2 v1.1.9 (*)
+```
+
+`compression` feature 有効時に増える workspace 内依存は
+`fandhe-backend-plugin-compression` 1 件、外部 crates.io 依存は `flate2` と
+その推移的依存（`crc32fast` / `miniz_oxide` / `adler2`）の計 4 件。無効時は
+これらが `cargo tree -e normal`（release ビルドに含まれる通常依存のみ）に
+一切現れないことを確認済み（`-e normal` を付けない素の `cargo tree` は
+`fandhe-backend-http` の dev-dependencies 経由で `flate2` がテスト専用に解決
+されるため一致率確認には `-e normal` が必要。テストコードは release
+バイナリに含まれないため pay-for-what-you-use 違反ではない、
+`scripts/pay-for-what-you-use-check.sh` の `cargo tree` 検証もこれと同じ
+`-e normal` 相当のフィルタで実行し PASS を確認済み）。
+
+### unsafe 件数
+
+`crates/plugin-compression/src/lib.rs` 全体で `unsafe` ブロックは 0 件
+（`cargo-geiger` 未導入のため厳密計測は未実施。無効構成の依存グラフに
+プラグインクレート自体が現れないため geiger 計上対象にもならない、
+`scripts/pay-for-what-you-use-check.sh` c 項の実行結果と整合）。
 
 ## 2026-07-20 — `crates/plugin-cors` 追加（イシュー #305）
 
