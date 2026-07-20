@@ -38,11 +38,14 @@ fuzz_target!(|data: &[u8]| {
     let chunk_width = (usize::from(split_seed) % 64) + 1;
     // fuzz corpus が肥大化してもチャンク総数が MAX_CHUNK_COUNT
     // （chunked.rs、16_384）を超えないよう、chunk_width に応じて入力長を
-    // 上限化する（`chunk_width * MAX_CHUNK_COUNT` が生成しうるチャンク総数の
-    // 上限。chunk_width = 1 のとき 65536 バイトまで許すと 16_384 を超えて
-    // decode が `TooManyChunks` を返し直後の `.expect` が panic するため、
-    // 単純な固定長上限（64 * 1024）では不十分だった）。
-    let max_len = chunk_width.saturating_mul(MAX_CHUNK_COUNT as usize);
+    // 上限化する。`ChunkedDecoder` はデータチャンクだけでなく終端チャンク
+    // （size 0 の行）も chunk_count に含めてカウントする（chunked.rs
+    // L269-L273）ため、許容できるデータチャンク数は `MAX_CHUNK_COUNT - 1`
+    // が上限（`chunk_width * MAX_CHUNK_COUNT` のままだとデータチャンク
+    // MAX_CHUNK_COUNT 個 + terminator 1 個で MAX_CHUNK_COUNT を超え、
+    // decode が `TooManyChunks` を返し直後の `.expect` が panic していた）。
+    let max_data_chunks = (MAX_CHUNK_COUNT as usize).saturating_sub(1);
+    let max_len = chunk_width.saturating_mul(max_data_chunks);
     let body = &body[..body.len().min(max_len).min(64 * 1024)];
 
     let mut encoded = Vec::new();
