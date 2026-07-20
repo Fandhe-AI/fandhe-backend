@@ -26,10 +26,15 @@
 //!    [`request::RequestHead::query`] が返す生文字列を受け取り、`&`/`=` へ
 //!    分解する sans-IO 純関数。呼び出し元（`crates/routes` のハンドラ・
 //!    `crates/plugin-*`）が個別実装していた同型コードの重複を解消する。
-//! 7. percent-decode ヘルパ（[`percent`]、イシュー #307）。ルーティング照合の
+//! 7. `Set-Cookie` ヘッダの構築時検証済みヘルパ（[`cookie`]、イシュー #303）。
+//!    [`response::Response::with_header`] の汎用検証（CR/LF/NUL 拒否）だけでは
+//!    カバーしない RFC 6265 cookie-name / cookie-value の文法検証を、
+//!    構築時検証済み専用型 [`cookie::SetCookie`] として提供する
+//!    （認証・セッション実装、親イシュー #296 の前提整備）。
+//! 8. percent-decode ヘルパ（[`percent`]、イシュー #307）。ルーティング照合の
 //!    非デコード契約（[`request::RequestHead::path`]）は変えず、ハンドラが
 //!    照合確定後に明示的に呼ぶ場合のみデコードする opt-in 純関数。
-//! 8. `application/x-www-form-urlencoded` ボディパーサ（[`form`]、イシュー
+//! 9. `application/x-www-form-urlencoded` ボディパーサ（[`form`]、イシュー
 //!    #308）。[`query`]・[`percent`] を合成し、`+` → 空白変換を含む
 //!    form-urlencoded 固有のデコード仕様・DoS 上限・Content-Type 検証ヘルパを
 //!    提供する sans-IO 純関数。
@@ -46,6 +51,7 @@ pub mod body;
 pub mod buffer;
 pub mod chunked;
 pub mod connection;
+pub mod cookie;
 pub mod form;
 pub mod percent;
 pub mod query;

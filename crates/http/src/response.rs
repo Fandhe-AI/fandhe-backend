@@ -43,7 +43,18 @@
 //! 管理するため上書きを拒否する。検証失敗時は `Response` を変更せず
 //! `Err` を返すため、CRLF を含む値がワイヤに出る経路は存在しない。
 //!
-//! 上記 3 例外（静的リテラル・構築時検証済み専用型・検証付き動的 API）を
+//! 4 つ目が [`Response::with_set_cookie`] である（イシュー #303）。
+//! `Set-Cookie` は `with_header` の CR/LF/NUL 検証だけでは RFC 6265 の
+//! cookie-name（token）/ cookie-value（cookie-octet）文法までは検証できず、
+//! 値中の `;` 等が `Set-Cookie` の属性区切り構文と衝突しうる。そこで
+//! [`AllowedMethods`] と同じ構築時検証済み専用型 [`crate::cookie::SetCookie`]
+//! のみを受け取ることで、infallible に（`SetCookie` 側で既に検証済みのため）
+//! 安全な `Set-Cookie` 行を追加する。内部的には検証済みの `Set-Cookie` 値を
+//! `with_header` と同じ `extra_headers` へ積むため、複数回の呼び出しで
+//! 複数 `Set-Cookie` 行を挿入順に出力できる（`with_header` の追記
+//! セマンティクスをそのまま利用）。
+//!
+//! 上記 4 例外（静的リテラル・構築時検証済み専用型 2 種・検証付き動的 API）を
 //! 除き、**検証なしで**動的な値をヘッダとして送出する経路は今後も
 //! 追加しない方針を維持する。
 //!
@@ -399,6 +410,65 @@ impl Response {
 
         self.extra_headers.push((name, value));
         Ok(self)
+    }
+
+    /// 検証済みの `Set-Cookie` を追加する（イシュー #303）。
+    ///
+    /// [`crate::cookie::SetCookie`] は構築時に RFC 6265 の cookie-name /
+    /// cookie-value / path-value 文法で検証済みのため、この呼び出しは
+    /// **infallible**（`with_allow` と同じ型レベル保証パターン）。
+    ///
+    /// # 複数 cookie の付与
+    ///
+    /// 複数回呼び出すことで複数 `Set-Cookie` 行を挿入順に出力する
+    /// （`with_header` の追記セマンティクスを利用、受け入れ基準の「同一
+    /// レスポンスへの複数 Set-Cookie 付与」に対応）。
+    ///
+    /// # セキュリティ推奨（`.claude/rules/security.md`）
+    ///
+    /// セッション ID 等のシークレットを載せる cookie には
+    /// [`crate::cookie::SetCookie::http_only`] で `HttpOnly` を付けることを
+    /// **強く推奨する**（XSS 経由の cookie 窃取防止）。合わせて
+    /// [`crate::cookie::SetCookie::secure`]（平文送出防止）・
+    /// [`crate::cookie::SetCookie::same_site`]（CSRF 緩和）の付与も推奨する。
+    /// これらは既定 off であり、この API 自体は既定を強制しない
+    /// （呼び出し元が cookie の性質に応じて選択する）。
+    ///
+    /// ```
+    /// use fandhe_backend_http::cookie::SetCookie;
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// let cookie = SetCookie::new("session", "abc123")
+    ///     .unwrap()
+    ///     .path("/")
+    ///     .unwrap()
+    ///     .max_age(3600)
+    ///     .http_only()
+    ///     .secure();
+    /// let res = Response::empty(200).with_set_cookie(cookie);
+    /// let text = String::from_utf8(res.serialize(true)).unwrap();
+    /// assert!(text.contains("Set-Cookie: session=abc123; Path=/; Max-Age=3600; Secure; HttpOnly\r\n"));
+    ///
+    /// // 複数回の呼び出しで複数 Set-Cookie 行を挿入順に出力する。
+    /// let res = Response::empty(200)
+    ///     .with_set_cookie(SetCookie::new("a", "1").unwrap())
+    ///     .with_set_cookie(SetCookie::new("b", "2").unwrap());
+    /// let text = String::from_utf8(res.serialize(true)).unwrap();
+    /// let first = text.find("Set-Cookie: a=1\r\n").unwrap();
+    /// let second = text.find("Set-Cookie: b=2\r\n").unwrap();
+    /// assert!(first < second);
+    /// ```
+    #[must_use]
+    pub fn with_set_cookie(mut self, cookie: crate::cookie::SetCookie) -> Self {
+        // `SetCookie::to_header_value` が出力しうる文字集合（tchar な名前 /
+        // cookie-octet な値 / path-value なパス / 固定属性リテラル / i64 の
+        // 数字表現）は `with_header` の値検証（CR/LF/NUL + 制御文字拒否）が
+        // 許可する範囲の真部分集合であるため、ここで検証を再実行しなくても
+        // `with_header` が拒否するような行がワイヤに出ることはない。
+        // 将来 Domain/Expires 等ゆるい入力を追加する際はこの前提が崩れる点に注意。
+        self.extra_headers
+            .push(("Set-Cookie".to_string(), cookie.to_header_value()));
+        self
     }
 
     /// 3xx リダイレクト応答を組み立てる（イシュー #302）。
@@ -884,6 +954,58 @@ mod tests {
         let res = Response::new(200, b"hi".to_vec());
         let text = String::from_utf8(res.serialize(true)).unwrap();
         assert_eq!(text, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
+    }
+
+    // --- with_set_cookie（イシュー #303） ---
+
+    #[test]
+    fn with_set_cookie_serializes_name_and_value() {
+        let cookie = crate::cookie::SetCookie::new("session", "abc").unwrap();
+        let res = Response::empty(200).with_set_cookie(cookie);
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert!(text.contains("Set-Cookie: session=abc\r\n"));
+    }
+
+    #[test]
+    fn with_set_cookie_allows_multiple_cookies_in_insertion_order() {
+        // 受け入れ基準 2: 同一レスポンスへの複数 Set-Cookie 付与。
+        let res = Response::empty(200)
+            .with_set_cookie(crate::cookie::SetCookie::new("a", "1").unwrap())
+            .with_set_cookie(crate::cookie::SetCookie::new("b", "2").unwrap());
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        let first = text
+            .find("Set-Cookie: a=1\r\n")
+            .expect("first cookie present");
+        let second = text
+            .find("Set-Cookie: b=2\r\n")
+            .expect("second cookie present");
+        assert!(first < second, "挿入順に出力されること");
+    }
+
+    #[test]
+    fn with_set_cookie_serializes_all_attributes_in_fixed_order() {
+        let cookie = crate::cookie::SetCookie::new("session", "abc")
+            .unwrap()
+            .path("/")
+            .unwrap()
+            .max_age(3600)
+            .same_site(crate::cookie::SameSite::Lax)
+            .secure()
+            .http_only();
+        let res = Response::empty(200).with_set_cookie(cookie);
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert!(text.contains(
+            "Set-Cookie: session=abc; Path=/; Max-Age=3600; SameSite=Lax; Secure; HttpOnly\r\n"
+        ));
+    }
+
+    #[test]
+    fn with_set_cookie_never_produces_a_value_with_crlf() {
+        // レスポンス分割回帰: SetCookie は構築段階で CRLF を含む name/value/path
+        // を拒否するため、with_set_cookie を経由してワイヤに CRLF が混入する
+        // 経路は存在しない（構築失敗する側を確認する）。
+        assert!(crate::cookie::SetCookie::new("session\r\nX-Evil", "v").is_err());
+        assert!(crate::cookie::SetCookie::new("session", "v\r\nX-Evil: 1").is_err());
     }
 
     // --- redirect（イシュー #302） ---
