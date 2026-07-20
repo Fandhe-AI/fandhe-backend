@@ -43,6 +43,53 @@ assert_eq() {
     fi
 }
 
+echo "===== get_loadavg1: uptime 表記解析ロジック本体の回帰テスト（#274 レビュー指摘） ====="
+# 以下は `get_loadavg1` を再定義せず、実装本体（`benches/lib/exclusive.sh`）の
+# 解析ロジックを直接検証する。`FANDHE_BACKEND_PROC_LOADAVG` に存在しないパスを
+# 指定して `/proc/loadavg` 分岐を意図的に外し、`uptime` 分岐（本テストで
+# スタブ関数として上書きしたコマンド）を通す。各ケースはサブシェルで実行し、
+# `uptime` スタブや環境変数が後続のモック系テストへ波及しないようにする。
+FANDHE_BACKEND_PROC_LOADAVG_MISSING="/nonexistent/fandhe-backend-nfr6-test-$$"
+
+uptime_case_result="$(
+    unset -f get_loadavg1 2>/dev/null
+    source "${REPO_ROOT}/benches/lib/exclusive.sh"
+    uptime() { echo "01:23:45 up 1 day,  2:34,  3 users,  load average: 0.42, 0.30, 0.25"; }
+    FANDHE_BACKEND_PROC_LOADAVG="${FANDHE_BACKEND_PROC_LOADAVG_MISSING}" get_loadavg1
+)"
+assert_eq "Linux 表記「load average: 0.42, 0.30, 0.25」→ 0.42" "0.42" "${uptime_case_result}"
+
+uptime_case_result="$(
+    unset -f get_loadavg1 2>/dev/null
+    source "${REPO_ROOT}/benches/lib/exclusive.sh"
+    uptime() { echo "01:23  up 1 day,  2:34, 3 users, load averages: 3.43 3.10 2.98"; }
+    FANDHE_BACKEND_PROC_LOADAVG="${FANDHE_BACKEND_PROC_LOADAVG_MISSING}" get_loadavg1
+)"
+assert_eq "macOS 表記「load averages: 3.43 3.10 2.98」（複数形・カンマなし）→ 3.43" "3.43" "${uptime_case_result}"
+
+uptime_case_result="$(
+    unset -f get_loadavg1 2>/dev/null
+    source "${REPO_ROOT}/benches/lib/exclusive.sh"
+    uptime() { echo "no load info"; }
+    FANDHE_BACKEND_PROC_LOADAVG="${FANDHE_BACKEND_PROC_LOADAVG_MISSING}" get_loadavg1
+)"
+if [[ "${uptime_case_result}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    fail "不正な uptime 出力「no load info」から数値が抽出されてしまった（実際: '${uptime_case_result}'）"
+else
+    pass "不正な uptime 出力「no load info」は非数値を返す（実際: '${uptime_case_result}'）"
+fi
+
+# 非数値化が呼び出し側の判定と組み合わさりフェイルクローズで BUSY になることを
+# 確認する（`check_quiescence_once` は `get_loadavg1` の戻り値を直接使う）。
+quiescence_case_result="$(
+    unset -f get_loadavg1 2>/dev/null
+    source "${REPO_ROOT}/benches/lib/exclusive.sh"
+    uptime() { echo "no load info"; }
+    list_busy_process_names() { :; }
+    FANDHE_BACKEND_PROC_LOADAVG="${FANDHE_BACKEND_PROC_LOADAVG_MISSING}" check_quiescence_once
+)"
+assert_eq "不正な uptime 出力は check_quiescence_once でフェイルクローズ BUSY になる" "BUSY" "${quiescence_case_result}"
+
 echo "===== check_quiescence_once: loadavg 閾値判定（LOAD1_MAX=1.0 既定） ====="
 LOAD1_MAX="1.0"
 get_loadavg1() { echo "0.50"; }
