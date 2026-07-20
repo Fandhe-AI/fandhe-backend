@@ -38,7 +38,11 @@
 //!    #308）。[`query`]・[`percent`] を合成し、`+` → 空白変換を含む
 //!    form-urlencoded 固有のデコード仕様・DoS 上限・Content-Type 検証ヘルパを
 //!    提供する sans-IO 純関数。
-//! 10. エラーレスポンス共通化ヘルパ（[`error`]、イシュー #310）。
+//! 10. Cookie ヘッダ読み取りパーサ（[`cookie`]、イシュー #309）。RFC 6265
+//!     cookie-pair 構文に準拠して `Cookie` ヘッダ値を key-value 組へ分解する
+//!     sans-IO 純関数。[`request::RequestHead::cookies`] が複数 `Cookie`
+//!     ヘッダの結合・累積 DoS 上限適用を担う。
+//! 11. エラーレスポンス共通化ヘルパ（[`error`]、イシュー #310）。
 //!     `Result<T, E> -> Response` 変換を担う最小 trait [`error::IntoResponse`]
 //!     と、JSON エラーボディ標準形を組み立てる [`error::error_response`] を
 //!     提供する。各ハンドラ（`crates/routes` のクロージャ・`crates/plugin-*`）が

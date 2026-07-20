@@ -77,6 +77,10 @@ fandhe-backend/
 │   │                                    # （RFC 6265 cookie-name/cookie-value/path-value 検証、
 │   │                                    # `HttpOnly`/`Secure`/`SameSite`/`Path`/`Max-Age` 属性対応、
 │   │                                    # 認証・セッション実装前提整備、イシュー #303）。
+│   │                                    # `cookie::parse_cookie_header` で RFC 6265 準拠の
+│   │                                    # Cookie ヘッダ読み取りパーサを提供（cookie-pair 構文検証・
+│   │                                    # DoS 上限内蔵・非デコード。`RequestHead::cookies` が複数
+│   │                                    # `Cookie` ヘッダの結合・累積上限適用を担う、イシュー #309）。
 │   │                                    # `error::IntoResponse` / `error::error_response` で
 │   │                                    # エラーレスポンス共通化ヘルパを提供（serde 非依存、
 │   │                                    # JSON エラーボディ標準形 `{"error":"..."}` を手実装
