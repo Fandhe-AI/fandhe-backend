@@ -42,15 +42,22 @@
 //!    未登録時は従来どおり 404 / 405 + `Allow` を返す（後方互換、詳細は
 //!    「フェイルクローズ」節・[`FallbackPolicy`] の doc comment を参照）。
 //!
-//! `{name}` は「非空の 1 セグメント」にのみマッチし、ワイルドカード・複数セグメント
-//! パラメータには対応しない（過剰マッチ防止）。`RequestHead::target` は `fandhe-backend-http` の
+//! `{name}` は「非空の 1 セグメント」にのみマッチする。末尾セグメントに限り
+//! `{*name}` ワイルドカード（イシュー #317）を配置でき、残りの target セグメント
+//! 全体（**1 個以上**、`/` を含む）を吸収して 1 つの値として束縛する（0 セグメントは
+//! 不一致。`Segment::Wildcard` / `route_param` の doc comment 参照）。中間セグメントへの
+//! `{*name}` 配置は登録時エラー（[`RoutePatternError::WildcardNotLast`]）でフェイル
+//! クローズする。`RequestHead::target` は `fandhe-backend-http` の
 //! パーサが SP・制御文字を含まないことを既に検証済みだが、正規化やデコードの差異は
 //! アクセス制御バイパスの典型的な経路（OWASP A01、`.claude/rules/security.md`）に
 //! なり得るため、本クレートは % デコード・末尾スラッシュ正規化を一切行わない
 //! （「パーサが渡したバイト列をそのまま文字列として比較する」という既存方針を
 //! パラメータルートにも踏襲する）。加えてパス走査・過剰キャプチャ対策として、
 //! `{name}` は値が `.` / `..` と一致するセグメント、および `?` / `#` を含む
-//! セグメントには一致しない（不一致 = フェイルクローズで 404 側に倒す）。
+//! セグメントには一致しない（不一致 = フェイルクローズで 404 側に倒す）。`{*name}`
+//! ワイルドカードは吸収する**全セグメント**に同じ対策を個別適用するため、
+//! `/static/../etc/passwd` のようなリクエストは 404 になる（% デコードは行わない
+//! ため `%2e%2e` はリテラルとして通過する。デコード後の再検証は利用側の責務）。
 //!
 //! パス照合は [`fandhe_backend_http::request::RequestHead::path`]（`target` 中の最初の
 //! `?` より前）に対して行い、クエリ文字列は [`fandhe_backend_http::request::RequestHead::query`]
@@ -243,16 +250,23 @@ impl Router {
         self
     }
 
-    /// `method` + `pattern`（`{name}` セグメントを含む）に一致するリクエストを
-    /// `handler` へ委譲するよう登録する（TASK-176、#176）。
+    /// `method` + `pattern`（`{name}` セグメント・末尾 `{*name}` ワイルドカードを
+    /// 含む）に一致するリクエストを `handler` へ委譲するよう登録する（TASK-176、
+    /// #176。ワイルドカードはイシュー #317）。
     ///
-    /// `pattern` は先頭 `/` で始まり、`/` 区切りの各セグメントが「リテラル」または
-    /// 「`{name}` 全体一致」のいずれかである必要がある（`a{b}` のような混在セグメントは
-    /// 不可）。少なくとも 1 つの `{name}` セグメントを含まないパターンは
-    /// [`RoutePatternError::NoParamSegment`] を返す（完全一致ルートは [`Router::route`]
-    /// を使う責務分界を明確にするため）。パターン不正は登録時に `Err` として検出する
-    /// （`.claude/rules/coding-rust.md` の「panic はライブラリ境界を越えさせない」に
-    /// 従い、`Result` で伝播しビルダーチェーンは `?` で継続できる）。
+    /// `pattern` は先頭 `/` で始まり、`/` 区切りの各セグメントが「リテラル」・
+    /// 「`{name}` 全体一致」・「パターンの最終セグメントに限り `{*name}`」の
+    /// いずれかである必要がある（`a{b}` のような混在セグメントは不可）。
+    /// `{*name}` は残りの target セグメント全体（**1 個以上**、`/` を含む）を
+    /// 1 つの値として吸収する（0 セグメントは不一致。モジュール doc
+    /// 「マッチング方針」節参照）。少なくとも 1 つの `{name}` / `{*name}`
+    /// セグメントを含まないパターンは [`RoutePatternError::NoParamSegment`] を
+    /// 返す（完全一致ルートは [`Router::route`] を使う責務分界を明確にするため）。
+    /// `{*name}` を最終セグメント以外に配置すると
+    /// [`RoutePatternError::WildcardNotLast`] を返す。パターン不正は登録時に
+    /// `Err` として検出する（`.claude/rules/coding-rust.md` の「panic はライブラリ
+    /// 境界を越えさせない」に従い、`Result` で伝播しビルダーチェーンは `?` で
+    /// 継続できる）。
     ///
     /// マッチング優先順位・入力検証（パス走査対策等）の詳細はモジュール doc
     /// 「マッチング方針」節を参照。
@@ -275,6 +289,29 @@ impl Router {
     /// let res = router.dispatch(&head, &[]);
     /// assert_eq!(res.status, 200);
     /// assert_eq!(res.body, b"hello, alice".to_vec());
+    /// ```
+    ///
+    /// 末尾ワイルドカード（`{*path}`）で `/` を含む複数セグメントを 1 つの値として
+    /// 束縛する例（静的ファイル配信プラグイン等が前提とする形状、イシュー #317）:
+    ///
+    /// ```
+    /// use fandhe_backend_routes::Router;
+    /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+    ///
+    /// let router = Router::new()
+    ///     .route_param("GET", "/static/{*path}", |_head, params, _body| {
+    ///         let path = params.get("path").unwrap_or("");
+    ///         fandhe_backend_http::response::Response::new(200, path.as_bytes().to_vec())
+    ///     })
+    ///     .unwrap();
+    ///
+    /// let head = match parse_request_head(b"GET /static/css/app.css HTTP/1.1\r\n\r\n").unwrap() {
+    ///     ParseOutcome::Complete { head, .. } => head,
+    ///     ParseOutcome::Incomplete => unreachable!(),
+    /// };
+    /// let res = router.dispatch(&head, &[]);
+    /// assert_eq!(res.status, 200);
+    /// assert_eq!(res.body, b"css/app.css".to_vec());
     /// ```
     pub fn route_param(
         mut self,
@@ -501,7 +538,8 @@ impl Router {
         let mut param_methods: Vec<String> = Vec::new();
         if let Some(target_segments) = pattern::request_target_segments(head.path()) {
             for param_route in &self.param_routes {
-                let Some(params) = pattern::match_segments(&param_route.segments, &target_segments)
+                let Some(params) =
+                    pattern::match_segments(&param_route.segments, &target_segments, head.path())
                 else {
                     continue;
                 };
@@ -1004,5 +1042,134 @@ mod tests {
         let res = router.dispatch(&head("GET", "/x"), &[]);
         assert_eq!(res.status, 405);
         assert_ne!(res.body, b"fallback".to_vec());
+    }
+
+    // --- ワイルドカードパスパラメータ `{*name}`（イシュー #317） ---
+
+    #[test]
+    fn wildcard_route_binds_multi_segment_tail_with_slashes() {
+        let router = Router::new()
+            .route_param("GET", "/static/{*path}", |_h, params, _b| {
+                let path = params.get("path").unwrap_or("");
+                Response::new(200, path.as_bytes().to_vec())
+            })
+            .unwrap();
+
+        let res = router.dispatch(&head("GET", "/static/css/app.css"), &[]);
+        assert_eq!(res.status, 200);
+        assert_eq!(res.body, b"css/app.css".to_vec());
+    }
+
+    #[test]
+    fn wildcard_route_does_not_match_zero_segments() {
+        // 受け入れ条件: `{*path}` は 1 個以上のセグメントを要求し、0 セグメント
+        // （`/static` 単体）には一致しない（末尾スラッシュなしは 404）。
+        let router = Router::new()
+            .route_param("GET", "/static/{*path}", |_h, _params, _b| {
+                Response::empty(200)
+            })
+            .unwrap();
+
+        let res = router.dispatch(&head("GET", "/static"), &[]);
+        assert_eq!(res.status, 404);
+    }
+
+    #[test]
+    fn wildcard_route_static_exact_route_takes_priority() {
+        // 受け入れ条件 3: 静的ルート（完全一致）がワイルドカードパラメータルート
+        // より常に優先される。
+        let router = Router::new()
+            .route("GET", "/static/exact", |_h, _b| {
+                Response::new(200, b"static-exact".to_vec())
+            })
+            .route_param("GET", "/static/{*path}", |_h, params, _b| {
+                let path = params.get("path").unwrap_or("");
+                Response::new(200, format!("wildcard:{path}").into_bytes())
+            })
+            .unwrap();
+
+        assert_eq!(
+            router.dispatch(&head("GET", "/static/exact"), &[]).body,
+            b"static-exact".to_vec()
+        );
+        assert_eq!(
+            router.dispatch(&head("GET", "/static/other"), &[]).body,
+            b"wildcard:other".to_vec()
+        );
+    }
+
+    #[test]
+    fn wildcard_route_falls_through_from_earlier_registered_single_segment_param() {
+        // 受け入れ条件 3: 登録順意味論の固定化。先に登録した 1 セグメント
+        // パラメータルートが 1 セグメントリクエストでは勝ち、複数セグメントの
+        // リクエストはそのパラメータルートに一致しないため後続のワイルドカード
+        // ルートへフォールスルーする。
+        let router = Router::new()
+            .route_param("GET", "/static/{file}", |_h, params, _b| {
+                let file = params.get("file").unwrap_or("");
+                Response::new(200, format!("single:{file}").into_bytes())
+            })
+            .unwrap()
+            .route_param("GET", "/static/{*path}", |_h, params, _b| {
+                let path = params.get("path").unwrap_or("");
+                Response::new(200, format!("wildcard:{path}").into_bytes())
+            })
+            .unwrap();
+
+        assert_eq!(
+            router.dispatch(&head("GET", "/static/app.css"), &[]).body,
+            b"single:app.css".to_vec()
+        );
+        assert_eq!(
+            router
+                .dispatch(&head("GET", "/static/css/app.css"), &[])
+                .body,
+            b"wildcard:css/app.css".to_vec()
+        );
+    }
+
+    #[test]
+    fn wildcard_route_method_mismatch_returns_405_with_allow() {
+        let router = Router::new()
+            .route_param("GET", "/static/{*path}", |_h, _params, _b| {
+                Response::empty(200)
+            })
+            .unwrap();
+
+        let res = router.dispatch(&head("POST", "/static/css/app.css"), &[]);
+        assert_eq!(res.status, 405);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(text.contains("Allow: GET\r\n"));
+    }
+
+    #[test]
+    fn wildcard_route_non_origin_form_target_does_not_match() {
+        // `*`（asterisk-form）はセグメント分割対象外のため一致しない
+        // （`request_target_segments` が `None` を返す、モジュール doc参照）。
+        let router = Router::new()
+            .route("OPTIONS", "*", |_h, _b| Response::empty(200))
+            .route_param("GET", "/static/{*path}", |_h, _params, _b| {
+                Response::empty(200)
+            })
+            .unwrap();
+
+        let res = router.dispatch(&head("OPTIONS", "*"), &[]);
+        assert_eq!(res.status, 200);
+    }
+
+    #[test]
+    fn wildcard_route_unmatched_zero_segment_falls_through_to_fallback() {
+        // fallback（イシュー #316）とのマージ地点回帰: 0 セグメント不一致は
+        // 404 として fallback へ委譲される。
+        let router = Router::new()
+            .route_param("GET", "/static/{*path}", |_h, _params, _b| {
+                Response::empty(200)
+            })
+            .unwrap()
+            .fallback(|_h, _b| Response::new(404, b"fallback".to_vec()));
+
+        let res = router.dispatch(&head("GET", "/static"), &[]);
+        assert_eq!(res.status, 404);
+        assert_eq!(res.body, b"fallback".to_vec());
     }
 }
