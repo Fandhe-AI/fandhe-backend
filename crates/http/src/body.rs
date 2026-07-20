@@ -489,7 +489,10 @@ mod tests {
     #[test]
     fn body_length_with_limit_extreme_large_limit_is_accepted() {
         // 極端な大値は拒否せずそのまま上限として使う（利用者責務、doc 明記済み）。
-        let value = 1_000_000u64;
+        // 既定 MAX_BODY_BYTES（1_048_576）を明確に超える値を使い、「引き上げた上限が
+        // 実際に効いている」ことを検証する（既定値のままでも通ってしまう値だと
+        // max_body_bytes 引数が無視されていても検知できないため）。
+        let value = MAX_BODY_BYTES + 1;
         let buf = format!("POST / HTTP/1.1\r\nContent-Length: {value}\r\n\r\n");
         let head = head_of(buf.as_bytes());
         assert_eq!(
