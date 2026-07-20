@@ -259,3 +259,16 @@ test = true
 [[example]]
 name = "openapi_endpoints"
 test = true
+
+# イシュー #320: `examples/openapi_custom_doc.rs`（利用者アプリ独自 OpenAPI
+# スキーマ登録サンプル）。`Server::openapi_with` が `fandhe-backend-plugin-openapi`
+# （optional dep）の `OpenApiDoc` 型を直接使うため、`openapi` feature 無効時に
+# `cargo build --workspace --all-targets` 等がコンパイル対象へ含めて失敗しない
+# よう `required-features` で明示的にゲートする（`webrtc_nfr6` 等と同一
+# パターン）。`test = true` により `#[cfg(test)] mod tests`（登録済み JSON 配信・
+# yaml 未登録 404・無関係パスのフォールスルー）を `cargo test` の対象に含める
+# （`core-bench` / `openapi_endpoints` と同一理由）。
+[[example]]
+name = "openapi_custom_doc"
+required-features = ["openapi"]
+test = true

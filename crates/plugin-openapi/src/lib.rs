@@ -30,6 +30,12 @@
 //!   する。埋め込み実体の鮮度保証・TASK-2.1 との接続契約は `embed.rs` の doc comment
 //!   を参照。
 //!
+//! # 利用者アプリ独自スキーマ（イシュー #320）
+//! 上記はいずれもフレームワーク自身の固定スキーマ（[`ApiDoc`]）を配信する
+//! 経路である。利用者アプリが自前で生成した OpenAPI ドキュメントを配信したい
+//! 場合は [`OpenApiDoc`] を使う（`crate::custom` モジュール。
+//! `crates/core::Server::openapi_with` に登録する）。
+//!
 //! # 実行時コスト
 //! [`ApiDoc::openapi()`] はコンパイル時に構築されたメタデータから実行時に
 //! ドキュメント構造体を組み立てるのみで、サーバーのリクエスト処理経路からは
@@ -45,10 +51,12 @@
 //! （pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）。依存方向の機械検証は
 //! `scripts/dep-direction-check.sh`（TASK-1.5 / TASK-11.1）が担う。
 
+mod custom;
 mod docs;
 mod embed;
 mod schemas;
 
+pub use custom::{OpenApiDoc, OpenApiDocError};
 pub use docs::ApiDoc;
 pub use embed::{OPENAPI_JSON, OPENAPI_YAML};
 pub use schemas::{EchoBody, ErrorBody, SearchResponse, UserResponse};

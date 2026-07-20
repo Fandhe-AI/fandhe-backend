@@ -103,42 +103,54 @@ pub(crate) async fn try_intercept(
 
     // TASK-2.1（#256）: `GET /openapi.json` の静的サービング。`GET /openapi.yaml`
     // （#279、仕様（docs/spec/04-requirements.md）が「json と同等に yaml も提供」と
-    // 明記することへの対応）も同一パターンで追加した。プラグイン側
-    // （`crates/plugin-openapi`）はハンドラを持たず定数 `OPENAPI_JSON` /
-    // `OPENAPI_YAML` を公開するのみのため（`embed.rs` の接続契約）、他の設定登録型
-    // プラグインと異なり `fandhe_backend_plugin_openapi::try_handle_*` のような非同期
-    // 委譲関数は呼ばない。`server.openapi_enabled()` が `true`（明示登録済み）
-    // かつメソッド・パスが完全一致した場合のみ、コンパイル時埋め込みの静的
-    // JSON/YAML をそのまま返す薄い分岐（実行時生成コストゼロ、PoC-4 成功基準 3）。
-    // 未登録時は feature が有効でもフォールスルーする（`webrtc-proxy`・
-    // `graphql` と同じ設定登録型パターン、`Server::openapi` の doc を参照）。
-    // json/yaml は `head.target` の完全一致（クエリ付きはフォールスルー）で
-    // 排他的に分岐し、両方とも同一の opt-in トグル（`openapi_enabled`）を共有する。
+    // 明記することへの対応）も同一パターンで追加した。イシュー #320 で
+    // `server.openapi_enabled(): bool` を `server.openapi_registration(): &OpenApiRegistration`
+    // へ差し替え、フレームワーク固定スキーマ（`Embedded`）と利用者アプリ独自
+    // スキーマ（`Custom`、`crates/plugin-openapi/src/custom.rs::OpenApiDoc`）の
+    // 2 系統を同一分岐で扱う。`Disabled`（既定）時は feature が有効でも常に
+    // フォールスルーする（`webrtc-proxy`・`graphql` と同じ設定登録型パターン、
+    // `Server::openapi` / `Server::openapi_with` の doc を参照）。json/yaml は
+    // `head.target` の完全一致（クエリ付きはフォールスルー）で排他的に分岐し、
+    // 両方とも同一の登録状態（`openapi_registration`）を共有する。
     #[cfg(feature = "openapi")]
     {
-        if server.openapi_enabled() && head.method == "GET" && head.target == "/openapi.json" {
-            return Some(
-                Response::new(
-                    200,
+        use crate::server::OpenApiRegistration;
+
+        if head.method == "GET" && head.target == "/openapi.json" {
+            let body = match server.openapi_registration() {
+                OpenApiRegistration::Disabled => None,
+                OpenApiRegistration::Embedded => Some(
                     fandhe_backend_plugin_openapi::OPENAPI_JSON
                         .as_bytes()
                         .to_vec(),
-                )
-                .with_content_type("application/json"),
-            );
+                ),
+                OpenApiRegistration::Custom(doc) => Some(doc.json().to_vec()),
+            };
+            if let Some(body) = body {
+                return Some(Response::new(200, body).with_content_type("application/json"));
+            }
         }
-        if server.openapi_enabled() && head.method == "GET" && head.target == "/openapi.yaml" {
-            return Some(
-                Response::new(
-                    200,
+        if head.method == "GET" && head.target == "/openapi.yaml" {
+            let body = match server.openapi_registration() {
+                OpenApiRegistration::Disabled => None,
+                OpenApiRegistration::Embedded => Some(
                     fandhe_backend_plugin_openapi::OPENAPI_YAML
                         .as_bytes()
                         .to_vec(),
-                )
-                // RFC 9512 が定める YAML の正式メディアタイプ。MIME スニッフィング
-                // の余地を残さないため常に明示する（`.claude/rules/security.md` A05）。
-                .with_content_type("application/yaml"),
-            );
+                ),
+                // `with_yaml` 未登録（`yaml()` が `None`）なら既定 `Handler`
+                // へフォールスルーする（`OpenApiDoc::with_yaml` の doc を参照）。
+                OpenApiRegistration::Custom(doc) => doc.yaml().map(<[u8]>::to_vec),
+            };
+            if let Some(body) = body {
+                return Some(
+                    Response::new(200, body)
+                        // RFC 9512 が定める YAML の正式メディアタイプ。MIME
+                        // スニッフィングの余地を残さないため常に明示する
+                        // （`.claude/rules/security.md` A05）。
+                        .with_content_type("application/yaml"),
+                );
+            }
         }
     }
 

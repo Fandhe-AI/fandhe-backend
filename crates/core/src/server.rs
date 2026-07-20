@@ -206,6 +206,27 @@ impl Handler for fandhe_backend_routes::Router {
     }
 }
 
+/// `Server::openapi()` / `Server::openapi_with()` が設定する、`GET
+/// /openapi.json` / `GET /openapi.yaml` の配信登録状態（`openapi` feature
+/// 限定、TASK-2.1 / #256、イシュー #320）。
+///
+/// `crate::plugin::try_intercept` がこの enum を参照して応答内容を判定
+/// する。`Server::openapi()` と `Server::openapi_with()` は排他ではなく
+/// **後勝ち**（どちらを先に呼んでも、最後に呼んだ方の variant が残る。
+/// builder メソッドが `self` を消費して返す一般的な直感に一致する）。
+#[cfg(feature = "openapi")]
+pub(crate) enum OpenApiRegistration {
+    /// 未登録（既定、fail-closed）。feature が有効でも常にフォールスルー
+    /// する（`Server::openapi` の doc・A01/A05 観点を参照）。
+    Disabled,
+    /// `Server::openapi()` で登録した、フレームワーク固定スキーマ
+    /// （`fandhe_backend_plugin_openapi::OPENAPI_JSON` / `OPENAPI_YAML`）。
+    Embedded,
+    /// `Server::openapi_with(doc)` で登録した、利用者アプリ独自のスキーマ
+    /// （イシュー #320）。
+    Custom(fandhe_backend_plugin_openapi::OpenApiDoc),
+}
+
 /// 3 拡張点・既定ハンドラを登録するビルダー。
 ///
 /// 各登録メソッドは `self` を消費して返すため、メソッドチェーンで組み立てる。
@@ -278,15 +299,16 @@ pub struct Server {
     #[cfg(feature = "graphql")]
     graphql_config: Option<fandhe_backend_plugin_graphql::GraphQlConfig>,
     /// `openapi` feature（TASK-2.1 / #256）有効時のみ意味を持つ、`GET
-    /// /openapi.json` の公開トグル。`crate::plugin::try_intercept` がこの
-    /// フィールドを参照して応答するかどうかを判定する。既定 `false`
-    /// （未登録）では feature が有効でもフォールスルーする（`webrtc-proxy`・
+    /// /openapi.json` / `GET /openapi.yaml` の配信登録状態
+    /// （[`OpenApiRegistration`]）。`crate::plugin::try_intercept` がこの
+    /// フィールドを参照して応答内容を判定する。既定 `Disabled`（未登録）
+    /// では feature が有効でもフォールスルーする（`webrtc-proxy`・
     /// `graphql` と同じ「設定登録型」パターン。API 構造の開示を利用者の
     /// 明示的 opt-in に限定する意図、`.claude/rules/security.md` の
     /// A01/A05 観点）。feature 無効時はフィールド自体が構造体から消え、
     /// 依存・コードともゼロコストになる（pay-for-what-you-use）。
     #[cfg(feature = "openapi")]
-    openapi_enabled: bool,
+    openapi_registration: OpenApiRegistration,
     /// `cors` feature（イシュー #305）有効時のみ意味を持つ、登録済み CORS
     /// 設定。`crate::plugin::finalize_response`（レスポンス後処理型シーム）が
     /// このフィールドを参照して実リクエスト応答へ CORS ヘッダを付与する
@@ -333,7 +355,7 @@ impl Default for Server {
             #[cfg(feature = "graphql")]
             graphql_config: None,
             #[cfg(feature = "openapi")]
-            openapi_enabled: false,
+            openapi_registration: OpenApiRegistration::Disabled,
             #[cfg(feature = "cors")]
             cors_config: None,
             #[cfg(feature = "static")]
@@ -647,6 +669,7 @@ impl Server {
     }
 
     /// OpenAPI ドキュメント配信プラグイン（`crates/plugin-openapi`）を
+    /// フレームワーク固定スキーマ（[`ApiDoc`][fandhe_backend_plugin_openapi::ApiDoc]）で
     /// 有効化する（`openapi` feature 限定 API、TASK-2.1 / #256。`GET /openapi.yaml`
     /// 配信の追加は #279）。
     ///
@@ -662,6 +685,11 @@ impl Server {
     /// 非公開（fail-closed）とし利用者の明示登録を必須とする
     /// （`.claude/rules/security.md` の A01/A05 観点）。
     ///
+    /// 利用者アプリ独自のスキーマを配信したい場合は [`Server::openapi_with`]
+    /// を使う（イシュー #320）。両方呼んだ場合は最後に呼んだ方が勝つ
+    /// （builder の直感に一致する後勝ちルール、内部の配信登録状態管理を
+    /// 参照）。
+    ///
     /// # Examples
     /// ```
     /// use fandhe_backend_core::Server;
@@ -672,15 +700,55 @@ impl Server {
     #[cfg(feature = "openapi")]
     #[must_use]
     pub fn openapi(mut self) -> Self {
-        self.openapi_enabled = true;
+        self.openapi_registration = OpenApiRegistration::Embedded;
         self
     }
 
-    /// `plugin::try_intercept` が参照する、`GET /openapi.json` 公開の有効/
-    /// 無効フラグ（`openapi` feature 限定、TASK-2.1 / #256）。
+    /// 利用者アプリ独自の OpenAPI ドキュメント
+    /// （[`OpenApiDoc`][fandhe_backend_plugin_openapi::OpenApiDoc]）を登録して
+    /// OpenAPI 配信プラグインを有効化する（`openapi` feature 限定 API、
+    /// イシュー #320）。
+    ///
+    /// [`Server::openapi`]（フレームワーク固定スキーマ）とは異なり、利用者
+    /// アプリが自前で生成した OpenAPI ドキュメント（`utoipa` 由来・他ツール
+    /// 生成いずれも可）を `GET /openapi.json` / `GET /openapi.yaml` として
+    /// 配信できる。
+    /// [`OpenApiDoc::from_json`][fandhe_backend_plugin_openapi::OpenApiDoc::from_json]
+    /// が構築時（本メソッド呼び出し前）に JSON 妥当性を一度だけ検証済みのため、
+    /// 本メソッド自体は追加検証を行わない（fail-closed の検証責務は
+    /// [`OpenApiDoc`][fandhe_backend_plugin_openapi::OpenApiDoc] 側、
+    /// `crates/plugin-openapi/src/custom.rs` の doc を参照）。
+    /// `OpenApiDoc::yaml()` が `None`（`with_yaml` 未呼び出し）の場合、
+    /// `GET /openapi.yaml` は既定 `Handler` へフォールスルーする（404）。
+    ///
+    /// [`Server::openapi`] と `openapi_with` は排他ではなく**後勝ち**
+    /// （`crate::plugin::try_intercept` は最後に登録された配信登録状態のみを
+    /// 参照する）。両方を呼ぶ意味のある構成は通常ないが、builder パターンの
+    /// 一貫性のため片方だけを許可する特別扱いはしない。
+    ///
+    /// # Examples
+    /// ```
+    /// use fandhe_backend_core::Server;
+    /// use fandhe_backend_plugin_openapi::OpenApiDoc;
+    ///
+    /// let doc = OpenApiDoc::from_json(r#"{"openapi":"3.0.0","info":{"title":"t","version":"1"}}"#)
+    ///     .expect("妥当な JSON");
+    /// let server = Server::new().openapi_with(doc);
+    /// let _ = server;
+    /// ```
     #[cfg(feature = "openapi")]
-    pub(crate) fn openapi_enabled(&self) -> bool {
-        self.openapi_enabled
+    #[must_use]
+    pub fn openapi_with(mut self, doc: fandhe_backend_plugin_openapi::OpenApiDoc) -> Self {
+        self.openapi_registration = OpenApiRegistration::Custom(doc);
+        self
+    }
+
+    /// `plugin::try_intercept` が参照する、`GET /openapi.json` /
+    /// `GET /openapi.yaml` の配信登録状態（`openapi` feature 限定、
+    /// TASK-2.1 / #256、イシュー #320）。
+    #[cfg(feature = "openapi")]
+    pub(crate) fn openapi_registration(&self) -> &OpenApiRegistration {
+        &self.openapi_registration
     }
 
     /// CORS プラグイン（`crates/plugin-cors`）を有効化する（`cors` feature

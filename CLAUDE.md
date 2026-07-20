@@ -136,7 +136,12 @@ fandhe-backend/
 │   │                                   # `Server::openapi()` 登録時のみ `GET /openapi.json` を配信。
 │   │                                   # `GET /openapi.yaml` も同一 opt-in・同一スキーマ源
 │   │                                   # （ApiDoc）で配信（#279。YAML 変換依存は開発用
-│   │                                   # `gen-cli` feature に閉じ、サーバ経路には現れない））
+│   │                                   # `gen-cli` feature に閉じ、サーバ経路には現れない）。
+│   │                                   # `OpenApiDoc::from_json`（構築時 JSON 検証済み）+
+│   │                                   # `Server::openapi_with(doc)` で利用者アプリ独自の
+│   │                                   # OpenAPI スキーマも `GET /openapi.json` /
+│   │                                   # `GET /openapi.yaml` として配信可能（`Server::openapi()`
+│   │                                   # とは後勝ちで排他、イシュー #320）
 │   ├── plugin-websocket                # WebSocket プラグイン（RFC 6455 ハンドシェイク検証・101 応答・
 │   │                                    # tokio-tungstenite へのフレーミング委譲、TASK-4.1、#22。
 │   │                                    # `crates/core` の `websocket` feature 経由で `UpgradeHandler`

@@ -498,21 +498,37 @@ PoC-10 の知見（非同期 I/O 化だけでは RPS 劣化 31.6% を解消で�
   は `fandhe_backend_plugin_*::try_handle_*(head, body, config).await` という
   非同期関数へ委譲するが、`fandhe-backend-plugin-openapi` は定数
   `OPENAPI_JSON` / `OPENAPI_YAML`（`include_str!` によるコンパイル時埋め込み、
-  `embed.rs`。YAML 対応は #279）を公開するのみでハンドラを持たない
-  （`crates/plugin-openapi/src/lib.rs` の「拡張点対応: 非該当」宣言はこのため
-  変更していない。実行時拡張点の契約ではなくコンパイル時 feature 着脱に閉じる、
+  `embed.rs`。YAML 対応は #279）またはイシュー #320 で追加した
+  `OpenApiDoc`（利用者アプリ独自スキーマ、`custom.rs`）のバイト列を公開
+  するのみでハンドラを持たない（`crates/plugin-openapi/src/lib.rs` の
+  「拡張点対応: 非該当」宣言はこのため変更していない。実行時拡張点の契約
+  ではなくコンパイル時 feature 着脱に閉じる、
   `docs/design/dependency-graph-contract.md` 5 節）。`plugin::try_intercept`
-  側は `server.openapi_enabled() && head.method == "GET" &&
-  head.target == "/openapi.json"`（YAML は `/openapi.yaml`）を判定するだけの
-  同期分岐で完結し、`.await` を挟まない
-- **設定登録型（`bool` トグル）**: `webrtc_proxy_config`/`graphql_config` の
-  ような設定値ではなく、`Server::openapi()` は `openapi_enabled: bool` を
-  `true` にするだけの opt-in トグル（json/yaml 共通）。API 構造の開示
-  （`GET /openapi.json` / `GET /openapi.yaml` が内部エンドポイント構成を
-  露出する）を利用者の明示登録なしに既定公開しないため
-  （`.claude/rules/security.md` A01/A05 観点、`Server::openapi` の doc
-  comment を参照）。未登録時は feature が有効でも常にフォールスルー（404）
-  する点は他の設定登録型プラグイン（`webrtc-proxy`・`graphql`）と同じ
+  側は `head.method == "GET" && head.target == "/openapi.json"`（YAML は
+  `/openapi.yaml`）とメソッド・パスの完全一致を判定したうえで
+  `server.openapi_registration()`（後述の enum）を参照するだけの同期分岐で
+  完結し、`.await` を挟まない
+- **設定登録型（enum、イシュー #320 で `bool` トグルから移行）**:
+  `webrtc_proxy_config`/`graphql_config` と同様の「設定登録型」パターンだが、
+  `Server::openapi()` / `Server::openapi_with(doc)` の 2 メソッドが同一の
+  非公開 `OpenApiRegistration`（`Disabled` / `Embedded` / `Custom(OpenApiDoc)`）
+  へ書き込む。`Disabled`（既定）では feature が有効でも常にフォールスルー
+  （404）する点は他の設定登録型プラグイン（`webrtc-proxy`・`graphql`）と
+  同じ。`Embedded` はフレームワーク固定スキーマ（`OPENAPI_JSON`/
+  `OPENAPI_YAML`）、`Custom` は利用者アプリが `OpenApiDoc::from_json` で
+  検証済みの独自スキーマを配信する。API 構造の開示（内部エンドポイント
+  構成の露出）を利用者の明示登録なしに既定公開しないため
+  （`.claude/rules/security.md` A01/A05 観点、`Server::openapi` /
+  `Server::openapi_with` の doc comment を参照）。両メソッドは排他ではなく
+  **後勝ち**（最後に呼んだ方の variant が残る、builder パターンの一般的な
+  直感に一致。`crates/core/src/server.rs` の `OpenApiRegistration` doc・
+  `crates/core/tests/plugin_openapi_boundary.rs` の
+  `openapi_with_takes_precedence_over_earlier_openapi_call` /
+  `openapi_takes_precedence_over_earlier_openapi_with_call` を参照）。
+  `Custom` の JSON 検証（構文妥当性 + トップレベルオブジェクト）は
+  `OpenApiDoc::from_json` 構築時（利用者アプリの起動シーケンス内）に一度
+  だけ行い、リクエスト処理経路（`try_intercept`）では再検証しない
+  （fail-closed、`crates/plugin-openapi/src/custom.rs` の doc を参照）
 
 ## 5.9 レスポンス後処理型パターン（イシュー #305 で確立）
 
