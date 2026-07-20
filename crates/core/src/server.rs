@@ -84,7 +84,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use fandhe_backend_http::body::BodyError;
 use fandhe_backend_http::buffer::RecvBuffer;
 use fandhe_backend_http::chunked::ChunkedError;
-use fandhe_backend_http::connection::{RequestError, read_request, should_keep_alive};
+use fandhe_backend_http::connection::{RequestError, read_request_with_limit, should_keep_alive};
 use fandhe_backend_http::request::{ParseError, RequestHead};
 use fandhe_backend_http::response::Response;
 
@@ -196,6 +196,12 @@ pub struct Server {
     max_connections: usize,
     max_connection_lifetime: Duration,
     max_requests_per_connection: usize,
+    /// body として許容する最大バイト数（既定
+    /// `fandhe_backend_http::body::MAX_BODY_BYTES`、イシュー #311）。
+    /// `handle_connection_with_permit` がこの値を `read_request_with_limit`
+    /// （`fandhe_backend_http::connection`）へ渡し、固定長・chunked 両経路の
+    /// 413 判定に使う。
+    max_body_bytes: u64,
     /// `webrtc-proxy` feature（TASK-2.1 / #18）有効時のみ意味を持つ設定。
     /// `crate::plugin::try_intercept` がこのフィールドを参照して `POST
     /// /rtc/offer` を上流へ中継するかどうかを判定する。feature 無効時は
@@ -268,6 +274,7 @@ impl Default for Server {
             max_connections: DEFAULT_MAX_CONNECTIONS,
             max_connection_lifetime: DEFAULT_MAX_CONNECTION_LIFETIME,
             max_requests_per_connection: DEFAULT_MAX_REQUESTS_PER_CONNECTION,
+            max_body_bytes: fandhe_backend_http::body::MAX_BODY_BYTES,
             #[cfg(feature = "webrtc-proxy")]
             webrtc_proxy_config: None,
             #[cfg(feature = "webrtc")]
@@ -329,6 +336,40 @@ impl Server {
     #[must_use]
     pub fn max_requests_per_connection(mut self, max: usize) -> Self {
         self.max_requests_per_connection = max;
+        self
+    }
+
+    /// body として許容する最大バイト数の上限を設定する
+    /// （既定 `fandhe_backend_http::body::MAX_BODY_BYTES` = 1 MiB、イシュー #311）。
+    ///
+    /// [`handle_connection`] はこの値を `read_request_with_limit`
+    /// （`fandhe_backend_http::connection`）へ渡し、`Content-Length` 固定長
+    /// body・chunked transfer-coding の復号後総量の双方に適用する。上限を
+    /// 超えたリクエストは axum の `RequestBodyLimitLayer` 相当として
+    /// `413 Payload Too Large` を返す（body なしで拒否、内部の上限値は
+    /// レスポンスへ含めない）。
+    ///
+    /// - `0` を指定すると body を持つリクエストを一律 413 で拒否する
+    ///   （`Content-Length: 0` またはヘッダ不在の body なしリクエストは
+    ///   引き続き正常応答する）。より厳しい側への設定でありフェイルクローズ
+    ///   方向のため許容する
+    /// - 既定より大きい値を設定すると、1 接続あたりの body バッファリング
+    ///   最大メモリが増える。最悪ケースの概算は `max_body_bytes ×
+    ///   max_connections`（[`Server::max_connections`]）に比例するため、
+    ///   大値設定はリソース枯渇（DoS）耐性の後退になりうることを踏まえて
+    ///   利用者が判断すること（`.claude/rules/security.md`）
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_core::Server;
+    ///
+    /// let server = Server::new().max_body_bytes(64 * 1024); // 64 KiB
+    /// let _ = server;
+    /// ```
+    #[must_use]
+    pub fn max_body_bytes(mut self, max: usize) -> Self {
+        self.max_body_bytes = max as u64;
         self
     }
 
@@ -812,8 +853,11 @@ pub(crate) async fn handle_connection_with_permit<S>(
             .saturating_sub(elapsed_since_start);
         let read_timeout = READ_TIMEOUT.min(remaining_lifetime);
 
-        let read_result =
-            tokio::time::timeout(read_timeout, read_request(&mut stream, &mut buf)).await;
+        let read_result = tokio::time::timeout(
+            read_timeout,
+            read_request_with_limit(&mut stream, &mut buf, server.max_body_bytes),
+        )
+        .await;
 
         let request = match read_result {
             // タイムアウト（スロークライアント・keep-alive アイドル超過）:
@@ -1583,6 +1627,72 @@ GET /c HTTP/1.1\r\n\r\n",
         let server = Server::new();
         let request = format!(
             "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n{:X}\r\n",
+            MAX_BODY_BYTES + 1
+        );
+        let response = roundtrip(&server, request.as_bytes()).await;
+        assert!(response.starts_with("HTTP/1.1 413 Payload Too Large\r\n"));
+    }
+
+    #[tokio::test]
+    async fn max_body_bytes_custom_limit_rejects_over_boundary() {
+        // イシュー #311: Server::max_body_bytes で上限を上書きした場合、
+        // 上限を超える固定長 body は 413 で拒否される。
+        let server = Server::new().max_body_bytes(4);
+        let response = roundtrip(
+            &server,
+            b"POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nabcde",
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 413 Payload Too Large\r\n"));
+    }
+
+    #[tokio::test]
+    async fn max_body_bytes_custom_limit_accepts_at_boundary() {
+        // 上限ちょうどの body は受理され、通常どおりハンドラ解決（未登録
+        // ハンドラの 404）まで進む（body_too_large_returns_413 との対で境界を
+        // 固定する）。
+        let server = Server::new().max_body_bytes(4);
+        let response =
+            roundtrip(&server, b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\nabcd").await;
+        assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+    }
+
+    #[tokio::test]
+    async fn max_body_bytes_custom_limit_propagates_to_chunked() {
+        // カスタム上限が chunked 経路にも伝搬することを固定する
+        // （chunked_body_too_large_returns_413 のカスタム上限版）。
+        let server = Server::new().max_body_bytes(4);
+        let response = roundtrip(
+            &server,
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nabcde\r\n0\r\n\r\n",
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 413 Payload Too Large\r\n"));
+    }
+
+    #[tokio::test]
+    async fn max_body_bytes_zero_rejects_body_but_accepts_bodyless() {
+        // `0` は「body を持つリクエストを一律拒否する」設定として許容される
+        // （フェイルクローズ方向。doc comment の明記事項を固定する）。
+        let server = Server::new().max_body_bytes(0);
+        let response = roundtrip(&server, b"POST / HTTP/1.1\r\nContent-Length: 1\r\n\r\nx").await;
+        assert!(response.starts_with("HTTP/1.1 413 Payload Too Large\r\n"));
+
+        let server = Server::new().max_body_bytes(0);
+        let response = roundtrip(&server, b"GET / HTTP/1.1\r\n\r\n").await;
+        assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+    }
+
+    #[tokio::test]
+    async fn max_body_bytes_default_matches_unmodified_server() {
+        // ビルダー未呼び出し時は既定 MAX_BODY_BYTES のまま、既存の
+        // body_too_large_returns_413 と同一境界であることを固定する
+        // （後方互換の担保）。
+        use fandhe_backend_http::body::MAX_BODY_BYTES;
+
+        let server = Server::new();
+        let request = format!(
+            "POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
             MAX_BODY_BYTES + 1
         );
         let response = roundtrip(&server, request.as_bytes()).await;
