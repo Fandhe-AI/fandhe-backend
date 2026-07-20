@@ -56,7 +56,11 @@ fandhe-backend/
 │   │                                    # `fandhe_backend_plugin_cors::preflight_response` を
 │   │                                    # `Router::options_fallback`（#304）へ直接配線する 2 点構成
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
-│   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。chunked
+│   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
+│   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む
+│   │                                    # 残りパス全体を 1 個以上のセグメント条件で束縛（中間配置は
+│   │                                    # 登録時エラー、静的ファイル配信プラグイン等の前提整備、
+│   │                                    # イシュー #317）。chunked
 │   │                                    # Transfer-Encoding 対応（sans-IO `ChunkedDecoder`、
 │   │                                    # DoS 上限・fuzz target 追加、イシュー #181）。`RequestHead::path`
 │   │                                    # / `query` でクエリ文字列を分離し `Router::dispatch` の
