@@ -41,7 +41,7 @@ TASK-9.2（#62、RS256 + JWKS 化）・TASK-9.3（#63、検証結果キャッシ
 | PASS | B: 配線コード削減率 | マーカー区間 6 行（PoC-6 基準 207 行比 削減率 97.1%、閾値 90% 以上） |
 | PASS | B補足: ハンドラ領域の手書き配線シンボル不在 | `verify_token` / `RsaKeyPair` / `JwksKeySet` / `SharedJwks::new` / `TenantGateConfig::(new\|from_jwks_json)` いずれも `build_router` 内に出現なし |
 | PASS | C: 依存逆転型プラグインの維持 | `cargo tree -p backend-framework-core` に `bf-plugin-hub-wiring` が現れない |
-| WARN | D: NFR-6 無関係パス影響（実務許容帯内・狭義帯外） | RPS 比 98.58〜99.71% / p95 比 100.01〜101.52%（2 回実行、詳細下記。Cursor Bugbot review 4727552092 指摘1対応でリンクコスト専用最小 example `hub_link_only.rs` へ切り替え後の数値） |
+| WARN（2026-07-20 専有 Linux ホストでの確定計測により「確定」区分へ更新。下記「再計測（2026-07-20・専有 Linux ホスト、基準 D 確定）」節参照） | D: NFR-6 無関係パス影響（実務許容帯内・狭義帯外） | 当時（2 回実行）: RPS 比 98.58〜99.71% / p95 比 100.01〜101.52%（詳細下記。Cursor Bugbot review 4727552092 指摘1対応でリンクコスト専用最小 example `hub_link_only.rs` へ切り替え後の数値）。2026-07-20 専有 Linux ホスト確定計測: RPS 比 99.49% / p95 比 99.32%（同一パラメータ `RUNS=5 DURATION=5s CONNECTIONS=32`。判定区分 WARN は不変） |
 
 **終了コード: 0（FAIL なし、PASS / WARN のみ）**
 
@@ -187,3 +187,91 @@ cargo tree -p backend-framework-core | grep -c bf-plugin-hub-wiring  # 0
 cargo run --release -p bf-plugin-hub-wiring --example hub_service_demo
 # 起動時に表示される curl コマンド例（有効トークン付き）をそのまま使う
 ```
+
+## 再計測（2026-07-20・ローカル macOS 環境、基準 D フォローアップ）
+
+「BLOCKED / フォローアップ」節で残っていた基準 D（NFR-6）の専有環境確定再計測を
+`benches/nfr6-exclusive.sh` で試行した。**結果は BLOCKED（静穏未達・計測未実施）であり、
+基準 D の公式判定 WARN は維持する**（実測値は存在しない。PASS への区分変更なし。
+判定を丸めない・捏造しない、`.claude/rules/security.md`）。
+
+- 実施環境: macOS（Darwin 25.5.0）・論理 16 コア・commit `a44c620`。
+  並列 issue 実装ワークフローは停止済みで、`cargo` / `rustc` / `oha` は不在
+  （`snapshot_busy_processes=none`）
+- 実行パラメータ: 旧計測と同一の `TARGETS=hub RUNS=5 DURATION=5s CONNECTIONS=32`
+- 試行記録（`LOAD1_MAX=1.0` の既定閾値。緩和していない）: 待機上限 1800s で BLOCKED
+  （snapshot: 2026-07-20T01:04:06Z、loadavg1=3.22）。同日先行の webrtc 対象 3 試行
+  （`docs/acceptance/req8-webrtc-attack-surface.md` の同日追記節）でも計 3 時間超の待機で
+  静穏が成立せず、負荷源はデスクトップセッション（WindowServer・ブラウザ等の GUI
+  プロセス）の持続負荷（loadavg1 2.3〜3.4）だった
+- **付随修正**: 本再計測で `benches/lib/exclusive.sh` `get_loadavg1` の macOS `uptime`
+  表記（「load averages:」）非対応の移植性バグを発見・修正した（詳細は
+  `docs/acceptance/req8-webrtc-attack-surface.md` 同日追記節。セルフテスト 16 件 PASS）
+- **残課題**: 基準 D の確定再計測は引き続きフォローアップとする。GUI セッションが
+  停止した真に静穏な時間帯（もしくは専有 Linux ホスト）での実施が必要
+
+## 再計測（2026-07-20・専有 Linux ホスト、基準 D 確定）
+
+上記「2026-07-20・ローカル macOS 環境」節が BLOCKED のまま残していた基準 D（NFR-6）の
+専有環境確定再計測を、真に静穏な専有 Linux ホスト（`loadavg1` 実測 0.80、GUI セッション
+なし）で実施できた。`benches/nfr6-exclusive.sh` は静穏確認 OK → 計測完了まで到達し、
+**BLOCKED ではなく確定判定を得た**。
+
+### 実行環境
+
+| 項目 | 値 |
+|------|-----|
+| 実行日時 | 2026-07-20T03:41:03Z（`snapshot_label=before`） |
+| OS / カーネル | Linux `dev-box02` 7.0.0-27-generic #27-Ubuntu SMP PREEMPT_DYNAMIC（`uname -a`） |
+| 論理コア数 | 12（`snapshot_nproc=12`） |
+| 対象コミット | `b6e3144476207695193b0abcfdb333a044b21084`（worktree `bench/nfr6-exclusive-remeasure` HEAD） |
+| loadavg1（計測直前 snapshot） | 0.80 |
+| loadavg1（計測直後 snapshot） | 2.87（計測負荷自体・oha/対象バイナリの実行によるもの。計測前は静穏だった） |
+| busy processes（計測直前） | none（`cargo` / `rustc` / `oha` 不在） |
+| 実行パラメータ | 旧計測と同一の `TARGETS=hub RUNS=5 DURATION=5s CONNECTIONS=32`（パラメータ変更なし） |
+| ロック・静穏確認 | `benches/lib/exclusive.sh`（既定 `LOAD1_MAX=1.0` のまま緩和せず、静穏確認 OK で通過） |
+| 対象 example | `hub_link_only.rs`（`FANDHE_BACKEND_HUB_GATE=off`、`TenantGate` 未登録・リンクコストのみ分離計測） |
+
+### 実測値（全 5 run・中央値）
+
+RUNS=5（奇数）のため中央値は 5 値の中央（3 番目）の値（偶数個の「中央 2 値平均」規約は
+本計測には非該当）。
+
+| run | baseline RPS | baseline p95 (s) | hub(gate off) RPS | hub(gate off) p95 (s) |
+|-----|-------------|-------------------|--------------------|--------------------------|
+| 1 | 142732.7558034876 | 0.000238632 | 144938.467785582 | 0.000235069 |
+| 2 | 143120.45157239743 | 0.000239437 | 144286.90872846218 | 0.000235655 |
+| 3 | 149982.57317725578 | 0.000234238 | 143836.98942630965 | 0.000236574 |
+| 4 | 145392.4616116545 | 0.000233765 | 143436.35085005758 | 0.000238706 |
+| 5 | 144571.23210984157 | 0.000238187 | 142001.86156485957 | 0.000240517 |
+
+| 指標 | 中央値 |
+|------|--------|
+| baseline RPS 中央値 | 144571.23210984157 |
+| hub(gate off) RPS 中央値 | 143836.98942630965（baseline 比 **99.49%**） |
+| baseline p95 中央値 | 0.000238187 s |
+| hub(gate off) p95 中央値 | 0.000236574 s（baseline 比 **99.32%**） |
+
+### 判定
+
+`scripts/accept/lib/nfr6-ratio.sh` の `evaluate_nfr6_ratio` に判定帯（RPS 実務許容帯
+[95, 105]・狭義帯 [100.3, 100.8]、p95 実務許容帯 [–, 105]・狭義帯 [–, 100.8]、悪い方を
+採用）をそのまま当てはめた。
+
+- RPS 比 99.49% → 実務許容帯 [95, 105] 内・狭義帯 [100.3, 100.8] 外 → **WARN**
+- p95 比 99.32% → 実務許容帯 [–, 105] 内・狭義帯 [–, 100.8] 外 → **WARN**
+- 総合（悪い方採用）: **WARN**（`benches/nfr6-exclusive.sh` 出力: `判定（hub）: WARN`）
+- 終了コード: 0（BLOCKED ではなく判定確定。`FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE` には
+  到達していない）
+
+**旧判定（WARN）からの変更なし**: 旧参考実測（RPS 比 98.58〜99.71%、実務許容帯内・狭義帯外）
+と本計測（RPS 比 99.49%・p95 比 99.32%）は同じ実務許容帯内・狭義帯外の範囲に収まっており、
+判定区分は WARN のまま変わらない。ただし今回は BLOCKED ではなく専有環境での確定計測として
+実測できた点が従来の「フォローアップ課題」を解消する（丸め・捏造・閾値緩和は一切行っていない、
+`.claude/rules/security.md` フェイルクローズ原則）。
+
+**本再計測をもって基準 D の判定を WARN（確定）とする**（旧 WARN 判定を、専有 Linux ホスト
+での確定実測に基づき「確定」区分へ更新する。上記の判定サマリー・「基準 D の詳細と判断」節・
+「2026-07-20・ローカル macOS 環境」節の既存記述・実測値はいずれも改変しない。過去の記録
+として保持したうえで、本節が最新かつ公式の基準 D 判定を確定させる。「BLOCKED / フォロー
+アップ」節が挙げていた「専有環境での確定的な再計測」課題はこれで解消済みとする）。

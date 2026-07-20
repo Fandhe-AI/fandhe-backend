@@ -35,9 +35,9 @@ TASK-8.2（#27、別プロセスプロキシ）・TASK-8.3（#28、`webrtc-rs` �
 | PASS | C: cargo audit / deny 0件 | `scripts/dep-audit.sh`（全 feature 構成）が正常終了（advisories ok, bans ok, licenses ok, sources ok） |
 | PASS | D: webrtc/webrtc-proxy 2 feature の存在 | `backend-framework-core` に `webrtc`（in-process）・`webrtc-proxy`（別プロセス切り出し）の両 feature が存在 |
 | PASS | D補足: in-process/proxy のクレート境界分離 | `crates/plugin-webrtc` と `crates/plugin-webrtc-proxy` は相互依存なし |
-| FAIL（旧判定を維持、参考実測は下記参照） | E: NFR-6 無関係パス影響 | 当時: RPS 比 94〜95% / p95 比 106〜108%（狭義の NFR-6 帯 100.3〜100.8% には収まらない）。**2026-07 再実行（#220）で参考実測（別パラメータ）を追加したが、同一パラメータでの確定比較が済んでいないため FAIL 判定は維持する。下記「2026-07 再実行」節参照** |
+| **WARN**（2026-07-20 専有 Linux ホストでの確定再計測により FAIL から更新。下記「再計測（2026-07-20・専有 Linux ホスト、基準 E 確定）」節参照） | E: NFR-6 無関係パス影響 | 当時（2026-07-17 実測）: RPS 比 94〜95% / p95 比 106〜108%（狭義の NFR-6 帯 100.3〜100.8% には収まらず、実務許容帯 95〜105% も僅かに下回り FAIL）。2026-07-20 専有 Linux ホスト確定計測: RPS 比 95.54% / p95 比 104.94%（同一パラメータ `RUNS=5 DURATION=15s CONNECTIONS=128`。実務許容帯内・狭義帯外で WARN）。旧 2026-07-17 実測値・当時の FAIL 判定自体は改変しない（過去記録として保持） |
 
-**終了コード（当時）: 1（FAIL あり、基準 E）**。**2026-07 再実行でも基準 E の FAIL 判定は維持しており、本レポート上の公式判定は FAIL のまま据え置く。ただし `webrtc-accept.sh` は実行のたびに実測される RPS・p95 比に応じて動的に FAIL/WARN/PASS を判定する（判定ロジックは `scripts/accept/lib/nfr6-ratio.sh` の `evaluate_nfr6_ratio` に従う）ため、専有計測 BLOCKED 下の参考実測（既定 `CONNECTIONS=32 DURATION=5s`）で偶然 WARN 相当の値が出た実行では終了コード 0 となることがある。旧確定計測（`CONNECTIONS=128 DURATION=15s`）とは単純比較できないため、この 1 回の実行結果を唯一の確定判断とはしない（詳細は下記「2026-07 再実行」節）。
+**終了コード（当時）: 1（FAIL あり、基準 E）**。2026-07 再実行（#220）時点では専有計測が BLOCKED（静穏未達）だったため FAIL 判定を維持していたが、**2026-07-20 に専有 Linux ホストで確定計測を実施でき、基準 E の公式判定は WARN に更新した**（詳細・実測値・判定根拠は下記「再計測（2026-07-20・専有 Linux ホスト、基準 E 確定）」節）。`webrtc-accept.sh` は実行のたびに実測される RPS・p95 比に応じて動的に FAIL/WARN/PASS を判定する（判定ロジックは `scripts/accept/lib/nfr6-ratio.sh` の `evaluate_nfr6_ratio` に従う）ため、専有計測 BLOCKED 下の参考実測（既定 `CONNECTIONS=32 DURATION=5s`）で偶然 WARN 相当の値が出た実行では終了コード 0 となることがあった（旧確定計測 `CONNECTIONS=128 DURATION=15s` とは単純比較できず、当時はこの 1 回の実行結果を唯一の確定判断としなかった）。
 
 ## 基準 E（NFR-6）の詳細と判断
 
@@ -323,3 +323,102 @@ unsafe（大きな絶対量）は削減されず残る。この残余リスク�
 上記を根拠に、基準 B補足の判定を「**受容 WARN（削減不能・残余リスク受容済み、PR レビュー
 承認をもって確定）**」として確定する。PASS への丸め込みは行わず、WARN のまま実測値・
 判断根拠を保持する（捏造しない・フェイルクローズ、`.claude/rules/security.md`）。
+
+## 再計測（2026-07-20・ローカル macOS 環境、基準 E フォローアップ）
+
+「BLOCKED / フォローアップ」節・#220 で残っていた基準 E（NFR-6）の専有環境確定再計測を
+`benches/nfr6-exclusive.sh` で試行した。**結果は BLOCKED（静穏未達・計測未実施）であり、
+基準 E の公式判定 FAIL は維持する**（実測値は存在しない。PASS/WARN への区分変更なし。
+判定を丸めない・捏造しない、`.claude/rules/security.md`）。
+
+- 実施環境: macOS（Darwin 25.5.0）・論理 16 コア・commit `a44c620`。
+  並列 issue 実装ワークフローは停止済みで、`cargo` / `rustc` / `oha` はいずれの試行でも
+  不在（`snapshot_busy_processes=none`）
+- 実行パラメータ: 旧確定計測と同一の `TARGETS=webrtc RUNS=5 DURATION=15s CONNECTIONS=128`
+  （パラメータ変更による判定覆しは行わない、#220 の教訓）
+
+試行記録（いずれも `LOAD1_MAX=1.0` の既定閾値。緩和していない）:
+
+| 試行 | 待機上限 | 結果 | BLOCKED 時 snapshot |
+|------|------|------|------|
+| 1 回目 | 1800s | BLOCKED | 2026-07-19T23:01:52Z、`snapshot_loadavg1=s:`（下記の移植性バグにより loadavg 解析不能。フェイルクローズで BUSY 扱い） |
+| 2 回目（バグ修正後） | 1800s | BLOCKED | 2026-07-19T23:32:52Z、loadavg1=2.54 |
+| 3 回目（バグ修正後） | 3600s | BLOCKED | 2026-07-20T00:33:38Z、loadavg1=3.38 |
+
+- **付随修正（本再計測で発見した計測基盤の移植性バグ）**: `benches/lib/exclusive.sh` の
+  `get_loadavg1` は `uptime` 末尾表記を `-F'load average'` で分割していたため、macOS の
+  「load average**s**: x y z」（複数形・カンマなし）表記では非数値「s:」が返り、静穏確認が
+  恒久的に BUSY 判定となっていた（1 回目の BLOCKED の直接原因）。両 OS 表記対応へ修正し、
+  `scripts/tests/run-nfr6-exclusive-tests.sh` の 16 件 PASS を確認した。フェイルクローズ
+  設計（解析不能を QUIESCENT へ丸めない）は修正前も正しく機能していた
+- **BLOCKED の原因**: 計 3 時間超の待機中、1 分 loadavg が 2.3〜3.4 で持続した。負荷源は
+  ビルド系プロセスではなくデスクトップセッション（WindowServer・ブラウザ等の GUI
+  プロセス）であり、既定閾値 `LOAD1_MAX=1.0` を下回る静穏は成立しなかった
+- **残課題**: 基準 E の確定再計測は引き続きフォローアップとする。GUI セッションが
+  停止した真に静穏な時間帯（もしくは専有 Linux ホスト）での実施が必要
+
+## 再計測（2026-07-20・専有 Linux ホスト、基準 E 確定）
+
+上記「2026-07-20・ローカル macOS 環境」節が BLOCKED のまま残していた基準 E（NFR-6）の
+専有環境確定再計測を、真に静穏な専有 Linux ホスト（`loadavg1` 実測 0.17〜0.21、GUI
+セッションなし）で実施できた。`benches/nfr6-exclusive.sh` は静穏確認 OK → 計測完了まで
+到達し、**BLOCKED ではなく確定判定を得た**。
+
+### 実行環境
+
+| 項目 | 値 |
+|------|-----|
+| 実行日時 | 2026-07-20T03:36:49Z（`snapshot_label=before`） |
+| OS / カーネル | Linux `dev-box02` 7.0.0-27-generic #27-Ubuntu SMP PREEMPT_DYNAMIC（`uname -a`） |
+| 論理コア数 | 12（`snapshot_nproc=12`） |
+| 対象コミット | `b6e3144476207695193b0abcfdb333a044b21084`（worktree `bench/nfr6-exclusive-remeasure` HEAD） |
+| loadavg1（計測直前 snapshot） | 0.21 |
+| loadavg1（計測直後 snapshot） | 3.60（計測負荷自体・oha/対象バイナリの実行によるもの。計測前は静穏だった） |
+| busy processes（計測直前） | none（`cargo` / `rustc` / `oha` 不在） |
+| 実行パラメータ | 旧確定計測と同一の `TARGETS=webrtc RUNS=5 DURATION=15s CONNECTIONS=128`（パラメータ変更なし、#220 の教訓を踏襲） |
+| ロック・静穏確認 | `benches/lib/exclusive.sh`（既定 `LOAD1_MAX=1.0` のまま緩和せず、静穏確認 OK で通過） |
+
+### 実測値（全 5 run・中央値）
+
+RUNS=5（奇数）のため中央値は 5 値の中央（3 番目）の値（偶数個の「中央 2 値平均」規約は
+本計測には非該当）。
+
+| run | baseline RPS | baseline p95 (s) | webrtc RPS | webrtc p95 (s) |
+|-----|-------------|-------------------|------------|-----------------|
+| 1 | 143098.51009574515 | 0.000929834 | 137119.94680406927 | 0.000962995 |
+| 2 | 143513.957236022 | 0.000925749 | 136172.37606241085 | 0.000969153 |
+| 3 | 144905.4791130689 | 0.000909912 | 136529.12922482507 | 0.000969462 |
+| 4 | 143147.5573744865 | 0.000921729 | 139532.33651191753 | 0.000967264 |
+| 5 | 144356.426524488 | 0.000914518 | 137900.3620503512 | 0.000958812 |
+
+| 指標 | 中央値 |
+|------|--------|
+| baseline RPS 中央値 | 143513.957236022 |
+| webrtc RPS 中央値 | 137119.94680406927（baseline 比 **95.54%**） |
+| baseline p95 中央値 | 0.000921729 s |
+| webrtc p95 中央値 | 0.000967264 s（baseline 比 **104.94%**） |
+
+### 判定
+
+`scripts/accept/lib/nfr6-ratio.sh` の `evaluate_nfr6_ratio` に判定帯（RPS 実務許容帯
+[95, 105]・狭義帯 [100.3, 100.8]、p95 実務許容帯 [–, 105]・狭義帯 [–, 100.8]、悪い方を
+採用）をそのまま当てはめた。
+
+- RPS 比 95.54% → 実務許容帯 [95, 105] 内・狭義帯 [100.3, 100.8] 外 → **WARN**
+- p95 比 104.94% → 実務許容帯 [–, 105] 内・狭義帯 [–, 100.8] 外 → **WARN**
+- 総合（悪い方採用）: **WARN**（`benches/nfr6-exclusive.sh` 出力: `判定（webrtc）: WARN`）
+- 終了コード: 0（BLOCKED ではなく判定確定。`FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE` には
+  到達していない）
+
+**旧判定（FAIL）からの変更根拠**: 旧確定計測は RPS 比 93.86〜94%台（実務許容帯下限 95%を
+下回る）で FAIL だったが、本計測は真に静穏な専有ホストで RPS 比 95.54%（実務許容帯内）・
+p95 比 104.94%（実務許容帯内）を得た。同一パラメータ（`RUNS=5 DURATION=15s
+CONNECTIONS=128`）・同一判定ロジック（`evaluate_nfr6_ratio`、閾値変更なし）での結果であり、
+丸め・捏造・閾値緩和は一切行っていない（`.claude/rules/security.md` フェイルクローズ原則）。
+狭義帯には収まらず PASS ではないため、WARN のまま実測値・判断根拠を保持する。
+
+**本再計測をもって基準 E の判定を WARN とする**（旧 FAIL 判定を、専有 Linux ホストでの
+確定実測に基づき更新する。上記「判定サマリー」表の基準 E 行・冒頭の「終了コード（当時）」
+記述、および本節より前の「2026-07 再実行」節・「2026-07-20・ローカル macOS 環境」節の
+既存記述・実測値はいずれも改変しない。過去の記録として保持したうえで、本節が最新かつ
+公式の基準 E 判定を確定させる）。

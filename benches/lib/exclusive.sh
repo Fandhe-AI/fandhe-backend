@@ -68,11 +68,28 @@ _nfr6_validate_numeric() {
 # 1 分 loadavg を取得する。`/proc/loadavg`（Linux）優先、フォールバックで `uptime`。
 # テストから差し替え可能にするため独立関数に切り出す
 # （セルフテストは本関数を再定義して固定値を返させ、静穏判定の境界値を検証する）。
+#
+# `uptime` の末尾表記は Linux が「load average: 0.1, 0.2, 0.3」、macOS が
+# 「load averages: 0.1 0.2 0.3」と異なる（複数形 + カンマなし）。旧実装は
+# `-F'load average'` で分割した第 2 フィールドの先頭語を取るため、macOS では
+# 「s:」という非数値が返り、`check_quiescence_once` がフェイルクローズで永遠に
+# BUSY と判定して静穏確認が成立しなかった。区切りを「load averages?:」の正規
+# 表現にして両表記から 1 分値のみを取り出す。
+#
+# `FANDHE_BACKEND_PROC_LOADAVG` は `/proc/loadavg` の参照先を差し替えるための
+# テスト専用フック（既定は `/proc/loadavg` のままで本番挙動は変わらない）。
+# 本番環境（Linux self-hosted runner）では常に `/proc/loadavg` が読めるため
+# `uptime` 分岐へ実際には到達せず、`scripts/tests/run-nfr6-exclusive-tests.sh`
+# は本フックで存在しないパスを指定して意図的に `uptime` 分岐を通し、上記の
+# 表記差分解析ロジック本体を直接検証する（#274 レビュー指摘: 既存テストは
+# 全ケースで `get_loadavg1` をモック関数に再定義しており、解析ロジック本体を
+# 検証する回帰テストが存在しなかった）。
 get_loadavg1() {
-    if [ -r /proc/loadavg ]; then
-        cut -d' ' -f1 /proc/loadavg
+    local proc_loadavg="${FANDHE_BACKEND_PROC_LOADAVG:-/proc/loadavg}"
+    if [ -r "${proc_loadavg}" ]; then
+        cut -d' ' -f1 "${proc_loadavg}"
     else
-        uptime | awk -F'load average' '{ print $2 }' | tr -d ',' | awk '{ print $1 }'
+        uptime | awk '{ sub(/.*load averages?: */, ""); sub(/,/, ""); print $1 }'
     fi
 }
 

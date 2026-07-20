@@ -325,6 +325,21 @@ else
             # 2 回の再試行では同時実行中の他ジョブの完了を待ちきれず連続失敗しうるため、
             # 試行回数を 3 回に増やし、試行間に短いバックオフ（他ジョブのレジストリ
             # アクセスが収まる時間を確保）を入れて再現率を下げる。
+            # geiger 実行前にレジストリキャッシュを cargo fetch で温める（PR #274 CI で
+            # 特定した恒常故障への対処）。`assertion failed: self.pending_ids.insert(id)`
+            # （cargo-0.86.0 PackageSet 内部パニック）は、レジストリキャッシュに未取得の
+            # クレートが残っていて cargo-geiger 自身のダウンロード経路（PackageSet::
+            # download）へ入った場合に再現する既知の弱点で、キャッシュが完備していれば
+            # この経路自体を通らない。ローカル検証では同一コミット・同一コマンドが
+            # キャッシュ完備環境で決定的に成功し、stderr のノイズ（Failed to match）も
+            # CI と完全一致した（差はパニックの有無のみ）。runner コンテナの再作成等で
+            # 共有 CARGO_HOME がコールドになると 3 回リトライでも回復しないため、
+            # 事前 fetch で決定的に回避する。fetch 自体の失敗はここで fail にしない
+            # （直後の geiger リトライループが既存のフェイルクローズ判定を担う）。
+            if [ -z "${PFWU_GEIGER_CMD:-}" ]; then
+                cargo fetch --manifest-path "${CORE_MANIFEST}" >/dev/null 2>&1 \
+                    || echo "[geiger] 事前 cargo fetch に失敗しました（geiger 本体の試行は継続します）" >&2
+            fi
             geiger_json=""
             geiger_max_attempts=3
             # PFWU_GEIGER_RETRY_WAIT: 試行間バックオフの基準秒数（既定 5。試行 1→2 で
