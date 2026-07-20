@@ -153,6 +153,7 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
 | `plugin-webrtc` | in-process WebRTC（`webrtc-rs` 直接依存） |
 | `plugin-webrtc-proxy` | WebRTC シグナリングプロキシ（別プロセス切り出し型） |
 | `plugin-cors` | CORS（プリフライトは `Router::options_fallback` 経由・実リクエストへのヘッダ付与は新設のレスポンス後処理型シーム `crate::plugin::finalize_response` 経由。3 拡張点いずれにも載らない 5 番目のプラグイン境界パターン、`docs/design/plugin-boundary.md` 5.9 節） |
+| `plugin-static` | 静的ファイル配信（パスインターセプト型 `try_intercept` + `spawn_blocking` 変種、`Server::static_files(config)` 登録時のみ応答。パストラバーサル対策は二層防御（字句検証 + canonicalize 後の root 配下検証）、`docs/design/plugin-boundary.md` 5.10 節、イシュー #318） |
 | `plugin-hub-wiring` | hub 共通配線（`RequestGate` 上の `TenantGate`。JWT (RS256 + JWKS) 検証 → `org_id` 抽出 → フェイルクローズ。依存逆転型プラグイン、`docs/design/plugin-boundary.md` 5.6 節）。越境アクセス監査ログ（`audit` モジュール、`cross_tenant_attempt` カテゴリ。「正当な 404」と「越境 404」を外部応答同一のまま監査ログのみで区別、TASK-9.6・#89） |
 | `axum-ref` | 性能比較用参照実装 |
 

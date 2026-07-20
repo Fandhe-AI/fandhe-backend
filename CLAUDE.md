@@ -45,7 +45,8 @@ fandhe-backend/
 │   ├── core                           # 最小コア。`webrtc-proxy`（TASK-2.1、#18）・`webrtc`
 │   │                                    # （TASK-8.1、#26）・`websocket`（TASK-4.1、#22）・
 │   │                                    # `graphql`（TASK-2.4、#21）・`openapi`（TASK-2.1、#256）・
-│   │                                    # `cors`（イシュー #305）の 6 feature で `dep:` 構文により
+│   │                                    # `cors`（イシュー #305）・`static`（イシュー #318）の
+│   │                                    # 7 feature で `dep:` 構文により
 │   │                                    # 各プラグインを着脱可能に配線済み（`webrtc-proxy` 優先評価）。
 │   │                                    # `openapi` は `Server::openapi()` の明示登録
 │   │                                    # （opt-in）時のみ `GET /openapi.json` と
@@ -154,6 +155,18 @@ fandhe-backend/
 │   │                                    # `crates/core` の `cors` feature 経由で `Server::cors(config)`
 │   │                                    # 登録時のみ実リクエストへ CORS ヘッダを付与。外部依存ゼロ、
 │   │                                    # `docs/design/plugin-boundary.md` の該当節を参照）
+│   ├── plugin-static                  # 静的ファイル配信プラグイン（イシュー #318。パス
+│   │                                    # インターセプト型（`try_intercept`）+ `spawn_blocking`
+│   │                                    # 変種。`crates/core` の `static` feature 経由で
+│   │                                    # `Server::static_files(config)` 登録時のみ `GET` を
+│   │                                    # 配信。二層防御（I/O 前の字句検証（先頭ドット
+│   │                                    # セグメント拒否で `.env`・`.git/config` 等の機密
+│   │                                    # ファイル配信も遮断）+ canonicalize 後の root 配下
+│   │                                    # 検証）でパストラバーサル・シンボリックリンク脱出を
+│   │                                    # 拒否し、未検出・検証失敗・サイズ超過は一律 404。
+│   │                                    # 外部依存ゼロ（`fandhe-backend-http` + `tokio`
+│   │                                    # の `rt` feature のみ）、`docs/design/plugin-boundary.md`
+│   │                                    # 5.10 節を参照）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
 ├── ts/                     # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）。

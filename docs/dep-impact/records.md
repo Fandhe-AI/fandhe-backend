@@ -8,6 +8,34 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-07-21 — `crates/plugin-static` 追加（イシュー #318）
+
+静的ファイル配信プラグイン（`static` feature）を新設した。`graphql`・`openapi` と
+同じパスインターセプト型（`try_intercept`、設定登録型）で配線し、外部 crates.io
+依存はゼロ（`fandhe-backend-http` + `tokio`（`rt` feature、`spawn_blocking` 用）
+のみ、`docs/design/plugin-boundary.md` 5.10 節）。
+
+### 依存の残留確認（pay-for-what-you-use）
+
+```
+$ cargo tree -p fandhe-backend-core --no-default-features | grep -c plugin-static
+0
+$ cargo tree -p fandhe-backend-core --no-default-features --features static | grep plugin-static
+├── fandhe-backend-plugin-static v0.1.0 (crates/plugin-static)
+```
+
+`static` feature 有効時に増える workspace 内依存は `fandhe-backend-plugin-static`
+1 件のみ。`tokio` は `fandhe-backend-core` 自体が既に依存済み（`rt`/`net`/`io-util`/
+`time`/`sync` feature）のため、本プラグインが要求する `rt` feature の追加による
+新規外部依存の増分はゼロ。MIME 推定は crate 内蔵の静的テーブル
+（`crates/plugin-static/src/mime.rs`）で行い、`mime_guess` 等の外部依存は追加しない。
+
+### unsafe 件数
+
+`unsafe` は 0 件（`crates/plugin-static/src/lib.rs`・`src/mime.rs` 全体で `unsafe`
+ブロックなし。`cargo-geiger` 未導入のため厳密計測は未実施、`unsafe-triage.sh` の
+テキストベース走査でも 0 件を確認）。
+
 ## 2026-07-20 — `crates/plugin-cors` 追加（イシュー #305）
 
 CORS プラグイン（`cors` feature）を新設した。「レスポンス後処理型」という
