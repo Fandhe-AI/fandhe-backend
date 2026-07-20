@@ -1,6 +1,6 @@
 //! `fandhe-backend-plugin-compression`: レスポンス圧縮プラグイン（イシュー #321）。
 //!
-//! 拡張点対応: レスポンス後処理型（`finalize_response`）
+//! 拡張点対応: レスポンス後処理型（finalize_response）
 //! （3 拡張点 trait には非該当。固定シグネチャシームへの閉包根拠は
 //! `docs/design/plugin-boundary.md` 5.9 節、機械可読宣言の規約は
 //! `docs/design/dependency-graph-contract.md` 3 節。`crates/plugin-cors`
