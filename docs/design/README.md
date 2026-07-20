@@ -131,3 +131,12 @@
   契約を対象とした破壊的変更の定義・手続き（`feat!:`/`BREAKING CHANGE:`・非推奨期間）、
   pre-1.0/v1.0 以降のサポートポリシーを記述。`webrtc-rs-version-strategy.md`（独立 WebRTC
   サービス側のバージョン戦略）とは別軸。ドラフト、最終承認は人間レビュー）
+- [`async-handler.md`](./async-handler.md): async ハンドラ対応の設計判断（イシュー #314、
+  REQ-1。現行の同期ハンドラ契約（`Handler::handle`・`RouteHandler`・
+  `ParamRouteHandler`）が sqlx 等の非同期 DB クライアントを構造的に使えない分水嶺である
+  ことを踏まえ、async trait 化・別型併設・ハンドラのみ async 化（採用）・現状維持の 4 候補を
+  dyn 互換性・性能影響・後方互換・拡張点契約への影響・実装コストで比較。3 拡張点
+  （`Middleware`/`UpgradeHandler`/`RequestGate`）の同期契約は変更せず、`crates/
+  plugin-websocket`/`crates/plugin-graphql` の boxed-future 型消去の先例に倣い新規依存を
+  追加しない移行方針・性能影響予測とベンチ検証方法・DoS/panic 境界の安全性考慮・実装
+  イシュー分解方針を記述）
