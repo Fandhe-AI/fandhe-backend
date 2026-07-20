@@ -989,8 +989,20 @@ mod tests {
     fn fallback_default_policy_still_405_when_allow_build_fails() {
         // 上記と対をなす対照実験: 既定ポリシー（NotFoundOnly）では `Allow`
         // 構築失敗時も従来どおり `Allow` なしの 405 を返す（安全側デフォルト維持）。
-        let router = Router::new().route("BAD METHOD", "/x", |_h, _b| Response::empty(200));
+        //
+        // レビュー指摘（PR #337、Cursor Bugbot）: 旧版は fallback を一切登録して
+        // おらず、「NotFoundOnly では 405 が fallback へ委譲されない」契約を検証
+        // していなかった（fallback 未登録でも 405 は素通りするため、委譲する
+        // リグレッションが混入しても検知できない）。`NotFoundOnly` の fallback を
+        // 明示登録し、その handler が呼ばれていないこと（body が handler 由来で
+        // ないこと）まで確認することで対照実験として機能させる。
+        let router = Router::new()
+            .route("BAD METHOD", "/x", |_h, _b| Response::empty(200))
+            .fallback_with(FallbackPolicy::NotFoundOnly, |_h, _b| {
+                Response::new(404, b"fallback".to_vec())
+            });
         let res = router.dispatch(&head("GET", "/x"), &[]);
         assert_eq!(res.status, 405);
+        assert_ne!(res.body, b"fallback".to_vec());
     }
 }
