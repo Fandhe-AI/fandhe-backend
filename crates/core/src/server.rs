@@ -896,9 +896,10 @@ impl BoundServer {
     /// 1. **accept 停止**: shutdown フラグを立て、リスニングソケットを
     ///    明示的に `drop` する（以降の新規接続は OS レベルで拒否される。
     ///    受け入れ条件「シグナル受信後に新規接続を受け付けない」）。フラグは
-    ///    [`handle_connection_with_permit`] の keep-alive 判定にも伝わり、
-    ///    処理中のリクエストは完走させつつ、以後は `Connection: close` を
-    ///    付けて早期に接続を閉じる（[`BoundServer::shutdown_flag`] フィールドの doc を参照）
+    ///    `handle_connection_with_permit`（本クレート非公開）の keep-alive
+    ///    判定にも伝わり、処理中のリクエストは完走させつつ、以後は
+    ///    `Connection: close` を付けて早期に接続を閉じる（`BoundServer` の
+    ///    非公開フィールド `shutdown_flag` の doc を参照）
     /// 2. **in-flight 完了待ち**: [`Server::shutdown_grace_period`]
     ///    （既定 `DEFAULT_SHUTDOWN_GRACE_PERIOD` = 30 秒）を上限に、
     ///    `connection_limit` の全 permit（`permit_total` 個）が解放される
