@@ -82,3 +82,10 @@ path = "fuzz_targets/cookie_header.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "chunked_roundtrip"
+path = "fuzz_targets/chunked_roundtrip.rs"
+test = false
+doc = false
+bench = false

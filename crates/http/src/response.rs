@@ -613,6 +613,156 @@ impl Response {
         out.extend_from_slice(&self.body);
         out
     }
+
+    /// chunked ストリーミング応答（イシュー #319）のヘッド部のみを直列化する。
+    ///
+    /// コアの書き出しループ（`crates/core/src/server.rs`）が
+    /// `Handler::handle_streaming` で `Some` を得た場合に、通常の
+    /// [`Response::serialize`]（`Content-Length` 一括送信）の代わりに使う。
+    /// ステータス行・`Content-Type`（[`Response::with_content_type`]）・
+    /// `Allow`（[`Response::with_allow`]）・`with_header` 追加ヘッダの出力
+    /// 順序は `serialize` と同一（`with_set_cookie` の `Set-Cookie` も同じ
+    /// `extra_headers` 経路のため同様に出力される）。異なるのは末尾のみ:
+    /// `Content-Length` の代わりに `Transfer-Encoding: chunked` を出力する。
+    ///
+    /// # スマグリング対策（RFC 9112 §6.3）
+    ///
+    /// `Content-Length` と `Transfer-Encoding: chunked`を同一応答へ両方
+    /// 出力する経路は、`serialize`（`Content-Length` のみ）と本メソッド
+    /// （`Transfer-Encoding` のみ）へ完全に分離しているため構造的に存在
+    /// しない（呼び出し元はどちらか一方の直列化メソッドしか呼べない）。
+    ///
+    /// # `body` フィールドの扱い
+    ///
+    /// chunked 応答の実データはこのメソッドの戻り値には含まれず、呼び出し元が
+    /// [`crate::chunked::encode_chunk`] / [`crate::chunked::encode_terminator`]
+    /// で個別に書き出す契約のため、`self.body` は使用しない（無視する）。
+    /// `self.body` が非空のまま呼ばれるのは呼び出し元の契約違反であり、
+    /// デバッグビルドでは `debug_assert!` で早期検知する。
+    ///
+    /// ```
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// let res = Response::empty(200).with_content_type("text/event-stream");
+    /// let head = res.serialize_chunked_head(true);
+    /// let text = String::from_utf8(head).unwrap();
+    /// assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+    /// assert!(text.contains("Content-Type: text/event-stream\r\n"));
+    /// assert!(text.contains("Transfer-Encoding: chunked\r\n"));
+    /// assert!(!text.contains("Content-Length"));
+    /// assert!(text.ends_with("\r\n\r\n"));
+    /// ```
+    #[must_use]
+    pub fn serialize_chunked_head(&self, keep_alive: bool) -> Vec<u8> {
+        debug_assert!(
+            self.body.is_empty(),
+            "serialize_chunked_head は self.body を送出しない契約（呼び出し元の誤用）"
+        );
+        let reason = reason_phrase(self.status);
+        let mut out = Vec::with_capacity(96);
+        out.extend_from_slice(b"HTTP/1.1 ");
+        out.extend_from_slice(self.status.to_string().as_bytes());
+        out.push(b' ');
+        out.extend_from_slice(reason.as_bytes());
+        out.extend_from_slice(b"\r\n");
+        if let Some(content_type) = self.content_type {
+            out.extend_from_slice(b"Content-Type: ");
+            out.extend_from_slice(content_type.as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
+        if let Some(allow) = &self.allow {
+            out.extend_from_slice(b"Allow: ");
+            out.extend_from_slice(allow.to_header_value().as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
+        for (name, value) in &self.extra_headers {
+            if self.content_type.is_some() && name.eq_ignore_ascii_case("content-type") {
+                continue;
+            }
+            if self.allow.is_some() && name.eq_ignore_ascii_case("allow") {
+                continue;
+            }
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(b": ");
+            out.extend_from_slice(value.as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(b"Transfer-Encoding: chunked\r\n");
+        if !keep_alive {
+            out.extend_from_slice(b"Connection: close\r\n");
+        }
+        out.extend_from_slice(b"\r\n");
+        out
+    }
+
+    /// HTTP/1.0 向けストリーミング応答（イシュー #319）のヘッド部を直列化する。
+    ///
+    /// HTTP/1.0 は `Transfer-Encoding: chunked` を理解しない前提のクライアントが
+    /// 存在するため（RFC 9112 は chunked を HTTP/1.1 以降の機能と位置づける）、
+    /// コアの書き出しループは HTTP/1.0 リクエストへストリーミング応答する際に
+    /// [`Response::serialize_chunked_head`] の代わりに本メソッドを使う。
+    /// `Content-Length` も `Transfer-Encoding` も出力しない代わりに body を
+    /// EOF（接続クローズ）で終端する古典的な HTTP/1.0 の応答形式であり、常に
+    /// `Connection: close` を伴う（HTTP/1.0 は keep-alive が既定で無効なため
+    /// 呼び出し元に選択肢を与えない）。呼び出し元はヘッド送出後、chunk
+    /// フレーミングを介さず生データをそのまま `write_all` し、送信完了後に
+    /// 接続を閉じる契約。
+    ///
+    /// ```
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// let res = Response::empty(200).with_content_type("text/plain");
+    /// let head = res.serialize_streaming_head_http10();
+    /// let text = String::from_utf8(head).unwrap();
+    /// assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+    /// assert!(text.contains("Content-Type: text/plain\r\n"));
+    /// assert!(text.contains("Connection: close\r\n"));
+    /// assert!(!text.contains("Content-Length"));
+    /// assert!(!text.contains("Transfer-Encoding"));
+    /// assert!(text.ends_with("\r\n\r\n"));
+    /// ```
+    #[must_use]
+    pub fn serialize_streaming_head_http10(&self) -> Vec<u8> {
+        debug_assert!(
+            self.body.is_empty(),
+            "serialize_streaming_head_http10 は self.body を送出しない契約（呼び出し元の誤用）"
+        );
+        let reason = reason_phrase(self.status);
+        let mut out = Vec::with_capacity(96);
+        // ステータス行は "HTTP/1.1" 固定（serialize / serialize_chunked_head と
+        // 同一の既存慣習。フレームワークは応答のプロトコルバージョン文字列を
+        // リクエストのバージョンへ追従させない）。
+        out.extend_from_slice(b"HTTP/1.1 ");
+        out.extend_from_slice(self.status.to_string().as_bytes());
+        out.push(b' ');
+        out.extend_from_slice(reason.as_bytes());
+        out.extend_from_slice(b"\r\n");
+        if let Some(content_type) = self.content_type {
+            out.extend_from_slice(b"Content-Type: ");
+            out.extend_from_slice(content_type.as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
+        if let Some(allow) = &self.allow {
+            out.extend_from_slice(b"Allow: ");
+            out.extend_from_slice(allow.to_header_value().as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
+        for (name, value) in &self.extra_headers {
+            if self.content_type.is_some() && name.eq_ignore_ascii_case("content-type") {
+                continue;
+            }
+            if self.allow.is_some() && name.eq_ignore_ascii_case("allow") {
+                continue;
+            }
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(b": ");
+            out.extend_from_slice(value.as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(b"Connection: close\r\n");
+        out.extend_from_slice(b"\r\n");
+        out
+    }
 }
 
 /// 既知ステータスコードの reason phrase を返す固定テーブル。
@@ -1077,5 +1227,66 @@ mod tests {
             let res = Response::redirect(status, "/ok").unwrap();
             assert_eq!(res.status, status);
         }
+    }
+
+    // --- serialize_chunked_head（イシュー #319） ---
+
+    #[test]
+    fn serialize_chunked_head_uses_transfer_encoding_not_content_length() {
+        let res = Response::empty(200);
+        let text = String::from_utf8(res.serialize_chunked_head(true)).unwrap();
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(text.contains("Transfer-Encoding: chunked\r\n"));
+        assert!(!text.contains("Content-Length"));
+        assert!(!text.contains("Connection: close"));
+        assert!(text.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn serialize_chunked_head_closes_connection_when_not_keep_alive() {
+        let res = Response::empty(200);
+        let text = String::from_utf8(res.serialize_chunked_head(false)).unwrap();
+        assert!(text.contains("Connection: close\r\n"));
+    }
+
+    #[test]
+    fn serialize_chunked_head_includes_content_type_and_extra_headers() {
+        let res = Response::empty(200)
+            .with_content_type("text/event-stream")
+            .with_header("X-Stream-Id".to_string(), "abc".to_string())
+            .unwrap();
+        let text = String::from_utf8(res.serialize_chunked_head(true)).unwrap();
+        assert!(text.contains("Content-Type: text/event-stream\r\n"));
+        assert!(text.contains("X-Stream-Id: abc\r\n"));
+        assert!(text.contains("Transfer-Encoding: chunked\r\n"));
+    }
+
+    #[test]
+    fn serialize_chunked_head_never_emits_content_length_alongside_transfer_encoding() {
+        // RFC 9112 §6.3 スマグリング対策: 両ヘッダの共存を構造的に排除
+        // していることの固定回帰。
+        let res = Response::empty(204);
+        let text = String::from_utf8(res.serialize_chunked_head(true)).unwrap();
+        assert!(text.contains("Transfer-Encoding: chunked"));
+        assert!(!text.contains("Content-Length"));
+    }
+
+    // --- serialize_streaming_head_http10（イシュー #319） ---
+
+    #[test]
+    fn serialize_streaming_head_http10_always_closes_and_omits_framing_headers() {
+        let res = Response::empty(200);
+        let text = String::from_utf8(res.serialize_streaming_head_http10()).unwrap();
+        assert!(text.contains("Connection: close\r\n"));
+        assert!(!text.contains("Content-Length"));
+        assert!(!text.contains("Transfer-Encoding"));
+        assert!(text.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn serialize_streaming_head_http10_includes_content_type() {
+        let res = Response::empty(200).with_content_type("application/octet-stream");
+        let text = String::from_utf8(res.serialize_streaming_head_http10()).unwrap();
+        assert!(text.contains("Content-Type: application/octet-stream\r\n"));
     }
 }

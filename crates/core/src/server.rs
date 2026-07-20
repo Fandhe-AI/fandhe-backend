@@ -87,12 +87,13 @@ use tokio::task::JoinSet;
 
 use fandhe_backend_http::body::BodyError;
 use fandhe_backend_http::buffer::RecvBuffer;
-use fandhe_backend_http::chunked::ChunkedError;
+use fandhe_backend_http::chunked::{ChunkedError, encode_chunk, encode_terminator};
 use fandhe_backend_http::connection::{RequestError, read_request_with_limit, should_keep_alive};
-use fandhe_backend_http::request::{ParseError, RequestHead};
+use fandhe_backend_http::request::{HttpVersion, ParseError, RequestHead};
 use fandhe_backend_http::response::Response;
 
 use crate::extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
+use crate::streaming::{RecvOutcome, StreamingResponse};
 
 /// `read_request` 1 回あたりの読み取りタイムアウトの既定値（スロークライアント対策）。
 ///
@@ -113,6 +114,20 @@ use crate::extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
 /// `read_timeout` だけ read がブロックし、その間 permit を握ったまま
 /// 総生存期間を超過する」経路を塞ぐ。
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// レスポンス側 chunked ストリーミング送信（[`Handler::handle_streaming`]、
+/// イシュー #319）の各書き込み待ちの既定タイムアウト。
+///
+/// `DEFAULT_READ_TIMEOUT` と同じスロークライアント対策の考え方を書き出し側にも
+/// 適用する。producer からの次チャンク待ち（`StreamingResponse::recv`）・
+/// ソケットへの実書き込み（`write_all`）双方に、`DEFAULT_READ_TIMEOUT` と
+/// 同じ「残り生存期間との短い方」丸めパターン（`write_streaming_response` を
+/// 参照）を適用し、スローリーダによる接続・semaphore permit の無期限占有を
+/// 防ぐ（`.claude/rules/security.md` のリソース枯渇観点）。既存の非ストリーミング
+/// 応答（`Response::serialize`）の一括 `write_all` にはタイムアウトを適用
+/// しない（イシュー #319 の計画時点でのスコープ外。
+/// `.claude/rules/out-of-scope-tracking.md` 対象候補）。
+const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 1 接続あたりの総生存期間の既定上限（リソース枯渇 DoS 対策）。
 ///
@@ -175,6 +190,71 @@ const DEFAULT_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(30);
 pub trait Handler: Send + Sync {
     /// リクエストヘッドと body からレスポンスを組み立てる。
     fn handle(&self, head: &RequestHead, body: &[u8]) -> Response;
+
+    /// レスポンス側 chunked ストリーミング送信（イシュー #319）の opt-in 拡張点。
+    ///
+    /// 既定実装は常に `None` を返し、`handle_connection_with_permit` は
+    /// 通常どおり [`Self::handle`] の一括応答（`Content-Length`）経路を使う。
+    /// 既存の `Handler` 実装はこのメソッドを override しなくてもコンパイル
+    /// が通り、挙動も一切変わらない（後方互換、`.claude/rules/
+    /// feature-modification.md` の受け入れ基準 2）。
+    ///
+    /// `Some(streaming)` を返す場合、呼び出し元（コアの書き出しループ）は
+    /// [`crate::streaming::StreamingResponse`] を chunked framing で逐次
+    /// 送信する。典型的な実装パターンは
+    /// [`crate::streaming::StreamingResponse::channel`] で得た
+    /// [`crate::streaming::BodyWriter`] を `tokio::spawn` した producer
+    /// タスクへ move し、producer がデータ生成の都合に合わせて `send` /
+    /// `finish` を呼ぶことである:
+    ///
+    /// ```
+    /// use fandhe_backend_core::server::Handler;
+    /// use fandhe_backend_core::streaming::StreamingResponse;
+    /// use fandhe_backend_http::request::RequestHead;
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// struct StreamingHandler;
+    ///
+    /// impl Handler for StreamingHandler {
+    ///     fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
+    ///         Response::empty(404)
+    ///     }
+    ///
+    ///     fn handle_streaming(
+    ///         &self,
+    ///         _head: &RequestHead,
+    ///         _body: &[u8],
+    ///     ) -> Option<StreamingResponse> {
+    ///         let (response, writer) = StreamingResponse::channel(200, Some("text/plain"), 4);
+    ///         tokio::spawn(async move {
+    ///             writer.send(b"hello ".to_vec()).await.ok();
+    ///             writer.send(b"world".to_vec()).await.ok();
+    ///             writer.finish().await.ok();
+    ///         });
+    ///         Some(response)
+    ///     }
+    /// }
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// use fandhe_backend_http::request::ParseOutcome;
+    ///
+    /// let handler = StreamingHandler;
+    /// let ParseOutcome::Complete { head, .. } =
+    ///     fandhe_backend_http::request::parse_request_head(b"GET / HTTP/1.1\r\n\r\n").unwrap()
+    /// else {
+    ///     panic!("expected complete head");
+    /// };
+    /// assert!(handler.handle_streaming(&head, b"").is_some());
+    /// # }
+    /// ```
+    fn handle_streaming(
+        &self,
+        _head: &RequestHead,
+        _body: &[u8],
+    ) -> Option<crate::streaming::StreamingResponse> {
+        None
+    }
 }
 
 /// `fandhe_backend_routes::Router`（依存方向 `server → routes → http::*` の実体化、
@@ -1359,14 +1439,47 @@ pub(crate) async fn handle_connection_with_permit<S>(
         // 処理を完結させたことを意味し、既定 Handler は呼ばない
         // （モジュール冒頭の処理フロー doc・`crate::plugin::try_intercept` の
         // doc を参照）。
-        let response =
-            match crate::plugin::try_intercept(server, &request.head, &request.body).await {
-                Some(response) => response,
-                None => match &server.handler {
-                    Some(handler) => handler.handle(&request.head, &request.body),
-                    None => Response::empty(404),
-                },
-            };
+        let intercepted = crate::plugin::try_intercept(server, &request.head, &request.body).await;
+
+        // レスポンス側 chunked ストリーミング送信（イシュー #319）: `try_intercept` が
+        // 委譲しなかった場合のみ、既定 `Handler` の opt-in 拡張点
+        // `Handler::handle_streaming` を確認する。`Some` を返した場合はこの
+        // ループ反復の残り（レスポンス書き込み・`on_response` 呼び出し・
+        // keep-alive 判定）を `write_streaming_response` に委ね、下の通常
+        // 一括応答経路（`handler.handle`・`finalize_response`・
+        // `response.serialize`）は使わない。`finalize_response`（CORS 等の
+        // レスポンス後処理型プラグイン）は `Response` 型を前提とするシームで
+        // あり `StreamingResponse` には適用しない（イシュー #319 計画時点の
+        // スコープ外、`.claude/rules/out-of-scope-tracking.md` 対象候補）。
+        if intercepted.is_none()
+            && let Some(handler) = &server.handler
+            && let Some(streaming) = handler.handle_streaming(&request.head, &request.body)
+        {
+            let keep_alive_after = write_streaming_response(
+                &mut stream,
+                streaming,
+                &request.head,
+                keep_alive,
+                server,
+                connection_started_at,
+            )
+            .await;
+            for middleware in &server.middlewares {
+                middleware.on_response(&request.head, started_at.elapsed());
+            }
+            match keep_alive_after {
+                Some(true) => continue,
+                _ => return,
+            }
+        }
+
+        let response = match intercepted {
+            Some(response) => response,
+            None => match &server.handler {
+                Some(handler) => handler.handle(&request.head, &request.body),
+                None => Response::empty(404),
+            },
+        };
 
         // レスポンス後処理型シーム（イシュー #305、CORS プラグイン）。
         // `try_intercept` 応答・既定 `Handler` 応答のどちらが確定した場合でも
@@ -1409,6 +1522,180 @@ pub(crate) async fn handle_connection_with_permit<S>(
 
         if !keep_alive {
             return;
+        }
+    }
+}
+
+/// [`Handler::handle_streaming`]（イシュー #319）が `Some` を返した場合の
+/// レスポンス書き込み専用経路。`handle_connection_with_permit` の通常応答
+/// 書き込み（`response.serialize(keep_alive)` を 1 回 `write_all`）とは
+/// 異なり、producer タスクが [`crate::streaming::BodyWriter`] 経由で送る
+/// チャンクを逐次ソケットへ書き出す。
+///
+/// # HTTP バージョン別の framing 選択
+///
+/// - HTTP/1.1: [`Response::serialize_chunked_head`] で `Transfer-Encoding:
+///   chunked` ヘッドを送り、以降 [`encode_chunk`] / [`encode_terminator`]
+///   でフレーミングしたチャンクを書き出す。
+/// - HTTP/1.0: chunked を理解しない前提のクライアントへ配慮し
+///   （`Response::serialize_streaming_head_http10` の doc を参照）、
+///   フレーミングなしの生データを EOF（本関数の戻りが呼び出し元の
+///   `return` を誘発し接続がクローズされること）で終端する。keep-alive は
+///   常に無効。
+///
+/// # タイムアウト・生存期間
+///
+/// producer からの次チャンク待ち（[`StreamingResponse::recv`]）・実際の
+/// `write_all` の両方に、[`DEFAULT_WRITE_TIMEOUT`]（`Server::write_timeout`
+/// のようなチューニング API は本イシューのスコープ外）と「残り生存期間」の
+/// 短い方を適用する（`handle_connection_with_permit` の read_timeout 丸め
+/// パターンと同一の考え方）。タイムアウト・書き込みエラーは即座に接続を
+/// クローズする（`None` を返す）。
+///
+/// # 戻り値
+///
+/// - `Some(true)`: 正常終端（[`crate::streaming::BodyWriter::finish`]）し、
+///   かつ呼び出し元の keep-alive 判定・生存期間・shutdown 状態のいずれも
+///   継続を許す場合。呼び出し元はこの接続で次のリクエストを読みに行ってよい
+/// - `Some(false)`: 正常終端したが keep-alive を継続しない場合
+///   （`Connection: close` を広告済み、または完了後に生存期間超過・
+///   shutdown を検知した場合。プラン「完了後に max_connection_lifetime を
+///   再チェックし、超過時はヘッダが keep-alive でも接続を閉じる」を実装）
+/// - `None`: タイムアウト・書き込みエラー・producer が `finish` を呼ばずに
+///   drop された（打ち切り）場合。呼び出し元は追加の応答を送らず接続を
+///   即座にクローズする（応答完全性の fail-closed、`crate::streaming` の
+///   モジュール doc を参照）
+async fn write_streaming_response<S>(
+    stream: &mut S,
+    mut streaming: StreamingResponse,
+    head: &RequestHead,
+    keep_alive: bool,
+    server: &Server,
+    connection_started_at: Instant,
+) -> Option<bool>
+where
+    S: AsyncWrite + Unpin,
+{
+    // 各書き込み・受信待ちに適用する残り生存期間を都度算出するヘルパー。
+    // `handle_connection_with_permit` の read_timeout 丸めパターン（#70
+    // Bugbot 指摘）と同一の考え方: 生存期間超過後は即座に 0 として扱う
+    // （`saturating_sub` によりタイムアウトが即発火し、余計な待ちを生まない）。
+    let remaining_lifetime = |started: Instant| -> Duration {
+        server
+            .max_connection_lifetime
+            .saturating_sub(started.elapsed())
+    };
+
+    if head.version == HttpVersion::Http10 {
+        // HTTP/1.0: chunked framing を使わず、ヘッドは常に Connection: close。
+        let mut head_response = Response::empty(streaming.status);
+        if let Some(content_type) = streaming.content_type {
+            head_response = head_response.with_content_type(content_type);
+        }
+        let head_bytes = head_response.serialize_streaming_head_http10();
+        let write_timeout = DEFAULT_WRITE_TIMEOUT.min(remaining_lifetime(connection_started_at));
+        if tokio::time::timeout(write_timeout, stream.write_all(&head_bytes))
+            .await
+            .ok()?
+            .is_err()
+        {
+            return None;
+        }
+
+        loop {
+            let recv_timeout = DEFAULT_WRITE_TIMEOUT.min(remaining_lifetime(connection_started_at));
+            let outcome = tokio::time::timeout(recv_timeout, streaming.recv())
+                .await
+                .ok()?;
+            match outcome {
+                RecvOutcome::Chunk(data) => {
+                    if data.is_empty() {
+                        continue;
+                    }
+                    let write_timeout =
+                        DEFAULT_WRITE_TIMEOUT.min(remaining_lifetime(connection_started_at));
+                    if tokio::time::timeout(write_timeout, stream.write_all(&data))
+                        .await
+                        .ok()?
+                        .is_err()
+                    {
+                        return None;
+                    }
+                }
+                // HTTP/1.0 は EOF（接続クローズ）で body を終端する。正常終端も
+                // 打ち切りも「これ以上書かず呼び出し元へ戻る（呼び出し元が
+                // 接続を閉じる）」という同一の挙動になる。
+                RecvOutcome::End | RecvOutcome::Aborted => return Some(false),
+            }
+        }
+    }
+
+    // HTTP/1.1: Transfer-Encoding: chunked。
+    let mut head_response = Response::empty(streaming.status);
+    if let Some(content_type) = streaming.content_type {
+        head_response = head_response.with_content_type(content_type);
+    }
+    let head_bytes = head_response.serialize_chunked_head(keep_alive);
+    let write_timeout = DEFAULT_WRITE_TIMEOUT.min(remaining_lifetime(connection_started_at));
+    if tokio::time::timeout(write_timeout, stream.write_all(&head_bytes))
+        .await
+        .ok()?
+        .is_err()
+    {
+        return None;
+    }
+
+    loop {
+        let recv_timeout = DEFAULT_WRITE_TIMEOUT.min(remaining_lifetime(connection_started_at));
+        let outcome = tokio::time::timeout(recv_timeout, streaming.recv())
+            .await
+            .ok()?;
+        match outcome {
+            RecvOutcome::Chunk(data) => {
+                let mut framed = Vec::with_capacity(data.len() + 16);
+                encode_chunk(&data, &mut framed);
+                if framed.is_empty() {
+                    // encode_chunk は空データを無出力にする契約（誤終端防止、
+                    // `fandhe_backend_http::chunked::encode_chunk` の doc）。
+                    // 書き込むものがなければソケットへは触れない。
+                    continue;
+                }
+                let write_timeout =
+                    DEFAULT_WRITE_TIMEOUT.min(remaining_lifetime(connection_started_at));
+                if tokio::time::timeout(write_timeout, stream.write_all(&framed))
+                    .await
+                    .ok()?
+                    .is_err()
+                {
+                    return None;
+                }
+            }
+            RecvOutcome::End => {
+                let mut terminator = Vec::new();
+                encode_terminator(&mut terminator);
+                let write_timeout =
+                    DEFAULT_WRITE_TIMEOUT.min(remaining_lifetime(connection_started_at));
+                if tokio::time::timeout(write_timeout, stream.write_all(&terminator))
+                    .await
+                    .ok()?
+                    .is_err()
+                {
+                    return None;
+                }
+                // プラン「完了後に max_connection_lifetime を再チェックし、
+                // 超過時はヘッダが keep-alive でも接続を閉じる」を実装する。
+                // shutdown_flag はここでは参照しない（handle_connection_with_permit
+                // 側が呼び出し前に決定した `keep_alive` に既に反映済み。長時間の
+                // ストリーミング中に新規 shutdown が入っても、既に送出済みの
+                // ヘッドを覆せないため、生存期間超過のみを終端後に再確認する）。
+                return Some(
+                    keep_alive && connection_started_at.elapsed() < server.max_connection_lifetime,
+                );
+            }
+            // producer が finish を呼ばずに drop された（打ち切り）。応答
+            // 完全性を保つため終端チャンクを送らず接続を閉じる
+            // （`crate::streaming` モジュール doc の「応答完全性」節）。
+            RecvOutcome::Aborted => return None,
         }
     }
 }
@@ -2359,5 +2646,194 @@ GET /c HTTP/1.1\r\n\r\n",
         fn _type_check() {
             let _ = _assert_handle_connection_accepts_tcp_stream;
         }
+    }
+
+    // --- レスポンス側 chunked ストリーミング送信（イシュー #319） ---
+
+    /// `handle_streaming` で複数チャンクを返すトイ `Handler`。`chunks` を順に
+    /// `send` し、最後に `finish` する（正常終端）。
+    struct StreamingHandler {
+        status: u16,
+        content_type: Option<&'static str>,
+        chunks: Vec<&'static [u8]>,
+    }
+    impl Handler for StreamingHandler {
+        fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
+            // handle_streaming が Some を返す限りこの経路は呼ばれないはず。
+            // 呼ばれた場合は実装不備を検知できるよう識別可能な応答にする。
+            Response::empty(599)
+        }
+
+        fn handle_streaming(
+            &self,
+            _head: &RequestHead,
+            _body: &[u8],
+        ) -> Option<crate::streaming::StreamingResponse> {
+            let (response, writer) =
+                crate::streaming::StreamingResponse::channel(self.status, self.content_type, 4);
+            let chunks: Vec<Vec<u8>> = self.chunks.iter().map(|c| c.to_vec()).collect();
+            tokio::spawn(async move {
+                for chunk in chunks {
+                    if writer.send(chunk).await.is_err() {
+                        return;
+                    }
+                }
+                let _ = writer.finish().await;
+            });
+            Some(response)
+        }
+    }
+
+    /// [`StreamingHandler`] の打ち切り（`finish` を呼ばない）版。producer は
+    /// `chunks` を送った後、`finish` を呼ばずに `writer` を drop する。
+    struct AbortingStreamingHandler {
+        chunks: Vec<&'static [u8]>,
+    }
+    impl Handler for AbortingStreamingHandler {
+        fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
+            Response::empty(599)
+        }
+
+        fn handle_streaming(
+            &self,
+            _head: &RequestHead,
+            _body: &[u8],
+        ) -> Option<crate::streaming::StreamingResponse> {
+            let (response, writer) = crate::streaming::StreamingResponse::channel(200, None, 4);
+            let chunks: Vec<Vec<u8>> = self.chunks.iter().map(|c| c.to_vec()).collect();
+            tokio::spawn(async move {
+                for chunk in chunks {
+                    if writer.send(chunk).await.is_err() {
+                        return;
+                    }
+                }
+                // finish を呼ばずに drop（打ち切り）。
+            });
+            Some(response)
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_handler_sends_chunked_framing_and_terminator() {
+        let handler = StreamingHandler {
+            status: 200,
+            content_type: Some("text/plain"),
+            chunks: vec![b"foo", b"bar"],
+        };
+        let server = Server::new().handler(handler);
+        let response = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("Transfer-Encoding: chunked\r\n"));
+        assert!(response.contains("Content-Type: text/plain\r\n"));
+        assert!(!response.contains("Content-Length"));
+        // chunk framing（hex サイズ行 + データ + CRLF）+ 終端。
+        assert!(response.contains("3\r\nfoo\r\n"));
+        assert!(response.contains("3\r\nbar\r\n"));
+        assert!(response.ends_with("0\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn handler_without_streaming_override_keeps_content_length_response() {
+        // 既存 Handler（handle_streaming を override しない）が無変更で
+        // コンパイル・従来どおり Content-Length 応答を返すことの後方互換回帰
+        // （受け入れ基準 2）。
+        let handler = FixedHandler {
+            status: 200,
+            body: b"hi",
+            calls: AtomicUsize::new(0),
+        };
+        let server = Server::new().handler(handler);
+        let response = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+        assert!(response.contains("Content-Length: 2\r\n"));
+        assert!(!response.contains("Transfer-Encoding"));
+    }
+
+    #[tokio::test]
+    async fn streaming_response_without_finish_closes_without_terminator() {
+        // producer が finish を呼ばずに drop した場合、受信側は終端チャンク
+        // なしで接続を閉じる（応答完全性の fail-closed）。
+        let handler = AbortingStreamingHandler {
+            chunks: vec![b"partial"],
+        };
+        let server = Server::new().handler(handler);
+        let response =
+            roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n").await;
+
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("7\r\npartial\r\n"));
+        // 終端チャンク（0\r\n\r\n）を送らずに閉じる。
+        assert!(!response.ends_with("0\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn streaming_response_continues_keep_alive_for_pipelined_next_request() {
+        // chunked 応答後の keep-alive 継続（パイプライン次リクエスト処理）。
+        let handler = StreamingHandler {
+            status: 200,
+            content_type: None,
+            chunks: vec![b"ok"],
+        };
+        let server = Server::new().handler(handler);
+        let (mut client, server_stream) = tokio::io::duplex(8192);
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        client
+            .write_all(b"GET / HTTP/1.1\r\n\r\nGET / HTTP/1.1\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+
+        handle_connection(&server, server_stream).await;
+
+        let mut out = Vec::new();
+        client.read_to_end(&mut out).await.unwrap();
+        let text = String::from_utf8(out).unwrap();
+
+        // 2 回分の応答（chunk framing + 終端）が両方含まれることを確認する
+        // （1 本目の応答後に接続が閉じられていれば 2 回目の応答は来ない）。
+        let occurrences = text.matches("0\r\n\r\n").count();
+        assert_eq!(
+            occurrences, 2,
+            "keep-alive 継続によりパイプライン済み 2 リクエスト目にも応答するはず: {text:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_backpressure_send_blocks_when_channel_is_full() {
+        // バックプレッシャ: 容量超過時に send が pend することを確認する
+        // （受け入れ基準 3。受信側がまだ何も読み出していない状態で容量を
+        // 超えて送信を試みると `.await` で停止する）。
+        let (_response, writer) = crate::streaming::StreamingResponse::channel(200, None, 1);
+        writer.send(b"first".to_vec()).await.unwrap();
+
+        let send_result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            writer.send(b"second".to_vec()),
+        )
+        .await;
+        assert!(
+            send_result.is_err(),
+            "容量超過時、受信側が読み出さない限り send は完了しないはず"
+        );
+    }
+
+    #[tokio::test]
+    async fn http10_streaming_request_gets_connection_close_and_eof_terminated_body() {
+        // HTTP/1.0 リクエストへのストリーミング応答は chunked framing を
+        // 使わず、Connection: close + EOF 終端。
+        let handler = StreamingHandler {
+            status: 200,
+            content_type: None,
+            chunks: vec![b"hello"],
+        };
+        let server = Server::new().handler(handler);
+        let response = roundtrip(&server, b"GET / HTTP/1.0\r\n\r\n").await;
+
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("Connection: close\r\n"));
+        assert!(!response.contains("Transfer-Encoding"));
+        assert!(!response.contains("Content-Length"));
+        // chunk framing を使わない生データがそのまま body として出力される。
+        assert!(response.ends_with("hello"));
     }
 }

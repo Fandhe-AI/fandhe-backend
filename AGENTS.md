@@ -133,6 +133,33 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
 | `plugin-hub-wiring` | hub 共通配線（`RequestGate` 上の `TenantGate`。JWT (RS256 + JWKS) 検証 → `org_id` 抽出 → フェイルクローズ。依存逆転型プラグイン、`docs/design/plugin-boundary.md` 5.6 節）。越境アクセス監査ログ（`audit` モジュール、`cross_tenant_attempt` カテゴリ。「正当な 404」と「越境 404」を外部応答同一のまま監査ログのみで区別、TASK-9.6・#89） |
 | `axum-ref` | 性能比較用参照実装 |
 
+### レスポンス側 chunked ストリーミング送信（`Handler::handle_streaming`、イシュー #319）
+
+`Handler`（`crates/core/src/server.rs`）は「3 拡張点」（`Middleware` /
+`UpgradeHandler` / `RequestGate`）の対象ではなく、既定ハンドラの差し込み口という
+既存の位置づけを持つ。`Handler::handle_streaming` はこの `Handler` の opt-in
+既定メソッドとして追加した拡張点であり、`Some(StreamingResponse)` を返す実装のみが
+`Transfer-Encoding: chunked` の逐次送信経路（`crates/core/src/streaming.rs` +
+`fandhe_backend_http::chunked::{encode_chunk, encode_terminator}` +
+`fandhe_backend_http::response::Response::serialize_chunked_head` /
+`serialize_streaming_head_http10`）を使う。既定実装は常に `None` を返すため、
+既存の `Handler::handle` のみの実装は無変更でコンパイル・従来どおりの
+`Content-Length` 応答を維持する（後方互換）。
+
+- producer 側の典型パターンは `StreamingResponse::channel` で得た `BodyWriter` を
+  `tokio::spawn` した非同期タスクへ move し、`send` / `finish` を呼ぶこと
+  （`Handler::handle_streaming` の doc test を参照）。`BodyWriter::send` は
+  bounded mpsc の容量超過時に `.await` で停止する（バックプレッシャ、
+  サーバ側バッファを有界に保つ）
+- `finish` を呼ばずに producer が drop された場合は打ち切りとして扱われ、
+  受信側（`write_streaming_response`）は終端チャンクを送らず接続をクローズする
+  （応答完全性の fail-closed。RFC 9112 の length 整合性維持）
+- HTTP/1.0 リクエストへは chunked framing を使わず、`Connection: close` +
+  EOF 終端で応答する（`Response::serialize_streaming_head_http10` の doc を参照）
+- `crate::plugin::finalize_response`（CORS 等のレスポンス後処理型シーム）は
+  `Response` 型を前提とするため `StreamingResponse` には適用しない
+  （イシュー #319 計画時点のスコープ外）
+
 ### 変更手順
 
 拡張点変更は、まず 3 種 trait（`Middleware` / `UpgradeHandler` / `RequestGate`、

@@ -60,7 +60,13 @@ fandhe-backend/
 │   │                                    # クローズ）に対応（既存 `run()` は `run_until` への薄い
 │   │                                    # 委譲として後方互換を維持、`Server::shutdown_grace_period`
 │   │                                    # で待機上限を設定可能、イシュー #313。
-│   │                                    # `docs/design/graceful-shutdown.md` 参照）
+│   │                                    # `docs/design/graceful-shutdown.md` 参照）。
+│   │                                    # `Handler::handle_streaming`（opt-in 既定メソッド）+
+│   │                                    # `streaming::{StreamingResponse, BodyWriter}` で
+│   │                                    # レスポンス側 chunked ストリーミング送信を提供（bounded
+│   │                                    # mpsc によるバックプレッシャ・`finish` 省略時は終端
+│   │                                    # チャンクなしで打ち切りクローズ、既存 `Handler::handle`
+│   │                                    # 実装は無変更で後方互換維持、イシュー #319）
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。chunked
 │   │                                    # Transfer-Encoding 対応（sans-IO `ChunkedDecoder`、
@@ -97,7 +103,14 @@ fandhe-backend/
 │   │                                    # 一致しなかったリクエストの共通処理（カスタム 404・SPA の
 │   │                                    # index.html 返却等）を登録可能にし、`FallbackPolicy` で
 │   │                                    # 405（メソッド不一致）も委譲するかを個別選択（既定は 404
-│   │                                    # のみ委譲する安全側、イシュー #316）
+│   │                                    # のみ委譲する安全側、イシュー #316）。
+│   │                                    # `Response::serialize_chunked_head` /
+│   │                                    # `serialize_streaming_head_http10` +
+│   │                                    # `chunked::{encode_chunk, encode_terminator}`（sans-IO
+│   │                                    # エンコーダ）でレスポンス側 chunked ストリーミング送信を
+│   │                                    # 提供（`crates/core` の `Handler::handle_streaming` opt-in
+│   │                                    # 拡張点から使用、既存の Content-Length 応答は無変更で
+│   │                                    # 後方互換維持、イシュー #319）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
