@@ -564,14 +564,22 @@ REQ-1/NFR-1（`docs/spec/04-requirements.md`）の判定は `bench-accept.sh` /
 退行と誤認しないための頑健化であり、次の規約に従う。
 
 - **FAIL（終了コード 1）のときのみ再試行する**: 同一専有ロックを保持したまま
-  `wait_for_quiescence` で静穏確認をやり直し、1 回だけ再計測する。
-- **単発 FAIL は 1 回のみ再試行可、2 連続 FAIL で退行確定**。再試行後も FAIL なら
-  最終結果として FAIL を確定し、それ以上は再試行しない。
+  `wait_for_quiescence` で静穏確認をやり直し、再計測する。`FAIL_RETRIES` に
+  指定した回数まで、FAIL が続く限りこれを繰り返す（PR #291 Bugbot 指摘対応で
+  ループ化。旧実装は `FAIL_RETRIES` に 2 以上を渡しても常に 1 回しか再試行され
+  なかった）。
+- **週次 schedule では `FAIL_RETRIES=1` を使うため、単発 FAIL は 1 回のみ再試行可、
+  2 連続 FAIL で退行確定**。再試行後も FAIL なら最終結果として FAIL を確定し、
+  それ以上は再試行しない。
 - **PASS（0）は再試行しない**（偶然の 1 回 PASS を過大評価しないため、初回 PASS を
   そのまま採用する）。
 - **BLOCKED（終了コード 2）は再試行しない**。計測環境自体が壊れている（専有ロック
   取得不能・ビルド失敗・静穏未達）ため再試行しても意味がなく、フェイルクローズで
   即座に BLOCKED を返す。
+- **再試行前の静穏確認（`wait_for_quiescence`）が `QUIESCE_WAIT_SECS` 待っても
+  得られなかった場合も BLOCKED として扱う**（PR #291 Bugbot 指摘対応）。ホストが
+  混雑しているだけの状態を、直前の FAIL 結果をそのまま採用して性能退行と誤検知
+  しないための挙動で、初回計測前の静穏未達が BLOCKED になるのと同じ扱いに揃える。
 - `FAIL_RETRIES` 既定値は `0`（再試行なし、導入前と同一挙動）。手動実行
   （`bash benches/bench-accept-exclusive.sh`）では既定のまま使ってよい。
 

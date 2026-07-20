@@ -286,6 +286,41 @@ retry_status=$?
 assert_eq "再試行回数 0 指定時は初回 FAIL がそのまま終了コード 1" "1" "${retry_status}"
 assert_eq "再試行回数 0 指定時は呼び出し回数 1 回のみ（従来挙動と同一）" "1" "${CALL_COUNT}"
 
+# ケース 6: FAIL_RETRIES=2（残り再試行回数 2 以上）を指定した場合、FAIL が続く限り
+# 指定回数まで再試行を繰り返す（PR #291 Bugbot 指摘対応。旧実装は残り再試行回数の
+# 値によらず常に 1 回しか再試行しなかった）。
+CALL_COUNT=0
+fail_twice_then_pass() {
+    CALL_COUNT=$((CALL_COUNT + 1))
+    if [ "${CALL_COUNT}" -le 2 ]; then
+        return 1
+    fi
+    return 0
+}
+nfr6_run_with_fail_retry 2 fail_twice_then_pass
+retry_status=$?
+assert_eq "FAIL_RETRIES=2 で 2 回 FAIL 後 PASS した場合は終了コード 0" "0" "${retry_status}"
+assert_eq "FAIL_RETRIES=2 で 2 回 FAIL 後 PASS した場合の呼び出し回数は 3 回" "3" "${CALL_COUNT}"
+
+# ケース 7: FAIL_RETRIES=2 で FAIL が続く場合、呼び出し回数は 1（初回）+ 2（再試行）
+# = 3 回で頭打ちになり、最終結果は FAIL のまま
+CALL_COUNT=0
+nfr6_run_with_fail_retry 2 always_fail
+retry_status=$?
+assert_eq "FAIL_RETRIES=2 で FAIL が続く場合も最終的に終了コード 1" "1" "${retry_status}"
+assert_eq "FAIL_RETRIES=2 で FAIL が続く場合の呼び出し回数は 3 回（初回 + 再試行 2 回）" "3" "${CALL_COUNT}"
+
+# ケース 8: 再試行前の静穏確認（wait_for_quiescence）が失敗した場合、直前の FAIL
+# 結果をそのまま返さず BLOCKED（終了コード 2）を返す（PR #291 Bugbot 指摘対応）。
+wait_for_quiescence() { return 1; }
+CALL_COUNT=0
+nfr6_run_with_fail_retry 1 always_fail
+retry_status=$?
+assert_eq "再試行前の静穏確認失敗時は FAIL ではなく BLOCKED（2）を返す" "2" "${retry_status}"
+assert_eq "静穏確認失敗時は再試行を実行せず呼び出し回数 1 回のみ" "1" "${CALL_COUNT}"
+# 以降のテストに影響しないよう QUIESCENT を常に返すモックへ戻す。
+wait_for_quiescence() { return 0; }
+
 echo ""
 echo "===== 結果: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} ====="
 if [ "${FAIL_COUNT}" -gt 0 ]; then

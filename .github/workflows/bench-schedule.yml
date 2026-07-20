@@ -50,10 +50,21 @@ jobs:
     permissions:
       contents: read
       issues: write
-    # ビルド（release ×2）+ 静穏待機（既定上限 1800s）+ 計測 2 試行（FAIL_RETRIES=1）を
-    # 包含する上限。.claude/rules/ci.md の「全ジョブに timeout-minutes を設定する」を
-    # 満たす（多層防御、ハングした専有計測が self-hosted runner を無期限占有しない）。
-    timeout-minutes: 180
+    # worst-case 予算（PR #291 Bugbot 指摘対応。旧 180 分は待機フェーズを過小に
+    # 見積もっていた）: `bench-accept-exclusive.sh` の実経路には次の待機がすべて
+    # 独立に最大 `QUIESCE_WAIT_SECS`（既定 1800s = 30 分）かかりうる。
+    #   (1) 専有ロック取得待ち（`acquire_exclusive_lock` の `flock -w`）      最大 30 分
+    #   (2) 計測前の静穏待機（`wait_for_quiescence`）                        最大 30 分
+    #   (3) 単発 FAIL 時の再試行前静穏待機（`nfr6_run_with_fail_retry` 内、
+    #       FAIL_RETRIES=1 で最大 1 回）                                     最大 30 分
+    # に加え、release ビルド ×2（workspace 一括・core-bench example）と計測
+    # 2 試行（FAIL_RETRIES=1）の実処理時間を要する。(1)〜(3) の合計だけで
+    # 90 分に達しうるため、旧 180 分ではビルド・計測の実処理時間を含めると
+    # ホスト競合時に worst-case がジョブタイムアウトを超え、PASS/FAIL/BLOCKED の
+    # 判定が確定する前にジョブがキャンセルされうる。240 分へ延長し、待機予算
+    # 90 分 + ビルド・計測の実処理分のマージンを確保する
+    # （.claude/rules/ci.md「全ジョブに timeout-minutes を設定する」多層防御）。
+    timeout-minutes: 240
     steps:
       - name: Checkout
         # 他ジョブ（ci.yml fmt/clippy/test 等）と同一コミット SHA で固定する
@@ -103,7 +114,15 @@ jobs:
         # 提示であり、ci.yml dep-audit ジョブの audit-triage 起票と同一レイヤ。
         # schedule / workflow_dispatch 実行時のみ（本 workflow はこの 2 トリガーしか
         # 持たないため実質常に真だが、他ジョブとの記述一貫性のため明示する）。
-        if: always() && steps.bench.outputs.status != '0' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        #
+        # `steps.bench.outcome == 'success'` を必須条件に加える（PR #291 Bugbot 指摘
+        # 対応）: checkout / rustup 導入 / oha 導入のいずれかが失敗すると「bench」
+        # ステップ自体が skip され、`steps.bench.outputs.status` は空文字になる。
+        # 空文字は `!= '0'` を満たしてしまうため、この条件だけでは
+        # bench-accept-exclusive.sh が一度も実行されていないのに
+        # `bench-regression` Issue が誤って自動起票されてしまう
+        # （前段の環境構築失敗を性能退行として誤報告する）。
+        if: always() && steps.bench.outcome == 'success' && steps.bench.outputs.status != '0' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         env:
           GH_TOKEN: ${{ github.token }}
           BENCH_STATUS: ${{ steps.bench.outputs.status }}
@@ -164,6 +183,17 @@ jobs:
         if: always()
         env:
           BENCH_STATUS: ${{ steps.bench.outputs.status }}
+          BENCH_OUTCOME: ${{ steps.bench.outcome }}
         run: |
+          # `bench` ステップが skip された場合（前段の checkout / rustup 導入 /
+          # oha 導入の失敗）は `BENCH_STATUS` が空文字になる。空文字のまま
+          # `exit "${BENCH_STATUS}"` すると bash が非数値引数でエラー終了し、実際の
+          # ベンチ判定を反映しない不明瞭な失敗になる（PR #291 Bugbot 指摘対応）。
+          # ジョブは前段の失敗により既に failure 状態のため、ここでは判定結果が
+          # 存在しない旨を明示して 1 で終了するに留め、既存の失敗状態を変えない。
+          if [ "${BENCH_OUTCOME}" != "success" ] || [ -z "${BENCH_STATUS}" ]; then
+            echo "bench-accept-exclusive.sh は実行されていません（前段ステップの失敗等）。判定結果を反映できないため終了します" >&2
+            exit 1
+          fi
           echo "bench-accept-exclusive.sh 終了コード: ${BENCH_STATUS}"
           exit "${BENCH_STATUS}"

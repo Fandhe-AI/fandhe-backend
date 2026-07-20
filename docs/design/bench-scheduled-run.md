@@ -50,7 +50,7 @@ CI に常設されておらず**、2026-07-18 の再計測 PASS（`benches/repor
 
 | パス | 変更 | 内容 |
 |------|------|------|
-| `.github/workflows/bench-schedule.yml` | 新規 | 週次 schedule + `workflow_dispatch`。単一ジョブ `bench-accept`（`runs-on: self-hosted`・`timeout-minutes: 180`・workflow `permissions: contents: read`・ジョブのみ `issues: write` 追加・`concurrency: group: bench-schedule, cancel-in-progress: false`） |
+| `.github/workflows/bench-schedule.yml` | 新規 | 週次 schedule + `workflow_dispatch`。単一ジョブ `bench-accept`（`runs-on: self-hosted`・`timeout-minutes: 240`（PR #291 Bugbot 指摘対応で 180 から延長）・workflow `permissions: contents: read`・ジョブのみ `issues: write` 追加・`concurrency: group: bench-schedule, cancel-in-progress: false`） |
 | `benches/lib/exclusive.sh` | 変更 | 再試行判定関数 `nfr6_run_with_fail_retry` を追加（終了コード 1 のときのみ `wait_for_quiescence` → `snapshot_environment` → 再実行、0/2 は即返す） |
 | `benches/bench-accept-exclusive.sh` | 変更 | `FAIL_RETRIES`（既定 0）を導入し、`bench-accept.sh` 呼び出しを `nfr6_run_with_fail_retry` 経由に変更 |
 | `scripts/tests/run-nfr6-exclusive-tests.sh` | 変更 | 再試行関数のケース追加（初回 PASS・1→0・1→1・BLOCKED 非再試行・FAIL_RETRIES=0 の 5 ケース） |
@@ -100,9 +100,14 @@ self-hosted runner のリソース逼迫（他ジョブとの同時実行等）�
 - **インジェクション（A03）**: Issue 本文は `--body-file` でファイル渡しし、ベンチ
   出力・レポート内容をシェル再解釈やコマンド置換に埋め込まない。`gh issue list`
   の検索はラベル指定（固定値）のみで外部入力を含めない。
-- **リソース枯渇 / runner 占有（DoS、NFR-10）**: `timeout-minutes: 180`
-  （ビルド + 静穏待機 + 計測 2 試行を包含）・`concurrency` で同時実行を抑止・
-  flock でホスト上の他計測との相互排他・週次実行で負荷を抑制する。
+- **リソース枯渇 / runner 占有（DoS、NFR-10）**: `timeout-minutes: 240`
+  （専有ロック取得待ち・計測前静穏待機・再試行前静穏待機の 3 待機フェーズ
+  （各最大 1800s = 30 分、合計 90 分）+ ビルド + 計測 2 試行の実処理時間を包含。
+  PR #291 Bugbot 指摘対応で 180 分から延長。旧 180 分は上記 3 待機フェーズの
+  うちロック取得待ちと再試行前静穏待機を予算に含めておらず、ホスト競合時に
+  worst-case がジョブタイムアウトを超えて PASS/FAIL/BLOCKED 判定確定前にジョブが
+  キャンセルされうる不備があった）・`concurrency` で同時実行を抑止・flock で
+  ホスト上の他計測との相互排他・週次実行で負荷を抑制する。
 - **サプライチェーン（A06/A08）**: `actions/checkout` は既存 workflow と同一
   コミット SHA に固定する。`oha` 導入は `cargo install --locked` + バージョン
   固定（dep-audit の cargo-deny/audit 導入ステップと同型）。

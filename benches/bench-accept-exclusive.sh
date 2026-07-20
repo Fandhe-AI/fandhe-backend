@@ -35,13 +35,16 @@
 #
 # FAIL_RETRIES（既定 0）: `bench-accept.sh` が終了コード 1（FAIL）を返した場合に
 # 限り、同一専有ロック保持中に静穏確認をやり直して指定回数だけ再計測する
-# （`benches/lib/exclusive.sh` の `nfr6_run_with_fail_retry`）。
+# （`benches/lib/exclusive.sh` の `nfr6_run_with_fail_retry`。FAIL が続く限り
+# 指定回数まで繰り返すループ、PR #291 Bugbot 指摘対応）。
 # `benches/reports/task-1.6-1-performance.md` の申し送りどおり、初回計測が
 # keep-alive 再接続ノイズ等で単発 FAIL になった実績があるための頑健化。
-# 「単発 FAIL は 1 回のみ再試行可、2 連続 FAIL で退行確定」という規約は
-# `benches/README.md`「定期実行（bench-schedule.yml）」節を参照。0（既定）は
-# 再試行なしの従来挙動のまま。BLOCKED（終了コード 2）は再試行しない
-# （計測環境自体が壊れているため意味がなく、フェイルクローズで即座に BLOCKED を返す）。
+# 週次 schedule では `FAIL_RETRIES=1` を使うため「単発 FAIL は 1 回のみ再試行可、
+# 2 連続 FAIL で退行確定」という規約は `benches/README.md`「定期実行
+# （bench-schedule.yml）」節を参照。0（既定）は再試行なしの従来挙動のまま。
+# BLOCKED（終了コード 2）は再試行しない（計測環境自体が壊れているため意味がなく、
+# フェイルクローズで即座に BLOCKED を返す。再試行前の静穏確認自体が得られなかった
+# 場合も同様に BLOCKED を返す）。
 #
 # 終了コード: `bench-accept.sh` の終了コードをそのまま透過する
 # （0 = 全項目 PASS、1 = 1 件以上 FAIL、2 = CORE_BIN 未整備で BLOCKED）。
@@ -131,7 +134,7 @@ echo "" >&2
 if [ "${accept_status}" -eq 0 ]; then
     echo "=== 総合: PASS（bench-accept.sh 終了コード 0） ===" >&2
 elif [ "${accept_status}" -eq 2 ]; then
-    echo "=== 総合: BLOCKED（bench-accept.sh 終了コード 2。CORE_BIN 未整備） ===" >&2
+    echo "=== 総合: BLOCKED（終了コード 2。bench-accept.sh 側の CORE_BIN 未整備、または再試行前の静穏確認未達のいずれか） ===" >&2
 else
     echo "=== 総合: FAIL（bench-accept.sh 終了コード ${accept_status}。FAIL_RETRIES=${FAIL_RETRIES} を使い切っても FAIL。判定は丸めない） ===" >&2
 fi
