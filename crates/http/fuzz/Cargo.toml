@@ -68,3 +68,10 @@ path = "fuzz_targets/parse_query.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "parse_form"
+path = "fuzz_targets/parse_form.rs"
+test = false
+doc = false
+bench = false
