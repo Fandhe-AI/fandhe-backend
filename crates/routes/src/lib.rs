@@ -395,7 +395,8 @@ impl Router {
     ///     ParseOutcome::Complete { head, .. } => head,
     ///     ParseOutcome::Incomplete => unreachable!(),
     /// };
-    /// let res = router.dispatch(&head, &[]);
+    /// let res = tokio::runtime::Builder::new_current_thread().build().unwrap()
+    ///     .block_on(router.dispatch(&head, &[]));
     /// assert_eq!(res.status, 200);
     /// assert_eq!(res.body, b"css/app.css".to_vec());
     /// ```
@@ -1226,8 +1227,8 @@ mod tests {
 
     // --- ワイルドカードパスパラメータ `{*name}`（イシュー #317） ---
 
-    #[test]
-    fn wildcard_route_binds_multi_segment_tail_with_slashes() {
+    #[tokio::test]
+    async fn wildcard_route_binds_multi_segment_tail_with_slashes() {
         let router = Router::new()
             .route_param("GET", "/static/{*path}", |_h, params, _b| {
                 let path = params.get("path").unwrap_or("");
@@ -1235,13 +1236,15 @@ mod tests {
             })
             .unwrap();
 
-        let res = router.dispatch(&head("GET", "/static/css/app.css"), &[]);
+        let res = router
+            .dispatch(&head("GET", "/static/css/app.css"), &[])
+            .await;
         assert_eq!(res.status, 200);
         assert_eq!(res.body, b"css/app.css".to_vec());
     }
 
-    #[test]
-    fn wildcard_route_does_not_match_zero_segments() {
+    #[tokio::test]
+    async fn wildcard_route_does_not_match_zero_segments() {
         // 受け入れ条件: `{*path}` は 1 個以上のセグメントを要求し、0 セグメント
         // （`/static` 単体）には一致しない（末尾スラッシュなしは 404）。
         let router = Router::new()
@@ -1250,12 +1253,12 @@ mod tests {
             })
             .unwrap();
 
-        let res = router.dispatch(&head("GET", "/static"), &[]);
+        let res = router.dispatch(&head("GET", "/static"), &[]).await;
         assert_eq!(res.status, 404);
     }
 
-    #[test]
-    fn wildcard_route_static_exact_route_takes_priority() {
+    #[tokio::test]
+    async fn wildcard_route_static_exact_route_takes_priority() {
         // 受け入れ条件 3: 静的ルート（完全一致）がワイルドカードパラメータルート
         // より常に優先される。
         let router = Router::new()
@@ -1269,17 +1272,23 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            router.dispatch(&head("GET", "/static/exact"), &[]).body,
+            router
+                .dispatch(&head("GET", "/static/exact"), &[])
+                .await
+                .body,
             b"static-exact".to_vec()
         );
         assert_eq!(
-            router.dispatch(&head("GET", "/static/other"), &[]).body,
+            router
+                .dispatch(&head("GET", "/static/other"), &[])
+                .await
+                .body,
             b"wildcard:other".to_vec()
         );
     }
 
-    #[test]
-    fn wildcard_route_falls_through_from_earlier_registered_single_segment_param() {
+    #[tokio::test]
+    async fn wildcard_route_falls_through_from_earlier_registered_single_segment_param() {
         // 受け入れ条件 3: 登録順意味論の固定化。先に登録した 1 セグメント
         // パラメータルートが 1 セグメントリクエストでは勝ち、複数セグメントの
         // リクエストはそのパラメータルートに一致しないため後続のワイルドカード
@@ -1297,33 +1306,39 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            router.dispatch(&head("GET", "/static/app.css"), &[]).body,
+            router
+                .dispatch(&head("GET", "/static/app.css"), &[])
+                .await
+                .body,
             b"single:app.css".to_vec()
         );
         assert_eq!(
             router
                 .dispatch(&head("GET", "/static/css/app.css"), &[])
+                .await
                 .body,
             b"wildcard:css/app.css".to_vec()
         );
     }
 
-    #[test]
-    fn wildcard_route_method_mismatch_returns_405_with_allow() {
+    #[tokio::test]
+    async fn wildcard_route_method_mismatch_returns_405_with_allow() {
         let router = Router::new()
             .route_param("GET", "/static/{*path}", |_h, _params, _b| {
                 Response::empty(200)
             })
             .unwrap();
 
-        let res = router.dispatch(&head("POST", "/static/css/app.css"), &[]);
+        let res = router
+            .dispatch(&head("POST", "/static/css/app.css"), &[])
+            .await;
         assert_eq!(res.status, 405);
         let text = String::from_utf8(res.serialize(false)).unwrap();
         assert!(text.contains("Allow: GET\r\n"));
     }
 
-    #[test]
-    fn wildcard_route_non_origin_form_target_does_not_match() {
+    #[tokio::test]
+    async fn wildcard_route_non_origin_form_target_does_not_match() {
         // `*`（asterisk-form）はセグメント分割対象外のため一致しない
         // （`request_target_segments` が `None` を返す、モジュール doc参照）。
         let router = Router::new()
@@ -1333,12 +1348,12 @@ mod tests {
             })
             .unwrap();
 
-        let res = router.dispatch(&head("OPTIONS", "*"), &[]);
+        let res = router.dispatch(&head("OPTIONS", "*"), &[]).await;
         assert_eq!(res.status, 200);
     }
 
-    #[test]
-    fn wildcard_route_unmatched_zero_segment_falls_through_to_fallback() {
+    #[tokio::test]
+    async fn wildcard_route_unmatched_zero_segment_falls_through_to_fallback() {
         // fallback（イシュー #316）とのマージ地点回帰: 0 セグメント不一致は
         // 404 として fallback へ委譲される。
         let router = Router::new()
@@ -1348,7 +1363,7 @@ mod tests {
             .unwrap()
             .fallback(|_h, _b| Response::new(404, b"fallback".to_vec()));
 
-        let res = router.dispatch(&head("GET", "/static"), &[]);
+        let res = router.dispatch(&head("GET", "/static"), &[]).await;
         assert_eq!(res.status, 404);
         assert_eq!(res.body, b"fallback".to_vec());
     }
