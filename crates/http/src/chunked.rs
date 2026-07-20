@@ -24,6 +24,67 @@
 
 use crate::body::MAX_BODY_BYTES;
 
+/// chunked transfer-coding のエンコーダ（sans-IO、イシュー #319）。
+///
+/// [`ChunkedDecoder`] と対になる純関数群。新規の状態を持たず、呼び出し元
+/// （`crates/core/src/server.rs` の書き出しループ）が任意のタイミングで
+/// 呼び出して `out` へ追記できる。ソケット I/O・バッファ確保戦略は一切
+/// 関知しない sans-IO 設計を [`ChunkedDecoder`] と共通させる。
+///
+/// `data` に 1 チャンク分のバイト列を書き込む。
+///
+/// `<hex-size>\r\n<data>\r\n` の形式で `out` へ追記する。
+///
+/// # 空チャンクの扱い（レスポンス誤終端の構造的防止）
+///
+/// RFC 9112 §7.1 上、chunk-size `0` は終端（last-chunk）専用の予約値であり、
+/// 通常チャンクとして送出してはならない。`data` が空の場合に素直に
+/// `0\r\n\r\n` を出力すると、ストリーミング途中で意図せず応答を終端させて
+/// しまう（呼び出し元がまだ後続チャンクを送るつもりでも、受信側は
+/// 完全な応答を受け取ったと誤認する）。本関数は **空データのときは何も
+/// 出力しない**契約とし、終端は必ず [`encode_terminator`] を明示的に
+/// 呼ぶ経路のみに限定する（`.claude/rules/security.md` のレスポンス完全性・
+/// フェイルクローズ方針）。
+///
+/// ```
+/// use fandhe_backend_http::chunked::encode_chunk;
+///
+/// let mut out = Vec::new();
+/// encode_chunk(b"Wiki", &mut out);
+/// assert_eq!(out, b"4\r\nWiki\r\n");
+///
+/// // 空データは無出力（誤終端防止）。
+/// let mut out = Vec::new();
+/// encode_chunk(b"", &mut out);
+/// assert!(out.is_empty());
+/// ```
+pub fn encode_chunk(data: &[u8], out: &mut Vec<u8>) {
+    if data.is_empty() {
+        return;
+    }
+    out.extend_from_slice(format!("{:x}", data.len()).as_bytes());
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(data);
+    out.extend_from_slice(b"\r\n");
+}
+
+/// chunked body の終端（last-chunk + 空 trailer + 空行）を `out` へ追記する。
+///
+/// `0\r\n\r\n` を出力する。[`ChunkedDecoder`] が「空 trailer のみ受理」する
+/// 方針（モジュール冒頭 doc）と対称的に、trailer フィールドは一切出力
+/// しない（送出側は trailer を持たない）。
+///
+/// ```
+/// use fandhe_backend_http::chunked::encode_terminator;
+///
+/// let mut out = Vec::new();
+/// encode_terminator(&mut out);
+/// assert_eq!(out, b"0\r\n\r\n");
+/// ```
+pub fn encode_terminator(out: &mut Vec<u8>) {
+    out.extend_from_slice(b"0\r\n\r\n");
+}
+
 /// 1 リクエストで許容するチャンク総数の上限。
 ///
 /// 1 バイトチャンクを大量に送りつける CPU・メモリ断片化 DoS を防ぐ
@@ -596,5 +657,81 @@ mod tests {
         let value = format!("{:X}\r\n", MAX_BODY_BYTES + 1);
         let err = decode_all(value.as_bytes()).unwrap_err();
         assert_eq!(err, ChunkedError::BodyTooLarge);
+    }
+
+    // --- encode_chunk / encode_terminator（イシュー #319） ---
+
+    #[test]
+    fn encode_chunk_writes_hex_size_and_data() {
+        let mut out = Vec::new();
+        encode_chunk(b"hello", &mut out);
+        assert_eq!(out, b"5\r\nhello\r\n");
+    }
+
+    #[test]
+    fn encode_chunk_uses_lowercase_hex_for_large_sizes() {
+        // 0x100 = 256 バイト。デコーダは大文字・小文字いずれの hex も
+        // 受理するが（is_ascii_hexdigit）、出力は決定的に小文字へ揃える。
+        let data = vec![b'x'; 0x100];
+        let mut out = Vec::new();
+        encode_chunk(&data, &mut out);
+        assert!(out.starts_with(b"100\r\n"));
+    }
+
+    #[test]
+    fn encode_chunk_empty_data_is_noop() {
+        let mut out = Vec::new();
+        encode_chunk(b"", &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn encode_terminator_writes_last_chunk() {
+        let mut out = Vec::new();
+        encode_terminator(&mut out);
+        assert_eq!(out, b"0\r\n\r\n");
+    }
+
+    #[test]
+    fn encode_then_decode_roundtrip_single_chunk() {
+        let mut out = Vec::new();
+        encode_chunk(b"Wikipedia", &mut out);
+        encode_terminator(&mut out);
+        let mut decoded = Vec::new();
+        let outcome = decode_all_into(&out, &mut decoded).unwrap();
+        assert!(matches!(outcome, DecodeOutcome::Complete { .. }));
+        assert_eq!(decoded, b"Wikipedia");
+    }
+
+    #[test]
+    fn encode_then_decode_roundtrip_multiple_chunks() {
+        let mut out = Vec::new();
+        encode_chunk(b"foo", &mut out);
+        encode_chunk(b"bar", &mut out);
+        encode_chunk(b"baz", &mut out);
+        encode_terminator(&mut out);
+        let mut decoded = Vec::new();
+        let outcome = decode_all_into(&out, &mut decoded).unwrap();
+        assert!(matches!(outcome, DecodeOutcome::Complete { .. }));
+        assert_eq!(decoded, b"foobarbaz");
+    }
+
+    #[test]
+    fn encode_then_decode_roundtrip_empty_body() {
+        // データチャンクを 1 つも送らず終端のみの場合（空ストリーミング応答）。
+        let mut out = Vec::new();
+        encode_terminator(&mut out);
+        let mut decoded = Vec::new();
+        let outcome = decode_all_into(&out, &mut decoded).unwrap();
+        assert!(matches!(outcome, DecodeOutcome::Complete { .. }));
+        assert!(decoded.is_empty());
+    }
+
+    /// テスト専用ヘルパー: `ChunkedDecoder::new()` で `input` 全体を一度に
+    /// 復号する（`decode_all` は非公開でエラー型固定のため、成功系
+    /// roundtrip 検証用に別名で用意する）。
+    fn decode_all_into(input: &[u8], out: &mut Vec<u8>) -> Result<DecodeOutcome, ChunkedError> {
+        let mut decoder = ChunkedDecoder::new();
+        decoder.decode(input, out)
     }
 }

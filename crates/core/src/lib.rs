@@ -99,6 +99,7 @@
 pub mod extension;
 pub(crate) mod plugin;
 pub mod server;
+pub mod streaming;
 
 // 3 拡張点はクレート直下からも参照できるよう re-export する。プラグイン側
 // （`crates/plugin-*`）はこの再エクスポート経由で `fandhe_backend_core::Middleware`
@@ -107,6 +108,9 @@ pub use extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
 
 // コアループの主要 API もクレート直下から参照できるよう re-export する。
 pub use server::{BoundServer, Handler, Server, handle_connection};
+
+// レスポンス側 chunked ストリーミング送信（イシュー #319）の opt-in API。
+pub use streaming::{BodyWriter, StreamClosed, StreamingResponse};
 
 /// このクレートのバージョン文字列を返す。
 ///
