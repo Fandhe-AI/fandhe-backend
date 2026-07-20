@@ -67,6 +67,11 @@ fandhe-backend/
 │   │                                    # プリフライトを opt-in フックへ委譲可能にし、明示登録された
 │   │                                    # OPTIONS ルートを常に優先しつつ未登録なら従来どおり
 │   │                                    # 405 + `Allow` を維持（CORS プラグイン前提整備、イシュー #304）。
+│   │                                    # `Response::with_set_cookie` + 構築時検証済み専用型
+│   │                                    # `cookie::SetCookie` で `Set-Cookie` ヘッダを安全に構築
+│   │                                    # （RFC 6265 cookie-name/cookie-value/path-value 検証、
+│   │                                    # `HttpOnly`/`Secure`/`SameSite`/`Path`/`Max-Age` 属性対応、
+│   │                                    # 認証・セッション実装前提整備、イシュー #303）。
 │   │                                    # `cookie::parse_cookie_header` で RFC 6265 準拠の
 │   │                                    # Cookie ヘッダ読み取りパーサを提供（cookie-pair 構文検証・
 │   │                                    # DoS 上限内蔵・非デコード。`RequestHead::cookies` が複数
