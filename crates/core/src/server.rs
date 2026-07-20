@@ -90,30 +90,31 @@ use fandhe_backend_http::response::Response;
 
 use crate::extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
 
-/// `read_request` 1 回あたりの読み取りタイムアウト（スロークライアント対策）。
+/// `read_request` 1 回あたりの読み取りタイムアウトの既定値（スロークライアント対策）。
 ///
 /// ヘッド・body の読み取り待ち、および keep-alive 接続が次のリクエストを
-/// 送ってくるまでのアイドル待ちの両方に同じ値を適用する。値は固定定数に
-/// とどめ、チューニング可能化はサーバビルダー拡張の後続スコープとする
-/// （`.claude/rules/security.md` のリソース枯渇対策）。
+/// 送ってくるまでのアイドル待ちの両方に同じ値を適用する。値のチューニングは
+/// [`Server::read_timeout`] で行う（`.claude/rules/security.md` のリソース
+/// 枯渇対策）。
 ///
-/// `READ_TIMEOUT` は「1 回の read 待ち」しか制限しないため、正当なタイムアウト
+/// `read_timeout` は「1 回の read 待ち」しか制限しないため、正当なタイムアウト
 /// 間隔より短い間隔で送信し続けるクライアントに対しては単体で無力である。
 /// この隙間は [`Server::max_connection_lifetime`]（接続の総生存期間上限）と
 /// [`Server::max_requests_per_connection`]（keep-alive 中の最大リクエスト数）
 /// で埋める（#70 レビュー指摘、`.claude/rules/security.md` のリソース枯渇観点）。
 ///
-/// [`handle_connection`] は実際の read 待ちにこの定数をそのまま使わず、
+/// [`handle_connection`] は実際の read 待ちにこの値をそのまま使わず、
 /// 残り生存期間（`max_connection_lifetime - 経過時間`）とのうち短い方を使う
 /// （#70 Bugbot 指摘）。これにより「生存期間チェックの直後に最大
-/// `READ_TIMEOUT` だけ read がブロックし、その間 permit を握ったまま
+/// `read_timeout` だけ read がブロックし、その間 permit を握ったまま
 /// 総生存期間を超過する」経路を塞ぐ。
-const READ_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 1 接続あたりの総生存期間の既定上限（リソース枯渇 DoS 対策）。
 ///
-/// `READ_TIMEOUT` は「1 回の read 待ち」しか制限しないため、これより短い
-/// 間隔で（例えば 1 バイトずつ）送信し続けるクライアントは、本上限がなければ
+/// `read_timeout`（[`Server::read_timeout`]）は「1 回の read 待ち」しか
+/// 制限しないため、これより短い間隔で（例えば 1 バイトずつ）送信し続ける
+/// クライアントは、本上限がなければ
 /// `DEFAULT_MAX_CONNECTIONS` の permit を無期限に占有できてしまう。
 /// [`handle_connection`] はコネクション開始時刻からの経過時間がこの値に達した
 /// 時点で（読み取り待ちに入る前に）接続を閉じ、permit を解放する。
@@ -131,8 +132,9 @@ const DEFAULT_MAX_REQUESTS_PER_CONNECTION: usize = 1_000;
 
 /// 同時接続数の既定上限（リソース枯渇 DoS 対策）。
 ///
-/// accept ループが際限なく `tokio::spawn` すると、`READ_TIMEOUT` による
-/// 1 接続あたりのスロークライアント対策があっても、大量の同時接続による
+/// accept ループが際限なく `tokio::spawn` すると、`read_timeout`
+/// （[`Server::read_timeout`]）による 1 接続あたりのスロークライアント対策が
+/// あっても、大量の同時接続による
 /// fd・メモリ消費（リソース枯渇 DoS）は防げない（`.claude/rules/security.md`）。
 /// [`BoundServer::run`] はこの上限を `tokio::sync::Semaphore` で強制し、
 /// 上限に達している間は新規 `accept` 自体を保留する（カーネルの listen
@@ -196,6 +198,8 @@ pub struct Server {
     max_connections: usize,
     max_connection_lifetime: Duration,
     max_requests_per_connection: usize,
+    read_timeout: Duration,
+    keep_alive_enabled: bool,
     /// `webrtc-proxy` feature（TASK-2.1 / #18）有効時のみ意味を持つ設定。
     /// `crate::plugin::try_intercept` がこのフィールドを参照して `POST
     /// /rtc/offer` を上流へ中継するかどうかを判定する。feature 無効時は
@@ -268,6 +272,8 @@ impl Default for Server {
             max_connections: DEFAULT_MAX_CONNECTIONS,
             max_connection_lifetime: DEFAULT_MAX_CONNECTION_LIFETIME,
             max_requests_per_connection: DEFAULT_MAX_REQUESTS_PER_CONNECTION,
+            read_timeout: DEFAULT_READ_TIMEOUT,
+            keep_alive_enabled: true,
             #[cfg(feature = "webrtc-proxy")]
             webrtc_proxy_config: None,
             #[cfg(feature = "webrtc")]
@@ -308,8 +314,8 @@ impl Server {
     /// 1 接続あたりの総生存期間の上限を設定する（既定 `DEFAULT_MAX_CONNECTION_LIFETIME`）。
     ///
     /// [`handle_connection`] はコネクション開始からの経過時間がこの値に達すると、
-    /// 次のリクエストの読み取り待ちに入る前に接続を閉じる（`READ_TIMEOUT` の
-    /// doc・`.claude/rules/security.md` のリソース枯渇観点を参照）。`Duration::ZERO`
+    /// 次のリクエストの読み取り待ちに入る前に接続を閉じる（`DEFAULT_READ_TIMEOUT`
+    /// の doc・`.claude/rules/security.md` のリソース枯渇観点を参照）。`Duration::ZERO`
     /// を指定すると最初のリクエストを読む前に接続を閉じてしまうため、実運用では
     /// 避けること。
     #[must_use]
@@ -323,12 +329,70 @@ impl Server {
     ///
     /// 上限に達したリクエストへの応答は `Connection: close` を伴い、以後
     /// [`handle_connection`] は同じ接続で次のリクエストを待たない
-    /// （`READ_TIMEOUT` の doc・`.claude/rules/security.md` のリソース枯渇観点を
-    /// 参照）。`0` を指定した場合でも最低 1 リクエストは処理してから閉じる
+    /// （`DEFAULT_READ_TIMEOUT` の doc・`.claude/rules/security.md` の
+    /// リソース枯渇観点を参照）。`0` を指定した場合でも最低 1 リクエストは処理してから閉じる
     /// （[`handle_connection`] 側で `.max(1)` に切り上げる）。
     #[must_use]
     pub fn max_requests_per_connection(mut self, max: usize) -> Self {
         self.max_requests_per_connection = max;
+        self
+    }
+
+    /// `read_request` 1 回あたりの読み取りタイムアウトを設定する
+    /// （既定 `DEFAULT_READ_TIMEOUT` = 30 秒）。
+    ///
+    /// ヘッド・body の読み取り待ち、および keep-alive 接続が次のリクエストを
+    /// 送ってくるまでのアイドル待ちの両方に適用される（`DEFAULT_READ_TIMEOUT`
+    /// の doc を参照）。
+    ///
+    /// - `Duration::ZERO` を指定すると、まだ届いていないリクエストの読み取り
+    ///   待ちには即座にタイムアウトし、応答を送らず接続を閉じる（フェイルクローズ。
+    ///   [`Server::max_connection_lifetime`] の `ZERO` 時の挙動と同じ「閉じる側に
+    ///   倒れる」設計であり、実運用では避けること）。`tokio::time::timeout` は
+    ///   内部の読み取りを先にポーリングするため、読み取り時点で既にデータが
+    ///   到着済み（パイプライン済みリクエスト等）の場合はタイムアウトより先に
+    ///   読み取りが完了しうる点に注意（`0` はあくまで「待たない」設定であり、
+    ///   到着済みデータの処理自体を禁止するものではない）。
+    /// - 実効タイムアウトは常に [`Server::max_connection_lifetime`] の残り生存
+    ///   期間との短い方に丸められる（`DEFAULT_READ_TIMEOUT` の doc・#70 Bugbot
+    ///   指摘を参照）。極端に大きい値を指定しても、接続の総占有時間は
+    ///   `max_connection_lifetime` の上限を超えない。
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use fandhe_backend_core::server::Server;
+    ///
+    /// let server = Server::new().read_timeout(Duration::from_secs(5));
+    /// let _ = server;
+    /// ```
+    #[must_use]
+    pub fn read_timeout(mut self, timeout: Duration) -> Self {
+        self.read_timeout = timeout;
+        self
+    }
+
+    /// keep-alive の有効/無効を設定する（既定 `true` = 有効）。
+    ///
+    /// `false` を指定すると、[`handle_connection`] は `should_keep_alive` の
+    /// 判定結果によらず常に `Connection: close` を付けて応答し、1 接続で
+    /// 1 リクエストのみ処理して閉じる（`RequestGate` 拒否応答・通常応答の
+    /// 両経路に適用される）。エラー応答は本設定と無関係に常時クローズする
+    /// （既存のフェイルセーフ挙動のまま）。
+    ///
+    /// 本設定は HTTP リクエスト/応答の keep-alive ループのみに適用され、
+    /// `UpgradeHandler` への委譲（WebSocket 等）成立後のセッション寿命は
+    /// スコープ外（Upgrade はこの keep-alive ループから離脱する既存契約の
+    /// まま変わらない）。
+    ///
+    /// ```
+    /// use fandhe_backend_core::server::Server;
+    ///
+    /// let server = Server::new().keep_alive(false);
+    /// let _ = server;
+    /// ```
+    #[must_use]
+    pub fn keep_alive(mut self, enabled: bool) -> Self {
+        self.keep_alive_enabled = enabled;
         self
     }
 
@@ -782,7 +846,7 @@ pub(crate) async fn handle_connection_with_permit<S>(
 {
     let mut buf = RecvBuffer::new();
     // 接続の総生存期間・keep-alive 中の総リクエスト数を計測する（#70 レビュー
-    // 指摘、`.claude/rules/security.md` のリソース枯渇観点。READ_TIMEOUT の
+    // 指摘、`.claude/rules/security.md` のリソース枯渇観点。DEFAULT_READ_TIMEOUT の
     // doc・Server::max_connection_lifetime / max_requests_per_connection の
     // doc を参照）。
     let connection_started_at = Instant::now();
@@ -793,24 +857,25 @@ pub(crate) async fn handle_connection_with_permit<S>(
 
     loop {
         // 次のリクエストを読みに行く前に総生存期間の上限を確認する。これにより
-        // READ_TIMEOUT より短い間隔で送信し続けるクライアントであっても、
+        // read_timeout より短い間隔で送信し続けるクライアントであっても、
         // 接続が上限を超えて permit を占有し続けることはない。
         let elapsed_since_start = connection_started_at.elapsed();
         if elapsed_since_start >= server.max_connection_lifetime {
             return;
         }
 
-        // read_request のタイムアウトは READ_TIMEOUT と「残り生存期間」の
-        // 短い方に丸める（#70 Bugbot 指摘: READ_TIMEOUT をそのまま使うと、
-        // 直前の生存期間チェックを通過した直後に読み取りが最大 READ_TIMEOUT
-        // だけブロックし、permit を握ったまま接続が max_connection_lifetime を
-        // 超過しうる）。これにより 1 回の read 待ちで接続が生存期間上限を
-        // 超えて居座ることはなく、超過前に必ずタイムアウトして接続が閉じる
-        // （下の `Err(_elapsed) => return` 分岐）。
+        // read_request のタイムアウトは server.read_timeout（既定
+        // DEFAULT_READ_TIMEOUT、Server::read_timeout でチューニング可能）と
+        // 「残り生存期間」の短い方に丸める（#70 Bugbot 指摘: read_timeout を
+        // そのまま使うと、直前の生存期間チェックを通過した直後に読み取りが
+        // 最大 read_timeout だけブロックし、permit を握ったまま接続が
+        // max_connection_lifetime を超過しうる）。これにより 1 回の read
+        // 待ちで接続が生存期間上限を超えて居座ることはなく、超過前に必ず
+        // タイムアウトして接続が閉じる（下の `Err(_elapsed) => return` 分岐）。
         let remaining_lifetime = server
             .max_connection_lifetime
             .saturating_sub(elapsed_since_start);
-        let read_timeout = READ_TIMEOUT.min(remaining_lifetime);
+        let read_timeout = server.read_timeout.min(remaining_lifetime);
 
         let read_result =
             tokio::time::timeout(read_timeout, read_request(&mut stream, &mut buf)).await;
@@ -838,12 +903,13 @@ pub(crate) async fn handle_connection_with_permit<S>(
             middleware.on_request(&request.head);
         }
 
-        // クライアントが keep-alive を要求していても、総リクエスト数上限に
-        // 達した場合・総生存期間上限に達した場合は `Connection: close` で
-        // 応答し、この接続では次のリクエストを待たない（#70 レビュー指摘、
-        // Server::max_requests_per_connection / max_connection_lifetime の
-        // doc を参照）。
-        let keep_alive = should_keep_alive(&request.head)
+        // クライアントが keep-alive を要求していても、`Server::keep_alive(false)`
+        // で無効化されている場合・総リクエスト数上限に達した場合・総生存期間
+        // 上限に達した場合は `Connection: close` で応答し、この接続では次の
+        // リクエストを待たない（#70 レビュー指摘、Server::keep_alive /
+        // max_requests_per_connection / max_connection_lifetime の doc を参照）。
+        let keep_alive = server.keep_alive_enabled
+            && should_keep_alive(&request.head)
             && requests_served < max_requests
             && connection_started_at.elapsed() < server.max_connection_lifetime;
 
@@ -1384,10 +1450,46 @@ GET /c HTTP/1.1\r\n\r\n",
     }
 
     #[tokio::test]
+    async fn keep_alive_disabled_forces_close_after_first_request() {
+        // `Server::keep_alive(false)` は `should_keep_alive` の判定結果に
+        // かかわらず常に `Connection: close` で応答し、1 接続 1 リクエストで
+        // 閉じることを確認する（受け入れ条件 3、`max_requests_per_connection`
+        // の上限到達時と同じ「以後の接続では次のリクエストを待たない」挙動を
+        // keep_alive 無効化そのもので再現する）。
+        let handler = FixedHandler {
+            status: 200,
+            body: b"ok",
+            calls: AtomicUsize::new(0),
+        };
+        let server = Server::new().keep_alive(false).handler(handler);
+        let (mut client, server_stream) = tokio::io::duplex(8192);
+        use tokio::io::AsyncWriteExt as _;
+
+        let write_task = tokio::spawn(async move {
+            // 2 リクエストとも keep-alive を要求するが、サーバ側で無効化済み。
+            client
+                .write_all(b"GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\n\r\n")
+                .await
+                .unwrap();
+            let mut out = Vec::new();
+            client.read_to_end(&mut out).await.unwrap();
+            out
+        });
+
+        handle_connection(&server, server_stream).await;
+        let out = write_task.await.unwrap();
+        let text = String::from_utf8(out).unwrap();
+
+        // 1 件のみ応答され、2 件目は送られる前に接続が閉じられる。
+        assert_eq!(text.matches("HTTP/1.1 200 OK").count(), 1);
+        assert!(text.contains("Connection: close"));
+    }
+
+    #[tokio::test]
     async fn max_connection_lifetime_closes_before_next_read() {
         // 総生存期間の上限に達した接続は、次のリクエストの読み取り待ちに
         // 入る前に閉じられることを確認する（#70 レビュー指摘: 接続の総生存
-        // 期間の上限。READ_TIMEOUT では防げない、短い間隔で送信し続ける
+        // 期間の上限。read_timeout（既定 DEFAULT_READ_TIMEOUT）では防げない、短い間隔で送信し続ける
         // クライアントによる permit 占有を防ぐ）。
         let handler = FixedHandler {
             status: 200,
@@ -1418,13 +1520,13 @@ GET /c HTTP/1.1\r\n\r\n",
 
     #[tokio::test]
     async fn max_connection_lifetime_bounds_slow_read_below_read_timeout() {
-        // #70 Bugbot 指摘: read_request のタイムアウトが常に READ_TIMEOUT
+        // #70 Bugbot 指摘: read_request のタイムアウトが常に read_timeout（既定 DEFAULT_READ_TIMEOUT）
         // （30 秒）固定だと、直前の生存期間チェックを通過した直後にスロー
         // クライアントが read をブロックさせた場合、生存期間の上限
-        // （本テストでは 50ms）を大幅に超えて（最大で READ_TIMEOUT 分）
+        // （本テストでは 50ms）を大幅に超えて（最大で read_timeout 分）
         // permit を握り続けてしまう。修正後は残り生存期間で read タイムアウトを
         // 丸めるため、read がブロックしている接続も生存期間の上限近辺で
-        // 閉じられることを確認する（30 秒の READ_TIMEOUT を待たない）。
+        // 閉じられることを確認する（30 秒の DEFAULT_READ_TIMEOUT を待たない）。
         let handler = FixedHandler {
             status: 200,
             body: b"ok",
@@ -1437,18 +1539,109 @@ GET /c HTTP/1.1\r\n\r\n",
 
         // クライアントは何も送らず接続だけ張り続ける（スロークライアント）。
         // read_request は永久にブロックしうるが、生存期間に基づく短縮
-        // タイムアウトにより READ_TIMEOUT（30 秒）を待たずに閉じられるはず。
+        // タイムアウトにより DEFAULT_READ_TIMEOUT（30 秒）を待たずに閉じられるはず。
         let started = Instant::now();
         handle_connection(&server, server_stream).await;
         let elapsed = started.elapsed();
         drop(client);
 
-        // READ_TIMEOUT（30 秒）よりも十分短い時間で接続が閉じられたことを
+        // DEFAULT_READ_TIMEOUT（30 秒）よりも十分短い時間で接続が閉じられたことを
         // 確認する（CI 環境のスケジューリング遅延を許容しつつ、修正前の
         // 挙動（30 秒待ち）とは明確に区別できるしきい値）。
         assert!(
             elapsed < Duration::from_secs(5),
-            "生存期間の上限近辺で閉じられるはずが {elapsed:?} かかった（READ_TIMEOUT 固定に戻っていないか確認）"
+            "生存期間の上限近辺で閉じられるはずが {elapsed:?} かかった（read_timeout 固定に戻っていないか確認）"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_timeout_closes_slow_client_at_configured_value() {
+        // `Server::read_timeout` で設定した値がそのまま read 待ちタイムアウトに
+        // 適用されることを確認する（受け入れ条件 2）。既定 30 秒のままでは
+        // 本テストのしきい値内に収まらないため、設定が効いたことを判別できる。
+        let handler = FixedHandler {
+            status: 200,
+            body: b"ok",
+            calls: AtomicUsize::new(0),
+        };
+        let server = Server::new()
+            .read_timeout(Duration::from_millis(50))
+            .handler(handler);
+        let (client, server_stream) = tokio::io::duplex(8192);
+
+        // クライアントは何も送らず接続だけ張り続ける（スロークライアント）。
+        let started = Instant::now();
+        handle_connection(&server, server_stream).await;
+        let elapsed = started.elapsed();
+        drop(client);
+
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "read_timeout(50ms) を設定したのに {elapsed:?} かかった（既定 30 秒のまま反映されていないか確認）"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_timeout_zero_fails_closed() {
+        // `Server::read_timeout(Duration::ZERO)` は最初のリクエストの読み取り
+        // 待ちにも即座にタイムアウトし、応答を送らず接続を閉じることを確認する
+        // （受け入れ条件 2 のゼロ検証。フェイルクローズ、`Server::read_timeout`
+        // の doc を参照）。クライアントが何も送らない状態（`tokio::io::duplex`
+        // に未読データなし）で検証する。`tokio::time::timeout` は内部の読み取り
+        // future を先にポーリングするため、送信済みデータがバッファにあると
+        // タイムアウトより先に読み取りが完了して即座には閉じない可能性がある
+        // （実測で確認済み）。データなしなら読み取り future は必ず Pending と
+        // なり、ZERO タイムアウトが確実に先勝ちする。
+        let handler = FixedHandler {
+            status: 200,
+            body: b"ok",
+            calls: AtomicUsize::new(0),
+        };
+        let server = Server::new().read_timeout(Duration::ZERO).handler(handler);
+        let (client, server_stream) = tokio::io::duplex(8192);
+
+        let started = Instant::now();
+        handle_connection(&server, server_stream).await;
+        let elapsed = started.elapsed();
+        drop(client);
+
+        // 既定 30 秒を待たず、即座（数秒未満）に接続が閉じられる。
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "read_timeout(ZERO) を設定したのに {elapsed:?} かかった（フェイルクローズできていない）"
+        );
+    }
+
+    #[tokio::test]
+    async fn extreme_read_timeout_is_bounded_by_connection_lifetime() {
+        // `read_timeout` に極端に大きい値（86400 秒）を設定しても、実効
+        // タイムアウトは `max_connection_lifetime`（本テストでは 50ms）との
+        // 短い方に丸められるため、接続占有はあくまで総生存期間上限で必ず
+        // 打ち切られることを確認する（受け入れ条件 2 の極端値検証。
+        // `max_connection_lifetime_bounds_slow_read_below_read_timeout` と
+        // 同じ構図を read_timeout 側の値を変えて再現する）。
+        let handler = FixedHandler {
+            status: 200,
+            body: b"ok",
+            calls: AtomicUsize::new(0),
+        };
+        let server = Server::new()
+            .read_timeout(Duration::from_secs(86_400))
+            .max_connection_lifetime(Duration::from_millis(50))
+            .handler(handler);
+        let (client, server_stream) = tokio::io::duplex(8192);
+
+        // クライアントは何も送らず接続だけ張り続ける（スロークライアント）。
+        let started = Instant::now();
+        handle_connection(&server, server_stream).await;
+        let elapsed = started.elapsed();
+        drop(client);
+
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "read_timeout を極端に大きくしても max_connection_lifetime の上限で \
+             閉じられるはずが {elapsed:?} かかった（read_timeout が生存期間で \
+             丸められていないか確認）"
         );
     }
 
