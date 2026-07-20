@@ -1723,10 +1723,13 @@ GET /c HTTP/1.1\r\n\r\n",
             _body: &[u8],
         ) -> fandhe_backend_routes::HandlerFuture {
             Box::pin(std::future::ready({
-                // `Handler::handle` は同期 API のため、テスト用に `std::thread::sleep`
-                // で処理時間の長期化を模擬する（本体側 await ではないため
+                // `Handler::handle` は async 契約（boxed-future）だが、この
+                // `std::future::ready` は構築時点で中身を同期評価するため、
+                // `std::thread::sleep` は poll ではなく `handle` 呼び出し内で
+                // 即座に実行される（本体側 await ではないため
                 // `.claude/rules/coding-rust.md` の「ブロッキング処理を await
-                // スレッドで実行しない」に抵触しない。単体テストのみで使用）。
+                // スレッドで実行しない」に抵触しない。処理時間の長期化を
+                // 模擬するテスト専用ヘルパーであり、単体テストのみで使用）。
                 std::thread::sleep(self.sleep_for);
                 Response::new(200, b"ok".to_vec())
             }))
