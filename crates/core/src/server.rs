@@ -127,6 +127,19 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// 応答（`Response::serialize`）の一括 `write_all` にはタイムアウトを適用
 /// しない（イシュー #319 の計画時点でのスコープ外。
 /// `.claude/rules/out-of-scope-tracking.md` 対象候補）。
+///
+/// # producer 側の制約（チャンク間隔 30 秒以内）
+///
+/// この値は「ソケットへの実書き込み待ち」だけでなく「producer からの次
+/// チャンク待ち（`streaming.recv()`）」にも同じ丸めパターンで適用される。
+/// そのため `BodyWriter::send` / `finish` の呼び出し間隔が本値を超えて
+/// 空くと、正常に稼働している producer でも接続が強制クローズされる
+/// （SSE のハートビート間隔や long-poll のようにアイドル区間が長い実装は
+/// 本値を超えないよう注意する）。ワイヤへ余計なバイトを出さずに待ち時間を
+/// リセットしたい場合は、`BodyWriter::send(Vec::new())`（空チャンクは
+/// `encode_chunk` の契約により無出力）を本値未満の間隔で呼び、内部的な
+/// キープアライブとして使う（`Handler::handle_streaming` の doc を参照）。
+/// `Server::write_timeout` のような値の調整 API は本イシューのスコープ外。
 const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 1 接続あたりの総生存期間の既定上限（リソース枯渇 DoS 対策）。
@@ -206,6 +219,18 @@ pub trait Handler: Send + Sync {
     /// [`crate::streaming::BodyWriter`] を `tokio::spawn` した producer
     /// タスクへ move し、producer がデータ生成の都合に合わせて `send` /
     /// `finish` を呼ぶことである:
+    ///
+    /// # チャンク間隔の制約（30 秒以内）
+    ///
+    /// producer からの次チャンク待ちには [`DEFAULT_WRITE_TIMEOUT`]（30 秒）が
+    /// 適用され、超過すると正常に稼働している producer でも接続が強制
+    /// クローズされる（スロークライアント・スロープロデューサ対策、
+    /// `.claude/rules/security.md` のリソース枯渇観点）。SSE
+    /// （`text/event-stream`）のハートビート間隔や long-poll のようにイベント
+    /// 発生がまばらな producer を実装する場合は、本値未満の間隔で
+    /// `BodyWriter::send(Vec::new())` を呼んで待ち時間をリセットするとよい
+    /// （空チャンクは `encode_chunk` の契約によりワイヤへは無出力のため、
+    /// クライアントに余計なバイトを見せずに内部キープアライブとして使える）。
     ///
     /// ```
     /// use fandhe_backend_core::server::Handler;

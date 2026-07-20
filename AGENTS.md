@@ -154,6 +154,13 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
 - `finish` を呼ばずに producer が drop された場合は打ち切りとして扱われ、
   受信側（`write_streaming_response`）は終端チャンクを送らず接続をクローズする
   （応答完全性の fail-closed。RFC 9112 の length 整合性維持）
+- producer からの次チャンク待ちには `DEFAULT_WRITE_TIMEOUT`（30 秒、
+  `crates/core/src/server.rs`）が適用され、`send` / `finish` の呼び出し間隔が
+  これを超えると正常な producer でも接続が強制クローズされる。SSE
+  （`text/event-stream`）のハートビート間隔や long-poll のようにアイドル区間が
+  長い producer は、本値未満の間隔で `BodyWriter::send(Vec::new())`（空チャンクは
+  無出力）を呼んでワイヤへ余計なバイトを出さずに待ち時間をリセットする
+  （`Handler::handle_streaming` の doc を参照）
 - HTTP/1.0 リクエストへは chunked framing を使わず、`Connection: close` +
   EOF 終端で応答する（`Response::serialize_streaming_head_http10` の doc を参照）
 - `crate::plugin::finalize_response`（CORS 等のレスポンス後処理型シーム）は

@@ -25,7 +25,7 @@
 #![no_main]
 
 use fandhe_backend_http::chunked::{
-    encode_chunk, encode_terminator, ChunkedDecoder, DecodeOutcome,
+    encode_chunk, encode_terminator, ChunkedDecoder, DecodeOutcome, MAX_CHUNK_COUNT,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -37,8 +37,13 @@ fuzz_target!(|data: &[u8]| {
     // ため回避。DoS 上限 MAX_CHUNK_COUNT に収まる粒度に抑える）。
     let chunk_width = (usize::from(split_seed) % 64) + 1;
     // fuzz corpus が肥大化してもチャンク総数が MAX_CHUNK_COUNT
-    // （chunked.rs、16_384）を超えないよう入力長を先に上限化する。
-    let body = &body[..body.len().min(64 * 1024)];
+    // （chunked.rs、16_384）を超えないよう、chunk_width に応じて入力長を
+    // 上限化する（`chunk_width * MAX_CHUNK_COUNT` が生成しうるチャンク総数の
+    // 上限。chunk_width = 1 のとき 65536 バイトまで許すと 16_384 を超えて
+    // decode が `TooManyChunks` を返し直後の `.expect` が panic するため、
+    // 単純な固定長上限（64 * 1024）では不十分だった）。
+    let max_len = chunk_width.saturating_mul(MAX_CHUNK_COUNT as usize);
+    let body = &body[..body.len().min(max_len).min(64 * 1024)];
 
     let mut encoded = Vec::new();
     for piece in body.chunks(chunk_width) {
