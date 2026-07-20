@@ -138,8 +138,21 @@ cors = ["dep:fandhe-backend-plugin-cors"]
 # lint を下げてまで derive マクロを使う理由がないため）。dev-dependencies は
 # release ビルドに一切含まれないため pay-for-what-you-use の対象外
 # （`.claude/rules/pay-for-what-you-use.md`）。
+#
+# `signal` feature（イシュー #313、`examples/graceful_shutdown.rs` 専用）:
+# `BoundServer::run_until` は shutdown シグナル源をコアで扱わず、利用者が
+# 渡す `Future` として受け取る設計（tokio `signal` feature をコアの
+# [dependencies] に持ち込まないための意図的な選択、pay-for-what-you-use）。
+# 利用例を示すためだけに dev-dependencies 限定で追加し、本体ビルド
+# （`cargo build -p fandhe-backend-core` / `--all-features` 問わず）の
+# 依存グラフには一切現れない（`cargo tree -p fandhe-backend-core -e normal`
+# で検証可能）。
 [dev-dependencies]
-tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", default-features = false, features = [
+    "macros",
+    "rt-multi-thread",
+    "signal",
+] }
 async-graphql = { version = "7", default-features = false, features = ["dynamic-schema"] }
 # `crates/core/tests/plugin_tracing_boundary.rs`（`#![cfg(feature = "tracing")]`
 # でコンパイル自体を feature ゲート）が、記録された span/event 件数をサンプリング

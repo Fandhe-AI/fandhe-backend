@@ -88,6 +88,13 @@
 //! bound.run().await
 //! # }
 //! ```
+//!
+//! プロセス終了を `run()` の kill に頼らず、accept 停止 → in-flight
+//! 完了待ち（上限時間・超過時強制クローズ）を伴って安全に停止したい場合は
+//! [`server::BoundServer::run_until`]（イシュー #313）を使う。`run()` は
+//! `run_until` への薄い委譲であり後方互換を維持する。利用例は
+//! `crates/core/examples/graceful_shutdown.rs`、設計判断は
+//! `docs/design/graceful-shutdown.md` を参照。
 
 pub mod extension;
 pub(crate) mod plugin;

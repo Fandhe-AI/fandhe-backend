@@ -74,12 +74,16 @@
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinSet;
 
 use fandhe_backend_http::body::BodyError;
 use fandhe_backend_http::buffer::RecvBuffer;
@@ -150,6 +154,16 @@ const DEFAULT_MAX_CONNECTIONS: usize = 10_000;
 /// の doc を参照。
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(10);
 
+/// graceful shutdown（[`BoundServer::run_until`]）の in-flight リクエスト完了待ち
+/// 上限の既定値（イシュー #313）。
+///
+/// シャットダウンシグナル受信後、accept を止めた上でこの時間だけ処理中の
+/// 接続の完了を待つ。上限を超えても完了しない接続は強制クローズする
+/// （ハング防止のフェイルクローズ、`.claude/rules/security.md` の
+/// リソース枯渇・可用性観点）。値のチューニングは
+/// [`Server::shutdown_grace_period`] で行う。
+const DEFAULT_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(30);
+
 /// リクエストに対する最終応答を生成する、コアが公開する既定ハンドラ拡張点。
 ///
 /// 3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）とは異なり
@@ -200,6 +214,9 @@ pub struct Server {
     max_requests_per_connection: usize,
     read_timeout: Duration,
     keep_alive_enabled: bool,
+    /// graceful shutdown（[`BoundServer::run_until`]）の in-flight 完了待ち
+    /// 上限（イシュー #313）。既定は `DEFAULT_SHUTDOWN_GRACE_PERIOD`。
+    shutdown_grace_period: Duration,
     /// `webrtc-proxy` feature（TASK-2.1 / #18）有効時のみ意味を持つ設定。
     /// `crate::plugin::try_intercept` がこのフィールドを参照して `POST
     /// /rtc/offer` を上流へ中継するかどうかを判定する。feature 無効時は
@@ -274,6 +291,7 @@ impl Default for Server {
             max_requests_per_connection: DEFAULT_MAX_REQUESTS_PER_CONNECTION,
             read_timeout: DEFAULT_READ_TIMEOUT,
             keep_alive_enabled: true,
+            shutdown_grace_period: DEFAULT_SHUTDOWN_GRACE_PERIOD,
             #[cfg(feature = "webrtc-proxy")]
             webrtc_proxy_config: None,
             #[cfg(feature = "webrtc")]
@@ -393,6 +411,31 @@ impl Server {
     #[must_use]
     pub fn keep_alive(mut self, enabled: bool) -> Self {
         self.keep_alive_enabled = enabled;
+        self
+    }
+
+    /// graceful shutdown（[`BoundServer::run_until`]）の in-flight リクエスト
+    /// 完了待ち上限を設定する（既定 `DEFAULT_SHUTDOWN_GRACE_PERIOD` = 30 秒、
+    /// イシュー #313）。
+    ///
+    /// シャットダウンシグナル受信後、[`BoundServer::run_until`] は新規接続の
+    /// 受理を止めた上で、処理中の全接続（WebSocket セッション等の長時間
+    /// 委譲先を含む。`BoundServer::run_until` の doc の「既知の限界」を参照）が
+    /// 完了するのをこの時間だけ待つ。上限を超えても完了しない接続は
+    /// 強制クローズし、必ず有界時間で `run_until` が戻る（ハング防止の
+    /// フェイルクローズ、`.claude/rules/security.md` のリソース枯渇・
+    /// 可用性観点）。
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use fandhe_backend_core::server::Server;
+    ///
+    /// let server = Server::new().shutdown_grace_period(Duration::from_secs(10));
+    /// let _ = server;
+    /// ```
+    #[must_use]
+    pub fn shutdown_grace_period(mut self, grace: Duration) -> Self {
+        self.shutdown_grace_period = grace;
         self
     }
 
@@ -649,12 +692,23 @@ impl Server {
         let listener = TcpListener::bind(addr).await?;
         // 0 を指定すると accept ループが永久に許可待ちでブロックし、
         // 新規接続を一切受理できなくなる（誤用によるデッドロック防止のため
-        // 最低 1 に切り上げる）。
-        let connection_limit = Arc::new(Semaphore::new(self.max_connections.max(1)));
+        // 最低 1 に切り上げる）。この `permit_count` は下の `Semaphore::new` と
+        // `permit_total`（[`BoundServer::run_until`] の in-flight 完了待ちが
+        // 「全 permit の回収」を「全接続完了」とみなす根拠）の**唯一の
+        // 発生源**であり、二重計算による乖離を避けるため 1 回だけ計算する。
+        let permit_count = self.max_connections.max(1);
+        let connection_limit = Arc::new(Semaphore::new(permit_count));
+        // セマフォの総 permit 数は `usize`、`acquire_many_owned` は `u32` を取る。
+        // `max_connections` が `u32::MAX` を超える極端な設定でも in-flight 完了待ち
+        // 自体は成立させる（切り詰めても「全 permit 回収」の意味は保たれる。
+        // 実運用でここまで大きい `max_connections` は想定しない）。
+        let permit_total = u32::try_from(permit_count).unwrap_or(u32::MAX);
         Ok(BoundServer {
             listener,
             server: Arc::new(self),
             connection_limit,
+            permit_total,
+            shutdown_flag: Arc::new(AtomicBool::new(false)),
         })
     }
 }
@@ -735,7 +789,62 @@ pub struct BoundServer {
     /// 同時接続数の上限を強制するセマフォ（`DEFAULT_MAX_CONNECTIONS` の doc を参照）。
     /// permit は [`BoundServer::run`] が spawn するコネクションタスクへ move し、
     /// タスク終了（`handle_connection` の戻り）時に自動で解放される。
+    /// graceful shutdown（[`BoundServer::run_until`]）は shutdown 後に
+    /// `permit_total` 個の permit を全回収することで「全 in-flight 接続が
+    /// 完了した」を検知する（[`Server::bind`] の doc を参照）。
     connection_limit: Arc<Semaphore>,
+    /// `connection_limit` の初期 permit 総数（[`Server::bind`] で
+    /// `max_connections.max(1)` から一意に導出、`u32` へクランプ済み）。
+    /// [`BoundServer::run_until`] が in-flight 完了待ちで
+    /// `acquire_many_owned(permit_total)` に使う。
+    permit_total: u32,
+    /// graceful shutdown シグナル受信を各コネクションタスクへ伝える
+    /// フラグ（イシュー #313）。[`BoundServer::run_until`] がシャットダウン
+    /// 検知時に `true` を立て、[`handle_connection_with_permit`] の
+    /// keep-alive 判定に反映される（処理中のリクエストは完走させつつ、
+    /// 以降は `Connection: close` を付けて早期に接続を閉じる）。
+    shutdown_flag: Arc<AtomicBool>,
+}
+
+/// [`BoundServer::run_until`] が shutdown Future と accept Future を競合
+/// させた結果（本モジュール内の非公開ヘルパー、tokio `macros` feature
+/// （`select!` が要求する）を追加しないための選択。`std::future::poll_fn` +
+/// `std::pin::pin!` で同等のことを最小依存で実現する）。
+enum Raced<T> {
+    /// shutdown Future が先に完了した。
+    Shutdown,
+    /// accept 側の Future が（shutdown より先に、または shutdown なしで）完了した。
+    Completed(T),
+}
+
+/// `shutdown`（1 度だけ pin して以後のループ反復をまたいで poll し続ける
+/// 必要がある。呼び出し側が `Pin<&mut S>` を渡す契約）と `accept`
+/// （反復ごとに新規生成される Future）を競合させる。
+///
+/// `tokio::select!` は `macros` feature（proc-macro 系推移依存）を要求する
+/// ため使わない（`crates/core/Cargo.toml` の tokio feature コメント・
+/// `.claude/rules/pay-for-what-you-use.md` を参照）。`accept` は cancel-safe
+/// （`shutdown` が先に完了して drop されても、取得済み permit が自動解放
+/// されるだけで接続を取りこぼさない。`BoundServer::run_until` の doc を参照）。
+async fn race_shutdown_or_accept<S, A>(mut shutdown: Pin<&mut S>, accept: A) -> Raced<A::Output>
+where
+    S: Future<Output = ()>,
+    A: Future,
+{
+    let mut accept = std::pin::pin!(accept);
+    std::future::poll_fn(move |cx| {
+        // shutdown を先にポーリングする: shutdown・accept が同一 poll で
+        // 同時に Ready になりうる場合でも「shutdown 優先」を保証し、
+        // shutdown 直後に新規接続を受理してしまう競合を避ける。
+        if shutdown.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Raced::Shutdown);
+        }
+        match accept.as_mut().poll(cx) {
+            Poll::Ready(value) => Poll::Ready(Raced::Completed(value)),
+            Poll::Pending => Poll::Pending,
+        }
+    })
+    .await
 }
 
 impl BoundServer {
@@ -745,6 +854,17 @@ impl BoundServer {
     }
 
     /// accept ループを回し、コネクションごとに [`handle_connection`] を spawn する。
+    /// シャットダウン手段を持たない（`std::future::pending` を shutdown Future
+    /// として渡すだけの）[`BoundServer::run_until`] の薄いラッパー（イシュー
+    /// #313 で既存 API の後方互換を維持するために導入。挙動・シグネチャとも
+    /// 従来のまま）。accept エラー処理・同時接続数上限の詳細は
+    /// [`BoundServer::run_until`] の doc を参照。
+    pub async fn run(self) -> io::Result<()> {
+        self.run_until(std::future::pending::<()>()).await
+    }
+
+    /// `shutdown` Future が完了するまで accept ループを回し、その後
+    /// graceful shutdown シーケンスを実行する（イシュー #313）。
     ///
     /// 各コネクションは独立した tokio タスクで処理されるため、1 接続の
     /// 処理停滞（スロークライアント等）が他接続をブロックしない。
@@ -761,42 +881,151 @@ impl BoundServer {
     /// 壊れたことを意味しない一過性のものが大半である。Tokio 公式ドキュメント
     /// （`TcpListener::accept`）も「多くの accept エラーはサーバ全体ではなく
     /// 個々の接続に紐づくものであり、ログに残してループを継続するのが
-    /// 一般的な実践」と述べている。そのため本実装は accept エラーで `run()`
-    /// を終了させず、`ACCEPT_ERROR_BACKOFF` だけ待ってから次の accept を
-    /// 再試行する（`.claude/rules/security.md` の可用性・リソース枯渇観点。
-    /// 1 件の一過性エラーでリスナー全体が永久停止するのを防ぐ）。戻り値が
-    /// `io::Result` なのは将来の呼び出し側都合による API 安定性のためであり、
-    /// 現状の実装は（プロセス終了等の外的要因を除き）`Err` を返さず走り続ける。
-    pub async fn run(self) -> io::Result<()> {
-        loop {
-            // セマフォが閉じられることはない（`close()` を呼ぶ経路がない）ため
-            // `acquire_owned` は必ず成功する。
-            let permit = Arc::clone(&self.connection_limit)
-                .acquire_owned()
-                .await
-                .expect("connection_limit semaphore is never closed");
+    /// 一般的な実践」と述べている。そのため本実装は accept エラーで
+    /// `run_until` を終了させず、`ACCEPT_ERROR_BACKOFF` だけ待ってから次の
+    /// accept を再試行する（`.claude/rules/security.md` の可用性・
+    /// リソース枯渇観点。1 件の一過性エラーでリスナー全体が永久停止するのを
+    /// 防ぐ）。戻り値が `io::Result` なのは将来の呼び出し側都合による API
+    /// 安定性のためであり、現状の実装は（プロセス終了等の外的要因を除き）
+    /// `Err` を返さず、`shutdown` 完了後に必ず `Ok(())` で戻る。
+    ///
+    /// # graceful shutdown シーケンス
+    ///
+    /// `shutdown` が完了すると、以下の順序で処理する:
+    ///
+    /// 1. **accept 停止**: shutdown フラグを立て、リスニングソケットを
+    ///    明示的に `drop` する（以降の新規接続は OS レベルで拒否される。
+    ///    受け入れ条件「シグナル受信後に新規接続を受け付けない」）。フラグは
+    ///    [`handle_connection_with_permit`] の keep-alive 判定にも伝わり、
+    ///    処理中のリクエストは完走させつつ、以後は `Connection: close` を
+    ///    付けて早期に接続を閉じる（[`BoundServer::shutdown_flag`] フィールドの doc を参照）
+    /// 2. **in-flight 完了待ち**: [`Server::shutdown_grace_period`]
+    ///    （既定 `DEFAULT_SHUTDOWN_GRACE_PERIOD` = 30 秒）を上限に、
+    ///    `connection_limit` の全 permit（`permit_total` 個）が解放される
+    ///    のを待つ。WebSocket 委譲で専用タスクへ move された permit も
+    ///    同じセマフォで解放されるため、WS セッションを含む全 in-flight を
+    ///    漏れなく待てる（`crate::plugin::try_handle_upgrade` の doc
+    ///    「permit の契約」を参照）
+    /// 3. **上限超過時は強制クローズ**: 上限内に全 permit が解放されなければ、
+    ///    警告ログを 1 行出した上で残存コネクションタスクを `JoinSet::shutdown`
+    ///    で abort する（`TcpStream` が drop されソケットは即時クローズされる。
+    ///    ハング防止のフェイルクローズ、受け入れ条件「上限時間・超過時強制
+    ///    クローズ」）
+    ///
+    /// どちらの経路でも `run_until` は `Server::shutdown_grace_period` + ε
+    /// 以内に必ず `Ok(())` で戻る。
+    ///
+    /// # 既知の限界
+    ///
+    /// WebSocket 委譲後の専用タスク（`fandhe_backend_plugin_websocket` 側の
+    /// `tokio::spawn`）は本関数が管理する `JoinSet` の外にあるため、grace
+    /// 超過時の強制 abort 対象にはならない。ただし in-flight 完了待ちは
+    /// permit 回収のタイムアウトで実装されており、WS セッションが
+    /// permit を握ったまま生き続けても `run_until` 自体は grace + ε 以内に
+    /// 必ず戻る（WS セッションへの明示的キャンセル伝播は本イシューの
+    /// スコープ外）。
+    pub async fn run_until<F>(self, shutdown: F) -> io::Result<()>
+    where
+        F: Future<Output = ()>,
+    {
+        let BoundServer {
+            listener,
+            server,
+            connection_limit,
+            permit_total,
+            shutdown_flag,
+        } = self;
 
-            let stream = match self.listener.accept().await {
-                Ok((stream, _peer_addr)) => stream,
-                Err(err) => {
-                    // permit はここで（スコープを抜けると同時に）解放され、
-                    // 次のループ先頭で再取得される。上の doc を参照。
-                    drop(permit);
-                    eprintln!("fandhe_backend_core::server: accept に失敗しました: {err}");
-                    tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
-                    continue;
+        let mut shutdown = std::pin::pin!(shutdown);
+        let mut join_set: JoinSet<()> = JoinSet::new();
+
+        loop {
+            // 完了済みタスクを反復のたびに全件回収する（1 件だけ回収すると
+            // accept 待ちが続く間に完了タスクが溜まり続けるため、`while` で
+            // 尽くす。ポーリング自体は非ブロッキングでコストは小さい）。
+            while join_set.try_join_next().is_some() {}
+
+            // セマフォが閉じられることはない（`close()` を呼ぶ経路がない）ため
+            // `acquire_owned` は必ず成功する。accept 側の Future は
+            // 「permit 取得 → accept」を 1 つの Future にまとめる。shutdown が
+            // 先に完了してこの Future が drop されても、取得済み permit は
+            // 自動解放されるだけで接続を取りこぼさない（cancel-safe）。
+            let connection_limit_for_accept = Arc::clone(&connection_limit);
+            let accept_fut = async {
+                let permit = connection_limit_for_accept
+                    .acquire_owned()
+                    .await
+                    .expect("connection_limit semaphore is never closed");
+                match listener.accept().await {
+                    Ok((stream, _peer_addr)) => Some((stream, permit)),
+                    Err(err) => {
+                        // permit はここで（スコープを抜けると同時に）解放され、
+                        // 次のループ先頭で再取得される。`run_until` の doc を参照。
+                        drop(permit);
+                        eprintln!("fandhe_backend_core::server: accept に失敗しました: {err}");
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
+                        None
+                    }
                 }
             };
-            let server = Arc::clone(&self.server);
-            tokio::spawn(async move {
-                // permit は WebSocket 委譲時に `handle_connection_with_permit`
-                // 内部で専用タスクへ move されうる（TASK-4.2 / #23、
-                // `crate::plugin::try_handle_upgrade` の doc「permit の契約」
-                // を参照）。move された場合ここでの `drop` は無 op（`None`）
-                // であり、二重解放や早期解放は起きない。
-                handle_connection_with_permit(&server, stream, Some(permit)).await;
-            });
+
+            match race_shutdown_or_accept(shutdown.as_mut(), accept_fut).await {
+                Raced::Shutdown => break,
+                Raced::Completed(None) => continue,
+                Raced::Completed(Some((stream, permit))) => {
+                    let server = Arc::clone(&server);
+                    let shutdown_flag = Arc::clone(&shutdown_flag);
+                    join_set.spawn(async move {
+                        // permit は WebSocket 委譲時に `handle_connection_with_permit`
+                        // 内部で専用タスクへ move されうる（TASK-4.2 / #23、
+                        // `crate::plugin::try_handle_upgrade` の doc「permit の契約」
+                        // を参照）。move された場合ここでの `drop` は無 op（`None`）
+                        // であり、二重解放や早期解放は起きない。
+                        handle_connection_with_permit(
+                            &server,
+                            stream,
+                            Some(permit),
+                            &shutdown_flag,
+                        )
+                        .await;
+                    });
+                }
+            }
         }
+
+        // 1. accept 停止: 以降の keep-alive 判定を早期クローズ側へ倒し、
+        // リスニングソケットを閉じて新規接続を OS レベルで拒否する。
+        shutdown_flag.store(true, Ordering::Relaxed);
+        drop(listener);
+
+        // 2. in-flight 完了待ち（grace 上限）。
+        let drain_result = tokio::time::timeout(
+            server.shutdown_grace_period,
+            Arc::clone(&connection_limit).acquire_many_owned(permit_total),
+        )
+        .await;
+
+        match drain_result {
+            Ok(Ok(_permits)) => {
+                // 全接続が完了済み。spawn 済みタスクの JoinHandle を最後まで
+                // drain する（`join_set.spawn` はタスクを既に起動しており、
+                // ここでの `join_next` は完了確認のみで新規処理は発生しない）。
+                while join_set.join_next().await.is_some() {}
+            }
+            _ => {
+                // grace 超過、またはセマフォ側の異常（`close()` 経路がなく
+                // 通常発生しない）。いずれもハング防止のため強制クローズへ
+                // 倒す（フェイルクローズ、受け入れ条件「上限時間・超過時
+                // 強制クローズ」）。
+                eprintln!(
+                    "fandhe_backend_core::server: graceful shutdown の猶予期間（{:?}）を超過したため残存接続を強制クローズします",
+                    server.shutdown_grace_period
+                );
+                join_set.shutdown().await;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -817,18 +1046,24 @@ impl BoundServer {
 /// 公開 API としては `permit` を持たない薄いラッパー
 /// （`handle_connection_with_permit`（`pub(crate)`）に `None` を渡すだけ）を
 /// 維持し、既存の呼び出し元・テスト（`tokio::io::duplex` を使う統合テスト等）
-/// との互換性を保つ。実接続（[`BoundServer::run`]）は `permit` を伴う内部版を
-/// 直接呼ぶ（本モジュール内の該当関数 doc を参照）。
+/// との互換性を保つ。実接続（[`BoundServer::run_until`]）は `permit` を伴う
+/// 内部版を直接呼ぶ（本モジュール内の該当関数 doc を参照）。graceful
+/// shutdown（イシュー #313）のシグナルも `BoundServer::run_until` 経由でしか
+/// 発生しないため、本関数は「シャットダウンなし」（常に `false`）のフラグを
+/// 内部で用意して渡す。
 pub async fn handle_connection<S>(server: &Server, stream: S)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    handle_connection_with_permit(server, stream, None).await;
+    // `BoundServer::run_until` を経由しない呼び出し（直接統合テスト等）は
+    // シャットダウン対象にならないため、常に `false` のローカルフラグを渡す。
+    let no_shutdown = Arc::new(AtomicBool::new(false));
+    handle_connection_with_permit(server, stream, None, &no_shutdown).await;
 }
 
 /// [`handle_connection`] の内部実装（`pub(crate)`、TASK-4.2 / #23）。
 ///
-/// `permit` は [`BoundServer::run`] が保持する同時接続数上限の
+/// `permit` は [`BoundServer::run_until`] が保持する同時接続数上限の
 /// `OwnedSemaphorePermit`（`.claude/rules/security.md` のリソース枯渇 DoS
 /// 対策）。関数が戻る時点で `permit`（ローカル所有の `Option`）はスコープを
 /// 抜けて自動的に drop され、`Some` なら通常どおり解放される。WebSocket
@@ -837,10 +1072,17 @@ where
 /// `permit` は `None` のまま戻る（drop は no-op）。これにより、長時間生存
 /// する WS セッションも `max_connections` のカウントから漏れない
 /// （`crate::plugin::try_handle_upgrade` の doc「permit の契約」を参照）。
+///
+/// `shutdown_flag` は [`BoundServer::run_until`] の graceful shutdown
+/// シグナル（イシュー #313）を伝える。`true` の間は keep-alive 判定を
+/// 早期クローズ側へ倒すが、**処理中のリクエストへの応答は必ず完走させる**
+/// （このフラグはループ先頭・次リクエストへ進むかどうかの判定にのみ関与し、
+/// 現在処理中のリクエストを中断させることはない）。
 pub(crate) async fn handle_connection_with_permit<S>(
     server: &Server,
     mut stream: S,
     mut permit: Option<OwnedSemaphorePermit>,
+    shutdown_flag: &Arc<AtomicBool>,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -908,10 +1150,15 @@ pub(crate) async fn handle_connection_with_permit<S>(
         // 上限に達した場合は `Connection: close` で応答し、この接続では次の
         // リクエストを待たない（#70 レビュー指摘、Server::keep_alive /
         // max_requests_per_connection / max_connection_lifetime の doc を参照）。
+        // graceful shutdown（イシュー #313）: シャットダウンシグナル受信後は
+        // 処理中のリクエストを完走させつつ、応答へ `Connection: close` を
+        // 付けてこの接続を閉じる（`handle_connection_with_permit` の doc・
+        // `BoundServer::run_until` の doc「accept 停止」を参照）。
         let keep_alive = server.keep_alive_enabled
             && should_keep_alive(&request.head)
             && requests_served < max_requests
-            && connection_started_at.elapsed() < server.max_connection_lifetime;
+            && connection_started_at.elapsed() < server.max_connection_lifetime
+            && !shutdown_flag.load(Ordering::Relaxed);
 
         // RequestGate はルーティング・アップグレードより先に評価する
         // （フェイルクローズ、モジュール冒頭の doc を参照）。
