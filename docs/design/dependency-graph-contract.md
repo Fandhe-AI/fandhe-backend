@@ -552,6 +552,37 @@ package/import 名の改名に続き、リポジトリ名・ドキュメント�
    である（分類規則見直しは 4.3 節〜4.10 節と同一の別 Issue 対象として据え置く。
    `.claude/rules/out-of-scope-tracking.md`）
 
+### 4.12 記載例（#305 / PR #330、CORS プラグイン example の新設）
+
+イシュー #305「CORS プラグイン（feature 着脱）を実装する」（PR #330）は、新規プラグイン
+`fandhe-backend-plugin-cors` を追加し、`crates/core/examples/cors_demo.rs` として
+2 点配線（`Router::options_fallback` へのプリフライト委譲・`Server::cors(config)` 登録）の
+動作確認用サンプルを新設するコミットである。`crates/plugin-cors/**` への変更を含むため
+`scripts/extension-closure-gate.sh` の判定対象となり、以下 1 件が E（閉包違反候補）と
+判定された。
+
+1. **対象コミット/PR**: PR #330（#305）
+2. **E ファイルパス**:
+   - `crates/core/examples/cors_demo.rs`
+3. **閉じない理由**: `extension-closure-check.sh` の分類規則（A: `crates/plugin-*/**`、
+   B: `crates/core` の 4 ファイルのみ、C: `crates/core/tests/**`・
+   `crates/plugin-*/tests/**` のみ、D: `docs/*`・`scripts/*`・`CLAUDE.md`・
+   `AGENTS.md`・`.github/*`・`deny.toml` のみ）は、`crates/core/examples/**` を
+   走査対象に含めていない（4.9 節・4.10 節で既に指摘済みの運用上のギャップと同一）。
+   本コミットは `cors` feature 有効時の動作確認用 example を新設したため、機械的に
+   E 判定となった
+4. **正当性根拠**: `cors_demo.rs` はバイナリを生成しない `[[example]]` ターゲット
+   （`cargo run --example cors_demo --features cors` でのみビルド・実行される）であり、
+   `crates/core` のライブラリコード・3 拡張点 trait（`Middleware` / `UpgradeHandler` /
+   `RequestGate`）・`try_intercept` / `finalize_response` 固定シームの契約・シグネチャは
+   一切変更していない。内容も `fandhe_backend_plugin_cors::preflight_response` を
+   `Router::options_fallback`（#304）へ、`CorsConfig` を `Server::cors`（4 節冒頭の表 5 行目、
+   「レスポンス後処理型」固定シーム）へ配線する既存 公開 API の呼び出しに留まり、
+   プラグイン実装ロジックが拡張点外へ漏出する変更ではない。したがって本件は拡張点設計の
+   閉包漏れではなく、`extension-closure-check.sh` の分類規則が `crates/core/examples/**` を
+   A〜D に含めていないことに起因する運用上のギャップである（分類規則自体の見直しは
+   4.3 節〜4.11 節と同一の別 Issue 対象として据え置く。`.claude/rules/out-of-scope-tracking.md`）
+
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 
 `fandhe-backend-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも
