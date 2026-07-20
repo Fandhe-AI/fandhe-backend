@@ -676,8 +676,8 @@ impl Server {
     ///
     /// 利用者アプリ独自のスキーマを配信したい場合は [`Server::openapi_with`]
     /// を使う（イシュー #320）。両方呼んだ場合は最後に呼んだ方が勝つ
-    /// （builder の直感に一致する後勝ちルール、[`OpenApiRegistration`] の
-    /// doc を参照）。
+    /// （builder の直感に一致する後勝ちルール、内部の配信登録状態管理を
+    /// 参照）。
     ///
     /// # Examples
     /// ```
@@ -693,25 +693,27 @@ impl Server {
         self
     }
 
-    /// 利用者アプリ独自の OpenAPI ドキュメント（[`OpenApiDoc`]）を登録して
+    /// 利用者アプリ独自の OpenAPI ドキュメント
+    /// （[`OpenApiDoc`][fandhe_backend_plugin_openapi::OpenApiDoc]）を登録して
     /// OpenAPI 配信プラグインを有効化する（`openapi` feature 限定 API、
     /// イシュー #320）。
     ///
     /// [`Server::openapi`]（フレームワーク固定スキーマ）とは異なり、利用者
     /// アプリが自前で生成した OpenAPI ドキュメント（`utoipa` 由来・他ツール
     /// 生成いずれも可）を `GET /openapi.json` / `GET /openapi.yaml` として
-    /// 配信できる。`OpenApiDoc::from_json` が構築時（本メソッド呼び出し前）
-    /// に JSON 妥当性を一度だけ検証済みのため、本メソッド自体は追加検証を
-    /// 行わない（fail-closed の検証責務は [`OpenApiDoc`] 側、
+    /// 配信できる。
+    /// [`OpenApiDoc::from_json`][fandhe_backend_plugin_openapi::OpenApiDoc::from_json]
+    /// が構築時（本メソッド呼び出し前）に JSON 妥当性を一度だけ検証済みのため、
+    /// 本メソッド自体は追加検証を行わない（fail-closed の検証責務は
+    /// [`OpenApiDoc`][fandhe_backend_plugin_openapi::OpenApiDoc] 側、
     /// `crates/plugin-openapi/src/custom.rs` の doc を参照）。
     /// `OpenApiDoc::yaml()` が `None`（`with_yaml` 未呼び出し）の場合、
     /// `GET /openapi.yaml` は既定 `Handler` へフォールスルーする（404）。
     ///
     /// [`Server::openapi`] と `openapi_with` は排他ではなく**後勝ち**
-    /// （`crate::plugin::try_intercept` は最後に登録された
-    /// [`OpenApiRegistration`] のみを参照する）。両方を呼ぶ意味のある構成は
-    /// 通常ないが、builder パターンの一貫性のため片方だけを許可する特別
-    /// 扱いはしない。
+    /// （`crate::plugin::try_intercept` は最後に登録された配信登録状態のみを
+    /// 参照する）。両方を呼ぶ意味のある構成は通常ないが、builder パターンの
+    /// 一貫性のため片方だけを許可する特別扱いはしない。
     ///
     /// # Examples
     /// ```

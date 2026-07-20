@@ -626,6 +626,41 @@ package/import 名の改名に続き、リポジトリ名・ドキュメント�
    ギャップに起因する。分類規則自体の見直しは 4.3 節〜4.12 節と同一の別 Issue 対象
    として据え置く（`.claude/rules/out-of-scope-tracking.md`）
 
+### 4.14 記載例（#320 / PR #341、利用者アプリ独自の OpenAPI スキーマ登録）
+
+イシュー #320「利用者アプリ独自の OpenAPI スキーマ登録に対応する」（PR #341）は、
+`fandhe-backend-plugin-openapi` に `OpenApiDoc`（構築時 JSON 検証済みの利用者スキーマ型、
+`crates/plugin-openapi/src/custom.rs`）を追加し、`Server::openapi_with(doc)` で
+フレームワーク固定スキーマ（`Server::openapi()`）と後勝ちで排他登録できるようにする
+変更である。`crates/plugin-openapi/**`・`crates/core/src/plugin.rs`・
+`crates/core/src/server.rs` への変更を含むため `scripts/extension-closure-gate.sh` の
+判定対象となり、以下 1 件が E（閉包違反候補）と判定された。
+
+1. **対象コミット/PR**: PR #341（#320、ベースコミット sha
+   `5dc1120cf2211c01ff83b17395d6f3b148738b2b`）
+2. **E ファイルパス**:
+   - `crates/core/examples/openapi_custom_doc.rs`
+3. **閉じない理由**: `extension-closure-check.sh` の分類規則（A: `crates/plugin-*/**`、
+   B: `crates/core` の 4 ファイルのみ、C: `crates/core/tests/**`・
+   `crates/plugin-*/tests/**` のみ、D: `docs/*`・`scripts/*`・`CLAUDE.md`・`AGENTS.md`・
+   `.github/*`・`deny.toml` のみ）は `crates/core/examples/**` を走査対象に含めていない
+   （4.9 節・4.10 節・4.12 節・4.13 節で既に指摘済みの運用上のギャップと同一）。本コミット
+   は `Server::openapi_with` の利用例を新設する example を追加したため、機械的に E 判定と
+   なった
+4. **正当性根拠**: `openapi_custom_doc.rs` はバイナリを生成しない `[[example]]` ターゲット
+   （`cargo run --example openapi_custom_doc --features openapi` でのみビルド・実行される）
+   であり、`crates/core` のライブラリコード・3 拡張点 trait（`Middleware` /
+   `UpgradeHandler` / `RequestGate`）・`try_intercept` 固定シームの契約・シグネチャは一切
+   変更していない。内容も既存公開 API `OpenApiDoc::from_json` /
+   `Server::openapi_with`（本 PR で追加された `crates/plugin-openapi`・`crates/core` 側の
+   公開 API 自体は A・B に該当し PASS 済み）の呼び出しに留まり、プラグイン実装ロジックが
+   拡張点外へ漏出する変更ではない。`fandhe-backend-plugin-openapi` はそもそも 3 拡張点
+   trait を使わない非該当プラグイン（5 節参照）であり、`OpenApiDoc` もビルド時 JSON
+   検証・静的配信のみで動的な拡張点契約には触れない。したがって本件は拡張点設計の閉包漏れ
+   ではなく、`extension-closure-check.sh` の分類規則が `crates/core/examples/**` を A〜D に
+   含めていないことに起因する運用上のギャップである（分類規則自体の見直しは 4.3 節〜4.13 節
+   と同一の別 Issue 対象として据え置く。`.claude/rules/out-of-scope-tracking.md`）
+
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 
 `fandhe-backend-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも
