@@ -1663,10 +1663,16 @@ where
                         return None;
                     }
                 }
-                // HTTP/1.0 は EOF（接続クローズ）で body を終端する。正常終端も
-                // 打ち切りも「これ以上書かず呼び出し元へ戻る（呼び出し元が
-                // 接続を閉じる）」という同一の挙動になる。
-                RecvOutcome::End | RecvOutcome::Aborted => return Some(false),
+                // HTTP/1.0 は EOF（接続クローズ）で body を終端するため、
+                // ソケット上の挙動は正常終端・打ち切りとも「これ以上書かず
+                // 接続を閉じる」で同一になる。ただし戻り値は HTTP/1.1 経路と
+                // 同じく分離する: 打ち切り（producer が `finish` を呼ばずに
+                // drop）を `Some(false)` にすると呼び出し元が完了応答として
+                // `Middleware::on_response` を呼んでしまい、「on_response は
+                // 完走した応答にのみ対応する」契約（`crate::streaming` の
+                // 応答完全性の節）に反する（レビュー指摘、イシュー #319）。
+                RecvOutcome::End => return Some(false),
+                RecvOutcome::Aborted => return None,
             }
         }
     }
@@ -2963,6 +2969,46 @@ GET /c HTTP/1.1\r\n\r\n",
             *events,
             vec!["on_request"],
             "打ち切り（finish なし drop）では on_response を呼ばないはず: {events:?}"
+        );
+    }
+
+    /// レビュー指摘（イシュー #319）の回帰防止テスト。HTTP/1.0 経路でも
+    /// HTTP/1.1 経路（`streaming_abort_does_not_invoke_on_response`）と同様、
+    /// 打ち切り（producer が `finish` を呼ばずに drop）では `on_response` を
+    /// 呼ばないことを確認する（「on_response は完走した応答にのみ対応する」
+    /// 契約のバージョン間統一）。
+    #[tokio::test]
+    async fn http10_streaming_abort_does_not_invoke_on_response() {
+        let handler = AbortingStreamingHandler {
+            chunks: vec![b"partial"],
+        };
+        let mw = Arc::new(RecordingMiddleware {
+            events: Mutex::new(Vec::new()),
+        });
+        struct MwProxy(Arc<RecordingMiddleware>);
+        impl Middleware for MwProxy {
+            fn name(&self) -> &'static str {
+                "proxy"
+            }
+            fn on_request(&self, head: &RequestHead) {
+                self.0.on_request(head);
+            }
+            fn on_response(&self, head: &RequestHead, elapsed: Duration) {
+                self.0.on_response(head, elapsed);
+            }
+        }
+        let server = Server::new()
+            .handler(handler)
+            .middleware(MwProxy(Arc::clone(&mw)));
+
+        let _ = roundtrip(&server, b"GET / HTTP/1.0\r\n\r\n").await;
+
+        let events = mw.events.lock().unwrap();
+        assert_eq!(
+            *events,
+            vec!["on_request"],
+            "HTTP/1.0 でも打ち切り（finish なし drop）では on_response を \
+             呼ばないはず: {events:?}"
         );
     }
 }
