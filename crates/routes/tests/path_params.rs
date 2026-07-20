@@ -315,3 +315,55 @@ fn non_origin_form_target_does_not_match_multi_segment_param_route() {
     assert_eq!(ok.status, 200);
     assert_eq!(ok.body, b"alice".to_vec());
 }
+
+// 以下 2 件は `fandhe_backend_http::percent`（イシュー #307）の受け入れ条件 3
+// 「ルーティング照合へ影響しないことをテストで担保（照合前デコードを行わない）」
+// を `Router` 経由の end-to-end で実証する。
+
+#[test]
+fn percent_encoded_slash_does_not_bypass_static_segment_boundary() {
+    // `%2F` は `/` の percent-encoding だが、照合はデコード前の生文字列で行われる
+    // （OWASP A01 正規化バイパス防止、REQ-1）ため、静的ルート `/items/a/b` には
+    // 一致せず、`{name}` 単一セグメントパラメータルートにも一致しない
+    // （セグメント数が生文字列基準で 1 のまま増えない）。
+    let router = Router::new()
+        .route("GET", "/items/a/b", |_h, _b| {
+            Response::new(200, b"static-matched".to_vec())
+        })
+        .route_param("GET", "/items/{name}", |_h, params, _b| {
+            // 一致した場合、生（エンコード済み）のまま渡ることも併せて確認する。
+            Response::new(200, params.get("name").unwrap_or("?").as_bytes().to_vec())
+        })
+        .unwrap();
+
+    let res = router.dispatch(&head("GET", "/items/a%2Fb"), &[]);
+    assert_eq!(res.status, 200);
+    // 静的ルートには一致せず、`{name}` が生のエンコード済み文字列を捕捉する。
+    assert_eq!(res.body, b"a%2Fb".to_vec());
+}
+
+#[test]
+fn handler_opt_in_decodes_captured_param_after_routing_match() {
+    // ルーティング照合は非デコードのまま行われ、ハンドラが明示的に
+    // `fandhe_backend_http::percent::decode_str` を呼んで初めて日本語値へ
+    // 復元される（opt-in 契約、受け入れ条件 4 の実利用パターン）。
+    let router = Router::new()
+        .route_param("GET", "/titles/{title}", |_h, params, _b| {
+            let raw = params.get("title").unwrap_or("");
+            match fandhe_backend_http::percent::decode_str(raw) {
+                Ok(decoded) => Response::new(200, decoded.into_bytes()),
+                Err(_) => Response::new(400, b"invalid percent-encoding".to_vec()),
+            }
+        })
+        .unwrap();
+
+    // 日本語タイトル「日本語」を percent-encoding した経路パラメータ。
+    let res = router.dispatch(&head("GET", "/titles/%E6%97%A5%E6%9C%AC%E8%AA%9E"), &[]);
+    assert_eq!(res.status, 200);
+    assert_eq!(res.body, "日本語".as_bytes().to_vec());
+
+    // 不正シーケンスはハンドラ内で opt-in デコードした際にエラーとして検出できる
+    // （ルーティング自体は生文字列のまま一致するため 404 にはならない）。
+    let bad = router.dispatch(&head("GET", "/titles/%ZZ"), &[]);
+    assert_eq!(bad.status, 400);
+}
