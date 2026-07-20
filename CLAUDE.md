@@ -56,7 +56,10 @@ fandhe-backend/
 │   │                                    # DoS 上限・fuzz target 追加、イシュー #181）。`RequestHead::path`
 │   │                                    # / `query` でクエリ文字列を分離し `Router::dispatch` の
 │   │                                    # パス照合をクエリ付きリクエストに対応させる（/search 前提整備、
-│   │                                    # イシュー #258）
+│   │                                    # イシュー #258）。`Router::options_fallback` で OPTIONS
+│   │                                    # プリフライトを opt-in フックへ委譲可能にし、明示登録された
+│   │                                    # OPTIONS ルートを常に優先しつつ未登録なら従来どおり
+│   │                                    # 405 + `Allow` を維持（CORS プラグイン前提整備、イシュー #304）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
