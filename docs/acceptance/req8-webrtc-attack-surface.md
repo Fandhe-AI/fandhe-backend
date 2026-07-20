@@ -323,3 +323,36 @@ unsafe（大きな絶対量）は削減されず残る。この残余リスク�
 上記を根拠に、基準 B補足の判定を「**受容 WARN（削減不能・残余リスク受容済み、PR レビュー
 承認をもって確定）**」として確定する。PASS への丸め込みは行わず、WARN のまま実測値・
 判断根拠を保持する（捏造しない・フェイルクローズ、`.claude/rules/security.md`）。
+
+## 再計測（2026-07-20・ローカル macOS 環境、基準 E フォローアップ）
+
+「BLOCKED / フォローアップ」節・#220 で残っていた基準 E（NFR-6）の専有環境確定再計測を
+`benches/nfr6-exclusive.sh` で試行した。**結果は BLOCKED（静穏未達・計測未実施）であり、
+基準 E の公式判定 FAIL は維持する**（実測値は存在しない。PASS/WARN への区分変更なし。
+判定を丸めない・捏造しない、`.claude/rules/security.md`）。
+
+- 実施環境: macOS（Darwin 25.5.0）・論理 16 コア・commit `a44c620`。
+  並列 issue 実装ワークフローは停止済みで、`cargo` / `rustc` / `oha` はいずれの試行でも
+  不在（`snapshot_busy_processes=none`）
+- 実行パラメータ: 旧確定計測と同一の `TARGETS=webrtc RUNS=5 DURATION=15s CONNECTIONS=128`
+  （パラメータ変更による判定覆しは行わない、#220 の教訓）
+
+試行記録（いずれも `LOAD1_MAX=1.0` の既定閾値。緩和していない）:
+
+| 試行 | 待機上限 | 結果 | BLOCKED 時 snapshot |
+|------|------|------|------|
+| 1 回目 | 1800s | BLOCKED | 2026-07-19T23:01:52Z、`snapshot_loadavg1=s:`（下記の移植性バグにより loadavg 解析不能。フェイルクローズで BUSY 扱い） |
+| 2 回目（バグ修正後） | 1800s | BLOCKED | 2026-07-19T23:32:52Z、loadavg1=2.54 |
+| 3 回目（バグ修正後） | 3600s | BLOCKED | 2026-07-20T00:33:38Z、loadavg1=3.38 |
+
+- **付随修正（本再計測で発見した計測基盤の移植性バグ）**: `benches/lib/exclusive.sh` の
+  `get_loadavg1` は `uptime` 末尾表記を `-F'load average'` で分割していたため、macOS の
+  「load average**s**: x y z」（複数形・カンマなし）表記では非数値「s:」が返り、静穏確認が
+  恒久的に BUSY 判定となっていた（1 回目の BLOCKED の直接原因）。両 OS 表記対応へ修正し、
+  `scripts/tests/run-nfr6-exclusive-tests.sh` の 16 件 PASS を確認した。フェイルクローズ
+  設計（解析不能を QUIESCENT へ丸めない）は修正前も正しく機能していた
+- **BLOCKED の原因**: 計 3 時間超の待機中、1 分 loadavg が 2.3〜3.4 で持続した。負荷源は
+  ビルド系プロセスではなくデスクトップセッション（WindowServer・ブラウザ等の GUI
+  プロセス）であり、既定閾値 `LOAD1_MAX=1.0` を下回る静穏は成立しなかった
+- **残課題**: 基準 E の確定再計測は引き続きフォローアップとする。GUI セッションが
+  停止した真に静穏な時間帯（もしくは専有 Linux ホスト）での実施が必要

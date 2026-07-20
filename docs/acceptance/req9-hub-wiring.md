@@ -187,3 +187,25 @@ cargo tree -p backend-framework-core | grep -c bf-plugin-hub-wiring  # 0
 cargo run --release -p bf-plugin-hub-wiring --example hub_service_demo
 # 起動時に表示される curl コマンド例（有効トークン付き）をそのまま使う
 ```
+
+## 再計測（2026-07-20・ローカル macOS 環境、基準 D フォローアップ）
+
+「BLOCKED / フォローアップ」節で残っていた基準 D（NFR-6）の専有環境確定再計測を
+`benches/nfr6-exclusive.sh` で試行した。**結果は BLOCKED（静穏未達・計測未実施）であり、
+基準 D の公式判定 WARN は維持する**（実測値は存在しない。PASS への区分変更なし。
+判定を丸めない・捏造しない、`.claude/rules/security.md`）。
+
+- 実施環境: macOS（Darwin 25.5.0）・論理 16 コア・commit `a44c620`。
+  並列 issue 実装ワークフローは停止済みで、`cargo` / `rustc` / `oha` は不在
+  （`snapshot_busy_processes=none`）
+- 実行パラメータ: 旧計測と同一の `TARGETS=hub RUNS=5 DURATION=5s CONNECTIONS=32`
+- 試行記録（`LOAD1_MAX=1.0` の既定閾値。緩和していない）: 待機上限 1800s で BLOCKED
+  （snapshot: 2026-07-20T01:04:06Z、loadavg1=3.22）。同日先行の webrtc 対象 3 試行
+  （`docs/acceptance/req8-webrtc-attack-surface.md` の同日追記節）でも計 3 時間超の待機で
+  静穏が成立せず、負荷源はデスクトップセッション（WindowServer・ブラウザ等の GUI
+  プロセス）の持続負荷（loadavg1 2.3〜3.4）だった
+- **付随修正**: 本再計測で `benches/lib/exclusive.sh` `get_loadavg1` の macOS `uptime`
+  表記（「load averages:」）非対応の移植性バグを発見・修正した（詳細は
+  `docs/acceptance/req8-webrtc-attack-surface.md` 同日追記節。セルフテスト 16 件 PASS）
+- **残課題**: 基準 D の確定再計測は引き続きフォローアップとする。GUI セッションが
+  停止した真に静穏な時間帯（もしくは専有 Linux ホスト）での実施が必要
