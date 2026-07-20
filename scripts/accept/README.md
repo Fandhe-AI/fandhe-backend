@@ -102,6 +102,13 @@ req1-deps-unsafe-audit.md` 既知 WARN）。`--manifest-path crates/core/Cargo.t
 実パッケージを起点に指定すれば workspace 内の推移的依存（core → routes → http）を
 含めて解決できる（`scripts/pay-for-what-you-use-check.sh` と同じ呼び出し方）。
 
+- **`--manifest-path` は絶対パスで渡す**: cargo-geiger 0.13.0 は `--manifest-path`
+  に相対パスを渡すと `manifest_path:"..." is not an absolute path` で確定的に
+  失敗する（プレーンな `cargo` コマンドは相対パスを許容するため cargo-geiger
+  固有の制約。リトライしても回復しない、#212 の非決定的 panic とは別種の失敗。
+  `docs/acceptance/req1-deps-unsafe-audit.md` 再検証節で実測確認）。
+  `${WORKSPACE_ROOT}`（`scripts/dep-impact.sh` では `${REPO_ROOT}`）を前置した
+  絶対パスを渡すこと
 - 専用 `CARGO_TARGET_DIR`（`target/accept-geiger`）で共有 `target/` のビルド
   キャッシュ破損・並列実行中の他ジョブとの競合を避ける
 - イシュー #212（cargo-geiger の非決定的 panic、`docs/design/

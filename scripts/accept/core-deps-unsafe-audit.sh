@@ -154,6 +154,12 @@ check_unsafe() {
     # `--manifest-path crates/core/Cargo.toml` で実パッケージを起点に指定すれば
     # workspace 内の推移的依存（core → routes → http）を含めて解決できる
     # （scripts/pay-for-what-you-use-check.sh と同じ呼び出し方に統一）。
+    # なお cargo-geiger 0.13.0 は `--manifest-path` に相対パスを渡すと
+    # 「manifest_path:"..." is not an absolute path」で失敗する（プレーンな
+    # `cargo` コマンドとは異なる cargo-geiger 固有の制約）。実行時に `cd
+    # "${WORKSPACE_ROOT}"` 済みであっても不十分なため、`${WORKSPACE_ROOT}` を
+    # 明示的に前置した絶対パスを渡す（pay-for-what-you-use-check.sh の
+    # `CORE_MANIFEST="${WORKSPACE_ROOT}/crates/core/Cargo.toml"` と同一方式）。
     if check_tool cargo-geiger "cargo install --locked cargo-geiger@0.13.0"; then
         if ! check_tool jq "jq の導入（例: apt install jq）"; then
             record_skip "B補足: cargo geiger（二重検証）" "jq 未導入のため geiger JSON 出力を解析できず二重検証を実行できない（導入: jq）"
@@ -170,7 +176,7 @@ check_unsafe() {
             # stderr は握り潰さず一時ログへ残し、全試行失敗時のみ WARN の詳細に含める。
             for geiger_attempt in $(seq 1 "${geiger_max_attempts}"); do
                 geiger_json="$(CARGO_TARGET_DIR="${geiger_target_dir}" cargo geiger \
-                    --manifest-path crates/core/Cargo.toml --no-default-features \
+                    --manifest-path "${WORKSPACE_ROOT}/crates/core/Cargo.toml" --no-default-features \
                     --output-format Json -q 2>"${geiger_log}" || true)"
                 if [ -n "${geiger_json}" ]; then
                     break

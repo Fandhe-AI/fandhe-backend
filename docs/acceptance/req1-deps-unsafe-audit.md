@@ -224,24 +224,32 @@ geiger JSON 出力（`jq` で解析）から対象コアクレート（`fandhe-b
 「基準 B の cargo geiger 二重検証（#284）」節を参照）。同一原因の随伴事象として
 `scripts/dep-impact.sh` の geiger 呼び出しも同じ修正を適用した。
 
-### 再実行結果
+**追加修正（同一イシュー #284 内、フル実行での再検証で判明）**: 上記修正直後の
+実装は `--manifest-path crates/core/Cargo.toml` を**相対パス**のまま渡していたが、
+`scripts/accept/core-deps-unsafe-audit.sh` を実際にフル実行したところ 3 回の
+リトライすべてが失敗し、stderr に
+`error: manifest_path:"crates/core/Cargo.toml" is not an absolute path. Please
+provide an absolute path.` を確認した。これは cargo-geiger 0.13.0 固有の制約
+（`--manifest-path` に絶対パスを要求する。プレーンな `cargo` コマンドは相対パスを
+許容するため cargo-geiger 特有の挙動）であり、同一コマンドを複数回・複数の
+独立した `CARGO_TARGET_DIR` で実行しても毎回同じエラーで確定的に失敗した
+（#212 の非決定的 panic とは異なる、リトライで回復しない性質の失敗）。よって
+当初の再実行結果に記載していた「単独実行で相対パス指定のまま成功した」という
+記述は誤りだったと判明したため、本節を上書き訂正する。`scripts/pay-for-what-you-use-check.sh`
+の `CORE_MANIFEST="${WORKSPACE_ROOT}/crates/core/Cargo.toml"` に倣い、
+`core-deps-unsafe-audit.sh`・`dep-impact.sh` の両方で `--manifest-path` を
+`${WORKSPACE_ROOT}`（`${REPO_ROOT}`）を前置した絶対パスに修正した。
+
+### 再実行結果（絶対パス修正後）
 
 実行環境: cargo-geiger 0.13.0 / rustc 1.96.0（本レポート冒頭の実行環境と同一）。
 
-修正後の `--manifest-path crates/core/Cargo.toml --no-default-features
---output-format Json -q` を単独実行し、JSON 出力を確認した結果、対象 3 コアクレート
-の used unsafe はいずれも全カテゴリ 0 件だった（`fandhe-backend-core` /
-`fandhe-backend-http` / `fandhe-backend-routes` とも
-`functions.unsafe_`/`exprs.unsafe_`/`item_impls.unsafe_`/`item_traits.unsafe_`/
-`methods.unsafe_` が全て 0）。これは基準 B 本体（grep 検証）の「unsafe 0 件」判定と
-一致する。
-
-一方、`scripts/accept/core-deps-unsafe-audit.sh` 経由のフル実行では、同一環境でも
-cargo-geiger 側の一過性失敗（#212 の既知 flaky panic、`Failed to parse file:
-.../signal-hook-registry-1.4.8/src/lib.rs` 等の非致命的パースエラーを含む出力揺れ）
-により 3 回のリトライすべてが失敗し、「B補足: cargo geiger（二重検証）」が WARN と
-なるケースも観測した。これは新実装が意図した設計どおりの挙動（geiger 実行失敗時は
-FAIL にせず WARN とし、基準 B 本体を主判定として扱う）であり、受け入れ判定
-（終了コード 0・FAIL なし）には影響しない。geiger が成功した際は PASS/FAIL 判定が
-機能することを上記の単独実行で確認済みのため、「二重検証」としての機構自体は
-回復・機能していると判断する。
+`scripts/accept/core-deps-unsafe-audit.sh` をフル実行し、「B補足: cargo geiger
+（二重検証）」が PASS となることを確認した（対象 3 コアクレート
+`fandhe-backend-core` / `fandhe-backend-http` / `fandhe-backend-routes` の
+used unsafe（`functions.unsafe_`/`exprs.unsafe_`/`item_impls.unsafe_`/
+`item_traits.unsafe_`/`methods.unsafe_` 合算）がいずれも 0）。これは基準 B 本体
+（grep 検証）の「unsafe 0 件」判定と一致する。同一構成で 3 回連続実行し、いずれも
+1 回目のリトライで成功・WARN 経路には落ちなかったことも確認した。`dep-impact.sh`
+の geiger 呼び出し（絶対パス修正後）も単独実行し、正常に Utf8 形式の集計表が
+出力されることを確認した。

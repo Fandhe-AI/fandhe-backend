@@ -120,8 +120,11 @@ if [ "${GEIGER_AVAILABLE}" -eq 1 ]; then
     # `--manifest-path crates/core/Cargo.toml` で実パッケージを起点に指定し、
     # 専用 CARGO_TARGET_DIR で共有 target/ のビルドキャッシュ破損を避ける
     # （scripts/pay-for-what-you-use-check.sh と同じ呼び出し方に統一）。
+    # cargo-geiger 0.13.0 は `--manifest-path` に相対パスを渡すと
+    # 「is not an absolute path」で失敗するため、`${REPO_ROOT}` を前置した
+    # 絶対パスを渡す（scripts/accept/core-deps-unsafe-audit.sh #284 で実測確認）。
     CARGO_TARGET_DIR="${REPO_ROOT}/target/dep-impact-geiger" cargo geiger \
-        --manifest-path crates/core/Cargo.toml --no-default-features --output-format Utf8 2>/dev/null \
+        --manifest-path "${REPO_ROOT}/crates/core/Cargo.toml" --no-default-features --output-format Utf8 2>/dev/null \
         || echo "cargo geiger の実行に失敗しました（詳細は標準エラー出力を確認してください）"
 else
     echo "cargo-geiger が未導入のためスキップしました。導入する場合:"
