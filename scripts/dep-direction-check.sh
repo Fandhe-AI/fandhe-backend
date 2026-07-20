@@ -154,6 +154,19 @@ else
             # 6.1 節）。`fandhe-backend-plugin-tracing` 自体は他の Middleware 型プラグインへ
             # 一般化せず、新規 Middleware 型プラグインは本リストへの明示追加と
             # レビューを要求する。
+            #
+            # 例外 4: `fandhe-backend-core:fandhe-backend-plugin-cors`（イシュー #305）。
+            # `Middleware::on_response` がレスポンスへの参照を持たない観測専用契約
+            # のため CORS ヘッダ付与に使えず、「レスポンス後処理型」という新パターン
+            # （`crate::plugin::finalize_response`、固定シグネチャの非公開シーム）で
+            # 配線する。`fandhe-backend-plugin-websocket`・`fandhe-backend-plugin-tracing`
+            # と同一の非循環パターン（プラグインクレートは core に依存せず、コア側が
+            # `optional = true` + `dep:` 構文で本クレートへ依存する）を踏襲し、
+            # `cargo build -p fandhe-backend-plugin-cors` が `fandhe-backend-core` の
+            # 全依存を引き込まずに完結する（`crates/plugin-cors/src/lib.rs` の doc・
+            # `docs/design/plugin-boundary.md` 6.1 節を参照）。本エッジは他の
+            # レスポンス後処理型プラグインへ一般化せず、新規プラグインは本リストへの
+            # 明示追加とレビューを要求する。
             allowed_edge_patterns=(
                 "fandhe-backend-core:fandhe-backend-http"
                 "fandhe-backend-core:fandhe-backend-routes"
@@ -161,6 +174,7 @@ else
                 "fandhe-backend-core:fandhe-backend-plugin-webrtc"
                 "fandhe-backend-core:fandhe-backend-plugin-websocket"
                 "fandhe-backend-core:fandhe-backend-plugin-tracing"
+                "fandhe-backend-core:fandhe-backend-plugin-cors"
                 # TASK-2.4（#21）: REQ-2「少なくとも 2 種のプラグインを feature
                 # flag で着脱できる」受け入れ基準の第 2 インスタンス（パス
                 # インターセプト型）。根拠は上記
@@ -338,7 +352,10 @@ webrtc_proxy_exception_file="crates/core/src/plugin.rs"
 # TASK-2.1（#256）: `fandhe_backend_plugin_openapi`（`crates/core/src/plugin.rs`
 # の静的サービング分岐・`crates/core/src/server.rs` の `openapi`/`openapi_enabled`
 # 系ビルダー/フィールド）を同一方針で例外対象に加える。
-webrtc_proxy_exception_symbol_pattern='fandhe_backend_plugin_webrtc_proxy|fandhe_backend_plugin_webrtc\b|webrtc_proxy|webrtc_config|fandhe_backend_plugin_websocket|websocket|fandhe_backend_plugin_graphql|fandhe_backend_plugin_tracing|TracingMiddleware|fandhe_backend_plugin_openapi|openapi|crate::plugin::|pub\(crate\) mod plugin;'
+# イシュー #305: `fandhe_backend_plugin_cors`（`crates/core/src/plugin.rs` の
+# レスポンス後処理型シーム `finalize_response`・`crates/core/src/server.rs` の
+# `cors`/`cors_config` 系ビルダー/フィールド）を同一方針で例外対象に加える。
+webrtc_proxy_exception_symbol_pattern='fandhe_backend_plugin_webrtc_proxy|fandhe_backend_plugin_webrtc\b|webrtc_proxy|webrtc_config|fandhe_backend_plugin_websocket|websocket|fandhe_backend_plugin_graphql|fandhe_backend_plugin_tracing|TracingMiddleware|fandhe_backend_plugin_openapi|openapi|fandhe_backend_plugin_cors|crate::plugin::|pub\(crate\) mod plugin;'
 
 plugin_hits_all=""
 for dir in crates/core crates/http crates/routes; do
@@ -374,7 +391,9 @@ for dir in crates/core crates/http crates/routes; do
             # の依存宣言・`dep:fandhe-backend-plugin-tracing` の feature 宣言（TASK-10.1、#56）
             # を許可する。TASK-2.1（#256）: `fandhe-backend-plugin-openapi =` の依存宣言・
             # `dep:fandhe-backend-plugin-openapi` の feature 宣言も同様に許可する。
-            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v -E 'fandhe-backend-plugin-webrtc(-proxy)?|fandhe-backend-plugin-websocket|fandhe-backend-plugin-graphql|fandhe-backend-plugin-tracing|fandhe-backend-plugin-openapi' || true)"
+            # イシュー #305: `fandhe-backend-plugin-cors =` の依存宣言・
+            # `dep:fandhe-backend-plugin-cors` の feature 宣言も同様に許可する。
+            cargo_toml_hits="$(printf '%s\n' "${cargo_toml_hits}" | grep -v -E 'fandhe-backend-plugin-webrtc(-proxy)?|fandhe-backend-plugin-websocket|fandhe-backend-plugin-graphql|fandhe-backend-plugin-tracing|fandhe-backend-plugin-openapi|fandhe-backend-plugin-cors' || true)"
         fi
         if [ -n "${cargo_toml_hits}" ]; then
             plugin_hits_all="${plugin_hits_all}${dir}/Cargo.toml に plugin- 依存あり: ${cargo_toml_hits}

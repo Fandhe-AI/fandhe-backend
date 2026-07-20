@@ -44,12 +44,17 @@ fandhe-backend/
 ├── crates/                # cargo workspace
 │   ├── core                           # 最小コア。`webrtc-proxy`（TASK-2.1、#18）・`webrtc`
 │   │                                    # （TASK-8.1、#26）・`websocket`（TASK-4.1、#22）・
-│   │                                    # `graphql`（TASK-2.4、#21）・`openapi`（TASK-2.1、#256）
-│   │                                    # の 5 feature で `dep:` 構文により各プラグインを
-│   │                                    # 着脱可能に配線済み（`webrtc-proxy` 優先評価）。
+│   │                                    # `graphql`（TASK-2.4、#21）・`openapi`（TASK-2.1、#256）・
+│   │                                    # `cors`（イシュー #305）の 6 feature で `dep:` 構文により
+│   │                                    # 各プラグインを着脱可能に配線済み（`webrtc-proxy` 優先評価）。
 │   │                                    # `openapi` は `Server::openapi()` の明示登録
 │   │                                    # （opt-in）時のみ `GET /openapi.json` と
-│   │                                    # `GET /openapi.yaml`（#279）を返す
+│   │                                    # `GET /openapi.yaml`（#279）を返す。`cors` は
+│   │                                    # `Server::cors(config)` 登録時のみ「レスポンス後処理型」
+│   │                                    # シーム（`crate::plugin::finalize_response`）経由で実
+│   │                                    # リクエストへ CORS ヘッダを付与し、プリフライトは利用者が
+│   │                                    # `fandhe_backend_plugin_cors::preflight_response` を
+│   │                                    # `Router::options_fallback`（#304）へ直接配線する 2 点構成
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。chunked
 │   │                                    # Transfer-Encoding 対応（sans-IO `ChunkedDecoder`、
@@ -112,6 +117,15 @@ fandhe-backend/
 │   │                                    # （tracing-appender の non_blocking writer）を提供。`crates/core` の
 │   │                                    # `tracing` feature 経由で `Middleware` 拡張点配線、Middleware 型
 │   │                                    # プラグイン境界パターンの第 1 号、`docs/design/plugin-boundary.md` 5.6 節）
+│   ├── plugin-cors                    # CORS プラグイン（イシュー #305。`Middleware::on_response` が
+│   │                                    # レスポンスへの参照を持たない観測専用契約のため使えず、
+│   │                                    # 「レスポンス後処理型」という新パターン（`crate::plugin::
+│   │                                    # finalize_response`、固定シグネチャの非公開シーム）で配線。
+│   │                                    # プリフライトは利用者が `preflight_response` を
+│   │                                    # `Router::options_fallback`（#304）へ直接配線する 2 層構成。
+│   │                                    # `crates/core` の `cors` feature 経由で `Server::cors(config)`
+│   │                                    # 登録時のみ実リクエストへ CORS ヘッダを付与。外部依存ゼロ、
+│   │                                    # `docs/design/plugin-boundary.md` の該当節を参照）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
 ├── ts/                     # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）。

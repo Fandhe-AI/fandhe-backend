@@ -8,6 +8,31 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-07-20 — `crates/plugin-cors` 追加（イシュー #305）
+
+CORS プラグイン（`cors` feature）を新設した。「レスポンス後処理型」という
+新パターン（`docs/design/plugin-boundary.md` 5.9 節）で配線し、外部 crates.io
+依存はゼロ（`fandhe-backend-http` のみに依存）。
+
+### 依存の残留確認（pay-for-what-you-use）
+
+```
+$ cargo tree -p fandhe-backend-core --no-default-features | grep -c plugin-cors
+0
+$ cargo tree -p fandhe-backend-core --no-default-features --features cors | grep plugin-cors
+├── fandhe-backend-plugin-cors v0.1.0 (crates/plugin-cors)
+```
+
+`cors` feature 有効時に増える workspace 内依存は `fandhe-backend-plugin-cors`
+1 件のみ。外部 crates.io 依存の増分はゼロ（std のみで実装、
+`crates/plugin-cors/Cargo.toml` の依存は `fandhe-backend-http` のみ）。
+
+### unsafe 件数
+
+`unsafe` は 0 件（`crates/plugin-cors/src/lib.rs` 全体で `unsafe` ブロックなし。
+`cargo-geiger` 未導入のため厳密計測は未実施、`unsafe-triage.sh` のテキスト
+ベース走査でも 0 件を確認）。
+
 ## 2026-07-20 — `GET /openapi.yaml` 配信・gen-openapi YAML 生成の追加（#279）
 
 仕様（`docs/spec/04-requirements.md`）が明記する「GET /openapi.json（GET /openapi.yaml
