@@ -444,7 +444,9 @@ impl Router {
     ///   含まれる場合は `AllowedMethods::from_methods` が `None` を返すため、
     ///   その分だけ除外する。パーサ（`fandhe-backend-http`）は tchar のみの method しか
     ///   生成しないため、実運用でこの除外が発生する経路はない。全滅時は
-    ///   `Allow` なしの 405 にフォールバックする、フェイルクローズ）。
+    ///   `Allow` なしの 405 にフォールバックする、フェイルクローズ。この場合も
+    ///   [`FallbackPolicy::IncludeMethodNotAllowed`] が登録済みなら `Allow` の
+    ///   有無によらず委譲する）。
     /// - 完全一致するルートがあればそのハンドラの戻り値をそのまま返す。
     ///
     /// ```
@@ -537,7 +539,15 @@ impl Router {
         let Some(allow) = Self::build_allow(registered_methods) else {
             // 登録 method が全て不正 token だった場合のフェイルクローズ
             // フォールバック。`Allow` は省略するが 405 自体は変わらない。
-            return Response::empty(405);
+            // `IncludeMethodNotAllowed` は「405 も handler へ委譲する」契約のため、
+            // `Allow` 省略時もこの分岐だけ委譲判定を素通りしない
+            // （イシュー #316 レビュー指摘。パーサは tchar のみの method しか
+            // 生成しないため実運用では到達しないが、`route()` は method 文字列を
+            // 検証せず登録するため利用者の自己登録次第で理論上到達しうる）。
+            return match &self.fallback {
+                Some((FallbackPolicy::IncludeMethodNotAllowed, handler)) => handler(head, body),
+                _ => Response::empty(405),
+            };
         };
 
         // OPTIONS プリフライトかつフォールバック登録済みなら委譲する
@@ -954,5 +964,33 @@ mod tests {
         let res = router.dispatch(&head("GET", "/any/path"), &[]);
         assert_eq!(res.status, 200);
         assert_eq!(res.body, b"<html>spa</html>".to_vec());
+    }
+
+    #[test]
+    fn fallback_include_method_not_allowed_intercepts_even_when_allow_build_fails() {
+        // レビュー指摘（イシュー #316）: 対象パスに登録済みの method が全て不正
+        // token（tchar 外）で `build_allow` が `None` を返す場合でも、
+        // `IncludeMethodNotAllowed` の「405 も委譲する」契約は破られない。
+        // `route()` は method 文字列をトークン検証せず登録するため、利用者が
+        // 空白を含む不正な method 文字列で自己登録した場合に限り到達する分岐
+        // （通常の正当な method 運用では発生しない）。
+        let router = Router::new()
+            .route("BAD METHOD", "/x", |_h, _b| Response::empty(200))
+            .fallback_with(FallbackPolicy::IncludeMethodNotAllowed, |_h, _b| {
+                Response::new(404, b"fallback".to_vec())
+            });
+
+        let res = router.dispatch(&head("GET", "/x"), &[]);
+        assert_eq!(res.status, 404);
+        assert_eq!(res.body, b"fallback".to_vec());
+    }
+
+    #[test]
+    fn fallback_default_policy_still_405_when_allow_build_fails() {
+        // 上記と対をなす対照実験: 既定ポリシー（NotFoundOnly）では `Allow`
+        // 構築失敗時も従来どおり `Allow` なしの 405 を返す（安全側デフォルト維持）。
+        let router = Router::new().route("BAD METHOD", "/x", |_h, _b| Response::empty(200));
+        let res = router.dispatch(&head("GET", "/x"), &[]);
+        assert_eq!(res.status, 405);
     }
 }
