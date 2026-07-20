@@ -137,7 +137,8 @@ TASK-12.3 で実装した構造規約・自律改修支援機構が適用され�
   [`docs/reports/task-12-4-third-party-scope-feasibility.md`](./task-12-4-third-party-scope-feasibility.md)
   に「不可・要エスカレーション（未定義依存）」として記録した。限界を受容して本レポートの
   数値（完遂率 8/10）を Conditional Go 条件 (3) の充足として確定するかは人間判断へ引き渡す。
-  制約解消までの恒久追跡先はイシュー #262
+  制約解消までの恒久追跡先はイシュー #262（2026-07-19 クローズ済み。後継の open 追跡先は
+  イシュー #281）
   （[`../design/third-party-model-diversity-reverification.md`](../design/third-party-model-diversity-reverification.md)）
   とする。
 

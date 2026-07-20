@@ -81,8 +81,13 @@ bash scripts/tests/run-ai-autonomy-accept-tests.sh
   8 節）。
 - 被験 AI は Claude ファミリーに限られる（TASK-12.4-1／TASK-12.4-2／TASK-12.5／TASK-12.6
   と同一の既知の限界）。隔離はファイル削除 + 指示による運用であり、サンドボックスに
-  よる強制ではない。制約解消までの恒久追跡先はイシュー #262
+  よる強制ではない。制約解消までの恒久追跡先はイシュー #262（**2026-07-19 に COMPLETED で
+  クローズ済み**。フェイルセーフ条項に基づく後継の open 追跡先はイシュー #281）
   （[`../design/third-party-model-diversity-reverification.md`](../design/third-party-model-diversity-reverification.md)）。
+  Conditional Go 条件 (3) は Claude ファミリー内検証で暫定充足しているが、**別ベンダー
+  LLM・人間被験による第三者検証の限界を人間が受容するかどうかの確定判断は PENDING**
+  （イシュー #281、同設計文書 6 節で記録待ち）。判断確定後は本記述を最終ステータスへ
+  更新する。
 
 ## 参照
 

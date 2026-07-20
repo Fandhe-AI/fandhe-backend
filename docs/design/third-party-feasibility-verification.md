@@ -54,7 +54,8 @@ LLM・人間被験者による追検証は現行の自動運転実行環境で�
 対応可否判定は
 [`docs/reports/task-12-4-third-party-scope-feasibility.md`](../reports/task-12-4-third-party-scope-feasibility.md)
 に「不可・要エスカレーション（未定義依存）」として記録した。限界の受容可否は人間判断へ
-引き渡す。制約解消までの恒久追跡先はイシュー #262 とし、実施条件・暫定運用の詳細は
+引き渡す。制約解消までの恒久追跡先はイシュー #262（2026-07-19 クローズ済み。後継の open
+追跡先はイシュー #281）とし、実施条件・暫定運用の詳細は
 [`third-party-model-diversity-reverification.md`](./third-party-model-diversity-reverification.md)
 に整理する。
 
@@ -227,5 +228,5 @@ TASK-12.3-2（#84、PR #121）はマージ済みであり、判定記録は同�
 - セキュリティ規約: [`.claude/rules/security.md`](../../.claude/rules/security.md)
 - 別モデル・人間被験の未充足に関する対応可否判定記録（イシュー #241）:
   [`docs/reports/task-12-4-third-party-scope-feasibility.md`](../reports/task-12-4-third-party-scope-feasibility.md)
-- モデル多様性制約の恒久追跡（イシュー #262）:
+- モデル多様性制約の恒久追跡（イシュー #262、クローズ済み。後継の open 追跡先はイシュー #281）:
   [`third-party-model-diversity-reverification.md`](./third-party-model-diversity-reverification.md)
