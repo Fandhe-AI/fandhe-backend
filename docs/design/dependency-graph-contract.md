@@ -632,6 +632,50 @@ package/import 名の改名に続き、リポジトリ名・ドキュメント�
    ギャップに起因する。分類規則自体の見直しは 4.3 節〜4.12 節と同一の別 Issue 対象
    として据え置く（`.claude/rules/out-of-scope-tracking.md`）
 
+### 4.14 記載例（#318 / PR #340、静的ファイル配信プラグインの新設）
+
+イシュー #318「静的ファイル配信プラグインを実装する」（PR #340）は、新規プラグイン
+`fandhe-backend-plugin-static` を追加し、`crates/core/examples/static_demo.rs` として
+`Server::static_files(config)` 登録の動作確認用サンプルを新設するとともに、
+`README.md` の feature 構成別サンプル一覧へ `static` を追記するコミットである。
+`crates/plugin-static/**` への変更を含むため `scripts/extension-closure-gate.sh` の
+判定対象となり、以下 2 件が E（閉包違反候補）と判定された。
+
+1. **対象コミット/PR**: PR #340（#318）
+2. **E ファイルパス**:
+   - `crates/core/examples/static_demo.rs`
+   - `README.md`
+3. **閉じない理由**: `extension-closure-check.sh` の分類規則（A: `crates/plugin-*/**`、
+   B: `crates/core` の 4 ファイルのみ、C: `crates/core/tests/**`・
+   `crates/plugin-*/tests/**` のみ、D: `docs/*`・`scripts/*`・`CLAUDE.md`・
+   `AGENTS.md`・`.github/*`・`deny.toml` のみ）は、`crates/core/examples/**`
+   （4.9 節・4.10 節・4.12 節・4.13 節で既に指摘済みの運用上のギャップ）に加え、
+   リポジトリ直下の `README.md`（`docs/*` 配下ではなくルート直下のため D の
+   glob パターンに一致しない）のいずれも走査対象に含めていない。本コミットは
+   この両方に該当する変更を同時に含むため、2 件とも機械的に E 判定となった
+4. **正当性根拠**:
+   - `static_demo.rs` はバイナリを生成しない `[[example]]` ターゲット（`cargo run
+     --example static_demo -p fandhe-backend-core --features static` でのみビルド・
+     実行される）であり、一時ディレクトリへ最小 SPA ライクなファイルを書き込んだ上で
+     `fandhe_backend_plugin_static::StaticFilesConfig` を組み立て `Server::
+     static_files(config)`（4 節冒頭の表のパスインターセプト型シーム）へ渡す
+     既存 公開 API の呼び出しに留まる。`crates/core` のライブラリコード・3 拡張点
+     trait（`Middleware` / `UpgradeHandler` / `RequestGate`）・`try_intercept` 固定
+     シームの契約・シグネチャは一切変更しておらず、4.12 節の `cors_demo.rs`・
+     4.13 節の `todo_async.rs` と同一パターン（プラグイン実装ロジックの拡張点外への
+     漏出ではなく、公開 API の呼び出し側コード）である
+   - `README.md` の変更は「feature 構成別のサンプル」列挙リストへ `static` の 1 語を
+     追記したのみで、`docs/guide/feature-samples.md` へのリンク文言・構成そのものは
+     無変更。ドキュメント文面の追記であり、コード・依存グラフ・拡張点契約への影響は
+     ない
+
+   したがって 2 件はいずれも拡張点設計の閉包漏れではなく、`extension-closure-check.sh`
+   の分類規則が `crates/core/examples/**` とリポジトリ直下のトップレベルドキュメント
+   （`README.md` 等、`docs/*` 配下でないもの）を A〜D のいずれにも割り当てていない、
+   4.9 節・4.10 節・4.12 節・4.13 節と同一の運用上のギャップに起因する。分類規則自体の
+   見直しは 4.3 節〜4.13 節と同一の別 Issue 対象として据え置く
+   （`.claude/rules/out-of-scope-tracking.md`）
+
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 
 `fandhe-backend-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも
