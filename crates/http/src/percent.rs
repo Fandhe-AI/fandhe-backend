@@ -263,12 +263,16 @@ mod tests {
 
     #[test]
     fn error_display_messages_are_non_empty() {
-        assert!(!PercentDecodeError::TruncatedEscape { at: 0 }
-            .to_string()
-            .is_empty());
-        assert!(!PercentDecodeError::InvalidHexDigit { at: 0 }
-            .to_string()
-            .is_empty());
+        assert!(
+            !PercentDecodeError::TruncatedEscape { at: 0 }
+                .to_string()
+                .is_empty()
+        );
+        assert!(
+            !PercentDecodeError::InvalidHexDigit { at: 0 }
+                .to_string()
+                .is_empty()
+        );
         assert!(!PercentDecodeError::InvalidUtf8.to_string().is_empty());
     }
 }
