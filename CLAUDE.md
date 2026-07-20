@@ -32,7 +32,11 @@ fandhe-backend/
 ├── docs/
 │   ├── spec/               # 仕様書 submodule（要件・タスク・ロードマップ）
 │   ├── design/             # リポジトリ側設計ドキュメント（実装フェーズの設計判断を記録）
-│   │   └── crates-io-release.md  # crates.io 公開手順（名前確保・所有権・リリース CI、イシュー #94）
+│   │   ├── crates-io-release.md  # crates.io 公開手順（名前確保・所有権・リリース CI、イシュー #94）
+│   │   └── v1-scope-tls-multipart.md  # TLS 終端・multipart/form-data の v1 スコープ方針
+│   │                                    # （フレームワーク本体では扱わず、TLS はリバース
+│   │                                    # プロキシ前提・multipart は raw body 受理のみ、
+│   │                                    # イシュー #322。docs/spec 除外事項表 #8・#9 と対応）
 │   ├── guide/              # 利用者向けガイド（Getting Started・feature 構成別サンプル・
 │   │                        # チュートリアル、TASK-11.5 / #95）。「どう作るか」の docs/design/ とは
 │   │                        # 責務分離、「どう使うか」を扱う
