@@ -164,11 +164,16 @@ fn echo(_head: &RequestHead, body: &[u8]) -> Response {
 /// クエリ文字列（`key=value` を `&` で連結した生文字列、% デコードなし）から
 /// `key` に対応する値を返す。同一キーが複数回出現する場合は最初の一致を返す。
 /// 値を持たない `key`（`key` のみ・`key=` いずれも）は空文字列として扱う。
+///
+/// `fandhe_backend_http::query::parse_query`（イシュー #306）へ委譲する。
+/// 上限（[`fandhe_backend_http::query::MAX_QUERY_BYTES`] /
+/// [`fandhe_backend_http::query::MAX_QUERY_PAIRS`]）超過時は fail-closed で
+/// `None` を返す（このサンプルでは呼び出し元がいずれも「見つからなかった」
+/// 扱いで 400 応答に倒れるため、握りつぶしにはならない）。
 fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
-    query.split('&').find_map(|pair| {
-        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-        if k == key { Some(v) } else { None }
-    })
+    fandhe_backend_http::query::parse_query(query)
+        .ok()?
+        .find_map(|(k, v)| if k == key { Some(v) } else { None })
 }
 
 /// `GET /search` ハンドラ本体（テスト可能な形に切り出し）。
