@@ -87,6 +87,29 @@ trait 実装のまま I/O を停止し、アトミックカウンタの更新の
   扱いは、標準ロギング／トレーシング実装（REQ-10・`plugin-tracing` 系タスク）側
   の設計事項として別途定める。本規約はこの論点を暗黙に決定しない。
 
+## 規約: ハンドラ契約は async・3 拡張点は同期のまま（イシュー #315）
+
+`docs/design/async-handler.md`（採用案 (c)）対応。**既定ハンドラ**（`crates/core/
+src/server.rs` の `Handler` trait、`fandhe_backend_routes::Router` の `route_async` /
+`route_param_async`）と、上記「ミドルウェア非同期 I/O 必須化」規約が対象とする
+**3 拡張点**（`Middleware` / `UpgradeHandler` / `RequestGate`）とでは、非同期化の
+扱いが非対称である点に注意する:
+
+- **`Handler::handle`**: `fandhe_backend_routes::HandlerFuture`（`Pin<Box<dyn
+  Future<Output = Response> + Send>>`、`async-trait` 等の外部依存なし・std のみで
+  型消去）を返す **async 契約**。実装者はハンドラ本体で `sqlx` 等の非同期 I/O を
+  直接 `.await` できる。既存の同期登録 API（`Router::route` / `route_param`）は
+  内部で `std::future::ready` に適合させ後方互換を維持する
+- **3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）**: 意図的に**同期の
+  まま据え置く**（`dyn` 互換性・呼び出しコストの単純さを優先、`docs/design/
+  async-handler.md` 2 節）。I/O が必要な場合は上記「ミドルウェア非同期 I/O
+  必須化」規約（非同期チャネル送信・別タスクへの委譲）に従う
+
+この非対称性は意図的な設計判断であり、3 拡張点を「ハンドラに揃えて async 化する」
+提案は本規約と衝突する。3 拡張点の async 化を検討する場合は
+`docs/design/async-handler.md` の再評価条件（8 節）に従い設計文書を更新してから
+着手すること。
+
 ## AI エージェント向け変更ガイド
 
 TASK-11.3（#35、`docs/spec/05-tasks.md` Phase 3 / MS-3、`docs/spec/04-requirements.md`
@@ -130,6 +153,8 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
 | `plugin-webrtc` | in-process WebRTC（`webrtc-rs` 直接依存） |
 | `plugin-webrtc-proxy` | WebRTC シグナリングプロキシ（別プロセス切り出し型） |
 | `plugin-cors` | CORS（プリフライトは `Router::options_fallback` 経由・実リクエストへのヘッダ付与は新設のレスポンス後処理型シーム `crate::plugin::finalize_response` 経由。3 拡張点いずれにも載らない 5 番目のプラグイン境界パターン、`docs/design/plugin-boundary.md` 5.9 節） |
+| `plugin-compression` | レスポンス圧縮（gzip）。`plugin-cors` と同じ `finalize_response` シームの第 2 インスタンス（CORS の後に逐次適用、イシュー #321）。ステータス・`Content-Type`・body サイズ・`Accept-Encoding` の判定基準を満たす場合のみフェイルセーフに圧縮。外部依存は `flate2` のみ、`docs/design/plugin-boundary.md` 5.10 節） |
+| `plugin-static` | 静的ファイル配信（パスインターセプト型 `try_intercept` + `spawn_blocking` 変種、`Server::static_files(config)` 登録時のみ応答。パストラバーサル対策は二層防御（字句検証 + canonicalize 後の root 配下検証）、`docs/design/plugin-boundary.md` 5.11 節、イシュー #318） |
 | `plugin-hub-wiring` | hub 共通配線（`RequestGate` 上の `TenantGate`。JWT (RS256 + JWKS) 検証 → `org_id` 抽出 → フェイルクローズ。依存逆転型プラグイン、`docs/design/plugin-boundary.md` 5.6 節）。越境アクセス監査ログ（`audit` モジュール、`cross_tenant_attempt` カテゴリ。「正当な 404」と「越境 404」を外部応答同一のまま監査ログのみで区別、TASK-9.6・#89） |
 | `axum-ref` | 性能比較用参照実装 |
 

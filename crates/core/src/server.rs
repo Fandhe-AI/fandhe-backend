@@ -200,11 +200,30 @@ const DEFAULT_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(30);
 /// （TASK-1.5 / #14、下記 `impl Handler for fandhe_backend_routes::Router` 参照）を
 /// 直接登録できるほか、トイハンドラ・テスト用の固定レスポンダ等の任意実装も
 /// 引き続き受け付ける。
+///
+/// イシュー #315（`docs/design/async-handler.md` 採用案 (c)）で async 契約へ
+/// 移行した。3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）は
+/// 意図的に同期のまま据え置き、本トレイトのみ async 化する非対称設計である点に
+/// 注意（`extension.rs` モジュール doc の対比記載も参照）。戻り値は
+/// `fandhe_backend_routes::HandlerFuture`（`Pin<Box<dyn Future<Output = Response> +
+/// Send>>`、`'static` 契約）で、`async-trait` 等の外部依存を追加せず std のみで
+/// 型消去する。実装者はハンドラ本体で `sqlx` 等の非同期 I/O を直接 `.await` できる。
 pub trait Handler: Send + Sync {
-    /// リクエストヘッドと body からレスポンスを組み立てる。
-    fn handle(&self, head: &RequestHead, body: &[u8]) -> Response;
+    /// リクエストヘッドと body からレスポンスを組み立てる future を返す。
+    ///
+    /// 呼び出し元（[`handle_connection`]）が `.await` する。ハンドラ内 panic は
+    /// 接続単位で spawn されたタスク内に閉じ込められ、他コネクションの処理を
+    /// 妨げない（`docs/design/async-handler.md` 7 節、`crates/core/tests/
+    /// async_handler.rs` で実証）。
+    fn handle(&self, head: &RequestHead, body: &[u8]) -> fandhe_backend_routes::HandlerFuture;
 
     /// レスポンス側 chunked ストリーミング送信（イシュー #319）の opt-in 拡張点。
+    ///
+    /// [`Self::handle`]（イシュー #315 で async 化）とは非対称に、本メソッドは
+    /// 同期のまま据え置く。ストリーミング応答自体は
+    /// [`crate::streaming::StreamingResponse::channel`] が返す producer 側
+    /// タスク（`tokio::spawn`）が非同期 I/O を担うため、拡張点自体を async に
+    /// する必要がない（呼び出し元がチャンネルを組み立てるだけで即座に返る）。
     ///
     /// 既定実装は常に `None` を返し、`handle_connection_with_permit` は
     /// 通常どおり [`Self::handle`] の一括応答（`Content-Length`）経路を使う。
@@ -241,8 +260,8 @@ pub trait Handler: Send + Sync {
     /// struct StreamingHandler;
     ///
     /// impl Handler for StreamingHandler {
-    ///     fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
-    ///         Response::empty(404)
+    ///     fn handle(&self, _head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
+    ///         Box::pin(async { Response::empty(404) })
     ///     }
     ///
     ///     fn handle_streaming(
@@ -289,10 +308,34 @@ pub trait Handler: Send + Sync {
 /// アダプタであり、ルーティングの意味論（method + target 完全一致を最優先し、
 /// miss 時のみ `{name}` パスパラメータ（TASK-176、#176）を登録順で照合・
 /// 404/405 のフェイルクローズ）は `crates/routes` 側の責務のまま変わらない。
+/// `Router::dispatch` 自体は同期関数で `HandlerFuture` を返す設計のため
+/// （ルーティング解決は同期・ハンドラ本体実行のみ非同期、イシュー #315）、
+/// このアダプタも素通しでよい。
 impl Handler for fandhe_backend_routes::Router {
-    fn handle(&self, head: &RequestHead, body: &[u8]) -> Response {
+    fn handle(&self, head: &RequestHead, body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
         self.dispatch(head, body)
     }
+}
+
+/// `Server::openapi()` / `Server::openapi_with()` が設定する、`GET
+/// /openapi.json` / `GET /openapi.yaml` の配信登録状態（`openapi` feature
+/// 限定、TASK-2.1 / #256、イシュー #320）。
+///
+/// `crate::plugin::try_intercept` がこの enum を参照して応答内容を判定
+/// する。`Server::openapi()` と `Server::openapi_with()` は排他ではなく
+/// **後勝ち**（どちらを先に呼んでも、最後に呼んだ方の variant が残る。
+/// builder メソッドが `self` を消費して返す一般的な直感に一致する）。
+#[cfg(feature = "openapi")]
+pub(crate) enum OpenApiRegistration {
+    /// 未登録（既定、fail-closed）。feature が有効でも常にフォールスルー
+    /// する（`Server::openapi` の doc・A01/A05 観点を参照）。
+    Disabled,
+    /// `Server::openapi()` で登録した、フレームワーク固定スキーマ
+    /// （`fandhe_backend_plugin_openapi::OPENAPI_JSON` / `OPENAPI_YAML`）。
+    Embedded,
+    /// `Server::openapi_with(doc)` で登録した、利用者アプリ独自のスキーマ
+    /// （イシュー #320）。
+    Custom(fandhe_backend_plugin_openapi::OpenApiDoc),
 }
 
 /// 3 拡張点・既定ハンドラを登録するビルダー。
@@ -367,15 +410,16 @@ pub struct Server {
     #[cfg(feature = "graphql")]
     graphql_config: Option<fandhe_backend_plugin_graphql::GraphQlConfig>,
     /// `openapi` feature（TASK-2.1 / #256）有効時のみ意味を持つ、`GET
-    /// /openapi.json` の公開トグル。`crate::plugin::try_intercept` がこの
-    /// フィールドを参照して応答するかどうかを判定する。既定 `false`
-    /// （未登録）では feature が有効でもフォールスルーする（`webrtc-proxy`・
+    /// /openapi.json` / `GET /openapi.yaml` の配信登録状態
+    /// （[`OpenApiRegistration`]）。`crate::plugin::try_intercept` がこの
+    /// フィールドを参照して応答内容を判定する。既定 `Disabled`（未登録）
+    /// では feature が有効でもフォールスルーする（`webrtc-proxy`・
     /// `graphql` と同じ「設定登録型」パターン。API 構造の開示を利用者の
     /// 明示的 opt-in に限定する意図、`.claude/rules/security.md` の
     /// A01/A05 観点）。feature 無効時はフィールド自体が構造体から消え、
     /// 依存・コードともゼロコストになる（pay-for-what-you-use）。
     #[cfg(feature = "openapi")]
-    openapi_enabled: bool,
+    openapi_registration: OpenApiRegistration,
     /// `cors` feature（イシュー #305）有効時のみ意味を持つ、登録済み CORS
     /// 設定。`crate::plugin::finalize_response`（レスポンス後処理型シーム）が
     /// このフィールドを参照して実リクエスト応答へ CORS ヘッダを付与する
@@ -388,6 +432,26 @@ pub struct Server {
     /// 依存・コードともゼロコストになる（pay-for-what-you-use）。
     #[cfg(feature = "cors")]
     cors_config: Option<fandhe_backend_plugin_cors::CorsConfig>,
+    /// `compression` feature（イシュー #321）有効時のみ意味を持つ、登録済み
+    /// レスポンス圧縮設定。`crate::plugin::finalize_response`（レスポンス
+    /// 後処理型シーム）がこのフィールドを参照し、`Some` の場合のみ
+    /// `fandhe_backend_plugin_compression::apply_compression` を呼んで
+    /// 実リクエスト応答へ gzip 圧縮を適用するかどうかを判定する。
+    /// `None`（未登録、既定）の場合は feature が有効でもレスポンスを一切
+    /// 変更しない（`cors`・`graphql`・`openapi` と同じ「設定登録型」
+    /// パターン）。feature 無効時はフィールド自体が構造体から消え、
+    /// 依存・コードともゼロコストになる（pay-for-what-you-use）。
+    #[cfg(feature = "compression")]
+    compression_config: Option<fandhe_backend_plugin_compression::CompressionConfig>,
+    /// `static` feature（イシュー #318）有効時のみ意味を持つ、登録済み静的
+    /// ファイル配信設定。`crate::plugin::try_intercept` がこのフィールドを
+    /// 参照して `GET` リクエストを配信するかどうかを判定する。`None`
+    /// （未登録、既定）の場合は feature が有効でもフォールスルーする
+    /// （`graphql`・`openapi`・`cors` と同じ「設定登録型」パターン）。
+    /// feature 無効時はフィールド自体が構造体から消え、依存・コードとも
+    /// ゼロコストになる（pay-for-what-you-use）。
+    #[cfg(feature = "static")]
+    static_files_config: Option<fandhe_backend_plugin_static::StaticFilesConfig>,
 }
 
 impl Default for Server {
@@ -413,9 +477,13 @@ impl Default for Server {
             #[cfg(feature = "graphql")]
             graphql_config: None,
             #[cfg(feature = "openapi")]
-            openapi_enabled: false,
+            openapi_registration: OpenApiRegistration::Disabled,
             #[cfg(feature = "cors")]
             cors_config: None,
+            #[cfg(feature = "compression")]
+            compression_config: None,
+            #[cfg(feature = "static")]
+            static_files_config: None,
         }
     }
 }
@@ -725,6 +793,7 @@ impl Server {
     }
 
     /// OpenAPI ドキュメント配信プラグイン（`crates/plugin-openapi`）を
+    /// フレームワーク固定スキーマ（[`ApiDoc`][fandhe_backend_plugin_openapi::ApiDoc]）で
     /// 有効化する（`openapi` feature 限定 API、TASK-2.1 / #256。`GET /openapi.yaml`
     /// 配信の追加は #279）。
     ///
@@ -740,6 +809,11 @@ impl Server {
     /// 非公開（fail-closed）とし利用者の明示登録を必須とする
     /// （`.claude/rules/security.md` の A01/A05 観点）。
     ///
+    /// 利用者アプリ独自のスキーマを配信したい場合は [`Server::openapi_with`]
+    /// を使う（イシュー #320）。両方呼んだ場合は最後に呼んだ方が勝つ
+    /// （builder の直感に一致する後勝ちルール、内部の配信登録状態管理を
+    /// 参照）。
+    ///
     /// # Examples
     /// ```
     /// use fandhe_backend_core::Server;
@@ -750,15 +824,55 @@ impl Server {
     #[cfg(feature = "openapi")]
     #[must_use]
     pub fn openapi(mut self) -> Self {
-        self.openapi_enabled = true;
+        self.openapi_registration = OpenApiRegistration::Embedded;
         self
     }
 
-    /// `plugin::try_intercept` が参照する、`GET /openapi.json` 公開の有効/
-    /// 無効フラグ（`openapi` feature 限定、TASK-2.1 / #256）。
+    /// 利用者アプリ独自の OpenAPI ドキュメント
+    /// （[`OpenApiDoc`][fandhe_backend_plugin_openapi::OpenApiDoc]）を登録して
+    /// OpenAPI 配信プラグインを有効化する（`openapi` feature 限定 API、
+    /// イシュー #320）。
+    ///
+    /// [`Server::openapi`]（フレームワーク固定スキーマ）とは異なり、利用者
+    /// アプリが自前で生成した OpenAPI ドキュメント（`utoipa` 由来・他ツール
+    /// 生成いずれも可）を `GET /openapi.json` / `GET /openapi.yaml` として
+    /// 配信できる。
+    /// [`OpenApiDoc::from_json`][fandhe_backend_plugin_openapi::OpenApiDoc::from_json]
+    /// が構築時（本メソッド呼び出し前）に JSON 妥当性を一度だけ検証済みのため、
+    /// 本メソッド自体は追加検証を行わない（fail-closed の検証責務は
+    /// [`OpenApiDoc`][fandhe_backend_plugin_openapi::OpenApiDoc] 側、
+    /// `crates/plugin-openapi/src/custom.rs` の doc を参照）。
+    /// `OpenApiDoc::yaml()` が `None`（`with_yaml` 未呼び出し）の場合、
+    /// `GET /openapi.yaml` は既定 `Handler` へフォールスルーする（404）。
+    ///
+    /// [`Server::openapi`] と `openapi_with` は排他ではなく**後勝ち**
+    /// （`crate::plugin::try_intercept` は最後に登録された配信登録状態のみを
+    /// 参照する）。両方を呼ぶ意味のある構成は通常ないが、builder パターンの
+    /// 一貫性のため片方だけを許可する特別扱いはしない。
+    ///
+    /// # Examples
+    /// ```
+    /// use fandhe_backend_core::Server;
+    /// use fandhe_backend_plugin_openapi::OpenApiDoc;
+    ///
+    /// let doc = OpenApiDoc::from_json(r#"{"openapi":"3.0.0","info":{"title":"t","version":"1"}}"#)
+    ///     .expect("妥当な JSON");
+    /// let server = Server::new().openapi_with(doc);
+    /// let _ = server;
+    /// ```
     #[cfg(feature = "openapi")]
-    pub(crate) fn openapi_enabled(&self) -> bool {
-        self.openapi_enabled
+    #[must_use]
+    pub fn openapi_with(mut self, doc: fandhe_backend_plugin_openapi::OpenApiDoc) -> Self {
+        self.openapi_registration = OpenApiRegistration::Custom(doc);
+        self
+    }
+
+    /// `plugin::try_intercept` が参照する、`GET /openapi.json` /
+    /// `GET /openapi.yaml` の配信登録状態（`openapi` feature 限定、
+    /// TASK-2.1 / #256、イシュー #320）。
+    #[cfg(feature = "openapi")]
+    pub(crate) fn openapi_registration(&self) -> &OpenApiRegistration {
+        &self.openapi_registration
     }
 
     /// CORS プラグイン（`crates/plugin-cors`）を有効化する（`cors` feature
@@ -802,6 +916,88 @@ impl Server {
     #[cfg(feature = "cors")]
     pub(crate) fn cors_config(&self) -> Option<&fandhe_backend_plugin_cors::CorsConfig> {
         self.cors_config.as_ref()
+    }
+
+    /// 圧縮プラグイン（`crates/plugin-compression`）を有効化する
+    /// （`compression` feature 限定 API、イシュー #321）。
+    ///
+    /// 登録すると `crate::plugin::finalize_response`（レスポンス後処理型
+    /// シーム）が全レスポンス（`try_intercept` 応答・既定 `Handler` 応答の
+    /// 双方）に対して `fandhe_backend_plugin_compression::apply_compression`
+    /// を適用し、`fandhe_backend_plugin_compression::CompressionConfig` の
+    /// 判定基準（ステータス・`Content-Type`・body サイズ・
+    /// `Accept-Encoding`）を満たすレスポンスを gzip 圧縮する。**未登録の
+    /// 場合は feature が有効でも常にレスポンスを変更しない**
+    /// （`cors`・`graphql`・`openapi` と同じ設定登録型パターン）。
+    ///
+    /// `cors` feature も同時に有効な場合、`finalize_response` は CORS
+    /// ヘッダ付与を先に適用してから圧縮を適用する（body を確定させる
+    /// 後処理は必ず最後、`crates/plugin-compression/src/lib.rs` の
+    /// crate doc を参照）。
+    ///
+    /// # Examples
+    /// ```
+    /// use fandhe_backend_core::Server;
+    /// use fandhe_backend_plugin_compression::CompressionConfig;
+    ///
+    /// let config = CompressionConfig::builder().build();
+    /// let server = Server::new().compression(config);
+    /// let _ = server;
+    /// ```
+    #[cfg(feature = "compression")]
+    #[must_use]
+    pub fn compression(
+        mut self,
+        config: fandhe_backend_plugin_compression::CompressionConfig,
+    ) -> Self {
+        self.compression_config = Some(config);
+        self
+    }
+
+    /// `crate::plugin::finalize_response` が参照する、登録済み圧縮設定
+    /// （`compression` feature 限定、イシュー #321）。
+    #[cfg(feature = "compression")]
+    pub(crate) fn compression_config(
+        &self,
+    ) -> Option<&fandhe_backend_plugin_compression::CompressionConfig> {
+        self.compression_config.as_ref()
+    }
+
+    /// 静的ファイル配信プラグイン（`crates/plugin-static`）を有効化する
+    /// （`static` feature 限定 API、イシュー #318）。
+    ///
+    /// 登録すると `crate::plugin::try_intercept` が `config.mount()`
+    /// プレフィックスに一致する `GET` リクエストを
+    /// `fandhe_backend_plugin_static::try_handle_static` へパスインター
+    /// セプトし、`config.root()`（構築時に canonicalize 済み）配下のファイルを
+    /// 返す。**未登録の場合は feature が有効でも常にフォールスルーする**
+    /// （`graphql`・`openapi`・`cors` と同じ設定登録型パターン）。
+    ///
+    /// # Examples
+    /// ```
+    /// use fandhe_backend_core::Server;
+    /// use fandhe_backend_plugin_static::StaticFilesConfig;
+    ///
+    /// let config = StaticFilesConfig::builder("/static", std::env::temp_dir())
+    ///     .build()
+    ///     .unwrap();
+    /// let server = Server::new().static_files(config);
+    /// let _ = server;
+    /// ```
+    #[cfg(feature = "static")]
+    #[must_use]
+    pub fn static_files(mut self, config: fandhe_backend_plugin_static::StaticFilesConfig) -> Self {
+        self.static_files_config = Some(config);
+        self
+    }
+
+    /// `crate::plugin::try_intercept` が参照する、登録済み静的ファイル配信
+    /// 設定（`static` feature 限定、イシュー #318）。
+    #[cfg(feature = "static")]
+    pub(crate) fn static_files_config(
+        &self,
+    ) -> Option<&fandhe_backend_plugin_static::StaticFilesConfig> {
+        self.static_files_config.as_ref()
     }
 
     /// トレーシングプラグイン（`crates/plugin-tracing`）を有効化する
@@ -1516,7 +1712,7 @@ pub(crate) async fn handle_connection_with_permit<S>(
         let response = match intercepted {
             Some(response) => response,
             None => match &server.handler {
-                Some(handler) => handler.handle(&request.head, &request.body),
+                Some(handler) => handler.handle(&request.head, &request.body).await,
                 None => Response::empty(404),
             },
         };
@@ -1916,9 +2112,15 @@ mod tests {
         calls: AtomicUsize,
     }
     impl Handler for FixedHandler {
-        fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
-            self.calls.fetch_add(1, Ordering::Relaxed);
-            Response::new(self.status, self.body.to_vec())
+        fn handle(
+            &self,
+            _head: &RequestHead,
+            _body: &[u8],
+        ) -> fandhe_backend_routes::HandlerFuture {
+            Box::pin(std::future::ready({
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                Response::new(self.status, self.body.to_vec())
+            }))
         }
     }
 
@@ -2454,13 +2656,22 @@ GET /c HTTP/1.1\r\n\r\n",
         sleep_for: Duration,
     }
     impl Handler for SlowHandler {
-        fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
-            // `Handler::handle` は同期 API のため、テスト用に `std::thread::sleep`
-            // で処理時間の長期化を模擬する（本体側 await ではないため
-            // `.claude/rules/coding-rust.md` の「ブロッキング処理を await
-            // スレッドで実行しない」に抵触しない。単体テストのみで使用）。
-            std::thread::sleep(self.sleep_for);
-            Response::new(200, b"ok".to_vec())
+        fn handle(
+            &self,
+            _head: &RequestHead,
+            _body: &[u8],
+        ) -> fandhe_backend_routes::HandlerFuture {
+            Box::pin(std::future::ready({
+                // `Handler::handle` は async 契約（boxed-future）だが、この
+                // `std::future::ready` は構築時点で中身を同期評価するため、
+                // `std::thread::sleep` は poll ではなく `handle` 呼び出し内で
+                // 即座に実行される（本体側 await ではないため
+                // `.claude/rules/coding-rust.md` の「ブロッキング処理を await
+                // スレッドで実行しない」に抵触しない。処理時間の長期化を
+                // 模擬するテスト専用ヘルパーであり、単体テストのみで使用）。
+                std::thread::sleep(self.sleep_for);
+                Response::new(200, b"ok".to_vec())
+            }))
         }
     }
 
@@ -2727,10 +2938,14 @@ GET /c HTTP/1.1\r\n\r\n",
         chunks: Vec<&'static [u8]>,
     }
     impl Handler for StreamingHandler {
-        fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
+        fn handle(
+            &self,
+            _head: &RequestHead,
+            _body: &[u8],
+        ) -> fandhe_backend_routes::HandlerFuture {
             // handle_streaming が Some を返す限りこの経路は呼ばれないはず。
             // 呼ばれた場合は実装不備を検知できるよう識別可能な応答にする。
-            Response::empty(599)
+            Box::pin(std::future::ready(Response::empty(599)))
         }
 
         fn handle_streaming(
@@ -2759,8 +2974,12 @@ GET /c HTTP/1.1\r\n\r\n",
         chunks: Vec<&'static [u8]>,
     }
     impl Handler for AbortingStreamingHandler {
-        fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
-            Response::empty(599)
+        fn handle(
+            &self,
+            _head: &RequestHead,
+            _body: &[u8],
+        ) -> fandhe_backend_routes::HandlerFuture {
+            Box::pin(std::future::ready(Response::empty(599)))
         }
 
         fn handle_streaming(

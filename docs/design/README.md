@@ -140,3 +140,9 @@
   plugin-websocket`/`crates/plugin-graphql` の boxed-future 型消去の先例に倣い新規依存を
   追加しない移行方針・性能影響予測とベンチ検証方法・DoS/panic 境界の安全性考慮・実装
   イシュー分解方針を記述）
+- [`v1-scope-tls-multipart.md`](./v1-scope-tls-multipart.md): TLS 終端・multipart/
+  form-data の v1 スコープ方針（イシュー #322。両者ともフレームワーク本体では扱わず、
+  TLS 終端はリバースプロキシ前提、multipart は既存 body 上限内の raw バイト列受理に
+  留める方針を明文化。`docs/spec/04-requirements.md` 除外事項表 #8・#9（upstream PR
+  fandhe-backend-spec#2）への相対リンクと、個別要求が来た場合の feasibility-guardrail
+  接続指針を記述）

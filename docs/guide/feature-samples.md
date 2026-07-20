@@ -129,6 +129,75 @@ curl -si localhost:3004/todos -H 'Origin: https://evil.example'
 提供します。`allow_any_origin()` と `allow_credentials(true)` の併用は
 `build()` が `Err` を返します（フェイルクローズ、credentials 付き全開放の防止）。
 
+## compression（`fandhe-backend-plugin-compression`）
+
+gzip でレスポンスを圧縮するプラグインです（[`docs/design/plugin-boundary.md`](../design/plugin-boundary.md)
+5.10 節「レスポンス後処理型パターンの第 2 インスタンス」参照）。CORS と同じ
+「レスポンス後処理型」シームで配線し、複数登録時は CORS → 圧縮の順に適用
+されます。
+
+```bash
+cargo run --example compression_demo -p fandhe-backend-core --features compression
+
+# 閾値以上の text/plain・Accept-Encoding: gzip → Content-Encoding: gzip
+curl -si localhost:3008/large -H 'Accept-Encoding: gzip' | head -20
+
+# Accept-Encoding なし → 無圧縮のまま
+curl -si localhost:3008/large
+
+# 閾値未満の応答（既定 1024 バイト未満）→ 無圧縮のまま
+curl -si localhost:3008/small -H 'Accept-Encoding: gzip'
+```
+
+配線は 1 点のみです（`crates/core/examples/compression_demo.rs` を参照）:
+
+`Server::new().handler(router).compression(config)` で登録すると、ステータス・
+`Content-Type`・body サイズ・`Accept-Encoding` の判定基準を満たすレスポンスを
+gzip 圧縮します（未登録なら feature が有効でも完全フォールスルー、opt-in）。
+
+`CompressionConfig::builder()` は最小圧縮対象サイズ `min_size`（既定 1024
+バイト）・圧縮対象 `Content-Type` リスト `compressible_types`
+（既定 `text/*`・`application/json` 等）を提供します。秘密情報を含みやすい
+レスポンスは BREACH 類似の情報漏洩リスクがあるため、対象 `Content-Type` から
+除外することを推奨します（`crates/plugin-compression/src/lib.rs` の crate
+doc を参照）。
+
+## static（`fandhe-backend-plugin-static`）
+
+SPA フロントエンド等の静的ファイルを配信するプラグインです
+（[`docs/design/plugin-boundary.md`](../design/plugin-boundary.md)
+5.11 節「パスインターセプト型の `spawn_blocking` ファイル I/O 変種」参照）。
+
+```bash
+cargo run --example static_demo -p fandhe-backend-core --features static
+
+# index.html（mount そのまま）
+curl -si localhost:3005/static
+
+# 通常ファイル（Content-Type 推定 + X-Content-Type-Options: nosniff を確認）
+curl -si localhost:3005/static/app.js
+
+# パストラバーサル試行（404 を確認）
+curl -si --path-as-is localhost:3005/static/../Cargo.toml
+```
+
+配線は `Server::new().static_files(config)` の 1 点のみです（未登録なら feature が
+有効でも完全フォールスルー、opt-in）。`StaticFilesConfig::builder(mount, root)` は
+`root` を構築時に `canonicalize` し、不在・非ディレクトリを `Err` で早期拒否します。
+
+- パストラバーサル対策は二層防御（I/O 前の字句検証 + `canonicalize` 後の実パスが
+  正規化済み root 配下であることの確認）で行い、シンボリックリンク経由の脱出も
+  拒否します
+- 字句検証では先頭が `.` のセグメント（ドットファイル・ドットディレクトリ）も
+  一律拒否します。`root` 配下に `.env`・`.git/config` 等の機密ファイルが誤って
+  置かれていても配信されません
+- ファイル未検出・検証失敗・サイズ超過（`max_file_bytes`、既定 8 MiB）は一律 404
+  （存在オラクルを作らないフェイルクローズ）
+- ディレクトリはインデックス（`index.html`）を試行し、それ以外はディレクトリ
+  リスティングを実装しません
+- ファイル I/O は `tokio::task::spawn_blocking` に閉じ、非同期ランタイム
+  スレッドをブロックしません
+
 ## hub-wiring（`fandhe-backend-plugin-hub-wiring`）
 
 マルチテナント JWT 検証（RS256 / JWKS）・テナント境界強制を `RequestGate` 拡張点

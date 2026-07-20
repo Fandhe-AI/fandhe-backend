@@ -32,7 +32,11 @@ fandhe-backend/
 ├── docs/
 │   ├── spec/               # 仕様書 submodule（要件・タスク・ロードマップ）
 │   ├── design/             # リポジトリ側設計ドキュメント（実装フェーズの設計判断を記録）
-│   │   └── crates-io-release.md  # crates.io 公開手順（名前確保・所有権・リリース CI、イシュー #94）
+│   │   ├── crates-io-release.md  # crates.io 公開手順（名前確保・所有権・リリース CI、イシュー #94）
+│   │   └── v1-scope-tls-multipart.md  # TLS 終端・multipart/form-data の v1 スコープ方針
+│   │                                    # （フレームワーク本体では扱わず、TLS はリバース
+│   │                                    # プロキシ前提・multipart は raw body 受理のみ、
+│   │                                    # イシュー #322。docs/spec 除外事項表 #8・#9 と対応）
 │   ├── guide/              # 利用者向けガイド（Getting Started・feature 構成別サンプル・
 │   │                        # チュートリアル、TASK-11.5 / #95）。「どう作るか」の docs/design/ とは
 │   │                        # 責務分離、「どう使うか」を扱う
@@ -45,7 +49,9 @@ fandhe-backend/
 │   ├── core                           # 最小コア。`webrtc-proxy`（TASK-2.1、#18）・`webrtc`
 │   │                                    # （TASK-8.1、#26）・`websocket`（TASK-4.1、#22）・
 │   │                                    # `graphql`（TASK-2.4、#21）・`openapi`（TASK-2.1、#256）・
-│   │                                    # `cors`（イシュー #305）の 6 feature で `dep:` 構文により
+│   │                                    # `cors`（イシュー #305）・`compression`
+│   │                                    # （イシュー #321）・`static`（イシュー #318）の
+│   │                                    # 8 feature で `dep:` 構文により
 │   │                                    # 各プラグインを着脱可能に配線済み（`webrtc-proxy` 優先評価）。
 │   │                                    # `openapi` は `Server::openapi()` の明示登録
 │   │                                    # （opt-in）時のみ `GET /openapi.json` と
@@ -55,6 +61,10 @@ fandhe-backend/
 │   │                                    # リクエストへ CORS ヘッダを付与し、プリフライトは利用者が
 │   │                                    # `fandhe_backend_plugin_cors::preflight_response` を
 │   │                                    # `Router::options_fallback`（#304）へ直接配線する 2 点構成。
+│   │                                    # `compression` は `Server::compression(config)` 登録時のみ
+│   │                                    # 同一シーム（CORS の後、逐次適用）経由で条件充足レスポンスを
+│   │                                    # gzip 圧縮する（`fandhe-backend-plugin-compression`、
+│   │                                    # 外部依存は `flate2` のみ）。
 │   │                                    # `BoundServer::run_until(shutdown)` で graceful shutdown
 │   │                                    # （accept 停止 → in-flight 完了待ち → grace 超過時強制
 │   │                                    # クローズ）に対応（既存 `run()` は `run_until` への薄い
@@ -68,7 +78,11 @@ fandhe-backend/
 │   │                                    # チャンクなしで打ち切りクローズ、既存 `Handler::handle`
 │   │                                    # 実装は無変更で後方互換維持、イシュー #319）
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
-│   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。chunked
+│   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
+│   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む
+│   │                                    # 残りパス全体を 1 個以上のセグメント条件で束縛（中間配置は
+│   │                                    # 登録時エラー、静的ファイル配信プラグイン等の前提整備、
+│   │                                    # イシュー #317）。chunked
 │   │                                    # Transfer-Encoding 対応（sans-IO `ChunkedDecoder`、
 │   │                                    # DoS 上限・fuzz target 追加、イシュー #181）。`RequestHead::path`
 │   │                                    # / `query` でクエリ文字列を分離し `Router::dispatch` の
@@ -103,7 +117,16 @@ fandhe-backend/
 │   │                                    # 一致しなかったリクエストの共通処理（カスタム 404・SPA の
 │   │                                    # index.html 返却等）を登録可能にし、`FallbackPolicy` で
 │   │                                    # 405（メソッド不一致）も委譲するかを個別選択（既定は 404
-│   │                                    # のみ委譲する安全側、イシュー #316）。
+│   │                                    # のみ委譲する安全側、イシュー #316）。`Router::route_async` /
+│   │                                    # `route_param_async` で async ハンドラを登録可能にし、
+│   │                                    # 既定ハンドラ契約（`crates/core` の `Handler::handle`）を
+│   │                                    # `fandhe_backend_routes::HandlerFuture`（boxed future）
+│   │                                    # 返却へ移行（`Router::route`/`route_param` の同期登録 API は
+│   │                                    # 内部アダプタで非破壊のまま維持。3 拡張点
+│   │                                    # （`Middleware`/`UpgradeHandler`/`RequestGate`）は意図的に
+│   │                                    # 同期のまま据え置き、`sqlx` 等の非同期 I/O をハンドラ本体で
+│   │                                    # 直接 await 可能にする、イシュー #315、
+│   │                                    # `docs/design/async-handler.md`）。
 │   │                                    # `Response::serialize_chunked_head` /
 │   │                                    # `serialize_streaming_head_http10` +
 │   │                                    # `chunked::{encode_chunk, encode_terminator}`（sans-IO
@@ -131,7 +154,12 @@ fandhe-backend/
 │   │                                   # `Server::openapi()` 登録時のみ `GET /openapi.json` を配信。
 │   │                                   # `GET /openapi.yaml` も同一 opt-in・同一スキーマ源
 │   │                                   # （ApiDoc）で配信（#279。YAML 変換依存は開発用
-│   │                                   # `gen-cli` feature に閉じ、サーバ経路には現れない））
+│   │                                   # `gen-cli` feature に閉じ、サーバ経路には現れない）。
+│   │                                   # `OpenApiDoc::from_json`（構築時 JSON 検証済み）+
+│   │                                   # `Server::openapi_with(doc)` で利用者アプリ独自の
+│   │                                   # OpenAPI スキーマも `GET /openapi.json` /
+│   │                                   # `GET /openapi.yaml` として配信可能（`Server::openapi()`
+│   │                                   # とは後勝ちで排他、イシュー #320）
 │   ├── plugin-websocket                # WebSocket プラグイン（RFC 6455 ハンドシェイク検証・101 応答・
 │   │                                    # tokio-tungstenite へのフレーミング委譲、TASK-4.1、#22。
 │   │                                    # `crates/core` の `websocket` feature 経由で `UpgradeHandler`
@@ -154,6 +182,28 @@ fandhe-backend/
 │   │                                    # `crates/core` の `cors` feature 経由で `Server::cors(config)`
 │   │                                    # 登録時のみ実リクエストへ CORS ヘッダを付与。外部依存ゼロ、
 │   │                                    # `docs/design/plugin-boundary.md` の該当節を参照）
+│   ├── plugin-compression             # レスポンス圧縮プラグイン（イシュー #321。`plugin-cors` が
+│   │                                    # 確立した「レスポンス後処理型」シームの第 2 インスタンス、
+│   │                                    # `finalize_response` で CORS の後に逐次適用）。gzip のみ実装
+│   │                                    # （br はスコープ外）、外部依存は `flate2`（`rust_backend`、
+│   │                                    # 純 Rust の miniz_oxide 実装に固定）のみ。ステータス・
+│   │                                    # `Content-Type`・body サイズ・`Accept-Encoding` を判定基準に
+│   │                                    # フェイルセーフに圧縮可否を決定。`crates/core` の
+│   │                                    # `compression` feature 経由で `Server::compression(config)`
+│   │                                    # 登録時のみ動作。BREACH 類似の情報漏洩リスクを doc に明記、
+│   │                                    # `docs/design/plugin-boundary.md` 5.10 節を参照）
+│   ├── plugin-static                  # 静的ファイル配信プラグイン（イシュー #318。パス
+│   │                                    # インターセプト型（`try_intercept`）+ `spawn_blocking`
+│   │                                    # 変種。`crates/core` の `static` feature 経由で
+│   │                                    # `Server::static_files(config)` 登録時のみ `GET` を
+│   │                                    # 配信。二層防御（I/O 前の字句検証（先頭ドット
+│   │                                    # セグメント拒否で `.env`・`.git/config` 等の機密
+│   │                                    # ファイル配信も遮断）+ canonicalize 後の root 配下
+│   │                                    # 検証）でパストラバーサル・シンボリックリンク脱出を
+│   │                                    # 拒否し、未検出・検証失敗・サイズ超過は一律 404。
+│   │                                    # 外部依存ゼロ（`fandhe-backend-http` + `tokio`
+│   │                                    # の `rt` feature のみ）、`docs/design/plugin-boundary.md`
+│   │                                    # 5.11 節を参照）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
 ├── ts/                     # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）。

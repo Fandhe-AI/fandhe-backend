@@ -13,6 +13,10 @@
 //! `crates/core/tests/plugin_graphql_boundary.rs` と同型のパターン）。
 //!
 //! feature 無効時の陰性対照は `plugin_openapi_boundary_disabled.rs` を参照。
+//!
+//! イシュー #320 で `Server::openapi_with(doc)`（利用者アプリ独自スキーマ、
+//! `OpenApiRegistration::Custom`）を追加し、`Server::openapi()`
+//! （`Embedded`）との後勝ちルールも本ファイル末尾で検証する。
 
 #![cfg(feature = "openapi")]
 
@@ -28,7 +32,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// 契約（`crates/core/src/server.rs` の `handle_connection` を参照）の証跡に使う。
 struct NotCalledHandler;
 impl Handler for NotCalledHandler {
-    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
         panic!("plugin::try_intercept が Some を返したのに既定 Handler が呼ばれた");
     }
 }
@@ -36,8 +40,8 @@ impl Handler for NotCalledHandler {
 /// 固定 200 応答を返すだけのトイハンドラ（フォールスルー確認用）。
 struct FixedOkHandler;
 impl Handler for FixedOkHandler {
-    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
-        Response::new(200, b"ok".to_vec())
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
+        Box::pin(std::future::ready(Response::new(200, b"ok".to_vec())))
     }
 }
 
@@ -145,4 +149,100 @@ async fn unrelated_path_falls_through_to_default_handler() {
     let response = String::from_utf8_lossy(&response);
     assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
     assert!(response.ends_with("ok"));
+}
+
+// イシュー #320: 利用者アプリ独自スキーマ登録（`Server::openapi_with`）の統合テスト。
+// `Server::openapi()`（Embedded、上記）と同一のインターセプト経路
+// （`crate::plugin::try_intercept` の `OpenApiRegistration::Custom` 分岐）を通す。
+
+const CUSTOM_JSON: &str = r#"{"openapi":"3.0.0","info":{"title":"custom","version":"1"}}"#;
+const CUSTOM_YAML: &str = "openapi: 3.0.0\ninfo:\n  title: custom\n";
+
+#[tokio::test]
+async fn openapi_with_serves_registered_json_and_bypasses_default_handler() {
+    use fandhe_backend_plugin_openapi::OpenApiDoc;
+
+    let doc = OpenApiDoc::from_json(CUSTOM_JSON).expect("妥当な JSON");
+    let server = Server::new().handler(NotCalledHandler).openapi_with(doc);
+
+    let request = b"GET /openapi.json HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.contains("Content-Type: application/json\r\n"));
+    assert!(response.contains(&format!("Content-Length: {}\r\n", CUSTOM_JSON.len())));
+    assert!(response.ends_with(CUSTOM_JSON));
+}
+
+#[tokio::test]
+async fn openapi_with_serves_registered_yaml_when_provided() {
+    use fandhe_backend_plugin_openapi::OpenApiDoc;
+
+    let doc = OpenApiDoc::from_json(CUSTOM_JSON)
+        .expect("妥当な JSON")
+        .with_yaml(CUSTOM_YAML)
+        .expect("妥当な yaml バイト列");
+    let server = Server::new().openapi_with(doc);
+
+    let request = b"GET /openapi.yaml HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.contains("Content-Type: application/yaml\r\n"));
+    assert!(response.contains(&format!("Content-Length: {}\r\n", CUSTOM_YAML.len())));
+    assert!(response.ends_with(CUSTOM_YAML));
+}
+
+#[tokio::test]
+async fn openapi_with_yaml_falls_through_to_404_when_not_registered() {
+    // `with_yaml` 未呼び出し（`OpenApiDoc::yaml()` が `None`）の場合、`GET
+    // /openapi.yaml` は既定 `Handler`（未登録時 404）へフォールスルーする
+    // （`OpenApiDoc::with_yaml` の doc を参照）。
+    use fandhe_backend_plugin_openapi::OpenApiDoc;
+
+    let doc = OpenApiDoc::from_json(CUSTOM_JSON).expect("妥当な JSON");
+    let server = Server::new().openapi_with(doc);
+
+    let request = b"GET /openapi.yaml HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+    assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+}
+
+#[tokio::test]
+async fn openapi_with_takes_precedence_over_earlier_openapi_call() {
+    // `Server::openapi()`（Embedded）→ `Server::openapi_with(doc)`（Custom）の
+    // 順で呼んだ場合、後勝ちで Custom が配信される（`OpenApiRegistration` の
+    // doc「後勝ち」ルールを参照）。
+    use fandhe_backend_plugin_openapi::OpenApiDoc;
+
+    let doc = OpenApiDoc::from_json(CUSTOM_JSON).expect("妥当な JSON");
+    let server = Server::new().openapi().openapi_with(doc);
+
+    let request = b"GET /openapi.json HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with(CUSTOM_JSON));
+    assert!(!response.contains(OPENAPI_JSON));
+}
+
+#[tokio::test]
+async fn openapi_takes_precedence_over_earlier_openapi_with_call() {
+    // 逆順（`openapi_with` → `openapi()`）でも後勝ちルールが対称に成立する
+    // ことを確認する（builder の直感に一致、`Server::openapi` の doc を参照）。
+    use fandhe_backend_plugin_openapi::OpenApiDoc;
+
+    let doc = OpenApiDoc::from_json(CUSTOM_JSON).expect("妥当な JSON");
+    let server = Server::new().openapi_with(doc).openapi();
+
+    let request = b"GET /openapi.json HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with(OPENAPI_JSON));
 }

@@ -282,10 +282,12 @@ mod tests {
 
     // --- GET /health ---
 
-    #[test]
-    fn health_returns_200_ok() {
+    #[tokio::test]
+    async fn health_returns_200_ok() {
         let router = build_router();
-        let res = router.dispatch(&head_of("GET /health HTTP/1.1\r\n\r\n"), b"");
+        let res = router
+            .dispatch(&head_of("GET /health HTTP/1.1\r\n\r\n"), b"")
+            .await;
         assert_eq!(res.status, 200);
         assert_eq!(body_str(&res), "OK");
         // ApiDoc（`body = String`）は `text/plain` としてレンダリングされる
@@ -294,19 +296,23 @@ mod tests {
         assert!(text.contains("Content-Type: text/plain\r\n"));
     }
 
-    #[test]
-    fn health_wrong_method_returns_405() {
+    #[tokio::test]
+    async fn health_wrong_method_returns_405() {
         let router = build_router();
-        let res = router.dispatch(&head_of("POST /health HTTP/1.1\r\n\r\n"), b"");
+        let res = router
+            .dispatch(&head_of("POST /health HTTP/1.1\r\n\r\n"), b"")
+            .await;
         assert_eq!(res.status, 405);
     }
 
     // --- GET /hello/{name} ---
 
-    #[test]
-    fn hello_returns_greeting() {
+    #[tokio::test]
+    async fn hello_returns_greeting() {
         let router = build_router();
-        let res = router.dispatch(&head_of("GET /hello/alice HTTP/1.1\r\n\r\n"), b"");
+        let res = router
+            .dispatch(&head_of("GET /hello/alice HTTP/1.1\r\n\r\n"), b"")
+            .await;
         assert_eq!(res.status, 200);
         assert_eq!(body_str(&res), "Hello, alice!");
         // ApiDoc（`body = String`）は `text/plain` としてレンダリングされる
@@ -317,27 +323,31 @@ mod tests {
 
     // --- GET /users/{id} ---
 
-    #[test]
-    fn users_valid_id_returns_200_json() {
+    #[tokio::test]
+    async fn users_valid_id_returns_200_json() {
         let router = build_router();
-        let res = router.dispatch(&head_of("GET /users/42 HTTP/1.1\r\n\r\n"), b"");
+        let res = router
+            .dispatch(&head_of("GET /users/42 HTTP/1.1\r\n\r\n"), b"")
+            .await;
         assert_eq!(res.status, 200);
         let parsed = body_json(&res);
         assert_eq!(parsed["id"], 42);
         assert_eq!(parsed["name"], "User 42");
     }
 
-    #[test]
-    fn users_invalid_id_returns_400_json() {
+    #[tokio::test]
+    async fn users_invalid_id_returns_400_json() {
         let router = build_router();
-        let res = router.dispatch(&head_of("GET /users/abc HTTP/1.1\r\n\r\n"), b"");
+        let res = router
+            .dispatch(&head_of("GET /users/abc HTTP/1.1\r\n\r\n"), b"")
+            .await;
         assert_eq!(res.status, 400);
         let parsed = body_json(&res);
         assert_eq!(parsed["error"], "invalid id");
     }
 
-    #[test]
-    fn users_by_id_directly_rejects_non_numeric() {
+    #[tokio::test]
+    async fn users_by_id_directly_rejects_non_numeric() {
         // ハンドラ本体（テスト可能な形に切り出した関数）の直接検証。
         let res = users_by_id("-1");
         assert_eq!(res.status, 400);
@@ -345,83 +355,101 @@ mod tests {
 
     // --- POST /echo ---
 
-    #[test]
-    fn echo_valid_json_roundtrips() {
+    #[tokio::test]
+    async fn echo_valid_json_roundtrips() {
         let router = build_router();
-        let res = router.dispatch(
-            &head_of("POST /echo HTTP/1.1\r\n\r\n"),
-            br#"{"message":"hi"}"#,
-        );
+        let res = router
+            .dispatch(
+                &head_of("POST /echo HTTP/1.1\r\n\r\n"),
+                br#"{"message":"hi"}"#,
+            )
+            .await;
         assert_eq!(res.status, 200);
         let parsed = body_json(&res);
         assert_eq!(parsed["message"], "hi");
     }
 
-    #[test]
-    fn echo_invalid_json_returns_400() {
+    #[tokio::test]
+    async fn echo_invalid_json_returns_400() {
         let router = build_router();
-        let res = router.dispatch(&head_of("POST /echo HTTP/1.1\r\n\r\n"), b"not json");
+        let res = router
+            .dispatch(&head_of("POST /echo HTTP/1.1\r\n\r\n"), b"not json")
+            .await;
         assert_eq!(res.status, 400);
         let parsed = body_json(&res);
         assert_eq!(parsed["error"], "invalid json body");
     }
 
-    #[test]
-    fn echo_wrong_method_returns_405() {
+    #[tokio::test]
+    async fn echo_wrong_method_returns_405() {
         let router = build_router();
-        let res = router.dispatch(&head_of("GET /echo HTTP/1.1\r\n\r\n"), b"");
+        let res = router
+            .dispatch(&head_of("GET /echo HTTP/1.1\r\n\r\n"), b"")
+            .await;
         assert_eq!(res.status, 405);
     }
 
     // --- GET /search ---
 
-    #[test]
-    fn search_returns_200_with_query_and_limit() {
+    #[tokio::test]
+    async fn search_returns_200_with_query_and_limit() {
         let router = build_router();
-        let res = router.dispatch(&head_of("GET /search?q=rust&limit=5 HTTP/1.1\r\n\r\n"), b"");
+        let res = router
+            .dispatch(&head_of("GET /search?q=rust&limit=5 HTTP/1.1\r\n\r\n"), b"")
+            .await;
         assert_eq!(res.status, 200);
         let parsed = body_json(&res);
         assert_eq!(parsed["query"], "rust");
         assert_eq!(parsed["limit"], 5);
     }
 
-    #[test]
-    fn search_missing_q_returns_400() {
+    #[tokio::test]
+    async fn search_missing_q_returns_400() {
         let router = build_router();
-        let res = router.dispatch(&head_of("GET /search HTTP/1.1\r\n\r\n"), b"");
+        let res = router
+            .dispatch(&head_of("GET /search HTTP/1.1\r\n\r\n"), b"")
+            .await;
         assert_eq!(res.status, 400);
     }
 
-    #[test]
-    fn search_missing_q_with_limit_only_returns_400() {
+    #[tokio::test]
+    async fn search_missing_q_with_limit_only_returns_400() {
         let router = build_router();
-        let res = router.dispatch(&head_of("GET /search?limit=5 HTTP/1.1\r\n\r\n"), b"");
+        let res = router
+            .dispatch(&head_of("GET /search?limit=5 HTTP/1.1\r\n\r\n"), b"")
+            .await;
         assert_eq!(res.status, 400);
     }
 
-    #[test]
-    fn search_invalid_limit_returns_400() {
+    #[tokio::test]
+    async fn search_invalid_limit_returns_400() {
         let router = build_router();
-        let res = router.dispatch(
-            &head_of("GET /search?q=rust&limit=abc HTTP/1.1\r\n\r\n"),
-            b"",
-        );
+        let res = router
+            .dispatch(
+                &head_of("GET /search?q=rust&limit=abc HTTP/1.1\r\n\r\n"),
+                b"",
+            )
+            .await;
         assert_eq!(res.status, 400);
     }
 
-    #[test]
-    fn search_default_limit_is_ten_when_omitted() {
+    #[tokio::test]
+    async fn search_default_limit_is_ten_when_omitted() {
         let router = build_router();
-        let res = router.dispatch(&head_of("GET /search?q=rust HTTP/1.1\r\n\r\n"), b"");
+        let res = router
+            .dispatch(&head_of("GET /search?q=rust HTTP/1.1\r\n\r\n"), b"")
+            .await;
         assert_eq!(res.status, 200);
         let parsed = body_json(&res);
         assert_eq!(parsed["limit"], 10);
     }
 
-    #[test]
-    fn search_unknown_path_still_returns_404() {
+    #[tokio::test]
+    async fn search_unknown_path_still_returns_404() {
         let router = build_router();
-        let res = router.dispatch(&head_of("GET /missing HTTP/1.1\r\n\r\n"), b"");
+        let res = router
+            .dispatch(&head_of("GET /missing HTTP/1.1\r\n\r\n"), b"")
+            .await;
         assert_eq!(res.status, 404);
     }
 }

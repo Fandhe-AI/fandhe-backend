@@ -1,0 +1,29 @@
+[package]
+name = "fandhe-backend-plugin-compression"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "fandhe-backend のレスポンス圧縮プラグイン（イシュー #321）。gzip での帯域削減を提供する。"
+publish = false
+
+# workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
+# （.claude/rules/coding-rust.md・.claude/rules/security.md）。
+[lints]
+workspace = true
+
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）: 本クレートは
+# `fandhe-backend-core` に依存しない（コア → 本クレートの optional 依存という
+# 単方向のエッジのみを許すため、循環依存を避ける設計上の要件。
+# `crates/plugin-cors`・`crates/plugin-websocket`・`crates/plugin-tracing` と
+# 同一の非循環パターン、`docs/design/plugin-boundary.md` 6.1 節を参照）。
+#
+# 依存は `fandhe-backend-http`（`RequestHead` の参照・`Response::header` /
+# `with_header` の利用）+ `flate2`（gzip 圧縮）のみ。`flate2` は
+# `default-features = false` + `rust_backend`（miniz_oxide 実装）に固定し、
+# C 実装（zlib）へのリンクを排除する（サプライチェーン最小化、
+# `.claude/rules/security.md` A06/A08）。推移的依存は miniz_oxide /
+# crc32fast / adler2 程度に留まる。
+[dependencies]
+fandhe-backend-http = { path = "../http" }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

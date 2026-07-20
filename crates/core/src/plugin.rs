@@ -22,7 +22,11 @@
 //! を追加した。`Middleware::on_response` はレスポンスへの参照を持たない
 //! 観測専用契約のため CORS ヘッダ付与に使えず、「レスポンス後処理型」という
 //! 新パターンが必要になった（`crates/plugin-cors/src/lib.rs` の crate doc・
-//! `docs/design/plugin-boundary.md` の該当節を参照）。
+//! `docs/design/plugin-boundary.md` の該当節を参照）。イシュー #321
+//! （圧縮プラグイン）で本シームの第 2 インスタンスを追加し、複数プラグイン
+//! を逐次適用（CORS → 圧縮の順、body を確定させる圧縮を必ず最後に適用）
+//! できるよう構成した（`crates/plugin-compression/src/lib.rs` の crate doc
+//! を参照）。
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::OwnedSemaphorePermit;
@@ -42,10 +46,11 @@ use crate::server::Server;
 /// 無効」であり、呼び出し元は既定 `Handler::handle`（未登録時 404）へ
 /// フォールスルーする。
 ///
-/// `webrtc-proxy`・`webrtc`・`graphql`・`openapi` のいずれの feature も無効時は
-/// `server`/`head`/`body` を一切参照せず即座に `None` を返す（`cargo tree` で
-/// `fandhe-backend-plugin-webrtc-proxy`・`fandhe-backend-plugin-webrtc`・`fandhe-backend-plugin-graphql`・
-/// `fandhe-backend-plugin-openapi` のいずれも現れないことに加え、本関数自体もコード上
+/// `webrtc-proxy`・`webrtc`・`graphql`・`openapi`・`static` のいずれの feature も
+/// 無効時は `server`/`head`/`body` を一切参照せず即座に `None` を返す
+/// （`cargo tree` で `fandhe-backend-plugin-webrtc-proxy`・`fandhe-backend-plugin-webrtc`・
+/// `fandhe-backend-plugin-graphql`・`fandhe-backend-plugin-openapi`・
+/// `fandhe-backend-plugin-static` のいずれも現れないことに加え、本関数自体もコード上
 /// ゼロコストであることの根拠）。
 /// `graphql` feature は TASK-2.4（#21）で追加した第 2 のプラグイン境界
 /// インスタンスであり、TASK-5.1（#38）で実 GraphQL 実行へ差し替えた
@@ -102,42 +107,71 @@ pub(crate) async fn try_intercept(
 
     // TASK-2.1（#256）: `GET /openapi.json` の静的サービング。`GET /openapi.yaml`
     // （#279、仕様（docs/spec/04-requirements.md）が「json と同等に yaml も提供」と
-    // 明記することへの対応）も同一パターンで追加した。プラグイン側
-    // （`crates/plugin-openapi`）はハンドラを持たず定数 `OPENAPI_JSON` /
-    // `OPENAPI_YAML` を公開するのみのため（`embed.rs` の接続契約）、他の設定登録型
-    // プラグインと異なり `fandhe_backend_plugin_openapi::try_handle_*` のような非同期
-    // 委譲関数は呼ばない。`server.openapi_enabled()` が `true`（明示登録済み）
-    // かつメソッド・パスが完全一致した場合のみ、コンパイル時埋め込みの静的
-    // JSON/YAML をそのまま返す薄い分岐（実行時生成コストゼロ、PoC-4 成功基準 3）。
-    // 未登録時は feature が有効でもフォールスルーする（`webrtc-proxy`・
-    // `graphql` と同じ設定登録型パターン、`Server::openapi` の doc を参照）。
-    // json/yaml は `head.target` の完全一致（クエリ付きはフォールスルー）で
-    // 排他的に分岐し、両方とも同一の opt-in トグル（`openapi_enabled`）を共有する。
+    // 明記することへの対応）も同一パターンで追加した。イシュー #320 で
+    // `server.openapi_enabled(): bool` を `server.openapi_registration(): &OpenApiRegistration`
+    // へ差し替え、フレームワーク固定スキーマ（`Embedded`）と利用者アプリ独自
+    // スキーマ（`Custom`、`crates/plugin-openapi/src/custom.rs::OpenApiDoc`）の
+    // 2 系統を同一分岐で扱う。`Disabled`（既定）時は feature が有効でも常に
+    // フォールスルーする（`webrtc-proxy`・`graphql` と同じ設定登録型パターン、
+    // `Server::openapi` / `Server::openapi_with` の doc を参照）。json/yaml は
+    // `head.target` の完全一致（クエリ付きはフォールスルー）で排他的に分岐し、
+    // 両方とも同一の登録状態（`openapi_registration`）を共有する。
     #[cfg(feature = "openapi")]
     {
-        if server.openapi_enabled() && head.method == "GET" && head.target == "/openapi.json" {
-            return Some(
-                Response::new(
-                    200,
+        use crate::server::OpenApiRegistration;
+
+        if head.method == "GET" && head.target == "/openapi.json" {
+            let body = match server.openapi_registration() {
+                OpenApiRegistration::Disabled => None,
+                OpenApiRegistration::Embedded => Some(
                     fandhe_backend_plugin_openapi::OPENAPI_JSON
                         .as_bytes()
                         .to_vec(),
-                )
-                .with_content_type("application/json"),
-            );
+                ),
+                OpenApiRegistration::Custom(doc) => Some(doc.json().to_vec()),
+            };
+            if let Some(body) = body {
+                return Some(Response::new(200, body).with_content_type("application/json"));
+            }
         }
-        if server.openapi_enabled() && head.method == "GET" && head.target == "/openapi.yaml" {
-            return Some(
-                Response::new(
-                    200,
+        if head.method == "GET" && head.target == "/openapi.yaml" {
+            let body = match server.openapi_registration() {
+                OpenApiRegistration::Disabled => None,
+                OpenApiRegistration::Embedded => Some(
                     fandhe_backend_plugin_openapi::OPENAPI_YAML
                         .as_bytes()
                         .to_vec(),
-                )
-                // RFC 9512 が定める YAML の正式メディアタイプ。MIME スニッフィング
-                // の余地を残さないため常に明示する（`.claude/rules/security.md` A05）。
-                .with_content_type("application/yaml"),
-            );
+                ),
+                // `with_yaml` 未登録（`yaml()` が `None`）なら既定 `Handler`
+                // へフォールスルーする（`OpenApiDoc::with_yaml` の doc を参照）。
+                OpenApiRegistration::Custom(doc) => doc.yaml().map(<[u8]>::to_vec),
+            };
+            if let Some(body) = body {
+                return Some(
+                    Response::new(200, body)
+                        // RFC 9512 が定める YAML の正式メディアタイプ。MIME
+                        // スニッフィングの余地を残さないため常に明示する
+                        // （`.claude/rules/security.md` A05）。
+                        .with_content_type("application/yaml"),
+                );
+            }
+        }
+    }
+
+    // イシュー #318: 静的ファイル配信プラグイン。`server.static_files_config()`
+    // が `Some`（明示登録済み）の場合のみ `fandhe_backend_plugin_static::try_handle_static`
+    // へ委譲する（`graphql`・`openapi` と同じ設定登録型パターン、未登録時は
+    // feature が有効でもフォールスルー）。ファイル I/O は
+    // `fandhe_backend_plugin_static` 側の `spawn_blocking` に閉じており、
+    // 本関数（ひいては `handle_connection` の非同期タスク）を直接ブロック
+    // しない（`.claude/rules/coding-rust.md`）。
+    #[cfg(feature = "static")]
+    {
+        if let Some(config) = server.static_files_config()
+            && let Some(response) =
+                fandhe_backend_plugin_static::try_handle_static(head, config).await
+        {
+            return Some(response);
         }
     }
 
@@ -274,7 +308,8 @@ fn from_graphql_response(response: fandhe_backend_plugin_graphql::Response) -> R
     Response::new(response.status, response.body).with_content_type(response.content_type)
 }
 
-/// レスポンス後処理型シーム（イシュー #305、CORS プラグイン）。
+/// レスポンス後処理型シーム（イシュー #305、CORS プラグインで新設。
+/// イシュー #321 で圧縮プラグインの第 2 インスタンスを追加）。
 ///
 /// `handle_connection_with_permit`（`crates/core/src/server.rs`）が
 /// `try_intercept` 応答・既定 `Handler` 応答のいずれかを確定させた直後、
@@ -284,9 +319,13 @@ fn from_graphql_response(response: fandhe_backend_plugin_graphql::Response) -> R
 /// 既定 `Handler` 応答にも同一の後処理を適用できる、`Handler` ラッパー方式
 /// にはない利点を持つ（`docs/design/plugin-boundary.md` の設計比較を参照）。
 ///
-/// `cors` feature 無効時、または `Server::cors` 未登録時は `response` を
-/// 無改変で返す（他のプラグインと同じ「設定登録型」のフォールスルー、
-/// pay-for-what-you-use）。
+/// 登録済みプラグインへ**逐次適用**する（CORS → 圧縮の順固定。圧縮は
+/// body を確定させる後処理のため必ず最後、`crates/plugin-compression/
+/// src/lib.rs` の crate doc を参照）。`cors` / `compression` いずれの
+/// feature も無効、または対応する `Server::cors` / `Server::compression`
+/// が未登録の場合はそれぞれの適用をスキップし、両方スキップ時は
+/// `response` を無改変で返す（他のプラグインと同じ「設定登録型」の
+/// フォールスルー、pay-for-what-you-use）。
 ///
 /// # プリフライトとの二重付与防止
 ///
@@ -315,19 +354,34 @@ pub(crate) fn finalize_response(
     head: &RequestHead,
     response: Response,
 ) -> Response {
+    #[allow(unused_mut)]
+    let mut response = response;
+
     #[cfg(feature = "cors")]
     {
         if let Some(config) = server.cors_config()
             && !fandhe_backend_plugin_cors::is_preflight(head)
         {
-            return fandhe_backend_plugin_cors::apply_cors_headers(head, config, response);
+            response = fandhe_backend_plugin_cors::apply_cors_headers(head, config, response);
         }
     }
 
-    #[cfg(not(feature = "cors"))]
+    // イシュー #321: 圧縮は「最終 body を確定させる後処理」のため、他の
+    // レスポンス後処理型プラグイン（現状は CORS のみ）より必ず後に適用する
+    // （CORS はヘッダのみで body に触れないため実害はないが、規約として
+    // 明文化する。`crates/plugin-compression/src/lib.rs` の crate doc を
+    // 参照）。
+    #[cfg(feature = "compression")]
     {
-        let _ = (server, head);
+        if let Some(config) = server.compression_config() {
+            response = fandhe_backend_plugin_compression::apply_compression(head, config, response);
+        }
     }
+
+    // feature 構成によっては上の cfg ブロックの一部・全部が消え、引数が
+    // 未使用になりうる（`try_intercept` と同じ理由。冒頭の doc を参照）。
+    // 参照型（`Copy`）の再読み込みは各分岐での使用有無に関わらず安全。
+    let _ = (server, head);
 
     response
 }

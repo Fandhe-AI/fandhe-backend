@@ -498,21 +498,37 @@ PoC-10 の知見（非同期 I/O 化だけでは RPS 劣化 31.6% を解消で�
   は `fandhe_backend_plugin_*::try_handle_*(head, body, config).await` という
   非同期関数へ委譲するが、`fandhe-backend-plugin-openapi` は定数
   `OPENAPI_JSON` / `OPENAPI_YAML`（`include_str!` によるコンパイル時埋め込み、
-  `embed.rs`。YAML 対応は #279）を公開するのみでハンドラを持たない
-  （`crates/plugin-openapi/src/lib.rs` の「拡張点対応: 非該当」宣言はこのため
-  変更していない。実行時拡張点の契約ではなくコンパイル時 feature 着脱に閉じる、
+  `embed.rs`。YAML 対応は #279）またはイシュー #320 で追加した
+  `OpenApiDoc`（利用者アプリ独自スキーマ、`custom.rs`）のバイト列を公開
+  するのみでハンドラを持たない（`crates/plugin-openapi/src/lib.rs` の
+  「拡張点対応: 非該当」宣言はこのため変更していない。実行時拡張点の契約
+  ではなくコンパイル時 feature 着脱に閉じる、
   `docs/design/dependency-graph-contract.md` 5 節）。`plugin::try_intercept`
-  側は `server.openapi_enabled() && head.method == "GET" &&
-  head.target == "/openapi.json"`（YAML は `/openapi.yaml`）を判定するだけの
-  同期分岐で完結し、`.await` を挟まない
-- **設定登録型（`bool` トグル）**: `webrtc_proxy_config`/`graphql_config` の
-  ような設定値ではなく、`Server::openapi()` は `openapi_enabled: bool` を
-  `true` にするだけの opt-in トグル（json/yaml 共通）。API 構造の開示
-  （`GET /openapi.json` / `GET /openapi.yaml` が内部エンドポイント構成を
-  露出する）を利用者の明示登録なしに既定公開しないため
-  （`.claude/rules/security.md` A01/A05 観点、`Server::openapi` の doc
-  comment を参照）。未登録時は feature が有効でも常にフォールスルー（404）
-  する点は他の設定登録型プラグイン（`webrtc-proxy`・`graphql`）と同じ
+  側は `head.method == "GET" && head.target == "/openapi.json"`（YAML は
+  `/openapi.yaml`）とメソッド・パスの完全一致を判定したうえで
+  `server.openapi_registration()`（後述の enum）を参照するだけの同期分岐で
+  完結し、`.await` を挟まない
+- **設定登録型（enum、イシュー #320 で `bool` トグルから移行）**:
+  `webrtc_proxy_config`/`graphql_config` と同様の「設定登録型」パターンだが、
+  `Server::openapi()` / `Server::openapi_with(doc)` の 2 メソッドが同一の
+  非公開 `OpenApiRegistration`（`Disabled` / `Embedded` / `Custom(OpenApiDoc)`）
+  へ書き込む。`Disabled`（既定）では feature が有効でも常にフォールスルー
+  （404）する点は他の設定登録型プラグイン（`webrtc-proxy`・`graphql`）と
+  同じ。`Embedded` はフレームワーク固定スキーマ（`OPENAPI_JSON`/
+  `OPENAPI_YAML`）、`Custom` は利用者アプリが `OpenApiDoc::from_json` で
+  検証済みの独自スキーマを配信する。API 構造の開示（内部エンドポイント
+  構成の露出）を利用者の明示登録なしに既定公開しないため
+  （`.claude/rules/security.md` A01/A05 観点、`Server::openapi` /
+  `Server::openapi_with` の doc comment を参照）。両メソッドは排他ではなく
+  **後勝ち**（最後に呼んだ方の variant が残る、builder パターンの一般的な
+  直感に一致。`crates/core/src/server.rs` の `OpenApiRegistration` doc・
+  `crates/core/tests/plugin_openapi_boundary.rs` の
+  `openapi_with_takes_precedence_over_earlier_openapi_call` /
+  `openapi_takes_precedence_over_earlier_openapi_with_call` を参照）。
+  `Custom` の JSON 検証（構文妥当性 + トップレベルオブジェクト）は
+  `OpenApiDoc::from_json` 構築時（利用者アプリの起動シーケンス内）に一度
+  だけ行い、リクエスト処理経路（`try_intercept`）では再検証しない
+  （fail-closed、`crates/plugin-openapi/src/custom.rs` の doc を参照）
 
 ## 5.9 レスポンス後処理型パターン（イシュー #305 で確立）
 
@@ -590,6 +606,131 @@ graphql/openapi 応答が CORS 対象外になってしまう。「レスポン�
 素の関数ポインタで満たせるため、`crates/plugin-cors` は
 `fandhe-backend-routes` にも依存しない。
 
+## 5.10 レスポンス後処理型パターンの第 2 インスタンス（イシュー #321、圧縮）
+
+`crates/plugin-compression`（`compression` feature）は 5.9 節が確立した
+「レスポンス後処理型」シームの 2 例目。CORS がプリフライト・実リクエスト
+ヘッダ付与の 2 層構成を要したのに対し、圧縮は単層（実リクエスト応答の
+body 書き換えのみ）で完結する。
+
+### 5.10.1 逐次適用順（CORS → 圧縮固定）
+
+`finalize_response` は複数のレスポンス後処理型プラグインを**逐次適用**
+できるよう再構成した（5.9.2 節時点は CORS 単独のため早期 return で足りたが、
+2 例目の追加でこの構造は成り立たなくなった）。適用順は CORS → 圧縮の順に
+固定する。理由は圧縮が「最終 body を確定させる後処理」であり、以降に
+別の後処理型プラグインが body へ触れる余地を残さないため。CORS はヘッダ
+のみで body に触れないため本イシュー時点では順序自体が結果へ影響しないが、
+将来 body に触れる 3 例目が追加された際に迷わないよう、規約として
+明文化する。
+
+### 5.10.2 圧縮判定条件と `Response::header` の新設
+
+CORS 実装時は `Response` に読み取り API（ゲッター）が存在しなくても
+（`Origin` ヘッダの有無で分岐するだけで）成立したが、圧縮判定は自身が
+下す前の**レスポンス側の状態**（実効 `Content-Type`・既存 `Content-Encoding`
+の有無）を読む必要がある。この必要から `crates/http/src/response.rs` に
+[`Response::header`](../../crates/http/src/response.rs) を追加した（イシュー
+#301 で追加された `with_header` の書き込み系 API 群に対する読み取り系の
+初例）。`serialize` の優先順位（専用フィールド `content_type` が
+`extra_headers` の同名エントリより優先）と同じ解決順序を維持することで、
+圧縮判定が見る値と実際にワイヤへ出る値の乖離を防ぐ。
+
+### 5.10.3 CPU コストと「同期ブロッキング I/O 禁止」規約の非該当性
+
+`Middleware` の同期ブロッキング I/O 禁止規約（`.claude/rules/coding-rust.md`、
+PoC-3・5.7.4 節）は I/O 待ちで tokio ワーカスレッドを占有する挙動を対象と
+する。gzip 圧縮は同期だが CPU バウンドの処理であり、I/O 待ちを発生させない
+（ネットワーク・ディスク双方に触れない、メモリ上の `Vec<u8>` 変換のみ）。
+このため本規約の対象外と判断した。ただし CPU 処理自体のコストがゼロに
+なるわけではなく、作業量はコア既存のリクエストボディサイズ上限
+（`fandhe_backend_http::body::MAX_BODY_BYTES`）・ハンドラの生成物サイズに
+より有界という前提の上に成り立つ。巨大応答の圧縮を tokio ワーカから
+切り離す `spawn_blocking` 化・チャンク単位のストリーミング圧縮は
+スコープ外とし、`.claude/rules/out-of-scope-tracking.md` に従い後続課題
+として追跡する（#319 のレスポンス側ストリーミング送信に依存するため、
+その完了後に着手可能になる）。
+
+### 5.10.4 BREACH 類似リスクと opt-in 設計の関係
+
+TLS 上の圧縮応答で秘密情報と攻撃者制御入力が混在すると、圧縮後サイズの
+観測から秘密が推測されうる（BREACH 類似の攻撃）。本プラグインはこの
+リスクを実装で完全には解消できない（HTTP 層の圧縮機構そのものに内在する
+特性のため）。他の設定登録型プラグインと同じ「未登録なら feature が
+有効でも無効化」という opt-in 設計が、このリスクに対する第一の防御線
+として機能する。加えて `CompressionConfig` の対象 `Content-Type`
+許可リスト・最小サイズ閾値を利用者が調整できる API を提供し、秘密情報を
+含みやすいエンドポイントを個別に対象外化できるようにした
+（`crates/plugin-compression/src/lib.rs` の crate doc・`CompressionConfigBuilder::compressible_types`
+の doc を参照。具体的な攻撃手順はここに記載しない、
+`.claude/rules/feasibility-guardrail.md` の方針）。
+
+### 5.10.5 循環依存の回避・依存関係
+
+`crates/plugin-compression` 自体は `fandhe-backend-core` に依存しない
+（`fandhe-backend-http` + `flate2` にのみ依存する下位層）。`crates/plugin-cors`
+と同一の非循環パターンであり、コア側が `optional = true` + `dep:` 構文で
+本クレートへ依存する（6.1 節の `scripts/dep-direction-check.sh` ホワイト
+リスト例外 6 を参照）。
+
+## 5.11 パスインターセプト型の `spawn_blocking` ファイル I/O 変種（イシュー #318 で確立）
+
+`fandhe-backend-plugin-static`（静的ファイル配信プラグイン）は `try_intercept`
+（4 節）を使う設定登録型プラグインだが、他の `try_intercept` 実装（GraphQL・
+WebRTC 中継）が非同期の上流通信を要するのに対し、本プラグインは同期的な
+ファイルシステム I/O（`canonicalize`・`metadata`・`read`）を要する点が異なる。
+
+### 5.11.1 なぜ `Router` ハンドラ（同期シグネチャ）に載せられないか
+
+`fandhe_backend_routes::Router` へ登録するハンドラは
+`Fn(&RequestHead, &[u8]) -> Response` という同期シグネチャに固定されている
+（`crates/routes` の設計）。ファイル読み込みは（大きなファイル・低速ストレージ
+下で）ブロッキング I/O であり、`.claude/rules/coding-rust.md` の「Tokio 上で
+ブロッキング処理を await スレッドで実行しない」規約により `spawn_blocking` へ
+逃がす必要があるが、同期ハンドラの内部から非同期 `spawn_blocking().await` を
+呼ぶことはできない。そのため `Router` 経由ではなく、`try_intercept`
+（非同期シーム）へ `Server::static_files(config)` の設定登録型として配線する。
+
+### 5.11.2 `spawn_blocking` の隔離範囲
+
+`fandhe_backend_plugin_static::try_handle_static`（非同期）はメソッド・
+マウントプレフィックス判定・字句検証（`.`/`..`/空/NUL/`\`/先頭ドット
+セグメント拒否）までを同期で行い、実際のファイルシステム呼び出し（`canonicalize`・
+`metadata`・`read`）のみを単一の `tokio::task::spawn_blocking` クロージャへ
+まとめて委譲する（`crates/plugin-static/src/lib.rs` の `resolve_and_read`）。
+`spawn_blocking` 自体が失敗する（内部で panic した）場合もフェイルクローズで
+404 を返し、`try_intercept` 呼び出し元（`handle_connection` の非同期タスク）を
+ブロックしない。
+
+### 5.11.3 フェイルクローズ設計（二層防御）
+
+1. **I/O 前の字句検証**: 末尾パスをセグメント分割し、空・`.`・`..`・NUL・
+   `\`・先頭が `.` のセグメント（ドットファイル・ドットディレクトリ）を
+   含むセグメントを拒否する。パーセントデコードは行わない
+   （`crates/routes/src/pattern.rs` の `is_safe_segment_value` と同一の
+   「正規化しない」方針を踏襲）。先頭ドット拒否は、公開 root 配下に
+   `.env`・`.git/config`・`.htpasswd` 等の機密ファイルが置かれた場合の
+   意図しない配信（OWASP A01/A05）を防ぐフェイルクローズ判断で、イシュー
+   #318 のレビュー指摘（`.` 始まり通常ファイル名が拒否対象から漏れていた）
+   を受けて追加した
+2. **`canonicalize` 後の実パス検証**: 正規化済み実パスが正規化済み root
+   配下（`starts_with`）であることを確認し、シンボリックリンク経由の
+   root 脱出を拒否する
+
+ファイル未検出・検証失敗・権限エラー・サイズ超過（`max_file_bytes`）は
+一律 404（存在オラクル・列挙を作らないフェイルクローズ、
+`.claude/rules/security.md`）。ディレクトリリスティングは実装しない。
+
+### 5.11.4 循環依存の回避・依存関係
+
+`crates/plugin-static` 自体は `fandhe-backend-core` に依存しない
+（`fandhe-backend-http` のみに依存する下位層）。`fandhe-backend-plugin-websocket`・
+`fandhe-backend-plugin-cors` と同一の非循環パターンであり、コア側が
+`optional = true` + `dep:` 構文で本クレートへ依存する（6.1 節の
+`scripts/dep-direction-check.sh` ホワイトリスト例外 7 を参照）。MIME 推定は
+crate 内蔵の静的テーブル（`src/mime.rs`）で行うため、外部 crates.io 依存
+（`mime_guess` 等）は追加しない。
+
 ## 6. 検証コマンド
 
 | 検証 | コマンド | 期待結果 |
@@ -666,6 +807,21 @@ websocket と同型（`fandhe-backend-plugin-tracing` → `fandhe-backend-core` 
 生む workspace 内 path 依存エッジであり、`fandhe-backend-plugin-cors` 自体は
 websocket/tracing と同型で `fandhe-backend-core` に依存しない非循環パターン。
 チェック 3 の例外シンボルパターンにも `fandhe_backend_plugin_cors` を追加している。
+
+イシュー #321 で `fandhe-backend-core:fandhe-backend-plugin-compression` を 6 件目の
+例外として追加した。5.10 節のとおりレスポンス後処理型シームの第 2
+インスタンスであり、`fandhe-backend-plugin-compression` 自体は cors/websocket/
+tracing と同型で `fandhe-backend-core` に依存しない非循環パターン。
+チェック 3 の例外シンボルパターンにも `fandhe_backend_plugin_compression`/
+`compression_config` を追加している。
+
+イシュー #318 で `fandhe-backend-core:fandhe-backend-plugin-static` を 7 件目の
+例外として追加した。5.11 節のとおりパスインターセプト型 `try_intercept`
+（4 節）の `spawn_blocking` ファイル I/O 変種であり、
+`fandhe-backend-plugin-static` 自体は cors/compression/websocket/tracing と
+同型で `fandhe-backend-core` に依存しない非循環パターン。チェック 3 の
+例外シンボルパターンにも `fandhe_backend_plugin_static`/`static_files` を
+追加している。
 
 ## 7. スコープ外（別タスクで対応）
 

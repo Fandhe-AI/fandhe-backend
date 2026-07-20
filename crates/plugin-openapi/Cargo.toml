@@ -23,14 +23,13 @@ workspace = true
 utoipa = { version = "5", default-features = true }
 serde = { version = "1", features = ["derive"] }
 
-# gen-cli feature（TASK-3.2、#31）専用の optional 依存。`gen-cli` 無効時（サーバ側から
-# lib として参照される通常経路）は `dep:` 構文により Cargo.lock 解決対象にも
-# `cargo tree` にも一切現れない（pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
-serde_json = { version = "1", optional = true }
-
-# ApiDoc::openapi() の JSON シリアライズ結果を検証するためのみ。本体ビルド
-# （lib.rs 以下、utoipa 経由の実行時コスト）には影響しない。
-[dev-dependencies]
+# イシュー #320（`custom.rs::OpenApiDoc::from_json` の JSON 構文検証）で通常
+# 依存へ変更した。従来は `gen-cli` feature 限定の optional 依存だったが、
+# `utoipa`（上記、常に有効）が推移的に `serde_json` を引き込むため、通常
+# 依存化しても `cargo tree` 上の推移依存差はゼロ（`docs/dep-impact/records.md`
+# に証跡を記録）。pay-for-what-you-use は「feature 無効時に依存が増えない
+# こと」を要求するのであって「常時有効な依存を持たないこと」は要求しない
+# （`.claude/rules/pay-for-what-you-use.md`）ため、この変更は同原則に反しない。
 serde_json = "1"
 
 # gen-openapi CLI（TASK-3.2、#31。YAML 生成は #279）: `ApiDoc::openapi()` を
@@ -43,12 +42,12 @@ serde_json = "1"
 # 仕様が名指しする YAML 変換手段の候補には serde_yaml もあったが、serde_yaml は
 # unmaintained（RUSTSEC 情報勧告あり）のため、utoipa 公式の `yaml` feature が
 # 使う保守フォーク serde_norway を採用した（`.claude/rules/security.md` A06）。
-# `gen-cli` 無効時（サーバ側から lib として参照される通常経路）は `dep:` /
-# feature 依存構文により utoipa/yaml も serde_norway も Cargo.lock 解決対象・
+# `gen-cli` 無効時（サーバ側から lib として参照される通常経路）は feature
+# 依存構文により utoipa/yaml も serde_norway も Cargo.lock 解決対象・
 # `cargo tree` のいずれにも一切現れない
 # （pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）。
 [features]
-gen-cli = ["dep:serde_json", "utoipa/yaml"]
+gen-cli = ["utoipa/yaml"]
 
 [[bin]]
 name = "gen-openapi"

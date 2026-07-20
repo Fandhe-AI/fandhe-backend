@@ -152,6 +152,30 @@ doc test・examples を同期/非同期の二系統で保守するコストが�
 各イシューは `.claude/rules/feature-modification.md` の完遂判定 3 条件
 （`ci-complete` 緑・受け入れ基準充足・ドキュメント追随完了）に従う。
 
+### 6.1 実装対応（イシュー #315）
+
+上記 5 ステップをイシュー #315 で一括実装した。設計からの実装時の調整点:
+
+- `HandlerFuture` にライフタイムパラメータを持たせず（常に `'static`）、
+  `Router::dispatch` 自体は同期関数のまま `HandlerFuture` を返す形にした
+  （5 節で示した「ルーティング解決は同期・ハンドラ実行のみ非同期」の方針を、
+  HRTB（`for<'a> Fn(...) -> HandlerFuture<'a>`）を使わずに実現する。HRTB は
+  クロージャの型推論・借用検査で摩擦が大きく、`route_async` / `route_param_async`
+  が要求する `Fut: 'static` 契約と組み合わせると実質的にライフタイム
+  パラメータの恩恵がないため）。
+- `Router::route` / `Router::route_param`（同期 API）は非破壊のまま維持し、
+  内部で `Box::pin(std::future::ready(...))` へ適合させるアダプタとした
+  （5 節の方針どおり）。`Router::route_async` / `Router::route_param_async`
+  （新規 async 登録 API）を追加し、`Fut: Future<Output = Response> + Send +
+  'static` を要求する。
+- `crates/routes` の `[dev-dependencies]` に `tokio`（`rt` + `macros` のみ）を
+  追加した。doc test・`#[tokio::test]` 統合テストでのみ使用し、normal 依存
+  グラフには一切現れない（`cargo tree -p fandhe-backend-routes -e normal` で
+  確認済み。この経路には `crates/http` 経由の tokio が既に存在するため純増ではない）。
+- 受け入れテストは `crates/routes/tests/async_handler.rs`（`Router` 単体の
+  登録・優先順位契約）と `crates/core/tests/async_handler.rs`（実 TCP 接続
+  経由、sleep await・並行性・panic 境界の統合テスト）の 2 層で構成した。
+
 ## 7. DoS・安全性考慮
 
 - **長時間 pending との相互作用**: async ハンドラが長時間 `.await` で止まる場合でも、
