@@ -250,7 +250,7 @@ impl RequestHead {
         }
         let segments: Vec<&str> = raw_headers
             .iter()
-            .flat_map(|h| h.split(';').map(str::trim))
+            .flat_map(|h| h.split(';').map(trim_ows_str))
             .collect();
         if segments.len() > crate::cookie::MAX_COOKIE_COUNT {
             return Err(crate::cookie::CookieError::TooManyCookies);
@@ -571,6 +571,21 @@ fn trim_ows(bytes: &[u8]) -> &[u8] {
         .rposition(|b| !is_ows(b))
         .map_or(start, |p| p + 1);
     &bytes[start..end]
+}
+
+/// `&str` 版の OWS（SP `0x20` / HTAB `0x09`）trim。
+///
+/// `str::trim()` は Unicode の空白文字全般（NBSP・BOM 等）を除去してしまい、
+/// HTTP OWS（RFC 9110 §5.6.3 の SP/HTAB のみ）の定義より広くトリムしてしまう。
+/// `Cookie` ヘッダの pair 分割（[`crate::cookie::parse_cookie_header`]・
+/// [`RequestHead::cookies`]）では OWS 以外の Unicode 空白を trim してはならない
+/// （trim 後の値が意図せず変化し、本来 `InvalidCookiePair` になるべき pair が
+/// 誤って受理される fail-closed 契約の後退を防ぐ）。
+///
+/// SP/HTAB は ASCII の 1 バイト文字であり UTF-8 の継続バイト（`0x80..=0xBF`）とは
+/// 重ならないため、バイト境界での trim は UTF-8 境界を破壊しない。
+pub(crate) fn trim_ows_str(s: &str) -> &str {
+    s.trim_matches(|c: char| c == ' ' || c == '\t')
 }
 
 #[cfg(test)]
@@ -901,6 +916,19 @@ mod tests {
         let buf = b"GET / HTTP/1.1\r\nHost: h\r\ncookie: a=1\r\nCOOKIE: b=2\r\n\r\n";
         let (head, _) = complete(buf);
         assert_eq!(head.cookies().unwrap(), vec![("a", "1"), ("b", "2")]);
+    }
+
+    #[test]
+    fn cookies_unicode_whitespace_around_pair_is_not_trimmed() {
+        // NBSP（U+00A0）は HTTP OWS（SP/HTAB）ではないため `RequestHead::cookies`
+        // でも trim してはならない（`crate::cookie` の同名テストと対の固定、
+        // `str::trim()` の Unicode 空白全般 trim を使わない契約の回帰防止）。
+        let buf = "GET / HTTP/1.1\r\nHost: h\r\ncookie: a=1;\u{a0}b=2\r\n\r\n".as_bytes();
+        let (head, _) = complete(buf);
+        assert_eq!(
+            head.cookies().unwrap_err(),
+            crate::cookie::CookieError::InvalidCookiePair
+        );
     }
 
     #[test]

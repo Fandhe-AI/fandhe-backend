@@ -37,7 +37,9 @@
 //! - `cookie-name` は空を許容しない（空名は構文違反）
 //! - `cookie-value` は空を許容する（`k=` は valid）
 //! - DQUOTE で囲んだ値は両端の引用符を除去した内側を返す（除去する契約）
-//! - pair 前後の OWS（`; ` 区切りの空白）は trim する
+//! - pair 前後の OWS（RFC 9110 §5.6.3、SP `0x20` / HTAB `0x09` のみ）は trim する。
+//!   `str::trim()` の Unicode 空白全般 trim は使わない（NBSP・BOM 等を誤って除去し
+//!   fail-closed 契約を弱めるため、[`crate::request::trim_ows_str`] を使う）
 //!
 //! # 読み取り側: 不正組の扱い（fail-closed。受け入れ条件 1）
 //!
@@ -232,7 +234,7 @@ pub fn parse_cookie_header(value: &str) -> Result<Vec<(&str, &str)>, CookieError
     if value.len() > MAX_COOKIE_STRING_BYTES {
         return Err(CookieError::CookieStringTooLarge);
     }
-    let segments: Vec<&str> = value.split(';').map(str::trim).collect();
+    let segments: Vec<&str> = value.split(';').map(crate::request::trim_ows_str).collect();
     if segments.len() > MAX_COOKIE_COUNT {
         return Err(CookieError::TooManyCookies);
     }
@@ -627,6 +629,26 @@ mod tests {
         assert_eq!(
             parse_cookie_header("a=b,c").unwrap_err(),
             CookieError::InvalidCookiePair
+        );
+    }
+
+    #[test]
+    fn unicode_whitespace_around_pair_is_not_trimmed() {
+        // NBSP（U+00A0）は HTTP OWS（SP/HTAB）ではないため trim してはならない。
+        // `str::trim()` は NBSP を除去してしまうが、それは fail-closed 契約を
+        // 弱める（本来 tchar 違反で `InvalidCookiePair` になるべき）。
+        assert_eq!(
+            parse_cookie_header("a=1;\u{a0}b=2").unwrap_err(),
+            CookieError::InvalidCookiePair
+        );
+    }
+
+    #[test]
+    fn ascii_ows_around_pair_is_still_trimmed() {
+        // SP/HTAB（HTTP OWS）は引き続き trim される（回帰防止）。
+        assert_eq!(
+            parse_cookie_header("a=1; \t b=2\t ").unwrap(),
+            vec![("a", "1"), ("b", "2")]
         );
     }
 
