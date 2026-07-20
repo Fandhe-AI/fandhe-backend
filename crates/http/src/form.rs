@@ -1,6 +1,7 @@
 //! `application/x-www-form-urlencoded` ボディパーサ（sans-IO、イシュー #308）。
 //!
-//! [`crate::routes::RouteHandler`]（`Box<dyn Fn(&RequestHead, &[u8]) -> Response>`）は
+//! 上位層 `fandhe-backend-routes` クレートの `RouteHandler`
+//! （`Box<dyn Fn(&RequestHead, &[u8]) -> Response>`）は
 //! ボディを `&[u8]` のまま渡す契約であり、フォーム POST（`k=v&k2=v2`）の解釈は
 //! ハンドラ側の責務として残されていた。本モジュールはその分解処理を
 //! `crates/http` クレート内へ集約し、[`crate::query`]（`&`/`=` 分解、イシュー #306）・
