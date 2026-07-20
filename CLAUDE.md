@@ -54,7 +54,13 @@ fandhe-backend/
 │   │                                    # シーム（`crate::plugin::finalize_response`）経由で実
 │   │                                    # リクエストへ CORS ヘッダを付与し、プリフライトは利用者が
 │   │                                    # `fandhe_backend_plugin_cors::preflight_response` を
-│   │                                    # `Router::options_fallback`（#304）へ直接配線する 2 点構成
+│   │                                    # `Router::options_fallback`（#304）へ直接配線する 2 点構成。
+│   │                                    # `BoundServer::run_until(shutdown)` で graceful shutdown
+│   │                                    # （accept 停止 → in-flight 完了待ち → grace 超過時強制
+│   │                                    # クローズ）に対応（既存 `run()` は `run_until` への薄い
+│   │                                    # 委譲として後方互換を維持、`Server::shutdown_grace_period`
+│   │                                    # で待機上限を設定可能、イシュー #313。
+│   │                                    # `docs/design/graceful-shutdown.md` 参照）
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。chunked
 │   │                                    # Transfer-Encoding 対応（sans-IO `ChunkedDecoder`、
@@ -86,7 +92,12 @@ fandhe-backend/
 │   │                                    # JSON エラーボディ標準形 `{"error":"..."}` を手実装
 │   │                                    # エスケープで直列化、`message` は `&'static str` 限定で
 │   │                                    # スタックトレース・内部情報の流出経路を型レベルで排除、
-│   │                                    # イシュー #310）。`Router::route_async` /
+│   │                                    # イシュー #310）。`Router::fallback` /
+│   │                                    # `Router::fallback_with` で静的・パラメータいずれのルートにも
+│   │                                    # 一致しなかったリクエストの共通処理（カスタム 404・SPA の
+│   │                                    # index.html 返却等）を登録可能にし、`FallbackPolicy` で
+│   │                                    # 405（メソッド不一致）も委譲するかを個別選択（既定は 404
+│   │                                    # のみ委譲する安全側、イシュー #316）。`Router::route_async` /
 │   │                                    # `route_param_async` で async ハンドラを登録可能にし、
 │   │                                    # 既定ハンドラ契約（`crates/core` の `Handler::handle`）を
 │   │                                    # `fandhe_backend_routes::HandlerFuture`（boxed future）
