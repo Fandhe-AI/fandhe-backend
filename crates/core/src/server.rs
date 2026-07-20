@@ -158,9 +158,22 @@ const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(10);
 /// （TASK-1.5 / #14、下記 `impl Handler for fandhe_backend_routes::Router` 参照）を
 /// 直接登録できるほか、トイハンドラ・テスト用の固定レスポンダ等の任意実装も
 /// 引き続き受け付ける。
+///
+/// イシュー #315（`docs/design/async-handler.md` 採用案 (c)）で async 契約へ
+/// 移行した。3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）は
+/// 意図的に同期のまま据え置き、本トレイトのみ async 化する非対称設計である点に
+/// 注意（`extension.rs` モジュール doc の対比記載も参照）。戻り値は
+/// `fandhe_backend_routes::HandlerFuture`（`Pin<Box<dyn Future<Output = Response> +
+/// Send>>`、`'static` 契約）で、`async-trait` 等の外部依存を追加せず std のみで
+/// 型消去する。実装者はハンドラ本体で `sqlx` 等の非同期 I/O を直接 `.await` できる。
 pub trait Handler: Send + Sync {
-    /// リクエストヘッドと body からレスポンスを組み立てる。
-    fn handle(&self, head: &RequestHead, body: &[u8]) -> Response;
+    /// リクエストヘッドと body からレスポンスを組み立てる future を返す。
+    ///
+    /// 呼び出し元（[`handle_connection`]）が `.await` する。ハンドラ内 panic は
+    /// 接続単位で spawn されたタスク内に閉じ込められ、他コネクションの処理を
+    /// 妨げない（`docs/design/async-handler.md` 7 節、`crates/core/tests/
+    /// async_handler.rs` で実証）。
+    fn handle(&self, head: &RequestHead, body: &[u8]) -> fandhe_backend_routes::HandlerFuture;
 }
 
 /// `fandhe_backend_routes::Router`（依存方向 `server → routes → http::*` の実体化、
@@ -170,8 +183,11 @@ pub trait Handler: Send + Sync {
 /// アダプタであり、ルーティングの意味論（method + target 完全一致を最優先し、
 /// miss 時のみ `{name}` パスパラメータ（TASK-176、#176）を登録順で照合・
 /// 404/405 のフェイルクローズ）は `crates/routes` 側の責務のまま変わらない。
+/// `Router::dispatch` 自体は同期関数で `HandlerFuture` を返す設計のため
+/// （ルーティング解決は同期・ハンドラ本体実行のみ非同期、イシュー #315）、
+/// このアダプタも素通しでよい。
 impl Handler for fandhe_backend_routes::Router {
-    fn handle(&self, head: &RequestHead, body: &[u8]) -> Response {
+    fn handle(&self, head: &RequestHead, body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
         self.dispatch(head, body)
     }
 }
@@ -1037,7 +1053,7 @@ pub(crate) async fn handle_connection_with_permit<S>(
             match crate::plugin::try_intercept(server, &request.head, &request.body).await {
                 Some(response) => response,
                 None => match &server.handler {
-                    Some(handler) => handler.handle(&request.head, &request.body),
+                    Some(handler) => handler.handle(&request.head, &request.body).await,
                     None => Response::empty(404),
                 },
             };
@@ -1226,9 +1242,15 @@ mod tests {
         calls: AtomicUsize,
     }
     impl Handler for FixedHandler {
-        fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
-            self.calls.fetch_add(1, Ordering::Relaxed);
-            Response::new(self.status, self.body.to_vec())
+        fn handle(
+            &self,
+            _head: &RequestHead,
+            _body: &[u8],
+        ) -> fandhe_backend_routes::HandlerFuture {
+            Box::pin(std::future::ready({
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                Response::new(self.status, self.body.to_vec())
+            }))
         }
     }
 
@@ -1695,13 +1717,19 @@ GET /c HTTP/1.1\r\n\r\n",
         sleep_for: Duration,
     }
     impl Handler for SlowHandler {
-        fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
-            // `Handler::handle` は同期 API のため、テスト用に `std::thread::sleep`
-            // で処理時間の長期化を模擬する（本体側 await ではないため
-            // `.claude/rules/coding-rust.md` の「ブロッキング処理を await
-            // スレッドで実行しない」に抵触しない。単体テストのみで使用）。
-            std::thread::sleep(self.sleep_for);
-            Response::new(200, b"ok".to_vec())
+        fn handle(
+            &self,
+            _head: &RequestHead,
+            _body: &[u8],
+        ) -> fandhe_backend_routes::HandlerFuture {
+            Box::pin(std::future::ready({
+                // `Handler::handle` は同期 API のため、テスト用に `std::thread::sleep`
+                // で処理時間の長期化を模擬する（本体側 await ではないため
+                // `.claude/rules/coding-rust.md` の「ブロッキング処理を await
+                // スレッドで実行しない」に抵触しない。単体テストのみで使用）。
+                std::thread::sleep(self.sleep_for);
+                Response::new(200, b"ok".to_vec())
+            }))
         }
     }
 

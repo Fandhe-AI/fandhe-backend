@@ -18,43 +18,49 @@ fn head(method: &str, target: &str) -> RequestHead {
     }
 }
 
-#[test]
-fn static_route_matches_request_with_query_string() {
+#[tokio::test]
+async fn static_route_matches_request_with_query_string() {
     // 受け入れ条件 1: `GET /search?q=x` が `route("GET", "/search")` に一致し 200。
     let router = Router::new().route("GET", "/search", |_h, _b| {
         Response::new(200, b"ok".to_vec())
     });
 
-    let res = router.dispatch(&head("GET", "/search?q=x"), &[]);
+    let res = router.dispatch(&head("GET", "/search?q=x"), &[]).await;
     assert_eq!(res.status, 200);
 }
 
-#[test]
-fn handler_can_access_query_via_request_head() {
+#[tokio::test]
+async fn handler_can_access_query_via_request_head() {
     // 受け入れ条件 2: ハンドラ内で `head.query()` が生のクエリ文字列を返す。
     let router = Router::new().route("GET", "/search", |head, _b| {
         let query = head.query().unwrap_or("");
         Response::new(200, query.as_bytes().to_vec())
     });
 
-    let res = router.dispatch(&head("GET", "/search?q=x"), &[]);
+    let res = router.dispatch(&head("GET", "/search?q=x"), &[]).await;
     assert_eq!(res.status, 200);
     assert_eq!(res.body, b"q=x".to_vec());
 }
 
-#[test]
-fn static_route_matches_empty_and_absent_query() {
+#[tokio::test]
+async fn static_route_matches_empty_and_absent_query() {
     // 受け入れ条件 3: `?` のみ（空クエリ）・クエリなしのいずれも同一ルートに一致する。
     let router = Router::new().route("GET", "/search", |_h, _b| {
         Response::new(200, b"ok".to_vec())
     });
 
-    assert_eq!(router.dispatch(&head("GET", "/search?"), &[]).status, 200);
-    assert_eq!(router.dispatch(&head("GET", "/search"), &[]).status, 200);
+    assert_eq!(
+        router.dispatch(&head("GET", "/search?"), &[]).await.status,
+        200
+    );
+    assert_eq!(
+        router.dispatch(&head("GET", "/search"), &[]).await.status,
+        200
+    );
 }
 
-#[test]
-fn param_route_matches_request_with_query_string_without_capturing_it() {
+#[tokio::test]
+async fn param_route_matches_request_with_query_string_without_capturing_it() {
     // `?` がキャプチャに混入せず `name` パラメータが正しく取れることを確認する。
     let router = Router::new()
         .route_param("GET", "/hello/{name}", |_h, params, _b| {
@@ -63,41 +69,41 @@ fn param_route_matches_request_with_query_string_without_capturing_it() {
         })
         .unwrap();
 
-    let res = router.dispatch(&head("GET", "/hello/alice?x=1"), &[]);
+    let res = router.dispatch(&head("GET", "/hello/alice?x=1"), &[]).await;
     assert_eq!(res.status, 200);
     assert_eq!(res.body, b"alice".to_vec());
 }
 
-#[test]
-fn method_mismatch_with_query_string_returns_405_with_allow() {
+#[tokio::test]
+async fn method_mismatch_with_query_string_returns_405_with_allow() {
     // 405 + Allow: クエリ付きリクエストでも Allow 集約がパス基準で正しく効く。
     let router = Router::new().route("GET", "/search", |_h, _b| {
         Response::new(200, b"ok".to_vec())
     });
 
-    let res = router.dispatch(&head("POST", "/search?q=x"), &[]);
+    let res = router.dispatch(&head("POST", "/search?q=x"), &[]).await;
     assert_eq!(res.status, 405);
     let text = String::from_utf8(res.serialize(false)).unwrap();
     assert!(text.contains("Allow: GET\r\n"));
 }
 
-#[test]
-fn unregistered_path_with_query_string_returns_404() {
+#[tokio::test]
+async fn unregistered_path_with_query_string_returns_404() {
     let router = Router::new().route("GET", "/search", |_h, _b| {
         Response::new(200, b"ok".to_vec())
     });
 
-    let res = router.dispatch(&head("GET", "/nope?q=x"), &[]);
+    let res = router.dispatch(&head("GET", "/nope?q=x"), &[]).await;
     assert_eq!(res.status, 404);
 }
 
-#[test]
-fn percent_encoded_question_mark_does_not_split_path() {
+#[tokio::test]
+async fn percent_encoded_question_mark_does_not_split_path() {
     // 非デコード契約の固定化: `%3F` はパスの一部として扱われ、`/search` には一致しない。
     let router = Router::new().route("GET", "/search", |_h, _b| {
         Response::new(200, b"ok".to_vec())
     });
 
-    let res = router.dispatch(&head("GET", "/search%3Fq=x"), &[]);
+    let res = router.dispatch(&head("GET", "/search%3Fq=x"), &[]).await;
     assert_eq!(res.status, 404);
 }

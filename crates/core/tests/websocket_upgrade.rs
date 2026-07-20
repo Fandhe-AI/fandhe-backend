@@ -28,7 +28,7 @@ use tokio::net::{TcpListener, TcpStream};
 /// （`crates/core/src/server.rs` の `handle_connection` を参照）の証跡に使う。
 struct NotCalledHandler;
 impl Handler for NotCalledHandler {
-    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
         panic!("UpgradeHandler がマッチしたのに既定 Handler が呼ばれた");
     }
 }
@@ -196,8 +196,12 @@ async fn unsupported_version_is_rejected_with_426() {
 async fn non_websocket_path_falls_through_to_default_handler() {
     struct FixedOkHandler;
     impl Handler for FixedOkHandler {
-        fn handle(&self, _head: &RequestHead, _body: &[u8]) -> Response {
-            Response::new(200, b"ok".to_vec())
+        fn handle(
+            &self,
+            _head: &RequestHead,
+            _body: &[u8],
+        ) -> fandhe_backend_routes::HandlerFuture {
+            Box::pin(std::future::ready(Response::new(200, b"ok".to_vec())))
         }
     }
 

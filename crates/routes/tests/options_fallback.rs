@@ -18,22 +18,22 @@ fn head(method: &str, target: &str) -> RequestHead {
     }
 }
 
-#[test]
-fn preflight_options_returns_204_with_allow_header_for_static_route() {
+#[tokio::test]
+async fn preflight_options_returns_204_with_allow_header_for_static_route() {
     let router = Router::new()
         .route("GET", "/todos", |_h, _b| Response::empty(200))
         .route("POST", "/todos", |_h, _b| Response::empty(201))
         .route("DELETE", "/todos", |_h, _b| Response::empty(204))
         .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
 
-    let res = router.dispatch(&head("OPTIONS", "/todos"), &[]);
+    let res = router.dispatch(&head("OPTIONS", "/todos"), &[]).await;
     assert_eq!(res.status, 204);
     let text = String::from_utf8(res.serialize(false)).unwrap();
     assert!(text.contains("Allow: DELETE, GET, POST\r\n"));
 }
 
-#[test]
-fn preflight_options_returns_204_with_allow_header_for_param_route() {
+#[tokio::test]
+async fn preflight_options_returns_204_with_allow_header_for_param_route() {
     let router = Router::new()
         .route_param("GET", "/hello/{name}", |_h, _params, _b| {
             Response::empty(200)
@@ -45,36 +45,36 @@ fn preflight_options_returns_204_with_allow_header_for_param_route() {
         .unwrap()
         .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
 
-    let res = router.dispatch(&head("OPTIONS", "/hello/alice"), &[]);
+    let res = router.dispatch(&head("OPTIONS", "/hello/alice"), &[]).await;
     assert_eq!(res.status, 204);
     let text = String::from_utf8(res.serialize(false)).unwrap();
     assert!(text.contains("Allow: GET, PUT\r\n"));
 }
 
-#[test]
-fn preflight_options_falls_back_to_404_for_unregistered_path_even_with_fallback_registered() {
+#[tokio::test]
+async fn preflight_options_falls_back_to_404_for_unregistered_path_even_with_fallback_registered() {
     let router = Router::new()
         .route("GET", "/todos", |_h, _b| Response::empty(200))
         .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
 
-    let res = router.dispatch(&head("OPTIONS", "/unknown"), &[]);
+    let res = router.dispatch(&head("OPTIONS", "/unknown"), &[]).await;
     assert_eq!(res.status, 404);
 }
 
-#[test]
-fn preflight_options_without_fallback_registered_stays_405_for_backward_compatibility() {
+#[tokio::test]
+async fn preflight_options_without_fallback_registered_stays_405_for_backward_compatibility() {
     let router = Router::new()
         .route("GET", "/todos", |_h, _b| Response::empty(200))
         .route("POST", "/todos", |_h, _b| Response::empty(201));
 
-    let res = router.dispatch(&head("OPTIONS", "/todos"), &[]);
+    let res = router.dispatch(&head("OPTIONS", "/todos"), &[]).await;
     assert_eq!(res.status, 405);
     let text = String::from_utf8(res.serialize(false)).unwrap();
     assert!(text.contains("Allow: GET, POST\r\n"));
 }
 
-#[test]
-fn explicit_options_route_still_wins_over_fallback_in_mixed_router() {
+#[tokio::test]
+async fn explicit_options_route_still_wins_over_fallback_in_mixed_router() {
     let router = Router::new()
         .route("GET", "/todos", |_h, _b| Response::empty(200))
         .route("OPTIONS", "/todos", |_h, _b| {
@@ -87,11 +87,11 @@ fn explicit_options_route_still_wins_over_fallback_in_mixed_router() {
         .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
 
     // 明示登録された静的 OPTIONS ルートが優先される。
-    let explicit = router.dispatch(&head("OPTIONS", "/todos"), &[]);
+    let explicit = router.dispatch(&head("OPTIONS", "/todos"), &[]).await;
     assert_eq!(explicit.status, 200);
     assert_eq!(explicit.body, b"explicit-options".to_vec());
 
     // 明示登録のないパラメータルートはフォールバックへ委譲される。
-    let via_fallback = router.dispatch(&head("OPTIONS", "/hello/alice"), &[]);
+    let via_fallback = router.dispatch(&head("OPTIONS", "/hello/alice"), &[]).await;
     assert_eq!(via_fallback.status, 204);
 }
