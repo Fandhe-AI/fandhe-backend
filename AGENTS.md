@@ -150,7 +150,12 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
 #### 新規エンドポイント追加手順
 
 1. `fandhe_backend_routes::Router::route()`（完全一致）または `fandhe_backend_routes::Router::route_param()`
-   （`{name}` パスパラメータ、TASK-176・#176）へのルート登録
+   （`{name}` パスパラメータ、TASK-176・#176）へのルート登録。未マッチ（静的・
+   パラメータいずれにも一致しない）リクエストの共通処理が必要な場合は
+   `Router::fallback()` / `Router::fallback_with()`（イシュー #316）を使う。405
+   （メソッド不一致）も fallback へ流すかは `FallbackPolicy` で個別選択でき、既定
+   （`FallbackPolicy::NotFoundOnly`）は 404 のみを委譲し 405 + `Allow` を維持する
+   安全側
 2. ハンドラ実装（対象クレートは「モジュール境界」節の crates 一覧・
    [delegation-impl.md](.claude/rules/delegation-impl.md) のパスベース委譲に従い判断する）
 3. doc コメント + doc test（`# Examples`）を付与する
