@@ -107,78 +107,27 @@
   `publish = false` を維持し、フェイルクローズの対象を「利用者向け成果物でないクレート」に
   限定する運用へ移行した（4 節の区分表が正）
 
-## 6. リリース CI 設計（YAML 草案）
+## 6. リリース CI（実ファイル化済み、イシュー #373）
 
-実ファイル（`.github/workflows/release.yml`）は今回追加しない（private リポジトリ・
-Trusted Publishing 未設定のため追加しても実行不能なデッドコードになる。
-[[out-of-scope-tracking]] に従い、実ファイル化は別イシューに切り出す）。
-以下は将来実装時の草案。publish 手順は 4 節で正式化した
-`cargo publish --workspace`（依存順自動解決）に整合させている。
+`.github/workflows/release.yml` として実ファイル化済み（イシュー #373。草案保留の理由
+だった「private リポジトリのため実行不能」は public 化により解消）。verify（fmt /
+clippy / test / dep-audit）→ dry-run（`cargo publish --workspace --dry-run`）→
+publish（`cargo publish --workspace`、依存順自動解決）の 3 段構成で、トリガは `v*`
+タグ push と `workflow_dispatch` のみ。
 
-```yaml
-name: release
-
-on:
-  push:
-    tags:
-      - "v*"
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  verify:
-    runs-on: self-hosted
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace --all-features
-      - run: bash scripts/dep-audit.sh
-
-  dry-run:
-    needs: verify
-    runs-on: self-hosted
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      # 公開対象 13 クレート（publish = false でない全クレート）を依存順自動解決で dry-run する
-      - run: cargo publish --workspace --dry-run
-
-  publish:
-    needs: dry-run
-    runs-on: self-hosted
-    timeout-minutes: 15
-    environment: crates-io-release # GitHub Environments の required reviewers で人間承認を必須化
-    permissions:
-      contents: read
-      id-token: write # Trusted Publishing（OIDC）用。長命トークンをシークレットに保存しない
-    steps:
-      - uses: actions/checkout@v4
-      # cargo 1.96 の --workspace publish は依存順（fandhe-backend-http → fandhe-backend-plugin-* →
-      # fandhe-backend-routes → fandhe-backend-core → fandhe-backend-plugin-hub-wiring）と
-      # crates.io のインデックス反映待ちを自動解決するため、逐次 publish の手作業は不要
-      - run: cargo publish --workspace
-```
-
-- **認証**: crates.io の
-  [Trusted Publishing（OIDC）](https://crates.io/docs/trusted-publishing) を第一候補とする。
-  長命 API トークンをリポジトリシークレットに保存しない。Trusted Publishing が利用できない
-  場合のフォールバックとして、スコープ限定・短期限トークンを GitHub Environments の
-  シークレットで管理する
-- **承認**: `publish` ジョブは GitHub Environments の required reviewers による人間承認を
+- **認証**: org シークレット `CARGO_REGISTRY_TOKEN` によるトークン認証を当面採用する
+  （本節の当初第一候補だった
+  [Trusted Publishing（OIDC）](https://crates.io/docs/trusted-publishing) への移行は
+  将来課題として残す。トークンは publish ステップの env 経由でのみ参照し、コード・
+  ログへ露出させない）
+- **承認**: `publish` ジョブは GitHub Environments `crates-io-release`（required
+  reviewers、deployment branch policy: `main` ブランチ + `v*` タグ）による人間承認を
   必須とし、AI や CI による自動 publish は行わない（[[feature-modification]] の
   自動マージ禁止と同一原則）
 - **CI 規約準拠**（[[ci]]）: 全ジョブ `runs-on: self-hosted`・`timeout-minutes` 設定・
-  `permissions` 最小（既定 `contents: read`、`publish` ジョブのみ `id-token: write` を追加）・
-  fork PR からのトリガ不可（`push` タグ・`workflow_dispatch` のみで `pull_request` を
-  トリガに含めない）
+  `permissions` は `contents: read` のみ・fork PR からのトリガ不可（`push` タグ・
+  `workflow_dispatch` のみで `pull_request` をトリガに含めない）・publish の途中
+  キャンセルによる部分公開を防ぐため `concurrency` は `cancel-in-progress: false`
 
 ## 7. バージョニング
 

@@ -1,0 +1,141 @@
+# crates.io 公開ワークフロー（イシュー #373、docs/design/crates-io-release.md 6 節の実ファイル化）。
+#
+# 公開対象 13 クレート（publish = false でない全クレート）を verify → dry-run →
+# publish の 3 段で crates.io へ公開する。v0.1.0（2026-07-21）は手動 publish だったが、
+# 以後のバージョンは再現性・監査性のため本ワークフローに統一する。
+#
+# - トリガは `v*` タグ push と workflow_dispatch のみ。fork PR からシークレットへ
+#   到達させないため `pull_request` はトリガに含めない（.claude/rules/ci.md）
+# - publish ジョブは GitHub Environments `crates-io-release`（required reviewers）に
+#   よる人間承認を必須とし、AI・CI による自動 publish は行わない
+#   （feature-modification.md の自動マージ禁止と同一原則）
+# - 認証は org シークレット CARGO_REGISTRY_TOKEN によるトークン認証（設計書の
+#   フォールバック経路）。Trusted Publishing（OIDC）への移行は将来課題
+#   （docs/design/crates-io-release.md 6 節）
+# - cargo 1.96 の `cargo publish --workspace` は依存順（fandhe-backend-http →
+#   fandhe-backend-routes → fandhe-backend-core → fandhe-backend-plugin-*）と
+#   crates.io のインデックス反映待ちを自動解決するため、逐次 publish は不要
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# publish の途中キャンセルは公開済み・未公開クレートが混在する中途半端な状態を
+# 生むため、専有計測系（bench-schedule.yml）と同様にキャンセル不可とする
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: verify（fmt / clippy / test / dep-audit）
+    runs-on: self-hosted
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          submodules: recursive
+
+      # self-hosted runner に rustup が未導入/欠落している場合に備え、
+      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
+      # 導入済みなら何もしない（冪等）。
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --all-features
+
+      # dep-audit.sh はツール不在時に導入せず異常終了する（fail-closed）ため、
+      # ci.yml の dep-audit ジョブと同一のバージョン固定インストールを先行させる
+      # （サプライチェーン考慮: crates.io からバージョン固定で取得。
+      # .claude/rules/security.md。Bugbot 指摘対応）
+      - name: Ensure cargo-deny 0.19.8
+        run: |
+          if ! cargo deny --version 2>/dev/null | grep -q ' 0\.19\.8$'; then
+            cargo install --locked cargo-deny@0.19.8
+          fi
+
+      - name: Ensure cargo-audit 0.22.2
+        run: |
+          if ! cargo audit --version 2>/dev/null | grep -q ' 0\.22\.2$'; then
+            cargo install --locked cargo-audit@0.22.2
+          fi
+
+      - name: dep-audit（cargo audit / cargo deny、全 feature 構成）
+        run: bash scripts/dep-audit.sh
+
+  dry-run:
+    name: cargo publish --workspace --dry-run
+    needs: verify
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      # 公開対象 13 クレートを依存順自動解決でパッケージング検証する（トークン不要）
+      - name: cargo publish --workspace --dry-run
+        run: cargo publish --workspace --dry-run
+
+  publish:
+    name: cargo publish --workspace（要 環境承認）
+    needs: dry-run
+    runs-on: self-hosted
+    # publish は 13 クレートのアップロード + crates.io インデックス反映待ちを含み、
+    # ジョブタイムアウトによる途中打ち切りは「一部だけ公開済み」の部分公開状態を
+    # 生む（concurrency の cancel-in-progress: false と同じ理由で避けたい失敗様態）。
+    # dry-run より大幅に余裕を持たせる（Bugbot 指摘対応）
+    timeout-minutes: 120
+    # required reviewers による人間承認ゲート。承認されるまで publish は実行されない
+    environment: crates-io-release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      # トークンは env 経由でのみ渡し、コマンドライン引数・ログへ展開しない
+      # （.claude/rules/security.md）。CARGO_REGISTRY_TOKEN は cargo が標準で
+      # 参照する環境変数のため --token 引数は不要
+      - name: cargo publish --workspace
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --workspace
