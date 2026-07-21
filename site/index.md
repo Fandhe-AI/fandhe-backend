@@ -29,6 +29,15 @@ GraphQL / WebRTC / OpenAPI 自動生成 / 可観測性などを段階的に拡�
   ごとの最小サンプルと pay-for-what-you-use の検証手順
 - [チュートリアル](/fandhe-backend/guides/tutorial/) — 最小サーバ→拡張点の実装→
   feature 有効化まで段階的に学ぶ
+- [拡張点自作ガイド](/fandhe-backend/guides/extension-points/) — 3 拡張点
+  （`Middleware` / `UpgradeHandler` / `RequestGate`）の契約と自作手順
+- [レスポンスストリーミング](/fandhe-backend/guides/streaming/) — chunked
+  ストリーミング送信（`handle_streaming`）の使い方
+- [graceful shutdown](/fandhe-backend/guides/graceful-shutdown/) —
+  `run_until` による安全な停止手順
+- [サーバ API（core）](/fandhe-backend/api/server-api/) — API Reference の
+  入口。`Server` / `BoundServer` / `Handler` から各クレート・プラグイン設定
+  API まで 5 ページで公開 API の全体像と契約を俯瞰する
 
 ソースコードは [GitHub リポジトリ](https://github.com/Fandhe-AI/fandhe-backend)
 で公開されています（MIT OR Apache-2.0 デュアルライセンス）。

@@ -35,3 +35,46 @@ path = "/guides/feature-samples/"
 title = "チュートリアル"
 source = "docs/guide/tutorial.md"
 path = "/guides/tutorial/"
+
+[[section.page]]
+title = "拡張点自作ガイド"
+source = "docs/guide/extension-points.md"
+path = "/guides/extension-points/"
+
+[[section.page]]
+title = "レスポンスストリーミング"
+source = "docs/guide/streaming.md"
+path = "/guides/streaming/"
+
+[[section.page]]
+title = "graceful shutdown"
+source = "docs/guide/graceful-shutdown.md"
+path = "/guides/graceful-shutdown/"
+
+[[section]]
+title = "API Reference"
+
+[[section.page]]
+title = "サーバ API（core）"
+source = "docs/api/server-api.md"
+path = "/api/server-api/"
+
+[[section.page]]
+title = "3 拡張点契約"
+source = "docs/api/extension-api.md"
+path = "/api/extension-api/"
+
+[[section.page]]
+title = "HTTP プリミティブ API（http）"
+source = "docs/api/http-api.md"
+path = "/api/http-api/"
+
+[[section.page]]
+title = "ルーティング API（routes）"
+source = "docs/api/router-api.md"
+path = "/api/router-api/"
+
+[[section.page]]
+title = "プラグイン設定 API"
+source = "docs/api/plugin-config-api.md"
+path = "/api/plugin-config-api/"

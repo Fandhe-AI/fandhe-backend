@@ -3,9 +3,10 @@
 //! Fandhe-AI/fandhe-frontend の `crates/docs-site/tests/site_nav.rs` からの
 //! 移植。検証内容（パース成功・ページ登録の網羅・path/source の一意性・
 //! source 実在・ブロックレベルのレンダリング健全性）は同じで、期待値を
-//! fandhe-backend の `site/nav.toml`（トップ + `docs/guide/` 4 本 =
-//! 全 5 ページ）へ合わせている。`docs/guide/` の編集・改名でナビ登録と
-//! 実ファイルが乖離した場合に `cargo test` が fail-closed で検知する。
+//! fandhe-backend の `site/nav.toml`（トップ + `docs/guide/` 7 本 +
+//! `docs/api/` 5 本 = 全 13 ページ）へ合わせている。`docs/guide/`・
+//! `docs/api/` の編集・改名でナビ登録と実ファイルが乖離した場合に
+//! `cargo test` が fail-closed で検知する。
 
 use std::path::{Path, PathBuf};
 
@@ -38,16 +39,17 @@ fn site_nav_parses_successfully() {
 }
 
 #[test]
-fn site_nav_registers_two_sections_with_expected_titles() {
+fn site_nav_registers_three_sections_with_expected_titles() {
     let nav = load_nav();
     let titles: Vec<&str> = nav.sections.iter().map(|s| s.title.as_str()).collect();
-    assert_eq!(titles, vec!["Getting Started", "Guides"]);
+    assert_eq!(titles, vec!["Getting Started", "Guides", "API Reference"]);
 }
 
-/// 既存の利用者向けドキュメント（トップ + `docs/guide/` の 4 本 = 全 5 ページ）
-/// がサイト生成対象として漏れなく登録されている。
+/// 既存の利用者向けドキュメント（トップ + `docs/guide/` の 7 本 +
+/// `docs/api/` の 5 本 = 全 13 ページ）がサイト生成対象として漏れなく
+/// 登録されている。
 #[test]
-fn site_nav_registers_all_five_pages_with_expected_paths() {
+fn site_nav_registers_all_pages_with_expected_paths() {
     let nav = load_nav();
     let pages: Vec<(&str, &str)> = nav
         .sections
@@ -62,6 +64,20 @@ fn site_nav_registers_all_five_pages_with_expected_paths() {
         ("docs/guide/README.md", "/guides/"),
         ("docs/guide/feature-samples.md", "/guides/feature-samples/"),
         ("docs/guide/tutorial.md", "/guides/tutorial/"),
+        (
+            "docs/guide/extension-points.md",
+            "/guides/extension-points/",
+        ),
+        ("docs/guide/streaming.md", "/guides/streaming/"),
+        (
+            "docs/guide/graceful-shutdown.md",
+            "/guides/graceful-shutdown/",
+        ),
+        ("docs/api/server-api.md", "/api/server-api/"),
+        ("docs/api/extension-api.md", "/api/extension-api/"),
+        ("docs/api/http-api.md", "/api/http-api/"),
+        ("docs/api/router-api.md", "/api/router-api/"),
+        ("docs/api/plugin-config-api.md", "/api/plugin-config-api/"),
     ];
     assert_eq!(pages.len(), expected.len(), "unexpected pages: {pages:?}");
     for expected_pair in &expected {
