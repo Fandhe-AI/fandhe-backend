@@ -226,7 +226,12 @@ fandhe-backend/
 │                            # standalone workspace 構成（root workspace 非メンバー・
 │                            # `publish = false`）。3 種のサンプル置き場との重複回避方針は
 │                            # examples/README.md を参照
-│   └── with-cors                      # CORS の 2 層配線を見せる最小 ToDo API サンプル
+│   ├── with-cors                      # CORS の 2 層配線を見せる最小 ToDo API サンプル
+│   ├── with-graphql                   # GraphQL の配線（`Server::graphql` へのスキーマ登録 +
+│   │                                    # `POST /graphql` 最小クエリ実行）を見せるサンプル
+│   │                                    # （イシュー #360）
+│   └── with-websocket                 # ユーザー定義 WebSocket メッセージハンドラ
+│                                        # （`WebSocketConfig::with_handler`）を見せるサンプル
 ├── site/                   # GitHub Pages ドキュメントサイトコンテンツ（index.md・nav.toml・
 │                            # assets/site.css。docs-site SSG ツールで生成対象。base_path=/fandhe-backend）
 ├── ts/                     # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）。
