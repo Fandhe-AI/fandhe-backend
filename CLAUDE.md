@@ -215,6 +215,18 @@ fandhe-backend/
 │   │                                    # fandhe-frontend-core/app/server 0.1.0 のみ。
 │   │                                    # 内蔵 linkcheck は fail-closed でリンク切れ時は書き出さない）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
+├── templates/              # 利用者向け配布テンプレート（イシュー #364）
+│   └── app                            # feature 一式（cors / compression / static / openapi）を
+│                                        # 組み合わせた実運用形 ToDo API 雛形。root workspace
+│                                        # 非メンバー（`[workspace] members = ["."]` の standalone
+│                                        # workspace）+ `publish = false`。依存は `version` + `path`
+│                                        # 併記で、リポジトリ内では常に最新実装に対して検証する
+├── examples/               # Next.js 流 `with-<feature>` 独立サンプル群（イシュー #365）。
+│                            # 1 サンプル = 1 機能で、各サンプルは templates/app と同じ
+│                            # standalone workspace 構成（root workspace 非メンバー・
+│                            # `publish = false`）。3 種のサンプル置き場との重複回避方針は
+│                            # examples/README.md を参照
+│   └── with-cors                      # CORS の 2 層配線を見せる最小 ToDo API サンプル
 ├── site/                   # GitHub Pages ドキュメントサイトコンテンツ（index.md・nav.toml・
 │                            # assets/site.css。docs-site SSG ツールで生成対象。base_path=/fandhe-backend）
 ├── ts/                     # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）。
