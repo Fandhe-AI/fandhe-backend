@@ -15,6 +15,7 @@ workspace 構成、下記「構成の流儀」節を参照）。
 | ディレクトリ | 見せる機能 | 起動方法 |
 |-------------|-----------|---------|
 | [`with-cors/`](./with-cors/) | CORS の 2 層配線（`Router::options_fallback` + `Server::cors`） | `cd examples/with-cors && cargo run` |
+| [`with-graphql/`](./with-graphql/) | GraphQL の配線（`Server::graphql` へのスキーマ登録 + `POST /graphql` 最小クエリ実行） | `cd examples/with-graphql && cargo run` |
 
 ## サンプルコードの重複回避方針
 
