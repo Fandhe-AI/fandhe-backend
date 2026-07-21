@@ -18,7 +18,10 @@ cargo add fandhe-backend-core --features websocket
 公開対象クレートは `fandhe-backend-core` / `fandhe-backend-http` / `fandhe-backend-routes` と
 `fandhe-backend-plugin-*` の計 13 クレート（すべて v0.1.0 の lockstep）ですが、
 通常は `fandhe-backend-core` の feature 経由で利用すれば十分です（feature 一覧は
-本ページ 5 節参照）。以降の節は、リポジトリをクローンして examples を動かしながら
+本ページ 5 節参照）。自分のプロジェクトへ組み込む出発点（`cargo new` 相当の雛形）が
+欲しい場合は
+[`templates/app/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/templates/app/)
+を土台にコピーして使えます。以降の節は、リポジトリをクローンして examples を動かしながら
 試す場合の手順です。
 
 ## 前提
@@ -110,3 +113,8 @@ feature 一覧の正です）。
 
 feature 構成別の実行可能サンプルは [`feature-samples.md`](./feature-samples.md) を、
 拡張点の実装を含む段階的な学習は [`tutorial.md`](./tutorial.md) を参照してください。
+独立プロジェクトとしてそのまま `cargo run` できる standalone サンプル集は
+[`examples/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/examples/)、
+複数 feature を組み合わせた実運用形の雛形は
+[`templates/app/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/templates/app/)
+にあります。
