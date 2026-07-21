@@ -204,7 +204,10 @@ else
         leaked=()
         for entry in "${plugin_entries[@]}"; do
             crate="${entry#*:}"
-            if printf '%s' "${tree_negative}" | grep -qE "(^|[[:space:]])${crate} v"; then
+            # `printf | grep -q` は grep の早期終了で printf が SIGPIPE を受け、
+            # pipefail 下で「一致したのに非 0」となる偽陰性を生むため、
+            # herestring でパイプ自体を排除する（PR #350 CI の偽 FAIL 対策）。
+            if grep -qE "(^|[[:space:]])${crate} v" <<<"${tree_negative}"; then
                 leaked+=("${crate}")
             fi
         done
@@ -235,7 +238,7 @@ else
             fi
         fi
 
-        if ! printf '%s' "${tree_positive}" | grep -qE "(^|[[:space:]])${crate} v"; then
+        if ! grep -qE "(^|[[:space:]])${crate} v" <<<"${tree_positive}"; then
             fail "b: cargo tree 検証（有効構成 ${feature}） — feature 有効時にも ${crate} が出現しません（配線切れの疑い）"
             continue
         fi
@@ -244,7 +247,7 @@ else
         for other in "${plugin_entries[@]}"; do
             other_crate="${other#*:}"
             [ "${other_crate}" = "${crate}" ] && continue
-            if printf '%s' "${tree_positive}" | grep -qE "(^|[[:space:]])${other_crate} v"; then
+            if grep -qE "(^|[[:space:]])${other_crate} v" <<<"${tree_positive}"; then
                 other_leaked+=("${other_crate}")
             fi
         done
@@ -502,7 +505,8 @@ if [ -n "${symbols_content}" ]; then
     for entry in "${plugin_entries[@]}"; do
         crate="${entry#*:}"
         crate_symbol_prefix="$(printf '%s' "${crate}" | tr '-' '_')"
-        if printf '%s' "${symbols_content}" | grep -qF "${crate_symbol_prefix}"; then
+        # (b) と同じ SIGPIPE 偽陰性対策（シンボル漏れの見逃し防止）で herestring を使う。
+        if grep -qF "${crate_symbol_prefix}" <<<"${symbols_content}"; then
             symbol_leaked+=("${crate}")
         fi
     done
