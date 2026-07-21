@@ -266,6 +266,7 @@ fandhe-backend/
 │   ├── openapi-ts.sh                  # gen-openapi --check → ts/ の schema.d.ts 鮮度検証 → tsc --noEmit の openapi-typescript 連携パイプライン検証（TASK-6.1、#54）
 │   ├── openapi-ts-negative.sh         # openapi-ts.sh の陰性対照（意図的な型不一致の tsc --noEmit エラー検出）CI 常設検証（TASK-6.2、#55）
 │   ├── clean-worktrees.sh             # .claude/worktrees/ 残存ワークツリーの棚卸し・退避・削除（既定 dry-run、--apply で実削除、イシュー #221）
+│   ├── standalone-crates-io-check.sh  # templates/・examples/ の path 依存を除去し crates.io 公開版のみで build/test 検証（standalone-crates-io.yml から週次 + PR paths で実行、イシュー #371）
 │   └── accept/            # 受け入れ検証スクリプト（TASK-1.6-2 で追加、以降 REQ-2/5/6/8/13 分も収録）
 │       ├── README.md                  # 検証基準・前提ツール・実行方法
 │       ├── lib/common.sh              # PASS/FAIL/SKIP/WARN 集計の共通関数
