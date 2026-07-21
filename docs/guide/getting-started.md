@@ -2,6 +2,26 @@
 
 fandhe-backend をクローンしてから最小サーバを起動し、動作確認するまでの最短手順です。
 
+## crates.io から使う（公開後）
+
+crates.io への公開準備（メタデータ整備・workspace dry-run）が完了しており、リポジトリ
+public 化と `cargo publish --workspace` 実行後は、自分のプロジェクトに組み込む場合に
+リポジトリのクローンなしで crates.io（`https://crates.io/crates/fandhe-backend-core`）
+から依存に追加できるようになる予定です。
+
+```bash
+cargo add fandhe-backend-core
+
+# プラグインは feature で有効化します（例: WebSocket）
+cargo add fandhe-backend-core --features websocket
+```
+
+公開対象クレートは `fandhe-backend-core` / `fandhe-backend-http` / `fandhe-backend-routes` と
+`fandhe-backend-plugin-*` の計 13 クレート（すべて同一バージョンの lockstep）ですが、
+通常は `fandhe-backend-core` の feature 経由で利用すれば十分です（feature 一覧は
+本ページ 5 節参照）。以降の節は、リポジトリをクローンして examples を動かしながら
+試す場合の手順です。
+
 ## 前提
 
 - Rust の stable ツールチェーン（`rust-toolchain.toml` が固定しているバージョンが

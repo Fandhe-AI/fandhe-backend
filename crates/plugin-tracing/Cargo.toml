@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "fandhe-backend の可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1）。REQ-10 の PoC-10 実測（サンプリングなし構成で RPS 劣化 31.6%・p95 悪化 61.7%）を踏まえ、Middleware 拡張点上で一定割合のみ span/event を記録する。"
-publish = false
+# イシュー #94 の公開判断に基づき `publish = false` を解除済み。
+# 公開手順は docs/design/crates-io-release.md を参照。
+readme = "../../README.md"
+keywords = ["tracing", "observability", "sampling", "web", "plugin"]
+categories = ["web-programming", "development-tools::debugging", "asynchronous"]
 
 # workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
 # （.claude/rules/coding-rust.md・.claude/rules/security.md）。
@@ -28,7 +32,7 @@ workspace = true
 # - `tracing-appender`: `non_blocking` writer。AGENTS.md「規約: ミドルウェア非同期
 #   I/O 必須化」に従い、既定で非同期・バッファ済み I/O とするための実体
 [dependencies]
-fandhe-backend-http = { path = "../http" }
+fandhe-backend-http = { path = "../http", version = "0.1.0" }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = [
   "fmt",

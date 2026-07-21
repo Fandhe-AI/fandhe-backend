@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "fandhe-backend の OpenAPI ドキュメント生成プラグイン（TASK-3.1）。実装本体（crates/routes 等）とは疎結合な「ドキュメント専用関数」に utoipa::path を付与し ApiDoc に集約する（docs/spec/03-poc/openapi-generation の PoC-4 で検証・採用した方式）。"
-publish = false
+# イシュー #94 の公開判断に基づき `publish = false` を解除済み。
+# 公開手順は docs/design/crates-io-release.md を参照。
+readme = "../../README.md"
+keywords = ["openapi", "swagger", "documentation", "utoipa", "web"]
+categories = ["web-programming", "development-tools"]
 
 # workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
 # （.claude/rules/coding-rust.md・.claude/rules/security.md）。

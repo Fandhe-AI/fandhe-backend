@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "fandhe-backend のレスポンス圧縮プラグイン（イシュー #321）。gzip での帯域削減を提供する。"
-publish = false
+# イシュー #94 の公開判断に基づき `publish = false` を解除済み。
+# 公開手順は docs/design/crates-io-release.md を参照。
+readme = "../../README.md"
+keywords = ["gzip", "compression", "http", "web", "plugin"]
+categories = ["compression", "web-programming", "web-programming::http-server"]
 
 # workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
 # （.claude/rules/coding-rust.md・.claude/rules/security.md）。
@@ -25,5 +29,5 @@ workspace = true
 # `.claude/rules/security.md` A06/A08）。推移的依存は miniz_oxide /
 # crc32fast / adler2 程度に留まる。
 [dependencies]
-fandhe-backend-http = { path = "../http" }
+fandhe-backend-http = { path = "../http", version = "0.1.0" }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

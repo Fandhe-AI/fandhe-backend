@@ -5,7 +5,16 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "fandhe-backend の hub 共通配線プラグイン（TASK-9.1 / TASK-9.2）。コアの RequestGate 拡張点上に TenantGate を実装し、RS256 + JWKS による JWT 検証 → org_id 抽出 → フェイルクローズの配線を集約する。"
-publish = false
+# イシュー #94 の公開判断に基づき `publish = false` を解除済み。
+# 公開手順は docs/design/crates-io-release.md を参照。
+readme = "../../README.md"
+keywords = ["jwt", "jwks", "authentication", "web", "plugin"]
+categories = ["authentication", "web-programming"]
+# テスト専用 RSA 鍵フィクスチャ（tests/fixtures/README.md 参照。秘匿性はない）を
+# crates.io 公開物に同梱しない。「秘密鍵ファイルを公開物へ含めない」原則を
+# 機械的に守る安全側の除外で、ローカル・CI の cargo test には影響しない
+# （.claude/rules/security.md）。
+exclude = ["tests/fixtures/*.pk8"]
 
 # workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
 # （.claude/rules/coding-rust.md・.claude/rules/security.md）。
@@ -34,8 +43,8 @@ workspace = true
 # -p fandhe-backend-core` に本クレート・本依存が現れないことで
 # pay-for-what-you-use を機械検証できる）。
 [dependencies]
-fandhe-backend-core = { path = "../core" }
-fandhe-backend-http = { path = "../http" }
+fandhe-backend-core = { path = "../core", version = "0.1.0" }
+fandhe-backend-http = { path = "../http", version = "0.1.0" }
 ring = "0.17"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }

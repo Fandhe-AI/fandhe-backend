@@ -5,6 +5,11 @@
 性能を目標に、**最小コア + Cargo feature 駆動プラグイン**設計で、WebSocket /
 GraphQL / WebRTC / OpenAPI 自動生成 / 可観測性などを段階的に拡張できます。
 
+公開対象の 13 クレートは [crates.io](https://crates.io/crates/fandhe-backend-core) への
+公開準備が完了しており、公開後は `cargo add fandhe-backend-core` で導入し、プラグインは
+`cargo add fandhe-backend-core --features websocket` のように feature で有効化できる
+ようになる予定です。
+
 ## 2 つの核となる原則
 
 - **pay-for-what-you-use**: feature を無効化したら、その依存・コード・`unsafe`・

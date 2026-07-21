@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "fandhe-backend の WebSocket プラグイン（TASK-4.1）。コアの UpgradeHandler 拡張点から委譲された接続に対し、RFC 6455 ハンドシェイクの検証・101 応答の送出・tokio-tungstenite へのフレーミング委譲を行う。"
-publish = false
+# イシュー #94 の公開判断に基づき `publish = false` を解除済み。
+# 公開手順は docs/design/crates-io-release.md を参照。
+readme = "../../README.md"
+keywords = ["websocket", "http", "server", "web", "plugin"]
+categories = ["web-programming", "web-programming::websocket", "network-programming", "asynchronous"]
 
 # workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
 # （.claude/rules/coding-rust.md・.claude/rules/security.md）。
@@ -36,7 +40,7 @@ workspace = true
 #   （`cargo tree -p fandhe-backend-plugin-websocket` で `native-tls` 等が現れないことを
 #   継続的に確認する）。
 [dependencies]
-fandhe-backend-http = { path = "../http" }
+fandhe-backend-http = { path = "../http", version = "0.1.0" }
 tokio = { version = "1", default-features = false, features = ["io-util", "time"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = [
   "handshake",

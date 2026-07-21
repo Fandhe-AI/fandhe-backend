@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "fandhe-backend の in-process WebRTC プラグイン（TASK-8.1）。SDP Offer/Answer・データチャネル確立を webrtc-rs でプロセス内完結させる。REQ-8 の MVP 推奨（別プロセス切り出し、crates/plugin-webrtc-proxy）とは対照的な高攻撃表面の選択肢であり、クレート境界で完全に分離する。"
-publish = false
+# イシュー #94 の公開判断に基づき `publish = false` を解除済み。
+# 公開手順は docs/design/crates-io-release.md を参照。
+readme = "../../README.md"
+keywords = ["webrtc", "datachannel", "server", "web", "plugin"]
+categories = ["web-programming", "network-programming", "asynchronous"]
 
 # workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
 # （.claude/rules/coding-rust.md・.claude/rules/security.md）。
@@ -21,7 +25,7 @@ workspace = true
 # 有効時にのみコアの依存グラフへ現れる（`cargo tree -p fandhe-backend-core`
 # で検証）。
 [dependencies]
-fandhe-backend-http = { path = "../http" }
+fandhe-backend-http = { path = "../http", version = "0.1.0" }
 webrtc = "0.17"
 serde_json = "1"
 # シグナリング全体タイムアウト（`WebRtcConfig::signaling_timeout`）のみに使う。
