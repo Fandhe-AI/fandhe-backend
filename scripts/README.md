@@ -49,6 +49,10 @@ req6-typescript-types.md` 参照）。
 イシュー #221 で、`implement-issue-tree` ワークフローが作成する per-issue git worktree
 （`.claude/worktrees/`）の残存棚卸し・退避・削除を行う `clean-worktrees.sh` を追加した
 （親: #215、2026-07-19 時点で約 160 ディレクトリ・約 97GB の残存を確認）。
+イシュー #371 で、`templates/*`・`examples/*` の standalone クレートを一時ディレクトリへ
+コピーし `path` 依存を除去した上で crates.io 公開版のみで `cargo build` / `cargo test`
+する `standalone-crates-io-check.sh` を追加した（「コピーすると壊れるテンプレート」の
+すり抜け防止。独立 workflow `standalone-crates-io.yml` から呼ばれる）。
 イシュー #238 で、NFR-8「AI 生成テストによる注入リグレッションの検知率が 90% 以上」の
 実装フェーズ確定検証として、既知の破壊的変更を使い捨て `git worktree` へ注入し
 既存テストスイート（clippy / cargo-nextest / doc test）の検知可否を計測する
@@ -100,6 +104,7 @@ req6-typescript-types.md` 参照）。
 | `regression-injection-verify.sh` | NFR-8「注入リグレッション検知率 90% 以上」の実装フェーズ確定検証ハーネス（#238）。`docs/reports/nfr8-injection-patches/R-*.diff`（既知の破壊的変更 12 件、`docs/reports/nfr8-injection-case-definitions.md` で選定根拠を確定）を使い捨て `git worktree` へ 1 件ずつ適用し、対象クレートで clippy / cargo-nextest / doc test を実行して検知可否を判定する。`metric=injection_detection_rate pass=.. fail=.. pending=0 total=..` 形式のサマリを出力し、検知率 90% 未満またはパッチ適用不能ケースがあれば非 0 終了する（フェイルクローズ） | CI には常設追加しない（重量ビルドを 12 回伴うため。self-hosted runner の負荷抑制規約、`.claude/rules/ci.md`）。実測は手動実行し結果をレポートへ記録する |
 | `tests/run-regression-injection-tests.sh` | `regression-injection-verify.sh` のセルフテスト。`tests/fixtures/regression-injection/stub-gate.sh` を `--gate-cmd` 注入し、cargo 非依存で検知率集計・閾値判定・タイムアウト扱い・パッチ適用失敗のフェイルクローズを検証する（実際の検知率実測とは別物。本体の実測は上記コマンドを直接実行する） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
 | `tests/run-clean-worktrees-tests.sh` | `clean-worktrees.sh` のセルフテスト（一時 git リポジトリで登録済み clean/dirty・孤児を再現、ネットワーク・cargo ビルド不要） | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |
+| `standalone-crates-io-check.sh` | `templates/*`・`examples/*` の standalone クレートを一時ディレクトリへコピーし、`, path = "../../crates/..."` 指定を除去して crates.io 公開版（0.1.0）のみで `cargo build` / `cargo test` を実行する（イシュー #371）。対象検出 0 件・path 除去 0 件・除去後の path 残存・1 クレートでも FAIL、のいずれも非 0 終了（フェイルクローズ） | `.github/workflows/standalone-crates-io.yml`（独立 workflow）から呼ばれる。paths フィルタ付き pull_request + 週次 schedule（土曜 02:00 UTC）+ workflow_dispatch。`ci-complete` のゲート対象外 |
 
 ## 前提ツール
 
@@ -124,6 +129,7 @@ req6-typescript-types.md` 参照）。
 | npm（`openapi-ts.sh` のみ、動作確認済み: 11.6.2） | `ts/` の依存インストール（`npm ci --ignore-scripts`）・スクリプト実行 | Node.js（volta）に同梱 |
 | `actionlint`（`actionlint.sh` のみ、`actionlint.sh` の `ACTIONLINT_VERSION`/`ACTIONLINT_SHA256_LINUX_AMD64` が単一真実源。動作確認済み: 1.7.12） | `.github/workflows/*.yml` の静的検証（式インジェクション・構文誤り・`needs` 参照切れ等）。Go 製単一バイナリで `cargo install` 不可 | GitHub Releases から SHA256 検証込みで導入（`scripts/actionlint.sh` 未導入時のエラーメッセージにコマンド例あり。`ci.yml` の `actionlint` ジョブと同一手順） |
 | `shellcheck`（`actionlint.sh` のみ、任意。未導入時は actionlint の `run:` ブロック検査が縮退する WARN のみ。動作確認済み: 0.11.0） | actionlint の `run:` ブロック shellcheck 統合 | OS のパッケージマネージャ（例: `apt install shellcheck`） |
+| `cargo`（`standalone-crates-io-check.sh`。他スクリプトでも暗黙の前提だが、本スクリプトは Rust ツールチェーン以外の追加ツールを要さないため明示する） | standalone クレートの `cargo build` / `cargo test`（crates.io レジストリ解決） | rustup（https://rustup.rs/）でツールチェーンを導入 |
 
 ## `setup-required-checks.sh` — required status check の設定
 
@@ -512,4 +518,26 @@ bash scripts/clean-worktrees.sh --apply --no-salvage  # 退避せずに削除
 - CI には本体ではなくセルフテスト（`tests/run-clean-worktrees-tests.sh`）のみを組み込む。
   97GB 規模の削除は self-hosted runner 上で実行する処理ではなく、人間・エージェントが
   ローカル/運用時に手動実行する想定。
+
+## `standalone-crates-io-check.sh` — standalone クレートの crates.io 依存のみビルド検証（イシュー #371）
+
+```bash
+bash scripts/standalone-crates-io-check.sh
+```
+
+- `templates/*/Cargo.toml`・`examples/*/Cargo.toml` を走査して standalone クレートを
+  動的に検出する（列挙ハードコードなし。`examples/with-*` が増えても本スクリプト・
+  workflow の変更は不要。0 件検出は構成ドリフトとして `exit 1`）。
+- 各クレートを `mktemp -d` の一時ディレクトリへコピー（`target/` 除外、`trap` で掃除）
+  し、コピー側 Cargo.toml の fandhe-backend 依存から `, path = "../../crates/..."` を
+  sed で除去して crates.io の `version = "0.1.0"` 指定だけを残す。除去件数 0（書式
+  ドリフトで sed が空振り）・除去後の `path =` 残存はいずれも `exit 1`（フェイル
+  クローズ）。
+- 一時コピーで `cargo build` → `cargo test` を実行する。path 指定が残っていないため
+  fandhe-backend-* 依存はすべて crates.io 公開版から解決され、公開版に存在しない
+  API・feature を参照していればここで失敗する。クレートごとに PASS/FAIL を集計し、
+  1 件でも FAIL なら `exit 1`。
+- `.github/workflows/standalone-crates-io.yml`（独立 workflow）から呼ばれる。ci.yml へ
+  相乗りしない理由（paths フィルタがなく全 PR でフルビルドが走るため）・`ci-complete`
+  ゲート対象外であることは同 workflow の冒頭コメントを参照。
 

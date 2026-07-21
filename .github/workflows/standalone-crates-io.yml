@@ -1,0 +1,79 @@
+name: standalone-crates-io
+
+# イシュー #371: templates/*・examples/* の standalone クレートが「path 指定を
+# 外してリポジトリ外へコピーした場合に crates.io 公開版（0.1.0）だけでビルド・
+# テストできるか」を機械検証する（scripts/standalone-crates-io-check.sh 参照）。
+#
+# なぜ ci.yml へ相乗りさせず別 workflow にするか（bench-schedule.yml と同一の
+# 設計判断）:
+#   ci.yml の pull_request トリガーには paths フィルタがなく、ジョブを追加すると
+#   templates/examples に無関係な全 PR で crates.io からのダウンロード + 全
+#   standalone クレートのフルビルドが毎回走り、self-hosted runner の負荷抑制方針
+#   （.claude/rules/ci.md）と衝突する。paths フィルタ付き pull_request + 週次
+#   schedule の独立 workflow に分離することで、関係する変更時と定期検証のみに
+#   実行を絞る。ci.yml の日次 schedule（dep-audit のみ走らせる方針）にも負荷を
+#   追加しない。
+#
+# この分離の帰結として、本チェックは ci.yml の ci-complete 集約ゲート
+# （required status check、docs/design/ci-completion-criteria.md）の対象外となる。
+# templates/examples 変更 PR では独立チェックとして PR 上に表示され、失敗すれば
+# 可視だがマージ強制力はない（required 化は #371 のスコープ外）。
+#
+# cron 配置（.claude/rules/ci.md「schedule 系ワークフロー同士は cron をずらして
+# 負荷を分散する」）: update-external.yml（00:00 UTC 日次）・ci.yml（00:30 UTC
+# 日次）・bench-schedule.yml（日曜 02:00 UTC 週次）と重ならない
+# `0 2 * * 6`（土曜 02:00 UTC = 11:00 JST、週次）を使う。crates.io 公開版との
+# 乖離は PR を伴わずに（公開版 yank 等でも）生じうるため、PR トリガーだけでなく
+# 定期実行でも検知する。
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "templates/**"
+      - "examples/**"
+      - "scripts/standalone-crates-io-check.sh"
+      - ".github/workflows/standalone-crates-io.yml" # 自己参照パターン（docs-site.yml と同様）
+  schedule:
+    - cron: "0 2 * * 6"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read # 最小権限（.claude/rules/ci.md・A01/A05 対策）
+
+concurrency:
+  group: standalone-crates-io-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  standalone-crates-io:
+    name: standalone クレートの crates.io 依存のみビルド検証
+    runs-on: self-hosted
+    # standalone クレートごとの crates.io 依存ダウンロード + フルビルド + テストを
+    # 直列実行する（共有 target/ を使わないコールドビルド）。ハングしたジョブが
+    # self-hosted runner を無期限に占有しないための上限
+    # （.claude/rules/ci.md「全ジョブに timeout-minutes を設定する」多層防御）。
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        # ci.yml 各ジョブと同一 SHA で固定する（サプライチェーン考慮、
+        # .claude/rules/security.md）。
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      # self-hosted runner に rustup が未導入/欠落している場合に備え、
+      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
+      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
+      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
+      # ci.yml 各ジョブと同一パターン。
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      - name: standalone-crates-io-check.sh（path 除去 → crates.io 依存のみで build/test）
+        run: bash scripts/standalone-crates-io-check.sh
