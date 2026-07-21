@@ -2,7 +2,7 @@
 //!
 //! # 呼び出し文脈
 //!
-//! [`crate::main`]（バイナリ本体、引数パース・終了コード変換のみを担う薄い
+//! バイナリの `main`（バイナリ本体、引数パース・終了コード変換のみを担う薄い
 //! ラッパー）と `tests/site_build.rs`（E2E テスト）の双方から [`build_site`]
 //! を直接呼ぶ。bin/lib 両方から同一のビルドロジックを共有するために本モジュール
 //! を `lib.rs` 側に置く。
@@ -10,7 +10,8 @@
 //! # 処理順（fail-closed）
 //!
 //! 1. `<repo_root>/site/nav.toml` を [`nav::parse_nav`] → [`nav::validate_sources`]
-//! 2. 各ページの Markdown を [`markdown::render_markdown`] → [`linkcheck::rewrite_md_links`]
+//! 2. 各ページの Markdown を [`markdown::render_markdown`](crate::markdown::render_markdown)
+//!    → [`linkcheck::rewrite_md_links`]
 //!    （`.md` リンクをサイト内パスへ書き換え）→ [`layout::docs_page`] で文書化
 //! 3. [`linkcheck::check_links`] で全ページの内部リンクを突合検証し、1 件でも
 //!    壊れていれば **書き出しより前に** [`BuildError::LinkCheck`] で失敗させる

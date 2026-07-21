@@ -100,7 +100,7 @@ pub struct Page {
 /// の `TomlError` と同方針）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NavError {
-    /// 入力サイズが [`MAX_INPUT_BYTES`] を超えた。
+    /// 入力サイズが `MAX_INPUT_BYTES` を超えた。
     TooLarge,
     /// 構文エラー（未知のテーブル・未知のキー・非対応の値型・重複キー等）。
     Parse {
