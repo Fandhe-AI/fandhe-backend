@@ -82,9 +82,13 @@
     として同梱）
   - `keywords` / `categories` の付与、陳腐化していた `description` の更新
     （core / routes / http）
-  - `fandhe-backend-plugin-hub-wiring` はテスト専用 RSA 鍵 `tests/fixtures/*.pk8` を
-    `exclude = ["tests/fixtures/*.pk8"]` で公開物から除外（`tests/fixtures/README.md` は
-    同梱。ローカル・CI テストへの影響はない。[[security]] のシークレット混入防止）
+  - `fandhe-backend-plugin-hub-wiring` のテスト専用 RSA 鍵 `tests/fixtures/*.pk8` は
+    公開物に**同梱する**。src/（`#[cfg(test)]`）・tests/・examples/ が
+    `include_bytes!` でコンパイル時に参照しており、除外すると公開版クレートの
+    `cargo test`・examples ビルドがコンパイル不能になるため（PR #350 Bugbot 指摘で
+    当初の除外方針を取り消し）。鍵は `tests/fixtures/README.md` に「テスト専用・
+    秘匿性なし・本番使用禁止」と明記された公開前提のフィクスチャであり、
+    [[security]] のシークレット混入防止の対象となる実運用鍵ではない
 - publish は **`cargo publish --workspace` 1 コマンドで行う**。cargo 1.96 の
   `--workspace` publish は依存順（`fandhe-backend-http` → `fandhe-backend-plugin-*` →
   `fandhe-backend-routes` → `fandhe-backend-core` → `fandhe-backend-plugin-hub-wiring`）を

@@ -10,11 +10,13 @@ description = "fandhe-backend の hub 共通配線プラグイン（TASK-9.1 / T
 readme = "../../README.md"
 keywords = ["jwt", "jwks", "authentication", "web", "plugin"]
 categories = ["authentication", "web-programming"]
-# テスト専用 RSA 鍵フィクスチャ（tests/fixtures/README.md 参照。秘匿性はない）を
-# crates.io 公開物に同梱しない。「秘密鍵ファイルを公開物へ含めない」原則を
-# 機械的に守る安全側の除外で、ローカル・CI の cargo test には影響しない
-# （.claude/rules/security.md）。
-exclude = ["tests/fixtures/*.pk8"]
+# テスト専用 RSA 鍵フィクスチャ（tests/fixtures/*.pk8）は crates.io 公開物に
+# 同梱する。src/（`#[cfg(test)]`）・tests/・examples/ が `include_bytes!` で
+# コンパイル時に参照しており、除外すると公開版クレートの cargo test・
+# examples ビルドがコンパイル不能になるため（PR #350 Bugbot 指摘）。
+# 鍵は tests/fixtures/README.md に「テスト専用・秘匿性なし・本番使用禁止」と
+# 明記された公開前提のフィクスチャであり、シークレット混入防止
+# （.claude/rules/security.md）の対象となる実運用鍵ではない。
 
 # workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
 # （.claude/rules/coding-rust.md・.claude/rules/security.md）。
