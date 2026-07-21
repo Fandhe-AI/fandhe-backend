@@ -3,14 +3,13 @@
 イシュー #94「chore(global): OSS 公開準備（crates.io・LICENSE・CONTRIBUTING）」対応。
 本ドキュメントは crates.io への公開手順（名前確保・所有権・リリース CI）を**定める**もの。
 2026-07-21 に公開判断が下り、公開対象 13 クレートの `publish = false` 解除・メタデータ整備・
-`cargo publish --workspace --dry-run` 全件成功まで完了済み（4・5 節参照）。実 publish は
-未実施で、リポジトリ public 化と `cargo login`（ユーザー実施）が残る前提条件である
-（1 節「前提条件」参照）。リリース CI の実ファイル化は引き続き別イシューで扱う
+`cargo publish --workspace --dry-run` 全件成功・実 publish・リポジトリ public 化が
+完了済み（4・5・8 節参照）。リリース CI の実ファイル化は引き続き別イシューで扱う
 （`docs/design/README.md` の記載規約に従い、対応するタスク・要件 ID と紐付ける）。
 
 ## 1. 前提条件（公開ブロッカー）
 
-以下がすべて完了するまで、実 publish（`cargo publish --workspace`）は実行しない。
+以下がすべて完了し、実 publish（`cargo publish --workspace`）は 2026-07-21 に実施完了した。
 
 1. **正式名称の確定**: `fandhe-backend` に確定済み（#200、
    [`docs/design/framework-naming.md`](./framework-naming.md) 参照。crate/import 改名は
@@ -18,11 +17,10 @@
 2. **公開判断**: 2026-07-21 にリポジトリオーナーから公開指示済み。本ブロッカーは解消済み
 3. **公開対象クレートの最終選定**: 公開対象 13 クレートで確定済み（4 節の区分表参照）。
    本ブロッカーは解消済み
-4. **リポジトリの public 化**: 現状 `PRIVATE`（`gh repo view` で確認）。**publish 実行直前の
-   残ブロッカー**であり、public 化してから publish する（README・doc comment 内のリンクを
-   crates.io 上で解決可能にするため）
-5. **`cargo login`**: crates.io への認証はユーザーが実施する（トークンをリポジトリ・
-   エージェント環境に残さない。[[security]]）
+4. **リポジトリの public 化**: 2026-07-21 に public 化完了済み。README・doc comment 内の
+   リンクを crates.io 上で解決可能にするため実施。本ブロッカーは解消済み
+5. **`cargo login`**: crates.io への認証はユーザーが実施済み。トークンをリポジトリ・
+   エージェント環境に残さない。本ブロッカーは解消済み
 
 ## 2. 名前確保
 
@@ -72,10 +70,9 @@
 | `docs-site` | 恒久非公開 | GitHub Pages ドキュメントサイト生成ツール（SSG）。開発者・CI 用でフレームワーク利用者向け成果物ではない |
 | `crates/http/fuzz` | 恒久非公開（対象外） | cargo-fuzz 専用クレート。root workspace から `exclude` 済み（TASK-15.3-1、#87）であり、`cargo publish` の対象にも入らない |
 
-- **公開対象 13 クレートは `publish = false` を解除済み**（2026-07-21 の公開判断に基づく。
-  5 節参照）。恒久非公開 3 クレート（`axum-ref` / `ws-load-client` / `docs-site`）のみ
-  `publish = false` を維持し、workspace `exclude` の `crates/http/fuzz` と合わせて
-  公開物から除外する
+- **公開対象 13 クレートは crates.io v0.1.0 として公開済み**（2026-07-21 実施。5 節参照）。
+  恒久非公開 3 クレート（`axum-ref` / `ws-load-client` / `docs-site`）は `publish = false`
+  で維持し、workspace `exclude` の `crates/http/fuzz` と合わせて公開物から除外
 - 解除と併せて各公開対象クレートの `Cargo.toml` に次のメタデータを整備済み:
   - path 依存への `version = "0.1.0"` 併記（crates.io 公開には version 指定が必須）
   - `readme = "../../README.md"`（ルート README を各クレートの crates.io 掲載 README
@@ -89,10 +86,10 @@
     当初の除外方針を取り消し）。鍵は `tests/fixtures/README.md` に「テスト専用・
     秘匿性なし・本番使用禁止」と明記された公開前提のフィクスチャであり、
     [[security]] のシークレット混入防止の対象となる実運用鍵ではない
-- publish は **`cargo publish --workspace` 1 コマンドで行う**。cargo 1.96 の
+- publish は **`cargo publish --workspace` 1 コマンドで実施済み**（2026-07-21）。cargo 1.96 の
   `--workspace` publish は依存順（`fandhe-backend-http` → `fandhe-backend-plugin-*` →
   `fandhe-backend-routes` → `fandhe-backend-core` → `fandhe-backend-plugin-hub-wiring`）を
-  自動解決するため、クレート個別の逐次 publish・インデックス反映待ちの手作業は不要である。
+  自動解決するため、クレート個別の逐次 publish・インデックス反映待ちの手作業は不要。
   `cargo publish --workspace --dry-run` は 13 クレート全件で成功済み（2026-07-21）
 - 本公開準備に伴うドキュメント追随の更新対象は、本ドキュメントのほか `README.md`
   （インストール節・crates.io 掲載用の絶対 URL 化）・`docs/guide/getting-started.md`
@@ -193,21 +190,23 @@ jobs:
 
 ## 8. 公開前チェックリスト
 
-公開判断が下り、実際に publish を実行する際は以下をすべて確認する。
+実際に publish を実行する際に確認すべき項目（2026-07-21 実施状況）。
 
 - [x] `cargo publish --workspace --dry-run` が公開対象 13 クレート全件で成功する
       （2026-07-21 実施済み）
-- [ ] `cargo package --list -p <crate>` で同梱内容を確認し、シークレット・計測データ
+- [x] `cargo package --list -p <crate>` で同梱内容を確認し、シークレット・計測データ
       （`benches/reports/**` 等）・ローカル設定が誤って含まれていないことを確認する
       （`fandhe-backend-plugin-hub-wiring` のテスト専用 RSA 鍵 `tests/fixtures/*.pk8` は
-      `exclude` 済み。4 節参照）
-- [ ] 実 publish 前に、各クレートの `categories` スラッグを crates.io 公式カテゴリ一覧
-      （<https://crates.io/categories>）と 1 件ずつ照合する（`cargo publish --dry-run` では
-      サーバ側のカテゴリ検証が走らないため、dry-run 成功はスラッグの正しさを保証しない）
-- [ ] `cargo audit` / `cargo deny check` が 0 件で通過する（`scripts/dep-audit.sh`）
-- [ ] README・doc comment 内のドキュメントリンクが public URL で解決すること
-      （private リポジトリ前提のリンクが残っていないこと）
-- [ ] 1 節の前提条件がすべて完了している（残りはリポジトリ public 化と `cargo login`）
+      `exclude` 済み。4 節参照。2026-07-21 実施済み）
+- [x] 各クレートの `categories` スラッグを crates.io 公式カテゴリ一覧
+      （<https://crates.io/categories>）と 1 件ずつ照合する。2026-07-21 実施済み
+- [x] `cargo audit` / `cargo deny check` が 0 件で通過する（`scripts/dep-audit.sh`）。
+      2026-07-21 実施済み
+- [ ] README・doc comment 内のドキュメントリンクが public URL で解決すること。
+      注: `fandhe-backend-spec` リポジトリが private リポジトリのままで、README から
+      `docs/spec/` への 4 箇所のリンクが crates.io 掲載時に private リポジトリへの
+      リンクとなるため、完全解決は spec リポジトリの public 化待ち
+- [x] 1 節の前提条件がすべて完了している。2026-07-21 実施済み
 
 ## 参照
 
