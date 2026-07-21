@@ -1,0 +1,35 @@
+[package]
+name = "fandhe-backend-example-with-cors"
+version = "0.1.0"
+edition = "2024"
+description = "fandhe-backend の CORS プラグイン（cors feature）の 2 層配線だけを見せる最小 ToDo API サンプル（examples/with-cors、examples/README.md 参照）。"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# 依存は path 指定（リポジトリ内 workspace の crates/* を直接参照し、CI で
+# 常に最新実装に対して検証する）。本サンプルをリポジトリ外へコピーして
+# 使う場合は `path = "../../crates/..."` を外し、`version = "0.1.0"` のみの
+# crates.io 版参照に切り替えること（crates.io 公開済み、CLAUDE.md Overview
+# 節参照。`templates/app/Cargo.toml` と同一の注意）。
+[dependencies]
+# 見せたい機能（CORS）に必要な feature のみ有効化する。他 feature
+# （compression / static / openapi 等）は本サンプルの焦点外のため有効化しない
+# （pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
+fandhe-backend-core = { version = "0.1.0", path = "../../crates/core", features = [
+    "cors",
+] }
+fandhe-backend-http = { version = "0.1.0", path = "../../crates/http" }
+fandhe-backend-routes = { version = "0.1.0", path = "../../crates/routes" }
+fandhe-backend-plugin-cors = { version = "0.1.0", path = "../../crates/plugin-cors" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# root workspace（リポジトリ直下 Cargo.toml の members）から意図的に切り離す。
+# examples/with-cors は「フレームワーク利用者へ配布される独立サンプルの雛形」
+# であり、root workspace に巻き込まれると独立プロジェクトとしての
+# `cargo build`/`cargo test` の挙動を検証できなくなる（templates/app/Cargo.toml
+# と同一理由）。root Cargo.toml の `members` は `crates/*` glob のため、本
+# ディレクトリは変更なしに非メンバーのままになる（`cargo metadata` で確認済み）。
+[workspace]
+members = ["."]
