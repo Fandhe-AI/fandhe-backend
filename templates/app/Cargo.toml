@@ -1,0 +1,38 @@
+[package]
+name = "fandhe-backend-template-app"
+version = "0.1.0"
+edition = "2024"
+description = "fandhe-backend の feature 一式（cors / compression / static / openapi）を組み合わせた ToDo API テンプレート。実運用形の構成ドリフト防止用の雛形（templates/app/src/main.rs 冒頭 doc を参照）。"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# 依存は path 指定（リポジトリ内 workspace の crates/* を直接参照し、CI で
+# 常に最新実装に対して検証する）。テンプレートをリポジトリ外へコピーして
+# 使う場合は `path = "../../crates/..."` を外し、`version = "0.1.0"` のみの
+# crates.io 版参照に切り替えること（crates.io 公開済み、CLAUDE.md Overview
+# 節参照）。
+[dependencies]
+fandhe-backend-core = { version = "0.1.0", path = "../../crates/core", features = [
+    "cors",
+    "compression",
+    "static",
+    "openapi",
+] }
+fandhe-backend-http = { version = "0.1.0", path = "../../crates/http" }
+fandhe-backend-routes = { version = "0.1.0", path = "../../crates/routes" }
+fandhe-backend-plugin-cors = { version = "0.1.0", path = "../../crates/plugin-cors" }
+fandhe-backend-plugin-static = { version = "0.1.0", path = "../../crates/plugin-static" }
+fandhe-backend-plugin-compression = { version = "0.1.0", path = "../../crates/plugin-compression" }
+fandhe-backend-plugin-openapi = { version = "0.1.0", path = "../../crates/plugin-openapi" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# root workspace（リポジトリ直下 Cargo.toml の members）から意図的に切り離す。
+# templates/app は「フレームワーク利用者へ配布される独立プロジェクトの雛形」
+# であり、root workspace に巻き込まれると独立プロジェクトとしての
+# `cargo build`/`cargo test` の挙動を検証できなくなる。root Cargo.toml の
+# `members` は `crates/*` glob のため、本ディレクトリは変更なしに非メンバーの
+# ままになる（`cargo metadata` で確認済み）。
+[workspace]
+members = ["."]

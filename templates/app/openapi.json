@@ -1,0 +1,176 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "fandhe-backend ToDo テンプレート API",
+    "version": "0.1.0",
+    "description": "templates/app が提供する最小 ToDo CRUD API のスキーマ（Server::openapi_with 経由で GET /openapi.json として配信）。"
+  },
+  "paths": {
+    "/todos": {
+      "get": {
+        "summary": "ToDo 一覧取得",
+        "responses": {
+          "200": {
+            "description": "ToDo の配列",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Todo" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "ToDo 作成",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateTodoBody" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "作成した ToDo",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Todo" }
+              }
+            }
+          },
+          "400": {
+            "description": "不正な JSON ボディ、または title が空白のみ",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorBody" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/todos/{id}": {
+      "get": {
+        "summary": "ToDo 単体取得",
+        "parameters": [{ "$ref": "#/components/parameters/TodoId" }],
+        "responses": {
+          "200": {
+            "description": "該当 ToDo",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Todo" }
+              }
+            }
+          },
+          "404": {
+            "description": "該当 ToDo が存在しない、または id が非数値",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorBody" }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "ToDo 更新",
+        "parameters": [{ "$ref": "#/components/parameters/TodoId" }],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateTodoBody" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新後の ToDo",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Todo" }
+              }
+            }
+          },
+          "400": {
+            "description": "不正な JSON ボディ、または title が空白のみ",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorBody" }
+              }
+            }
+          },
+          "404": {
+            "description": "該当 ToDo が存在しない",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorBody" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "ToDo 削除",
+        "parameters": [{ "$ref": "#/components/parameters/TodoId" }],
+        "responses": {
+          "204": { "description": "削除成功（本文なし）" },
+          "404": {
+            "description": "該当 ToDo が存在しない",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorBody" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "TodoId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "integer", "format": "uint64" }
+      }
+    },
+    "schemas": {
+      "Todo": {
+        "type": "object",
+        "required": ["id", "title", "done"],
+        "properties": {
+          "id": { "type": "integer", "format": "uint64" },
+          "title": { "type": "string" },
+          "done": { "type": "boolean" }
+        }
+      },
+      "CreateTodoBody": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": { "type": "string" }
+        }
+      },
+      "UpdateTodoBody": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "done": { "type": "boolean" }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string" }
+        }
+      }
+    }
+  }
+}

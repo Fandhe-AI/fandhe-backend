@@ -1,4 +1,6 @@
 /target
+templates/*/target/
+examples/*/target/
 Cargo.lock
 **/*.rs.bk
 
