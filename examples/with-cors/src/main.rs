@@ -153,7 +153,12 @@ async fn main() -> std::io::Result<()> {
     println!("fandhe-backend-example-with-cors listening on {addr}");
     bound
         .run_until(async {
-            let _ = tokio::signal::ctrl_c().await;
+            // 登録失敗を握りつぶすと future が即完了し bind 直後にサーバが
+            // 終了してしまうため、シグナルハンドラを登録できない環境では
+            // 起動継続せず明示的に panic させる（graceful-shutdown ガイドと同方針）
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Ctrl-C シグナルハンドラの登録に失敗した");
         })
         .await
 }
