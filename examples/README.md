@@ -15,6 +15,7 @@ workspace 構成、下記「構成の流儀」節を参照）。
 | ディレクトリ | 見せる機能 | 起動方法 |
 |-------------|-----------|---------|
 | [`with-cors/`](./with-cors/) | CORS の 2 層配線（`Router::options_fallback` + `Server::cors`） | `cd examples/with-cors && cargo run` |
+| [`with-websocket/`](./with-websocket/) | ユーザー定義 WebSocket メッセージハンドラ（`WebSocketConfig::with_handler`） | `cd examples/with-websocket && cargo run` |
 
 ## サンプルコードの重複回避方針
 
@@ -32,6 +33,12 @@ fandhe-backend には目的の異なる 3 種類のサンプル置き場があ�
 standalone crate（独立 `cargo run`・独自 README・独自テスト）として複製している点が
 `crates/core/examples/` との違いです。両者に差分が生じた場合は
 `crates/core/examples/cors_demo.rs` 側を正とし、本ディレクトリ側を追随させてください。
+
+`examples/with-websocket/` は `crates/core/examples/ws_echo.rs`（10,000 同時接続
+負荷試験・RSS 計測専用、既定 `EchoHandler` のまま）とは目的が異なる独立サンプル
+です。土台にはせず、Issue #179 で追加されたユーザー定義メッセージハンドラ API
+（`WsMessageHandler` / `WebSocketConfig::with_handler`）の利用者向け配線例として
+新規に作成しています。
 
 ## 構成の流儀（`templates/app/` と共通）
 
