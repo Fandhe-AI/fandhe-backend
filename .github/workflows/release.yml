@@ -65,6 +65,22 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --all-features
 
+      # dep-audit.sh はツール不在時に導入せず異常終了する（fail-closed）ため、
+      # ci.yml の dep-audit ジョブと同一のバージョン固定インストールを先行させる
+      # （サプライチェーン考慮: crates.io からバージョン固定で取得。
+      # .claude/rules/security.md。Bugbot 指摘対応）
+      - name: Ensure cargo-deny 0.19.8
+        run: |
+          if ! cargo deny --version 2>/dev/null | grep -q ' 0\.19\.8$'; then
+            cargo install --locked cargo-deny@0.19.8
+          fi
+
+      - name: Ensure cargo-audit 0.22.2
+        run: |
+          if ! cargo audit --version 2>/dev/null | grep -q ' 0\.22\.2$'; then
+            cargo install --locked cargo-audit@0.22.2
+          fi
+
       - name: dep-audit（cargo audit / cargo deny、全 feature 構成）
         run: bash scripts/dep-audit.sh
 
@@ -95,7 +111,11 @@ jobs:
     name: cargo publish --workspace（要 環境承認）
     needs: dry-run
     runs-on: self-hosted
-    timeout-minutes: 30
+    # publish は 13 クレートのアップロード + crates.io インデックス反映待ちを含み、
+    # ジョブタイムアウトによる途中打ち切りは「一部だけ公開済み」の部分公開状態を
+    # 生む（concurrency の cancel-in-progress: false と同じ理由で避けたい失敗様態）。
+    # dry-run より大幅に余裕を持たせる（Bugbot 指摘対応）
+    timeout-minutes: 120
     # required reviewers による人間承認ゲート。承認されるまで publish は実行されない
     environment: crates-io-release
     steps:
