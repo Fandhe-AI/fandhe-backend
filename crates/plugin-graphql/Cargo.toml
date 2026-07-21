@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "fandhe-backend の GraphQL プラグイン実装（TASK-5.1 / #38）。パスインターセプト型のプラグイン境界パターン（TASK-2.4 / #21 で確立、webrtc-proxy と並ぶ第 2 インスタンス）を維持したまま、async-graphql による実クエリ実行へ内部実装を差し替える。"
-publish = false
+# イシュー #94 の公開判断に基づき `publish = false` を解除済み。
+# 公開手順は docs/design/crates-io-release.md を参照。
+readme = "../../README.md"
+keywords = ["graphql", "http", "server", "web", "plugin"]
+categories = ["web-programming", "web-programming::http-server", "asynchronous"]
 
 # workspace lints をそのまま継承する（`docs/design/unsafe-deny-lints.md` 第 1 層の
 # forbid を含む）。本番コード・テスト・doc test のいずれも `async_graphql::Object`
@@ -27,7 +31,7 @@ workspace = true
 # し、実行に必要な最小 feature のみ個別に有効化する。`cargo tree -p
 # fandhe-backend-plugin-graphql` で不要依存が混入していないことを継続的に確認する。
 [dependencies]
-fandhe-backend-http = { path = "../http" }
+fandhe-backend-http = { path = "../http", version = "0.1.0" }
 async-graphql = { version = "7", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

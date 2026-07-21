@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "fandhe-backend の静的ファイル配信プラグイン（イシュー #318）。パストラバーサル対策・spawn_blocking I/O を備えたディレクトリ配信を提供する。"
-publish = false
+# イシュー #94 の公開判断に基づき `publish = false` を解除済み。
+# 公開手順は docs/design/crates-io-release.md を参照。
+readme = "../../README.md"
+keywords = ["static", "files", "http", "server", "web"]
+categories = ["web-programming", "web-programming::http-server", "asynchronous"]
 
 # workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
 # （.claude/rules/coding-rust.md・.claude/rules/security.md）。
@@ -25,7 +29,7 @@ workspace = true
 # 静的テーブル（`src/mime.rs`）で行うため、外部 crates.io 依存（mime_guess 等）
 # は追加しない。
 [dependencies]
-fandhe-backend-http = { path = "../http" }
+fandhe-backend-http = { path = "../http", version = "0.1.0" }
 tokio = { version = "1", default-features = false, features = ["rt"] }
 
 # 単体テスト（`#[cfg(test)] mod tests`）で `#[tokio::test]` マクロ・

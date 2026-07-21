@@ -4,8 +4,12 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "fandhe-backend の最小 HTTP/1.1 コア（自前パーサ）。pay-for-what-you-use の起点として外部依存を持たない。"
-publish = false
+description = "fandhe-backend の HTTP/1.1 プリミティブ（sans-IO パーサ・レスポンス構築・chunked / query / form / cookie 各パーサ）。"
+# イシュー #94 の公開判断に基づき `publish = false` を解除済み。
+# 公開手順は docs/design/crates-io-release.md を参照。
+readme = "../../README.md"
+keywords = ["http", "parser", "server", "web", "framework"]
+categories = ["web-programming", "web-programming::http-server", "network-programming", "asynchronous"]
 
 # workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する。
 # CI の `cargo clippy -- -D warnings` と組み合わせて実質 deny として機能する

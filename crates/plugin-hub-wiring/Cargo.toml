@@ -5,7 +5,18 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "fandhe-backend の hub 共通配線プラグイン（TASK-9.1 / TASK-9.2）。コアの RequestGate 拡張点上に TenantGate を実装し、RS256 + JWKS による JWT 検証 → org_id 抽出 → フェイルクローズの配線を集約する。"
-publish = false
+# イシュー #94 の公開判断に基づき `publish = false` を解除済み。
+# 公開手順は docs/design/crates-io-release.md を参照。
+readme = "../../README.md"
+keywords = ["jwt", "jwks", "authentication", "web", "plugin"]
+categories = ["authentication", "web-programming"]
+# テスト専用 RSA 鍵フィクスチャ（tests/fixtures/*.pk8）は crates.io 公開物に
+# 同梱する。src/（`#[cfg(test)]`）・tests/・examples/ が `include_bytes!` で
+# コンパイル時に参照しており、除外すると公開版クレートの cargo test・
+# examples ビルドがコンパイル不能になるため（PR #350 Bugbot 指摘）。
+# 鍵は tests/fixtures/README.md に「テスト専用・秘匿性なし・本番使用禁止」と
+# 明記された公開前提のフィクスチャであり、シークレット混入防止
+# （.claude/rules/security.md）の対象となる実運用鍵ではない。
 
 # workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
 # （.claude/rules/coding-rust.md・.claude/rules/security.md）。
@@ -34,8 +45,8 @@ workspace = true
 # -p fandhe-backend-core` に本クレート・本依存が現れないことで
 # pay-for-what-you-use を機械検証できる）。
 [dependencies]
-fandhe-backend-core = { path = "../core" }
-fandhe-backend-http = { path = "../http" }
+fandhe-backend-core = { path = "../core", version = "0.1.0" }
+fandhe-backend-http = { path = "../http", version = "0.1.0" }
 ring = "0.17"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }

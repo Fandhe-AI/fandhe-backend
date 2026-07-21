@@ -1,10 +1,10 @@
 diff --git a/README.md b/README.md
-index b6be099..89598ca 100644
+index 4f19a72..0154df3 100644
 --- a/README.md
 +++ b/README.md
-@@ -53,3 +53,5 @@ git submodule update --init
+@@ -82,3 +82,5 @@ git submodule update --init
  crates.io への公開手順（名前確保・所有権・リリース CI）は
- [`docs/design/crates-io-release.md`](./docs/design/crates-io-release.md) で定めています
- （現時点では実際の公開は行っていません）。
+ [`docs/design/crates-io-release.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/crates-io-release.md)
+ で定めています。
 +<!-- regression-injection-verify.sh セルフテスト用フィクスチャ（無害な注入例） -->
 +

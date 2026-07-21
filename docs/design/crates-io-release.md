@@ -1,21 +1,28 @@
 # crates.io 公開手順
 
 イシュー #94「chore(global): OSS 公開準備（crates.io・LICENSE・CONTRIBUTING）」対応。
-本ドキュメントは crates.io への公開手順（名前確保・所有権・リリース CI）を**定める**もので、
-現時点で実際の `cargo publish` 実行・リポジトリ public 化・crates.io 上での名前確保は
-行わない（1 節「前提条件」参照）。実ファイル化・実行判断は前提条件充足後の別イシューで扱う
+本ドキュメントは crates.io への公開手順（名前確保・所有権・リリース CI）を**定める**もの。
+2026-07-21 に公開判断が下り、公開対象 13 クレートの `publish = false` 解除・メタデータ整備・
+`cargo publish --workspace --dry-run` 全件成功まで完了済み（4・5 節参照）。実 publish は
+未実施で、リポジトリ public 化と `cargo login`（ユーザー実施）が残る前提条件である
+（1 節「前提条件」参照）。リリース CI の実ファイル化は引き続き別イシューで扱う
 （`docs/design/README.md` の記載規約に従い、対応するタスク・要件 ID と紐付ける）。
 
 ## 1. 前提条件（公開ブロッカー）
 
-以下がすべて完了するまで、本ドキュメントの手順 2 節以降は実行しない。
+以下がすべて完了するまで、実 publish（`cargo publish --workspace`）は実行しない。
 
 1. **正式名称の確定**: `fandhe-backend` に確定済み（#200、
    [`docs/design/framework-naming.md`](./framework-naming.md) 参照。crate/import 改名は
    #202・PR #209 で反映済み）。本ブロッカーは解消済み
-2. **リポジトリの public 化**: 現状 `PRIVATE`（`gh repo view` で確認）。OSS として公開する
-   判断が正式に下されてから public 化する
-3. **公開対象クレートの最終選定**: 4 節の区分表をレビューで確定させる
+2. **公開判断**: 2026-07-21 にリポジトリオーナーから公開指示済み。本ブロッカーは解消済み
+3. **公開対象クレートの最終選定**: 公開対象 13 クレートで確定済み（4 節の区分表参照）。
+   本ブロッカーは解消済み
+4. **リポジトリの public 化**: 現状 `PRIVATE`（`gh repo view` で確認）。**publish 実行直前の
+   残ブロッカー**であり、public 化してから publish する（README・doc comment 内のリンクを
+   crates.io 上で解決可能にするため）
+5. **`cargo login`**: crates.io への認証はユーザーが実施する（トークンをリポジトリ・
+   エージェント環境に残さない。[[security]]）
 
 ## 2. 名前確保
 
@@ -59,42 +66,57 @@
 | `fandhe-backend-http` | 公開対象 | HTTP プリミティブ（下位層）。単体でも再利用価値がある |
 | `fandhe-backend-routes` | 公開対象 | ルーティング。`fandhe-backend-http` にのみ依存する中間層 |
 | `fandhe-backend-core`（`crates/core`） | 公開対象 | 最小コア本体 |
-| `fandhe-backend-plugin-websocket` / `fandhe-backend-plugin-graphql` / `fandhe-backend-plugin-openapi` / `fandhe-backend-plugin-webrtc` / `fandhe-backend-plugin-webrtc-proxy` / `fandhe-backend-plugin-tracing` / `fandhe-backend-plugin-hub-wiring`（存在するもの） | 公開対象 | feature 駆動プラグイン本体 |
+| `fandhe-backend-plugin-websocket` / `fandhe-backend-plugin-graphql` / `fandhe-backend-plugin-openapi` / `fandhe-backend-plugin-webrtc` / `fandhe-backend-plugin-webrtc-proxy` / `fandhe-backend-plugin-tracing` / `fandhe-backend-plugin-hub-wiring` / `fandhe-backend-plugin-cors` / `fandhe-backend-plugin-compression` / `fandhe-backend-plugin-static` | 公開対象 | feature 駆動プラグイン本体（10 クレート） |
 | `axum-ref` | 恒久非公開 | 性能比較用参照実装。フレームワーク利用者向け成果物ではない |
 | `ws-load-client` | 恒久非公開 | WebSocket 負荷試験専用バイナリ |
+| `docs-site` | 恒久非公開 | GitHub Pages ドキュメントサイト生成ツール（SSG）。開発者・CI 用でフレームワーク利用者向け成果物ではない |
 | `crates/http/fuzz` | 恒久非公開（対象外） | cargo-fuzz 専用クレート。root workspace から `exclude` 済み（TASK-15.3-1、#87）であり、`cargo publish` の対象にも入らない |
 
-- 公開対象クレートは現時点ではすべて `Cargo.toml` に `publish = false` を持たない
-  （`crates/core` を除く。5 節参照）。**正式名称確定・公開可否のレビュー承認が下りるまでは、
-  公開対象クレートも含めて全クレートに `publish = false` を設定し publish をフェイル
-  クローズで禁止する**（5 節）
-- publish 順序は依存方向（`server → routes → http::*`）に従う:
-  1. `fandhe-backend-http`
-  2. `fandhe-backend-routes`
-  3. `fandhe-backend-core`
-  4. `fandhe-backend-plugin-*`（相互依存がなければ順不同。`fandhe-backend-plugin-websocket` 等はコアに依存しない
-     設計のため、コアより先でも問題ない。ただし本ドキュメントでは分かりやすさのため
-     コアの後に統一する）
-- 公開判断が下り、個別クレートの publish を解除する際は、当該クレートの
-  `Cargo.toml` から `publish = false` の行を削除し、本ドキュメントの本表の
-  「恒久非公開」以外のクレートについて解除する
+- **公開対象 13 クレートは `publish = false` を解除済み**（2026-07-21 の公開判断に基づく。
+  5 節参照）。恒久非公開 3 クレート（`axum-ref` / `ws-load-client` / `docs-site`）のみ
+  `publish = false` を維持し、workspace `exclude` の `crates/http/fuzz` と合わせて
+  公開物から除外する
+- 解除と併せて各公開対象クレートの `Cargo.toml` に次のメタデータを整備済み:
+  - path 依存への `version = "0.1.0"` 併記（crates.io 公開には version 指定が必須）
+  - `readme = "../../README.md"`（ルート README を各クレートの crates.io 掲載 README
+    として同梱）
+  - `keywords` / `categories` の付与、陳腐化していた `description` の更新
+    （core / routes / http）
+  - `fandhe-backend-plugin-hub-wiring` のテスト専用 RSA 鍵 `tests/fixtures/*.pk8` は
+    公開物に**同梱する**。src/（`#[cfg(test)]`）・tests/・examples/ が
+    `include_bytes!` でコンパイル時に参照しており、除外すると公開版クレートの
+    `cargo test`・examples ビルドがコンパイル不能になるため（PR #350 Bugbot 指摘で
+    当初の除外方針を取り消し）。鍵は `tests/fixtures/README.md` に「テスト専用・
+    秘匿性なし・本番使用禁止」と明記された公開前提のフィクスチャであり、
+    [[security]] のシークレット混入防止の対象となる実運用鍵ではない
+- publish は **`cargo publish --workspace` 1 コマンドで行う**。cargo 1.96 の
+  `--workspace` publish は依存順（`fandhe-backend-http` → `fandhe-backend-plugin-*` →
+  `fandhe-backend-routes` → `fandhe-backend-core` → `fandhe-backend-plugin-hub-wiring`）を
+  自動解決するため、クレート個別の逐次 publish・インデックス反映待ちの手作業は不要である。
+  `cargo publish --workspace --dry-run` は 13 クレート全件で成功済み（2026-07-21）
+- 本公開準備に伴うドキュメント追随の更新対象は、本ドキュメントのほか `README.md`
+  （インストール節・crates.io 掲載用の絶対 URL 化）・`docs/guide/getting-started.md`
+  （crates.io からの導入手順）・`site/index.md`（ドキュメントサイトトップへの公開準備
+  状況とインストール手順の追記）である。いずれもコードの拡張点閉包とは無関係な
+  公開準備ドキュメントの追随であり、実 publish 完了後に「公開済み」表現へ切り替える
 
-## 5. publish フェイルクローズ（現時点の実装）
+## 5. publish フェイルクローズ（解除済み）
 
-- `crates/core/Cargo.toml` に `publish = false` を理由コメント付きで追加した
-  （本イシュー #94 で対応済み）。名称確定・公開判断が下るまで、意図しない
-  `cargo publish` 事故を機械的に防ぐ
-- 他の 11 クレート（`fandhe-backend-http` / `fandhe-backend-routes` / `fandhe-backend-plugin-*` / `axum-ref` /
-  `ws-load-client`）はすでに `publish = false` が設定済みであることを調査で確認済み
-  （2026-07 時点）。したがって現状、全 12 クレートが `publish = false` で
-  `cargo publish` 不能な状態を維持している
+- 名称確定・公開判断が下るまでの間、全クレートに `publish = false` を設定し、意図しない
+  `cargo publish` 事故を機械的に防ぐフェイルクローズ状態を維持していた（本イシュー #94 で
+  `crates/core` に追加、他クレートは設定済みを確認。2026-07 時点）
+- **2026-07-21 の公開判断（1 節）に基づき、公開対象 13 クレートの `publish = false` を
+  解除した**。恒久非公開 3 クレート（`axum-ref` / `ws-load-client` / `docs-site`）のみ
+  `publish = false` を維持し、フェイルクローズの対象を「利用者向け成果物でないクレート」に
+  限定する運用へ移行した（4 節の区分表が正）
 
 ## 6. リリース CI 設計（YAML 草案）
 
-実ファイル（`.github/workflows/release.yml`）は今回追加しない（名称未確定・private
-リポジトリ・Trusted Publishing 未設定のため追加しても実行不能なデッドコードになる。
-[[out-of-scope-tracking]] に従い、実ファイル化は名称確定後の別イシューに切り出す）。
-以下は将来実装時の草案。
+実ファイル（`.github/workflows/release.yml`）は今回追加しない（private リポジトリ・
+Trusted Publishing 未設定のため追加しても実行不能なデッドコードになる。
+[[out-of-scope-tracking]] に従い、実ファイル化は別イシューに切り出す）。
+以下は将来実装時の草案。publish 手順は 4 節で正式化した
+`cargo publish --workspace`（依存順自動解決）に整合させている。
 
 ```yaml
 name: release
@@ -129,9 +151,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      # 依存順（fandhe-backend-http → fandhe-backend-routes → fandhe-backend-core → fandhe-backend-plugin-*）で
-      # 各クレートに対し dry-run を実行する
-      - run: cargo publish --dry-run -p fandhe-backend-http
+      # 公開対象 13 クレート（publish = false でない全クレート）を依存順自動解決で dry-run する
+      - run: cargo publish --workspace --dry-run
 
   publish:
     needs: dry-run
@@ -143,11 +164,10 @@ jobs:
       id-token: write # Trusted Publishing（OIDC）用。長命トークンをシークレットに保存しない
     steps:
       - uses: actions/checkout@v4
-      # 依存順に publish する（各クレート間で crates.io のインデックス反映待ちを挟む）
-      - run: cargo publish -p fandhe-backend-http
-      - run: cargo publish -p fandhe-backend-routes
-      - run: cargo publish -p fandhe-backend-core
-      # 以降 fandhe-backend-plugin-* を順次 publish
+      # cargo 1.96 の --workspace publish は依存順（fandhe-backend-http → fandhe-backend-plugin-* →
+      # fandhe-backend-routes → fandhe-backend-core → fandhe-backend-plugin-hub-wiring）と
+      # crates.io のインデックス反映待ちを自動解決するため、逐次 publish の手作業は不要
+      - run: cargo publish --workspace
 ```
 
 - **認証**: crates.io の
@@ -175,13 +195,19 @@ jobs:
 
 公開判断が下り、実際に publish を実行する際は以下をすべて確認する。
 
-- [ ] `cargo publish --dry-run -p <crate>` が全公開対象クレートで成功する
+- [x] `cargo publish --workspace --dry-run` が公開対象 13 クレート全件で成功する
+      （2026-07-21 実施済み）
 - [ ] `cargo package --list -p <crate>` で同梱内容を確認し、シークレット・計測データ
       （`benches/reports/**` 等）・ローカル設定が誤って含まれていないことを確認する
+      （`fandhe-backend-plugin-hub-wiring` のテスト専用 RSA 鍵 `tests/fixtures/*.pk8` は
+      `exclude` 済み。4 節参照）
+- [ ] 実 publish 前に、各クレートの `categories` スラッグを crates.io 公式カテゴリ一覧
+      （<https://crates.io/categories>）と 1 件ずつ照合する（`cargo publish --dry-run` では
+      サーバ側のカテゴリ検証が走らないため、dry-run 成功はスラッグの正しさを保証しない）
 - [ ] `cargo audit` / `cargo deny check` が 0 件で通過する（`scripts/dep-audit.sh`）
 - [ ] README・doc comment 内のドキュメントリンクが public URL で解決すること
       （private リポジトリ前提のリンクが残っていないこと）
-- [ ] 1 節の前提条件（正式名称確定・public 化・公開対象クレート最終選定）がすべて完了している
+- [ ] 1 節の前提条件がすべて完了している（残りはリポジトリ public 化と `cargo login`）
 
 ## 参照
 

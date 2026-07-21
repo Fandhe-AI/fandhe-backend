@@ -773,6 +773,22 @@ fn safe_protocol_relative_link_is_allowed() {
 // すると n=400,000 では 33 秒（n=262,144 実測）を大きく超える 70 秒以上
 // かかるため、20 秒でも退行検知力は保たれる。当初の 5 秒上限は runner の
 // 並行負荷でわずかに超過する flaky（CI 実測 5.9〜6.6 秒）を起こした。
+//
+// cargo-llvm-cov のカバレッジ計装下では実行時間が約 11 倍（ローカル実測
+// 0.79 秒 → 8.77 秒）に膨らみ、runner の並行負荷が重なると 20 秒を限界的に
+// 超過する flaky（CI 実測 21.4〜22.7 秒）を起こした。計装実行は
+// cargo-llvm-cov が設定する `CARGO_LLVM_COV` 環境変数で判別できるため、
+// その場合のみ上限を 60 秒へ緩める。O(n^2) 退行時は計装下で 70 秒 × 11 倍
+// 以上かかるため、60 秒でも退行検知力は保たれる。
+
+/// 走査幅上限テストの時間上限。通常 20 秒、カバレッジ計装下のみ 60 秒。
+fn bounded_time_limit() -> std::time::Duration {
+    if std::env::var_os("CARGO_LLVM_COV").is_some() {
+        std::time::Duration::from_secs(60)
+    } else {
+        std::time::Duration::from_secs(20)
+    }
+}
 
 #[test]
 fn oversized_unclosed_emphasis_run_completes_within_bounded_time() {
@@ -785,7 +801,7 @@ fn oversized_unclosed_emphasis_run_completes_within_bounded_time() {
     let out = render_all(&huge_input);
     let elapsed = start.elapsed();
     assert!(
-        elapsed < std::time::Duration::from_secs(20),
+        elapsed < bounded_time_limit(),
         "走査幅上限が機能していれば debug ビルドでも数秒以内に完了するはず: {elapsed:?}"
     );
     assert!(!out.is_empty());
@@ -802,7 +818,7 @@ fn oversized_unclosed_link_bracket_run_completes_within_bounded_time() {
     let out = render_all(&huge_input);
     let elapsed = start.elapsed();
     assert!(
-        elapsed < std::time::Duration::from_secs(20),
+        elapsed < bounded_time_limit(),
         "走査幅上限が機能していれば debug ビルドでも数秒以内に完了するはず: {elapsed:?}"
     );
     assert!(!out.contains("<a "));
@@ -841,7 +857,7 @@ fn oversized_unclosed_backtick_run_completes_within_bounded_time() {
     let out = render_all(&huge_input);
     let elapsed = start.elapsed();
     assert!(
-        elapsed < std::time::Duration::from_secs(20),
+        elapsed < bounded_time_limit(),
         "開始バッククォート連続のカウントに走査幅上限が機能していれば debug ビルドでも数秒以内に完了するはず: {elapsed:?}"
     );
     assert!(!out.contains("<code>"));

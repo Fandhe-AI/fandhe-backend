@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "fandhe-backend の CORS プラグイン（イシュー #305）。プリフライト応答の組み立てと実リクエストへのヘッダ付与を提供する。"
-publish = false
+# イシュー #94 の公開判断に基づき `publish = false` を解除済み。
+# 公開手順は docs/design/crates-io-release.md を参照。
+readme = "../../README.md"
+keywords = ["cors", "http", "server", "web", "plugin"]
+categories = ["web-programming", "web-programming::http-server"]
 
 # workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
 # （.claude/rules/coding-rust.md・.claude/rules/security.md）。
@@ -27,4 +31,4 @@ workspace = true
 # `fandhe_backend_plugin_cors::preflight_response` を呼び出す構成）。
 # 外部 crates.io 依存はゼロ（std のみで実装）。
 [dependencies]
-fandhe-backend-http = { path = "../http" }
+fandhe-backend-http = { path = "../http", version = "0.1.0" }
