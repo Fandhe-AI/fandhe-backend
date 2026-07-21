@@ -2,7 +2,7 @@
 
 fandhe-backend は「最小コア + Cargo feature 駆動プラグイン」で構成されます。
 本文書は feature ごとに、有効化方法・実行可能なサンプル・動作確認手順・
-pay-for-what-you-use（[`.claude/rules/pay-for-what-you-use.md`](../../.claude/rules/pay-for-what-you-use.md)）の
+pay-for-what-you-use（[`.claude/rules/pay-for-what-you-use.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/.claude/rules/pay-for-what-you-use.md)）の
 検証方法を一覧します。実行できる example は `crates/core/examples/*` にある
 既存のものを使い、本文書にコード全文は複製しません（[`README.md`](./README.md) の原則）。
 
@@ -50,12 +50,12 @@ let server = Server::new()
 ```
 
 詳細な設計方針（別プロセス切り出し型を選ぶ理由・攻撃表面の考え方）は
-[`docs/design/webrtc-process-isolation.md`](../design/webrtc-process-isolation.md) を参照してください。
+[`docs/design/webrtc-process-isolation.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/webrtc-process-isolation.md) を参照してください。
 
 ## webrtc（`fandhe-backend-plugin-webrtc`、in-process 型）
 
 `webrtc-rs` に直接依存する in-process 型です。攻撃表面が大きいため、通常は
-上記 `webrtc-proxy` を推奨します（[`CLAUDE.md`](../../CLAUDE.md) Repository Structure 参照）。
+上記 `webrtc-proxy` を推奨します（[`CLAUDE.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/CLAUDE.md) Repository Structure 参照）。
 
 ```bash
 cargo build --release --example webrtc_nfr6 -p fandhe-backend-core --features webrtc
@@ -76,7 +76,7 @@ curl -v http://127.0.0.1:3006/health     # 200 応答（計測対象パス）
 
 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O
 （`tracing-appender` の non-blocking writer）により、RPS への影響を抑えています
-（[`docs/design/tracing-integration.md`](../design/tracing-integration.md) 参照）。
+（[`docs/design/tracing-integration.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/tracing-integration.md) 参照）。
 
 ## openapi（`fandhe-backend-plugin-openapi`、`gen-cli` feature）
 
@@ -95,12 +95,12 @@ scripts/openapi-two-stage.sh
 ```
 
 TypeScript 向け型定義（`ts/src/generated/schema.d.ts`）を連携させる場合は
-[`docs/design/openapi-typescript-pipeline.md`](../design/openapi-typescript-pipeline.md) を参照してください。
+[`docs/design/openapi-typescript-pipeline.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/openapi-typescript-pipeline.md) を参照してください。
 
 ## cors（`fandhe-backend-plugin-cors`）
 
 CORS（Cross-Origin Resource Sharing）を「プリフライト」と「実リクエストへの
-ヘッダ付与」の 2 点で配線するプラグインです（[`docs/design/plugin-boundary.md`](../design/plugin-boundary.md)
+ヘッダ付与」の 2 点で配線するプラグインです（[`docs/design/plugin-boundary.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/plugin-boundary.md)
 5.9 節「レスポンス後処理型パターン」参照）。
 
 ```bash
@@ -131,7 +131,7 @@ curl -si localhost:3004/todos -H 'Origin: https://evil.example'
 
 ## compression（`fandhe-backend-plugin-compression`）
 
-gzip でレスポンスを圧縮するプラグインです（[`docs/design/plugin-boundary.md`](../design/plugin-boundary.md)
+gzip でレスポンスを圧縮するプラグインです（[`docs/design/plugin-boundary.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/plugin-boundary.md)
 5.10 節「レスポンス後処理型パターンの第 2 インスタンス」参照）。CORS と同じ
 「レスポンス後処理型」シームで配線し、複数登録時は CORS → 圧縮の順に適用
 されます。
@@ -165,7 +165,7 @@ doc を参照）。
 ## static（`fandhe-backend-plugin-static`）
 
 SPA フロントエンド等の静的ファイルを配信するプラグインです
-（[`docs/design/plugin-boundary.md`](../design/plugin-boundary.md)
+（[`docs/design/plugin-boundary.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/plugin-boundary.md)
 5.11 節「パスインターセプト型の `spawn_blocking` ファイル I/O 変種」参照）。
 
 ```bash

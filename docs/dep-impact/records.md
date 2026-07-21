@@ -8,6 +8,52 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-07-21 — docs-site 基盤追加（GitHub Pages ドキュメントサイト生成ツール）
+
+`crates/docs-site`（`fandhe-backend-docs-site`、publish=false）を新設し、GitHub Pages
+ドキュメントサイト基盤を構築した。fandhe-frontend の docs-site を移植した SSG ツールで、
+`site/` の nav.toml・docs/guide/ から静的サイトを生成する。
+
+### 依存情報（pay-for-what-you-use）
+
+`crates/docs-site` の外部 crates.io 依存は以下の 3 件のみ:
+
+- `fandhe-frontend-core = "0.1.0"`
+- `fandhe-frontend-app = "0.1.0"`
+- `fandhe-frontend-server = "0.1.0"`
+
+本クレートは `publish = false` で crates.io リリース対象外であり、`crates/core` の
+`Cargo.toml` では依存しないため、本体サーババイナリ・本体 release ビルド依存ツリー、
+および feature 有効/無効のいずれの構成にも一切含まれない（docs 生成ツール専用。
+CI の `docs-site.yml` ワークフロー実行時のみビルド対象）。pay-for-what-you-use
+原則に抵触しない。
+
+```
+$ cargo tree -p fandhe-backend-core | grep fandhe-frontend
+（該当なし）
+$ cargo tree -p fandhe-backend-docs-site | grep fandhe-frontend
+├── fandhe-frontend-core v0.1.0
+├── fandhe-frontend-app v0.1.0
+└── fandhe-frontend-server v0.1.0
+```
+
+### 機能・特徴
+
+- `site/nav.toml` + `docs/guide/**` から静的 HTML サイト生成
+- base_path = `/fandhe-backend`（GitHub Pages 上の相対パス）
+- 内蔵 linkcheck（fail-closed）：リンク切れ検出時は書き出さない
+
+### unsafe 件数
+
+`unsafe` は 0 件（crate 自体の unsafe ブロック・テキストベース走査ともに 0 件。
+外部依存（fandhe-frontend-* 系）由来の unsafe は対象外）。
+
+### CI ワークフロー
+
+`.github/workflows/docs-site.yml` にて main への docs/guide・site・crates/docs-site
+変更 push で自動ビルド → GitHub Pages デプロイを実行。Pages Source=Actions の事前有効化が必要
+（ワークフロー・PR テンプレートのコメント記載参照）。
+
 ## 2026-07-21 — `crates/plugin-openapi` に利用者アプリ独自 OpenAPI スキーマ登録
 API を追加（イシュー #320）
 

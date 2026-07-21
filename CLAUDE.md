@@ -205,7 +205,14 @@ fandhe-backend/
 │   │                                    # の `rt` feature のみ）、`docs/design/plugin-boundary.md`
 │   │                                    # 5.11 節を参照）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
+│   ├── docs-site                      # GitHub Pages ドキュメントサイト生成ツール（SSG、
+│   │                                    # fandhe-frontend の docs-site を移植。publish=false で
+│   │                                    # 本体バイナリに含まれない。crates.io 依存は
+│   │                                    # fandhe-frontend-core/app/server 0.1.0 のみ。
+│   │                                    # 内蔵 linkcheck は fail-closed でリンク切れ時は書き出さない）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
+├── site/                   # GitHub Pages ドキュメントサイトコンテンツ（index.md・nav.toml・
+│                            # assets/site.css。docs-site SSG ツールで生成対象。base_path=/fandhe-backend）
 ├── ts/                     # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）。
 │                            # crates/plugin-openapi/openapi.json → openapi-typescript →
 │                            # ts/src/generated/schema.d.ts（コミット対象）→ openapi-fetch

@@ -60,8 +60,8 @@ let server = Server::new()
 
 > **注意（並行性）**: `Middleware` 実装は同期ブロッキング I/O を行わないでください。
 > 非同期チャネルへの送信・別タスクでの I/O 実行に留めます
-> （[`.claude/rules/coding-rust.md`](../../.claude/rules/coding-rust.md)、実装パターンの
-> 詳細根拠は [`AGENTS.md`](../../AGENTS.md) を参照）。実際のプロダクション実装は
+> （[`.claude/rules/coding-rust.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/.claude/rules/coding-rust.md)、実装パターンの
+> 詳細根拠は [`AGENTS.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/AGENTS.md) を参照）。実際のプロダクション実装は
 > `crates/plugin-tracing` の `TracingMiddleware`（非同期・バッファ済み I/O）を参照して
 > ください。
 
@@ -93,4 +93,4 @@ cargo tree -p fandhe-backend-core --features websocket  # websocket 依存が出
 - 他 feature（graphql / webrtc 系 / tracing / openapi / hub-wiring）の最小サンプルは
   [`feature-samples.md`](./feature-samples.md) を参照してください
 - プラグイン境界の設計判断（なぜこのパターンを採用したか）は
-  [`docs/design/plugin-boundary.md`](../design/plugin-boundary.md) を参照してください
+  [`docs/design/plugin-boundary.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/plugin-boundary.md) を参照してください

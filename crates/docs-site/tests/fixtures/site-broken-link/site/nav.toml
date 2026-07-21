@@ -1,0 +1,11 @@
+[site]
+title = "Fixture Docs (Broken Link)"
+base_path = ""
+
+[[section]]
+title = "Guide"
+
+[[section.page]]
+title = "Home"
+source = "site/index.md"
+path = "/"

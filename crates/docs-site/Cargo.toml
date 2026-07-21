@@ -1,0 +1,33 @@
+[package]
+name = "fandhe-backend-docs-site"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "fandhe-backend の公式 docs サイト（GitHub Pages）を生成する SSG ツール。Fandhe-AI/fandhe-frontend の crates/docs-site（MIT OR Apache-2.0）からの移植。配布物には含めない開発者・CI 用ツール。"
+publish = false
+
+# workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する
+# （.claude/rules/coding-rust.md・.claude/rules/security.md）。
+[lints]
+workspace = true
+
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）非影響の根拠:
+# 本クレートは fandhe-backend の他クレートから一切参照されない独立ツール
+# （開発者・CI 専用バイナリ）であり、フレームワーク本体の依存ツリー・
+# バイナリ・unsafe 件数に影響しない。依存はレンダラとして使う
+# fandhe-frontend の公開クレート 3 つ（crates.io）のみで、それ以外の外部
+# クレートは追加しない（TOML パース・CLI 引数パースも手実装で賄う。
+# 移植元 Fandhe-AI/fandhe-frontend crates/docs-site と同方針）。
+[dependencies]
+fandhe-frontend-core = "0.1.0"
+fandhe-frontend-app = "0.1.0"
+fandhe-frontend-server = "0.1.0"
+
+[lib]
+name = "fandhe_backend_docs_site"
+path = "src/lib.rs"
+
+[[bin]]
+name = "docs-site"
+path = "src/main.rs"

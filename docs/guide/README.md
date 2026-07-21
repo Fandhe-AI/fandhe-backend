@@ -29,12 +29,12 @@
 `crates/core/src/lib.rs` のクレート doc（`cargo test --doc` で検証される doc test）を
 「正」とし、本ガイドはそれらへの導線と実行手順のみを提供します。
 markdown に複製したコードは `cargo test --doc` の検証対象にならずドリフトするため
-（AI ファースト保守性、[`AGENTS.md`](../../AGENTS.md) 参照）、変更が入った場合は
+（AI ファースト保守性、[`AGENTS.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/AGENTS.md) 参照）、変更が入った場合は
 サンプル側を更新すればガイドの記載（コマンド・パス・feature 名）はそのまま有効です。
 
 ## 設計・要件との対応
 
-- 実装がどう作られているかは [`docs/design/`](../design/) を参照（例:
-  [`plugin-boundary.md`](../design/plugin-boundary.md) はプラグイン境界パターンの
+- 実装がどう作られているかは [`docs/design/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/docs/design/) を参照（例:
+  [`plugin-boundary.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/plugin-boundary.md) はプラグイン境界パターンの
   詳細）
-- 要件・受け入れ基準は [`docs/spec/04-requirements.md`](../spec/04-requirements.md) を参照
+- 要件・受け入れ基準は [`docs/spec/04-requirements.md`](https://github.com/Fandhe-AI/fandhe-backend-spec/blob/main/04-requirements.md) を参照

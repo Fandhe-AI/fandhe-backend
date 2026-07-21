@@ -1,0 +1,16 @@
+[site]
+title = "Fixture Docs"
+base_path = "/fixture-base"
+
+[[section]]
+title = "Guide"
+
+[[section.page]]
+title = "Home"
+source = "site/index.md"
+path = "/"
+
+[[section.page]]
+title = "Quickstart"
+source = "site/guide/quickstart.md"
+path = "/guide/quickstart/"

@@ -1,0 +1,37 @@
+# docs サイトのナビゲーション構成マニフェスト。
+# スキーマ: crates/docs-site/src/nav.rs（fail-closed TOML サブセット）。
+# パーサ・検証ロジックの契約はドキュメンテーションコメントを参照。
+[site]
+title = "fandhe-backend"
+base_path = "/fandhe-backend"
+
+[[section]]
+title = "Getting Started"
+
+[[section.page]]
+title = "はじめに"
+source = "site/index.md"
+path = "/"
+
+[[section.page]]
+title = "Getting Started"
+source = "docs/guide/getting-started.md"
+path = "/getting-started/"
+
+[[section]]
+title = "Guides"
+
+[[section.page]]
+title = "ガイドの読み方"
+source = "docs/guide/README.md"
+path = "/guides/"
+
+[[section.page]]
+title = "feature 構成別サンプル"
+source = "docs/guide/feature-samples.md"
+path = "/guides/feature-samples/"
+
+[[section.page]]
+title = "チュートリアル"
+source = "docs/guide/tutorial.md"
+path = "/guides/tutorial/"

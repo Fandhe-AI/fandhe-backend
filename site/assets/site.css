@@ -1,0 +1,420 @@
+/*
+ * fandhe-backend docs サイト共通スタイル（Fandhe-AI/fandhe-frontend の
+ * site/assets/site.css からの移植。クラス名契約を共有するため改変しない）。
+ *
+ * 役割・責務境界:
+ *   docs サイトジェネレータ（crates/docs-site）が生成する全ページに読み込ませる
+ *   プレーン CSS。外部リソース参照（CDN・Web フォント・リモート画像）を一切
+ *   持たず、単一ファイルのみでレイアウト・タイポグラフィが完結する。
+ *
+ * クラス名契約（`crates/docs-site/src/layout.rs` / `nav.rs` / `markdown.rs` の
+ * 実出力が正。ここに書かれたセレクタはすべて実際に生成される class 値であり、
+ * `crates/docs-site/tests/site_css_contract.rs` が両者の乖離を検知する）:
+ *
+ *   body
+ *     header.docs-header            … ヘッダバー（サイトタイトルへのリンク）
+ *     div.docs-container            … 2 カラムのグリッドコンテナ（header の下）
+ *       aside.docs-sidebar          … サイドバーのラッパー（`layout::docs_page`
+ *         が `nav::sidebar()`（`crates/docs-site/src/nav.rs`）の戻り値を
+ *         そのまま内側に配置する契約）
+ *         nav.sidebar               … `nav::sidebar()` の実出力。セクション
+ *           見出しは素の `h2`、ページ列は `ul` > `li` > `a`
+ *           （`.nav-section` 等の専用クラスは付与されない）
+ *           a[aria-current="page"] / a.current … 現在ページのリンク
+ *             （`nav::sidebar()` は両方を同時に付与する）
+ *       main.docs-main              … 本文カラムのラッパー
+ *         nav.docs-toc（任意・先頭）… ページ内目次。`li` に
+ *           `docs-toc-level-2` / `docs-toc-level-3` でネスト深さを表現する
+ *         article.docs-content      … Markdown レンダラの出力 + ページ内
+ *           `nav.prev-next`（`a.prev` / `a.next`）を内包する
+ *           - `pre > code.language-*` … フェンス付きコードブロック
+ *             （言語トークンが無効な場合 class 自体が付かない）
+ *
+ * 不変条件:
+ *   - @import / @font-face / リモート url() を追加しない（外部参照ゼロを維持する）
+ *   - フォントはシステムフォントスタックのみを使う
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --docs-color-bg: #ffffff;
+  --docs-color-bg-subtle: #f6f7f9;
+  --docs-color-bg-raised: #ffffff;
+  --docs-color-text: #1a1f26;
+  --docs-color-text-muted: #5b6472;
+  --docs-color-border: #e2e5ea;
+  --docs-color-accent: #4d5eff;
+  --docs-color-accent-bg: #eef0ff;
+  --docs-color-code-bg: #f2f3f5;
+  --docs-color-code-text: #1a1f26;
+
+  --docs-font-sans: system-ui, -apple-system, "Segoe UI", "Hiragino Sans",
+    "Noto Sans CJK JP", "Yu Gothic", sans-serif;
+  --docs-font-mono: ui-monospace, SFMono-Regular, "SF Mono", Consolas,
+    "Liberation Mono", monospace;
+
+  --docs-sidebar-width: 16rem;
+  --docs-max-content-width: 46rem;
+  --docs-header-height: 3.25rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --docs-color-bg: #0d1117;
+    --docs-color-bg-subtle: #131a22;
+    --docs-color-bg-raised: #161d26;
+    --docs-color-text: #e6edf3;
+    --docs-color-text-muted: #8b96a5;
+    --docs-color-border: #24303c;
+    --docs-color-accent: #8d9bff;
+    --docs-color-accent-bg: #1c2233;
+    --docs-color-code-bg: #131a22;
+    --docs-color-code-text: #e6edf3;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  background: var(--docs-color-bg);
+  color: var(--docs-color-text);
+  font-family: var(--docs-font-sans);
+  font-size: 15.5px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- ヘッダー ---- */
+
+.docs-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  height: var(--docs-header-height);
+  padding: 0 1.5rem;
+  border-bottom: 1px solid var(--docs-color-border);
+  background: var(--docs-color-bg);
+}
+
+.docs-header a {
+  font-weight: 600;
+  font-size: 0.95rem;
+  letter-spacing: -0.01em;
+  color: var(--docs-color-text);
+  text-decoration: none;
+}
+
+/* ---- 2 カラムレイアウト ---- */
+
+.docs-container {
+  display: grid;
+  grid-template-columns: var(--docs-sidebar-width) minmax(0, 1fr);
+  align-items: start;
+  max-width: 72rem;
+  margin: 0 auto;
+}
+
+/* ---- サイドバー ---- */
+
+.docs-sidebar {
+  /*
+   * `.docs-header` が sticky top: 0 で常時可視のため、`.docs-sidebar` は
+   * ヘッダー分オフセットして常時可視のヘッダー直下に張り付く。
+   */
+  position: sticky;
+  top: var(--docs-header-height);
+  align-self: start;
+  max-height: calc(100vh - var(--docs-header-height));
+  overflow-y: auto;
+  padding: 1.75rem 1rem 2rem;
+  border-right: 1px solid var(--docs-color-border);
+  font-size: 0.875rem;
+}
+
+.docs-sidebar nav.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.docs-sidebar nav.sidebar h2 {
+  font-weight: 600;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--docs-color-text-muted);
+  margin: 1.1rem 0.5rem 0.3rem;
+}
+
+.docs-sidebar nav.sidebar h2:first-child {
+  margin-top: 0;
+}
+
+.docs-sidebar nav.sidebar ul {
+  list-style: none;
+  margin: 0 0 0.4rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+}
+
+.docs-sidebar nav.sidebar li {
+  margin: 0;
+}
+
+.docs-sidebar nav.sidebar a {
+  display: block;
+  padding: 0.32rem 0.5rem;
+  border-radius: 0.4rem;
+  color: var(--docs-color-text-muted);
+  text-decoration: none;
+  font-size: 0.875rem;
+  border-left: 2px solid transparent;
+}
+
+.docs-sidebar nav.sidebar a:hover {
+  color: var(--docs-color-text);
+  background: var(--docs-color-bg-subtle);
+}
+
+/*
+ * `nav::sidebar()` は現在ページのリンクに `aria-current="page"` と
+ * `class="current"` の両方を同時に付与する（nav.rs 参照）。どちらか一方の
+ * みに依存せず両セレクタを併記する。
+ */
+.docs-sidebar nav.sidebar a[aria-current="page"],
+.docs-sidebar nav.sidebar a.current {
+  background: var(--docs-color-accent-bg);
+  color: var(--docs-color-accent);
+  border-left-color: var(--docs-color-accent);
+  font-weight: 600;
+}
+
+/* ---- 本文カラム ---- */
+
+.docs-main {
+  min-width: 0;
+  padding: 2.25rem 2rem 5rem;
+}
+
+.docs-content {
+  display: block;
+  max-width: var(--docs-max-content-width);
+  margin: 0 auto;
+}
+
+.docs-content h1,
+.docs-content h2,
+.docs-content h3 {
+  line-height: 1.35;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.docs-content h1 {
+  font-size: 2rem;
+  margin: 0 0 1.1rem;
+}
+
+.docs-content h2 {
+  font-size: 1.375rem;
+  margin: 2.25rem 0 0.85rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--docs-color-border);
+}
+
+.docs-content h3 {
+  font-size: 1.1rem;
+  margin: 1.6rem 0 0.5rem;
+}
+
+.docs-content p {
+  margin: 0 0 1.05rem;
+}
+
+.docs-content ul,
+.docs-content ol {
+  margin: 0 0 1.05rem;
+  padding-left: 1.4rem;
+}
+
+.docs-content li {
+  margin: 0.3rem 0;
+}
+
+.docs-content a {
+  color: var(--docs-color-accent);
+  text-decoration: none;
+}
+
+.docs-content a:hover {
+  text-decoration: underline;
+}
+
+.docs-content blockquote {
+  margin: 0 0 1.05rem;
+  padding: 0.5rem 1rem;
+  border-left: 3px solid var(--docs-color-border);
+  color: var(--docs-color-text-muted);
+}
+
+.docs-content code {
+  font-family: var(--docs-font-mono);
+  font-size: 0.875em;
+  color: var(--docs-color-code-text);
+  background: var(--docs-color-code-bg);
+  padding: 0.15em 0.4em;
+  border-radius: 0.35em;
+}
+
+.docs-content pre {
+  margin: 0 0 1.05rem;
+  padding: 1rem 1.1rem;
+  background: var(--docs-color-code-bg);
+  border: 1px solid var(--docs-color-border);
+  border-radius: 0.6rem;
+  overflow-x: auto;
+}
+
+.docs-content pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.85em;
+}
+
+.docs-content table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0 0 1.05rem;
+  max-width: 100%;
+  font-size: 0.925em;
+}
+
+.docs-content th,
+.docs-content td {
+  border: 1px solid var(--docs-color-border);
+  padding: 0.45rem 0.75rem;
+  text-align: left;
+}
+
+.docs-content th {
+  background: var(--docs-color-bg-subtle);
+  font-weight: 600;
+}
+
+/* ---- ページ内目次（任意、本文の前に配置） ---- */
+
+.docs-toc {
+  font-size: 0.85rem;
+  padding: 0.9rem 1.1rem;
+  margin: 0 auto 1.75rem;
+  max-width: var(--docs-max-content-width);
+  border: 1px solid var(--docs-color-border);
+  border-radius: 0.65rem;
+  background: var(--docs-color-bg-subtle);
+}
+
+.docs-toc ul {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.docs-toc a {
+  color: var(--docs-color-text-muted);
+  text-decoration: none;
+}
+
+.docs-toc a:hover {
+  color: var(--docs-color-accent);
+}
+
+.docs-toc-level-2 {
+  padding-left: 0;
+}
+
+.docs-toc-level-3 {
+  padding-left: 1rem;
+}
+
+/* ---- 前後ページナビ（本文末尾、カード風） ---- */
+
+nav.prev-next {
+  display: flex;
+  gap: 0.75rem;
+  margin: 2.5rem 0 0;
+  max-width: var(--docs-max-content-width);
+}
+
+nav.prev-next a {
+  flex: 1 1 0;
+  display: block;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--docs-color-border);
+  border-radius: 0.65rem;
+  color: var(--docs-color-text);
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 500;
+  background: var(--docs-color-bg-raised);
+}
+
+nav.prev-next a:hover {
+  border-color: var(--docs-color-accent);
+  color: var(--docs-color-accent);
+}
+
+nav.prev-next a.prev {
+  text-align: left;
+}
+
+nav.prev-next a.next {
+  text-align: right;
+}
+
+/* ---- モバイル対応: 768px 以下で 1 カラムに畳む ---- */
+
+@media (max-width: 768px) {
+  .docs-container {
+    display: block;
+  }
+
+  .docs-sidebar {
+    position: static;
+    max-height: none;
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--docs-color-border);
+    padding: 1rem;
+  }
+
+  .docs-main {
+    padding: 1.5rem 1.1rem 3rem;
+  }
+
+  nav.prev-next {
+    flex-direction: column;
+  }
+
+  nav.prev-next a.next {
+    text-align: left;
+  }
+}
