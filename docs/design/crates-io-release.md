@@ -90,6 +90,11 @@
   `fandhe-backend-routes` → `fandhe-backend-core` → `fandhe-backend-plugin-hub-wiring`）を
   自動解決するため、クレート個別の逐次 publish・インデックス反映待ちの手作業は不要である。
   `cargo publish --workspace --dry-run` は 13 クレート全件で成功済み（2026-07-21）
+- 本公開準備に伴うドキュメント追随の更新対象は、本ドキュメントのほか `README.md`
+  （インストール節・crates.io 掲載用の絶対 URL 化）・`docs/guide/getting-started.md`
+  （crates.io からの導入手順）・`site/index.md`（ドキュメントサイトトップへの公開準備
+  状況とインストール手順の追記）である。いずれもコードの拡張点閉包とは無関係な
+  公開準備ドキュメントの追随であり、実 publish 完了後に「公開済み」表現へ切り替える
 
 ## 5. publish フェイルクローズ（解除済み）
 
