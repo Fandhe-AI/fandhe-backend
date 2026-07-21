@@ -34,7 +34,6 @@ async-graphql = { version = "7", default-features = false, features = [
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 
 [dev-dependencies]
-serde_json = "1"
 tokio = { version = "1", features = ["io-util"] }
 
 # root workspace（リポジトリ直下 Cargo.toml の members）から意図的に切り離す。
