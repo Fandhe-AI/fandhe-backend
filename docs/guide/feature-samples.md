@@ -6,6 +6,16 @@ pay-for-what-you-use（[`.claude/rules/pay-for-what-you-use.md`](https://github.
 検証方法を一覧します。実行できる example は `crates/core/examples/*` にある
 既存のものを使い、本文書にコード全文は複製しません（[`README.md`](./README.md) の原則）。
 
+`crates/core/examples/*` は最小 example ですが、独立したプロジェクトとして
+`cargo run` できる standalone 版が
+[`examples/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/examples/)
+（`with-<feature>` 命名、1 サンプル = 1 機能）に、複数 feature を同時配線した
+実運用形の雛形が
+[`templates/app/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/templates/app/)
+にあります。重複回避方針の詳細は
+[`examples/README.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/examples/README.md)
+を参照してください（本文書では再掲しません）。
+
 > 掲載する example の多くは NFR（性能）計測専用として追加されたものです
 > （doc comment に「計測専用」と明記されています）。production 配線の書き方
 > そのものは各 example のコードと [`getting-started.md`](./getting-started.md) の
@@ -128,6 +138,10 @@ curl -si localhost:3004/todos -H 'Origin: https://evil.example'
 `allow_any_origin()`・`allow_credentials`・`allow_headers`・`max_age` 等を
 提供します。`allow_any_origin()` と `allow_credentials(true)` の併用は
 `build()` が `Err` を返します（フェイルクローズ、credentials 付き全開放の防止）。
+
+独立プロジェクトとしてそのまま `cargo run` できる standalone 版は
+[`examples/with-cors/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/examples/with-cors/)
+にあります。
 
 ## compression（`fandhe-backend-plugin-compression`）
 

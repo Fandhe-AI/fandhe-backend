@@ -32,6 +32,16 @@ markdown に複製したコードは `cargo test --doc` の検証対象になら
 （AI ファースト保守性、[`AGENTS.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/AGENTS.md) 参照）、変更が入った場合は
 サンプル側を更新すればガイドの記載（コマンド・パス・feature 名）はそのまま有効です。
 
+`crates/core/examples/*` は feature 単体の実装パターンを示す最小 example ですが、
+独立したプロジェクトとしてそのまま `cargo run` したい場合は
+[`examples/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/examples/)
+（Next.js 流の `with-<feature>` 独立サンプル集）を、複数 feature を組み合わせた
+実運用形の雛形は
+[`templates/app/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/templates/app/)
+を参照してください。サンプル置き場の重複回避方針の詳細は
+[`examples/README.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/examples/README.md)
+にまとめてあります（本節では再掲しません）。
+
 ## 設計・要件との対応
 
 - 実装がどう作られているかは [`docs/design/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/docs/design/) を参照（例:
