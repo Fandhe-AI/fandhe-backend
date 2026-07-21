@@ -14,6 +14,10 @@ crates/http/fuzz/target/
 # コミット対象、docs/design/openapi-typescript-pipeline.md 参照）。
 node_modules/
 
+# エージェント作業用のローカル一時ディレクトリ（local-plans・調査メモ・probe 出力等）。
+# コミット対象の成果物は置かない前提のスクラッチ領域。
+/_/
+
 # implement-issue-tree ワークフローが作成する per-issue git worktree（イシュー #221）。
 # 誤って `git add -A` 等で 97GB 規模の作業ツリーを stage しないための衛生目的。
 # 残存ワークツリーの棚卸し・整理は scripts/clean-worktrees.sh を使う。
