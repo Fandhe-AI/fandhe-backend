@@ -161,6 +161,7 @@ pub fn build_site(repo_root: &Path, out_dir: &Path) -> Result<BuildReport, Build
 
             let document = layout::docs_page(
                 &page.title,
+                &nav.site.title,
                 &nav.site.base_path,
                 nav::sidebar(&nav, &page.path),
                 body,

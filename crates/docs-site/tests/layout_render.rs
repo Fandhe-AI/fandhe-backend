@@ -17,7 +17,7 @@ fn sample_sidebar() -> fandhe_frontend_core::Node {
 #[test]
 fn docs_page_renders_a_single_complete_document() {
     let body = p(vec![], vec![text("本文です。")]);
-    let node = docs_page("タイトル", "", sample_sidebar(), body);
+    let node = docs_page("タイトル", "fandhe-backend", "", sample_sidebar(), body);
     let html = render(&node);
 
     assert!(html.starts_with("<html lang=\"ja\">"));
@@ -28,6 +28,19 @@ fn docs_page_renders_a_single_complete_document() {
     assert!(html.contains(r#"class="docs-sidebar""#));
     assert!(html.contains(r#"class="docs-content""#));
     assert!(html.contains(r#"href="/assets/site.css""#));
+}
+
+#[test]
+fn docs_header_home_link_uses_given_site_title() {
+    // ヘッダのホームリンク文言は引数 site_title（実運用では site/nav.toml の
+    // `[site] title`）に従う。移植元サイト名のハードコード回帰
+    // （PR #348 Bugbot 指摘）を防ぐ。
+    let body = p(vec![], vec![text("本文です。")]);
+    let node = docs_page("タイトル", "fandhe-backend", "", sample_sidebar(), body);
+    let html = render(&node);
+
+    assert!(html.contains(r#"<a href="/">fandhe-backend</a>"#));
+    assert!(!html.contains(">fandhe-frontend<"));
 }
 
 #[test]
@@ -143,7 +156,7 @@ fn no_headings_means_no_toc_nav_and_no_toc_section_in_document() {
     assert!(entries.is_empty());
     assert!(toc_nav(&entries).is_none());
 
-    let node = docs_page("タイトル", "", sample_sidebar(), body);
+    let node = docs_page("タイトル", "fandhe-backend", "", sample_sidebar(), body);
     let html = render(&node);
     assert!(!html.contains(r#"class="docs-toc""#));
     let _ = annotated;
@@ -152,7 +165,7 @@ fn no_headings_means_no_toc_nav_and_no_toc_section_in_document() {
 #[test]
 fn toc_nav_links_use_anchor_hrefs_matching_injected_ids() {
     let body = fandhe_frontend_core::div(vec![], vec![h2(vec![], vec![text("導入")])]);
-    let node = docs_page("タイトル", "", sample_sidebar(), body);
+    let node = docs_page("タイトル", "fandhe-backend", "", sample_sidebar(), body);
     let html = render(&node);
 
     assert!(html.contains(r#"class="docs-toc""#));
@@ -214,7 +227,13 @@ fn docs_page_output_is_deterministic_for_identical_input() {
                 p(vec![], vec![text("本文")]),
             ],
         );
-        docs_page("タイトル", "/fandhe-frontend", sample_sidebar(), body)
+        docs_page(
+            "タイトル",
+            "fandhe-backend",
+            "/fandhe-backend",
+            sample_sidebar(),
+            body,
+        )
     };
     assert_eq!(render(&make()), render(&make()));
 }
@@ -226,7 +245,7 @@ fn xss_payloads_in_title_headings_and_sidebar_are_escaped() {
 
     let sidebar = ul(vec![], vec![li(vec![], vec![text(attr_payload)])]);
     let body = fandhe_frontend_core::div(vec![], vec![h2(vec![], vec![text(payload)])]);
-    let node = docs_page(payload, "", sidebar, body);
+    let node = docs_page(payload, payload, "", sidebar, body);
     let html = render(&node);
 
     assert!(!html.contains("<script>alert(1)</script>"));

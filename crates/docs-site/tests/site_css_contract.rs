@@ -190,7 +190,13 @@ fn assert_all_classes_covered(html: &str, css_tokens: &HashSet<String>, context:
 #[test]
 fn docs_page_html_class_tokens_are_covered_by_site_css() {
     let css_tokens = extract_css_class_selectors(&site_css());
-    let node = docs_page("タイトル", "", fixture_sidebar(), fixture_body());
+    let node = docs_page(
+        "タイトル",
+        "fandhe-backend",
+        "",
+        fixture_sidebar(),
+        fixture_body(),
+    );
     let html = render(&node);
     assert_all_classes_covered(&html, &css_tokens, "docs_page");
 }

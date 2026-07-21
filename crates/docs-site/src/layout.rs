@@ -265,15 +265,23 @@ pub fn asset_href(base_path: &str, relative: &str) -> String {
 /// （`<html>` 要素）を組み立てる。
 ///
 /// 内部で [`with_heading_anchors`] と [`toc_nav`] を適用し、本文中の
-/// `h2`/`h3` にアンカーを注入した上でページ内目次を生成する。`title` は
-/// [`text`] 経由で、`sidebar`/`body` はそのまま `Node` 木として埋め込むため
+/// `h2`/`h3` にアンカーを注入した上でページ内目次を生成する。`title`（ページ
+/// タイトル）と `site_title`（全ページ共通ヘッダのホームリンク文言。
+/// `site/nav.toml` の `[site] title` を渡す契約）は [`text`] 経由で、
+/// `sidebar`/`body` はそのまま `Node` 木として埋め込むため
 /// テキストスロットはすべて既定エスケープ済みで出力される（`raw_html()`・
 /// HTML 文字列の直接組み立ては一切行わない）。
 ///
 /// `<!DOCTYPE html>` の前置は呼び出し側
 /// （`fandhe_frontend_server::ssg::generate_pages()`）の契約であり、本関数は
 /// 文書 `Node` を返すのみで DOCTYPE 文字列を出力しない。
-pub fn docs_page(title: &str, base_path: &str, sidebar: Node, body: Node) -> Node {
+pub fn docs_page(
+    title: &str,
+    site_title: &str,
+    base_path: &str,
+    sidebar: Node,
+    body: Node,
+) -> Node {
     let (annotated_body, toc_entries) = with_heading_anchors(body);
     let toc = toc_nav(&toc_entries);
 
@@ -324,7 +332,10 @@ pub fn docs_page(title: &str, base_path: &str, sidebar: Node, body: Node) -> Nod
     let root_href = asset_href(base_path, "");
     let header_node = header(
         vec![("class", "docs-header")],
-        vec![a(vec![("href", &root_href)], vec![text("fandhe-frontend")])],
+        vec![a(
+            vec![("href", &root_href)],
+            vec![text(site_title.to_string())],
+        )],
     );
 
     let body_node = el(
