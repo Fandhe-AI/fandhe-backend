@@ -28,6 +28,11 @@
 //! のみに依存し、外部クレートは追加しない（`Cargo.toml` の依存方針コメント
 //! 参照）。
 //!
+//! workspace 全体の依存方向規約（依存方向: server → routes → http::*、
+//! `scripts/dep-direction-check.sh` が機械検証）との関係では、本クレートは
+//! ドキュメント生成専用の開発ツールとしてフレームワーク本体のどのクレートにも
+//! 依存せず・依存されず、上記の一方向グラフの外に独立して位置する。
+//!
 //! `#![forbid(unsafe_code)]` は workspace lint（`unsafe_code = "warn"` +
 //! CI の `-D warnings`）より強い保証として本クレートでも維持する
 //! （`.claude/rules/coding-rust.md` の一般規約）。
