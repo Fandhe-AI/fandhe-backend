@@ -115,6 +115,10 @@ for crate_dir in "${crate_dirs[@]}"; do
     # ローカルビルドの成果物はコピー対象外（crates.io 解決だけで検証するため、
     # 既存 target/ の残骸がビルド結果へ影響しないよう除去する）。
     rm -rf "${copy_dir}/target"
+    # 一時コピーはリポジトリ外にあり root の rust-toolchain.toml のピンが効かない。
+    # `--default-toolchain none` の新規 runner では toolchain 未選択で cargo が失敗
+    # するため、ピンごと同梱して repo と同一ツールチェーンで検証する（Bugbot 指摘対応）。
+    cp "${REPO_ROOT}/rust-toolchain.toml" "${copy_dir}/"
 
     manifest="${copy_dir}/Cargo.toml"
 
