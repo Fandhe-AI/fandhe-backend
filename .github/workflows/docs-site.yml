@@ -1,0 +1,93 @@
+name: docs-site
+
+# docs サイト（crates/docs-site による SSG、Fandhe-AI/fandhe-frontend の
+# 同名 workflow からの移植）を main push 時にビルドし GitHub Pages へ公開する。
+#
+# 前提（手動操作）: リポジトリ Settings → Pages → Source を
+# "GitHub Actions" に設定済みであること。未設定の場合 build ジョブは成功し
+# deploy ジョブのみが失敗する。CLI で有効化する場合のコマンド:
+#   gh api -X POST repos/Fandhe-AI/fandhe-backend/pages -f build_type=workflow
+#
+# 既知の制約: レンダラ側クレート（crates.io の fandhe-frontend-core /
+# fandhe-frontend-app / fandhe-frontend-server）の更新は Cargo.lock 経由で
+# crates/docs-site/** のトリガーに乗らない場合がある。反映が必要な場合は
+# workflow_dispatch で手動再デプロイする。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/guide/**"
+      - "site/**"
+      - "crates/docs-site/**"
+      - ".github/workflows/docs-site.yml" # 自己参照パターン（ci.yml 系と同様）
+
+  workflow_dispatch:
+
+permissions:
+  contents: read # workflow レベルは read のみ（最小権限、.claude/rules/ci.md・A01/A05 対策）
+
+concurrency:
+  group: docs-site-pages
+  cancel-in-progress: false # Pages デプロイ中断による中途半端な公開状態を避ける
+
+jobs:
+  build:
+    name: "build: docs site (SSG + linkcheck)"
+    runs-on: self-hosted
+    timeout-minutes: 30 # 共有キャッシュ未命中時のコールドビルドを考慮（ci.md: timeout 必須）
+    steps:
+      - name: Checkout
+        # actions/checkout v6.0.3（ci.yml と同一 SHA 固定）。
+        # site/nav.toml が参照するのは site/ と docs/guide/ のみのため
+        # docs/spec サブモジュールは不要（submodules 既定 false）。
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Setup Rust toolchain
+        # dtolnay/rust-toolchain（移植元 workflow と同一 SHA 固定）。
+        # cargo 未導入の self-hosted インスタンスへの安全網。
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      - name: "build: generate site into dist"
+        # linkcheck は build_site() 内蔵（crates/docs-site/src/linkcheck.rs）。
+        # リンク切れ検出時は書き出しを一切行わず非 0 終了する（fail-closed）。
+        # 移植元 workflow の `--locked` は付けない: 本リポジトリは Cargo.lock を
+        # コミットしない方針（.gitignore）のため、ci.yml の各ジョブと同様に
+        # lock なしで解決する。
+        run: cargo run -p fandhe-backend-docs-site -- --out "${RUNNER_TEMP}/docs-site-dist"
+
+      # 出力先を RUNNER_TEMP 配下にする理由: self-hosted の作業ディレクトリは
+      # ジョブ間で永続するため、リポジトリ直下への出力による stale 生成物の
+      # 混入を避ける。
+      - name: "verify: dist sanity check"
+        # 空サイト・アセット欠落を黙って公開しないための決定的チェック（fail-closed）
+        run: |
+          test -f "${RUNNER_TEMP}/docs-site-dist/index.html"
+          test -f "${RUNNER_TEMP}/docs-site-dist/assets/site.css"
+
+      - name: Upload Pages artifact
+        # 要: runner に tar がインストール済み（upload-pages-artifact が内部で使用。
+        #     Linux self-hosted プールでは通常常設だが、ci.md 規約に従い前提を明示）
+        # actions/upload-pages-artifact v5.0.0（commit SHA 固定）
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
+        with:
+          path: ${{ runner.temp }}/docs-site-dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: self-hosted
+    timeout-minutes: 10
+    permissions:
+      pages: write # Pages デプロイ作成に必要（デプロイジョブのみに限定、A01/A05 対策）
+      id-token: write # OIDC によるデプロイ元検証に必要（同上）
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        # actions/deploy-pages v5.0.0（commit SHA 固定）
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128
