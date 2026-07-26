@@ -18,7 +18,7 @@
 //!   `aria-pressed` 更新、クリック時の切替・保存、および `hidden` 属性の解除
 //!   （配線完了後にのみ可視化する）を担う。
 //!
-//! # セキュリティ不変条件（[[security]]・[[coding-rust]]）
+//! # セキュリティ不変条件（`.claude/rules/security.md`・`.claude/rules/coding-rust.md`）
 //!
 //! `Node::Text`（`fandhe_frontend_core`）は `<script>` の中身であっても必ず
 //! `escape_html_into` を経由する。`<script>` の中身は HTML パーサが実体参照を
