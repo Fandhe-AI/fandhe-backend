@@ -91,7 +91,7 @@ curl -v http://127.0.0.1:3006/health     # 200 応答（計測対象パス）
 ## openapi（`fandhe-backend-plugin-openapi`、`gen-cli` feature）
 
 OpenAPI ドキュメントは `utoipa::path` 定義から `gen-openapi` CLI で生成し、
-`crates/plugin-openapi/openapi.json` / `openapi.yaml`（#279、仕様が明記する「json と
+`crates/plugin-openapi/openapi.json` / `openapi.yaml`（仕様が明記する「json と
 同等に yaml も提供」への対応）に静的埋め込みします。`Server::openapi()` を登録すると
 `GET /openapi.json` と `GET /openapi.yaml` の両方が同一スキーマ源（`ApiDoc`）から
 配信されます。

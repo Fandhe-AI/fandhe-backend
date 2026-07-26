@@ -7,15 +7,21 @@
 //! `docs/guide/` 7 本 + API Reference セクション索引 + `docs/api/` 5 本 +
 //! `site/examples/` 5 本 = 全 20 ページ）へ合わせている。
 //! `docs/guide/`・`docs/api/`・`site/examples/` の編集・改名でナビ登録と
-//! 実ファイルが乖離した場合に `cargo test` が fail-closed で検知する
-//! （イシュー #392 で Examples セクションを追加、イシュー #393 で
-//! Guides / API Reference の要約付きセクション索引ページを追加）。
+//! 実ファイルが乖離した場合に `cargo test` が fail-closed で検知する。
+//!
+//! セクション順は `docs/design/docs-site-redesign.md` 6 節が定める
+//! Getting Started / Guides / Examples / API Reference の 4 部構成に従う
+//! （`docs/design/docs-site-redesign.md` 7 節の公開範囲規約に基づき、
+//! nav 登録ソースからは issue 番号・内部タスク表記を分離済み。将来の
+//! 再混入は本ファイル末尾の `site_nav_sources_contain_no_internal_records`
+//! が fail-closed で検知する）。Guides / API Reference の要約付きセクション
+//! 索引ページ（`site/guides.md` / `site/api.md`）も同規約に従い登録する。
 
 use std::path::{Path, PathBuf};
 
 use fandhe_backend_docs_site::markdown::render_markdown;
-use fandhe_backend_docs_site::nav::{Nav, parse_nav, validate_sources};
-use fandhe_frontend_core::Node;
+use fandhe_backend_docs_site::nav::{Nav, parse_nav, sidebar, validate_sources};
+use fandhe_frontend_core::{Node, render};
 
 /// `CARGO_MANIFEST_DIR`（`crates/docs-site`）から repo_root を解決する。
 /// テストフィクスチャがクレート内に閉じず repo_root 配下の実ファイルを
@@ -47,7 +53,7 @@ fn site_nav_registers_four_sections_with_expected_titles() {
     let titles: Vec<&str> = nav.sections.iter().map(|s| s.title.as_str()).collect();
     assert_eq!(
         titles,
-        vec!["Getting Started", "Guides", "API Reference", "Examples"]
+        vec!["Getting Started", "Guides", "Examples", "API Reference"]
     );
 }
 
@@ -171,6 +177,25 @@ fn every_source_renders_without_fence_leakage_and_starts_with_a_heading() {
     }
 }
 
+/// イシュー #391: 実マニフェスト（`site/nav.toml`）から生成したサイドバーが
+/// 現在ページ表現・意味論の両方でアクセシビリティ契約を満たすことを固定する。
+#[test]
+fn site_nav_sidebar_uses_aria_current_only_and_no_role_attribute() {
+    let nav = load_nav();
+    // 実在ページの 1 つを現在ページとして選び、aria-current 分岐を発生させる。
+    let current_path = "/getting-started/";
+    let html = render(&sidebar(&nav, current_path));
+
+    // 現在ページは aria-current="page" のみで表現され、`class="current"`
+    // を含まない（移植元イシュー #756 と同じく class 併用は廃止済み）。
+    assert!(html.contains(r#"aria-current="page""#));
+    assert!(!html.contains(r#"class="current""#));
+
+    // サイドバー nav は role なしの headless 構造（ネイティブ要素の暗黙 role
+    // をそのまま使う）。
+    assert!(!html.contains("role="));
+}
+
 fn is_heading(node: &Node) -> bool {
     matches!(
         node,
@@ -187,4 +212,106 @@ fn contains_unclosed_fence_marker(node: &Node) -> bool {
         Node::RawHtml(_) => false,
         Node::Element { children, .. } => children.iter().any(contains_unclosed_fence_marker),
     }
+}
+
+/// `docs/design/docs-site-redesign.md` 7 節「公開範囲規約」が定める内部進行情報
+/// （issue/PR 番号・`TASK-N.N` 表記・`PoC-N` 表記）を nav 登録ページから機械的に
+/// 検出する。公開サイトへの内部記録の再混入を CI（`cargo test`）レベルで
+/// fail-closed に阻止するのが目的（イシュー #395）。
+///
+/// `regex` クレート等の外部依存は `pay-for-what-you-use` 方針
+/// （`crates/docs-site` の依存は fandhe-frontend-* に限定）に反するため、
+/// 検出は手書きの文字走査で行う。
+///
+/// 検出パターン:
+/// - (a) `TASK-` の直後に ASCII 数字が続く（`TASK-11.3` 等）
+/// - (b) `PoC-` の直後に ASCII 数字が続く（`PoC-3` 等）
+/// - (c) `#` の直後に ASCII 数字が 2〜4 桁連続し、その直後の文字が英数字で
+///   ない（`#279、` `（#313）` 等の issue 参照を捕捉しつつ、`#0075ca` のような
+///   6 桁 hex カラーコード（数字4桁の直後が英字）や `#1a2b3c`
+///   （数字が1桁で連続しない）は誤検知しない）
+fn find_internal_record_marker(text: &str) -> Option<&'static str> {
+    if contains_prefixed_digit(text, "TASK-") {
+        return Some("TASK-N 表記");
+    }
+    if contains_prefixed_digit(text, "PoC-") {
+        return Some("PoC-N 表記");
+    }
+    if contains_issue_hash_reference(text) {
+        return Some("# 直後の issue 番号表記");
+    }
+    None
+}
+
+/// `prefix` の直後に ASCII 数字が来る箇所が存在するかを走査する
+/// （`TASK-11.3`・`PoC-3` のような内部タスク表記の検出に使う）。
+fn contains_prefixed_digit(text: &str, prefix: &str) -> bool {
+    let bytes = text.as_bytes();
+    let plen = prefix.len();
+    let mut start = 0;
+    while let Some(rel) = text[start..].find(prefix) {
+        let idx = start + rel + plen;
+        if bytes.get(idx).is_some_and(u8::is_ascii_digit) {
+            return true;
+        }
+        start += rel + plen;
+    }
+    false
+}
+
+/// `#` の直後に ASCII 数字が 2〜4 桁連続し、その次の文字が英数字でない
+/// 箇所を検出する（hex カラーコードとの誤検知を避けるための桁数・後続文字条件）。
+fn contains_issue_hash_reference(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b != b'#' {
+            continue;
+        }
+        let mut digits = 0usize;
+        while bytes.get(i + 1 + digits).is_some_and(u8::is_ascii_digit) {
+            digits += 1;
+        }
+        if (2..=4).contains(&digits) {
+            let next = bytes.get(i + 1 + digits);
+            let next_is_alnum = next.is_some_and(u8::is_ascii_alphanumeric);
+            if !next_is_alnum {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// 内部記録の再混入を検知する fail-closed ガードテスト（イシュー #395）。
+///
+/// nav 登録済みの全 source（`site/`・`docs/guide/`・`docs/api/`）を読み、
+/// issue 番号・`TASK-N`・`PoC-N` 表記が残っていれば検出ファイル名・行番号と
+/// 分離規約の参照先を添えて失敗する。
+#[test]
+fn site_nav_sources_contain_no_internal_records() {
+    let root = repo_root();
+    let nav = load_nav();
+    let mut violations = Vec::new();
+    for section in &nav.sections {
+        for page in &section.pages {
+            let full_path = root.join(&page.source);
+            let input = std::fs::read_to_string(&full_path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", page.source));
+            for (line_no, line) in input.lines().enumerate() {
+                if let Some(kind) = find_internal_record_marker(line) {
+                    violations.push(format!(
+                        "{}:{}: {kind} が検出されました（分離規約は \
+                         `docs/design/docs-site-redesign.md` 7 節参照）: {line}",
+                        page.source,
+                        line_no + 1,
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "nav 登録ページに内部記録の残存が検出されました:\n{}",
+        violations.join("\n")
+    );
 }

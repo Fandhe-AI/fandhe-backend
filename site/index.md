@@ -6,9 +6,8 @@
 GraphQL / WebRTC / OpenAPI 自動生成 / 可観測性などを段階的に拡張できます。
 
 公開対象の 13 クレートは [crates.io](https://crates.io/crates/fandhe-backend-core) に
-v0.1.0 として公開済み（2026-07-21）です。`cargo add fandhe-backend-core` で導入し、
-プラグインは `cargo add fandhe-backend-core --features websocket` のように feature で
-有効化します。
+v0.1.0 として公開済みです。`cargo add fandhe-backend-core` で導入し、プラグインは
+`cargo add fandhe-backend-core --features websocket` のように feature で有効化します。
 
 ## 2 つの核となる原則
 
@@ -17,34 +16,55 @@ v0.1.0 として公開済み（2026-07-21）です。`cargo add fandhe-backend-c
 - **AI ファースト保守性**: doc test・網羅テスト・CI ガードレールを整備し、
   AI エージェントが安全に保守できる状態を保ちます。
 
-## 主な構成要素
+## feature プラグイン一覧
 
-- **最小コア**（`fandhe-backend-core`）: HTTP/1.1 サーバと 3 種の拡張点
-  （`Middleware` / `UpgradeHandler` / `RequestGate`）のみを持つ軽量コア
-- **feature 駆動プラグイン**: websocket / graphql / openapi / webrtc 系 /
-  tracing / cors / compression / static の各プラグインを Cargo feature で着脱
-- **CI ガードレール**: 依存監査・unsafe 集計・性能ベンチ・ファジングを CI で継続実行
+最小コア（`fandhe-backend-core`）は HTTP/1.1 サーバと 3 種の拡張点
+（`Middleware` / `UpgradeHandler` / `RequestGate`）のみを持ち、以下はすべて
+Cargo feature で個別に着脱できるプラグインです。多くは `Server` への明示登録
+（opt-in）時のみ動作し、無効化・未登録時は依存・コード・バイナリ増がゼロになります。
 
-## ドキュメントの歩き方
+| feature | 提供する機能 |
+|---------|-------------|
+| `websocket` | RFC 6455 準拠の WebSocket ハンドシェイク・ユーザー定義メッセージハンドラ |
+| `graphql` | async-graphql によるスキーマ登録・クエリ実行（`POST /graphql`） |
+| `openapi` | OpenAPI スキーマ自動生成・配信（`GET /openapi.json` / `GET /openapi.yaml`） |
+| `webrtc-proxy` | WebRTC シグナリングプロキシ（別プロセス切り出し型） |
+| `webrtc` | in-process WebRTC（`webrtc-rs` 直接依存） |
+| `tracing` | サンプリング付き可観測性（非同期・バッファ済み I/O） |
+| `cors` | CORS ヘッダ付与（レスポンス後処理型シーム経由） |
+| `compression` | レスポンス gzip 圧縮（CORS の後に逐次適用） |
+| `static` | 静的ファイル配信（パストラバーサル対策済み） |
 
-- [Getting Started](/fandhe-backend/getting-started/) — クローンから最小サーバ
-  起動・動作確認までの最短手順
-- [ガイド一覧](/fandhe-backend/guides/) — 利用者向けガイド全体の要約付き索引
-- [feature 構成別サンプル](/fandhe-backend/guides/feature-samples/) — feature
-  ごとの最小サンプルと pay-for-what-you-use の検証手順
-- [チュートリアル](/fandhe-backend/guides/tutorial/) — 最小サーバ→拡張点の実装→
-  feature 有効化まで段階的に学ぶ
-- [拡張点自作ガイド](/fandhe-backend/guides/extension-points/) — 3 拡張点
-  （`Middleware` / `UpgradeHandler` / `RequestGate`）の契約と自作手順
-- [レスポンスストリーミング](/fandhe-backend/guides/streaming/) — chunked
-  ストリーミング送信（`handle_streaming`）の使い方
-- [graceful shutdown](/fandhe-backend/guides/graceful-shutdown/) —
-  `run_until` による安全な停止手順
-- [API リファレンス](/fandhe-backend/api/) — API Reference 全体の要約付き索引。
-  `Server` / `BoundServer` / `Handler` から各クレート・プラグイン設定 API まで
-  5 ページで公開 API の全体像と契約を俯瞰する
-- [サンプル集](/fandhe-backend/examples/) — `examples/with-*` 3 種と
-  `templates/app` へ、独立して `cargo run` できるサンプルの入口
+## はじめる
+
+### Getting Started
+
+クローンから最小サーバの起動・動作確認までを最短手順で説明します。
+
+→ [Getting Started](/fandhe-backend/getting-started/)
+
+### Guides
+
+feature 構成別サンプル・チュートリアル・拡張点自作・ストリーミング・graceful
+shutdown など、目的別ガイドの入口です。
+
+→ [Guides](/fandhe-backend/guides/)
+
+### Examples
+
+`examples/with-*` 3 種と `templates/app` へ、独立して `cargo run` できるサンプルの
+入口です。
+
+→ [Examples](/fandhe-backend/examples/)
+
+### API Reference
+
+`Server` / `BoundServer` / `Handler` から各クレート・プラグイン設定 API まで、
+公開 API の全体像と契約を俯瞰できます。
+
+→ [API Reference](/fandhe-backend/api/)
+
+---
 
 ソースコードは [GitHub リポジトリ](https://github.com/Fandhe-AI/fandhe-backend)
 で公開されています（MIT OR Apache-2.0 デュアルライセンス）。
