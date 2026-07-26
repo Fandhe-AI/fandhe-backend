@@ -74,23 +74,28 @@ pub const INLINE_THEME_BOOTSTRAP: &str = "try{var t=localStorage.getItem(`fandhe
 ///
 /// 責務:
 ///
-/// 1. `.docs-theme-toggle` ボタンを取得する（無ければ即 return。docs-site
-///    以外のページ・将来の骨格変更で要素が消えても例外を投げない防御的実装）。
-/// 2. 実効テーマを解決する: `<html data-theme>` 属性値（`dark`/`light` のみ
+/// 1. `document.readyState === "loading"` なら `DOMContentLoaded` を待ち、
+///    そうでなければ `init()` を即時実行する。
+/// 2. `init()` 内で `.docs-theme-toggle` ボタンを取得する（無ければ即
+///    return。docs-site 以外のページ・将来の骨格変更で要素が消えても例外を
+///    投げない防御的実装）。`querySelector` の呼び出しを `init()` 内に置く
+///    ことで、上記 1 の `DOMContentLoaded` 待ちフォールバックが実際に意味を
+///    持つ（`init()` 呼び出し前に要素取得・null 判定を済ませてしまうと、
+///    まだ解析されていない DOM に対して常に null 判定される死んだ分岐に
+///    なる）。
+/// 3. 実効テーマを解決する: `<html data-theme>` 属性値（`dark`/`light` のみ
 ///    採用） → 無ければ `matchMedia("(prefers-color-scheme: dark)")`。
-/// 3. ボタンのラベル・`aria-pressed` を実効テーマに合わせて初期化する
+/// 4. ボタンのラベル・`aria-pressed` を実効テーマに合わせて初期化する
 ///    （この時点では `data-theme` を書き込まない。利用者が未選択なら OS 設定
 ///    追従のままにする）。
-/// 4. `click` で実効テーマの反対側へ切替 → `localStorage` へ保存（例外は
+/// 5. `click` で実効テーマの反対側へ切替 → `localStorage` へ保存（例外は
 ///    握りつぶす） → `data-theme` 属性を更新 → ラベル更新。
-/// 5. **すべての配線が完了した後にのみ** `hidden` 属性を解除する。`hidden` の
+/// 6. **すべての配線が完了した後にのみ** `hidden` 属性を解除する。`hidden` の
 ///    除去を `<head>` のインラインスニペットや CSS 側で行うと、`site.js` の
 ///    読み込み失敗（ネットワーク断・将来 CSP 等）時に「押しても何も起きない
 ///    ボタン」が残ってしまう。JS 無効時だけでなく JS が届かなかった場合の
 ///    受け入れ条件（「非表示 + OS 設定追従」）を満たすため、可視化は配線完了
 ///    後に限定する（レビューで安易に単純化しないこと）。
-/// 6. `document.readyState === "loading"` なら `DOMContentLoaded` を待ち、
-///    そうでなければ即時実行する。
 ///
 /// 文字列リテラルはすべてバッククォート（テンプレートリテラル。補間は使わ
 /// ない）を使い、`&&` の代わりに `||` を使うことでエスケープ対象文字
@@ -101,10 +106,7 @@ pub const INLINE_THEME_BOOTSTRAP: &str = "try{var t=localStorage.getItem(`fandhe
 pub const SITE_JS: &str = "\
 (function () {
   var STORAGE_KEY = `fandhe-backend-docs-theme`;
-  var toggle = document.querySelector(`.docs-theme-toggle`);
-  if (!toggle) {
-    return;
-  }
+  var toggle;
 
   function effectiveTheme() {
     var attr = document.documentElement.getAttribute(`data-theme`);
@@ -133,6 +135,10 @@ pub const SITE_JS: &str = "\
   }
 
   function init() {
+    toggle = document.querySelector(`.docs-theme-toggle`);
+    if (!toggle) {
+      return;
+    }
     applyLabel(effectiveTheme());
     toggle.addEventListener(`click`, function () {
       var next = effectiveTheme() === `dark` ? `light` : `dark`;
@@ -140,7 +146,7 @@ pub const SITE_JS: &str = "\
       document.documentElement.setAttribute(`data-theme`, next);
       applyLabel(next);
     });
-    // 配線がすべて完了した後にのみ可視化する（上記 doc コメント手順 5）。
+    // 配線がすべて完了した後にのみ可視化する（上記 doc コメント手順 6）。
     toggle.removeAttribute(`hidden`);
   }
 
@@ -248,7 +254,7 @@ mod tests {
     }
 
     /// [`SITE_JS`] は `hidden` の解除をイベント配線完了後にのみ行う（上記
-    /// doc コメント手順 5）。`removeAttribute` 呼び出しが `init` 関数の最後
+    /// doc コメント手順 6）。`removeAttribute` 呼び出しが `init` 関数の最後
     /// （`addEventListener` の後）に位置することを、文字列上の出現順で
     /// 固定する。
     #[test]
@@ -262,6 +268,35 @@ mod tests {
         assert!(
             listener_pos < reveal_pos,
             "hidden の解除はイベント配線より後である必要がある"
+        );
+    }
+
+    /// レビュー指摘（イシュー #390）の回帰テスト: `.docs-theme-toggle` の
+    /// `querySelector` 呼び出しが `init` 関数の中（`readyState` 分岐より後）
+    /// に位置することを固定する。トップレベルで即時実行してしまうと、
+    /// 上記 doc コメント手順 1 が説明する「`readyState === "loading"` なら
+    /// `DOMContentLoaded` を待つ」フォールバックが、要素取得前に済んだ
+    /// null 判定によって意味を持たなくなる（defer 実行時には実害がなくとも
+    /// doc コメントの契約とコードが乖離するデッドコード化を防ぐ）。
+    #[test]
+    fn site_js_queries_toggle_element_inside_init_not_at_top_level() {
+        let ready_state_check_pos = SITE_JS
+            .find("document.readyState")
+            .expect("SITE_JS should branch on document.readyState");
+        let query_selector_pos = SITE_JS
+            .find("document.querySelector(`.docs-theme-toggle`)")
+            .expect("SITE_JS should query the toggle element");
+        assert!(
+            query_selector_pos < ready_state_check_pos,
+            "querySelector の呼び出しは init 関数定義内（readyState 分岐より前のソース位置）にある必要がある"
+        );
+
+        let init_fn_pos = SITE_JS
+            .find("function init()")
+            .expect("SITE_JS should define an init function");
+        assert!(
+            init_fn_pos < query_selector_pos,
+            "querySelector の呼び出しは init 関数の中に位置する必要がある"
         );
     }
 

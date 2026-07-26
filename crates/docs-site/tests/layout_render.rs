@@ -59,7 +59,10 @@ fn header_actions_contain_github_link_and_theme_toggle() {
 
     assert!(html.contains(r#"class="docs-theme-toggle""#));
     assert!(html.contains(r#"type="button""#));
-    assert!(html.contains("hidden"));
+    // `hidden` は真偽属性として `hidden=""` の形で出力される（render_into は
+    // 常に `key="value"` 形式、fandhe-frontend-core）。部分文字列一致だと
+    // 無関係な箇所の "hidden" にも通ってしまうため属性としての出現を固定する。
+    assert!(html.contains(r#"hidden="""#));
     assert!(html.contains(r#"aria-label="Toggle color theme""#));
     assert!(html.contains(r#"aria-pressed="false""#));
 }
@@ -97,7 +100,10 @@ fn head_places_inline_theme_bootstrap_before_stylesheet_and_deferred_script_afte
         stylesheet_pos < script_src_pos,
         "assets/site.js must come after the stylesheet link"
     );
-    assert!(html.contains("defer"));
+    // `defer` も `hidden` 同様、真偽属性として `defer=""` の形で出力される。
+    // 部分文字列一致（"defer"）は無関係な出現にも通ってしまうため属性としての
+    // 出現を固定する。
+    assert!(html.contains(r#"defer="""#));
 }
 
 #[test]
