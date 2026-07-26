@@ -11,16 +11,20 @@ name: docs-site
 # 既知の制約: レンダラ側クレート（crates.io の fandhe-frontend-core /
 # fandhe-frontend-app / fandhe-frontend-server）の更新は Cargo.lock 経由で
 # crates/docs-site/** のトリガーに乗らない場合がある。反映が必要な場合は
-# workflow_dispatch で手動再デプロイする。
+# workflow_dispatch で手動再デプロイする（手順・確認方法は
+# docs/design/docs-site-redesign.md の「手動再デプロイ運用」節を参照）。
 
 on:
   push:
     branches: [main]
     paths:
       - "docs/guide/**"
+      - "docs/api/**" # site/nav.toml の API Reference セクションのビルド入力（イシュー #398）
       - "site/**"
       - "crates/docs-site/**"
       - ".github/workflows/docs-site.yml" # 自己参照パターン（ci.yml 系と同様）
+      # examples/** は site/nav.toml から参照されずビルド入力にならないため意図的に含めない
+      # （site/examples/*.md へ再構成済み。追加すると空振りトリガーになる、イシュー #398）。
 
   workflow_dispatch:
 
@@ -62,10 +66,16 @@ jobs:
       # ジョブ間で永続するため、リポジトリ直下への出力による stale 生成物の
       # 混入を避ける。
       - name: "verify: dist sanity check"
-        # 空サイト・アセット欠落を黙って公開しないための決定的チェック（fail-closed）
+        # 空サイト・アセット欠落を黙って公開しないための決定的チェック（fail-closed）。
+        # -s で非空も検証し、書き出しに失敗した 0 バイトファイルの見逃しを防ぐ。
+        # assets/site.js はテーマトグル JS（crates/docs-site/src/script.rs、#390）。
+        # assets/search-index.json（全文検索インデックス、#396）はイシュー #398 時点で
+        # #396 が未マージのため検査対象に未追加（fail-closed: 常に FAIL する検査を
+        # 先行導入しない。#396 マージ後に追随する、docs/design/docs-site-redesign.md 参照）。
         run: |
-          test -f "${RUNNER_TEMP}/docs-site-dist/index.html"
-          test -f "${RUNNER_TEMP}/docs-site-dist/assets/site.css"
+          test -s "${RUNNER_TEMP}/docs-site-dist/index.html"
+          test -s "${RUNNER_TEMP}/docs-site-dist/assets/site.css"
+          test -s "${RUNNER_TEMP}/docs-site-dist/assets/site.js"
 
       - name: Upload Pages artifact
         # 要: runner に tar がインストール済み（upload-pages-artifact が内部で使用。
