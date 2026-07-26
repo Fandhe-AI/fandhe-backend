@@ -59,7 +59,56 @@ fn site_nav_registers_four_sections_with_expected_titles() {
 
 /// 既存の利用者向けドキュメント（トップ + Guides セクション索引 +
 /// `docs/guide/` の 7 本 + API Reference セクション索引 + `docs/api/` の
-/// 5 本 + `site/examples/` の 5 本 = 全 20 ページ）が
+/// 5 本 + `site/examples/` の 5 本 = 全 20 ページ）を
+/// モジュールスコープの定数として保持する。`site/nav.toml` にページを
+/// 追加・削除した場合はこのリストを実測値へ追随させる必要があり、
+/// 更新を怠ると `site_nav_registers_all_pages_with_expected_paths` が
+/// fail-closed で検知する。[`EXPECTED_PAGE_COUNT`] は本リストの長さを
+/// 導出するのみで、別途値を保持しない（レビュー指摘: リストと定数の
+/// 二重管理は「一方だけ更新して他方を放置する」という定数自身が作り出す
+/// 失敗モードを生むため、導出値にして構造的に排除する）。
+const EXPECTED_PAGES: &[(&str, &str)] = &[
+    ("site/index.md", "/"),
+    ("docs/guide/getting-started.md", "/getting-started/"),
+    ("site/guides.md", "/guides/"),
+    ("docs/guide/README.md", "/guides/reading/"),
+    ("docs/guide/feature-samples.md", "/guides/feature-samples/"),
+    ("docs/guide/tutorial.md", "/guides/tutorial/"),
+    (
+        "docs/guide/extension-points.md",
+        "/guides/extension-points/",
+    ),
+    ("docs/guide/streaming.md", "/guides/streaming/"),
+    (
+        "docs/guide/graceful-shutdown.md",
+        "/guides/graceful-shutdown/",
+    ),
+    ("site/api.md", "/api/"),
+    ("docs/api/server-api.md", "/api/server-api/"),
+    ("docs/api/extension-api.md", "/api/extension-api/"),
+    ("docs/api/http-api.md", "/api/http-api/"),
+    ("docs/api/router-api.md", "/api/router-api/"),
+    ("docs/api/plugin-config-api.md", "/api/plugin-config-api/"),
+    ("site/examples.md", "/examples/"),
+    ("site/examples/with-cors.md", "/examples/with-cors/"),
+    ("site/examples/with-graphql.md", "/examples/with-graphql/"),
+    (
+        "site/examples/with-websocket.md",
+        "/examples/with-websocket/",
+    ),
+    ("site/examples/templates-app.md", "/examples/templates-app/"),
+];
+
+/// nav 登録ページ総数の契約値（イシュー #397）。[`EXPECTED_PAGES`] の長さを
+/// そのまま導出するだけで独立した値を持たないため、[`EXPECTED_PAGES`] の
+/// 更新漏れが本定数との不一致として現れることは構造上あり得ない
+/// （「期待値で固定する」という受け入れ条件は
+/// `site_nav_registers_expected_page_count` が引き続き担保する）。
+const EXPECTED_PAGE_COUNT: usize = EXPECTED_PAGES.len();
+
+/// 既存の利用者向けドキュメント（[`EXPECTED_PAGES`]、トップ + Guides
+/// セクション索引 + `docs/guide/` の 7 本 + API Reference セクション索引 +
+/// `docs/api/` の 5 本 + `site/examples/` の 5 本 = 全 20 ページ）が
 /// サイト生成対象として漏れなく登録されている。
 #[test]
 fn site_nav_registers_all_pages_with_expected_paths() {
@@ -71,44 +120,33 @@ fn site_nav_registers_all_pages_with_expected_paths() {
         .map(|p| (p.source.as_str(), p.path.as_str()))
         .collect();
 
-    let expected = vec![
-        ("site/index.md", "/"),
-        ("docs/guide/getting-started.md", "/getting-started/"),
-        ("site/guides.md", "/guides/"),
-        ("docs/guide/README.md", "/guides/reading/"),
-        ("docs/guide/feature-samples.md", "/guides/feature-samples/"),
-        ("docs/guide/tutorial.md", "/guides/tutorial/"),
-        (
-            "docs/guide/extension-points.md",
-            "/guides/extension-points/",
-        ),
-        ("docs/guide/streaming.md", "/guides/streaming/"),
-        (
-            "docs/guide/graceful-shutdown.md",
-            "/guides/graceful-shutdown/",
-        ),
-        ("site/api.md", "/api/"),
-        ("docs/api/server-api.md", "/api/server-api/"),
-        ("docs/api/extension-api.md", "/api/extension-api/"),
-        ("docs/api/http-api.md", "/api/http-api/"),
-        ("docs/api/router-api.md", "/api/router-api/"),
-        ("docs/api/plugin-config-api.md", "/api/plugin-config-api/"),
-        ("site/examples.md", "/examples/"),
-        ("site/examples/with-cors.md", "/examples/with-cors/"),
-        ("site/examples/with-graphql.md", "/examples/with-graphql/"),
-        (
-            "site/examples/with-websocket.md",
-            "/examples/with-websocket/",
-        ),
-        ("site/examples/templates-app.md", "/examples/templates-app/"),
-    ];
-    assert_eq!(pages.len(), expected.len(), "unexpected pages: {pages:?}");
-    for expected_pair in &expected {
+    assert_eq!(
+        pages.len(),
+        EXPECTED_PAGES.len(),
+        "unexpected pages: {pages:?}"
+    );
+    for expected_pair in EXPECTED_PAGES {
         assert!(
             pages.contains(expected_pair),
             "nav.toml is missing expected page {expected_pair:?}"
         );
     }
+}
+
+/// nav 登録ページ総数を独立の契約定数（[`EXPECTED_PAGE_COUNT`]）で明示固定する
+/// （イシュー #397）。[`EXPECTED_PAGE_COUNT`] は [`EXPECTED_PAGES`] からの
+/// 導出値であり二重管理ではないが、本テストは「ページを 1 本増減しただけで
+/// 意図せず通過してしまわないか」を定数比較の形で読み手に明示するのが目的。
+#[test]
+fn site_nav_registers_expected_page_count() {
+    let nav = load_nav();
+    let page_count = nav.sections.iter().map(|s| s.pages.len()).sum::<usize>();
+    assert_eq!(
+        page_count, EXPECTED_PAGE_COUNT,
+        "site/nav.toml のページ総数が契約値 EXPECTED_PAGE_COUNT と乖離しています。\
+         ページを追加・削除した場合は EXPECTED_PAGES を実測値へ追随させてください \
+         （EXPECTED_PAGE_COUNT は EXPECTED_PAGES から自動導出されるため個別更新は不要）。"
+    );
 }
 
 #[test]

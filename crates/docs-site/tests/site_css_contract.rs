@@ -87,6 +87,16 @@ fn fixture_body() -> Node {
     )
 }
 
+/// 見出し（`h2`/`h3`）を含まない本文フィクスチャ。`docs_page` の TOC 省略
+/// 分岐（`.docs-container.docs-no-toc`、イシュー #389 Bugbot 指摘）を
+/// 発生させるために [`fixture_body`] と分けて用意する。
+fn fixture_body_without_headings() -> Node {
+    fandhe_frontend_core::div(
+        vec![],
+        vec![p(vec![], vec![text("見出しのない本文です。")])],
+    )
+}
+
 fn fixture_sidebar() -> Node {
     // `docs_page` 単独呼び出しテストでは `nav::sidebar()` の実出力を使わず
     // 最小の `ul`/`li` を渡す既存 `layout_render.rs` の流儀に合わせつつ、
@@ -220,6 +230,126 @@ fn prev_next_nav_html_class_tokens_are_covered_by_site_css() {
     let node = prev_next_nav(&nav, "/quickstart/");
     let html = render(&node);
     assert_all_classes_covered(&html, &css_tokens, "nav::prev_next_nav");
+}
+
+/// 生成 HTML と `site.css` の class 契約インベントリ（イシュー #397）。
+///
+/// 上記 3 テスト（`docs_page_html_class_tokens_are_covered_by_site_css` 等）は
+/// いずれも「生成 HTML の class ⊆ site.css のセレクタ」という片方向検証に
+/// 留まる。この方向だけでは、実装変更でフィクスチャが特定の class を
+/// 出力しなくなった場合（分岐条件の変更・要素の削除等）に該当 assert が
+/// 単に対象を失って静かに通過してしまい、「実は誰も使っていない孤立
+/// class が site.css に取り残される」ドリフトを検知できない抜け穴がある。
+/// 本テストは契約対象 class を [`EXPECTED_CLASSES`] として明示列挙し、
+/// (a) 生成 HTML に契約外 class が混入していないか、(b) 契約 class が
+/// 生成 HTML から欠落していないか（抜け穴を閉じる本体）、(c) 契約 class が
+/// `site.css` にセレクタとして定義されているか、(d) `site.css` に契約リスト
+/// 外の孤立 class が残っていないか、の 4 方向を fail-closed に検証する。
+const EXPECTED_CLASSES: &[&str] = &[
+    "docs-brand",
+    "docs-container",
+    "docs-content",
+    "docs-github-link",
+    "docs-header",
+    "docs-header-actions",
+    "docs-main",
+    "docs-no-toc",
+    "docs-search",
+    "docs-search-input",
+    "docs-search-label",
+    "docs-search-results",
+    "docs-sidebar",
+    "docs-sidebar-toggle",
+    "docs-sidebar-toggle-label",
+    "docs-theme-toggle",
+    "docs-toc",
+    "docs-toc-aside",
+    "docs-toc-level-2",
+    "docs-toc-level-3",
+    "next",
+    "prev",
+    "prev-next",
+    "sidebar",
+    "skip-nav",
+];
+
+#[test]
+fn generated_html_class_inventory_matches_expected_contract_and_site_css() {
+    let css_tokens = extract_css_class_selectors(&site_css());
+    let expected: HashSet<String> = EXPECTED_CLASSES.iter().map(|s| s.to_string()).collect();
+
+    // `docs_page`・`sidebar`・`prev_next_nav` の 3 フィクスチャ HTML を合算し、
+    // 契約対象 class が実際に出力される全経路をまとめて走査する
+    // （TOC 2 階層・prev/next 両方向・ヘッダー右側要素を同時に発生させる
+    // フィクスチャ選定は上記個別テストの流儀を踏襲）。
+    let nav = fixture_nav();
+    let mut html = String::new();
+    html.push_str(&render(&docs_page(
+        "タイトル",
+        "fandhe-backend",
+        "",
+        fixture_sidebar(),
+        fixture_body(),
+    )));
+    html.push_str(&render(&docs_page(
+        "見出しなし",
+        "fandhe-backend",
+        "",
+        fixture_sidebar(),
+        fixture_body_without_headings(),
+    )));
+    html.push_str(&render(&sidebar(&nav, "/quickstart/")));
+    html.push_str(&render(&prev_next_nav(&nav, "/quickstart/")));
+    let html_tokens = extract_class_tokens(&html);
+
+    let unexpected_in_html: Vec<&String> = html_tokens
+        .iter()
+        .filter(|t| !expected.contains(t.as_str()))
+        .collect();
+    assert!(
+        unexpected_in_html.is_empty(),
+        "契約リスト EXPECTED_CLASSES に無い class が生成 HTML に出現しました: \
+         {unexpected_in_html:?}\n新規 class は EXPECTED_CLASSES へ追加した上で、\
+         site/assets/site.css にも同名セレクタを定義してください \
+         （EXPECTED_CLASSES へ追加するだけでは missing_from_css で失敗します）。"
+    );
+
+    let missing_from_html: Vec<&&str> = EXPECTED_CLASSES
+        .iter()
+        .filter(|c| !html_tokens.contains(**c))
+        .collect();
+    assert!(
+        missing_from_html.is_empty(),
+        "契約 class が生成 HTML から欠落しています: {missing_from_html:?}\n\
+         フィクスチャが対象 class を出力しなくなった（実装変更で分岐・要素が\
+         削除された）可能性があります。EXPECTED_CLASSES を実装に追随させるか、\
+         フィクスチャを対象 class が出力される構成へ戻してください。"
+    );
+
+    let missing_from_css: Vec<&&str> = EXPECTED_CLASSES
+        .iter()
+        .filter(|c| !css_tokens.contains(**c))
+        .collect();
+    assert!(
+        missing_from_css.is_empty(),
+        "契約 class が site/assets/site.css にセレクタとして定義されていません: \
+         {missing_from_css:?}"
+    );
+
+    let orphaned_in_css: Vec<&String> = css_tokens
+        .iter()
+        .filter(|t| !expected.contains(t.as_str()))
+        .collect();
+    assert!(
+        orphaned_in_css.is_empty(),
+        "site/assets/site.css に契約リスト EXPECTED_CLASSES 外の class セレクタが\
+         残存しています: {orphaned_in_css:?}\n\
+         生成 HTML のどの経路からも出力されない孤立 class の可能性があります。\
+         実際に使われている経路があれば、当該 class が出力されるようフィクスチャを\
+         変更した上で EXPECTED_CLASSES へ追加してください（EXPECTED_CLASSES へ\
+         追加するだけでは missing_from_html で失敗します）。使われていなければ\
+         site.css から削除してください。"
+    );
 }
 
 #[test]
