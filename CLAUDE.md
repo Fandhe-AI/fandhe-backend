@@ -250,6 +250,12 @@ fandhe-backend/
 │                                        # （`WebSocketConfig::with_handler`）を見せるサンプル
 ├── site/                   # GitHub Pages ドキュメントサイトコンテンツ（index.md・nav.toml・
 │                            # assets/site.css。docs-site SSG ツールで生成対象。base_path=/fandhe-backend）
+│   ├── guides.md                      # Guides セクション索引ページ（イシュー #393）。要約付き
+│   │                                    # リンク一覧を持ちセクション先頭に配置、既存
+│   │                                    # `docs/guide/README.md` は /guides/reading/ へ再登録し
+│   │                                    # 他ページからの .md リンク互換を維持
+│   ├── api.md                         # API Reference セクション索引ページ（イシュー #393）。
+│   │                                    # 要約付きリンク一覧を持ちセクション先頭に配置
 │   └── examples/                      # Examples セクション原稿（イシュー #392）。索引
 │                                        # （examples.md）+ with-cors / with-graphql /
 │                                        # with-websocket / templates-app の 4 紹介ページ。

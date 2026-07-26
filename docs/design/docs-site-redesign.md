@@ -170,9 +170,12 @@ fandhe-backend の nav 登録ページ数が 13 と小規模であるため採�
   `templates/app` の紹介ページ 4 本。原稿は各ディレクトリの既存 `README.md` を流用・
   再構成し、実コードへの導線は GitHub 上の該当ディレクトリへの外部リンクとする
   （サンプルコード自体を docs サイトへ複製しない。二重管理を避ける）。
-- **Guides** / **API Reference**: 各セクション先頭に 1 行要約付きの索引ページを置く
-  （既存 `docs/guide/README.md` はガイド索引として流用、API Reference には新規索引
-  ページを追加）。
+- **Guides** / **API Reference**: 各セクション先頭に 1 行要約付きの索引ページを置く。
+  実装（#393）では両セクションとも新規索引ページ（`site/guides.md` / `site/api.md`）を
+  追加する方針に変更した。既存 `docs/guide/README.md` はガイド索引としての流用を止め、
+  `/guides/reading/` へ再登録して他ページからの `.md` リンク互換のみ維持する
+  （新規索引ページのほうが要約付きリンク一覧を統一フォーマットで提供でき、
+  Examples セクションの構成パターンとも揃うため）。
 - トップページ（`site/index.md`）は 2 原則（pay-for-what-you-use / AI ファースト
   保守性）・feature プラグイン一覧・4 セクションへの入口案内で構成する。
 

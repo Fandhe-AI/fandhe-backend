@@ -62,7 +62,7 @@ shutdown など、目的別ガイドの入口です。
 `Server` / `BoundServer` / `Handler` から各クレート・プラグイン設定 API まで、
 公開 API の全体像と契約を俯瞰できます。
 
-→ [API Reference](/fandhe-backend/api/server-api/)
+→ [API Reference](/fandhe-backend/api/)
 
 ---
 

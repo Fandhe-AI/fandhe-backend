@@ -3,8 +3,9 @@
 //! Fandhe-AI/fandhe-frontend の `crates/docs-site/tests/site_nav.rs` からの
 //! 移植。検証内容（パース成功・ページ登録の網羅・path/source の一意性・
 //! source 実在・ブロックレベルのレンダリング健全性）は同じで、期待値を
-//! fandhe-backend の `site/nav.toml`（トップ + `docs/guide/` 7 本 +
-//! `docs/api/` 5 本 + `site/examples/` 5 本 = 全 18 ページ）へ合わせている。
+//! fandhe-backend の `site/nav.toml`（トップ + Guides セクション索引 +
+//! `docs/guide/` 7 本 + API Reference セクション索引 + `docs/api/` 5 本 +
+//! `site/examples/` 5 本 = 全 20 ページ）へ合わせている。
 //! `docs/guide/`・`docs/api/`・`site/examples/` の編集・改名でナビ登録と
 //! 実ファイルが乖離した場合に `cargo test` が fail-closed で検知する。
 //!
@@ -13,7 +14,8 @@
 //! （`docs/design/docs-site-redesign.md` 7 節の公開範囲規約に基づき、
 //! nav 登録ソースからは issue 番号・内部タスク表記を分離済み。将来の
 //! 再混入は本ファイル末尾の `site_nav_sources_contain_no_internal_records`
-//! が fail-closed で検知する）。
+//! が fail-closed で検知する）。Guides / API Reference の要約付きセクション
+//! 索引ページ（`site/guides.md` / `site/api.md`）も同規約に従い登録する。
 
 use std::path::{Path, PathBuf};
 
@@ -55,8 +57,9 @@ fn site_nav_registers_four_sections_with_expected_titles() {
     );
 }
 
-/// 既存の利用者向けドキュメント（トップ + `docs/guide/` の 7 本 +
-/// `docs/api/` の 5 本 + `site/examples/` の 5 本 = 全 18 ページ）が
+/// 既存の利用者向けドキュメント（トップ + Guides セクション索引 +
+/// `docs/guide/` の 7 本 + API Reference セクション索引 + `docs/api/` の
+/// 5 本 + `site/examples/` の 5 本 = 全 20 ページ）が
 /// サイト生成対象として漏れなく登録されている。
 #[test]
 fn site_nav_registers_all_pages_with_expected_paths() {
@@ -71,7 +74,8 @@ fn site_nav_registers_all_pages_with_expected_paths() {
     let expected = vec![
         ("site/index.md", "/"),
         ("docs/guide/getting-started.md", "/getting-started/"),
-        ("docs/guide/README.md", "/guides/"),
+        ("site/guides.md", "/guides/"),
+        ("docs/guide/README.md", "/guides/reading/"),
         ("docs/guide/feature-samples.md", "/guides/feature-samples/"),
         ("docs/guide/tutorial.md", "/guides/tutorial/"),
         (
@@ -83,6 +87,7 @@ fn site_nav_registers_all_pages_with_expected_paths() {
             "docs/guide/graceful-shutdown.md",
             "/guides/graceful-shutdown/",
         ),
+        ("site/api.md", "/api/"),
         ("docs/api/server-api.md", "/api/server-api/"),
         ("docs/api/extension-api.md", "/api/extension-api/"),
         ("docs/api/http-api.md", "/api/http-api/"),
