@@ -19,12 +19,16 @@
 //! - [`markdown`]: Markdown ブロック構文 → Node 木レンダラ
 //! - [`nav`]: `site/nav.toml` のパース・サイドバー / 前後ナビ生成
 //! - [`linkcheck`]: `.md` リンクのサイト内パスへの書き換え・内部リンク突合検証
-//! - [`script`]: ダークモードトグル用の唯一の JS（イシュー #390）。`layout`
-//!   の `<head>`・ヘッダーアクション領域から参照される
+//! - [`script`]: ダークモードトグル・全文検索用の唯一の JS（イシュー #390・
+//!   #396）。`layout` の `<head>`・ヘッダーアクション領域から参照される
+//! - [`search`]: 依存ゼロ全文検索インデックスの生成（イシュー #396）。
+//!   ページ本文からのプレーンテキスト抽出・決定的 JSON 直列化・サイズ上限
+//!   検証を sans-I/O な純関数として提供する
 //! - [`build`]: `nav.toml` 読込 → ページ組み立て → linkcheck →
-//!   `generate_pages()` 書き出し → アセットコピー → [`script::SITE_JS`]
-//!   書き出しの一連のビルドパイプライン本体。`main.rs`（バイナリ本体）は
-//!   本モジュールの [`build::build_site`] を呼ぶ薄いラッパー。
+//!   `generate_pages()` 書き出し → アセットコピー → [`script::SITE_JS`] /
+//!   検索インデックス（[`search`]）書き出しの一連のビルドパイプライン本体。
+//!   `main.rs`（バイナリ本体）は本モジュールの [`build::build_site`] を
+//!   呼ぶ薄いラッパー。
 //!
 //! `fandhe-frontend-core` / `fandhe-frontend-app` / `fandhe-frontend-server`
 //! のみに依存し、外部クレートは追加しない（`Cargo.toml` の依存方針コメント
@@ -47,3 +51,4 @@ pub mod linkcheck;
 pub mod markdown;
 pub mod nav;
 pub mod script;
+pub mod search;

@@ -229,7 +229,21 @@ fandhe-backend/
 │   │                                    # イベント配線は `site.js` 読み込み後にのみ行う
 │   │                                    # fail-closed 構成。JS 無効時は `prefers-color-scheme`
 │   │                                    # 追従へ退避）。`site/assets/site.js` と同名の静的
-│   │                                    # アセットは生成物との衝突としてビルドエラーにする
+│   │                                    # アセットは生成物との衝突としてビルドエラーにする。
+│   │                                    # `src/search.rs` が依存ゼロ全文検索インデックスを
+│   │                                    # 生成し（イシュー #396）、`build::build_site` が各
+│   │                                    # ページの本文（prev/next ナビ・サイドバー・ヘッダー
+│   │                                    # を含まない）を走査してページ単位 4 KiB 切り詰め・
+│   │                                    # 索引全体 1 MiB 上限（超過は fail-closed でビルド
+│   │                                    # 失敗）を適用したのち `out_dir/assets/search-index.json`
+│   │                                    # へ書き出す。`layout::docs_page` はヘッダー右側の
+│   │                                    # 検索入力欄（既定 `hidden`）へ索引 URL を
+│   │                                    # `data-search-index` 属性で埋め込み、`src/script.rs`
+│   │                                    # の `SITE_JS` が実行時に索引を遅延 `fetch` して
+│   │                                    # タイトル/見出し/本文の部分一致検索・結果描画を行う
+│   │                                    # （`site/assets/search-index.json` も生成物との衝突
+│   │                                    # としてビルドエラーにする。外部 JS ライブラリ・
+│   │                                    # 追加クレート依存は一切増やさない）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
 ├── templates/              # 利用者向け配布テンプレート（イシュー #364）
 │   └── app                            # feature 一式（cors / compression / static / openapi）を

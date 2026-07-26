@@ -116,6 +116,54 @@ fn header_actions_contain_github_link_and_theme_toggle() {
 }
 
 #[test]
+fn header_actions_contain_search_ui_before_github_link() {
+    // イシュー #396: `div.docs-header-actions` の先頭に検索 UI
+    // （`div.docs-search` 一式）が出力されること。GitHub リンク・
+    // テーマトグルより前に配置される契約を出現順で固定する。
+    let body = p(vec![], vec![text("本文です。")]);
+    let node = docs_page(
+        "タイトル",
+        "fandhe-backend",
+        "/fandhe-backend",
+        sample_sidebar(),
+        body,
+    );
+    let html = render(&node);
+
+    let search_pos = html
+        .find(r#"class="docs-search""#)
+        .expect("docs-search should be rendered");
+    let github_pos = html
+        .find(r#"class="docs-github-link""#)
+        .expect("docs-github-link should be rendered");
+    assert!(
+        search_pos < github_pos,
+        "検索 UI は GitHub リンクより前に配置される必要がある"
+    );
+
+    // 既定 `hidden`（配線完了後にのみ `assets/site.js` が解除する契約、
+    // テーマトグルと同じ fail-closed パターン）。
+    assert!(html.contains(r#"<div class="docs-search" hidden="">"#));
+
+    // ラベルと入力欄が `for`/`id` で対応する（a11y）。
+    assert!(html.contains(r#"<label class="docs-search-label" for="docs-search-input">"#));
+    assert!(html.contains(r#"id="docs-search-input""#));
+    assert!(html.contains(r#"class="docs-search-input""#));
+    assert!(html.contains(r#"type="search""#));
+    assert!(html.contains(r#"autocomplete="off""#));
+    assert!(html.contains(r#"aria-controls="docs-search-results""#));
+
+    // 索引 URL は `asset_href` の単一実装点を経由する
+    // （`base_path="/fandhe-backend"` を渡した場合の正規化結果）。
+    assert!(html.contains(r#"data-search-index="/fandhe-backend/assets/search-index.json""#));
+
+    // 結果コンテナは既定 `hidden` + `aria-live="polite"`。
+    assert!(html.contains(r#"id="docs-search-results""#));
+    assert!(html.contains(r#"class="docs-search-results""#));
+    assert!(html.contains(r#"aria-live="polite""#));
+}
+
+#[test]
 fn head_places_inline_theme_bootstrap_before_stylesheet_and_deferred_script_after() {
     // イシュー #390: FOUC 抑止インラインスニペットは stylesheet より前、
     // `assets/site.js`（defer）は stylesheet より後に出力される

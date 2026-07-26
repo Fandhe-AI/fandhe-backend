@@ -61,12 +61,15 @@ fn build_site_generates_all_pages_and_assets_for_ok_fixture() {
 
     assert_eq!(report.written.len(), 2);
     // `site/assets/site.css`（フィクスチャの静的アセット）+
-    // `assets/site.js`（テーマトグル JS の生成物、イシュー #390）の 2 件。
-    assert_eq!(report.assets.len(), 2);
+    // `assets/site.js`（テーマトグル JS の生成物、イシュー #390）+
+    // `assets/search-index.json`（検索インデックスの生成物、イシュー #396）
+    // の 3 件。
+    assert_eq!(report.assets.len(), 3);
     assert!(out.0.join("index.html").exists());
     assert!(out.0.join("guide/quickstart/index.html").exists());
     assert!(out.0.join("assets/site.css").exists());
     assert!(out.0.join("assets/site.js").exists());
+    assert!(out.0.join("assets/search-index.json").exists());
 }
 
 #[test]
@@ -165,6 +168,87 @@ fn build_site_output_contains_skip_nav_and_aria_current_only() {
 
     let css = std::fs::read_to_string(out.0.join("assets/site.css")).unwrap();
     assert!(css.contains(".skip-nav"));
+}
+
+/// イシュー #396 受け入れ条件 1: 実サイトビルドで検索インデックスが生成され、
+/// サイズ上限（[`fandhe_backend_docs_site::search::MAX_INDEX_BYTES`]）以内に
+/// 収まることを固定する。
+#[test]
+fn build_site_generates_search_index_within_size_limit_for_the_real_repository_site() {
+    use fandhe_backend_docs_site::search::MAX_INDEX_BYTES;
+
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("resolve repository root");
+    let out = TempDir::new("search-index");
+
+    let report = build_site(&repo_root, &out.0).expect("real site/nav.toml should build cleanly");
+    assert!(
+        report
+            .assets
+            .iter()
+            .any(|p| p.ends_with("search-index.json"))
+    );
+
+    let index_path = out.0.join("assets/search-index.json");
+    assert!(index_path.exists());
+    let bytes = std::fs::metadata(&index_path).unwrap().len() as usize;
+    assert!(
+        bytes < MAX_INDEX_BYTES,
+        "search index size {bytes} bytes should be below the {MAX_INDEX_BYTES} byte limit"
+    );
+}
+
+/// イシュー #396: 実サイトの検索インデックスが `site/nav.toml` の全ページ
+/// （20 ページ、`build_site_succeeds_for_the_real_repository_site` と同数）を
+/// 含み、`base_path`（`/fandhe-backend`）を保持することを固定する。生の
+/// `< > &` および `U+2028`/`U+2029` を含まないことも合わせて検証する
+/// （[`fandhe_backend_docs_site::search::escape_json_string`] の多層防御
+/// エスケープ契約の回帰テスト）。
+#[test]
+fn build_site_search_index_covers_all_pages_and_escapes_defense_in_depth_characters() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("resolve repository root");
+    let out = TempDir::new("search-index-content");
+
+    build_site(&repo_root, &out.0).expect("real site/nav.toml should build cleanly");
+    let index_json = std::fs::read_to_string(out.0.join("assets/search-index.json")).unwrap();
+
+    assert!(index_json.contains(r#""base_path":"/fandhe-backend""#));
+    // `"href":` の出現回数でページ数を数える（JSON パーサを追加依存させない
+    // ため文字列探索で代替する。受け入れ条件 4: 外部 JS/依存ライブラリを
+    // 追加しない方針とは独立に、テスト側も外部 JSON クレートを増やさない）。
+    assert_eq!(index_json.matches(r#""href":"#).count(), 20);
+
+    for forbidden in ['<', '>', '&', '\u{2028}', '\u{2029}'] {
+        assert!(
+            !index_json.contains(forbidden),
+            "search index must not contain raw {forbidden:?}"
+        );
+    }
+}
+
+/// イシュー #396: 検索インデックスの直列化は決定的であり、2 回ビルドしても
+/// バイト列が同一になることを固定する（[`serialize_index`] のキー順固定
+/// 契約。fandhe_backend_docs_site::search::serialize_index の doc 参照）。
+#[test]
+fn build_site_search_index_is_byte_identical_across_repeated_builds() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("resolve repository root");
+    let out_a = TempDir::new("search-index-det-a");
+    let out_b = TempDir::new("search-index-det-b");
+
+    build_site(&repo_root, &out_a.0).expect("real site/nav.toml should build cleanly (a)");
+    build_site(&repo_root, &out_b.0).expect("real site/nav.toml should build cleanly (b)");
+
+    let json_a = std::fs::read(out_a.0.join("assets/search-index.json")).unwrap();
+    let json_b = std::fs::read(out_b.0.join("assets/search-index.json")).unwrap();
+    assert_eq!(json_a, json_b);
 }
 
 // ---- バイナリ経由（終了コード・stderr の契約） ----
