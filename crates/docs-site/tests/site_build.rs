@@ -121,6 +121,28 @@ fn build_site_succeeds_for_the_real_repository_site() {
     assert!(out.0.join("index.html").exists());
 }
 
+/// イシュー #391: 実サイトビルド出力に SkipNav・`aria-current="page"` 一本化が
+/// 反映され、`class="current"` が残っていないことを E2E で固定する。
+#[test]
+fn build_site_output_contains_skip_nav_and_aria_current_only() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("resolve repository root");
+    let out = TempDir::new("a11y");
+
+    build_site(&repo_root, &out.0).expect("real site/nav.toml should build cleanly");
+    let index_html = std::fs::read_to_string(out.0.join("index.html")).unwrap();
+
+    assert!(index_html.contains(r#"class="skip-nav""#));
+    assert!(index_html.contains(r#"id="fandhe-skip-nav""#));
+    assert!(index_html.contains(r#"aria-current="page""#));
+    assert!(!index_html.contains(r#"class="current""#));
+
+    let css = std::fs::read_to_string(out.0.join("assets/site.css")).unwrap();
+    assert!(css.contains(".skip-nav"));
+}
+
 // ---- バイナリ経由（終了コード・stderr の契約） ----
 
 fn docs_site_bin() -> PathBuf {

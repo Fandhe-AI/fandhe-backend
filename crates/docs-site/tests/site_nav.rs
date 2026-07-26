@@ -11,8 +11,8 @@
 use std::path::{Path, PathBuf};
 
 use fandhe_backend_docs_site::markdown::render_markdown;
-use fandhe_backend_docs_site::nav::{Nav, parse_nav, validate_sources};
-use fandhe_frontend_core::Node;
+use fandhe_backend_docs_site::nav::{Nav, parse_nav, sidebar, validate_sources};
+use fandhe_frontend_core::{Node, render};
 
 /// `CARGO_MANIFEST_DIR`（`crates/docs-site`）から repo_root を解決する。
 /// テストフィクスチャがクレート内に閉じず repo_root 配下の実ファイルを
@@ -152,6 +152,25 @@ fn every_source_renders_without_fence_leakage_and_starts_with_a_heading() {
             }
         }
     }
+}
+
+/// イシュー #391: 実マニフェスト（`site/nav.toml`）から生成したサイドバーが
+/// 現在ページ表現・意味論の両方でアクセシビリティ契約を満たすことを固定する。
+#[test]
+fn site_nav_sidebar_uses_aria_current_only_and_no_role_attribute() {
+    let nav = load_nav();
+    // 実在ページの 1 つを現在ページとして選び、aria-current 分岐を発生させる。
+    let current_path = "/getting-started/";
+    let html = render(&sidebar(&nav, current_path));
+
+    // 現在ページは aria-current="page" のみで表現され、`class="current"`
+    // を含まない（移植元イシュー #756 と同じく class 併用は廃止済み）。
+    assert!(html.contains(r#"aria-current="page""#));
+    assert!(!html.contains(r#"class="current""#));
+
+    // サイドバー nav は role なしの headless 構造（ネイティブ要素の暗黙 role
+    // をそのまま使う）。
+    assert!(!html.contains("role="));
 }
 
 fn is_heading(node: &Node) -> bool {

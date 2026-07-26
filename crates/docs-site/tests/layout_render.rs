@@ -263,3 +263,47 @@ fn xss_payloads_in_title_headings_and_sidebar_are_escaped() {
     let id = &entries[0].id;
     assert!(id.chars().all(|c| c.is_alphanumeric() || c == '-'));
 }
+
+#[test]
+fn skip_nav_link_is_the_first_element_inside_body() {
+    // イシュー #391: SkipNav リンクは `<body>` 直後の最初の要素として
+    // 出力される契約（ヘッダ・サイドバーより前）。
+    let body = p(vec![], vec![text("本文です。")]);
+    let node = docs_page("タイトル", "fandhe-backend", "", sample_sidebar(), body);
+    let html = render(&node);
+
+    assert!(html.contains(r##"<body><a class="skip-nav" href="#fandhe-skip-nav">"##));
+}
+
+#[test]
+fn skip_nav_target_precedes_article_and_follows_main() {
+    // イシュー #391: スキップ先ターゲット div は `<main` の後・
+    // `article.docs-content` の前に出現する（`tabindex="-1"` でプログラム的
+    // フォーカスのみ許可し、Tab 順序には加えない）。
+    let body = p(vec![], vec![text("本文です。")]);
+    let node = docs_page("タイトル", "fandhe-backend", "", sample_sidebar(), body);
+    let html = render(&node);
+
+    let main_idx = html.find("<main").expect("main element must exist");
+    let target_idx = html
+        .find(r#"<div id="fandhe-skip-nav" tabindex="-1">"#)
+        .expect("skip nav target must exist");
+    let article_idx = html
+        .find(r#"class="docs-content""#)
+        .expect("article.docs-content must exist");
+
+    assert!(main_idx < target_idx);
+    assert!(target_idx < article_idx);
+}
+
+#[test]
+fn skip_nav_link_href_fragment_matches_target_id() {
+    // イシュー #391: link 側 `href="#<id>"` とターゲット側 `id="<id>"` が
+    // 一致すること（フラグメントの取り違えを回帰検知する）。
+    let body = p(vec![], vec![text("本文です。")]);
+    let node = docs_page("タイトル", "fandhe-backend", "", sample_sidebar(), body);
+    let html = render(&node);
+
+    assert!(html.contains(r##"href="#fandhe-skip-nav""##));
+    assert!(html.contains(r#"id="fandhe-skip-nav""#));
+}
