@@ -154,6 +154,16 @@ body {
   .docs-toc-aside {
     display: block;
   }
+
+  /* 見出しがなく `aside.docs-toc-aside` 自体が省略されるページ
+   * （`crates/docs-site/src/layout.rs` が `docs-no-toc` を付与）では、
+   * 3 列トラック定義のままだと子要素 2 個に対し TOC 幅ぶんの空白列が
+   * 右側に残る。2 カラム構成へ切り替えて空白を解消する
+   * （Bugbot 指摘、イシュー #389）。
+   */
+  .docs-container.docs-no-toc {
+    grid-template-columns: var(--docs-sidebar-width) minmax(0, 1fr);
+  }
 }
 
 /* ---- サイドバー ---- */

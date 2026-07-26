@@ -378,16 +378,27 @@ pub fn docs_page(
         ),
         main_tag(vec![("class", "docs-main")], main_children),
     ];
+    // 見出しがなく TOC 列を省略するページでは `.docs-container` に
+    // `docs-no-toc` を付与し、`site/assets/site.css` 側で `min-width: 1200px`
+    // 時の grid-template-columns を 2 カラムへ切り替える（3 列トラック定義が
+    // 残ると子要素数と不一致になり、空の TOC 幅ぶん右余白が生じるため。
+    // Bugbot 指摘、イシュー #389）。
+    let has_toc = toc.is_some();
     if let Some(toc_node) = toc {
         container_children.push(aside(vec![("class", "docs-toc-aside")], vec![toc_node]));
     }
+    let container_class = if has_toc {
+        "docs-container"
+    } else {
+        "docs-container docs-no-toc"
+    };
 
     let body_node = el(
         "body",
         vec![],
         vec![
             header_node,
-            div(vec![("class", "docs-container")], container_children),
+            div(vec![("class", container_class)], container_children),
         ],
     );
 
