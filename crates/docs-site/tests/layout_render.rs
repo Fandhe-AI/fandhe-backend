@@ -34,13 +34,61 @@ fn docs_page_renders_a_single_complete_document() {
 fn docs_header_home_link_uses_given_site_title() {
     // ヘッダのホームリンク文言は引数 site_title（実運用では site/nav.toml の
     // `[site] title`）に従う。移植元サイト名のハードコード回帰
-    // （PR #348 Bugbot 指摘）を防ぐ。
+    // （PR #348 Bugbot 指摘）を防ぐ。イシュー #389 で `class="docs-brand"` を
+    // 付与したため完全一致アサーションを class 込みへ追随した。
     let body = p(vec![], vec![text("本文です。")]);
     let node = docs_page("タイトル", "fandhe-backend", "", sample_sidebar(), body);
     let html = render(&node);
 
-    assert!(html.contains(r#"<a href="/">fandhe-backend</a>"#));
+    assert!(html.contains(r#"<a class="docs-brand" href="/">fandhe-backend</a>"#));
     assert!(!html.contains(">fandhe-frontend<"));
+}
+
+#[test]
+fn docs_header_link_carries_docs_brand_class() {
+    let body = p(vec![], vec![text("本文です。")]);
+    let node = docs_page("タイトル", "fandhe-backend", "", sample_sidebar(), body);
+    let html = render(&node);
+
+    assert!(html.contains(r#"class="docs-brand""#));
+}
+
+#[test]
+fn sidebar_toggle_input_and_label_are_wired_together() {
+    // 狭幅時の無 JS 開閉トグル（イシュー #389）。`label[for]` が
+    // `input[id]` と対応していること、両者に契約 class が付与されること。
+    let body = p(vec![], vec![text("本文です。")]);
+    let node = docs_page("タイトル", "fandhe-backend", "", sample_sidebar(), body);
+    let html = render(&node);
+
+    assert!(html.contains(r#"class="docs-sidebar-toggle""#));
+    assert!(html.contains(r#"id="docs-sidebar-toggle""#));
+    assert!(html.contains(r#"class="docs-sidebar-toggle-label""#));
+    assert!(html.contains(r#"for="docs-sidebar-toggle""#));
+}
+
+#[test]
+fn toc_aside_appears_after_main_within_docs_container_when_headings_exist() {
+    // 3 カラム化（イシュー #389）: `.docs-container` 内で
+    // `.docs-sidebar` → `.docs-main` → `.docs-toc-aside` の順に出現し、
+    // 目次は本文カラムの外（右カラム）に独立配置されることを検証する。
+    let body = fandhe_frontend_core::div(vec![], vec![h2(vec![], vec![text("導入")])]);
+    let node = docs_page("タイトル", "fandhe-backend", "", sample_sidebar(), body);
+    let html = render(&node);
+
+    let sidebar_pos = html.find(r#"class="docs-sidebar""#).expect("docs-sidebar");
+    let main_pos = html.find(r#"class="docs-main""#).expect("docs-main");
+    let toc_aside_pos = html
+        .find(r#"class="docs-toc-aside""#)
+        .expect("docs-toc-aside");
+
+    assert!(sidebar_pos < main_pos);
+    assert!(main_pos < toc_aside_pos);
+
+    // 目次 nav は本文（docs-content）の外側、docs-toc-aside の内側にある
+    // ことを確認する（旧: docs-main 先頭配置からの移設）。
+    let toc_nav_pos = html.find(r#"class="docs-toc""#).expect("docs-toc nav");
+    assert!(toc_aside_pos < toc_nav_pos);
 }
 
 #[test]
@@ -159,6 +207,9 @@ fn no_headings_means_no_toc_nav_and_no_toc_section_in_document() {
     let node = docs_page("タイトル", "fandhe-backend", "", sample_sidebar(), body);
     let html = render(&node);
     assert!(!html.contains(r#"class="docs-toc""#));
+    // 見出しの無いページでは右カラム自体（`aside.docs-toc-aside`）も
+    // 出力されない（イシュー #389。空の右カラムを残さないため）。
+    assert!(!html.contains(r#"class="docs-toc-aside""#));
     let _ = annotated;
 }
 

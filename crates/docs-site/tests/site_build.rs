@@ -118,7 +118,21 @@ fn build_site_succeeds_for_the_real_repository_site() {
     let report = build_site(&repo_root, &out.0).expect("real site/nav.toml should build cleanly");
     assert!(!report.written.is_empty());
     assert!(!report.assets.is_empty());
+    // `site/nav.toml` の総ページ数を機械固定する（イシュー #389 受け入れ条件
+    // 2: 既存 13 ページ全てがリンク切れなくビルドできること）。ページ数が
+    // 変わった場合はこの値も追随する必要がある。
+    assert_eq!(report.written.len(), 13);
     assert!(out.0.join("index.html").exists());
+
+    // 3 カラム構造（イシュー #389 受け入れ条件 1）: トップページに
+    // `docs-container` / `docs-brand` が出力されること。トップページ
+    // （site/index.md）に h2/h3 が無ければ `docs-toc-aside` は出力されない
+    // 契約のため、右カラムの有無自体はここでは固定しない。
+    let index_html = std::fs::read_to_string(out.0.join("index.html")).unwrap();
+    assert!(index_html.contains(r#"class="docs-container""#));
+    assert!(index_html.contains(r#"class="docs-brand""#));
+    assert!(index_html.contains(r#"class="docs-sidebar""#));
+    assert!(index_html.contains(r#"class="docs-main""#));
 }
 
 // ---- バイナリ経由（終了コード・stderr の契約） ----

@@ -1,4 +1,8 @@
-//! docs サイトの Linear Developers 風 2 カラムページ骨格。
+//! docs サイトの Linear Developers 風 3 カラムページ骨格（イシュー #389 で
+//! 2 カラム（サイドバー + 本文）から刷新）。ヘッダー + 左サイドバー + 中央本文 +
+//! 右 TOC カラムの 3 段構成にし、狭幅時は CSS のみ（チェックボックスハック）で
+//! 折りたたむ（参照設計は fandhe-frontend の
+//! `docs/design/docs-site-three-column-redesign.md`）。
 //!
 //! タイトル・サイドバー・本文の各 [`Node`] から、DOCTYPE を除いた完全な
 //! HTML 文書 `Node`（`<html>` 要素）を組み立てる。生成した `Node` は
@@ -15,7 +19,9 @@
 
 use std::collections::HashSet;
 
-use fandhe_frontend_core::{Node, a, article, aside, div, el, header, li, main_tag, nav, text, ul};
+use fandhe_frontend_core::{
+    Node, a, article, aside, div, el, header, input, label, li, main_tag, nav, text, ul,
+};
 
 /// ページ内目次（TOC）の 1 エントリ。
 ///
@@ -264,6 +270,10 @@ pub fn asset_href(base_path: &str, relative: &str) -> String {
 /// タイトル・`base_path`・サイドバー・本文から完全な HTML 文書 `Node`
 /// （`<html>` 要素）を組み立てる。
 ///
+/// 出力は `header.docs-header` + `div.docs-container`（`aside.docs-sidebar` /
+/// `main.docs-main` / 見出しがある場合のみ出力される `aside.docs-toc-aside`
+/// の 3 カラム）の骨格（イシュー #389）。
+///
 /// 内部で [`with_heading_anchors`] と [`toc_nav`] を適用し、本文中の
 /// `h2`/`h3` にアンカーを注入した上でページ内目次を生成する。`title`（ページ
 /// タイトル）と `site_title`（全ページ共通ヘッダのホームリンク文言。
@@ -315,41 +325,69 @@ pub fn docs_page(
         ],
     );
 
-    // 「on this page」目次は本文の前（`main` 内の先頭）に置く。読者が本文を
-    // 読み始める前に目次へ気付けるようにするための並び順であり、
-    // `site/assets/site.css` はこの `.docs-content` 前という位置関係を
-    // 前提にスタイルしていない（`.docs-toc` 単体で完結する見た目にしている
-    // ため、並び順を変えてもレイアウトは崩れない）。
-    let mut main_children = Vec::new();
-    if let Some(toc_node) = toc {
-        main_children.push(toc_node);
-    }
-    main_children.push(article(
+    // 「on this page」目次は右カラム（`aside.docs-toc-aside`）に置く（イシュー
+    // #389 で本文前のカード配置から移設。3 カラム化に伴い `.docs-container` の
+    // 第 3 子として独立させ、`≥1200px` では sticky な右レールとして常時可視、
+    // `768〜1199px` 未満では `site/assets/site.css` 側で列ごと非表示にする）。
+    // `toc_nav` の契約（空なら `None`）は不変のため、見出しの無いページでは
+    // `aside.docs-toc-aside` 自体を出力しない。
+    let main_children = vec![article(
         vec![("class", "docs-content")],
         vec![annotated_body],
-    ));
+    )];
 
     let root_href = asset_href(base_path, "");
     let header_node = header(
         vec![("class", "docs-header")],
         vec![a(
-            vec![("href", &root_href)],
+            vec![("class", "docs-brand"), ("href", &root_href)],
             vec![text(site_title.to_string())],
         )],
     );
+
+    // 狭幅（<768px）でのサイドバー折りたたみは JS ハイドレーションを行わない
+    // docs-site の方針上、チェックボックスハック（無 JS の CSS 専用開閉）で
+    // 実現する。`≥768px` では `site/assets/site.css` 側で input/label とも
+    // 非表示にし、常時展開の現行挙動へ収束させる。`role`/`aria-expanded` は
+    // 意図的に付与しない（JS の状態更新経路が無く、静的属性は支援技術へ虚偽の
+    // 状態を伝えるため。参照設計 §3.5 と同原則）。
+    //
+    // 補足: `fandhe_frontend_core::render` は void 要素の自己終了を扱わず
+    // `<input ...></input>` と出力するが、既存の `<meta>`/`<link>` 同様に
+    // ブラウザ互換上無害（HTML パーサは想定外の終了タグを無視する）。
+    let sidebar_toggle = input(
+        vec![
+            ("type", "checkbox"),
+            ("id", "docs-sidebar-toggle"),
+            ("class", "docs-sidebar-toggle"),
+        ],
+        vec![],
+    );
+    let sidebar_toggle_label = label(
+        vec![
+            ("for", "docs-sidebar-toggle"),
+            ("class", "docs-sidebar-toggle-label"),
+        ],
+        vec![text("Menu")],
+    );
+
+    let mut container_children = vec![
+        aside(
+            vec![("class", "docs-sidebar")],
+            vec![sidebar_toggle, sidebar_toggle_label, sidebar],
+        ),
+        main_tag(vec![("class", "docs-main")], main_children),
+    ];
+    if let Some(toc_node) = toc {
+        container_children.push(aside(vec![("class", "docs-toc-aside")], vec![toc_node]));
+    }
 
     let body_node = el(
         "body",
         vec![],
         vec![
             header_node,
-            div(
-                vec![("class", "docs-container")],
-                vec![
-                    aside(vec![("class", "docs-sidebar")], vec![sidebar]),
-                    main_tag(vec![("class", "docs-main")], main_children),
-                ],
-            ),
+            div(vec![("class", "docs-container")], container_children),
         ],
     );
 

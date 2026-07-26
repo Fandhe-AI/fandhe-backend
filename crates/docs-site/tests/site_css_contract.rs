@@ -229,3 +229,26 @@ fn extract_css_class_selectors_ignores_decimal_numbers() {
     assert!(tokens.contains("docs-toc"));
     assert!(!tokens.contains("5rem"));
 }
+
+/// 3 カラムレイアウトの breakpoint 契約（イシュー #389 受け入れ条件 3）。
+/// `≥1200px` で 3 カラム化・`<768px` で単列化するメディアクエリと、右カラム
+/// （`.docs-toc-aside`）の表示切り替えが `site/assets/site.css` に存在する
+/// ことを文字列レベルで検証する（fail-closed。実ブラウザ検証は CI 環境で
+/// 不可なため、この契約テストと CSS 実装レビューの 2 点で担保する）。
+#[test]
+fn site_css_has_three_column_responsive_breakpoints() {
+    let css = site_css();
+
+    assert!(
+        css.contains("min-width: 1200px"),
+        "3 カラム化の breakpoint（min-width: 1200px）が見つからない"
+    );
+    assert!(
+        css.contains("max-width: 767px"),
+        "単列化の breakpoint（max-width: 767px）が見つからない"
+    );
+    assert!(
+        css.contains(".docs-toc-aside") && css.contains("display: none"),
+        ".docs-toc-aside の非表示切り替えが見つからない"
+    );
+}
