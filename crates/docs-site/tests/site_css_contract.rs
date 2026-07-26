@@ -283,7 +283,9 @@ fn generated_html_class_inventory_matches_expected_contract_and_site_css() {
     assert!(
         unexpected_in_html.is_empty(),
         "契約リスト EXPECTED_CLASSES に無い class が生成 HTML に出現しました: \
-         {unexpected_in_html:?}\n新規 class は EXPECTED_CLASSES へ追加してください。"
+         {unexpected_in_html:?}\n新規 class は EXPECTED_CLASSES へ追加した上で、\
+         site/assets/site.css にも同名セレクタを定義してください \
+         （EXPECTED_CLASSES へ追加するだけでは missing_from_css で失敗します）。"
     );
 
     let missing_from_html: Vec<&&str> = EXPECTED_CLASSES
@@ -317,7 +319,9 @@ fn generated_html_class_inventory_matches_expected_contract_and_site_css() {
         "site/assets/site.css に契約リスト EXPECTED_CLASSES 外の class セレクタが\
          残存しています: {orphaned_in_css:?}\n\
          生成 HTML のどの経路からも出力されない孤立 class の可能性があります。\
-         実際に使われている経路があれば EXPECTED_CLASSES へ追加し、そうでなければ\
+         実際に使われている経路があれば、当該 class が出力されるようフィクスチャを\
+         変更した上で EXPECTED_CLASSES へ追加してください（EXPECTED_CLASSES へ\
+         追加するだけでは missing_from_html で失敗します）。使われていなければ\
          site.css から削除してください。"
     );
 }
