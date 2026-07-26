@@ -37,6 +37,10 @@ fandhe-backend/
 │   ├── spec/               # 仕様書 submodule（要件・タスク・ロードマップ）
 │   ├── design/             # リポジトリ側設計ドキュメント（実装フェーズの設計判断を記録）
 │   │   ├── crates-io-release.md  # crates.io 公開手順（名前確保・所有権・リリース CI、イシュー #94）
+│   │   ├── docs-site-redesign.md  # GitHub Pages docs サイト刷新設計（イシュー #388、
+│   │   │                            # 親 #384。3 カラムレイアウト・依存ゼロ全文検索・
+│   │   │                            # 公開範囲規約（issue/TASK 番号記述の docs/design/ への
+│   │   │                            # 集約）を fandhe-frontend 設計正典から翻訳、#389〜#399 の根拠）
 │   │   └── v1-scope-tls-multipart.md  # TLS 終端・multipart/form-data の v1 スコープ方針
 │   │                                    # （フレームワーク本体では扱わず、TLS はリバース
 │   │                                    # プロキシ前提・multipart は raw body 受理のみ、
@@ -234,6 +238,11 @@ fandhe-backend/
 │                                        # （`WebSocketConfig::with_handler`）を見せるサンプル
 ├── site/                   # GitHub Pages ドキュメントサイトコンテンツ（index.md・nav.toml・
 │                            # assets/site.css。docs-site SSG ツールで生成対象。base_path=/fandhe-backend）
+│   └── examples/                      # Examples セクション原稿（イシュー #392）。索引
+│                                        # （examples.md）+ with-cors / with-graphql /
+│                                        # with-websocket / templates-app の 4 紹介ページ。
+│                                        # `examples/README.md`・各 README を再構成し、
+│                                        # GitHub 上の実体への絶対 URL 導線を張る
 ├── ts/                     # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）。
 │                            # crates/plugin-openapi/openapi.json → openapi-typescript →
 │                            # ts/src/generated/schema.d.ts（コミット対象）→ openapi-fetch

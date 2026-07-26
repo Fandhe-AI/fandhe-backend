@@ -4,8 +4,8 @@
 //!
 //! # 背景
 //!
-//! `layout.rs` は独自に `docs-*` プレフィックスの class を組み立て、
-//! `nav.rs` は `sidebar` / `current` / `prev-next` / `prev` / `next` を
+//! `layout.rs` は独自に `docs-*` プレフィックス（`skip-nav` 含む）の class を
+//! 組み立て、`nav.rs` は `sidebar` / `prev-next` / `prev` / `next` を
 //! 独自に組み立てる並列実装であり、両者が実際に一致しているかは
 //! コンパイラでは検証されない（CSS 文字列は Rust の型システム外）。過去に
 //! `site.css` 側だけが `site-*` プレフィックスの想定クラス名で書かれ、
@@ -205,8 +205,8 @@ fn docs_page_html_class_tokens_are_covered_by_site_css() {
 fn sidebar_html_class_tokens_are_covered_by_site_css() {
     let css_tokens = extract_css_class_selectors(&site_css());
     let nav = fixture_nav();
-    // 現在ページを 2 番目のページに一致させ、`aria-current`/`class="current"`
-    // 双方の分岐を実際に発生させる。
+    // 現在ページを 2 番目のページに一致させ、`aria-current` 付与の分岐を
+    // 実際に発生させる（イシュー #391: `class="current"` は廃止済み）。
     let node = sidebar(&nav, "/quickstart/");
     let html = render(&node);
     assert_all_classes_covered(&html, &css_tokens, "nav::sidebar");

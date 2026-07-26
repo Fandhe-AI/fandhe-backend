@@ -533,11 +533,19 @@ fn href(nav: &Nav, path: &str) -> String {
 }
 
 /// サイドバー [`Node`] を生成する。セクション・ページとも宣言順で列挙し、
-/// `current_path` に一致するページの `<a>` にのみ `aria-current="page"` と
-/// `class="current"` を付与する。`current_path` が `nav` 中のどの
-/// `page.path` にも一致しない場合はハイライトなしで全ページを列挙する
-/// （サイトトップ等、nav セクション外のページが正当に存在しうるため
-/// エラーにはしない契約）。
+/// `current_path` に一致するページの `<a>` にのみ `aria-current="page"` を
+/// 付与する（イシュー #391。移植元 fandhe-frontend #756 に倣い
+/// `class="current"` の併用は廃止し `aria-current` 一本化とした。支援技術は
+/// `aria-current` のみで現在ページを判別でき、見た目のハイライトは
+/// `site/assets/site.css` の `a[aria-current="page"]` セレクタが担う）。
+/// `current_path` が `nav` 中のどの `page.path` にも一致しない場合は
+/// ハイライトなしで全ページを列挙する（サイトトップ等、nav セクション外の
+/// ページが正当に存在しうるためエラーにはしない契約）。
+///
+/// `<nav>`/`<h2>`/`<ul>`/`<li>`/`<a>` はいずれも `role` 属性を付与しない
+/// headless 構造（イシュー #391）。ネイティブ要素の暗黙 role
+/// （`navigation`/`listitem`/`link` 等）をそのまま使い、支援技術に対して
+/// 不適切・冗長な role 上書きを行わない。
 ///
 /// タイトル・href はすべて [`el`] / [`text`] 経由で組み立てられ、
 /// `render()` 時に既定エスケープ（REQ-1）を必ず経由する。HTML 文字列の
@@ -552,7 +560,6 @@ pub fn sidebar(nav: &Nav, current_path: &str) -> Node {
             let mut attrs: Vec<(&str, &str)> = vec![("href", &link_href)];
             if is_current {
                 attrs.push(("aria-current", "page"));
-                attrs.push(("class", "current"));
             }
             let link = el("a", attrs, vec![text(page.title.clone())]);
             items.push(el("li", vec![], vec![link]));
@@ -1033,9 +1040,10 @@ path = "/p1/"
         assert!(getting_started_idx < api_idx);
 
         assert!(html.contains(r#"href="/fandhe-frontend/guide/getting-started/""#));
-        // 現在ページのみ aria-current="page" を持つ。
+        // 現在ページのみ aria-current="page" を持つ（イシュー #391:
+        // `class="current"` は廃止し `aria-current` 一本化）。
         assert_eq!(html.matches(r#"aria-current="page""#).count(), 1);
-        assert!(html.contains(r#"class="current""#));
+        assert!(!html.contains(r#"class="current""#));
     }
 
     #[test]
@@ -1044,6 +1052,15 @@ path = "/p1/"
         let html = render(&sidebar(&nav, "/not-in-nav/"));
         assert!(!html.contains("aria-current"));
         assert!(!html.contains(r#"class="current""#));
+    }
+
+    #[test]
+    fn sidebar_never_emits_role_attribute() {
+        // イシュー #391: サイドバー nav は role なしの headless 構造
+        // （ネイティブ要素の暗黙 role を利用）であることを固定する回帰テスト。
+        let nav = parse_nav(SAMPLE).unwrap();
+        let html = render(&sidebar(&nav, "/guide/getting-started/"));
+        assert!(!html.contains("role="));
     }
 
     #[test]

@@ -119,9 +119,12 @@ fn build_site_succeeds_for_the_real_repository_site() {
     assert!(!report.written.is_empty());
     assert!(!report.assets.is_empty());
     // `site/nav.toml` の総ページ数を機械固定する（イシュー #389 受け入れ条件
-    // 2: 既存 13 ページ全てがリンク切れなくビルドできること）。ページ数が
-    // 変わった場合はこの値も追随する必要がある。
-    assert_eq!(report.written.len(), 13);
+    // 2: 全ページがリンク切れなくビルドできること）。ページ数が変わった
+    // 場合はこの値も追随する必要がある（当初 13 ページから、イシュー #392 の
+    // Examples セクション追加（examples.md + with-cors/with-graphql/
+    // with-websocket/templates-app の 4 ページ）を main からのマージで
+    // 取り込み 18 ページへ増加）。
+    assert_eq!(report.written.len(), 18);
     assert!(out.0.join("index.html").exists());
 
     // 3 カラム構造（イシュー #389 受け入れ条件 1）: トップページに
@@ -133,6 +136,28 @@ fn build_site_succeeds_for_the_real_repository_site() {
     assert!(index_html.contains(r#"class="docs-brand""#));
     assert!(index_html.contains(r#"class="docs-sidebar""#));
     assert!(index_html.contains(r#"class="docs-main""#));
+}
+
+/// イシュー #391: 実サイトビルド出力に SkipNav・`aria-current="page"` 一本化が
+/// 反映され、`class="current"` が残っていないことを E2E で固定する。
+#[test]
+fn build_site_output_contains_skip_nav_and_aria_current_only() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("resolve repository root");
+    let out = TempDir::new("a11y");
+
+    build_site(&repo_root, &out.0).expect("real site/nav.toml should build cleanly");
+    let index_html = std::fs::read_to_string(out.0.join("index.html")).unwrap();
+
+    assert!(index_html.contains(r#"class="skip-nav""#));
+    assert!(index_html.contains(r#"id="fandhe-skip-nav""#));
+    assert!(index_html.contains(r#"aria-current="page""#));
+    assert!(!index_html.contains(r#"class="current""#));
+
+    let css = std::fs::read_to_string(out.0.join("assets/site.css")).unwrap();
+    assert!(css.contains(".skip-nav"));
 }
 
 // ---- バイナリ経由（終了コード・stderr の契約） ----
