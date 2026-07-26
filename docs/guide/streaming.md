@@ -1,7 +1,7 @@
 # レスポンスストリーミングガイド
 
 fandhe-backend は、レスポンス body を一括ではなく逐次送信する chunked
-ストリーミング送信を opt-in で提供する（イシュー #319）。SSE
+ストリーミング送信を opt-in で提供する。SSE
 （`text/event-stream`）・大きなファイルの逐次生成・進捗つき長時間処理の応答などに
 使う。入口は既定ハンドラ trait の opt-in 既定メソッド
 `Handler::handle_streaming`（`crates/core/src/server.rs`）と、
