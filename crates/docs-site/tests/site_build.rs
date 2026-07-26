@@ -60,10 +60,13 @@ fn build_site_generates_all_pages_and_assets_for_ok_fixture() {
         build_site(&fixture_root("site-ok"), &out.0).expect("site-ok fixture should build");
 
     assert_eq!(report.written.len(), 2);
-    assert_eq!(report.assets.len(), 1);
+    // `site/assets/site.css`（フィクスチャの静的アセット）+
+    // `assets/site.js`（テーマトグル JS の生成物、イシュー #390）の 2 件。
+    assert_eq!(report.assets.len(), 2);
     assert!(out.0.join("index.html").exists());
     assert!(out.0.join("guide/quickstart/index.html").exists());
     assert!(out.0.join("assets/site.css").exists());
+    assert!(out.0.join("assets/site.js").exists());
 }
 
 #[test]
@@ -119,6 +122,13 @@ fn build_site_succeeds_for_the_real_repository_site() {
     assert!(!report.written.is_empty());
     assert!(!report.assets.is_empty());
     assert!(out.0.join("index.html").exists());
+
+    // ダークモードトグル・GitHub リンク（イシュー #390）の実出力検証。
+    assert!(out.0.join("assets/site.js").exists());
+    let index_html = std::fs::read_to_string(out.0.join("index.html")).unwrap();
+    assert!(index_html.contains("docs-theme-toggle"));
+    assert!(index_html.contains("docs-github-link"));
+    assert!(index_html.contains(r#"src="/fandhe-backend/assets/site.js""#));
 }
 
 // ---- バイナリ経由（終了コード・stderr の契約） ----

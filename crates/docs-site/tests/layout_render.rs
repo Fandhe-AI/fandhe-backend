@@ -44,6 +44,63 @@ fn docs_header_home_link_uses_given_site_title() {
 }
 
 #[test]
+fn header_actions_contain_github_link_and_theme_toggle() {
+    // イシュー #390: ヘッダー右側のアクション領域に GitHub リンク・
+    // ダークモードトグルが出力されること。
+    let body = p(vec![], vec![text("本文です。")]);
+    let node = docs_page("タイトル", "fandhe-backend", "", sample_sidebar(), body);
+    let html = render(&node);
+
+    assert!(html.contains(r#"class="docs-header-actions""#));
+    assert!(html.contains(r#"class="docs-github-link""#));
+    assert!(html.contains(r#"href="https://github.com/Fandhe-AI/fandhe-backend""#));
+    assert!(html.contains(r#"target="_blank""#));
+    assert!(html.contains(r#"rel="noopener noreferrer""#));
+
+    assert!(html.contains(r#"class="docs-theme-toggle""#));
+    assert!(html.contains(r#"type="button""#));
+    assert!(html.contains("hidden"));
+    assert!(html.contains(r#"aria-label="Toggle color theme""#));
+    assert!(html.contains(r#"aria-pressed="false""#));
+}
+
+#[test]
+fn head_places_inline_theme_bootstrap_before_stylesheet_and_deferred_script_after() {
+    // イシュー #390: FOUC 抑止インラインスニペットは stylesheet より前、
+    // `assets/site.js`（defer）は stylesheet より後に出力される
+    // （`layout::docs_page` モジュール doc・`script` モジュール doc 参照）。
+    let body = p(vec![], vec![text("本文です。")]);
+    let node = docs_page(
+        "タイトル",
+        "fandhe-backend",
+        "/fandhe-backend",
+        sample_sidebar(),
+        body,
+    );
+    let html = render(&node);
+
+    let bootstrap_pos = html
+        .find("localStorage.getItem")
+        .expect("inline theme bootstrap script should be present");
+    let stylesheet_pos = html
+        .find(r#"href="/fandhe-backend/assets/site.css""#)
+        .expect("site.css stylesheet link should be present");
+    let script_src_pos = html
+        .find(r#"src="/fandhe-backend/assets/site.js""#)
+        .expect("assets/site.js script tag should be present");
+
+    assert!(
+        bootstrap_pos < stylesheet_pos,
+        "inline theme bootstrap must come before the stylesheet link"
+    );
+    assert!(
+        stylesheet_pos < script_src_pos,
+        "assets/site.js must come after the stylesheet link"
+    );
+    assert!(html.contains("defer"));
+}
+
+#[test]
 fn heading_anchors_are_extracted_in_document_order_with_correct_levels() {
     let body = fandhe_frontend_core::div(
         vec![],
