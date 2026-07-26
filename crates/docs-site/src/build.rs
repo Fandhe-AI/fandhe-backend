@@ -34,6 +34,7 @@ use crate::layout;
 use crate::linkcheck::{self, BrokenLink};
 use crate::markdown::render_markdown;
 use crate::nav::{self, NavError};
+use crate::script;
 
 /// [`build_site`] が成功時に返すビルド結果のサマリ。
 #[derive(Debug, Clone)]
@@ -69,6 +70,12 @@ pub enum BuildError {
     /// エントリが存在し、通常ファイルのみ許可する方針に反した
     /// （リポジトリ外ファイルの持ち出し防止のための fail-closed 検証）。
     UnsupportedAssetEntry(PathBuf),
+    /// [`script::SCRIPT_REL_PATH`]（`assets/site.js`）と同名の静的アセットが
+    /// `site/assets/` 配下に既に存在し、ビルド生成物（テーマトグル JS）との
+    /// ファイル名衝突が起きる（イシュー #390。生成物が静的アセットを暗黙に
+    /// 上書きしない fail-closed 検証。書き出しより前に検出し、`out_dir` には
+    /// 一切書き出さない）。
+    AssetNameCollision(PathBuf),
 }
 
 impl fmt::Display for BuildError {
@@ -93,6 +100,12 @@ impl fmt::Display for BuildError {
                 write!(
                     f,
                     "unsupported entry under site/assets/ (only regular files are allowed): {path:?}"
+                )
+            }
+            BuildError::AssetNameCollision(path) => {
+                write!(
+                    f,
+                    "static asset collides with the generated theme toggle script: {path:?}"
                 )
             }
         }
@@ -128,6 +141,7 @@ pub fn build_site(repo_root: &Path, out_dir: &Path) -> Result<BuildReport, Build
     })?;
     let nav = nav::parse_nav(&nav_input)?;
     nav::validate_sources(&nav, repo_root)?;
+    check_no_asset_name_collision(repo_root)?;
 
     let source_to_path = linkcheck::source_to_path_map(&nav);
 
@@ -183,9 +197,37 @@ pub fn build_site(repo_root: &Path, out_dir: &Path) -> Result<BuildReport, Build
     }
 
     let written = ssg::generate_pages(&pages, out_dir)?;
-    let assets = copy_assets(repo_root, out_dir)?;
+    let mut assets = copy_assets(repo_root, out_dir)?;
+    assets.push(write_site_js(out_dir)?);
 
     Ok(BuildReport { written, assets })
+}
+
+/// `site/assets/` 配下に [`script::SCRIPT_REL_PATH`]（`assets/site.js`）と
+/// 同名の静的アセットが存在しないことを検証する（fail-closed。
+/// [`write_site_js`] が生成物として書き出すファイルを静的アセットが暗黙に
+/// 上書き・混同されるのを防ぐ）。書き出しより前（`copy_assets` 呼び出しより
+/// 前）に呼び、衝突があれば `out_dir` に一切書き出させない。
+fn check_no_asset_name_collision(repo_root: &Path) -> Result<(), BuildError> {
+    let collision_path = repo_root.join("site").join(script::SCRIPT_REL_PATH);
+    if collision_path.exists() {
+        return Err(BuildError::AssetNameCollision(PathBuf::from(
+            "site/assets/site.js",
+        )));
+    }
+    Ok(())
+}
+
+/// [`script::SITE_JS`] を `out_dir/assets/site.js`（[`script::SCRIPT_REL_PATH`]）
+/// へ書き出す。`copy_assets` が `out_dir/assets/` を作成済みであることを
+/// 前提とする（呼び出し順は [`build_site`] が保証する）。
+fn write_site_js(out_dir: &Path) -> Result<PathBuf, BuildError> {
+    let dest = out_dir.join(script::SCRIPT_REL_PATH);
+    fs::write(&dest, script::SITE_JS).map_err(|source| BuildError::Io {
+        path: dest.clone(),
+        source,
+    })?;
+    Ok(dest)
 }
 
 /// `site/assets/` 配下の通常ファイル一覧から、突合検証用の href
@@ -334,14 +376,33 @@ path = "/next/"
 
         let report = build_site(&temp.0, &out_dir).expect("valid fixture should build");
         assert_eq!(report.written.len(), 2);
-        assert_eq!(report.assets.len(), 1);
+        // `site/assets/site.css`（フィクスチャの静的アセット）+
+        // `assets/site.js`（テーマトグル JS の生成物、イシュー #390）の 2 件。
+        assert_eq!(report.assets.len(), 2);
         assert!(out_dir.join("index.html").exists());
         assert!(out_dir.join("next/index.html").exists());
         assert!(out_dir.join("assets/site.css").exists());
+        assert!(out_dir.join("assets/site.js").exists());
 
         let index_html = fs::read_to_string(out_dir.join("index.html")).unwrap();
         assert!(index_html.contains(r#"href="/next/""#));
         assert!(!index_html.contains(".md"));
+
+        let site_js = fs::read_to_string(out_dir.join("assets/site.js")).unwrap();
+        assert!(site_js.contains(crate::script::THEME_STORAGE_KEY));
+    }
+
+    #[test]
+    fn build_site_rejects_static_asset_colliding_with_generated_site_js() {
+        let temp = TempDir::new("asset-collision");
+        write_fixture_site(&temp.0);
+        fs::write(temp.0.join("site/assets/site.js"), "console.log(1);\n").unwrap();
+        let out_dir = temp.0.join("dist");
+
+        let err = build_site(&temp.0, &out_dir)
+            .expect_err("a static asset named site.js should collide with the generated script");
+        assert!(matches!(err, BuildError::AssetNameCollision(_)));
+        assert!(!out_dir.exists());
     }
 
     #[test]

@@ -60,10 +60,13 @@ fn build_site_generates_all_pages_and_assets_for_ok_fixture() {
         build_site(&fixture_root("site-ok"), &out.0).expect("site-ok fixture should build");
 
     assert_eq!(report.written.len(), 2);
-    assert_eq!(report.assets.len(), 1);
+    // `site/assets/site.css`（フィクスチャの静的アセット）+
+    // `assets/site.js`（テーマトグル JS の生成物、イシュー #390）の 2 件。
+    assert_eq!(report.assets.len(), 2);
     assert!(out.0.join("index.html").exists());
     assert!(out.0.join("guide/quickstart/index.html").exists());
     assert!(out.0.join("assets/site.css").exists());
+    assert!(out.0.join("assets/site.js").exists());
 }
 
 #[test]
@@ -119,12 +122,10 @@ fn build_site_succeeds_for_the_real_repository_site() {
     assert!(!report.written.is_empty());
     assert!(!report.assets.is_empty());
     // `site/nav.toml` の総ページ数を機械固定する（イシュー #389 受け入れ条件
-    // 2: 全ページがリンク切れなくビルドできること）。ページ数が変わった
-    // 場合はこの値も追随する必要がある（当初 13 ページから、イシュー #392 の
-    // Examples セクション追加（examples.md + with-cors/with-graphql/
-    // with-websocket/templates-app の 4 ページ）を main からのマージで
-    // 取り込み 18 ページへ増加）。
-    assert_eq!(report.written.len(), 18);
+    // 2: 既存ページ全てがリンク切れなくビルドできること）。ページ数が
+    // 変わった場合はこの値も追随する必要がある（イシュー #400/#406/#407 で
+    // Examples・API Reference・Guides 索引ページが追加され 13 → 20 に増加）。
+    assert_eq!(report.written.len(), 20);
     assert!(out.0.join("index.html").exists());
 
     // 3 カラム構造（イシュー #389 受け入れ条件 1）: トップページに
@@ -136,6 +137,12 @@ fn build_site_succeeds_for_the_real_repository_site() {
     assert!(index_html.contains(r#"class="docs-brand""#));
     assert!(index_html.contains(r#"class="docs-sidebar""#));
     assert!(index_html.contains(r#"class="docs-main""#));
+
+    // ダークモードトグル・GitHub リンク（イシュー #390）の実出力検証。
+    assert!(out.0.join("assets/site.js").exists());
+    assert!(index_html.contains("docs-theme-toggle"));
+    assert!(index_html.contains("docs-github-link"));
+    assert!(index_html.contains(r#"src="/fandhe-backend/assets/site.js""#));
 }
 
 /// イシュー #391: 実サイトビルド出力に SkipNav・`aria-current="page"` 一本化が

@@ -217,7 +217,19 @@ fandhe-backend/
 │   │                                    # fandhe-frontend の docs-site を移植。publish=false で
 │   │                                    # 本体バイナリに含まれない。crates.io 依存は
 │   │                                    # fandhe-frontend-core/app/server 0.1.0 のみ。
-│   │                                    # 内蔵 linkcheck は fail-closed でリンク切れ時は書き出さない）
+│   │                                    # 内蔵 linkcheck は fail-closed でリンク切れ時は書き出さない）。
+│   │                                    # `src/script.rs` にダークモードトグル用の唯一の JS を
+│   │                                    # 保持し、`build::build_site` が `out_dir/assets/site.js`
+│   │                                    # へ書き出す（イシュー #390）。`layout::docs_page` は
+│   │                                    # FOUC 抑止インラインスニペットを `<head>` 先頭付近
+│   │                                    # （stylesheet より前）へ、`<script src>`（`defer`）を
+│   │                                    # stylesheet の後へ埋め込み、ヘッダー右側の
+│   │                                    # `div.docs-header-actions` に GitHub リンクと既定
+│   │                                    # `hidden` のテーマトグルボタンを配置する（可視化・
+│   │                                    # イベント配線は `site.js` 読み込み後にのみ行う
+│   │                                    # fail-closed 構成。JS 無効時は `prefers-color-scheme`
+│   │                                    # 追従へ退避）。`site/assets/site.js` と同名の静的
+│   │                                    # アセットは生成物との衝突としてビルドエラーにする
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
 ├── templates/              # 利用者向け配布テンプレート（イシュー #364）
 │   └── app                            # feature 一式（cors / compression / static / openapi）を
@@ -238,6 +250,12 @@ fandhe-backend/
 │                                        # （`WebSocketConfig::with_handler`）を見せるサンプル
 ├── site/                   # GitHub Pages ドキュメントサイトコンテンツ（index.md・nav.toml・
 │                            # assets/site.css。docs-site SSG ツールで生成対象。base_path=/fandhe-backend）
+│   ├── guides.md                      # Guides セクション索引ページ（イシュー #393）。要約付き
+│   │                                    # リンク一覧を持ちセクション先頭に配置、既存
+│   │                                    # `docs/guide/README.md` は /guides/reading/ へ再登録し
+│   │                                    # 他ページからの .md リンク互換を維持
+│   ├── api.md                         # API Reference セクション索引ページ（イシュー #393）。
+│   │                                    # 要約付きリンク一覧を持ちセクション先頭に配置
 │   └── examples/                      # Examples セクション原稿（イシュー #392）。索引
 │                                        # （examples.md）+ with-cors / with-graphql /
 │                                        # with-websocket / templates-app の 4 紹介ページ。

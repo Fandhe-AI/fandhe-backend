@@ -22,9 +22,14 @@ path = "/getting-started/"
 title = "Guides"
 
 [[section.page]]
+title = "ガイド一覧"
+source = "site/guides.md"
+path = "/guides/"
+
+[[section.page]]
 title = "ガイドの読み方"
 source = "docs/guide/README.md"
-path = "/guides/"
+path = "/guides/reading/"
 
 [[section.page]]
 title = "feature 構成別サンプル"
@@ -50,34 +55,6 @@ path = "/guides/streaming/"
 title = "graceful shutdown"
 source = "docs/guide/graceful-shutdown.md"
 path = "/guides/graceful-shutdown/"
-
-[[section]]
-title = "API Reference"
-
-[[section.page]]
-title = "サーバ API（core）"
-source = "docs/api/server-api.md"
-path = "/api/server-api/"
-
-[[section.page]]
-title = "3 拡張点契約"
-source = "docs/api/extension-api.md"
-path = "/api/extension-api/"
-
-[[section.page]]
-title = "HTTP プリミティブ API（http）"
-source = "docs/api/http-api.md"
-path = "/api/http-api/"
-
-[[section.page]]
-title = "ルーティング API（routes）"
-source = "docs/api/router-api.md"
-path = "/api/router-api/"
-
-[[section.page]]
-title = "プラグイン設定 API"
-source = "docs/api/plugin-config-api.md"
-path = "/api/plugin-config-api/"
 
 [[section]]
 title = "Examples"
@@ -106,3 +83,36 @@ path = "/examples/with-websocket/"
 title = "templates/app"
 source = "site/examples/templates-app.md"
 path = "/examples/templates-app/"
+
+[[section]]
+title = "API Reference"
+
+[[section.page]]
+title = "API リファレンス"
+source = "site/api.md"
+path = "/api/"
+
+[[section.page]]
+title = "サーバ API（core）"
+source = "docs/api/server-api.md"
+path = "/api/server-api/"
+
+[[section.page]]
+title = "3 拡張点契約"
+source = "docs/api/extension-api.md"
+path = "/api/extension-api/"
+
+[[section.page]]
+title = "HTTP プリミティブ API（http）"
+source = "docs/api/http-api.md"
+path = "/api/http-api/"
+
+[[section.page]]
+title = "ルーティング API（routes）"
+source = "docs/api/router-api.md"
+path = "/api/router-api/"
+
+[[section.page]]
+title = "プラグイン設定 API"
+source = "docs/api/plugin-config-api.md"
+path = "/api/plugin-config-api/"
