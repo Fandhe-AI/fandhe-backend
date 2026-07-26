@@ -78,3 +78,31 @@ path = "/api/router-api/"
 title = "プラグイン設定 API"
 source = "docs/api/plugin-config-api.md"
 path = "/api/plugin-config-api/"
+
+[[section]]
+title = "Examples"
+
+[[section.page]]
+title = "サンプル集"
+source = "site/examples.md"
+path = "/examples/"
+
+[[section.page]]
+title = "with-cors"
+source = "site/examples/with-cors.md"
+path = "/examples/with-cors/"
+
+[[section.page]]
+title = "with-graphql"
+source = "site/examples/with-graphql.md"
+path = "/examples/with-graphql/"
+
+[[section.page]]
+title = "with-websocket"
+source = "site/examples/with-websocket.md"
+path = "/examples/with-websocket/"
+
+[[section.page]]
+title = "templates/app"
+source = "site/examples/templates-app.md"
+path = "/examples/templates-app/"

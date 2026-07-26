@@ -4,15 +4,16 @@
 //! 移植。検証内容（パース成功・ページ登録の網羅・path/source の一意性・
 //! source 実在・ブロックレベルのレンダリング健全性）は同じで、期待値を
 //! fandhe-backend の `site/nav.toml`（トップ + `docs/guide/` 7 本 +
-//! `docs/api/` 5 本 = 全 13 ページ）へ合わせている。`docs/guide/`・
-//! `docs/api/` の編集・改名でナビ登録と実ファイルが乖離した場合に
-//! `cargo test` が fail-closed で検知する。
+//! `docs/api/` 5 本 + `site/examples/` 5 本 = 全 18 ページ）へ合わせている。
+//! `docs/guide/`・`docs/api/`・`site/examples/` の編集・改名でナビ登録と
+//! 実ファイルが乖離した場合に `cargo test` が fail-closed で検知する
+//! （イシュー #392 で Examples セクションを追加）。
 
 use std::path::{Path, PathBuf};
 
 use fandhe_backend_docs_site::markdown::render_markdown;
-use fandhe_backend_docs_site::nav::{Nav, parse_nav, validate_sources};
-use fandhe_frontend_core::Node;
+use fandhe_backend_docs_site::nav::{Nav, parse_nav, sidebar, validate_sources};
+use fandhe_frontend_core::{Node, render};
 
 /// `CARGO_MANIFEST_DIR`（`crates/docs-site`）から repo_root を解決する。
 /// テストフィクスチャがクレート内に閉じず repo_root 配下の実ファイルを
@@ -39,15 +40,18 @@ fn site_nav_parses_successfully() {
 }
 
 #[test]
-fn site_nav_registers_three_sections_with_expected_titles() {
+fn site_nav_registers_four_sections_with_expected_titles() {
     let nav = load_nav();
     let titles: Vec<&str> = nav.sections.iter().map(|s| s.title.as_str()).collect();
-    assert_eq!(titles, vec!["Getting Started", "Guides", "API Reference"]);
+    assert_eq!(
+        titles,
+        vec!["Getting Started", "Guides", "API Reference", "Examples"]
+    );
 }
 
 /// 既存の利用者向けドキュメント（トップ + `docs/guide/` の 7 本 +
-/// `docs/api/` の 5 本 = 全 13 ページ）がサイト生成対象として漏れなく
-/// 登録されている。
+/// `docs/api/` の 5 本 + `site/examples/` の 5 本 = 全 18 ページ）が
+/// サイト生成対象として漏れなく登録されている。
 #[test]
 fn site_nav_registers_all_pages_with_expected_paths() {
     let nav = load_nav();
@@ -78,6 +82,14 @@ fn site_nav_registers_all_pages_with_expected_paths() {
         ("docs/api/http-api.md", "/api/http-api/"),
         ("docs/api/router-api.md", "/api/router-api/"),
         ("docs/api/plugin-config-api.md", "/api/plugin-config-api/"),
+        ("site/examples.md", "/examples/"),
+        ("site/examples/with-cors.md", "/examples/with-cors/"),
+        ("site/examples/with-graphql.md", "/examples/with-graphql/"),
+        (
+            "site/examples/with-websocket.md",
+            "/examples/with-websocket/",
+        ),
+        ("site/examples/templates-app.md", "/examples/templates-app/"),
     ];
     assert_eq!(pages.len(), expected.len(), "unexpected pages: {pages:?}");
     for expected_pair in &expected {
@@ -152,6 +164,25 @@ fn every_source_renders_without_fence_leakage_and_starts_with_a_heading() {
             }
         }
     }
+}
+
+/// イシュー #391: 実マニフェスト（`site/nav.toml`）から生成したサイドバーが
+/// 現在ページ表現・意味論の両方でアクセシビリティ契約を満たすことを固定する。
+#[test]
+fn site_nav_sidebar_uses_aria_current_only_and_no_role_attribute() {
+    let nav = load_nav();
+    // 実在ページの 1 つを現在ページとして選び、aria-current 分岐を発生させる。
+    let current_path = "/getting-started/";
+    let html = render(&sidebar(&nav, current_path));
+
+    // 現在ページは aria-current="page" のみで表現され、`class="current"`
+    // を含まない（移植元イシュー #756 と同じく class 併用は廃止済み）。
+    assert!(html.contains(r#"aria-current="page""#));
+    assert!(!html.contains(r#"class="current""#));
+
+    // サイドバー nav は role なしの headless 構造（ネイティブ要素の暗黙 role
+    // をそのまま使う）。
+    assert!(!html.contains("role="));
 }
 
 fn is_heading(node: &Node) -> bool {

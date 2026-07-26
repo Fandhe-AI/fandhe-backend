@@ -12,6 +12,9 @@
  * `crates/docs-site/tests/site_css_contract.rs` が両者の乖離を検知する）:
  *
  *   body
+ *     a.skip-nav                    … SkipNav（イシュー #391）。`body` 直下
+ *       先頭に出力される、本文へのスキップリンク。既定は視覚上隠し、
+ *       `:focus-visible` 時のみ表示する
  *     header.docs-header            … ヘッダバー（サイトタイトルへのリンク +
  *       div.docs-header-actions      … ヘッダー右側のアクション領域
  *         （イシュー #390）。GitHub リンクとテーマトグルを内包する
@@ -25,12 +28,15 @@
  *         そのまま内側に配置する契約）
  *         nav.sidebar               … `nav::sidebar()` の実出力。セクション
  *           見出しは素の `h2`、ページ列は `ul` > `li` > `a`
- *           （`.nav-section` 等の専用クラスは付与されない）
- *           a[aria-current="page"] / a.current … 現在ページのリンク
- *             （`nav::sidebar()` は両方を同時に付与する）
+ *           （`.nav-section` 等の専用クラスは付与されない。`role` 属性も
+ *           付与されない headless 構造）
+ *           a[aria-current="page"] … 現在ページのリンク（イシュー #391:
+ *             `class="current"` の併用は廃止し `aria-current` に一本化）
  *       main.docs-main              … 本文カラムのラッパー
  *         nav.docs-toc（任意・先頭）… ページ内目次。`li` に
  *           `docs-toc-level-2` / `docs-toc-level-3` でネスト深さを表現する
+ *         div#fandhe-skip-nav        … SkipNav のスキップ先ターゲット
+ *           （イシュー #391。`article.docs-content` 直前、`tabindex="-1"`）
  *         article.docs-content      … Markdown レンダラの出力 + ページ内
  *           `nav.prev-next`（`a.prev` / `a.next`）を内包する
  *           - `pre > code.language-*` … フェンス付きコードブロック
@@ -282,16 +288,58 @@ body {
 }
 
 /*
- * `nav::sidebar()` は現在ページのリンクに `aria-current="page"` と
- * `class="current"` の両方を同時に付与する（nav.rs 参照）。どちらか一方の
- * みに依存せず両セレクタを併記する。
+ * `nav::sidebar()` は現在ページのリンクに `aria-current="page"` のみを
+ * 付与する（イシュー #391。`class="current"` 併用は廃止し
+ * `aria-current` に一本化。nav.rs 参照）。
  */
-.docs-sidebar nav.sidebar a[aria-current="page"],
-.docs-sidebar nav.sidebar a.current {
+.docs-sidebar nav.sidebar a[aria-current="page"] {
   background: var(--docs-color-accent-bg);
   color: var(--docs-color-accent);
   border-left-color: var(--docs-color-accent);
   font-weight: 600;
+}
+
+/*
+ * ---- SkipNav（イシュー #391） ----
+ * `layout::docs_page` が `<body>` 先頭に出力するスキップリンク。既定は
+ * clip 手法で視覚上隠しつつ Tab 順序には含め（`display: none` 等の
+ * Tab 順序自体からの除外はしない）、`:focus-visible` 時のみ画面に
+ * 固定表示して視認可能にする。
+ */
+.skip-nav {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-nav:focus-visible {
+  position: fixed;
+  top: 0.5rem;
+  left: 0.5rem;
+  width: auto;
+  height: auto;
+  padding: 0.5rem 1rem;
+  margin: 0;
+  overflow: visible;
+  clip: auto;
+  white-space: normal;
+  z-index: 100;
+  background: var(--docs-color-bg-raised);
+  color: var(--docs-color-accent);
+  border: 1px solid var(--docs-color-border);
+  border-radius: 0.25rem;
+}
+
+/* スキップ先ターゲット自体はプログラム的フォーカスのみを想定するため、
+ * フォーカスリングを表示しない（移植元 pre-styled-ui と同契約）。 */
+#fandhe-skip-nav {
+  outline: none;
 }
 
 /* ---- 本文カラム ---- */

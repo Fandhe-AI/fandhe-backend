@@ -27,6 +27,13 @@ use crate::script;
 /// ヘッダー右側のアクション領域（`div.docs-header-actions`）に固定表示する。
 const REPOSITORY_URL: &str = "https://github.com/Fandhe-AI/fandhe-backend";
 
+/// SkipNav（本文へのスキップリンク）の遷移先フラグメント id
+/// （イシュー #391）。moved-in-from `fandhe_frontend_headless_ui::skip_nav`
+/// の `DEFAULT_ID` と同値を採用し、移植元との命名整合を保つ。`docs_page` が
+/// リンク側 `href="#..."` とターゲット側 `id="..."` の両方でこの定数を
+/// 参照するため、値の変更は 1 箇所で完結する。
+const SKIP_NAV_ID: &str = "fandhe-skip-nav";
+
 /// ページ内目次（TOC）の 1 エントリ。
 ///
 /// [`with_heading_anchors`] が本文 `Node` を走査して収集する。`level` は
@@ -352,6 +359,13 @@ pub fn docs_page(
     if let Some(toc_node) = toc {
         main_children.push(toc_node);
     }
+    // SkipNav のスキップ先ターゲット（イシュー #391）。`article` 直前に置き、
+    // `.skip-nav` リンクからの遷移でキーボード利用者がヘッダ・サイドバーを
+    // 経由せず本文直前へ到達できるようにする（WCAG 2.1 SC 2.4.1 Bypass
+    // Blocks）。`tabindex="-1"` によりプログラム的フォーカスのみを許可し、
+    // 通常の Tab 順序には加えない（移植元 `pre_styled_ui::skip_nav` と同契約）。
+    let skip_nav_target_id = format!("#{SKIP_NAV_ID}");
+    main_children.push(div(vec![("id", SKIP_NAV_ID), ("tabindex", "-1")], vec![]));
     main_children.push(article(
         vec![("class", "docs-content")],
         vec![annotated_body],
@@ -401,10 +415,23 @@ pub fn docs_page(
         ],
     );
 
+    // SkipNav リンク（イシュー #391）。`<body>` 先頭に置き、既定は
+    // `site/assets/site.css` の `.skip-nav` 規則で視覚上は隠しつつ Tab
+    // 順序には含める（clip 手法）。キーボードフォーカス時のみ
+    // `:focus-visible` で視覚復元し、ヘッダ・サイドバーを Tab で毎回
+    // 通過させずに本文へ到達できるようにする。`href` は本モジュール内で
+    // 組み立てた固定フラグメント（`#fandhe-skip-nav`）のみを指し、外部入力
+    // 由来の URL・スキームを受理する経路は持たない。
+    let skip_nav_link = a(
+        vec![("class", "skip-nav"), ("href", &skip_nav_target_id)],
+        vec![text("Skip to content".to_string())],
+    );
+
     let body_node = el(
         "body",
         vec![],
         vec![
+            skip_nav_link,
             header_node,
             div(
                 vec![("class", "docs-container")],
