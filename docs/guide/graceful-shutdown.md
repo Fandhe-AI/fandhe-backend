@@ -1,7 +1,7 @@
 # graceful shutdown ガイド
 
 fandhe-backend は `BoundServer::run_until(shutdown)` により graceful shutdown を
-提供する（イシュー #313）。シャットダウンシグナルを受けると新規接続の受理を
+提供する。シャットダウンシグナルを受けると新規接続の受理を
 止め、処理中（in-flight）のリクエスト・接続の完了を上限時間まで待ってから
 終了する。デプロイ更新のたびに in-flight リクエストが強制切断される問題への
 対処である。API は `crates/core/src/server.rs`、設計判断の記録は
@@ -80,7 +80,7 @@ Future を `shutdown` として渡せばよい。
 | `run_until(shutdown)` | `shutdown` Future の完了 | 本番運用・デプロイ更新を伴う長期稼働 |
 
 `run()` は `run_until` への薄い委譲として残っており、既存の `run()` 利用箇所は
-無変更のまま動作する（イシュー #313 の受け入れ条件 1）。新規コードでは
+無変更のまま動作する（後方互換のため）。新規コードでは
 `run_until` の利用を推奨する。
 
 なお `run_until` が返す Future 自体を呼び出し側の `tokio::select!` 等で外部
