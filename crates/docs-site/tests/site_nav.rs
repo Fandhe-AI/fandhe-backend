@@ -20,8 +20,8 @@
 use std::path::{Path, PathBuf};
 
 use fandhe_backend_docs_site::markdown::render_markdown;
-use fandhe_backend_docs_site::nav::{Nav, parse_nav, sidebar, validate_sources};
-use fandhe_frontend_core::{Node, render};
+use fandhe_backend_docs_site::nav::{parse_nav, sidebar, validate_sources, Nav};
+use fandhe_frontend_core::{render, Node};
 
 /// `CARGO_MANIFEST_DIR`（`crates/docs-site`）から repo_root を解決する。
 /// テストフィクスチャがクレート内に閉じず repo_root 配下の実ファイルを
@@ -56,6 +56,17 @@ fn site_nav_registers_four_sections_with_expected_titles() {
         vec!["Getting Started", "Guides", "Examples", "API Reference"]
     );
 }
+
+/// nav 登録ページ総数の契約値（イシュー #397）。
+///
+/// `site_nav_registers_all_pages_with_expected_paths` は従来
+/// `expected` リストの長さ経由でページ総数を暗黙に固定していたが、
+/// 「期待値で固定する」という受け入れ条件を読み手に明示するため、
+/// 契約値を独立した定数として切り出す。`site/nav.toml` にページを
+/// 追加・削除した場合はこの定数と `expected` の両方を実測値へ
+/// 追随させる必要があり、更新を怠ると `site_nav_registers_expected_page_count`
+/// が fail-closed で検知する。
+const EXPECTED_PAGE_COUNT: usize = 20;
 
 /// 既存の利用者向けドキュメント（トップ + Guides セクション索引 +
 /// `docs/guide/` の 7 本 + API Reference セクション索引 + `docs/api/` の
@@ -109,6 +120,23 @@ fn site_nav_registers_all_pages_with_expected_paths() {
             "nav.toml is missing expected page {expected_pair:?}"
         );
     }
+}
+
+/// nav 登録ページ総数を独立の契約定数（[`EXPECTED_PAGE_COUNT`]）で明示固定する
+/// （イシュー #397）。`site_nav_registers_all_pages_with_expected_paths` の
+/// 期待リストと二重管理になるが、こちらは「ページを 1 本増減しただけで
+/// 意図せず通過してしまわないか」を定数比較の形で読み手に明示するのが目的で、
+/// 期待リストの更新漏れをこの定数との不一致として検知する意味も持つ。
+#[test]
+fn site_nav_registers_expected_page_count() {
+    let nav = load_nav();
+    let page_count = nav.sections.iter().map(|s| s.pages.len()).sum::<usize>();
+    assert_eq!(
+        page_count, EXPECTED_PAGE_COUNT,
+        "site/nav.toml のページ総数が契約値 EXPECTED_PAGE_COUNT と乖離しています。\
+         ページを追加・削除した場合は本定数と site_nav_registers_all_pages_with_expected_paths \
+         の expected リストの両方を実測値へ追随させてください。"
+    );
 }
 
 #[test]
