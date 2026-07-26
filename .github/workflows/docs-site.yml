@@ -69,13 +69,13 @@ jobs:
         # 空サイト・アセット欠落を黙って公開しないための決定的チェック（fail-closed）。
         # -s で非空も検証し、書き出しに失敗した 0 バイトファイルの見逃しを防ぐ。
         # assets/site.js はテーマトグル JS（crates/docs-site/src/script.rs、#390）。
-        # assets/search-index.json（全文検索インデックス、#396）はイシュー #398 時点で
-        # #396 が未マージのため検査対象に未追加（fail-closed: 常に FAIL する検査を
-        # 先行導入しない。#396 マージ後に追随する、docs/design/docs-site-redesign.md 参照）。
+        # assets/search-index.json は全文検索インデックス（crates/docs-site/src/search.rs・
+        # build.rs、#396。build_site() が常に書き出す生成物のため無条件で検査対象に含める）。
         run: |
           test -s "${RUNNER_TEMP}/docs-site-dist/index.html"
           test -s "${RUNNER_TEMP}/docs-site-dist/assets/site.css"
           test -s "${RUNNER_TEMP}/docs-site-dist/assets/site.js"
+          test -s "${RUNNER_TEMP}/docs-site-dist/assets/search-index.json"
 
       - name: Upload Pages artifact
         # 要: runner に tar がインストール済み（upload-pages-artifact が内部で使用。

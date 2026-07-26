@@ -299,14 +299,14 @@ Markdown/HTML 生成が手書き実装である方針と揃える）。
   要求する class と `site.css` の実定義の乖離を検知する既存方式を維持する。
 - `.github/workflows/docs-site.yml` の改修事項（#398 で実施）:
   - ビルド後存在検査（旧 `index.html` / `assets/site.css` の 2 点、`test -f`）を
-    `test -s`（非空も検証）へ強化し、`assets/site.js`（テーマトグル JS、#390）の
-    存在検査を追加した。
+    `test -s`（非空も検証）へ強化し、`assets/site.js`（テーマトグル JS、#390）・
+    `assets/search-index.json`（全文検索インデックス、#396）の存在検査を追加した。
+    `#396` は本イシュー（#398）着手時点で未マージだったため一時的に検査対象から
+    外していたが、`#396` マージ後（`build_site()` が無条件で書き出す生成物である
+    ことを確認済み）に追随して追加した。
   - **paths トリガーに `docs/api/**` を追加した**（現状ギャップ、1 節「実測値」参照）。
     `examples/**` は `site/nav.toml` から参照されずビルド入力にならないため
     追加していない（`site/examples/*.md` へ再構成済み、6 節参照）。
-  - `assets/search-index.json`（#396）の存在検査は本イシュー（#398）時点で #396 が
-    未マージのため追加していない（fail-closed: 常に FAIL する検査を先行導入しない）。
-    #396 マージ後に別途追随する。
   - self-hosted / `timeout-minutes` / 最小 `permissions`（`contents: read`）は
     `.claude/rules/ci.md` に従い維持した（変更なし）。
 
@@ -407,7 +407,21 @@ curl -fsS https://fandhe-ai.github.io/fandhe-backend/ | grep -c "docs-header-act
 
 # テーマトグル JS アセットが配信されていること
 curl -fsS -o /dev/null -w "%{http_code}\n" https://fandhe-ai.github.io/fandhe-backend/assets/site.js
+
+# 検索インデックスが配信されていること（#396）
+curl -fsS -o /dev/null -w "%{http_code}\n" https://fandhe-ai.github.io/fandhe-backend/assets/search-index.json
 ```
 
 体系的な視覚確認・受け入れレポート作成は #399 のスコープとする。本節は
 workflow_dispatch 経路の運用手順のみを扱う。
+
+### マージ前と後の検証範囲の違い
+
+`docs-site.yml` の `push` トリガーは `branches: [main]` に固定されており、
+`workflow_dispatch` も `--ref` に指定したブランチのワークフロー**定義**を実行するのみで、
+Pages への実デプロイは常に `github-pages` environment（main 相当）へ反映される。
+そのため本イシュー（#398）のブランチ上で `gh workflow run --ref <このブランチ>` を
+実行しても、実際にデプロイされるのは main 側の docs-site.yml のコピーであり、
+本ブランチの変更（paths トリガー追加・存在検査拡充）そのものの実デプロイ検証には
+ならない。実デプロイ検証（受け入れ条件 4）は本ブランチのマージ後に実施する前提とし、
+マージ前に本節の手順だけで無理に完了させない。
