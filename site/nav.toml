@@ -22,9 +22,14 @@ path = "/getting-started/"
 title = "Guides"
 
 [[section.page]]
+title = "ガイド一覧"
+source = "site/guides.md"
+path = "/guides/"
+
+[[section.page]]
 title = "ガイドの読み方"
 source = "docs/guide/README.md"
-path = "/guides/"
+path = "/guides/reading/"
 
 [[section.page]]
 title = "feature 構成別サンプル"
@@ -53,6 +58,11 @@ path = "/guides/graceful-shutdown/"
 
 [[section]]
 title = "API Reference"
+
+[[section.page]]
+title = "API リファレンス"
+source = "site/api.md"
+path = "/api/"
 
 [[section.page]]
 title = "サーバ API（core）"

@@ -29,7 +29,7 @@ v0.1.0 として公開済み（2026-07-21）です。`cargo add fandhe-backend-c
 
 - [Getting Started](/fandhe-backend/getting-started/) — クローンから最小サーバ
   起動・動作確認までの最短手順
-- [ガイドの読み方](/fandhe-backend/guides/) — 利用者向けガイド全体の入口
+- [ガイド一覧](/fandhe-backend/guides/) — 利用者向けガイド全体の要約付き索引
 - [feature 構成別サンプル](/fandhe-backend/guides/feature-samples/) — feature
   ごとの最小サンプルと pay-for-what-you-use の検証手順
 - [チュートリアル](/fandhe-backend/guides/tutorial/) — 最小サーバ→拡張点の実装→
@@ -40,9 +40,9 @@ v0.1.0 として公開済み（2026-07-21）です。`cargo add fandhe-backend-c
   ストリーミング送信（`handle_streaming`）の使い方
 - [graceful shutdown](/fandhe-backend/guides/graceful-shutdown/) —
   `run_until` による安全な停止手順
-- [サーバ API（core）](/fandhe-backend/api/server-api/) — API Reference の
-  入口。`Server` / `BoundServer` / `Handler` から各クレート・プラグイン設定
-  API まで 5 ページで公開 API の全体像と契約を俯瞰する
+- [API リファレンス](/fandhe-backend/api/) — API Reference 全体の要約付き索引。
+  `Server` / `BoundServer` / `Handler` から各クレート・プラグイン設定 API まで
+  5 ページで公開 API の全体像と契約を俯瞰する
 - [サンプル集](/fandhe-backend/examples/) — `examples/with-*` 3 種と
   `templates/app` へ、独立して `cargo run` できるサンプルの入口
 
