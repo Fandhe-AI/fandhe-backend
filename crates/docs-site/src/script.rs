@@ -19,7 +19,11 @@
 //!   （配線完了後にのみ可視化する）を担う。イシュー #396 で全文検索の
 //!   初期化（`.docs-search-input` の遅延 `fetch`・部分一致検索・結果描画）
 //!   も同じ [`SITE_JS`] へ追加した（新規アセットを増やさない方針。
-//!   `crate::build` の予約名衝突検証を単純に保つ）。
+//!   `crate::build` の予約名衝突検証を単純に保つ）。索引 `fetch` が失敗
+//!   した場合は `loadFailed` フラグで終端失敗状態を保持し、以降の
+//!   `input` イベントでは再 `fetch` を行わない（PR #410 レビュー指摘、
+//!   404・ネットワークエラー時にキー入力のたびリクエストが再送される
+//!   retry storm を防ぐ）。
 //!
 //! # セキュリティ不変条件（`.claude/rules/security.md`・`.claude/rules/coding-rust.md`）
 //!
@@ -200,12 +204,19 @@ pub const SITE_JS: &str = "\
 
     var indexData = null;
     var loading = false;
+    var loadFailed = false;
 
     function loadIndex() {
       if (indexData) {
         return;
       }
       if (loading) {
+        return;
+      }
+      if (loadFailed) {
+        // 直前の fetch が失敗して終端状態に入っている。404 やネットワーク
+        // エラー後の再入力のたびに再試行し続けるのを避ける
+        // （キー入力ごとの無条件リトライ防止）。
         return;
       }
       loading = true;
@@ -223,8 +234,11 @@ pub const SITE_JS: &str = "\
         })
         .catch(function () {
           // 索引取得に失敗しても検索 UI 自体は壊さず、結果 0 件のまま
-          // フォールバックする（上記 doc コメント手順 3）。
+          // フォールバックする（上記 doc コメント手順 3）。loadFailed を
+          // 立てて以降の input イベントでの無条件再試行を止める終端失敗
+          // 状態とする。
           loading = false;
+          loadFailed = true;
         });
     }
 
@@ -544,5 +558,43 @@ mod tests {
         assert!(SITE_JS.contains("function isSafeHref(href)"));
         assert!(SITE_JS.contains("href.indexOf(`/`) !== 0"));
         assert!(SITE_JS.contains("href.indexOf(`//`) === 0"));
+    }
+
+    /// レビュー指摘（PR #410 Bugbot）の回帰テスト: 検索索引の `fetch` が
+    /// 失敗した場合、`loadFailed` という終端失敗状態が `catch` 内で
+    /// 立てられ、`loadIndex` の先頭（`fetch` 呼び出しより前）でその状態を
+    /// 見て早期リターンすることを固定する。この構造がないと、404 や
+    /// ネットワークエラー後に検索ボックスへの `input` イベントのたびに
+    /// 無条件で `fetch` が再試行されてしまう。
+    #[test]
+    fn site_js_search_fetch_failure_sets_terminal_state_to_avoid_retry_storm() {
+        let load_index_pos = SITE_JS
+            .find("function loadIndex()")
+            .expect("SITE_JS should define loadIndex");
+        let load_failed_check_pos = SITE_JS
+            .find("if (loadFailed)")
+            .expect("SITE_JS should short-circuit loadIndex once a fetch failure is recorded");
+        let fetch_pos = SITE_JS
+            .find("fetch(indexUrl)")
+            .expect("SITE_JS should fetch the search index");
+        let catch_pos = SITE_JS
+            .find(".catch(function ()")
+            .expect("SITE_JS should swallow search index fetch failures");
+        let load_failed_set_pos = SITE_JS
+            .rfind("loadFailed = true;")
+            .expect("SITE_JS should record a terminal failure state on fetch error");
+
+        assert!(
+            load_index_pos < load_failed_check_pos,
+            "loadFailed の判定は loadIndex 関数の中に位置する必要がある"
+        );
+        assert!(
+            load_failed_check_pos < fetch_pos,
+            "loadFailed の早期リターンは fetch 呼び出しより前に位置する必要がある"
+        );
+        assert!(
+            catch_pos < load_failed_set_pos,
+            "loadFailed = true の代入は catch ハンドラの中に位置する必要がある"
+        );
     }
 }
