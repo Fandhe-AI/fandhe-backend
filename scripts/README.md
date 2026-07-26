@@ -541,3 +541,26 @@ bash scripts/standalone-crates-io-check.sh
   相乗りしない理由（paths フィルタがなく全 PR でフルビルドが走るため）・`ci-complete`
   ゲート対象外であることは同 workflow の冒頭コメントを参照。
 
+## `docs-site-visual.sh` — docs サイトの視覚確認スクリーンショット撮影（イシュー #399）
+
+```bash
+bash scripts/docs-site-visual.sh
+# 出力: $HOME/fandhe-backend-docs-site-visual/<timestamp>/{shots/*.png, manifest.tsv, logs/}
+```
+
+- 刷新後の docs サイト（`docs/design/docs-site-redesign.md`）を headless chromium で
+  ビルド → ライト/ダーク/no-JS（CSP `script-src 'none'`）の 3 通りに配信 → 19 枚撮影する。
+  fandhe-frontend の `tools/docs-site/visual-regression.sh` からの移植・改変
+  （`base_path="/fandhe-backend"` に合わせた配信ルートのネスト・撮影マトリクスの変更）。
+- 前提ツール: `chromium`（または `chromium-browser`）・`python3`・`cargo`・`ss`。
+- fail-closed: ビルド直後に刷新後サイトであることをプリフライト検証（`docs-toc-aside` /
+  `site.js` / `search-index.json` の存在）、ダーク変種の置換件数前後一致検証、1 枚ごとの
+  空ファイル検知、枚数（≤28）/容量（≤3.5MiB）バジェット超過はいずれも非 0 終了。
+- 既定出力先は `$HOME` 配下固定（`DOCS_SITE_SHOTS_DIR` で上書き可）。snap 版 chromium の
+  AppArmor 閉じ込めにより `$HOME` 外（worktree 相対パス・`/tmp` 配下含む）への書き込みは
+  無音で失敗するため、絶対パス・非ドットパス要素検証で未然に検知する。
+- 検索結果ドロップダウン（Tier 2、`DOCS_SITE_VISUAL_TIER2=1` で opt-in）は失敗許容・
+  容量バジェット順守のため既定オフ。
+- CI 常設化はしない（chromium 常設を self-hosted runner に前提できないため、[[ci]] 規約の
+  対象外）。実行結果は `docs/acceptance/issue399-docs-site-visual.md` に記録済み。
+

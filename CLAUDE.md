@@ -50,7 +50,10 @@ fandhe-backend/
 │   │                        # 責務分離、「どう使うか」を扱う
 │   ├── dep-impact/         # 依存インパクト（依存数・バイナリサイズ・unsafe 件数）記録台帳（TASK-15.2）
 │   └── acceptance/         # REQ-1 等・NFR-7 等の受け入れ検証結果レポート（TASK-1.6-2 で追加、
-│                            # NFR-7 分は #263、NFR-6 分は #282 で追加）
+│                            # NFR-7 分は #263、NFR-6 分は #282 で追加）。issue399-docs-site-visual.md は
+│                            # docs サイト刷新（親 #384）の視覚確認・受け入れレポート（イシュー #399。
+│                            # ライト/ダーク × 複数解像度のスクリーンショット証跡 `assets/issue399/`・
+│                            # 実ブラウザ描画でのみ発見できた CSS カスケード順序バグの検出・修正記録）
 ├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）
 ├── rust-toolchain.toml    # stable + rustfmt/clippy
 ├── crates/                # cargo workspace
@@ -308,6 +311,9 @@ fandhe-backend/
 │   ├── openapi-ts-negative.sh         # openapi-ts.sh の陰性対照（意図的な型不一致の tsc --noEmit エラー検出）CI 常設検証（TASK-6.2、#55）
 │   ├── clean-worktrees.sh             # .claude/worktrees/ 残存ワークツリーの棚卸し・退避・削除（既定 dry-run、--apply で実削除、イシュー #221）
 │   ├── standalone-crates-io-check.sh  # templates/・examples/ の path 依存を除去し crates.io 公開版のみで build/test 検証（standalone-crates-io.yml から週次 + PR paths で実行、イシュー #371）
+│   ├── docs-site-visual.sh            # 刷新後の docs サイトを headless chromium でライト/ダーク/no-JS ×
+│   │                                    # 複数解像度撮影し `docs/acceptance/issue399-docs-site-visual.md`
+│   │                                    # の視覚証跡一式を生成（イシュー #399。CI 常設化はしない）
 │   └── accept/            # 受け入れ検証スクリプト（TASK-1.6-2 で追加、以降 REQ-2/5/6/8/13 分も収録）
 │       ├── README.md                  # 検証基準・前提ツール・実行方法
 │       ├── lib/common.sh              # PASS/FAIL/SKIP/WARN 集計の共通関数
