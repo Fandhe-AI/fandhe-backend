@@ -234,6 +234,11 @@ fandhe-backend/
 │                                        # （`WebSocketConfig::with_handler`）を見せるサンプル
 ├── site/                   # GitHub Pages ドキュメントサイトコンテンツ（index.md・nav.toml・
 │                            # assets/site.css。docs-site SSG ツールで生成対象。base_path=/fandhe-backend）
+│   └── examples/                      # Examples セクション原稿（イシュー #392）。索引
+│                                        # （examples.md）+ with-cors / with-graphql /
+│                                        # with-websocket / templates-app の 4 紹介ページ。
+│                                        # `examples/README.md`・各 README を再構成し、
+│                                        # GitHub 上の実体への絶対 URL 導線を張る
 ├── ts/                     # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）。
 │                            # crates/plugin-openapi/openapi.json → openapi-typescript →
 │                            # ts/src/generated/schema.d.ts（コミット対象）→ openapi-fetch
