@@ -87,6 +87,16 @@ fn fixture_body() -> Node {
     )
 }
 
+/// 見出し（`h2`/`h3`）を含まない本文フィクスチャ。`docs_page` の TOC 省略
+/// 分岐（`.docs-container.docs-no-toc`、イシュー #389 Bugbot 指摘）を
+/// 発生させるために [`fixture_body`] と分けて用意する。
+fn fixture_body_without_headings() -> Node {
+    fandhe_frontend_core::div(
+        vec![],
+        vec![p(vec![], vec![text("見出しのない本文です。")])],
+    )
+}
+
 fn fixture_sidebar() -> Node {
     // `docs_page` 単独呼び出しテストでは `nav::sidebar()` の実出力を使わず
     // 最小の `ul`/`li` を渡す既存 `layout_render.rs` の流儀に合わせつつ、
@@ -236,15 +246,24 @@ fn prev_next_nav_html_class_tokens_are_covered_by_site_css() {
 /// `site.css` にセレクタとして定義されているか、(d) `site.css` に契約リスト
 /// 外の孤立 class が残っていないか、の 4 方向を fail-closed に検証する。
 const EXPECTED_CLASSES: &[&str] = &[
+    "docs-brand",
     "docs-container",
     "docs-content",
     "docs-github-link",
     "docs-header",
     "docs-header-actions",
     "docs-main",
+    "docs-no-toc",
+    "docs-search",
+    "docs-search-input",
+    "docs-search-label",
+    "docs-search-results",
     "docs-sidebar",
+    "docs-sidebar-toggle",
+    "docs-sidebar-toggle-label",
     "docs-theme-toggle",
     "docs-toc",
+    "docs-toc-aside",
     "docs-toc-level-2",
     "docs-toc-level-3",
     "next",
@@ -271,6 +290,13 @@ fn generated_html_class_inventory_matches_expected_contract_and_site_css() {
         "",
         fixture_sidebar(),
         fixture_body(),
+    )));
+    html.push_str(&render(&docs_page(
+        "見出しなし",
+        "fandhe-backend",
+        "",
+        fixture_sidebar(),
+        fixture_body_without_headings(),
     )));
     html.push_str(&render(&sidebar(&nav, "/quickstart/")));
     html.push_str(&render(&prev_next_nav(&nav, "/quickstart/")));
