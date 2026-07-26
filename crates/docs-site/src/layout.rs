@@ -1,4 +1,8 @@
-//! docs サイトの Linear Developers 風 2 カラムページ骨格。
+//! docs サイトの Linear Developers 風 3 カラムページ骨格（イシュー #389 で
+//! 2 カラム（サイドバー + 本文）から刷新）。ヘッダー + 左サイドバー + 中央本文 +
+//! 右 TOC カラムの 3 段構成にし、狭幅時は CSS のみ（チェックボックスハック）で
+//! 折りたたむ（参照設計は fandhe-frontend の
+//! `docs/design/docs-site-three-column-redesign.md`）。
 //!
 //! タイトル・サイドバー・本文の各 [`Node`] から、DOCTYPE を除いた完全な
 //! HTML 文書 `Node`（`<html>` 要素）を組み立てる。生成した `Node` は
@@ -18,7 +22,7 @@
 use std::collections::HashSet;
 
 use fandhe_frontend_core::{
-    Node, a, article, aside, button, div, el, header, li, main_tag, nav, text, ul,
+    Node, a, article, aside, button, div, el, header, input, label, li, main_tag, nav, text, ul,
 };
 
 use crate::script;
@@ -281,6 +285,10 @@ pub fn asset_href(base_path: &str, relative: &str) -> String {
 /// タイトル・`base_path`・サイドバー・本文から完全な HTML 文書 `Node`
 /// （`<html>` 要素）を組み立てる。
 ///
+/// 出力は `header.docs-header` + `div.docs-container`（`aside.docs-sidebar` /
+/// `main.docs-main` / 見出しがある場合のみ出力される `aside.docs-toc-aside`
+/// の 3 カラム）の骨格（イシュー #389）。
+///
 /// 内部で [`with_heading_anchors`] と [`toc_nav`] を適用し、本文中の
 /// `h2`/`h3` にアンカーを注入した上でページ内目次を生成する。`title`（ページ
 /// タイトル）と `site_title`（全ページ共通ヘッダのホームリンク文言。
@@ -350,26 +358,23 @@ pub fn docs_page(
     ));
     let head = el("head", vec![], head_children);
 
-    // 「on this page」目次は本文の前（`main` 内の先頭）に置く。読者が本文を
-    // 読み始める前に目次へ気付けるようにするための並び順であり、
-    // `site/assets/site.css` はこの `.docs-content` 前という位置関係を
-    // 前提にスタイルしていない（`.docs-toc` 単体で完結する見た目にしている
-    // ため、並び順を変えてもレイアウトは崩れない）。
-    let mut main_children = Vec::new();
-    if let Some(toc_node) = toc {
-        main_children.push(toc_node);
-    }
+    // 「on this page」目次は右カラム（`aside.docs-toc-aside`）に置く（イシュー
+    // #389 で本文前のカード配置から移設。3 カラム化に伴い `.docs-container` の
+    // 第 3 子として独立させ、`≥1200px` では sticky な右レールとして常時可視、
+    // `768〜1199px` 未満では `site/assets/site.css` 側で列ごと非表示にする）。
+    // `toc_nav` の契約（空なら `None`）は不変のため、見出しの無いページでは
+    // `aside.docs-toc-aside` 自体を出力しない。
+    //
     // SkipNav のスキップ先ターゲット（イシュー #391）。`article` 直前に置き、
     // `.skip-nav` リンクからの遷移でキーボード利用者がヘッダ・サイドバーを
     // 経由せず本文直前へ到達できるようにする（WCAG 2.1 SC 2.4.1 Bypass
     // Blocks）。`tabindex="-1"` によりプログラム的フォーカスのみを許可し、
     // 通常の Tab 順序には加えない（移植元 `pre_styled_ui::skip_nav` と同契約）。
     let skip_nav_target_id = format!("#{SKIP_NAV_ID}");
-    main_children.push(div(vec![("id", SKIP_NAV_ID), ("tabindex", "-1")], vec![]));
-    main_children.push(article(
-        vec![("class", "docs-content")],
-        vec![annotated_body],
-    ));
+    let main_children = vec![
+        div(vec![("id", SKIP_NAV_ID), ("tabindex", "-1")], vec![]),
+        article(vec![("class", "docs-content")], vec![annotated_body]),
+    ];
 
     let root_href = asset_href(base_path, "");
     // ヘッダー右側のアクション群（GitHub リンク・テーマトグル、イシュー
@@ -408,7 +413,7 @@ pub fn docs_page(
         vec![("class", "docs-header")],
         vec![
             a(
-                vec![("href", &root_href)],
+                vec![("class", "docs-brand"), ("href", &root_href)],
                 vec![text(site_title.to_string())],
             ),
             header_actions,
@@ -427,19 +432,61 @@ pub fn docs_page(
         vec![text("Skip to content".to_string())],
     );
 
+    // 狭幅（<768px）でのサイドバー折りたたみは JS ハイドレーションを行わない
+    // docs-site の方針上、チェックボックスハック（無 JS の CSS 専用開閉）で
+    // 実現する。`≥768px` では `site/assets/site.css` 側で input/label とも
+    // 非表示にし、常時展開の現行挙動へ収束させる。`role`/`aria-expanded` は
+    // 意図的に付与しない（JS の状態更新経路が無く、静的属性は支援技術へ虚偽の
+    // 状態を伝えるため。参照設計 §3.5 と同原則）。
+    //
+    // 補足: `fandhe_frontend_core::render` は void 要素の自己終了を扱わず
+    // `<input ...></input>` と出力するが、既存の `<meta>`/`<link>` 同様に
+    // ブラウザ互換上無害（HTML パーサは想定外の終了タグを無視する）。
+    let sidebar_toggle = input(
+        vec![
+            ("type", "checkbox"),
+            ("id", "docs-sidebar-toggle"),
+            ("class", "docs-sidebar-toggle"),
+        ],
+        vec![],
+    );
+    let sidebar_toggle_label = label(
+        vec![
+            ("for", "docs-sidebar-toggle"),
+            ("class", "docs-sidebar-toggle-label"),
+        ],
+        vec![text("Menu")],
+    );
+
+    let mut container_children = vec![
+        aside(
+            vec![("class", "docs-sidebar")],
+            vec![sidebar_toggle, sidebar_toggle_label, sidebar],
+        ),
+        main_tag(vec![("class", "docs-main")], main_children),
+    ];
+    // 見出しがなく TOC 列を省略するページでは `.docs-container` に
+    // `docs-no-toc` を付与し、`site/assets/site.css` 側で `min-width: 1200px`
+    // 時の grid-template-columns を 2 カラムへ切り替える（3 列トラック定義が
+    // 残ると子要素数と不一致になり、空の TOC 幅ぶん右余白が生じるため。
+    // Bugbot 指摘、イシュー #389）。
+    let has_toc = toc.is_some();
+    if let Some(toc_node) = toc {
+        container_children.push(aside(vec![("class", "docs-toc-aside")], vec![toc_node]));
+    }
+    let container_class = if has_toc {
+        "docs-container"
+    } else {
+        "docs-container docs-no-toc"
+    };
+
     let body_node = el(
         "body",
         vec![],
         vec![
             skip_nav_link,
             header_node,
-            div(
-                vec![("class", "docs-container")],
-                vec![
-                    aside(vec![("class", "docs-sidebar")], vec![sidebar]),
-                    main_tag(vec![("class", "docs-main")], main_children),
-                ],
-            ),
+            div(vec![("class", container_class)], container_children),
         ],
     );
 

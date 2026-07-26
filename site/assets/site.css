@@ -1,6 +1,11 @@
 /*
- * fandhe-backend docs サイト共通スタイル（Fandhe-AI/fandhe-frontend の
- * site/assets/site.css からの移植。クラス名契約を共有するため改変しない）。
+ * fandhe-backend docs サイト共通スタイル。
+ *
+ * 由来: 当初 Fandhe-AI/fandhe-frontend の site/assets/site.css を移植したもの
+ * だが、移植元は生成 CSS（Theme::to_css・StyleSheet）へ移行済みで両者間の
+ * クラス名契約共有は既に成立していない。本ファイルは backend 独自の静的
+ * アセットであり、`crates/docs-site` の実出力を正として保守する
+ * （イシュー #389 で 3 カラムレイアウトへ刷新した際に記述を是正）。
  *
  * 役割・責務境界:
  *   docs サイトジェネレータ（crates/docs-site）が生成する全ページに読み込ませる
@@ -15,32 +20,38 @@
  *     a.skip-nav                    … SkipNav（イシュー #391）。`body` 直下
  *       先頭に出力される、本文へのスキップリンク。既定は視覚上隠し、
  *       `:focus-visible` 時のみ表示する
- *     header.docs-header            … ヘッダバー（サイトタイトルへのリンク +
+ *     header.docs-header            … ヘッダバー（サイトタイトルへのリンク
+ *       a.docs-brand が付与される + div.docs-header-actions）
  *       div.docs-header-actions      … ヘッダー右側のアクション領域
  *         （イシュー #390）。GitHub リンクとテーマトグルを内包する
  *         a.docs-github-link         … リポジトリへの外部リンク
  *         button.docs-theme-toggle   … ダークモードトグル。既定 `hidden`、
  *           `assets/site.js`（`crates/docs-site/src/script.rs`）が配線
  *           完了後にのみ可視化する）
- *     div.docs-container            … 2 カラムのグリッドコンテナ（header の下）
- *       aside.docs-sidebar          … サイドバーのラッパー（`layout::docs_page`
- *         が `nav::sidebar()`（`crates/docs-site/src/nav.rs`）の戻り値を
- *         そのまま内側に配置する契約）
+ *     div.docs-container            … 3 カラムのグリッドコンテナ（header の下。
+ *       `≥1200px` で 3 列、`768〜1199px` で 2 列（TOC 列を隠す）、
+ *       `<768px` で単列に折りたたむ）
+ *       aside.docs-sidebar          … 左カラム。`layout::docs_page` が
+ *         input.docs-sidebar-toggle + label.docs-sidebar-toggle-label
+ *         （狭幅時の無 JS 開閉トグル） + `nav::sidebar()`
+ *         （`crates/docs-site/src/nav.rs`）の戻り値をこの順で内側に配置する契約
  *         nav.sidebar               … `nav::sidebar()` の実出力。セクション
  *           見出しは素の `h2`、ページ列は `ul` > `li` > `a`
  *           （`.nav-section` 等の専用クラスは付与されない。`role` 属性も
  *           付与されない headless 構造）
  *           a[aria-current="page"] … 現在ページのリンク（イシュー #391:
  *             `class="current"` の併用は廃止し `aria-current` に一本化）
- *       main.docs-main              … 本文カラムのラッパー
- *         nav.docs-toc（任意・先頭）… ページ内目次。`li` に
- *           `docs-toc-level-2` / `docs-toc-level-3` でネスト深さを表現する
+ *       main.docs-main              … 中央カラム（本文）
  *         div#fandhe-skip-nav        … SkipNav のスキップ先ターゲット
  *           （イシュー #391。`article.docs-content` 直前、`tabindex="-1"`）
  *         article.docs-content      … Markdown レンダラの出力 + ページ内
  *           `nav.prev-next`（`a.prev` / `a.next`）を内包する
  *           - `pre > code.language-*` … フェンス付きコードブロック
  *             （言語トークンが無効な場合 class 自体が付かない）
+ *       aside.docs-toc-aside（任意）… 右カラム。見出しが無いページでは
+ *         `layout::docs_page` がこの `aside` 自体を出力しない
+ *         nav.docs-toc              … ページ内目次。`li` に
+ *           `docs-toc-level-2` / `docs-toc-level-3` でネスト深さを表現する
  *
  * 不変条件:
  *   - @import / @font-face / リモート url() を追加しない（外部参照ゼロを維持する）
@@ -67,6 +78,7 @@
     "Liberation Mono", monospace;
 
   --docs-sidebar-width: 16rem;
+  --docs-toc-width: 14rem;
   --docs-max-content-width: 46rem;
   --docs-header-height: 3.25rem;
 }
@@ -159,7 +171,7 @@ body {
   background: var(--docs-color-bg);
 }
 
-.docs-header a {
+.docs-header a.docs-brand {
   font-weight: 600;
   font-size: 0.95rem;
   letter-spacing: -0.01em;
@@ -180,6 +192,7 @@ body {
   font-weight: 500;
   font-size: 0.85rem;
   color: var(--docs-color-text-muted);
+  text-decoration: none;
 }
 
 .docs-github-link:hover {
@@ -213,14 +226,42 @@ body {
   display: none;
 }
 
-/* ---- 2 カラムレイアウト ---- */
+/*
+ * ---- 3 カラムレイアウト ----
+ *
+ * 既定（クエリなし）は `768〜1199px` の 2 カラム（サイドバー + 本文、TOC 列は
+ * 隠す）を基準にし、`@media (min-width: 1200px)` で 3 カラム化、
+ * `@media (max-width: 767px)` で単列化する 3 段階（イシュー #389）。
+ */
 
 .docs-container {
   display: grid;
   grid-template-columns: var(--docs-sidebar-width) minmax(0, 1fr);
   align-items: start;
-  max-width: 72rem;
+  max-width: 88rem;
   margin: 0 auto;
+}
+
+@media (min-width: 1200px) {
+  .docs-container {
+    grid-template-columns:
+      var(--docs-sidebar-width) minmax(0, 1fr)
+      var(--docs-toc-width);
+  }
+
+  .docs-toc-aside {
+    display: block;
+  }
+
+  /* 見出しがなく `aside.docs-toc-aside` 自体が省略されるページ
+   * （`crates/docs-site/src/layout.rs` が `docs-no-toc` を付与）では、
+   * 3 列トラック定義のままだと子要素 2 個に対し TOC 幅ぶんの空白列が
+   * 右側に残る。2 カラム構成へ切り替えて空白を解消する
+   * （Bugbot 指摘、イシュー #389）。
+   */
+  .docs-container.docs-no-toc {
+    grid-template-columns: var(--docs-sidebar-width) minmax(0, 1fr);
+  }
 }
 
 /* ---- サイドバー ---- */
@@ -238,6 +279,17 @@ body {
   padding: 1.75rem 1rem 2rem;
   border-right: 1px solid var(--docs-color-border);
   font-size: 0.875rem;
+}
+
+/*
+ * サイドバー折りたたみトグル（無 JS のチェックボックスハック）。
+ * `≥768px`（既定・クエリなし）では常時展開の現行挙動へ収束させるため
+ * input/label とも隠す（`max-width: 767px` 側のモバイル対応セクションで
+ * 表示側へ上書きする）。
+ */
+.docs-sidebar-toggle,
+.docs-sidebar-toggle-label {
+  display: none;
 }
 
 .docs-sidebar nav.sidebar {
@@ -456,16 +508,32 @@ body {
   font-weight: 600;
 }
 
-/* ---- ページ内目次（任意、本文の前に配置） ---- */
+/* ---- 右カラム: ページ内目次（任意。見出しの無いページでは aside 自体が
+   出力されず、このスタイルは適用対象を持たない） ---- */
+
+.docs-toc-aside {
+  /*
+   * `.docs-sidebar` と同じくヘッダー分オフセットして sticky にすることで、
+   * 本文スクロールに追従する右レールにする。`768〜1199px` では列自体を
+   * 隠す（見出しは本文中に残るため情報は失われない）。`≥1200px` の
+   * `display: block` 上書きは上の 3 カラムレイアウト節を参照。
+   */
+  display: none;
+  position: sticky;
+  top: var(--docs-header-height);
+  align-self: start;
+  max-height: calc(100vh - var(--docs-header-height));
+  overflow-y: auto;
+  padding: 1.75rem 1rem 2rem;
+  border-left: 1px solid var(--docs-color-border);
+}
 
 .docs-toc {
   font-size: 0.85rem;
-  padding: 0.9rem 1.1rem;
-  margin: 0 auto 1.75rem;
-  max-width: var(--docs-max-content-width);
-  border: 1px solid var(--docs-color-border);
-  border-radius: 0.65rem;
-  background: var(--docs-color-bg-subtle);
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
 }
 
 .docs-toc ul {
@@ -529,9 +597,9 @@ nav.prev-next a.next {
   text-align: right;
 }
 
-/* ---- モバイル対応: 768px 以下で 1 カラムに畳む ---- */
+/* ---- モバイル対応: 767px 以下で単列に畳む ---- */
 
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .docs-container {
     display: block;
   }
@@ -545,7 +613,61 @@ nav.prev-next a.next {
     padding: 1rem;
   }
 
+  /*
+   * サイドバー折りたたみトグル（無 JS のチェックボックスハック）。
+   * label をトグルボタン風に表示し、input は視覚的に隠しつつ Tab
+   * フォーカス・Space 操作を保つため `display: none` にしない
+   * （`position: absolute; opacity: 0` の sr-only 型）。既定で折りたたむ
+   * （`:checked` でのみ `nav.sidebar` を表示する）。
+   */
+  .docs-sidebar-toggle {
+    display: block;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    opacity: 0;
+  }
+
+  .docs-sidebar-toggle-label {
+    display: block;
+    margin-bottom: 0.5rem;
+    padding: 0.4rem 0.75rem;
+    border: 1px solid var(--docs-color-border);
+    border-radius: 0.4rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--docs-color-text);
+    cursor: pointer;
+  }
+
+  /*
+   * input.docs-sidebar-toggle は視覚的に隠れているが Tab フォーカスは
+   * 保持するため（上記コメント参照）、フォーカス時は隣接する label へ
+   * 可視インジケータを復元する。`.skip-nav:focus-visible` と同じ
+   * `:focus-visible` 方針（マウスクリックでは表示しない）。
+   */
+  .docs-sidebar-toggle:focus-visible + .docs-sidebar-toggle-label {
+    outline: 2px solid var(--docs-color-accent);
+    outline-offset: 2px;
+  }
+
+  .docs-sidebar nav.sidebar {
+    display: none;
+  }
+
+  .docs-sidebar-toggle:checked ~ nav.sidebar {
+    display: flex;
+  }
+
+  .docs-toc-aside {
+    display: none;
+  }
+
   .docs-main {
+    min-width: 0;
     padding: 1.5rem 1.1rem 3rem;
   }
 
