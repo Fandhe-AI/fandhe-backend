@@ -89,10 +89,16 @@ jobs:
       # oha（HTTP 負荷生成、benches/README.md 前提ツール）を冪等・バージョン固定で
       # インストールする（サプライチェーン考慮: crates.io からバージョン固定で取得。
       # 既存 cargo-nextest/cargo-deny 等の導入ステップと同じ方針）。
-      - name: Ensure oha 1.9.1
+      #
+      # バージョンは 1.15.0 に固定する。既存の計測レポート（`benches/reports/
+      # task-1.6-1-performance.md` 等）・受け入れ検証（`docs/acceptance/`）がすべて
+      # oha 1.15.0 で取得されており、負荷生成器のバージョンを跨いで axum-ref 比の
+      # RPS を比較しないため（当初指定の 1.9.1 は crates.io に存在しないバージョンで、
+      # `cargo install` が `could not find oha in registry` で必ず失敗していた）。
+      - name: Ensure oha 1.15.0
         run: |
-          if ! oha --version 2>/dev/null | grep -qE ' 1\.9\.1($| )'; then
-            cargo install --locked oha@1.9.1
+          if ! oha --version 2>/dev/null | grep -qE ' 1\.15\.0($| )'; then
+            cargo install --locked oha@1.15.0
           fi
 
       # `benches/bench-accept-exclusive.sh` は専有ロック取得後にビルド → 静穏確認 →
