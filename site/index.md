@@ -43,6 +43,8 @@ v0.1.0 として公開済み（2026-07-21）です。`cargo add fandhe-backend-c
 - [サーバ API（core）](/fandhe-backend/api/server-api/) — API Reference の
   入口。`Server` / `BoundServer` / `Handler` から各クレート・プラグイン設定
   API まで 5 ページで公開 API の全体像と契約を俯瞰する
+- [サンプル集](/fandhe-backend/examples/) — `examples/with-*` 3 種と
+  `templates/app` へ、独立して `cargo run` できるサンプルの入口
 
 ソースコードは [GitHub リポジトリ](https://github.com/Fandhe-AI/fandhe-backend)
 で公開されています（MIT OR Apache-2.0 デュアルライセンス）。
