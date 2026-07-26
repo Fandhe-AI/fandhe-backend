@@ -18,6 +18,13 @@
 //! （`hydrate.js`）は行わないが、イシュー #390 でダークモードトグル専用の
 //! 素の JS（[`crate::script`]）のみを `<head>`（FOUC 抑止インラインスニペット）
 //! と全 `<link rel="stylesheet">` の後（`assets/site.js`、`defer`）に埋め込む。
+//!
+//! イシュー #396 でヘッダー右側（`div.docs-header-actions` の先頭）へ全文
+//! 検索 UI（`div.docs-search` 一式）を追加した。索引 URL
+//! （[`crate::search::INDEX_REL_PATH`]）は必ず [`asset_href`] を経由して
+//! `data-search-index` 属性へ埋め込み、実際の検索実行・DOM 更新は
+//! [`crate::script::SITE_JS`] が読み込み後にのみ配線する（`hidden` の解除も
+//! 配線完了後、テーマトグルと同じ fail-closed パターン）。
 
 use std::collections::HashSet;
 
@@ -26,6 +33,7 @@ use fandhe_frontend_core::{
 };
 
 use crate::script;
+use crate::search;
 
 /// docs サイトが公開する GitHub リポジトリへの外部リンク先（イシュー #390）。
 /// ヘッダー右側のアクション領域（`div.docs-header-actions`）に固定表示する。
@@ -377,6 +385,44 @@ pub fn docs_page(
     ];
 
     let root_href = asset_href(base_path, "");
+    // 全文検索 UI（イシュー #396）。`div.docs-header-actions` の先頭に置く。
+    // 既定 `hidden`（JS 無効時・`site.js` 取得失敗時のフォールバック。
+    // テーマトグルと同じ「配線完了後にのみ `crate::script::SITE_JS` が
+    // `hidden` を解除する」契約）。索引 URL は必ず [`asset_href`] を経由し、
+    // `base_path` の正規化を重複させない（単一実装点）。`data-*` 属性の
+    // ため `crate::linkcheck` の `href` 突合対象にはならない。
+    let search_index_href = asset_href(base_path, search::INDEX_REL_PATH);
+    let search_ui = div(
+        vec![("class", "docs-search"), ("hidden", "")],
+        vec![
+            label(
+                vec![("class", "docs-search-label"), ("for", "docs-search-input")],
+                vec![text("Search")],
+            ),
+            input(
+                vec![
+                    ("type", "search"),
+                    ("id", "docs-search-input"),
+                    ("class", "docs-search-input"),
+                    ("autocomplete", "off"),
+                    ("placeholder", "ドキュメントを検索"),
+                    ("aria-label", "ドキュメント内検索"),
+                    ("aria-controls", "docs-search-results"),
+                    ("data-search-index", &search_index_href),
+                ],
+                vec![],
+            ),
+            div(
+                vec![
+                    ("id", "docs-search-results"),
+                    ("class", "docs-search-results"),
+                    ("hidden", ""),
+                    ("aria-live", "polite"),
+                ],
+                vec![],
+            ),
+        ],
+    );
     // ヘッダー右側のアクション群（GitHub リンク・テーマトグル、イシュー
     // #390）。`target="_blank"` + `rel="noopener noreferrer"`（OWASP A05:
     // tabnabbing 対策。開いた先から `window.opener` を操作される経路と
@@ -388,6 +434,7 @@ pub fn docs_page(
     let header_actions = div(
         vec![("class", "docs-header-actions")],
         vec![
+            search_ui,
             a(
                 vec![
                     ("href", REPOSITORY_URL),

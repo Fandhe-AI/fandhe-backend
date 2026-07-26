@@ -23,7 +23,16 @@
  *     header.docs-header            … ヘッダバー（サイトタイトルへのリンク
  *       a.docs-brand が付与される + div.docs-header-actions）
  *       div.docs-header-actions      … ヘッダー右側のアクション領域
- *         （イシュー #390）。GitHub リンクとテーマトグルを内包する
+ *         （イシュー #390）。全文検索 UI・GitHub リンク・テーマトグルを
+ *         この順で内包する
+ *         div.docs-search            … 全文検索 UI（イシュー #396）。既定
+ *           `hidden`、`assets/site.js` が配線完了後にのみ可視化する
+ *           label.docs-search-label  … 視覚上は clip 手法で隠すが
+ *             `for`/`id` 対応は維持する（a11y）
+ *           input.docs-search-input  … `type="search"`。索引 URL は
+ *             `data-search-index` 属性で保持する
+ *           div.docs-search-results  … 検索結果パネル。既定 `hidden`、
+ *             `assets/site.js` が `ul` > `li` > `a` を動的に追加する
  *         a.docs-github-link         … リポジトリへの外部リンク
  *         button.docs-theme-toggle   … ダークモードトグル。既定 `hidden`、
  *           `assets/site.js`（`crates/docs-site/src/script.rs`）が配線
@@ -186,6 +195,99 @@ body {
   align-items: center;
   gap: 0.9rem;
   margin-left: auto;
+}
+
+/* ---- 全文検索 UI（イシュー #396） ---- */
+
+.docs-search {
+  position: relative;
+}
+
+/*
+ * `assets/site.js` は配線完了後にのみ `hidden` 属性を除去する
+ * （`crates/docs-site/src/script.rs` モジュール doc 参照。テーマトグルの
+ * `.docs-theme-toggle[hidden]` と同じ fail-closed パターン）。JS 無効・
+ * 読み込み失敗時は常にこの規則が非表示を担保する。
+ */
+.docs-search[hidden] {
+  display: none;
+}
+
+/* ラベルは視覚上のみ隠す clip 手法（`.skip-nav` と同流儀）。 */
+.docs-search-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.docs-search-input {
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--docs-color-text);
+  background: var(--docs-color-bg-subtle);
+  border: 1px solid var(--docs-color-border);
+  border-radius: 0.4rem;
+  padding: 0.3rem 0.65rem;
+  width: 12rem;
+}
+
+.docs-search-input:focus-visible {
+  outline: 2px solid var(--docs-color-accent);
+  outline-offset: 1px;
+  border-color: var(--docs-color-accent);
+}
+
+.docs-search-results {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  z-index: 20;
+  min-width: 18rem;
+  max-height: calc(100vh - var(--docs-header-height) - 1.5rem);
+  overflow-y: auto;
+  background: var(--docs-color-bg-raised);
+  border: 1px solid var(--docs-color-border);
+  border-radius: 0.5rem;
+  box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.12);
+  padding: 0.4rem;
+}
+
+.docs-search-results[hidden] {
+  display: none;
+}
+
+.docs-search-results ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.docs-search-results li {
+  margin: 0;
+}
+
+.docs-search-results a {
+  display: block;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.4rem;
+  color: var(--docs-color-text);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+
+.docs-search-results a:hover,
+.docs-search-results a:focus-visible {
+  background: var(--docs-color-bg-subtle);
+  outline: none;
 }
 
 .docs-github-link {
@@ -602,6 +704,22 @@ nav.prev-next a.next {
 @media (max-width: 767px) {
   .docs-container {
     display: block;
+  }
+
+  /*
+   * 固定幅（`width: 12rem`）のままだと `.docs-header-actions` が
+   * 折り返し・横スクロールの原因になるため、狭幅では相対幅へ縮める
+   * （3 節設計方針: いずれの幅でも横スクロールを出さない）。
+   */
+  .docs-search-input {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .docs-search-results {
+    left: 0;
+    right: 0;
+    min-width: 0;
   }
 
   .docs-sidebar {

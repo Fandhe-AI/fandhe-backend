@@ -35,6 +35,7 @@ use crate::linkcheck::{self, BrokenLink};
 use crate::markdown::render_markdown;
 use crate::nav::{self, NavError};
 use crate::script;
+use crate::search::{self, IndexTooLarge, SearchIndex, SearchPage, SearchSection};
 
 /// [`build_site`] が成功時に返すビルド結果のサマリ。
 #[derive(Debug, Clone)]
@@ -70,12 +71,17 @@ pub enum BuildError {
     /// エントリが存在し、通常ファイルのみ許可する方針に反した
     /// （リポジトリ外ファイルの持ち出し防止のための fail-closed 検証）。
     UnsupportedAssetEntry(PathBuf),
-    /// [`script::SCRIPT_REL_PATH`]（`assets/site.js`）と同名の静的アセットが
-    /// `site/assets/` 配下に既に存在し、ビルド生成物（テーマトグル JS）との
-    /// ファイル名衝突が起きる（イシュー #390。生成物が静的アセットを暗黙に
-    /// 上書きしない fail-closed 検証。書き出しより前に検出し、`out_dir` には
-    /// 一切書き出さない）。
+    /// [`script::SCRIPT_REL_PATH`]（`assets/site.js`）や
+    /// [`search::INDEX_REL_PATH`]（`assets/search-index.json`）と同名の
+    /// 静的アセットが `site/assets/` 配下に既に存在し、ビルド生成物との
+    /// ファイル名衝突が起きる（イシュー #390・#396。生成物が静的アセットを
+    /// 暗黙に上書きしない fail-closed 検証。書き出しより前に検出し、
+    /// `out_dir` には一切書き出さない）。
     AssetNameCollision(PathBuf),
+    /// 検索インデックス（[`search::serialize_index`]）の直列化結果が
+    /// [`search::MAX_INDEX_BYTES`] を超過した（イシュー #396。
+    /// [`search::validate_index_size`] の fail-closed 検証結果）。
+    SearchIndexTooLarge(IndexTooLarge),
 }
 
 impl fmt::Display for BuildError {
@@ -105,7 +111,13 @@ impl fmt::Display for BuildError {
             BuildError::AssetNameCollision(path) => {
                 write!(
                     f,
-                    "static asset collides with the generated theme toggle script: {path:?}"
+                    "static asset collides with a generated artifact: {path:?}"
+                )
+            }
+            BuildError::SearchIndexTooLarge(IndexTooLarge { bytes, max }) => {
+                write!(
+                    f,
+                    "search index size {bytes} bytes exceeds the {max} byte limit"
                 )
             }
         }
@@ -147,6 +159,7 @@ pub fn build_site(repo_root: &Path, out_dir: &Path) -> Result<BuildReport, Build
 
     let mut pages: Vec<(String, Node)> = Vec::new();
     let mut broken: Vec<BrokenLink> = Vec::new();
+    let mut search_pages: Vec<SearchPage> = Vec::new();
 
     for section in &nav.sections {
         for page in &section.pages {
@@ -167,6 +180,33 @@ pub fn build_site(repo_root: &Path, out_dir: &Path) -> Result<BuildReport, Build
                 &source_to_path,
                 &mut broken,
             );
+
+            // 検索インデックスの入力は本文（`rewritten_body`）のみに限定する
+            // （prev/next ナビ・サイドバー・ヘッダーを含めない、イシュー #396
+            // 計画 3 節 5 項）。`with_heading_anchors` は本文を再構築しながら
+            // TOC を収集する副作用があるため、`layout::docs_page` へ渡す本文
+            // とは別に clone を取ってから索引用に呼ぶ（`Node: Clone` により
+            // 安価な参照カウントではなく木の複製だが、docs サイトの
+            // ビルド時専用処理でありホットパスではないため許容する）。
+            let (_, toc_entries) = layout::with_heading_anchors(rewritten_body.clone());
+            let text = search::truncate_at_char_boundary(
+                &search::extract_plain_text(&rewritten_body),
+                search::MAX_PAGE_TEXT_BYTES,
+            )
+            .to_string();
+            search_pages.push(SearchPage {
+                href: layout::asset_href(&nav.site.base_path, &page.path),
+                title: page.title.clone(),
+                sections: toc_entries
+                    .into_iter()
+                    .map(|entry| SearchSection {
+                        level: entry.level,
+                        id: entry.id,
+                        title: entry.title,
+                    })
+                    .collect(),
+                text,
+            });
 
             let body = div(
                 vec![],
@@ -196,24 +236,43 @@ pub fn build_site(repo_root: &Path, out_dir: &Path) -> Result<BuildReport, Build
         return Err(BuildError::LinkCheck(broken));
     }
 
+    let search_index = SearchIndex {
+        base_path: nav.site.base_path.clone(),
+        pages: search_pages,
+    };
+    let search_index_json = search::serialize_index(&search_index);
+    search::validate_index_size(&search_index_json, search::MAX_INDEX_BYTES)
+        .map_err(BuildError::SearchIndexTooLarge)?;
+
     let written = ssg::generate_pages(&pages, out_dir)?;
     let mut assets = copy_assets(repo_root, out_dir)?;
     assets.push(write_site_js(out_dir)?);
+    assets.push(write_search_index(out_dir, &search_index_json)?);
 
     Ok(BuildReport { written, assets })
 }
 
-/// `site/assets/` 配下に [`script::SCRIPT_REL_PATH`]（`assets/site.js`）と
-/// 同名の静的アセットが存在しないことを検証する（fail-closed。
-/// [`write_site_js`] が生成物として書き出すファイルを静的アセットが暗黙に
-/// 上書き・混同されるのを防ぐ）。書き出しより前（`copy_assets` 呼び出しより
-/// 前）に呼び、衝突があれば `out_dir` に一切書き出させない。
+/// ビルドが生成物として書き出す `out_dir` 相対パス一覧（`site/assets/`
+/// 配下の同名静的アセットとの衝突検証対象）。[`script::SCRIPT_REL_PATH`]
+/// （`assets/site.js`、イシュー #390）と [`search::INDEX_REL_PATH`]
+/// （`assets/search-index.json`、イシュー #396）の 2 件。新しい生成物
+/// アセットを追加する際はここへ加えることで [`check_no_asset_name_collision`]
+/// が自動的に対象へ含める。
+const RESERVED_GENERATED_ASSETS: [&str; 2] = [script::SCRIPT_REL_PATH, search::INDEX_REL_PATH];
+
+/// `site/assets/` 配下に [`RESERVED_GENERATED_ASSETS`] のいずれかと同名の
+/// 静的アセットが存在しないことを検証する（fail-closed。生成物として
+/// 書き出すファイルを静的アセットが暗黙に上書き・混同されるのを防ぐ）。
+/// 書き出しより前（`copy_assets` 呼び出しより前）に呼び、衝突があれば
+/// `out_dir` に一切書き出させない。
 fn check_no_asset_name_collision(repo_root: &Path) -> Result<(), BuildError> {
-    let collision_path = repo_root.join("site").join(script::SCRIPT_REL_PATH);
-    if collision_path.exists() {
-        return Err(BuildError::AssetNameCollision(PathBuf::from(
-            "site/assets/site.js",
-        )));
+    for reserved in RESERVED_GENERATED_ASSETS {
+        let collision_path = repo_root.join("site").join(reserved);
+        if collision_path.exists() {
+            return Err(BuildError::AssetNameCollision(PathBuf::from(format!(
+                "site/{reserved}"
+            ))));
+        }
     }
     Ok(())
 }
@@ -224,6 +283,21 @@ fn check_no_asset_name_collision(repo_root: &Path) -> Result<(), BuildError> {
 fn write_site_js(out_dir: &Path) -> Result<PathBuf, BuildError> {
     let dest = out_dir.join(script::SCRIPT_REL_PATH);
     fs::write(&dest, script::SITE_JS).map_err(|source| BuildError::Io {
+        path: dest.clone(),
+        source,
+    })?;
+    Ok(dest)
+}
+
+/// 直列化済み検索インデックス JSON を `out_dir/assets/search-index.json`
+/// （[`search::INDEX_REL_PATH`]）へ書き出す。[`write_site_js`] と同じく
+/// `copy_assets` が `out_dir/assets/` を作成済みであることを前提とする
+/// （呼び出し順は [`build_site`] が保証する）。呼び出し時点で
+/// [`search::validate_index_size`] のサイズ検証は完了済みの契約
+/// （`build_site` の処理順）。
+fn write_search_index(out_dir: &Path, json: &str) -> Result<PathBuf, BuildError> {
+    let dest = out_dir.join(search::INDEX_REL_PATH);
+    fs::write(&dest, json).map_err(|source| BuildError::Io {
         path: dest.clone(),
         source,
     })?;
@@ -377,12 +451,15 @@ path = "/next/"
         let report = build_site(&temp.0, &out_dir).expect("valid fixture should build");
         assert_eq!(report.written.len(), 2);
         // `site/assets/site.css`（フィクスチャの静的アセット）+
-        // `assets/site.js`（テーマトグル JS の生成物、イシュー #390）の 2 件。
-        assert_eq!(report.assets.len(), 2);
+        // `assets/site.js`（テーマトグル JS の生成物、イシュー #390）+
+        // `assets/search-index.json`（検索インデックスの生成物、イシュー #396）
+        // の 3 件。
+        assert_eq!(report.assets.len(), 3);
         assert!(out_dir.join("index.html").exists());
         assert!(out_dir.join("next/index.html").exists());
         assert!(out_dir.join("assets/site.css").exists());
         assert!(out_dir.join("assets/site.js").exists());
+        assert!(out_dir.join("assets/search-index.json").exists());
 
         let index_html = fs::read_to_string(out_dir.join("index.html")).unwrap();
         assert!(index_html.contains(r#"href="/next/""#));
@@ -390,6 +467,14 @@ path = "/next/"
 
         let site_js = fs::read_to_string(out_dir.join("assets/site.js")).unwrap();
         assert!(site_js.contains(crate::script::THEME_STORAGE_KEY));
+
+        let search_index = fs::read_to_string(out_dir.join("assets/search-index.json")).unwrap();
+        // 索引の入力は本文（`rewritten_body`）のみに限定される契約（イシュー
+        // #396 計画 3 節 5 項）。フィクスチャの本文（"Back to intro."）は
+        // 含まれるが、prev/next ナビ由来の文字列（`nav::prev_next_nav` が
+        // 生成するリンクラベル）は含まれない回帰テスト。
+        assert!(search_index.contains("Back to intro."));
+        assert!(search_index.contains(r#""href":"/next/""#));
     }
 
     #[test]
@@ -401,6 +486,20 @@ path = "/next/"
 
         let err = build_site(&temp.0, &out_dir)
             .expect_err("a static asset named site.js should collide with the generated script");
+        assert!(matches!(err, BuildError::AssetNameCollision(_)));
+        assert!(!out_dir.exists());
+    }
+
+    #[test]
+    fn build_site_rejects_static_asset_colliding_with_generated_search_index() {
+        let temp = TempDir::new("search-index-collision");
+        write_fixture_site(&temp.0);
+        fs::write(temp.0.join("site/assets/search-index.json"), "{}\n").unwrap();
+        let out_dir = temp.0.join("dist");
+
+        let err = build_site(&temp.0, &out_dir).expect_err(
+            "a static asset named search-index.json should collide with the generated index",
+        );
         assert!(matches!(err, BuildError::AssetNameCollision(_)));
         assert!(!out_dir.exists());
     }

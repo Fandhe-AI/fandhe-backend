@@ -16,7 +16,14 @@
 //! - [`SITE_JS`]: `crate::build::build_site` が [`SCRIPT_REL_PATH`]
 //!   （`out_dir` 起点）へ書き出す本体。`.docs-theme-toggle` ボタンのラベル・
 //!   `aria-pressed` 更新、クリック時の切替・保存、および `hidden` 属性の解除
-//!   （配線完了後にのみ可視化する）を担う。
+//!   （配線完了後にのみ可視化する）を担う。イシュー #396 で全文検索の
+//!   初期化（`.docs-search-input` の遅延 `fetch`・部分一致検索・結果描画）
+//!   も同じ [`SITE_JS`] へ追加した（新規アセットを増やさない方針。
+//!   `crate::build` の予約名衝突検証を単純に保つ）。索引 `fetch` が失敗
+//!   した場合は `loadFailed` フラグで終端失敗状態を保持し、以降の
+//!   `input` イベントでは再 `fetch` を行わない（PR #410 レビュー指摘、
+//!   404・ネットワークエラー時にキー入力のたびリクエストが再送される
+//!   retry storm を防ぐ）。
 //!
 //! # セキュリティ不変条件（`.claude/rules/security.md`・`.claude/rules/coding-rust.md`）
 //!
@@ -72,10 +79,10 @@ pub const INLINE_THEME_BOOTSTRAP: &str = "try{var t=localStorage.getItem(`fandhe
 
 /// [`SCRIPT_REL_PATH`] へ書き出す `assets/site.js` の全量。
 ///
-/// 責務:
+/// 責務（テーマトグル、イシュー #390）:
 ///
 /// 1. `document.readyState === "loading"` なら `DOMContentLoaded` を待ち、
-///    そうでなければ `init()` を即時実行する。
+///    そうでなければ即座に配線を実行する。
 /// 2. `init()` 内で `.docs-theme-toggle` ボタンを取得する（無ければ即
 ///    return。docs-site 以外のページ・将来の骨格変更で要素が消えても例外を
 ///    投げない防御的実装）。`querySelector` の呼び出しを `init()` 内に置く
@@ -97,15 +104,42 @@ pub const INLINE_THEME_BOOTSTRAP: &str = "try{var t=localStorage.getItem(`fandhe
 ///    受け入れ条件（「非表示 + OS 設定追従」）を満たすため、可視化は配線完了
 ///    後に限定する（レビューで安易に単純化しないこと）。
 ///
+/// 責務（全文検索、イシュー #396）:
+///
+/// 1. `.docs-search` / `.docs-search-input` / `#docs-search-results` を
+///    取得する（無ければ即 return）。
+/// 2. 索引 URL は `data-search-index` 属性から読む（空なら return）。
+/// 3. 索引は初回 `focus` または初回 `input` のいずれか早い方で 1 度だけ
+///    `fetch` する（`loading` フラグで多重取得を抑止）。取得失敗は
+///    `.catch` でサイレントに諦め、UI は結果 0 件のまま壊さない
+///    （設計上の意図的なフォールバック。将来の安易な簡略化で消さないこと）。
+/// 4. クエリは小文字化して部分一致判定する。スコアはタイトル一致 + 3 /
+///    セクション見出し一致 + 2 / 本文一致 + 1 の決定的加算とし、0 点の
+///    ページは除外した上でスコア降順に並べ替え、上位 `SEARCH_MAX_RESULTS`
+///    （`SITE_JS` 内 JS 定数、8 件）のみを描画する。
+/// 5. 結果の描画は `document.createElement` + `textContent` +
+///    `setAttribute` のみで行う（`innerHTML` 等は使わない、下記参照）。
+///    href は必ず `/` から始まり `//` から始まらないもの（同一オリジンの
+///    相対パス）のみを描画する多層防御を行う（索引はビルド時生成の信頼
+///    データだが、将来の改変・配信改ざんに対する保険。OWASP A10 SSRF 対策
+///    と同種の発想を流用）。
+/// 6. `Escape` キーで入力・結果をクリアする。空クエリ・0 件時は結果パネルへ
+///    `hidden` を戻し、レイアウトを崩さない。
+/// 7. **すべての配線が完了した後にのみ** `.docs-search` の `hidden` を
+///    解除する（テーマトグルと同じ fail-closed パターン、上記手順 6 参照）。
+///
 /// 文字列リテラルはすべてバッククォート（テンプレートリテラル。補間は使わ
-/// ない）を使い、`&&` の代わりに `||` を使うことでエスケープ対象文字
-/// （`< > & " '`）を含まない（[`is_escape_safe`] 参照）。`innerHTML` /
+/// ない）を使い、`&&` の代わりに `||` またはネストした `if` を、比較演算子
+/// `<`/`>` の代わりに `!==`/`===`/`indexOf(...) !== -1`/sort コンパレータを
+/// 使うことでエスケープ対象文字（`< > & " '`）を含まない
+/// （[`is_escape_safe`] 参照）。`innerHTML` / `insertAdjacentHTML` /
 /// `document.write` / `eval` / `new Function` は使わない（DOM 操作は
-/// `setAttribute`/`removeAttribute`/`textContent`/`addEventListener` に
-/// 限定する）。
+/// `setAttribute`/`removeAttribute`/`textContent`/`createElement`/
+/// `appendChild`/`addEventListener` に限定する）。
 pub const SITE_JS: &str = "\
 (function () {
   var STORAGE_KEY = `fandhe-backend-docs-theme`;
+  var SEARCH_MAX_RESULTS = 8;
   var toggle;
 
   function effectiveTheme() {
@@ -150,10 +184,168 @@ pub const SITE_JS: &str = "\
     toggle.removeAttribute(`hidden`);
   }
 
-  if (document.readyState === `loading`) {
-    document.addEventListener(`DOMContentLoaded`, init);
-  } else {
+  function initSearch() {
+    var container = document.querySelector(`.docs-search`);
+    if (!container) {
+      return;
+    }
+    var input = document.querySelector(`.docs-search-input`);
+    if (!input) {
+      return;
+    }
+    var results = document.querySelector(`#docs-search-results`);
+    if (!results) {
+      return;
+    }
+    var indexUrl = input.getAttribute(`data-search-index`);
+    if (!indexUrl) {
+      return;
+    }
+
+    var indexData = null;
+    var loading = false;
+    var loadFailed = false;
+
+    function loadIndex() {
+      if (indexData) {
+        return;
+      }
+      if (loading) {
+        return;
+      }
+      if (loadFailed) {
+        // 直前の fetch が失敗して終端状態に入っている。404 やネットワーク
+        // エラー後の再入力のたびに再試行し続けるのを避ける
+        // （キー入力ごとの無条件リトライ防止）。
+        return;
+      }
+      loading = true;
+      fetch(indexUrl)
+        .then(function (res) {
+          if (!res.ok) {
+            throw new Error(`search index fetch failed`);
+          }
+          return res.json();
+        })
+        .then(function (data) {
+          indexData = data;
+          loading = false;
+          renderResults(input.value);
+        })
+        .catch(function () {
+          // 索引取得に失敗しても検索 UI 自体は壊さず、結果 0 件のまま
+          // フォールバックする（上記 doc コメント手順 3）。loadFailed を
+          // 立てて以降の input イベントでの無条件再試行を止める終端失敗
+          // 状態とする。
+          loading = false;
+          loadFailed = true;
+        });
+    }
+
+    function clearResults() {
+      while (results.firstChild) {
+        results.removeChild(results.firstChild);
+      }
+    }
+
+    function isSafeHref(href) {
+      if (typeof href !== `string`) {
+        return false;
+      }
+      if (href.indexOf(`/`) !== 0) {
+        return false;
+      }
+      if (href.indexOf(`//`) === 0) {
+        return false;
+      }
+      return true;
+    }
+
+    function scorePage(page, query) {
+      var score = 0;
+      if (page.title.toLowerCase().indexOf(query) !== -1) {
+        score = score + 3;
+      }
+      page.sections.forEach(function (section) {
+        if (section.title.toLowerCase().indexOf(query) !== -1) {
+          score = score + 2;
+        }
+      });
+      if (page.text.toLowerCase().indexOf(query) !== -1) {
+        score = score + 1;
+      }
+      return score;
+    }
+
+    function renderResults(rawQuery) {
+      var query = rawQuery.toLowerCase();
+      clearResults();
+      if (query.length === 0) {
+        results.setAttribute(`hidden`, ``);
+        return;
+      }
+      if (!indexData) {
+        results.setAttribute(`hidden`, ``);
+        return;
+      }
+      var matches = [];
+      indexData.pages.forEach(function (page) {
+        var score = scorePage(page, query);
+        if (score !== 0) {
+          matches.push({ page: page, score: score });
+        }
+      });
+      matches.sort(function (a, b) {
+        return b.score - a.score;
+      });
+      var top = matches.slice(0, SEARCH_MAX_RESULTS);
+      if (top.length === 0) {
+        results.setAttribute(`hidden`, ``);
+        return;
+      }
+      var list = document.createElement(`ul`);
+      top.forEach(function (entry) {
+        var page = entry.page;
+        if (!isSafeHref(page.href)) {
+          return;
+        }
+        var item = document.createElement(`li`);
+        var link = document.createElement(`a`);
+        link.setAttribute(`href`, page.href);
+        link.textContent = page.title;
+        item.appendChild(link);
+        list.appendChild(item);
+      });
+      results.appendChild(list);
+      results.removeAttribute(`hidden`);
+    }
+
+    input.addEventListener(`focus`, loadIndex);
+    input.addEventListener(`input`, function () {
+      loadIndex();
+      renderResults(input.value);
+    });
+    input.addEventListener(`keydown`, function (event) {
+      if (event.key === `Escape`) {
+        input.value = ``;
+        clearResults();
+        results.setAttribute(`hidden`, ``);
+      }
+    });
+
+    // 配線がすべて完了した後にのみ可視化する（上記 doc コメント手順 7）。
+    container.removeAttribute(`hidden`);
+  }
+
+  function ready() {
     init();
+    initSearch();
+  }
+
+  if (document.readyState === `loading`) {
+    document.addEventListener(`DOMContentLoaded`, ready);
+  } else {
+    ready();
   }
 })();
 ";
@@ -313,5 +505,96 @@ mod tests {
         ] {
             assert!(!SITE_JS.contains(needle), "SITE_JS should not use {needle}");
         }
+    }
+
+    /// [`SITE_JS`] が検索入力欄（`.docs-search-input`）と索引 URL 属性
+    /// （`data-search-index`）を参照することを固定する（イシュー #396）。
+    #[test]
+    fn site_js_references_search_input_and_index_attribute() {
+        assert!(SITE_JS.contains(".docs-search-input"));
+        assert!(SITE_JS.contains("data-search-index"));
+        assert!(SITE_JS.contains("#docs-search-results"));
+    }
+
+    /// 検索索引の `fetch` 失敗をサイレントにフォールバックする `catch` が
+    /// 存在することを固定する（イシュー #396 計画 5 節手順 3。索引取得失敗時
+    /// も UI を壊さない契約の回帰テスト）。
+    #[test]
+    fn site_js_search_fetch_has_a_silent_catch_fallback() {
+        let fetch_pos = SITE_JS
+            .find("fetch(indexUrl)")
+            .expect("SITE_JS should fetch the search index");
+        let catch_pos = SITE_JS
+            .find(".catch(function ()")
+            .expect("SITE_JS should swallow search index fetch failures");
+        assert!(
+            fetch_pos < catch_pos,
+            "catch は fetch(indexUrl) より後に位置する必要がある"
+        );
+    }
+
+    /// [`SITE_JS`] は検索 UI（`.docs-search`）の `hidden` 解除を、入力欄への
+    /// イベント配線がすべて完了した後にのみ行う（テーマトグルと同じ
+    /// fail-closed パターン、上記 doc コメント手順 7）。
+    #[test]
+    fn site_js_reveals_search_ui_only_after_wiring_is_complete() {
+        let keydown_listener_pos = SITE_JS
+            .find("input.addEventListener(`keydown`")
+            .expect("SITE_JS should wire a keydown handler on the search input");
+        let reveal_pos = SITE_JS
+            .find("container.removeAttribute(`hidden`)")
+            .expect("SITE_JS should reveal the search UI by removing the hidden attribute");
+        assert!(
+            keydown_listener_pos < reveal_pos,
+            "検索 UI の hidden 解除はイベント配線より後である必要がある"
+        );
+    }
+
+    /// 検索結果の href 検証（`isSafeHref`）が `/` 始まり・`//` 非開始のみを
+    /// 受理することを固定する（OWASP A10 SSRF 対策と同種の多層防御、
+    /// イシュー #396 計画 5 節手順 5）。
+    #[test]
+    fn site_js_search_validates_result_hrefs_before_rendering() {
+        assert!(SITE_JS.contains("function isSafeHref(href)"));
+        assert!(SITE_JS.contains("href.indexOf(`/`) !== 0"));
+        assert!(SITE_JS.contains("href.indexOf(`//`) === 0"));
+    }
+
+    /// レビュー指摘（PR #410 Bugbot）の回帰テスト: 検索索引の `fetch` が
+    /// 失敗した場合、`loadFailed` という終端失敗状態が `catch` 内で
+    /// 立てられ、`loadIndex` の先頭（`fetch` 呼び出しより前）でその状態を
+    /// 見て早期リターンすることを固定する。この構造がないと、404 や
+    /// ネットワークエラー後に検索ボックスへの `input` イベントのたびに
+    /// 無条件で `fetch` が再試行されてしまう。
+    #[test]
+    fn site_js_search_fetch_failure_sets_terminal_state_to_avoid_retry_storm() {
+        let load_index_pos = SITE_JS
+            .find("function loadIndex()")
+            .expect("SITE_JS should define loadIndex");
+        let load_failed_check_pos = SITE_JS
+            .find("if (loadFailed)")
+            .expect("SITE_JS should short-circuit loadIndex once a fetch failure is recorded");
+        let fetch_pos = SITE_JS
+            .find("fetch(indexUrl)")
+            .expect("SITE_JS should fetch the search index");
+        let catch_pos = SITE_JS
+            .find(".catch(function ()")
+            .expect("SITE_JS should swallow search index fetch failures");
+        let load_failed_set_pos = SITE_JS
+            .rfind("loadFailed = true;")
+            .expect("SITE_JS should record a terminal failure state on fetch error");
+
+        assert!(
+            load_index_pos < load_failed_check_pos,
+            "loadFailed の判定は loadIndex 関数の中に位置する必要がある"
+        );
+        assert!(
+            load_failed_check_pos < fetch_pos,
+            "loadFailed の早期リターンは fetch 呼び出しより前に位置する必要がある"
+        );
+        assert!(
+            catch_pos < load_failed_set_pos,
+            "loadFailed = true の代入は catch ハンドラの中に位置する必要がある"
+        );
     }
 }
