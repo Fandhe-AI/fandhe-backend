@@ -146,3 +146,10 @@
   留める方針を明文化。`docs/spec/04-requirements.md` 除外事項表 #8・#9（upstream PR
   fandhe-backend-spec#2）への相対リンクと、個別要求が来た場合の feasibility-guardrail
   接続指針を記述）
+- [`docs-site-redesign.md`](./docs-site-redesign.md): GitHub Pages docs サイト刷新の
+  設計ドキュメント（イシュー #388、親トラッキング #384。fandhe-frontend の docs-site
+  設計正典 3 本（3 カラムレイアウト・依存ゼロ全文検索・利用者向け API/内部設計記録
+  分離）を fandhe-backend の文脈へ翻訳し、3 カラム DOM/class 契約・ダークモード・
+  アクセシビリティ・コンテンツ構成・公開範囲規約（`docs/design/` を移設先とする判断）・
+  検索インデックス仕様・CI 追随（`docs/api/**` の paths トリガー欠落含む）を #389〜#399
+  向けに確定する）
