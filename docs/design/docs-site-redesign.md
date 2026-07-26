@@ -297,15 +297,18 @@ Markdown/HTML 生成が手書き実装である方針と揃える）。
   `docs-brand` / `docs-header-actions` / `docs-toc-aside` / `docs-skip-link` /
   `docs-search-input` / `docs-search-results` 等）を契約対象に追加し、`layout.rs` が
   要求する class と `site.css` の実定義の乖離を検知する既存方式を維持する。
-- `.github/workflows/docs-site.yml` の改修事項:
-  - ビルド後存在検査（現行 `index.html` / `assets/site.css` の 2 点）に、刷新後の
-    必須生成物 `assets/search-index.json` およびテーマ/検索用 JS アセットの存在検査を
-    追加する。
-  - **paths トリガーに `docs/api/**` を追加する**（現状ギャップ、1 節「実測値」参照）。
-    `examples/**` の README を流用する場合は `paths` にも追加を検討する（実装時に
-    実際の流用方式に応じて確定する）。
+- `.github/workflows/docs-site.yml` の改修事項（#398 で実施）:
+  - ビルド後存在検査（旧 `index.html` / `assets/site.css` の 2 点、`test -f`）を
+    `test -s`（非空も検証）へ強化し、`assets/site.js`（テーマトグル JS、#390）・
+    `assets/search-index.json`（全文検索インデックス、#396）の存在検査を追加した。
+    `#396` は本イシュー（#398）着手時点で未マージだったため一時的に検査対象から
+    外していたが、`#396` マージ後（`build_site()` が無条件で書き出す生成物である
+    ことを確認済み）に追随して追加した。
+  - **paths トリガーに `docs/api/**` を追加した**（現状ギャップ、1 節「実測値」参照）。
+    `examples/**` は `site/nav.toml` から参照されずビルド入力にならないため
+    追加していない（`site/examples/*.md` へ再構成済み、6 節参照）。
   - self-hosted / `timeout-minutes` / 最小 `permissions`（`contents: read`）は
-    `.claude/rules/ci.md` に従い維持する。
+    `.claude/rules/ci.md` に従い維持した（変更なし）。
 
 ## 10. セキュリティ不変条件（OWASP Top 10 観点）
 
@@ -370,3 +373,55 @@ Markdown/HTML 生成が手書き実装である方針と揃える）。
 - 本リポジトリ内: [`docs/design/README.md`](./README.md)（設計ドキュメント置き場の位置づけ）、
   親トラッキング issue #384、CLAUDE.md の Repository Structure（`crates/docs-site`
   節・`site/` 節）
+
+## 14. 手動再デプロイ運用（workflow_dispatch）（→ #398）
+
+`.github/workflows/docs-site.yml` の `push.paths` は `docs/guide/**` /
+`docs/api/**` / `site/**` / `crates/docs-site/**` / 本 workflow 自身のみを対象と
+する。以下のケースでは push だけではサイトが再ビルドされず、手動再デプロイが必要になる。
+
+- **レンダラ側クレートの更新**: crates.io の `fandhe-frontend-core` /
+  `fandhe-frontend-app` / `fandhe-frontend-server`（`crates/docs-site/Cargo.toml`
+  の依存）が新バージョンを公開した場合。本リポジトリは Cargo.lock を
+  コミットしない方針（`.gitignore`）のため、依存更新は `paths` トリガーに乗らない
+  （workflow ヘッダーコメントに明記済みの既知の制約）。
+- その他、`paths` に含まれないファイルの変更がビルド結果に影響する場合
+  （例: nav.toml が将来的に `site/**` 外を参照するよう変更された場合）。
+
+### 手順
+
+```bash
+# main ブランチの内容で再ビルド・再デプロイを起動する
+gh workflow run docs-site.yml --ref main
+
+# 起動した run を追跡する（run ID は `gh run list` で確認可能）
+gh run list --workflow=docs-site.yml --limit 1
+gh run watch <run-id>
+```
+
+### デプロイ後の確認方法
+
+```bash
+# 公開ページが 200 で応答し、刷新後のヘッダー構造を含むこと
+curl -fsS https://fandhe-ai.github.io/fandhe-backend/ | grep -c "docs-header-actions"
+
+# テーマトグル JS アセットが配信されていること
+curl -fsS -o /dev/null -w "%{http_code}\n" https://fandhe-ai.github.io/fandhe-backend/assets/site.js
+
+# 検索インデックスが配信されていること（#396）
+curl -fsS -o /dev/null -w "%{http_code}\n" https://fandhe-ai.github.io/fandhe-backend/assets/search-index.json
+```
+
+体系的な視覚確認・受け入れレポート作成は #399 のスコープとする。本節は
+workflow_dispatch 経路の運用手順のみを扱う。
+
+### マージ前と後の検証範囲の違い
+
+`docs-site.yml` の `push` トリガーは `branches: [main]` に固定されており、
+`workflow_dispatch` も `--ref` に指定したブランチのワークフロー**定義**を実行するのみで、
+Pages への実デプロイは常に `github-pages` environment（main 相当）へ反映される。
+そのため本イシュー（#398）のブランチ上で `gh workflow run --ref <このブランチ>` を
+実行しても、実際にデプロイされるのは main 側の docs-site.yml のコピーであり、
+本ブランチの変更（paths トリガー追加・存在検査拡充）そのものの実デプロイ検証には
+ならない。実デプロイ検証（受け入れ条件 4）は本ブランチのマージ後に実施する前提とし、
+マージ前に本節の手順だけで無理に完了させない。
