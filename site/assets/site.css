@@ -643,6 +643,17 @@ nav.prev-next a.next {
     cursor: pointer;
   }
 
+  /*
+   * input.docs-sidebar-toggle は視覚的に隠れているが Tab フォーカスは
+   * 保持するため（上記コメント参照）、フォーカス時は隣接する label へ
+   * 可視インジケータを復元する。`.skip-nav:focus-visible` と同じ
+   * `:focus-visible` 方針（マウスクリックでは表示しない）。
+   */
+  .docs-sidebar-toggle:focus-visible + .docs-sidebar-toggle-label {
+    outline: 2px solid var(--docs-color-accent);
+    outline-offset: 2px;
+  }
+
   .docs-sidebar nav.sidebar {
     display: none;
   }
