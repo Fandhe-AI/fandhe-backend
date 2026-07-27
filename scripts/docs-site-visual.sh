@@ -191,7 +191,7 @@ start_server_on_free_port() {
     sleep 2
   done
   echo "error: could not bind a free port after $PORT_ATTEMPTS attempts" >&2
-  exit 1
+  return 1
 }
 
 # register_server_pid: start_server_on_free_port が成功後に書き出した
