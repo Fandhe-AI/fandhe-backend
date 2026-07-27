@@ -344,6 +344,20 @@ body {
   margin: 0 auto;
 }
 
+/*
+ * `768〜1199px` では TOC 列自体を隠す既定値（見出しは本文中に残るため情報は
+ * 失われない）。CSS カスケードは同一詳細度の規則を出現順で解決するため、
+ * この既定を後段（下の「右カラム: ページ内目次」節）の詳細スタイルと同じ
+ * ブロックに同居させると、そちらが後に出現する構成では常にこちらが勝って
+ * `@media (min-width: 1200px)` の `display: block` 上書きが無効化される
+ * （実際に本イシュー #399 の視覚確認で検出: 全 breakpoint で右 TOC が
+ * 一度も描画されなかった不具合）。単独ブロックとして @media より前に置き、
+ * カスケード順の罠を再発させない。
+ */
+.docs-toc-aside {
+  display: none;
+}
+
 @media (min-width: 1200px) {
   .docs-container {
     grid-template-columns:
@@ -616,11 +630,11 @@ body {
 .docs-toc-aside {
   /*
    * `.docs-sidebar` と同じくヘッダー分オフセットして sticky にすることで、
-   * 本文スクロールに追従する右レールにする。`768〜1199px` では列自体を
-   * 隠す（見出しは本文中に残るため情報は失われない）。`≥1200px` の
-   * `display: block` 上書きは上の 3 カラムレイアウト節を参照。
+   * 本文スクロールに追従する右レールにする。既定 `display: none` と
+   * `≥1200px` の `display: block` 上書きは上の 3 カラムレイアウト節
+   * （`.docs-container` 直後の単独ブロック）を参照。カスケード順序の罠を
+   * 避けるため、`display` はここでは設定しない。
    */
-  display: none;
   position: sticky;
   top: var(--docs-header-height);
   align-self: start;

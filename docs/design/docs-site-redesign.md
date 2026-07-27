@@ -341,7 +341,7 @@ Markdown/HTML 生成が手書き実装である方針と揃える）。
 | #396 | 8 節 | 依存ゼロ全文検索 |
 | #397 | 9 節 | fail-closed 契約テストの作り替え |
 | #398 | 9 節 | `docs-site.yml` CI 追随（paths トリガー欠落含む） |
-| #399 | 全節 | 統合検証・Pages 実デプロイ確認 |
+| #399 | 全節 | 統合検証・Pages 実デプロイ確認（視覚確認・受け入れレポート: [`docs/acceptance/issue399-docs-site-visual.md`](../acceptance/issue399-docs-site-visual.md)。実ブラウザ描画で 3 カラムレイアウトの右 TOC が CSS カスケード順序バグにより全 breakpoint で描画されない不具合を検出し、`site/assets/site.css` で修正済み） |
 
 節番号は本文書内で安定させ、後続イシューからの参照（`docs-site-redesign.md §N`）を
 壊さない。節を追加する場合は末尾に追記し、既存節番号を振り直さない。
