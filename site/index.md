@@ -39,7 +39,8 @@ Cargo feature で個別に着脱できるプラグインです。多くは `Serv
 
 ### Getting Started
 
-クローンから最小サーバの起動・動作確認までを最短手順で説明します。
+crates.io からの依存追加〜最小サーバの起動・動作確認までを最短手順で説明します。
+リポジトリのクローンは不要です。
 
 → [Getting Started](/fandhe-backend/getting-started/)
 
