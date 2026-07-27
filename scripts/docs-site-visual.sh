@@ -152,6 +152,13 @@ echo "==> dark variant generated ($after_count page(s))"
 # start_server_on_free_port: 候補ポートへ実サーバを起動し、ss の pid フィールドで
 # 「自分が bind した」ことを確認する。並列イシュー実行中のポート衝突に効く
 # （実装計画 §ステップ1）。
+# NOTE: この関数は呼び出し側で `port="$(start_server_on_free_port ...)"` の
+# ようにコマンド置換経由で呼ばれる。コマンド置換はサブシェルで実行されるため、
+# 関数内で SERVER_PIDS（親シェルの配列）へ追記しても親シェルには反映されず、
+# EXIT トラップの cleanup が起動したサーバを kill できない不具合があった
+# （イシュー #399 PR #413 Bugbot 指摘 1）。PID は `.pid-$mode-$port` ファイルへ
+# 書き出す形を維持し、SERVER_PIDS への追記は呼び出し側（コマンド置換の外）で
+# 同ファイルを読み直して行う。
 start_server_on_free_port() {
   local root="$1"
   local mode="$2" # "plain" or "nojs"
@@ -175,7 +182,6 @@ start_server_on_free_port() {
     pid="$(cat "$LOGS_DIR/.pid-$mode-$port" 2>/dev/null || true)"
     if [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1; then
       if COLUMNS=1000 ss -ltnp 2>/dev/null | grep ":$port " | grep -q "pid=$pid,"; then
-        SERVER_PIDS+=("$pid")
         echo "$port"
         return 0
       fi
@@ -188,9 +194,25 @@ start_server_on_free_port() {
   exit 1
 }
 
+# register_server_pid: start_server_on_free_port が成功後に書き出した
+# `.pid-$mode-$port` ファイルを親シェル（コマンド置換の外）で読み直し、
+# 親シェルの SERVER_PIDS へ追記する。EXIT トラップの cleanup が実際にこの
+# PID を kill できるようにするための橋渡し。
+register_server_pid() {
+  local mode="$1" port="$2"
+  local pid
+  pid="$(cat "$LOGS_DIR/.pid-$mode-$port" 2>/dev/null || true)"
+  if [ -n "$pid" ]; then
+    SERVER_PIDS+=("$pid")
+  fi
+}
+
 LIGHT_PORT="$(start_server_on_free_port "$SERVE_LIGHT" plain)"
+register_server_pid plain "$LIGHT_PORT"
 DARK_PORT="$(start_server_on_free_port "$SERVE_DARK" plain)"
+register_server_pid plain "$DARK_PORT"
 NOJS_PORT="$(start_server_on_free_port "$SERVE_NOJS" nojs)"
+register_server_pid nojs "$NOJS_PORT"
 echo "==> servers up: light=127.0.0.1:$LIGHT_PORT dark=127.0.0.1:$DARK_PORT nojs=127.0.0.1:$NOJS_PORT"
 
 # ── ステップ 3: 撮影ヘルパー ──────────────────────────────────────────
@@ -325,22 +347,49 @@ else
   S2_OK=0
 fi
 
+# S2 の dark 用配信ツリー: SERVE_DARK 生成時と同じ
+# `<html lang="ja">` → `<html lang="ja" data-theme="dark">` 置換を S2_ROOT の
+# コピーに適用する。誤って light-only の S2_ROOT を dark 変種としても撮影して
+# いた不具合（イシュー #399 PR #413 Bugbot 指摘 2）の修正。
+S2_DARK_ROOT="$OUT_DIR/serve-search-dark"
+if [ "$S2_OK" = "1" ]; then
+  rm -rf "$S2_DARK_ROOT"
+  cp -r "$S2_ROOT" "$S2_DARK_ROOT"
+  s2_dark_before="$(grep -rl '<html lang="ja">' "$S2_DARK_ROOT$BASE_PATH" --include='*.html' | wc -l | tr -d ' ')"
+  find "$S2_DARK_ROOT$BASE_PATH" -name '*.html' -print0 | xargs -0 sed -i \
+    's/<html lang="ja">/<html lang="ja" data-theme="dark">/'
+  s2_dark_after="$(grep -rl '<html lang="ja" data-theme="dark">' "$S2_DARK_ROOT$BASE_PATH" --include='*.html' | wc -l | tr -d ' ')"
+  if [ "$s2_dark_before" != "$s2_dark_after" ] || [ "$s2_dark_before" -eq 0 ]; then
+    echo "warning: S2 (search results, Tier 2) dark variant substitution count mismatch (before=$s2_dark_before after=$s2_dark_after) — skipped" >&2
+    S2_OK=0
+  fi
+fi
+
 if [ "$S2_OK" = "1" ]; then
   S2_PORT="$(start_server_on_free_port "$S2_ROOT" plain || echo "")"
-  if [ -n "$S2_PORT" ]; then
+  if [ -n "$S2_PORT" ]; then register_server_pid plain "$S2_PORT"; fi
+  S2_DARK_PORT="$(start_server_on_free_port "$S2_DARK_ROOT" plain || echo "")"
+  if [ -n "$S2_DARK_PORT" ]; then register_server_pid plain "$S2_DARK_PORT"; fi
+  if [ -n "$S2_PORT" ] && [ -n "$S2_DARK_PORT" ]; then
     S2_URL_LIGHT="http://127.0.0.1:$S2_PORT$BASE_PATH/"
+    S2_URL_DARK="http://127.0.0.1:$S2_DARK_PORT$BASE_PATH/"
     for variant in light dark; do
       file="$SHOTS_DIR/s2-search-results-$variant.png"
+      if [ "$variant" = "dark" ]; then
+        url="$S2_URL_DARK"
+      else
+        url="$S2_URL_LIGHT"
+      fi
       "$CHROMIUM_BIN" --headless --disable-gpu --no-sandbox \
         --window-size=1440,900 \
         --screenshot="$file" \
         --virtual-time-budget=5000 \
-        "$S2_URL_LIGHT" >"$LOGS_DIR/shot-s2-$variant.log" 2>&1 || true
+        "$url" >"$LOGS_DIR/shot-s2-$variant.log" 2>&1 || true
       if [ -s "$file" ]; then
         bytes="$(stat -c%s "$file")"
         sha="$(sha256sum "$file" | awk '{print $1}')"
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-          "shots/s2-search-results-$variant.png" "$S2_URL_LIGHT" 1440 900 "$variant" harness "$bytes" "$sha" >>"$MANIFEST"
+          "shots/s2-search-results-$variant.png" "$url" 1440 900 "$variant" harness "$bytes" "$sha" >>"$MANIFEST"
         TOTAL_SHOTS=$((TOTAL_SHOTS + 1))
       else
         echo "warning: S2 (search results, Tier 2) capture failed for $variant — omitted from manifest (see docs/acceptance report 検証の限界)" >&2
