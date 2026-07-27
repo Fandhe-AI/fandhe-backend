@@ -1,66 +1,75 @@
 # Getting Started
 
-fandhe-backend をクローンしてから最小サーバを起動し、動作確認するまでの最短手順です。
+crates.io に公開済みの fandhe-backend を自分のプロジェクトへ組み込み、最小サーバを
+起動して動作確認するまでの最短手順です。リポジトリのクローンは不要です。
 
-## crates.io から使う（公開済み）
+## 前提
 
-crates.io v0.1.0 として公開済み（2026-07-21）です。自分のプロジェクトに組み込む場合は
-リポジトリのクローンなしで [crates.io](https://crates.io/crates/fandhe-backend-core)
-から直接依存に追加できます。
+- Rust の stable ツールチェーン（`rustup` でインストールされていれば追加設定は
+  不要です）
+
+## 1. プロジェクトを作成して依存を追加する
+
+crates.io v0.1.0 として公開済み（2026-07-21）です。
+[crates.io](https://crates.io/crates/fandhe-backend-core) から直接依存に追加します。
 
 ```bash
-cargo add fandhe-backend-core
+cargo new my-app && cd my-app
 
-# プラグインは feature で有効化します（例: WebSocket）
+cargo add fandhe-backend-core fandhe-backend-http fandhe-backend-routes
+cargo add tokio --features rt-multi-thread,macros
+
+# プラグインは feature で有効化します（例: WebSocket。一覧は本ページ 5 節参照）
 cargo add fandhe-backend-core --features websocket
 ```
 
 公開対象クレートは `fandhe-backend-core` / `fandhe-backend-http` / `fandhe-backend-routes` と
 `fandhe-backend-plugin-*` の計 13 クレート（すべて v0.1.0 の lockstep）ですが、
 通常は `fandhe-backend-core` の feature 経由で利用すれば十分です（feature 一覧は
-本ページ 5 節参照）。自分のプロジェクトへ組み込む出発点（`cargo new` 相当の雛形）が
-欲しい場合は
-[`templates/app/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/templates/app/)
-を土台にコピーして使えます。以降の節は、リポジトリをクローンして examples を動かしながら
-試す場合の手順です。
+本ページ 5 節参照）。feature を何も指定しない場合、`fandhe-backend-plugin-*` の
+依存・コードは一切バイナリに含まれません（pay-for-what-you-use、
+[`.claude/rules/pay-for-what-you-use.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/.claude/rules/pay-for-what-you-use.md)）。
 
-## 前提
+`cargo new` の代わりに雛形から始めることもできます。複数 feature を組み合わせた
+実運用形の雛形は
+[`templates/app/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/templates/app/)、
+1 機能ずつの独立サンプルは
+[`examples/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/examples/)
+にあり、いずれも standalone プロジェクトとしてコピーしてそのまま `cargo run`
+できます（コピー後は `Cargo.toml` の依存から `path = ...` を外し、
+`version = "0.1.0"` のみの crates.io 版参照に切り替えてください）。
 
-- Rust の stable ツールチェーン（`rust-toolchain.toml` が固定しているバージョンが
-  自動で使われます。`rustup` を使っている場合は追加設定不要です）
-- `docs/spec/` を submodule として取り込むため、クローン時は `--recurse-submodules`
-  が必要です
+## 2. 最小サーバを書く
 
-## 1. クローン
-
-```bash
-git clone --recurse-submodules git@github.com:Fandhe-AI/fandhe-backend.git
-cd fandhe-backend
-```
-
-既存クローンに submodule が入っていない場合は次で取り込めます。
-
-```bash
-git submodule update --init
-```
-
-## 2. ビルド
-
-```bash
-cargo build
-```
-
-既定（no feature）では `crates/core`・`crates/http`・`crates/routes` のみがビルド対象に
-なります。feature を何も指定しない場合、`crates/plugin-*` の依存・コードは一切
-バイナリに含まれません（pay-for-what-you-use、[`.claude/rules/pay-for-what-you-use.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/.claude/rules/pay-for-what-you-use.md)）。
-
-## 3. 最小サーバを起動する
-
-`crates/core/examples/minimal.rs` は `fandhe_backend_core::Server` に
+`src/main.rs` を次の内容に置き換えます。`fandhe_backend_core::Server` に
 `fandhe_backend_routes::Router` を 1 件登録しただけの最小構成です。
 
+```rust,no_run
+use fandhe_backend_core::Server;
+use fandhe_backend_http::response::Response;
+use fandhe_backend_routes::Router;
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let router = Router::new()
+        .route("GET", "/", |_head, _body| {
+            Response::new(200, b"hello fandhe-backend\n".to_vec())
+        })
+        .route("GET", "/health", |_head, _body| {
+            Response::new(200, b"ok\n".to_vec())
+        });
+
+    let server = Server::new().handler(router);
+    let bound = server.bind("127.0.0.1:3000").await?;
+    println!("listening on http://{}", bound.local_addr()?);
+    bound.run().await
+}
+```
+
+## 3. 起動して動作確認する
+
 ```bash
-cargo run --example minimal -p fandhe-backend-core
+cargo run
 ```
 
 別ターミナルから動作確認します。

@@ -18,7 +18,7 @@
 
 | 文書 | 内容 |
 |------|------|
-| [`getting-started.md`](./getting-started.md) | クローン〜ビルド〜最小サーバ起動〜動作確認までの最短手順 |
+| [`getting-started.md`](./getting-started.md) | crates.io からの依存追加〜最小サーバ起動〜動作確認までの最短手順 |
 | [`feature-samples.md`](./feature-samples.md) | Cargo feature（websocket / graphql / openapi / webrtc 系 / tracing / hub-wiring）ごとの最小サンプルと実行手順 |
 | [`tutorial.md`](./tutorial.md) | 最小サーバ→拡張点の実装→feature 有効化まで段階的に学ぶチュートリアル |
 
