@@ -24,7 +24,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use fandhe_backend_docs_site::layout::docs_page;
-use fandhe_backend_docs_site::nav::{Nav, parse_nav, prev_next_nav, sidebar};
+use fandhe_backend_docs_site::nav::{Nav, header_nav, parse_nav, prev_next_nav, sidebar};
 use fandhe_frontend_core::{Node, li, p, render, text, ul};
 
 /// `CARGO_MANIFEST_DIR`（`crates/docs-site`）から repo_root を解決する
@@ -53,6 +53,7 @@ base_path = ""
 
 [[section]]
 title = "Getting Started"
+index_path = "/"
 
 [[section.page]]
 title = "Intro"
@@ -66,6 +67,7 @@ path = "/quickstart/"
 
 [[section]]
 title = "Guides"
+index_path = "/advanced/"
 
 [[section.page]]
 title = "Advanced"
@@ -223,6 +225,17 @@ fn sidebar_html_class_tokens_are_covered_by_site_css() {
 }
 
 #[test]
+fn header_nav_html_class_tokens_are_covered_by_site_css() {
+    let css_tokens = extract_css_class_selectors(&site_css());
+    let nav = fixture_nav();
+    // 現在ページをセクション所属ページに一致させ、`aria-current="true"` /
+    // `aria-current="page"` 両分岐を実際に発生させる。
+    let node = header_nav(&nav, "/quickstart/");
+    let html = render(&node);
+    assert_all_classes_covered(&html, &css_tokens, "nav::header_nav");
+}
+
+#[test]
 fn prev_next_nav_html_class_tokens_are_covered_by_site_css() {
     let css_tokens = extract_css_class_selectors(&site_css());
     let nav = fixture_nav();
@@ -252,6 +265,11 @@ const EXPECTED_CLASSES: &[&str] = &[
     "docs-github-link",
     "docs-header",
     "docs-header-actions",
+    "docs-header-dropdown",
+    "docs-header-group",
+    "docs-header-menu",
+    "docs-header-nav",
+    "docs-header-trigger",
     "docs-main",
     "docs-no-toc",
     "docs-search",
@@ -278,7 +296,7 @@ fn generated_html_class_inventory_matches_expected_contract_and_site_css() {
     let css_tokens = extract_css_class_selectors(&site_css());
     let expected: HashSet<String> = EXPECTED_CLASSES.iter().map(|s| s.to_string()).collect();
 
-    // `docs_page`・`sidebar`・`prev_next_nav` の 3 フィクスチャ HTML を合算し、
+    // `docs_page`・`sidebar`・`header_nav`・`prev_next_nav` のフィクスチャ HTML を合算し、
     // 契約対象 class が実際に出力される全経路をまとめて走査する
     // （TOC 2 階層・prev/next 両方向・ヘッダー右側要素を同時に発生させる
     // フィクスチャ選定は上記個別テストの流儀を踏襲）。
@@ -299,6 +317,7 @@ fn generated_html_class_inventory_matches_expected_contract_and_site_css() {
         fixture_body_without_headings(),
     )));
     html.push_str(&render(&sidebar(&nav, "/quickstart/")));
+    html.push_str(&render(&header_nav(&nav, "/quickstart/")));
     html.push_str(&render(&prev_next_nav(&nav, "/quickstart/")));
     let html_tokens = extract_class_tokens(&html);
 

@@ -21,7 +21,18 @@
  *       先頭に出力される、本文へのスキップリンク。既定は視覚上隠し、
  *       `:focus-visible` 時のみ表示する
  *     header.docs-header            … ヘッダバー（サイトタイトルへのリンク
- *       a.docs-brand が付与される + div.docs-header-actions）
+ *       a.docs-brand + nav.docs-header-nav + div.docs-header-actions）
+ *       nav.docs-header-nav          … ヘッダーセクションメニュー
+ *         （`nav::header_nav()`。`layout::docs_page_with_header_nav` が
+ *         a.docs-brand の直後に配置する。開閉は :hover / :focus-within の
+ *         CSS のみで行い、`role` / `aria-expanded` は付与されない）
+ *         ul.docs-header-menu        … セクション列（横並び）
+ *           li.docs-header-group     … セクション 1 件分（position: relative）
+ *             a.docs-header-trigger  … セクション索引ページ（index_path）への
+ *               リンク。現在セクションでは `aria-current="true"` が付く
+ *             ul.docs-header-dropdown … セクション直下ページのドロップダウン
+ *               （li > a。現在ページには `aria-current="page"` が付く。
+ *               `<768px` では非表示にし、トリガーの横スクロール列のみ残す）
  *       div.docs-header-actions      … ヘッダー右側のアクション領域
  *         （イシュー #390）。全文検索 UI・GitHub リンク・テーマトグルを
  *         この順で内包する
@@ -186,6 +197,106 @@ body {
   letter-spacing: -0.01em;
   color: var(--docs-color-text);
   text-decoration: none;
+}
+
+/*
+ * ---- ヘッダーセクションメニュー ----
+ *
+ * `nav::header_nav()` の実出力（nav.docs-header-nav > ul.docs-header-menu >
+ * li.docs-header-group > a.docs-header-trigger + ul.docs-header-dropdown）。
+ * ドロップダウンの開閉は JS を使わず :hover / :focus-within のみで行う。
+ * `top: 100%` で group に密着させ、トリガーからドロップダウンへポインタを
+ * 移動する途中に隙間（hover が切れる領域）を作らない。
+ */
+
+.docs-header-nav {
+  margin-left: 1.25rem;
+  min-width: 0;
+}
+
+.docs-header-menu {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.docs-header-group {
+  position: relative;
+}
+
+.docs-header-trigger {
+  display: block;
+  padding: 0.3rem 0.65rem;
+  border-radius: 0.4rem;
+  color: var(--docs-color-text-muted);
+  text-decoration: none;
+  font-size: 0.85rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.docs-header-trigger:hover,
+.docs-header-trigger:focus-visible {
+  color: var(--docs-color-text);
+  background: var(--docs-color-bg-subtle);
+}
+
+/* 現在ページが属するセクションのトリガー（`aria-current="true"`。
+ * ページ完全一致の `"page"` とは意味軸が異なる。nav.rs 参照）。 */
+.docs-header-trigger[aria-current="true"] {
+  color: var(--docs-color-accent);
+  background: var(--docs-color-accent-bg);
+  font-weight: 600;
+}
+
+.docs-header-dropdown {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  min-width: 14rem;
+  margin: 0;
+  padding: 0.4rem;
+  list-style: none;
+  background: var(--docs-color-bg-raised);
+  border: 1px solid var(--docs-color-border);
+  border-radius: 0.5rem;
+  box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.12);
+}
+
+.docs-header-group:hover .docs-header-dropdown,
+.docs-header-group:focus-within .docs-header-dropdown {
+  display: block;
+}
+
+.docs-header-dropdown li {
+  margin: 0;
+}
+
+.docs-header-dropdown a {
+  display: block;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.4rem;
+  color: var(--docs-color-text);
+  text-decoration: none;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.docs-header-dropdown a:hover,
+.docs-header-dropdown a:focus-visible {
+  background: var(--docs-color-bg-subtle);
+  outline: none;
+}
+
+.docs-header-dropdown a[aria-current="page"] {
+  color: var(--docs-color-accent);
+  background: var(--docs-color-accent-bg);
+  font-weight: 600;
 }
 
 /* ---- ヘッダー右側のアクション領域（イシュー #390） ---- */
@@ -718,6 +829,36 @@ nav.prev-next a.next {
 @media (max-width: 767px) {
   .docs-container {
     display: block;
+  }
+
+  /*
+   * 狭幅ではサイドバーが現在セクションのみになるため、ヘッダーセクション
+   * メニューを消すと他セクションへの導線が絶たれる。メニューは非表示に
+   * せず 2 段目へ折り返し（トリガーの横スクロール列）、ドロップダウンのみ
+   * 無効化する（:hover はタッチ環境で信頼できないため。トリガー自体が
+   * セクション索引ページへのリンクとして導線を担い、索引ページ到達後は
+   * サイドバーが当該セクションの全ページを表示する。fail-closed で
+   * 導線ゼロにしない方針）。
+   */
+  .docs-header {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: var(--docs-header-height);
+    padding: 0.4rem 1rem;
+    row-gap: 0.15rem;
+  }
+
+  .docs-header-nav {
+    order: 3;
+    width: 100%;
+    overflow-x: auto;
+    margin-left: 0;
+  }
+
+  .docs-header-dropdown,
+  .docs-header-group:hover .docs-header-dropdown,
+  .docs-header-group:focus-within .docs-header-dropdown {
+    display: none;
   }
 
   /*

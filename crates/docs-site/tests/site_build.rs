@@ -148,6 +148,56 @@ fn build_site_succeeds_for_the_real_repository_site() {
     assert!(index_html.contains(r#"src="/fandhe-backend/assets/site.js""#));
 }
 
+/// ヘッダーセクションメニュー + サイドバー現在セクション絞り込みの E2E 検証。
+/// 実サイトのトップページ（Getting Started セクション所属）で、
+/// (a) 全 4 セクションのトリガーがヘッダーに出力される、(b) 現在セクションの
+/// トリガーに `aria-current="true"` が付く、(c) サイドバーには現在セクション
+/// のページのみが載り他セクションのページが載らない、を固定する。
+#[test]
+fn build_site_output_has_header_section_menu_and_scoped_sidebar() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("resolve repository root");
+    let out = TempDir::new("header-nav");
+
+    build_site(&repo_root, &out.0).expect("real site/nav.toml should build cleanly");
+    let index_html = std::fs::read_to_string(out.0.join("index.html")).unwrap();
+
+    // (a) ヘッダーセクションメニューと 4 セクションのトリガー。
+    assert!(index_html.contains(r#"class="docs-header-nav""#));
+    assert_eq!(
+        index_html.matches(r#"class="docs-header-trigger""#).count(),
+        4
+    );
+    assert!(index_html.contains(r#"class="docs-header-dropdown""#));
+
+    // (b) 現在セクション（Getting Started、index_path = "/"）のトリガーのみ
+    // aria-current="true"。
+    assert_eq!(index_html.matches(r#"aria-current="true""#).count(), 1);
+    assert!(
+        index_html
+            .contains(r#"class="docs-header-trigger" href="/fandhe-backend/" aria-current="true""#)
+    );
+
+    // (c) サイドバー（nav.sidebar）は現在セクションのみ。ヘッダードロップ
+    // ダウンにも全ページリンクが載るため、サイドバー部分だけを切り出して
+    // 検証する。
+    let sidebar_start = index_html
+        .find(r#"<nav class="sidebar""#)
+        .expect("sidebar nav must exist");
+    let sidebar_end = index_html[sidebar_start..]
+        .find("</nav>")
+        .map(|i| sidebar_start + i)
+        .expect("sidebar nav must close");
+    let sidebar_html = &index_html[sidebar_start..sidebar_end];
+    assert!(sidebar_html.contains(r#"href="/fandhe-backend/getting-started/""#));
+    assert!(!sidebar_html.contains(r#"href="/fandhe-backend/guides/""#));
+    assert!(!sidebar_html.contains(r#"href="/fandhe-backend/api/server-api/""#));
+    assert!(sidebar_html.contains(">Getting Started<"));
+    assert!(!sidebar_html.contains(">Guides<"));
+}
+
 /// イシュー #391: 実サイトビルド出力に SkipNav・`aria-current="page"` 一本化が
 /// 反映され、`class="current"` が残っていないことを E2E で固定する。
 #[test]

@@ -213,10 +213,14 @@ pub fn build_site(repo_root: &Path, out_dir: &Path) -> Result<BuildReport, Build
                 vec![rewritten_body, nav::prev_next_nav(&nav, &page.path)],
             );
 
-            let document = layout::docs_page(
+            // ヘッダーセクションメニュー + 現在セクション絞り込みサイドバー。
+            // `nav::header_nav` が全セクションへの導線を常時担い、
+            // `nav::sidebar` は現在ページが属するセクションのみを表示する。
+            let document = layout::docs_page_with_header_nav(
                 &page.title,
                 &nav.site.title,
                 &nav.site.base_path,
+                Some(nav::header_nav(&nav, &page.path)),
                 nav::sidebar(&nav, &page.path),
                 body,
             );
@@ -424,6 +428,7 @@ base_path = ""
 
 [[section]]
 title = "Guide"
+index_path = "/"
 
 [[section.page]]
 title = "Intro"

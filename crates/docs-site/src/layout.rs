@@ -315,6 +315,27 @@ pub fn docs_page(
     sidebar: Node,
     body: Node,
 ) -> Node {
+    docs_page_with_header_nav(title, site_title, base_path, None, sidebar, body)
+}
+
+/// [`docs_page`] の拡張版。ヘッダーセクションメニュー（`header_nav`。
+/// `crate::nav::header_nav` の戻り値を渡す契約）を `a.docs-brand` の直後・
+/// `div.docs-header-actions` の前へ組み込む。`None` の場合は従来どおり
+/// メニューなしのヘッダーを出力し、[`docs_page`] は `None` を渡す薄い
+/// ラッパーとして後方互換を維持する（既存呼び出し・テストを壊さない）。
+///
+/// `header_nav` はそのまま `Node` 木として埋め込むため、テキスト・href の
+/// 既定エスケープは生成側（`crate::nav::header_nav`）の [`el`] / [`text`]
+/// 経由の組み立てが担う（本関数は `raw_html()`・HTML 文字列の直接組み立てを
+/// 一切行わない、[`docs_page`] と同一の方針）。
+pub fn docs_page_with_header_nav(
+    title: &str,
+    site_title: &str,
+    base_path: &str,
+    header_nav: Option<Node>,
+    sidebar: Node,
+    body: Node,
+) -> Node {
     let (annotated_body, toc_entries) = with_heading_anchors(body);
     let toc = toc_nav(&toc_entries);
 
@@ -456,16 +477,18 @@ pub fn docs_page(
             ),
         ],
     );
-    let header_node = header(
-        vec![("class", "docs-header")],
-        vec![
-            a(
-                vec![("class", "docs-brand"), ("href", &root_href)],
-                vec![text(site_title.to_string())],
-            ),
-            header_actions,
-        ],
-    );
+    // ヘッダー構成: `a.docs-brand` → セクションメニュー（渡された場合のみ）→
+    // `div.docs-header-actions`。メニューの生成責務は `crate::nav::header_nav`
+    // にあり、本関数は配置順のみを契約する。
+    let mut header_children = vec![a(
+        vec![("class", "docs-brand"), ("href", &root_href)],
+        vec![text(site_title.to_string())],
+    )];
+    if let Some(nav_node) = header_nav {
+        header_children.push(nav_node);
+    }
+    header_children.push(header_actions);
+    let header_node = header(vec![("class", "docs-header")], header_children);
 
     // SkipNav リンク（イシュー #391）。`<body>` 先頭に置き、既定は
     // `site/assets/site.css` の `.skip-nav` 規則で視覚上は隠しつつ Tab

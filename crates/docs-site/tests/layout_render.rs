@@ -7,8 +7,10 @@
 //! が返す `Node` に対する `render()` 出力のみを検証し DOCTYPE の有無は
 //! 検証しない（DOCTYPE 前置は #470 でエントリ接続後に検証する）。
 
-use fandhe_backend_docs_site::layout::{asset_href, docs_page, toc_nav, with_heading_anchors};
-use fandhe_frontend_core::{h2, h3, li, p, render, text, ul};
+use fandhe_backend_docs_site::layout::{
+    asset_href, docs_page, docs_page_with_header_nav, toc_nav, with_heading_anchors,
+};
+use fandhe_frontend_core::{h2, h3, li, nav, p, render, text, ul};
 
 fn sample_sidebar() -> fandhe_frontend_core::Node {
     ul(vec![], vec![li(vec![], vec![text("はじめに")])])
@@ -113,6 +115,54 @@ fn header_actions_contain_github_link_and_theme_toggle() {
     assert!(html.contains(r#"hidden="""#));
     assert!(html.contains(r#"aria-label="Toggle color theme""#));
     assert!(html.contains(r#"aria-pressed="false""#));
+}
+
+#[test]
+fn docs_page_with_header_nav_places_menu_between_brand_and_actions() {
+    // ヘッダーセクションメニュー: `a.docs-brand` の直後・
+    // `div.docs-header-actions` の前に配置される契約を出現順で固定する。
+    // メニュー Node 自体の生成責務は `nav::header_nav` にあるため、ここでは
+    // 配置検証用の最小 `nav.docs-header-nav` を渡す。
+    let body = p(vec![], vec![text("本文です。")]);
+    let header_menu = nav(
+        vec![
+            ("class", "docs-header-nav"),
+            ("aria-label", "Site sections"),
+        ],
+        vec![],
+    );
+    let node = docs_page_with_header_nav(
+        "タイトル",
+        "fandhe-backend",
+        "",
+        Some(header_menu),
+        sample_sidebar(),
+        body,
+    );
+    let html = render(&node);
+
+    let brand_pos = html.find(r#"class="docs-brand""#).expect("docs-brand");
+    let menu_pos = html
+        .find(r#"class="docs-header-nav""#)
+        .expect("docs-header-nav");
+    let actions_pos = html
+        .find(r#"class="docs-header-actions""#)
+        .expect("docs-header-actions");
+    assert!(brand_pos < menu_pos);
+    assert!(menu_pos < actions_pos);
+}
+
+#[test]
+fn docs_page_without_header_nav_omits_menu_and_keeps_backward_compatibility() {
+    // `docs_page` は `docs_page_with_header_nav(.., None, ..)` の薄いラッパー
+    // としてメニューなしの従来ヘッダーを出力する（後方互換契約）。
+    let body = p(vec![], vec![text("本文です。")]);
+    let node = docs_page("タイトル", "fandhe-backend", "", sample_sidebar(), body);
+    let html = render(&node);
+
+    assert!(!html.contains("docs-header-nav"));
+    assert!(html.contains(r#"class="docs-brand""#));
+    assert!(html.contains(r#"class="docs-header-actions""#));
 }
 
 #[test]

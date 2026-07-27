@@ -57,6 +57,17 @@ fn site_nav_registers_four_sections_with_expected_titles() {
     );
 }
 
+/// ヘッダーセクションメニュー（`nav::header_nav`）のトリガーリンク先となる
+/// 各セクションの `index_path` を期待値で固定する。パーサが「セクション配下の
+/// 実在 `page.path` と完全一致」を fail-closed 検証するため、ここでは実
+/// マニフェストの値そのものの契約を担う。
+#[test]
+fn site_nav_sections_declare_expected_index_paths() {
+    let nav = load_nav();
+    let index_paths: Vec<&str> = nav.sections.iter().map(|s| s.index_path.as_str()).collect();
+    assert_eq!(index_paths, vec!["/", "/guides/", "/examples/", "/api/"]);
+}
+
 /// 既存の利用者向けドキュメント（トップ + Guides セクション索引 +
 /// `docs/guide/` の 7 本 + API Reference セクション索引 + `docs/api/` の
 /// 5 本 + `site/examples/` の 5 本 = 全 20 ページ）を

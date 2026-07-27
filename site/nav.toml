@@ -7,6 +7,7 @@ base_path = "/fandhe-backend"
 
 [[section]]
 title = "Getting Started"
+index_path = "/"
 
 [[section.page]]
 title = "はじめに"
@@ -20,6 +21,7 @@ path = "/getting-started/"
 
 [[section]]
 title = "Guides"
+index_path = "/guides/"
 
 [[section.page]]
 title = "ガイド一覧"
@@ -58,6 +60,7 @@ path = "/guides/graceful-shutdown/"
 
 [[section]]
 title = "Examples"
+index_path = "/examples/"
 
 [[section.page]]
 title = "サンプル集"
@@ -86,6 +89,7 @@ path = "/examples/templates-app/"
 
 [[section]]
 title = "API Reference"
+index_path = "/api/"
 
 [[section.page]]
 title = "API リファレンス"

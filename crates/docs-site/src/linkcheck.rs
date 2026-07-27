@@ -404,6 +404,7 @@ base_path = "/fandhe-frontend"
 
 [[section]]
 title = "Guide"
+index_path = "/guide/intro/"
 
 [[section.page]]
 title = "Intro"
