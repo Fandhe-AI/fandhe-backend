@@ -17,7 +17,10 @@
 //!
 //! - `#` から始まる行コメント、および文字列値の終端後に続く `# ...`
 //! - `[site]` テーブル（`title` / `base_path` の 2 キー）
-//! - `[[section]]` array-of-tables（`title` キー）
+//! - `[[section]]` array-of-tables（`title` / `index_path` の 2 キー。
+//!   `index_path` はヘッダーセクションメニューのトリガーリンク先で、
+//!   当該セクション配下の実在する `page.path` と完全一致しなければ
+//!   パースエラーにする fail-closed 検証を行う）
 //! - `[[section.page]]` array-of-tables（直前の `[[section]]` に属する。
 //!   `title` / `source` / `path` の 3 キー）
 //! - `key = "value"`（ダブルクォート文字列のみ。エスケープは `\"` `\\`
@@ -77,6 +80,10 @@ pub struct Site {
 pub struct Section {
     /// サイドバーの見出しとして表示するセクションタイトル。
     pub title: String,
+    /// ヘッダーセクションメニュー（[`header_nav`]）のトリガーリンク先となる
+    /// セクション索引ページの出力 URL パス。当該セクション配下の実在する
+    /// `page.path` と完全一致することをパース時に検証済み（fail-closed）。
+    pub index_path: String,
     /// 宣言順を保持したページ列（1 件以上、空セクションはパース時点でエラー）。
     pub pages: Vec<Page>,
 }
@@ -128,6 +135,14 @@ pub enum NavError {
     },
     /// セクションにページが 1 件も宣言されていない。
     EmptySection(String),
+    /// `section.index_path` が当該セクション配下のどの `page.path` とも
+    /// 一致しない（欠落は [`NavError::MissingKey`] が担う）。
+    IndexPathNotInSection {
+        /// 対象セクションのタイトル。
+        section: String,
+        /// 一致しなかった `index_path` の値。
+        index_path: String,
+    },
 }
 
 impl fmt::Display for NavError {
@@ -152,6 +167,13 @@ impl fmt::Display for NavError {
                 write!(f, "missing required key `{key}` in [{context}]")
             }
             NavError::EmptySection(title) => write!(f, "section `{title}` has no pages"),
+            NavError::IndexPathNotInSection {
+                section,
+                index_path,
+            } => write!(
+                f,
+                "section `{section}` declares index_path `{index_path}` which does not match any page.path in the section"
+            ),
         }
     }
 }
@@ -162,6 +184,7 @@ impl std::error::Error for NavError {}
 /// まとめて検証する（欠落順序に依存しない一貫したエラーにするため）。
 struct SectionBuilder {
     title: Option<String>,
+    index_path: Option<String>,
     pages: Vec<PageBuilder>,
 }
 
@@ -361,6 +384,7 @@ pub fn parse_nav(input: &str) -> Result<Nav, NavError> {
                 "section" => {
                     sections.push(SectionBuilder {
                         title: None,
+                        index_path: None,
                         pages: Vec::new(),
                     });
                     ctx = Ctx::Section(sections.len() - 1);
@@ -415,6 +439,12 @@ pub fn parse_nav(input: &str) -> Result<Nav, NavError> {
             },
             Ctx::Section(sidx) => match key {
                 "title" => set_once(&mut sections[sidx].title, value, line, "section.title")?,
+                "index_path" => set_once(
+                    &mut sections[sidx].index_path,
+                    value,
+                    line,
+                    "section.index_path",
+                )?,
                 other => {
                     return Err(parse_err(
                         line,
@@ -493,8 +523,22 @@ pub fn parse_nav(input: &str) -> Result<Nav, NavError> {
                 path,
             });
         }
+        // `index_path` は当該セクション配下の実在する `page.path` と完全一致
+        // しなければならない（fail-closed。ヘッダーセクションメニューの
+        // トリガーが存在しないページを指す事故をパース時点で遮断する）。
+        let index_path = section.index_path.ok_or_else(|| NavError::MissingKey {
+            context: "section".to_string(),
+            key: "index_path".to_string(),
+        })?;
+        if !out_pages.iter().any(|p| p.path == index_path) {
+            return Err(NavError::IndexPathNotInSection {
+                section: title,
+                index_path,
+            });
+        }
         out_sections.push(Section {
             title,
+            index_path,
             pages: out_pages,
         });
     }
@@ -525,6 +569,45 @@ pub fn validate_sources(nav: &Nav, repo_root: &Path) -> Result<(), NavError> {
     Ok(())
 }
 
+impl Nav {
+    /// `path` が属するセクション（配下の `page.path` に完全一致する
+    /// ページを持つセクション）を宣言順の線形探索で返す。どのセクションにも
+    /// 属さないパスは `None`（nav 未登録ページが正当に存在しうるため
+    /// エラーにはしない契約。[`sidebar`] はこの場合に全セクション表示へ
+    /// フォールバックする）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_docs_site::nav::parse_nav;
+    ///
+    /// let nav = parse_nav(
+    ///     r#"
+    /// [site]
+    /// title = "Docs"
+    /// base_path = ""
+    ///
+    /// [[section]]
+    /// title = "Guide"
+    /// index_path = "/intro/"
+    ///
+    /// [[section.page]]
+    /// title = "Intro"
+    /// source = "intro.md"
+    /// path = "/intro/"
+    /// "#,
+    /// )
+    /// .unwrap();
+    /// assert_eq!(nav.section_for_path("/intro/").map(|s| s.title.as_str()), Some("Guide"));
+    /// assert!(nav.section_for_path("/not-in-nav/").is_none());
+    /// ```
+    pub fn section_for_path(&self, path: &str) -> Option<&Section> {
+        self.sections
+            .iter()
+            .find(|section| section.pages.iter().any(|page| page.path == path))
+    }
+}
+
 /// `nav.site.base_path` + `page.path` を単純連結した href を返す。
 /// 両者とも [`parse_nav`] で形式検証済み（`base_path` は `/` 終わりでない、
 /// `path` は `/` 始まり）のため、二重 `/` は発生しない。
@@ -532,15 +615,38 @@ fn href(nav: &Nav, path: &str) -> String {
     format!("{}{}", nav.site.base_path, path)
 }
 
-/// サイドバー [`Node`] を生成する。セクション・ページとも宣言順で列挙し、
-/// `current_path` に一致するページの `<a>` にのみ `aria-current="page"` を
-/// 付与する（イシュー #391。移植元 fandhe-frontend #756 に倣い
-/// `class="current"` の併用は廃止し `aria-current` 一本化とした。支援技術は
-/// `aria-current` のみで現在ページを判別でき、見た目のハイライトは
-/// `site/assets/site.css` の `a[aria-current="page"]` セレクタが担う）。
+/// 1 セクション分のサイドバー見出し（`h2`）+ ページ列（`ul` > `li` > `a`）を
+/// `section_nodes` へ追記する。[`sidebar`] の絞り込み表示・フォールバック
+/// 全件表示の両分岐から呼ばれる単一実装点。
+fn push_sidebar_section(nav: &Nav, section: &Section, current_path: &str, out: &mut Vec<Node>) {
+    let mut items: Vec<Node> = Vec::new();
+    for page in &section.pages {
+        let link_href = href(nav, &page.path);
+        let is_current = page.path == current_path;
+        let mut attrs: Vec<(&str, &str)> = vec![("href", &link_href)];
+        if is_current {
+            attrs.push(("aria-current", "page"));
+        }
+        let link = el("a", attrs, vec![text(page.title.clone())]);
+        items.push(el("li", vec![], vec![link]));
+    }
+    out.push(el("h2", vec![], vec![text(section.title.clone())]));
+    out.push(el("ul", vec![], items));
+}
+
+/// サイドバー [`Node`] を生成する。`current_path` が属するセクション
+/// （[`Nav::section_for_path`]）のみを描画し、`current_path` に一致する
+/// ページの `<a>` にのみ `aria-current="page"` を付与する（イシュー #391。
+/// 移植元 fandhe-frontend #756 に倣い `class="current"` の併用は廃止し
+/// `aria-current` 一本化とした。支援技術は `aria-current` のみで現在ページを
+/// 判別でき、見た目のハイライトは `site/assets/site.css` の
+/// `a[aria-current="page"]` セレクタが担う）。
+///
 /// `current_path` が `nav` 中のどの `page.path` にも一致しない場合は
-/// ハイライトなしで全ページを列挙する（サイトトップ等、nav セクション外の
-/// ページが正当に存在しうるためエラーにはしない契約）。
+/// 従来どおり全セクション・全ページの列挙へフォールバックする（fail-open。
+/// 公開静的サイトのナビゲーション表示でありアクセス境界ではないため、
+/// nav 未登録ページで導線を全損させるより全件表示の方が安全側。他セクション
+/// への導線はヘッダーセクションメニュー（[`header_nav`]）が常時担う）。
 ///
 /// `<nav>`/`<h2>`/`<ul>`/`<li>`/`<a>` はいずれも `role` 属性を付与しない
 /// headless 構造（イシュー #391）。ネイティブ要素の暗黙 role
@@ -552,25 +658,108 @@ fn href(nav: &Nav, path: &str) -> String {
 /// 直接組み立て・`raw_html()` は使用しない。
 pub fn sidebar(nav: &Nav, current_path: &str) -> Node {
     let mut section_nodes: Vec<Node> = Vec::new();
-    for section in &nav.sections {
-        let mut items: Vec<Node> = Vec::new();
-        for page in &section.pages {
-            let link_href = href(nav, &page.path);
-            let is_current = page.path == current_path;
-            let mut attrs: Vec<(&str, &str)> = vec![("href", &link_href)];
-            if is_current {
-                attrs.push(("aria-current", "page"));
+    match nav.section_for_path(current_path) {
+        Some(section) => push_sidebar_section(nav, section, current_path, &mut section_nodes),
+        None => {
+            for section in &nav.sections {
+                push_sidebar_section(nav, section, current_path, &mut section_nodes);
             }
-            let link = el("a", attrs, vec![text(page.title.clone())]);
-            items.push(el("li", vec![], vec![link]));
         }
-        section_nodes.push(el("h2", vec![], vec![text(section.title.clone())]));
-        section_nodes.push(el("ul", vec![], items));
     }
     el(
         "nav",
         vec![("class", "sidebar"), ("aria-label", "Documentation")],
         section_nodes,
+    )
+}
+
+/// ヘッダー用セクションメニュー [`Node`] を生成する。全セクションを宣言順に
+/// 列挙し、`layout::docs_page` のヘッダー（`a.docs-brand` の直後）へ埋め込む
+/// 契約（`crates/docs-site/src/build.rs` が配線する）。
+///
+/// 構造は `nav.docs-header-nav[aria-label="Site sections"]` >
+/// `ul.docs-header-menu` > セクションごとの `li.docs-header-group` >
+/// トリガー `a.docs-header-trigger`（`href` はセクション索引ページ
+/// `section.index_path`）+ ドロップダウン `ul.docs-header-dropdown`
+/// （セクション直下ページの `li` > `a`）。
+///
+/// - トリガーには現在ページがそのセクションに属するとき `aria-current="true"`
+///   を付与する（ページ完全一致を表す `"page"` とは意味軸を分離し、
+///   「現在のセクション」というより粗い粒度を `"true"` で表す）
+/// - ドロップダウン内リンクは `page.path == current_path` のとき
+///   `aria-current="page"` を付与する（[`sidebar`] と同一契約）
+/// - 開閉は JS を使わず CSS の `:hover` / `:focus-within` のみで行うため、
+///   `role` / `aria-expanded` / `aria-haspopup` は付与しない（JS の状態更新
+///   経路が無い静的マークアップに動的状態を偽装すると支援技術へ虚偽の状態を
+///   伝えるため。サイドバートグルの `role` 不使用方針と同原則）
+///
+/// タイトル・href はすべて [`el`] / [`text`] 経由で組み立てられ、`render()`
+/// 時に既定エスケープ（REQ-1）を必ず経由する。
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_docs_site::nav::{header_nav, parse_nav};
+/// use fandhe_frontend_core::render;
+///
+/// let nav = parse_nav(
+///     r#"
+/// [site]
+/// title = "Docs"
+/// base_path = ""
+///
+/// [[section]]
+/// title = "Guide"
+/// index_path = "/intro/"
+///
+/// [[section.page]]
+/// title = "Intro"
+/// source = "intro.md"
+/// path = "/intro/"
+/// "#,
+/// )
+/// .unwrap();
+/// let html = render(&header_nav(&nav, "/intro/"));
+/// assert!(html.contains(r#"class="docs-header-trigger" href="/intro/" aria-current="true""#));
+/// ```
+pub fn header_nav(nav: &Nav, current_path: &str) -> Node {
+    let mut groups: Vec<Node> = Vec::new();
+    for section in &nav.sections {
+        let in_section = section.pages.iter().any(|page| page.path == current_path);
+
+        let trigger_href = href(nav, &section.index_path);
+        let mut trigger_attrs: Vec<(&str, &str)> =
+            vec![("class", "docs-header-trigger"), ("href", &trigger_href)];
+        if in_section {
+            trigger_attrs.push(("aria-current", "true"));
+        }
+        let trigger = el("a", trigger_attrs, vec![text(section.title.clone())]);
+
+        let mut items: Vec<Node> = Vec::new();
+        for page in &section.pages {
+            let link_href = href(nav, &page.path);
+            let mut attrs: Vec<(&str, &str)> = vec![("href", &link_href)];
+            if page.path == current_path {
+                attrs.push(("aria-current", "page"));
+            }
+            let link = el("a", attrs, vec![text(page.title.clone())]);
+            items.push(el("li", vec![], vec![link]));
+        }
+        let dropdown = el("ul", vec![("class", "docs-header-dropdown")], items);
+
+        groups.push(el(
+            "li",
+            vec![("class", "docs-header-group")],
+            vec![trigger, dropdown],
+        ));
+    }
+    el(
+        "nav",
+        vec![
+            ("class", "docs-header-nav"),
+            ("aria-label", "Site sections"),
+        ],
+        vec![el("ul", vec![("class", "docs-header-menu")], groups)],
     )
 }
 
@@ -651,6 +840,7 @@ base_path = "/fandhe-frontend"
 
 [[section]]
 title = "Guide"
+index_path = "/guide/intro/"
 
 [[section.page]]
 title = "Introduction"
@@ -664,6 +854,7 @@ path = "/guide/getting-started/"
 
 [[section]]
 title = "Reference"
+index_path = "/reference/api/"
 
 [[section.page]]
 title = "API"
@@ -700,6 +891,7 @@ base_path = ""
 
 [[section]] # comment after header
 title = "Guide"
+index_path = "/intro/"
 
 [[section.page]]
 title = "Intro"
@@ -720,6 +912,7 @@ base_path = ""
 
 [[section]]
 title = "S"
+index_path = "/p/"
 
 [[section.page]]
 title = "P"
@@ -741,6 +934,7 @@ base_path = ""
 
 [[section]]
 title = "A"
+index_path = "/dup/"
 
 [[section.page]]
 title = "P1"
@@ -749,6 +943,7 @@ path = "/dup/"
 
 [[section]]
 title = "B"
+index_path = "/dup/"
 
 [[section.page]]
 title = "P2"
@@ -771,6 +966,7 @@ base_path = ""
 
 [[section]]
 title = "A"
+index_path = "/p1/"
 
 [[section.page]]
 title = "P1"
@@ -795,6 +991,7 @@ base_path = ""
 
 [[section]]
 title = "A"
+index_path = "/p1/"
 
 [[section.page]]
 title = "P1"
@@ -814,6 +1011,7 @@ base_path = ""
 
 [[section]]
 title = "A"
+index_path = "/p1/"
 
 [[section.page]]
 title = "P1"
@@ -835,6 +1033,7 @@ base_path = ""
 
 [[section]]
 title = "A"
+index_path = "/p1/"
 
 [[section.page]]
 title = "P1"
@@ -857,6 +1056,7 @@ base_path = ""
 
 [[section]]
 title = "A"
+index_path = "/"
 
 [[section.page]]
 title = "Top"
@@ -876,6 +1076,7 @@ base_path = ""
 
 [[section]]
 title = "A"
+index_path = "p1/"
 
 [[section.page]]
 title = "P1"
@@ -894,6 +1095,7 @@ base_path = ""
 
 [[section]]
 title = "A"
+index_path = "/p1"
 
 [[section.page]]
 title = "P1"
@@ -912,6 +1114,7 @@ base_path = ""
 
 [[section]]
 title = "A"
+index_path = "/../p1/"
 
 [[section.page]]
 title = "P1"
@@ -929,6 +1132,7 @@ title = "Docs"
 
 [[section]]
 title = "A"
+index_path = "/p1/"
 
 [[section.page]]
 title = "P1"
@@ -953,6 +1157,7 @@ base_path = ""
 
 [[section]]
 title = "Empty"
+index_path = "/x/"
 "#;
         match parse_nav(input) {
             Err(NavError::EmptySection(title)) => assert_eq!(title, "Empty"),
@@ -984,6 +1189,7 @@ base_path = ""
 
 [[section]]
 title = "A"
+index_path = "/p1/"
 
 [[section.page]]
 title = "P1"
@@ -1017,6 +1223,7 @@ base_path = "no-leading-slash"
 
 [[section]]
 title = "A"
+index_path = "/p1/"
 
 [[section.page]]
 title = "P1"
@@ -1026,18 +1233,95 @@ path = "/p1/"
         assert!(matches!(parse_nav(input), Err(NavError::Parse { .. })));
     }
 
+    // ---- index_path の fail-closed 検証 ----
+
+    #[test]
+    fn rejects_section_without_index_path() {
+        let input = r#"
+[site]
+title = "Docs"
+base_path = ""
+
+[[section]]
+title = "A"
+
+[[section.page]]
+title = "P1"
+source = "p1.md"
+path = "/p1/"
+"#;
+        match parse_nav(input) {
+            Err(NavError::MissingKey { context, key }) => {
+                assert_eq!(context, "section");
+                assert_eq!(key, "index_path");
+            }
+            other => panic!("expected MissingKey, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_index_path_not_matching_any_page_in_section() {
+        // 別セクションのページを指す index_path も「当該セクション配下」
+        // 条件で拒否される（セクション単位の完全一致契約）。
+        let input = r#"
+[site]
+title = "Docs"
+base_path = ""
+
+[[section]]
+title = "A"
+index_path = "/elsewhere/"
+
+[[section.page]]
+title = "P1"
+source = "p1.md"
+path = "/p1/"
+"#;
+        match parse_nav(input) {
+            Err(NavError::IndexPathNotInSection {
+                section,
+                index_path,
+            }) => {
+                assert_eq!(section, "A");
+                assert_eq!(index_path, "/elsewhere/");
+            }
+            other => panic!("expected IndexPathNotInSection, got {other:?}"),
+        }
+    }
+
+    // ---- section_for_path ----
+
+    #[test]
+    fn section_for_path_finds_owning_section_or_none() {
+        let nav = parse_nav(SAMPLE).unwrap();
+        assert_eq!(
+            nav.section_for_path("/guide/getting-started/")
+                .map(|s| s.title.as_str()),
+            Some("Guide")
+        );
+        assert_eq!(
+            nav.section_for_path("/reference/api/")
+                .map(|s| s.title.as_str()),
+            Some("Reference")
+        );
+        assert!(nav.section_for_path("/not-in-nav/").is_none());
+    }
+
     // ---- サイドバー（受け入れ条件 2） ----
 
     #[test]
-    fn sidebar_lists_all_pages_in_document_order_with_current_highlighted() {
+    fn sidebar_lists_only_current_section_pages_with_current_highlighted() {
         let nav = parse_nav(SAMPLE).unwrap();
         let html = render(&sidebar(&nav, "/guide/getting-started/"));
-        // 文書順: Introduction, Getting Started, API
+        // 現在セクション（Guide）のページのみ宣言順で列挙し、他セクション
+        // （Reference）は描画しない（ヘッダーセクションメニュー導入に伴う
+        // 現在セクション絞り込み仕様）。
         let intro_idx = html.find("Introduction").unwrap();
         let getting_started_idx = html.find("Getting Started").unwrap();
-        let api_idx = html.find("API").unwrap();
         assert!(intro_idx < getting_started_idx);
-        assert!(getting_started_idx < api_idx);
+        assert!(html.contains(">Guide<"));
+        assert!(!html.contains(">Reference<"));
+        assert!(!html.contains(r#"href="/fandhe-frontend/reference/api/""#));
 
         assert!(html.contains(r#"href="/fandhe-frontend/guide/getting-started/""#));
         // 現在ページのみ aria-current="page" を持つ（イシュー #391:
@@ -1047,9 +1331,15 @@ path = "/p1/"
     }
 
     #[test]
-    fn sidebar_has_no_highlight_when_current_path_absent() {
+    fn sidebar_falls_back_to_all_sections_when_current_path_absent() {
+        // nav 未登録パスでは全セクション表示へフォールバックする（fail-open。
+        // sidebar の doc comment 参照）。ハイライトは付かない。
         let nav = parse_nav(SAMPLE).unwrap();
         let html = render(&sidebar(&nav, "/not-in-nav/"));
+        assert!(html.contains(">Guide<"));
+        assert!(html.contains(">Reference<"));
+        assert!(html.contains(r#"href="/fandhe-frontend/guide/intro/""#));
+        assert!(html.contains(r#"href="/fandhe-frontend/reference/api/""#));
         assert!(!html.contains("aria-current"));
         assert!(!html.contains(r#"class="current""#));
     }
@@ -1072,6 +1362,7 @@ base_path = ""
 
 [[section]]
 title = "<script>alert(1)</script>"
+index_path = "/p1/"
 
 [[section.page]]
 title = "Quote\"Title"
@@ -1129,5 +1420,92 @@ path = "/p1/"
         let html_last = render(&prev_next_nav(&nav, "/reference/api/"));
         assert!(html_last.contains(r#"class="prev""#));
         assert!(!html_last.contains(r#"class="next""#));
+    }
+
+    // ---- ヘッダーセクションメニュー（header_nav） ----
+
+    #[test]
+    fn header_nav_lists_all_sections_with_triggers_and_dropdowns() {
+        let nav = parse_nav(SAMPLE).unwrap();
+        let html = render(&header_nav(&nav, "/guide/getting-started/"));
+
+        assert!(html.contains(r#"<nav class="docs-header-nav" aria-label="Site sections">"#));
+        assert!(html.contains(r#"class="docs-header-menu""#));
+        // 全セクションのグループが宣言順で出力される。
+        assert_eq!(html.matches(r#"class="docs-header-group""#).count(), 2);
+        assert_eq!(html.matches(r#"class="docs-header-dropdown""#).count(), 2);
+
+        // トリガーの href はセクション索引ページ（index_path）を指す。
+        assert!(
+            html.contains(r#"class="docs-header-trigger" href="/fandhe-frontend/guide/intro/""#)
+        );
+        assert!(
+            html.contains(r#"class="docs-header-trigger" href="/fandhe-frontend/reference/api/""#)
+        );
+
+        // ドロップダウンには各セクション直下の全ページが入る。
+        assert!(html.contains(r#"href="/fandhe-frontend/guide/getting-started/""#));
+        assert!(html.contains(">Introduction<"));
+        assert!(html.contains(">API<"));
+    }
+
+    #[test]
+    fn header_nav_marks_current_section_trigger_and_current_page_link() {
+        let nav = parse_nav(SAMPLE).unwrap();
+        let html = render(&header_nav(&nav, "/guide/getting-started/"));
+
+        // 現在セクション（Guide）のトリガーにのみ aria-current="true"
+        // （セクション粒度）、現在ページのリンクにのみ aria-current="page"
+        // （ページ粒度）。意味軸を分離した 2 値がそれぞれ 1 回ずつ出現する。
+        assert_eq!(html.matches(r#"aria-current="true""#).count(), 1);
+        assert!(html.contains(
+            r#"class="docs-header-trigger" href="/fandhe-frontend/guide/intro/" aria-current="true""#
+        ));
+        assert_eq!(html.matches(r#"aria-current="page""#).count(), 1);
+        assert!(
+            html.contains(r#"href="/fandhe-frontend/guide/getting-started/" aria-current="page""#)
+        );
+    }
+
+    #[test]
+    fn header_nav_has_no_current_markers_for_unregistered_path() {
+        let nav = parse_nav(SAMPLE).unwrap();
+        let html = render(&header_nav(&nav, "/not-in-nav/"));
+        assert!(!html.contains("aria-current"));
+    }
+
+    #[test]
+    fn header_nav_never_emits_role_or_dynamic_state_attributes() {
+        // 開閉は CSS の :hover / :focus-within のみで行うため、role /
+        // aria-expanded / aria-haspopup を付与しない（静的マークアップへの
+        // 動的状態の偽装を避ける契約。header_nav の doc comment 参照）。
+        let nav = parse_nav(SAMPLE).unwrap();
+        let html = render(&header_nav(&nav, "/guide/intro/"));
+        assert!(!html.contains("role="));
+        assert!(!html.contains("aria-expanded"));
+        assert!(!html.contains("aria-haspopup"));
+    }
+
+    #[test]
+    fn header_nav_escapes_section_and_page_titles() {
+        let input = r#"
+[site]
+title = "Docs"
+base_path = ""
+
+[[section]]
+title = "<script>alert(1)</script>"
+index_path = "/p1/"
+
+[[section.page]]
+title = "Quote\"Title"
+source = "p1.md"
+path = "/p1/"
+"#;
+        let nav = parse_nav(input).unwrap();
+        let html = render(&header_nav(&nav, "/p1/"));
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(html.contains("Quote&quot;Title"));
     }
 }
