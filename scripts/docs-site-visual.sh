@@ -227,8 +227,12 @@ shoot() {
     echo "error: shot budget exceeded ($MAX_SHOTS)" >&2
     exit 1
   fi
+  # NOTE: Chromium の `--hide-scrollbars` は値なしプレゼンス判定の boolean スイッチ
+  # （`base::CommandLine::HasSwitch` で判定）のため `=false` を渡しても無効化されず、
+  # 逆にスクロールバーを非表示にしてしまう（イシュー #413 Bugbot 指摘）。ページレベル
+  # 横スクロールバー非発生の確認（観点 4）にはスクロールバーを実際に表示させたまま
+  # 撮影する必要があるため、フラグ自体を渡さない（Chromium 既定でスクロールバー表示）。
   "$CHROMIUM_BIN" --headless --disable-gpu --no-sandbox \
-    --hide-scrollbars=false \
     --window-size="${width},${height}" \
     --screenshot="$file" \
     --virtual-time-budget=4000 \
