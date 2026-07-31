@@ -212,9 +212,11 @@ fandhe-backend/
 │   │                                    # ファイル配信も遮断）+ canonicalize 後の root 配下
 │   │                                    # 検証）でパストラバーサル・シンボリックリンク脱出を
 │   │                                    # 拒否し、未検出・検証失敗・サイズ超過は一律 404。
-│   │                                    # 外部依存ゼロ（`fandhe-backend-http` + `tokio`
-│   │                                    # の `rt` feature のみ）、`docs/design/plugin-boundary.md`
-│   │                                    # 5.11 節を参照）
+│   │                                    # 末尾スラッシュ 1 個（`<mount>/dir/`）はディレクトリ
+│   │                                    # 要求として index.html を解決（連続スラッシュ拒否は
+│   │                                    # 維持、イシュー #418）。外部依存ゼロ（`fandhe-backend-http`
+│   │                                    # + `tokio` の `rt` feature のみ）、
+│   │                                    # `docs/design/plugin-boundary.md` 5.11 節を参照）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
 │   ├── docs-site                      # GitHub Pages ドキュメントサイト生成ツール（SSG、
 │   │                                    # fandhe-frontend の docs-site を移植。publish=false で

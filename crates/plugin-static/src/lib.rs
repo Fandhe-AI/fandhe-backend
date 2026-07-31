@@ -43,6 +43,13 @@
 //! - ディレクトリリスティングは実装しない（A05 対策、恒久方針）
 //! - ファイル I/O（`canonicalize`・`metadata`・`read`）は単一の
 //!   `spawn_blocking` クロージャ内に閉じる（`.claude/rules/coding-rust.md`）
+//! - 末尾スラッシュ 1 個は「ディレクトリ要求」として受理し `index.html` を
+//!   解決する（SSG が生成する `/posts/hello/` 形式の URL 互換、イシュー
+//!   #418）。除去は 1 個のみに限定し、連続スラッシュ（`//`）は引き続き
+//!   空セグメントとして一律拒否する（「正規化しない」方針を後退させない）。
+//!   末尾スラッシュ付き要求が通常ファイルへ解決された場合も一律 404
+//!   （フェイルクローズ）。301 リダイレクトによる URL 正規化は本クレートの
+//!   スコープ外（拡張点でレスポンス改変ができない制約、イシュー #420）
 //!
 //! # 既知の限界
 //!
@@ -259,6 +266,9 @@ fn is_safe_segment(segment: &str) -> bool {
 ///
 /// `root` は構築時に canonicalize 済みの前提（[`StaticFilesConfigBuilder::build`]）。
 /// `segments` は [`is_safe_segment`] を通過済みの前提（呼び出し元が保証）。
+/// `dir_request` は URL が末尾スラッシュ付き（「ディレクトリ要求」、イシュー
+/// #418）だったかを表す。`true` の場合、解決先が通常ファイルであれば配信
+/// しない（一般的な静的サーバーと同挙動、フェイルクローズ）。
 /// 戻り値 `Some((bytes, content_type))` は配信対象を確定できたことを意味し、
 /// `None` はあらゆる失敗（未検出・root 外・ディレクトリで index.html なし・
 /// サイズ超過・I/O エラー）を一律に表す（呼び出し元が 404 へ変換する、
@@ -266,6 +276,7 @@ fn is_safe_segment(segment: &str) -> bool {
 fn resolve_and_read(
     root: &Path,
     segments: &[&str],
+    dir_request: bool,
     max_file_bytes: u64,
 ) -> Option<(Vec<u8>, &'static str)> {
     let mut candidate = root.to_path_buf();
@@ -282,6 +293,12 @@ fn resolve_and_read(
     }
 
     let metadata = std::fs::metadata(&canonical).ok()?;
+    // 末尾スラッシュ付き要求（ディレクトリ要求）が通常ファイルへ解決された
+    // 場合は配信しない（イシュー #418、一般的な静的サーバーと同挙動の
+    // フェイルクローズ）。
+    if dir_request && !metadata.is_dir() {
+        return None;
+    }
     let final_path = if metadata.is_dir() {
         // ディレクトリ解決時は index.html を試す（SPA ユースケース向けの
         // 最小既定。ディレクトリリスティングは実装しない、モジュール冒頭 doc）。
@@ -338,6 +355,9 @@ fn try_add_header(response: Response, name: &str, value: &str) -> Response {
 /// 完結させたことを意味する）。ファイル未検出・パス走査試行・サイズ超過等の
 /// あらゆる失敗は一律 404（モジュール冒頭 doc のフェイルクローズ方針）。
 ///
+/// 末尾スラッシュ 1 個（`<mount>/dir/`）は「ディレクトリ要求」として
+/// `dir/index.html` を解決する（イシュー #418、モジュール冒頭 doc 参照）。
+///
 /// # ブロッキング I/O の隔離（`.claude/rules/coding-rust.md`）
 ///
 /// `canonicalize`・`metadata`・`read` はすべて `tokio::task::spawn_blocking`
@@ -362,6 +382,15 @@ fn try_add_header(response: Response, name: &str, value: &str) -> Response {
 /// let config = StaticFilesConfig::builder("/static", &dir).build().unwrap();
 ///
 /// let buf = b"GET /static/index.html HTTP/1.1\r\n\r\n";
+/// let ParseOutcome::Complete { head, .. } = parse_request_head(buf).unwrap() else {
+///     unreachable!()
+/// };
+/// let response = try_handle_static(&head, &config).await.unwrap();
+/// assert_eq!(response.status, 200);
+/// assert_eq!(response.body, b"<h1>hi</h1>");
+///
+/// // 末尾スラッシュ付きディレクトリ URL も index.html を解決する（イシュー #418）。
+/// let buf = b"GET /static/ HTTP/1.1\r\n\r\n";
 /// let ParseOutcome::Complete { head, .. } = parse_request_head(buf).unwrap() else {
 ///     unreachable!()
 /// };
@@ -395,6 +424,21 @@ pub async fn try_handle_static(head: &RequestHead, config: &StaticFilesConfig) -
     let path = head.path();
     let tail = strip_mount(path, &config.mount)?;
 
+    // 末尾スラッシュ 1 個は「ディレクトリ要求」（SSG が生成する `/posts/hello/`
+    // 形式の URL 互換、イシュー #418）として受理し、`index.html` 解決を試みる。
+    // 除去は 1 個のみに限定し、連続スラッシュ由来の空セグメント拒否（下記
+    // `is_safe_segment` 検証・「正規化しない」方針）は後退させない。
+    let (tail, dir_request) = match tail.strip_suffix('/') {
+        Some(stripped) => (stripped, true),
+        None => (tail, false),
+    };
+    // `/static//`（mount 直後が連続スラッシュ）は除去後も tail が空のまま
+    // 残る。mount 直下の `/static/`（既存挙動、tail が最初から空）とは区別し、
+    // 一律 404 で連続スラッシュ拒否方針を維持する。
+    if dir_request && tail.is_empty() {
+        return Some(Response::empty(404));
+    }
+
     let segments: Vec<&str> = if tail.is_empty() {
         Vec::new()
     } else {
@@ -412,7 +456,7 @@ pub async fn try_handle_static(head: &RequestHead, config: &StaticFilesConfig) -
 
     let outcome = tokio::task::spawn_blocking(move || {
         let refs: Vec<&str> = owned_segments.iter().map(String::as_str).collect();
-        resolve_and_read(&root, &refs, max_file_bytes)
+        resolve_and_read(&root, &refs, dir_request, max_file_bytes)
     })
     .await;
 
@@ -594,6 +638,102 @@ mod tests {
         let response = try_handle_static(&head, &config).await.unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"<h1>docs</h1>");
+    }
+
+    // --- 末尾スラッシュ（ディレクトリ要求、イシュー #418） ---
+
+    #[tokio::test]
+    async fn serves_subdirectory_index_html_with_trailing_slash() {
+        let dir = TempDir::new();
+        dir.write("docs/index.html", b"<h1>docs</h1>");
+        let config = config_for(&dir);
+        let head = head_from(b"GET /static/docs/ HTTP/1.1\r\n\r\n");
+
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"<h1>docs</h1>");
+    }
+
+    #[tokio::test]
+    async fn serves_root_index_html_with_trailing_slash() {
+        let dir = TempDir::new();
+        dir.write("index.html", b"<h1>root</h1>");
+        let config = config_for(&dir);
+        let head = head_from(b"GET /static/ HTTP/1.1\r\n\r\n");
+
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"<h1>root</h1>");
+    }
+
+    #[tokio::test]
+    async fn serves_directory_index_with_trailing_slash_on_root_mount() {
+        let dir = TempDir::new();
+        dir.write("docs/index.html", b"<h1>docs</h1>");
+        let config = StaticFilesConfig::builder("/", dir.path()).build().unwrap();
+        let head = head_from(b"GET /docs/ HTTP/1.1\r\n\r\n");
+
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"<h1>docs</h1>");
+    }
+
+    #[tokio::test]
+    async fn trailing_slash_on_regular_file_returns_404() {
+        let dir = TempDir::new();
+        dir.write("app.js", b"console.log('hi')");
+        let config = config_for(&dir);
+        let head = head_from(b"GET /static/app.js/ HTTP/1.1\r\n\r\n");
+
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 404);
+    }
+
+    #[tokio::test]
+    async fn double_trailing_slash_returns_404() {
+        let dir = TempDir::new();
+        dir.write("docs/index.html", b"<h1>docs</h1>");
+        let config = config_for(&dir);
+        let head = head_from(b"GET /static/docs// HTTP/1.1\r\n\r\n");
+
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 404);
+    }
+
+    #[tokio::test]
+    async fn trailing_slash_only_after_mount_double_slash_returns_404() {
+        let dir = TempDir::new();
+        dir.write("index.html", b"<h1>root</h1>");
+        let config = config_for(&dir);
+        let head = head_from(b"GET /static// HTTP/1.1\r\n\r\n");
+
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 404);
+    }
+
+    #[tokio::test]
+    async fn directory_without_index_html_with_trailing_slash_returns_404() {
+        let dir = TempDir::new();
+        std::fs::create_dir_all(dir.path().join("empty")).unwrap();
+        let config = config_for(&dir);
+        let head = head_from(b"GET /static/empty/ HTTP/1.1\r\n\r\n");
+
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 404);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_directory_escaping_root_with_trailing_slash_is_rejected() {
+        let outside = TempDir::new();
+        outside.write("index.html", b"<h1>secret</h1>");
+        let dir = TempDir::new();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("escape")).unwrap();
+        let config = config_for(&dir);
+        let head = head_from(b"GET /static/escape/ HTTP/1.1\r\n\r\n");
+
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 404);
     }
 
     #[tokio::test]
