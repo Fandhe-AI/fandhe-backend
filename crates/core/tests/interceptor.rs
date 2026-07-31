@@ -221,10 +221,7 @@ impl RequestGate for RequireAuthHeader {
     fn check(&self, head: &RequestHead) -> GateOutcome {
         match head.header("authorization") {
             Some(_) => GateOutcome::Allow,
-            None => GateOutcome::Reject {
-                status: 401,
-                body: Vec::new(),
-            },
+            None => GateOutcome::reject(401, Vec::new()),
         }
     }
 }

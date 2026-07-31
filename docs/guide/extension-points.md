@@ -15,7 +15,7 @@ fandhe-backend のコアは、拡張点を 3 種の trait（`Middleware` / `Upgr
 
 | trait | 呼ばれるタイミング | できること | できないこと |
 |-------|-------------------|-----------|-------------|
-| `RequestGate` | ルーティング・アップグレード判定より**前** | `GateOutcome::Allow` / `Reject` による早期拒否（認証・認可・同意ゲート等） | レスポンス内容の加工（拒否時の status / body 指定のみ） |
+| `RequestGate` | ルーティング・アップグレード判定より**前** | `GateOutcome::Allow` / `Reject` による早期拒否（認証・認可・同意ゲート等、拒否応答は `Retry-After` 等ヘッダ付きも可） | 判定根拠データ（JWT クレーム等）をコアへ持ち出すこと |
 | `UpgradeHandler` | `RequestGate` 通過後、既定 `Handler` より前 | 長時間接続（WebSocket 等）への**委譲判定**（`matches` が `bool` を返す） | フレーミング・接続奪取後の読み書き（プラグイン側の責務） |
 | `Middleware` | `on_request`: ヘッド受理後・ルーティング前 / `on_response`: レスポンス送出後 | ロギング・メトリクス等の**観測** | リクエスト・レスポンスの変更（`head` は不変参照のみ） |
 
@@ -38,7 +38,9 @@ async 契約であり、この非対称は意図的な設計である（`crates/
 ## `RequestGate` を自作する
 
 `check` はリクエストヘッドを検査し、`GateOutcome::Allow`（続行）または
-`GateOutcome::Reject { status, body }`（早期拒否）を返す。
+`GateOutcome::Reject { response }`（早期拒否、`response` は検証済み
+[`Response`]）を返す。`Retry-After` 等ヘッダ付き拒否応答を返せるよう、
+検証済み `Response` を直接運ぶ設計になっている。
 
 ```rust,ignore
 use fandhe_backend_core::{GateOutcome, RequestGate};
@@ -55,11 +57,9 @@ impl RequestGate for ApiKeyGate {
     fn check(&self, head: &RequestHead) -> GateOutcome {
         match head.header("x-api-key") {
             Some(_) => GateOutcome::Allow,
-            // 判定不能・情報欠落時は必ず Reject（フェイルクローズ）
-            None => GateOutcome::Reject {
-                status: 401,
-                body: Vec::new(),
-            },
+            // 判定不能・情報欠落時は必ず Reject（フェイルクローズ）。
+            // ヘッダ不要な最小構成は `GateOutcome::reject` ヘルパで足りる。
+            None => GateOutcome::reject(401, Vec::new()),
         }
     }
 }
@@ -67,15 +67,40 @@ impl RequestGate for ApiKeyGate {
 let server = Server::new().handler(router).gate(ApiKeyGate);
 ```
 
+`Retry-After` 等のヘッダを付与したい場合は、`Response` の検証済み構築 API
+（`with_header` / `with_content_type`）で組み立ててから `Reject` へ渡す。
+
+```rust,ignore
+use fandhe_backend_core::{GateOutcome, RequestGate};
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
+
+struct RateLimitGate;
+
+impl RequestGate for RateLimitGate {
+    fn name(&self) -> &'static str {
+        "rate-limit-gate"
+    }
+
+    fn check(&self, _head: &RequestHead) -> GateOutcome {
+        let response = Response::new(429, b"{\"error\":\"rate limited\"}".to_vec())
+            .with_content_type("application/json")
+            .with_header("Retry-After", "30")
+            .expect("リテラル値は構築時検証を通る");
+        GateOutcome::Reject { response }
+    }
+}
+```
+
 守るべき契約は次のとおり。
 
 - **フェイルクローズ**: 判定に必要な情報が欠落・不正な場合、あるいは判定不能な
   場合は必ず `Reject` を返し、疑わしきは通過させない（[`.claude/rules/security.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/.claude/rules/security.md)
   の認可既定拒否の方針）
-- `Reject` の `status` は数値（`u16`）のみを運ぶ。ステータス行の組み立て
-  （reason phrase の付与等）はコア側の責務であり、任意文字列をステータス行へ
-  書き出せない設計によってレスポンス分割・ヘッダインジェクションを型レベルで
-  排除している
+- `Reject` が運ぶ `response` は `Response` の構築時検証（CR/LF/NUL 拒否・
+  `Content-Length`/`Connection`/`Transfer-Encoding` の予約名拒否）を経た値の
+  みで、任意文字列を無検証でヘッダ・ステータス行へ書き出す経路は存在しない
+  （レスポンス分割・ヘッダインジェクション対策）
 - 拒否レスポンス送出後も、登録済み `Middleware` の `on_response` は呼ばれる
   （観測の一貫性）
 

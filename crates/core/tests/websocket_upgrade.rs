@@ -41,10 +41,7 @@ impl RequestGate for DenyAllGate {
         "deny-all"
     }
     fn check(&self, _head: &RequestHead) -> GateOutcome {
-        GateOutcome::Reject {
-            status: 403,
-            body: Vec::new(),
-        }
+        GateOutcome::reject(403, Vec::new())
     }
 }
 

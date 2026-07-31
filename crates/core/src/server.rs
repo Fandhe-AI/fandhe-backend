@@ -1614,10 +1614,14 @@ pub(crate) async fn handle_connection_with_permit<S>(
         // RequestGate はルーティング・アップグレードより先に評価する
         // （フェイルクローズ、モジュール冒頭の doc を参照）。
         if let Some(rejection) = first_rejection(&server.gates, &request.head) {
-            let GateOutcome::Reject { status, body } = rejection else {
+            let GateOutcome::Reject { response } = rejection else {
                 unreachable!("first_rejection only returns Reject outcomes")
             };
-            let response = Response::new(status, body);
+            // ゲート実装が組み立てた検証済み `Response` をそのまま送出する
+            // （イシュー #424）。`Content-Length` / `Connection` は
+            // `serialize(keep_alive)` がフレーミング管理の一元責務として
+            // 上書き決定するため、ゲート側の値を尊重する必要はない
+            // （`Response::with_header` が両ヘッダ名を予約名として拒否済み）。
             if stream
                 .write_all(&response.serialize(keep_alive))
                 .await
@@ -2163,10 +2167,7 @@ mod tests {
         fn check(&self, head: &RequestHead) -> GateOutcome {
             match head.header("authorization") {
                 Some(_) => GateOutcome::Allow,
-                None => GateOutcome::Reject {
-                    status: 401,
-                    body: b"unauthorized".to_vec(),
-                },
+                None => GateOutcome::reject(401, b"unauthorized".to_vec()),
             }
         }
     }
@@ -2178,10 +2179,24 @@ mod tests {
             "always-reject"
         }
         fn check(&self, _head: &RequestHead) -> GateOutcome {
-            GateOutcome::Reject {
-                status: self.0,
-                body: Vec::new(),
-            }
+            GateOutcome::reject(self.0, Vec::new())
+        }
+    }
+
+    /// `429 + Retry-After` を返すトイ `RequestGate`（イシュー #424、ヘッダ付き
+    /// 拒否応答がワイヤ上に正しく出力されることを確認するワイヤレベル統合
+    /// テスト用）。
+    struct RateLimitGate;
+    impl RequestGate for RateLimitGate {
+        fn name(&self) -> &'static str {
+            "rate-limit"
+        }
+        fn check(&self, _head: &RequestHead) -> GateOutcome {
+            let response = Response::new(429, b"{\"error\":\"rate limited\"}".to_vec())
+                .with_content_type("application/json")
+                .with_header("Retry-After", "30")
+                .expect("リテラル値は構築時検証を通る");
+            GateOutcome::Reject { response }
         }
     }
 
@@ -2389,6 +2404,22 @@ mod tests {
             .gate(AlwaysRejectGate(401));
         let response = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
         assert!(response.starts_with("HTTP/1.1 403 Forbidden\r\n"));
+    }
+
+    #[tokio::test]
+    async fn gate_reject_with_headers_reaches_the_wire() {
+        // イシュー #424: `GateOutcome::Reject` が運ぶ `Response` の
+        // `Retry-After` / `Content-Type` ヘッダがワイヤ上の応答へそのまま
+        // 出力され、`Content-Length` / `Connection` はコア（`serialize`）
+        // 管理のままであることを固定する。
+        let server = Server::new().gate(RateLimitGate);
+        let response = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+        assert!(response.starts_with("HTTP/1.1 429 Too Many Requests\r\n"));
+        assert!(response.contains("Retry-After: 30\r\n"));
+        assert!(response.contains("Content-Type: application/json\r\n"));
+        assert!(response.contains("Content-Length: "));
+        assert!(response.contains("Connection: close\r\n"));
+        assert!(response.ends_with("{\"error\":\"rate limited\"}"));
     }
 
     #[tokio::test]
