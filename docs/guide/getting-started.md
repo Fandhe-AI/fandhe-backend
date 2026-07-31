@@ -29,6 +29,11 @@ cargo add fandhe-backend-core --features websocket
 本ページ 5 節参照）。feature を何も指定しない場合、`fandhe-backend-plugin-*` の
 依存・コードは一切バイナリに含まれません（pay-for-what-you-use、
 [`.claude/rules/pay-for-what-you-use.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/.claude/rules/pay-for-what-you-use.md)）。
+`static` / `compression` feature については `Server::static_files` /
+`Server::compression` へ渡す設定型（`StaticFilesConfig` / `CompressionConfig`）も
+`fandhe_backend_core::plugin_static` / `plugin_compression` として再エクスポートされて
+おり、対応するプラグインクレートへの直接依存を追加する必要はありません
+（**次回の crates.io リリース以降に反映**され、現行公開版 v0.1.0 には未収録です）。
 
 `cargo new` の代わりに雛形から始めることもできます。複数 feature を組み合わせた
 実運用形の雛形は
@@ -112,8 +117,8 @@ curl -v http://127.0.0.1:3000/missing     # 404 応答（未登録パス）
 | `tracing` | `fandhe-backend-plugin-tracing` | サンプリング付き可観測性（`Middleware` 経由） |
 | `openapi` | `fandhe-backend-plugin-openapi` | `Server::openapi()` / `openapi_with(doc)` 登録時のみ `GET /openapi.json` / `GET /openapi.yaml` を配信 |
 | `cors` | `fandhe-backend-plugin-cors` | `Server::cors(config)` 登録時のみ実リクエスト応答へ CORS ヘッダを付与（プリフライトは `Router::options_fallback` で配線） |
-| `compression` | `fandhe-backend-plugin-compression` | `Server::compression(config)` 登録時のみ条件を満たすレスポンスを gzip 圧縮 |
-| `static` | `fandhe-backend-plugin-static` | `Server::static_files(config)` 登録時のみ静的ファイルを `GET` 配信（二層防御のパストラバーサル対策付き） |
+| `compression` | `fandhe-backend-plugin-compression` | `Server::compression(config)` 登録時のみ条件を満たすレスポンスを gzip 圧縮。設定型 `CompressionConfig` は `fandhe_backend_core::plugin_compression` からも参照可能 |
+| `static` | `fandhe-backend-plugin-static` | `Server::static_files(config)` 登録時のみ静的ファイルを `GET` 配信（二層防御のパストラバーサル対策付き）。設定型 `StaticFilesConfig` は `fandhe_backend_core::plugin_static` からも参照可能 |
 
 なお `fandhe-backend-plugin-hub-wiring`（JWT 検証・テナント境界強制）は
 `crates/core` の feature ではなく、`RequestGate` 拡張点（`TenantGate`）を直接

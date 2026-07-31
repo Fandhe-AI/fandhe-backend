@@ -771,6 +771,33 @@ mime` 自体は失敗せず、拡張子（非空・`.`/`/`/`\`/NUL・制御文�
 `build()` での構築時検証がヘッダインジェクション（OWASP A03、
 `.claude/rules/security.md`）を遮断する唯一の確実な防御線になる。
 
+## 5.12 設定登録型プラグインの設定型 core 再エクスポート（イシュー #421）
+
+`static`（5.11 節）・`compression`（5.10 節）のような「設定登録型」プラグインは、
+`Server::static_files(config)` / `Server::compression(config)` へ渡す設定型
+（`StaticFilesConfig` / `CompressionConfig`）を利用者が構築するために、従来は
+プラグインクレート（`fandhe-backend-plugin-static` / `-compression`）への
+直接依存が別途必要だった。`crates/core/src/lib.rs` は対象 feature 有効時のみ
+プラグインクレートをモジュールとして丸ごと再エクスポートする
+（`#[cfg(feature = "static")] pub use fandhe_backend_plugin_static as
+plugin_static;` 等）。利用者は `fandhe-backend-core` への依存 + feature 指定
+だけで `fandhe_backend_core::plugin_static::StaticFilesConfig` /
+`fandhe_backend_core::plugin_compression::CompressionConfig` を構築できる。
+
+- **whole-crate 再エクスポートを採用**（型単位の個別 `pub use` は採用しない）:
+  プラグイン側に付随型（`StaticFilesConfigBuilder` / `StaticConfigError` /
+  `CompressionConfigBuilder` 等）が増えても本再エクスポートの追随が不要になる。
+  型単位の再エクスポートはプラグイン間の名前衝突リスクを生むため見送った
+- feature 無効時は再エクスポート自体が `#[cfg(feature = ...)]` で消え、依存も
+  `dep:` 構文により `cargo tree` から消える（pay-for-what-you-use は不変）
+- ハンドラ本体（`try_handle_static`・`apply_compression` 等）はコア内部の
+  非公開 `plugin` モジュール（4.2 節・5.9 節のシーム）から呼ばれる実装詳細で
+  あり、本再エクスポート経由での直接利用は想定しない
+- 本パターンは `static` / `compression` の 2 feature のみに適用済み。他の
+  設定登録型 feature（`websocket` / `graphql` / `cors` / `tracing` /
+  `openapi` / `webrtc` 系）への水平展開は本イシューのスコープ外（フォロー
+  アップ候補として記録、[[out-of-scope-tracking]]）
+
 ## 6. 検証コマンド
 
 | 検証 | コマンド | 期待結果 |

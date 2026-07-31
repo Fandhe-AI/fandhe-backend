@@ -193,6 +193,27 @@ async fn unrelated_path_falls_through_to_default_handler() {
     assert!(response.ends_with("ok"));
 }
 
+#[tokio::test]
+async fn config_built_via_core_reexport_serves_file() {
+    // イシュー #421: `fandhe_backend_core::plugin_static::StaticFilesConfig`
+    // （プラグインクレートへの直接依存を追加しない再エクスポート経路）
+    // 経由で構築した設定でも、直接依存経路（上の各テスト）と同一の配線・
+    // 応答になることを確認する。
+    let dir = TempDir::new("reexport");
+    dir.write("app.js", b"console.log('re-export')");
+    let config =
+        fandhe_backend_core::plugin_static::StaticFilesConfig::builder("/static", dir.path())
+            .build()
+            .unwrap();
+    let server = Server::new().handler(NotCalledHandler).static_files(config);
+
+    let request = b"GET /static/app.js HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with("console.log('re-export')"));
+}
+
 /// `/static/` （末尾スラッシュ）を `/static`（末尾なし）へ 301 で正規化する
 /// トイ `Interceptor`。イシュー #420 の想定ユースケース（末尾スラッシュ正規化）。
 struct TrailingSlashRedirect;

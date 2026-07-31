@@ -91,6 +91,11 @@ fandhe-backend/
 │   │                                    # mpsc によるバックプレッシャ・`finish` 省略時は終端
 │   │                                    # チャンクなしで打ち切りクローズ、既存 `Handler::handle`
 │   │                                    # 実装は無変更で後方互換維持、イシュー #319）。
+│   │                                    # `static` / `compression` feature 有効時は設定型
+│   │                                    # `StaticFilesConfig` / `CompressionConfig` を
+│   │                                    # `plugin_static` / `plugin_compression` モジュールとして
+│   │                                    # 再エクスポートし、プラグインクレートへの直接依存を
+│   │                                    # 追加せずに構築可能にする（イシュー #421）。
 │   │                                    # `Interceptor`（`interceptor` モジュール、イシュー #420）で
 │   │                                    # 3 拡張点で表現できないリダイレクト・レスポンス改変を
 │   │                                    # ユーザー向けに提供。`intercept`（ルーティング・プラグイン

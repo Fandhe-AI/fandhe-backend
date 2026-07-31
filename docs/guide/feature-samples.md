@@ -176,6 +176,11 @@ gzip 圧縮します（未登録なら feature が有効でも完全フォール
 除外することを推奨します（`crates/plugin-compression/src/lib.rs` の crate
 doc を参照）。
 
+`fandhe-backend-plugin-compression` へ直接依存しなくても、`compression`
+feature を有効化した `fandhe-backend-core` から
+`fandhe_backend_core::plugin_compression::CompressionConfig` として同じ型を
+参照できます（次回の crates.io リリース以降に反映）。
+
 ## static（`fandhe-backend-plugin-static`）
 
 SPA フロントエンド等の静的ファイルを配信するプラグインです
@@ -211,6 +216,11 @@ curl -si --path-as-is localhost:3005/static/../Cargo.toml
   リスティングを実装しません
 - ファイル I/O は `tokio::task::spawn_blocking` に閉じ、非同期ランタイム
   スレッドをブロックしません
+
+`fandhe-backend-plugin-static` へ直接依存しなくても、`static` feature を
+有効化した `fandhe-backend-core` から
+`fandhe_backend_core::plugin_static::StaticFilesConfig` として同じ型を
+参照できます（次回の crates.io リリース以降に反映）。
 
 ## hub-wiring（`fandhe-backend-plugin-hub-wiring`）
 
