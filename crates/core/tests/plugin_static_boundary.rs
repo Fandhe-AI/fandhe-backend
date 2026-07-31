@@ -106,6 +106,28 @@ async fn registered_static_serves_file_and_bypasses_default_handler() {
 }
 
 #[tokio::test]
+async fn registered_static_serves_directory_index_with_trailing_slash() {
+    // 末尾スラッシュ付きディレクトリ URL（`/static/docs/`）が index.html を
+    // 解決してコア配線経由で 200 を返すことを確認する（イシュー #418。
+    // より網羅的な拒否・許可ケースは `crates/plugin-static/src/lib.rs` の
+    // ユニットテストを参照）。
+    let dir = TempDir::new("trailing-slash");
+    std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+    std::fs::write(dir.path().join("docs/index.html"), b"<h1>docs</h1>").unwrap();
+    let config = StaticFilesConfig::builder("/static", dir.path())
+        .build()
+        .unwrap();
+    let server = Server::new().handler(NotCalledHandler).static_files(config);
+
+    let request = b"GET /static/docs/ HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with("<h1>docs</h1>"));
+}
+
+#[tokio::test]
 async fn registered_static_traversal_attempt_returns_404() {
     let dir = TempDir::new("traversal");
     dir.write("index.html", b"hi");
