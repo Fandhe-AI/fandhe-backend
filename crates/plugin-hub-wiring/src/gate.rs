@@ -166,10 +166,7 @@ impl RequestGate for TenantGate {
         // ヒット/ミスで判定結果が変わることはない（TASK-9.3 / #63）。
         match self.config.authenticator.authenticate(head) {
             Ok(_claims) => GateOutcome::Allow,
-            Err(TokenError::MissingOrgId) => GateOutcome::Reject {
-                status: 403,
-                body: FORBIDDEN_BODY.to_vec(),
-            },
+            Err(TokenError::MissingOrgId) => GateOutcome::reject(403, FORBIDDEN_BODY.to_vec()),
             Err(
                 TokenError::MissingToken
                 | TokenError::Malformed
@@ -178,10 +175,7 @@ impl RequestGate for TenantGate {
                 | TokenError::UnknownKeyId
                 | TokenError::InvalidSignature
                 | TokenError::Expired,
-            ) => GateOutcome::Reject {
-                status: 401,
-                body: UNAUTHORIZED_BODY.to_vec(),
-            },
+            ) => GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec()),
         }
     }
 }
@@ -253,10 +247,7 @@ mod tests {
         let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
         assert_eq!(
             gate_for(&keypair).check(&head),
-            GateOutcome::Reject {
-                status: 401,
-                body: UNAUTHORIZED_BODY.to_vec()
-            }
+            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
         );
     }
 
@@ -267,10 +258,7 @@ mod tests {
         let head = head_from(&raw);
         assert_eq!(
             gate_for(&keypair).check(&head),
-            GateOutcome::Reject {
-                status: 401,
-                body: UNAUTHORIZED_BODY.to_vec()
-            }
+            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
         );
     }
 
@@ -311,10 +299,7 @@ mod tests {
         let head = head_from(&raw);
         assert_eq!(
             gate_for(&keypair).check(&head),
-            GateOutcome::Reject {
-                status: 401,
-                body: UNAUTHORIZED_BODY.to_vec()
-            }
+            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
         );
     }
 
@@ -325,10 +310,7 @@ mod tests {
         let head = head_from(&raw);
         assert_eq!(
             gate_for(&keypair).check(&head),
-            GateOutcome::Reject {
-                status: 401,
-                body: UNAUTHORIZED_BODY.to_vec()
-            }
+            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
         );
     }
 
@@ -340,10 +322,7 @@ mod tests {
         let head = head_from(&raw);
         assert_eq!(
             gate_for(&keypair).check(&head),
-            GateOutcome::Reject {
-                status: 401,
-                body: UNAUTHORIZED_BODY.to_vec()
-            }
+            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
         );
     }
 
@@ -355,10 +334,7 @@ mod tests {
         let head = head_from(&raw);
         assert_eq!(
             gate_for(&keypair).check(&head),
-            GateOutcome::Reject {
-                status: 401,
-                body: UNAUTHORIZED_BODY.to_vec()
-            }
+            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
         );
     }
 
@@ -374,10 +350,7 @@ mod tests {
         let gate = TenantGate::new(empty_config);
         assert_eq!(
             gate.check(&head),
-            GateOutcome::Reject {
-                status: 401,
-                body: UNAUTHORIZED_BODY.to_vec()
-            }
+            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
         );
     }
 
@@ -389,11 +362,39 @@ mod tests {
         let head = head_from(&raw);
         assert_eq!(
             gate_for(&keypair).check(&head),
-            GateOutcome::Reject {
-                status: 403,
-                body: FORBIDDEN_BODY.to_vec()
-            }
+            GateOutcome::reject(403, FORBIDDEN_BODY.to_vec())
         );
+    }
+
+    #[test]
+    fn reject_wire_bytes_are_unchanged_by_gate_outcome_response_migration() {
+        // イシュー #424: `GateOutcome::Reject` が `status`/`body` の個別
+        // フィールドから検証済み `Response` を運ぶ形へ変わっても、
+        // `TenantGate` が払い出す 401/403 応答のワイヤ上バイト列は従来と
+        // 完全同一であること（ヘッダを一切追加しないこと）を固定する
+        // （計画の「応答バイト列は現行と完全同一に保つ」要件）。
+        let keypair = test_keypair();
+        let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
+        let GateOutcome::Reject { response } = gate_for(&keypair).check(&head) else {
+            panic!("expected Reject for missing Authorization header");
+        };
+        let wire = String::from_utf8(response.serialize(false)).unwrap();
+        assert!(wire.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
+        assert!(wire.contains("Content-Length: "));
+        assert!(!wire.contains("Content-Type:"));
+        assert!(!wire.contains("Retry-After:"));
+        assert!(wire.ends_with(&String::from_utf8_lossy(UNAUTHORIZED_BODY).into_owned()));
+
+        let token = make_token(&keypair, TEST_KID, None, 9_999_999_999);
+        let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
+        let head = head_from(&raw);
+        let GateOutcome::Reject { response } = gate_for(&keypair).check(&head) else {
+            panic!("expected Reject for missing org_id");
+        };
+        let wire = String::from_utf8(response.serialize(false)).unwrap();
+        assert!(wire.starts_with("HTTP/1.1 403 Forbidden\r\n"));
+        assert!(!wire.contains("Content-Type:"));
+        assert!(wire.ends_with(&String::from_utf8_lossy(FORBIDDEN_BODY).into_owned()));
     }
 
     #[test]
@@ -405,8 +406,8 @@ mod tests {
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
         match gate_for(&keypair).check(&head) {
-            GateOutcome::Reject { body, .. } => {
-                let body_str = String::from_utf8_lossy(&body);
+            GateOutcome::Reject { response } => {
+                let body_str = String::from_utf8_lossy(&response.body);
                 assert!(!body_str.contains(&token));
             }
             GateOutcome::Allow => panic!("expected Reject for expired token"),
@@ -437,10 +438,7 @@ mod tests {
         // 旧鍵の署名は新 JWKS では検証できず拒否される。
         assert_eq!(
             gate.check(&head_from(&raw)),
-            GateOutcome::Reject {
-                status: 401,
-                body: UNAUTHORIZED_BODY.to_vec()
-            }
+            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
         );
 
         let new_token = make_token(&rotated_keypair, TEST_KID, Some("org-1"), 9_999_999_999);

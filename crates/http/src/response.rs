@@ -882,6 +882,10 @@ fn reason_phrase(status: u16) -> &'static str {
         404 => "Not Found",
         405 => "Method Not Allowed",
         413 => "Payload Too Large",
+        // レート制限応答（RFC 6585）。イシュー #424 で `GateOutcome::Reject`
+        // がヘッダ付き拒否応答を運べるようになり、`429 + Retry-After` が
+        // ゲート実装から実際に返せるようになったため収載する。
+        429 => "Too Many Requests",
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
         501 => "Not Implemented",
@@ -964,6 +968,15 @@ mod tests {
         // 503 が空 reason phrase に劣化しないことを確認する（PR #138 Bugbot 指摘）。
         let service_unavailable = String::from_utf8(Response::empty(503).serialize(false)).unwrap();
         assert!(service_unavailable.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
+    }
+
+    #[test]
+    fn serialize_too_many_requests_has_reason_phrase() {
+        // イシュー #424: `GateOutcome::Reject` がヘッダ付き拒否応答を運べる
+        // ようになり、レート制限実装が実際に 429 を返せるようになった。
+        // 429 が空 reason phrase に劣化しないことを確認する。
+        let too_many_requests = String::from_utf8(Response::empty(429).serialize(false)).unwrap();
+        assert!(too_many_requests.starts_with("HTTP/1.1 429 Too Many Requests\r\n"));
     }
 
     #[test]

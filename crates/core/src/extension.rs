@@ -37,6 +37,7 @@
 //! （詳細規約は TASK-2.3 で `AGENTS.md` に整備済み）。
 
 use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
 use std::time::Duration;
 
 /// リクエスト/レスポンスを**観測するだけ**のフック。
@@ -143,23 +144,51 @@ pub trait UpgradeHandler: Send + Sync {
 /// [`RequestGate::check`] の判定結果。
 ///
 /// 許可/拒否の判定結果のみを運び、JWT クレーム・`org_id` 等の hub 固有データ
-/// をコアに持ち込まない（PoC-6 の設計判断）。`Reject` の `status` は
-/// レスポンスのステータスコードのみを運ぶ数値（`u16`）とし、任意文字列を
-/// そのままステータス行に書き出す設計を避ける。これはレスポンス分割・
-/// ヘッダインジェクションを型レベルで排除するためであり、ステータス行の
-/// 組み立て（reason phrase の付与等）はコア側（#70 実装分）の責務とする。
+/// をコアに持ち込まない（PoC-6 の設計判断）。`Reject` は検証済み
+/// [`Response`] をそのまま運ぶ（イシュー #424）。任意文字列を無検証で
+/// ステータス行・ヘッダへ書き出す経路は存在しない。`Response` の構築 API
+/// （[`Response::new`] / [`Response::with_header`] /
+/// [`Response::with_content_type`] 等）が CR/LF/NUL・予約ヘッダ名
+/// （`Content-Length` / `Connection` / `Transfer-Encoding`）を構築時に
+/// 拒否するフェイルクローズ検証を担うため、これはレスポンス分割・
+/// ヘッダインジェクションを型レベルで排除するという従来の設計意図
+/// （`status: u16` のみを運んでいた旧設計の根拠）を維持したまま、
+/// レート制限の `429 + Retry-After` 等ヘッダ付き拒否応答を可能にする。
+/// `Content-Length` / `Connection` はコア側（#70 実装分、`serialize`）が
+/// keep-alive 判定に応じて最終決定するため、ゲート実装からは上書きできない
+/// （`with_header` の予約名拒否）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateOutcome {
     /// リクエストを許可する。以降の処理（ルーティング等）を続行する。
     Allow,
-    /// リクエストを拒否する。`status` は HTTP ステータスコード、`body` は
-    /// レスポンスボディの生バイト列。
+    /// リクエストを拒否する。`response` をクライアントへそのまま返す
+    /// （`Content-Length` / `Connection` はコア側で上書きされる）。
     Reject {
-        /// レスポンスとして返す HTTP ステータスコード。
-        status: u16,
-        /// レスポンスボディの生バイト列。
-        body: Vec<u8>,
+        /// クライアントへ返す検証済みレスポンス。
+        response: Response,
     },
+}
+
+impl GateOutcome {
+    /// `status` と `body` のみを運ぶ最小の [`GateOutcome::Reject`] を組み立てる。
+    ///
+    /// ヘッダを付与しない従来相当の拒否応答を簡潔に書くためのヘルパ。
+    /// ヘッダ（`Retry-After` 等）を付与したい場合は
+    /// `GateOutcome::Reject { response: Response::new(status, body).with_header(...)? }`
+    /// のように [`Response`] の検証済み構築 API を直接使う。
+    ///
+    /// ```
+    /// use fandhe_backend_core::extension::GateOutcome;
+    ///
+    /// let outcome = GateOutcome::reject(401, Vec::new());
+    /// assert_eq!(outcome, GateOutcome::Reject { response: fandhe_backend_http::response::Response::new(401, Vec::new()) });
+    /// ```
+    #[must_use]
+    pub fn reject(status: u16, body: Vec<u8>) -> Self {
+        Self::Reject {
+            response: Response::new(status, body),
+        }
+    }
 }
 
 /// 早期拒否可能な拡張点。認証・認可・同意ゲート等、ルーティング前に
@@ -187,7 +216,7 @@ pub enum GateOutcome {
 ///     fn check(&self, head: &fandhe_backend_http::request::RequestHead) -> GateOutcome {
 ///         match head.header("authorization") {
 ///             Some(_) => GateOutcome::Allow,
-///             None => GateOutcome::Reject { status: 401, body: Vec::new() },
+///             None => GateOutcome::reject(401, Vec::new()),
 ///         }
 ///     }
 /// }
@@ -206,10 +235,51 @@ pub enum GateOutcome {
 ///     ParseOutcome::Complete { head, .. } => head,
 ///     ParseOutcome::Incomplete => unreachable!(),
 /// };
-/// assert_eq!(
-///     gate.check(&head),
-///     GateOutcome::Reject { status: 401, body: Vec::new() }
-/// );
+/// assert_eq!(gate.check(&head), GateOutcome::reject(401, Vec::new()));
+/// ```
+///
+/// # ヘッダ付き拒否応答の例（`429 Retry-After`、イシュー #424）
+///
+/// レート制限のように `Retry-After` ヘッダを伴う拒否応答を返す実装は、
+/// [`Response`] の検証済み構築 API（[`Response::with_header`]）を使って
+/// `GateOutcome::Reject` を組み立てる。
+///
+/// ```
+/// use fandhe_backend_core::extension::{GateOutcome, RequestGate};
+/// use fandhe_backend_http::request::{RequestHead, parse_request_head, ParseOutcome};
+/// use fandhe_backend_http::response::Response;
+///
+/// /// 常に拒否し、`429 + Retry-After` を返すトイのレート制限ゲート。
+/// struct AlwaysRateLimited;
+///
+/// impl RequestGate for AlwaysRateLimited {
+///     fn name(&self) -> &'static str {
+///         "always-rate-limited"
+///     }
+///
+///     fn check(&self, _head: &RequestHead) -> GateOutcome {
+///         let response = Response::new(429, b"{\"error\":\"rate limited\"}".to_vec())
+///             .with_content_type("application/json")
+///             .with_header("Retry-After", "30")
+///             .expect("Retry-After はリテラル値のため構築時検証を通る");
+///         GateOutcome::Reject { response }
+///     }
+/// }
+///
+/// let gate = AlwaysRateLimited;
+/// let buf = b"GET / HTTP/1.1\r\n\r\n";
+/// let head = match parse_request_head(buf).unwrap() {
+///     ParseOutcome::Complete { head, .. } => head,
+///     ParseOutcome::Incomplete => unreachable!(),
+/// };
+/// let GateOutcome::Reject { response } = gate.check(&head) else {
+///     unreachable!("AlwaysRateLimited は常に Reject を返す");
+/// };
+/// let wire = response.serialize(false);
+/// let text = String::from_utf8(wire).unwrap();
+/// assert!(text.starts_with("HTTP/1.1 429"));
+/// assert!(text.contains("Retry-After: 30\r\n"));
+/// assert!(text.contains("Content-Type: application/json\r\n"));
 /// ```
 pub trait RequestGate: Send + Sync {
     /// 診断・ログ表示用の静的識別名。
@@ -343,10 +413,7 @@ mod tests {
         fn check(&self, head: &RequestHead) -> GateOutcome {
             match head.header("authorization") {
                 Some(_) => GateOutcome::Allow,
-                None => GateOutcome::Reject {
-                    status: 401,
-                    body: Vec::new(),
-                },
+                None => GateOutcome::reject(401, Vec::new()),
             }
         }
     }
@@ -362,10 +429,7 @@ mod tests {
         let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
         assert_eq!(
             FailClosedGate.check(&head),
-            GateOutcome::Reject {
-                status: 401,
-                body: Vec::new()
-            }
+            GateOutcome::reject(401, Vec::new())
         );
     }
 
@@ -377,44 +441,62 @@ mod tests {
 
     #[test]
     fn gate_outcome_reject_carries_status_and_body() {
-        // `Reject` の `status`/`body` フィールドが正しく保持されることを固定する。
-        // コア側（#70）はこの数値をそのままステータス行に、body をそのまま
-        // レスポンスボディに使う契約であり、値の欠落・破損は直接クライアント
-        // 応答に波及する。
+        // `Reject` が運ぶ `response` の status/body が正しく保持されることを
+        // 固定する。コア側（#70）はこの `Response` をそのまま `serialize` する
+        // 契約であり、値の欠落・破損は直接クライアント応答に波及する。
         let outcome = GateOutcome::Reject {
-            status: 403,
-            body: b"forbidden".to_vec(),
+            response: Response::new(403, b"forbidden".to_vec()),
         };
         match outcome {
-            GateOutcome::Reject { status, body } => {
-                assert_eq!(status, 403);
-                assert_eq!(body, b"forbidden");
+            GateOutcome::Reject { response } => {
+                assert_eq!(response.status, 403);
+                assert_eq!(response.body, b"forbidden");
             }
             GateOutcome::Allow => panic!("expected Reject"),
         }
     }
 
     #[test]
+    fn gate_outcome_reject_carries_headers() {
+        // `Reject` がヘッダ（`Retry-After` 等）を運べることを固定する
+        // （イシュー #424、429 + Retry-After が返せない問題の解消）。
+        let response = Response::new(429, Vec::new())
+            .with_header("Retry-After", "30")
+            .expect("リテラル値は構築時検証を通る");
+        let outcome = GateOutcome::Reject { response };
+        let GateOutcome::Reject { response } = outcome else {
+            panic!("expected Reject");
+        };
+        let wire = response.serialize(false);
+        let text = String::from_utf8(wire).unwrap();
+        assert!(text.starts_with("HTTP/1.1 429"));
+        assert!(text.contains("Retry-After: 30\r\n"));
+    }
+
+    #[test]
+    fn gate_outcome_reject_helper_matches_manual_construction() {
+        // `GateOutcome::reject` ヘルパが `Response::new` 直接呼び出しと
+        // 同一の `Reject` を組み立てることを固定する。
+        assert_eq!(
+            GateOutcome::reject(401, b"denied".to_vec()),
+            GateOutcome::Reject {
+                response: Response::new(401, b"denied".to_vec())
+            }
+        );
+    }
+
+    #[test]
     fn gate_outcome_allow_and_reject_are_not_equal() {
         // `PartialEq` 導出が variant を跨いで誤って等しいと判定しないことを固定する。
         let allow = GateOutcome::Allow;
-        let reject = GateOutcome::Reject {
-            status: 401,
-            body: Vec::new(),
-        };
+        let reject = GateOutcome::reject(401, Vec::new());
         assert_ne!(allow, reject);
     }
 
     #[test]
     fn gate_outcome_reject_with_different_status_are_not_equal() {
-        let a = GateOutcome::Reject {
-            status: 401,
-            body: Vec::new(),
-        };
-        let b = GateOutcome::Reject {
-            status: 403,
-            body: Vec::new(),
-        };
+        let a = GateOutcome::reject(401, Vec::new());
+        let b = GateOutcome::reject(403, Vec::new());
         assert_ne!(a, b);
     }
 }

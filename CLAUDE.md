@@ -98,7 +98,15 @@ fandhe-backend/
 │   │                                    # `plugin::try_intercept` より前）と `map_response`
 │   │                                    # （最終応答確定後・`finalize_response` より前）の 2 フック、
 │   │                                    # `Server::interceptor` で複数登録可（登録順評価）。feature
-│   │                                    # ゲート不要（外部依存ゼロ、pay-for-what-you-use）
+│   │                                    # ゲート不要（外部依存ゼロ、pay-for-what-you-use）。
+│   │                                    # `RequestGate::check` の拒否応答 `GateOutcome::Reject` は
+│   │                                    # イシュー #424 で `status`/`body` の個別フィールドから
+│   │                                    # 検証済み `Response`（`crates/http`）をそのまま運ぶ形へ
+│   │                                    # 変更し、レート制限の `429 + Retry-After` 等ヘッダ付き
+│   │                                    # 拒否応答をゲート実装から返せるようにした（`GateOutcome::
+│   │                                    # reject(status, body)` ヘルパでヘッダなしの従来相当の
+│   │                                    # 構築も可能。ヘッダ検証は `Response::with_header` の
+│   │                                    # 既存フェイルクローズ機構に委ねる）
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む

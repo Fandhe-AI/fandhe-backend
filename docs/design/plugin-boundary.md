@@ -425,6 +425,16 @@ PoC-6）であり、JWT 検証で抽出した `org_id` 等のクレームはコ�
 コアは hub 固有シンボル（JWT・`org_id`・JWKS）へ一切依存しないまま、
 依存逆転型プラグインからの利用を受け付けられる。
 
+イシュー #424 で `GateOutcome::Reject` は `status: u16` / `body: Vec<u8>` の
+個別フィールドではなく、検証済み `Response`（`crates/http/src/response.rs`）を
+そのまま運ぶ形へ変更した（レート制限の `429 + Retry-After` 等、ヘッダ付き拒否
+応答が組み立てられなかった問題の解消）。運ぶのは拒否応答という構造化データの
+表現形式のみであり、本節が固定する「判定根拠データ（クレーム）を運ばない」
+という責務境界そのものは変わらない。ヘッダの検証（CR/LF/NUL 拒否・
+`Content-Length`/`Connection`/`Transfer-Encoding` の予約名拒否）は `Response`
+の構築 API 側の既存フェイルクローズ機構に委ねるため、本変更で新たな検証
+ロジックの二重実装は発生しない。
+
 ### 5.6.4 後続 Gate 型プラグインへの適用指針
 
 新規プラグインが `RequestGate`/`Middleware` のみを実装し、判定・観測ロジック
