@@ -20,7 +20,9 @@
 
 #![cfg(feature = "compression")]
 
+use fandhe_backend_core::interceptor::Interceptor;
 use fandhe_backend_core::{Server, handle_connection};
+use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
 use fandhe_backend_plugin_compression::CompressionConfig;
 use fandhe_backend_routes::Router;
@@ -208,4 +210,46 @@ async fn config_built_via_core_reexport_compresses_and_roundtrips() {
     let mut decoded = String::new();
     decoder.read_to_string(&mut decoded).unwrap();
     assert_eq!(decoded, "x".repeat(2048));
+}
+
+/// 応答 body を大きく差し替える `Interceptor::map_response`（イシュー #420）。
+/// `map_response` 後の body が圧縮対象になる（順序: map_response →
+/// finalize_response の CORS → 圧縮）ことの検証に使う。
+struct ExpandBody;
+impl Interceptor for ExpandBody {
+    fn name(&self) -> &'static str {
+        "expand-body"
+    }
+
+    fn map_response(&self, _head: &RequestHead, response: Response) -> Response {
+        Response::new(response.status, "y".repeat(2048).into_bytes())
+            .with_content_type("text/plain")
+    }
+}
+
+#[tokio::test]
+async fn interceptor_map_response_output_is_compressed() {
+    // イシュー #420 の設計判断: `Interceptor::map_response` は
+    // `finalize_response`（CORS → 圧縮）より前に適用する。`map_response` が
+    // 差し替えた body（元の `/small` 応答とは別の 2048 バイト body）が
+    // gzip 圧縮対象になることを確認する（`crates/core/src/interceptor.rs`
+    // モジュール doc の評価順序を参照）。
+    let config = CompressionConfig::builder().min_size(1).build();
+    let router = build_router();
+    let server = Server::new()
+        .interceptor(ExpandBody)
+        .handler(router)
+        .compression(config);
+
+    let request = b"GET /small HTTP/1.1\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n";
+    let raw = roundtrip_raw(&server, request).await;
+    let (head, body) = split_response(&raw);
+
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(head.contains("Content-Encoding: gzip\r\n"));
+
+    let mut decoder = flate2::read::GzDecoder::new(body.as_slice());
+    let mut decoded = String::new();
+    decoder.read_to_string(&mut decoded).unwrap();
+    assert_eq!(decoded, "y".repeat(2048));
 }

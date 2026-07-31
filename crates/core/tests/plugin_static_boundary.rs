@@ -17,6 +17,7 @@
 
 #![cfg(feature = "static")]
 
+use fandhe_backend_core::interceptor::Interceptor;
 use fandhe_backend_core::{Handler, Server, handle_connection};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
@@ -211,4 +212,92 @@ async fn config_built_via_core_reexport_serves_file() {
     let response = String::from_utf8_lossy(&response);
     assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
     assert!(response.ends_with("console.log('re-export')"));
+}
+
+/// `/static/` （末尾スラッシュ）を `/static`（末尾なし）へ 301 で正規化する
+/// トイ `Interceptor`。イシュー #420 の想定ユースケース（末尾スラッシュ正規化）。
+struct TrailingSlashRedirect;
+impl Interceptor for TrailingSlashRedirect {
+    fn name(&self) -> &'static str {
+        "trailing-slash-redirect"
+    }
+
+    fn intercept(&self, head: &RequestHead, _body: &[u8]) -> Option<Response> {
+        let path = head.path();
+        if path.len() > 1 && path.ends_with('/') {
+            Response::redirect(301, path.trim_end_matches('/').to_string()).ok()
+        } else {
+            None
+        }
+    }
+}
+
+/// `Interceptor::intercept`（イシュー #420）が `plugin::try_intercept`
+/// （`static` feature）より先に評価され、static mount 配下でも先取りできる
+/// ことを確認する（計画の「plugin_static_boundary.rs へ intercept が static
+/// 配信を先取りするケースを追加」に対応）。
+#[tokio::test]
+async fn interceptor_intercept_takes_priority_over_static_mount() {
+    let dir = TempDir::new("intercept-priority");
+    dir.write("index.html", b"hi");
+    let config = StaticFilesConfig::builder("/static", dir.path())
+        .build()
+        .unwrap();
+    let server = Server::new()
+        .interceptor(TrailingSlashRedirect)
+        .handler(NotCalledHandler)
+        .static_files(config);
+
+    let request = b"GET /static/ HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+
+    assert!(response.starts_with("HTTP/1.1 301"), "response: {response}");
+    assert!(
+        response.contains("Location: /static\r\n"),
+        "response: {response}"
+    );
+}
+
+/// static mount の一律 404 body を `Interceptor::map_response`（イシュー #420）
+/// で差し替えられることを確認する（計画の「map_response が static の 404 body
+/// を差し替えるケースを追加」に対応）。
+struct Custom404Page;
+impl Interceptor for Custom404Page {
+    fn name(&self) -> &'static str {
+        "custom-404-page"
+    }
+
+    fn map_response(&self, _head: &RequestHead, response: Response) -> Response {
+        if response.status == 404 {
+            Response::new(404, b"<html>custom static 404</html>".to_vec())
+        } else {
+            response
+        }
+    }
+}
+
+#[tokio::test]
+async fn interceptor_map_response_rewrites_static_404_body() {
+    let dir = TempDir::new("map-response-404");
+    dir.write("index.html", b"hi");
+    let config = StaticFilesConfig::builder("/static", dir.path())
+        .build()
+        .unwrap();
+    let server = Server::new()
+        .interceptor(Custom404Page)
+        .handler(NotCalledHandler)
+        .static_files(config);
+
+    // 存在しないファイルを要求 → plugin-static が一律 404 を返す
+    // （`crates/plugin-static` の doc「未検出・検証失敗・サイズ超過は一律 404」）。
+    let request = b"GET /static/missing.js HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+
+    assert!(response.starts_with("HTTP/1.1 404"), "response: {response}");
+    assert!(
+        response.ends_with("<html>custom static 404</html>"),
+        "response: {response}"
+    );
 }
