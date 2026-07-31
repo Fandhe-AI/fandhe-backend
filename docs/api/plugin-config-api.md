@@ -100,9 +100,9 @@ RFC 6455 ハンドシェイク検証・101 応答・tokio-tungstenite へのフ�
 | 項目 | 内容 |
 |------|------|
 | Config 型 | `StaticFilesConfig`（`StaticFilesConfig::builder(mount, root)` 経由でのみ構築） |
-| builder メソッド | `max_file_bytes` / `build` |
-| 既定値 | `max_file_bytes = DEFAULT_MAX_FILE_BYTES`（8 MiB。1 リクエストあたりのメモリ使用上限そのもの） |
-| 構築時検証 | `build()` は `Result<_, StaticConfigError>`。`mount` の形式不正（`InvalidMount`）・`root` の canonicalize 失敗（`RootNotAccessible`）・非ディレクトリ（`RootNotADirectory`）を起動前に検出 |
+| builder メソッド | `max_file_bytes` / `mime(ext, content_type)`（内蔵 MIME テーブルより優先する拡張マッピング） / `build` |
+| 既定値 | `max_file_bytes = DEFAULT_MAX_FILE_BYTES`（8 MiB。1 リクエストあたりのメモリ使用上限そのもの）。`mime` 未登録時は内蔵テーブル（`.webmanifest` 等を含む）+ 既定 `application/octet-stream` |
+| 構築時検証 | `build()` は `Result<_, StaticConfigError>`。`mount` の形式不正（`InvalidMount`）・`root` の canonicalize 失敗（`RootNotAccessible`）・非ディレクトリ（`RootNotADirectory`）・`mime` マッピングの拡張子/Content-Type 不正（`InvalidMimeMapping`、CR/LF 等のヘッダインジェクション対策込み）を起動前に検出 |
 
 - 注意: 二層防御（I/O 前の字句検証 + canonicalize 後の root 配下検証）でパストラバーサル・シンボリックリンク脱出を拒否。先頭ドットセグメント（`.env`・`.git/config` 等）も配信拒否。未検出・検証失敗・サイズ超過は**一律 404**（存在秘匿）
 

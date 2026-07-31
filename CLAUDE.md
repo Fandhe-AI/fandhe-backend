@@ -225,8 +225,14 @@ fandhe-backend/
 │   │                                    # 拒否し、未検出・検証失敗・サイズ超過は一律 404。
 │   │                                    # 末尾スラッシュ 1 個（`<mount>/dir/`）はディレクトリ
 │   │                                    # 要求として index.html を解決（連続スラッシュ拒否は
-│   │                                    # 維持、イシュー #418）。外部依存ゼロ（`fandhe-backend-http`
-│   │                                    # + `tokio` の `rt` feature のみ）、
+│   │                                    # 維持、イシュー #418）。内蔵 MIME テーブルへ
+│   │                                    # `.webmanifest`（`application/manifest+json`）等の
+│   │                                    # PWA/SSG 頻出拡張子を追加し、`StaticFilesConfigBuilder::
+│   │                                    # mime(ext, content_type)` で内蔵テーブルにない拡張子を
+│   │                                    # 利用者が追加登録できる（`content_type` は `&'static str`
+│   │                                    # 限定・`build()` 時に拡張子/値の形式検証でヘッダ
+│   │                                    # インジェクションを遮断、イシュー #423）。外部依存ゼロ
+│   │                                    # （`fandhe-backend-http` + `tokio` の `rt` feature のみ）、
 │   │                                    # `docs/design/plugin-boundary.md` 5.11 節を参照）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
 │   ├── docs-site                      # GitHub Pages ドキュメントサイト生成ツール（SSG、
