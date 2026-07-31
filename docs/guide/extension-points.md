@@ -141,6 +141,60 @@ non-blocking writer（非同期・バッファ済み I/O）へ記録を委ね、
 1 点に記録を集約している（`Middleware` trait には request/response を跨いで
 per-request 状態を運ぶ経路がないため）。
 
+## `Interceptor`（ユーザー向けインターセプト・レスポンス改変）
+
+上記 3 拡張点はいずれも「リクエストを弾く」「観測する」「長時間接続へ委譲する」だけで、
+**リダイレクトを返す**・**確定済みレスポンスの body を差し替える**ことができない。
+この 2 用途向けに `Interceptor` trait（`crates/core/src/interceptor.rs`）を追加した。
+3 拡張点の対象外だが、`Handler` と同じ「レスポンダ系シーム」として feature ゲートなしで
+常時利用できる（詳細な設計判断は
+[`docs/design/interceptor-extension-point.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/interceptor-extension-point.md)）。
+
+```rust,ignore
+use fandhe_backend_core::interceptor::Interceptor;
+use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
+
+/// `/old` を `/new` へ 301 で正規化する例。
+struct RedirectOld;
+
+impl Interceptor for RedirectOld {
+    fn name(&self) -> &'static str {
+        "redirect-old"
+    }
+
+    fn intercept(&self, head: &RequestHead, _body: &[u8]) -> Option<Response> {
+        if head.path() == "/old" {
+            Response::redirect(301, "/new").ok()
+        } else {
+            None
+        }
+    }
+}
+```
+
+登録は `Server::interceptor(...)`（複数登録可、`RequestGate`/`Middleware` と同じ
+builder パターン）。
+
+| フック | 呼ばれるタイミング | できること |
+|-------|-------------------|-----------|
+| `intercept` | `UpgradeHandler` 通過後・`plugin::try_intercept`（static 等）より前 | `Some(response)` で応答を確定させ、以降のプラグイン評価・`Handler` をスキップ |
+| `map_response` | 最終応答（`intercept`/プラグイン/`Handler` いずれか）確定後・CORS/圧縮より前 | 確定済み `Response` を任意に書き換えて返す |
+
+- 複数 `Interceptor` を登録した場合、`intercept` は登録順に評価し最初の `Some`
+  が勝つ（以降は呼ばれない）。`map_response` は登録順に**逐次適用**する
+  （各実装が前段の戻り値を受け取る）
+- `intercept` が `plugin::try_intercept`（`static`/`graphql` 等の設定登録型プラグイン）
+  より**前**に評価されるため、利用者は登録済みプラグインの応答をインターセプトで
+  先取りできる（末尾スラッシュ 301 正規化のユースケース）
+- `map_response` は CORS ヘッダ付与・gzip 圧縮より**前**に適用されるため、書き換え後の
+  body に対して圧縮・ヘッダ付与が効く
+- `RequestGate` 拒否応答・パースエラー応答・Upgrade 委譲失敗応答・ストリーミング応答
+  （`Handler::handle_streaming`）には適用されない（fail-closed。既存の
+  `finalize_response` と同一の除外方針）
+- `intercept`/`map_response` とも `Middleware` と同じ同期契約（同期ブロッキング I/O
+  禁止）。カスタム 404 ページ等の静的コンテンツは起動時にメモリへプリロードしておく
+
 ## セキュリティ・制約
 
 - 3 trait とも `Send + Sync` 境界が必須である。拡張点の実装は複数ワーカー
@@ -149,8 +203,9 @@ per-request 状態を運ぶ経路がないため）。
   強制しない。実装者が守る規約として doc に明記されている
 - `GateOutcome` は許可/拒否の判定結果のみを運び、JWT クレーム等のプラグイン
   固有データをコアへ持ち込まない（依存方向は常に「プラグイン → コア」の一方向）
-- 拡張点の評価順序（`RequestGate` → `UpgradeHandler` → パスインターセプト型
-  プラグイン → 既定 `Handler`）は固定であり、利用者側で変更できない
+- 拡張点の評価順序（`RequestGate` → `UpgradeHandler` → `Interceptor::intercept` →
+  パスインターセプト型プラグイン → 既定 `Handler` → `Interceptor::map_response` →
+  レスポンス後処理型プラグイン）は固定であり、利用者側で変更できない
 
 ## 関連ドキュメント
 
@@ -159,5 +214,7 @@ per-request 状態を運ぶ経路がないため）。
 - feature 構成別の実行可能サンプル: [`feature-samples.md`](./feature-samples.md)
 - プラグイン境界パターンの設計判断:
   [`docs/design/plugin-boundary.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/plugin-boundary.md)
+- `Interceptor`（3 拡張点で表現できないリダイレクト・レスポンス改変）の設計判断:
+  [`docs/design/interceptor-extension-point.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/interceptor-extension-point.md)
 - 既定 `Handler` の async 化（3 拡張点を同期に据え置く判断）:
   [`docs/design/async-handler.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/async-handler.md)

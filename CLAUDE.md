@@ -37,6 +37,9 @@ fandhe-backend/
 │   ├── spec/               # 仕様書 submodule（要件・タスク・ロードマップ）
 │   ├── design/             # リポジトリ側設計ドキュメント（実装フェーズの設計判断を記録）
 │   │   ├── crates-io-release.md  # crates.io 公開手順（名前確保・所有権・リリース CI、イシュー #94）
+│   │   ├── interceptor-extension-point.md  # ユーザー向けインターセプト・レスポンス改変
+│   │   │                            # 拡張点 `Interceptor` の設計判断（イシュー #420。3 拡張点で
+│   │   │                            # 表現できない根拠・評価順序・fail-closed 除外を記録）
 │   │   ├── docs-site-redesign.md  # GitHub Pages docs サイト刷新設計（イシュー #388、
 │   │   │                            # 親 #384。3 カラムレイアウト・依存ゼロ全文検索・
 │   │   │                            # 公開範囲規約（issue/TASK 番号記述の docs/design/ への
@@ -87,7 +90,15 @@ fandhe-backend/
 │   │                                    # レスポンス側 chunked ストリーミング送信を提供（bounded
 │   │                                    # mpsc によるバックプレッシャ・`finish` 省略時は終端
 │   │                                    # チャンクなしで打ち切りクローズ、既存 `Handler::handle`
-│   │                                    # 実装は無変更で後方互換維持、イシュー #319）
+│   │                                    # 実装は無変更で後方互換維持、イシュー #319）。
+│   │                                    # `Interceptor`（`interceptor` モジュール、イシュー #420）で
+│   │                                    # 3 拡張点で表現できないリダイレクト・レスポンス改変を
+│   │                                    # ユーザー向けに提供。`intercept`（ルーティング・プラグイン
+│   │                                    # 評価前、`RequestGate`/`UpgradeHandler` より後・
+│   │                                    # `plugin::try_intercept` より前）と `map_response`
+│   │                                    # （最終応答確定後・`finalize_response` より前）の 2 フック、
+│   │                                    # `Server::interceptor` で複数登録可（登録順評価）。feature
+│   │                                    # ゲート不要（外部依存ゼロ、pay-for-what-you-use）
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む
