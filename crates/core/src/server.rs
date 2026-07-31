@@ -938,7 +938,7 @@ impl Server {
     /// # Examples
     /// ```
     /// use fandhe_backend_core::Server;
-    /// use fandhe_backend_plugin_compression::CompressionConfig;
+    /// use fandhe_backend_core::plugin_compression::CompressionConfig;
     ///
     /// let config = CompressionConfig::builder().build();
     /// let server = Server::new().compression(config);
@@ -976,7 +976,7 @@ impl Server {
     /// # Examples
     /// ```
     /// use fandhe_backend_core::Server;
-    /// use fandhe_backend_plugin_static::StaticFilesConfig;
+    /// use fandhe_backend_core::plugin_static::StaticFilesConfig;
     ///
     /// let config = StaticFilesConfig::builder("/static", std::env::temp_dir())
     ///     .build()

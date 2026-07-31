@@ -87,7 +87,12 @@ fandhe-backend/
 │   │                                    # レスポンス側 chunked ストリーミング送信を提供（bounded
 │   │                                    # mpsc によるバックプレッシャ・`finish` 省略時は終端
 │   │                                    # チャンクなしで打ち切りクローズ、既存 `Handler::handle`
-│   │                                    # 実装は無変更で後方互換維持、イシュー #319）
+│   │                                    # 実装は無変更で後方互換維持、イシュー #319）。
+│   │                                    # `static` / `compression` feature 有効時は設定型
+│   │                                    # `StaticFilesConfig` / `CompressionConfig` を
+│   │                                    # `plugin_static` / `plugin_compression` モジュールとして
+│   │                                    # 再エクスポートし、プラグインクレートへの直接依存を
+│   │                                    # 追加せずに構築可能にする（イシュー #421）
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む

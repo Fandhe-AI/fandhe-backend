@@ -184,3 +184,28 @@ async fn cors_and_compression_apply_in_sequence() {
     decoder.read_to_string(&mut decoded).unwrap();
     assert_eq!(decoded, "x".repeat(2048));
 }
+
+#[tokio::test]
+async fn config_built_via_core_reexport_compresses_and_roundtrips() {
+    // イシュー #421: `fandhe_backend_core::plugin_compression::CompressionConfig`
+    // （プラグインクレートへの直接依存を追加しない再エクスポート経路）
+    // 経由で構築した設定でも、直接依存経路（上のテスト）と同一の配線・
+    // 応答になることを確認する。
+    let config = fandhe_backend_core::plugin_compression::CompressionConfig::builder()
+        .min_size(1)
+        .build();
+    let router = build_router();
+    let server = Server::new().handler(router).compression(config);
+
+    let request = b"GET /large HTTP/1.1\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n";
+    let raw = roundtrip_raw(&server, request).await;
+    let (head, body) = split_response(&raw);
+
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(head.contains("Content-Encoding: gzip\r\n"));
+
+    let mut decoder = flate2::read::GzDecoder::new(body.as_slice());
+    let mut decoded = String::new();
+    decoder.read_to_string(&mut decoded).unwrap();
+    assert_eq!(decoded, "x".repeat(2048));
+}

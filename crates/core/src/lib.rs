@@ -52,6 +52,18 @@
 //!   検知し、`fandhe_backend_plugin_websocket::handle_upgrade` へ完全委譲する（RFC 6455
 //!   ハンドシェイク・フレーミングは `crates/plugin-websocket` 側の責務）。
 //!   無効時（既定）は依存・コード・`unsafe` を一切含まない。
+//! - `static`（イシュー #318）: `crates/plugin-static` を組み込み、
+//!   [`server::Server::static_files`] へ渡す設定型 `StaticFilesConfig` を
+//!   [`plugin_static`] モジュールとして再エクスポートする（イシュー #421）。
+//!   利用者は `fandhe-backend-plugin-static` へ直接依存せずに
+//!   `fandhe_backend_core::plugin_static::StaticFilesConfig` を構築できる。
+//!   無効時（既定）は依存・コード・`unsafe` を一切含まない。
+//! - `compression`（イシュー #321）: `crates/plugin-compression` を組み込み、
+//!   [`server::Server::compression`] へ渡す設定型 `CompressionConfig` を
+//!   [`plugin_compression`] モジュールとして再エクスポートする（イシュー #421）。
+//!   利用者は `fandhe-backend-plugin-compression` へ直接依存せずに
+//!   `fandhe_backend_core::plugin_compression::CompressionConfig` を構築できる。
+//!   無効時（既定）は依存・コード・`unsafe` を一切含まない。
 //!
 //! # 今後のタスクとの対応
 //!
@@ -111,6 +123,54 @@ pub use server::{BoundServer, Handler, Server, handle_connection};
 
 // レスポンス側 chunked ストリーミング送信（イシュー #319）の opt-in API。
 pub use streaming::{BodyWriter, StreamClosed, StreamingResponse};
+
+/// 静的ファイル配信プラグイン（`crates/plugin-static`）の再エクスポート
+/// （`static` feature 限定、イシュー #421）。
+///
+/// [`server::Server::static_files`] へ渡す [`StaticFilesConfig`]（および
+/// `StaticFilesConfigBuilder` / `StaticConfigError` 等の付随型）を、
+/// `fandhe-backend-plugin-static` への直接依存を追加せずに構築できるようにする
+/// 唯一の目的で存在する薄い再エクスポート（whole-crate 形式。プラグイン側に
+/// 型が増えても本モジュールの追随は不要）。ハンドラ本体
+/// （`try_handle_static` 等）はコア内部の `crate::plugin` シームから
+/// 呼ばれる実装詳細であり、本モジュール経由での利用は想定しない。
+///
+/// [`StaticFilesConfig`]: fandhe_backend_plugin_static::StaticFilesConfig
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_core::plugin_static::StaticFilesConfig;
+///
+/// let config = StaticFilesConfig::builder("/static", std::env::temp_dir()).build();
+/// assert!(config.is_ok());
+/// ```
+#[cfg(feature = "static")]
+pub use fandhe_backend_plugin_static as plugin_static;
+
+/// レスポンス圧縮プラグイン（`crates/plugin-compression`）の再エクスポート
+/// （`compression` feature 限定、イシュー #421）。
+///
+/// [`server::Server::compression`] へ渡す [`CompressionConfig`]（および
+/// `CompressionConfigBuilder` 等の付随型）を、
+/// `fandhe-backend-plugin-compression` への直接依存を追加せずに構築できる
+/// ようにする唯一の目的で存在する薄い再エクスポート（`plugin_static` と同一の
+/// whole-crate パターン）。圧縮適用本体（`apply_compression` 等）はコア内部の
+/// `crate::plugin::finalize_response` シームから呼ばれる実装詳細であり、
+/// 本モジュール経由での利用は想定しない。
+///
+/// [`CompressionConfig`]: fandhe_backend_plugin_compression::CompressionConfig
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_core::plugin_compression::CompressionConfig;
+///
+/// let config = CompressionConfig::builder().build();
+/// let _ = config;
+/// ```
+#[cfg(feature = "compression")]
+pub use fandhe_backend_plugin_compression as plugin_compression;
 
 /// このクレートのバージョン文字列を返す。
 ///
