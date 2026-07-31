@@ -740,6 +740,27 @@ WebRTC 中継）が非同期の上流通信を要するのに対し、本プラ�
 crate 内蔵の静的テーブル（`src/mime.rs`）で行うため、外部 crates.io 依存
 （`mime_guess` 等）は追加しない。
 
+### 5.11.5 MIME 解決の 2 段構成（イシュー #423）
+
+内蔵テーブルに `.webmanifest`（`application/manifest+json`）等の PWA/SSG
+配信頻出拡張子を追加しつつ、テーブルに存在しない拡張子を利用者が個別に
+補える経路を `StaticFilesConfigBuilder::mime(ext, content_type)` として
+追加した。解決順序は「利用者オーバーライド（`StaticFilesConfig::
+mime_overrides`）→ 内蔵テーブル（`mime::TABLE`）→ 既定値
+`application/octet-stream`」の 2 段フォールバックで、未知拡張子は従来どおり
+安全側の既定値へ倒れる（フェイルクローズ方針を後退させない）。
+
+`content_type` の型を `&'static str` に限定しているのは、`Response::
+with_content_type` が同じ制約を持つ既存設計（5.10 節・`crates/core` の
+`plugin.rs` 冒頭コメント）と揃え、リクエスト由来の動的文字列がレスポンス
+ヘッダへ流入する経路を型レベルで排除するため。`StaticFilesConfigBuilder::
+mime` 自体は失敗せず、拡張子（非空・`.`/`/`/`\`/NUL・制御文字禁止）と
+`content_type`（非空・CR/LF 等の制御文字禁止）の検証は `build()` に集約する
+（`StaticConfigError::InvalidMimeMapping`）。`Response::with_content_type`
+内部の CRLF 検査は `debug_assert!` のみでリリースビルドでは無効化されるため、
+`build()` での構築時検証がヘッダインジェクション（OWASP A03、
+`.claude/rules/security.md`）を遮断する唯一の確実な防御線になる。
+
 ## 5.12 設定登録型プラグインの設定型 core 再エクスポート（イシュー #421）
 
 `static`（5.11 節）・`compression`（5.10 節）のような「設定登録型」プラグインは、

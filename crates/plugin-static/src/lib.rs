@@ -88,6 +88,13 @@ pub enum StaticConfigError {
     RootNotAccessible(std::io::Error),
     /// `root` は存在するがディレクトリではない。
     RootNotADirectory,
+    /// [`StaticFilesConfigBuilder::mime`] で登録した拡張子・`Content-Type` の
+    /// いずれかが不正（イシュー #423）。理由は `String` に格納する。
+    ///
+    /// 拒否対象: 拡張子が空・`.`/`/`/`\`/NUL/制御文字を含む、または
+    /// `Content-Type` が空・CR/LF・その他制御文字を含む場合（ヘッダ
+    /// インジェクション対策、`.claude/rules/security.md` A03）。
+    InvalidMimeMapping(String),
 }
 
 impl std::fmt::Display for StaticConfigError {
@@ -96,6 +103,7 @@ impl std::fmt::Display for StaticConfigError {
             Self::InvalidMount(reason) => write!(f, "mount が不正: {reason}"),
             Self::RootNotAccessible(err) => write!(f, "root にアクセスできない: {err}"),
             Self::RootNotADirectory => f.write_str("root がディレクトリではない"),
+            Self::InvalidMimeMapping(reason) => write!(f, "mime マッピングが不正: {reason}"),
         }
     }
 }
@@ -122,6 +130,13 @@ pub struct StaticFilesConfig {
     /// 配信を許可する 1 ファイルあたりの最大バイト数（既定
     /// [`DEFAULT_MAX_FILE_BYTES`]）。
     max_file_bytes: u64,
+    /// 拡張子（正規化済み: 先頭 `.` 剥離・小文字化・重複は後勝ちで統合済み）
+    /// → `Content-Type` の追加マッピング（[`StaticFilesConfigBuilder::mime`]、
+    /// イシュー #423）。内蔵 [`mime::content_type_for_extension`] のテーブルより
+    /// 優先して解決される。`&'static str` 限定はリクエスト由来の動的文字列が
+    /// レスポンスヘッダへ流入する経路を型レベルで排除するための既存設計方針
+    /// （`fandhe_backend_http::response::Response::with_content_type` と同じ制約）。
+    mime_overrides: Vec<(String, &'static str)>,
 }
 
 impl StaticFilesConfig {
@@ -136,6 +151,7 @@ impl StaticFilesConfig {
             mount: mount.into(),
             root: root.into(),
             max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            mime_overrides: Vec::new(),
         }
     }
 }
@@ -147,6 +163,10 @@ pub struct StaticFilesConfigBuilder {
     mount: String,
     root: PathBuf,
     max_file_bytes: u64,
+    /// [`StaticFilesConfigBuilder::mime`] で登録された生の（未検証の）
+    /// 拡張子・`Content-Type` の対。検証・正規化（先頭 `.` 剥離・小文字化・
+    /// 後勝ち重複解決）は `build()` に集約する（イシュー #423）。
+    mime_overrides: Vec<(String, &'static str)>,
 }
 
 impl StaticFilesConfigBuilder {
@@ -159,12 +179,42 @@ impl StaticFilesConfigBuilder {
         self
     }
 
+    /// 拡張子 → `Content-Type` の追加マッピングを登録する（内蔵テーブル
+    /// より優先、イシュー #423）。
+    ///
+    /// `ext` は先頭に `.` を付けても付けなくてもよい（`"webmanifest"` /
+    /// `".webmanifest"` は同義に正規化される）。大文字小文字は無視する。
+    /// 同一拡張子を複数回登録した場合は最後の登録が勝つ。`content_type` を
+    /// `&'static str` に限定しているのは、レスポンスヘッダへリクエスト由来の
+    /// 動的文字列が流入する経路を型レベルで排除するため（`Response::
+    /// with_content_type` と同じ既存方針）。
+    ///
+    /// 本メソッド自体は失敗しない。拡張子・`Content-Type` の形式検証は
+    /// `build()` に集約する（[`StaticConfigError::InvalidMimeMapping`]）。
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_static::StaticFilesConfig;
+    ///
+    /// let config = StaticFilesConfig::builder("/static", std::env::temp_dir())
+    ///     .mime("custom", "application/x-custom")
+    ///     .build()
+    ///     .unwrap();
+    /// let _ = config;
+    /// ```
+    #[must_use]
+    pub fn mime(mut self, ext: impl Into<String>, content_type: &'static str) -> Self {
+        self.mime_overrides.push((ext.into(), content_type));
+        self
+    }
+
     /// 検証付きで [`StaticFilesConfig`] を構築する（フェイルクローズ）。
     ///
     /// - `mount` の形式検証（本モジュール冒頭 doc・[`StaticConfigError::InvalidMount`]）
     /// - `root` の [`std::fs::canonicalize`]（不在・アクセス不可は
     ///   [`StaticConfigError::RootNotAccessible`]）
     /// - `root` がディレクトリであることの確認（[`StaticConfigError::RootNotADirectory`]）
+    /// - [`StaticFilesConfigBuilder::mime`] で登録した各マッピングの形式検証
+    ///   （[`StaticConfigError::InvalidMimeMapping`]、イシュー #423）
     ///
     /// ```
     /// use fandhe_backend_plugin_static::StaticFilesConfig;
@@ -182,12 +232,54 @@ impl StaticFilesConfigBuilder {
         if !root.is_dir() {
             return Err(StaticConfigError::RootNotADirectory);
         }
+        let mime_overrides = validate_mime_overrides(self.mime_overrides)?;
         Ok(StaticFilesConfig {
             mount,
             root,
             max_file_bytes: self.max_file_bytes,
+            mime_overrides,
         })
     }
+}
+
+/// [`StaticFilesConfigBuilder::mime`] で登録されたマッピングを検証・正規化する
+/// （イシュー #423、フェイルクローズ）。
+///
+/// - 拡張子: 先頭の `.` を高々 1 個剥がしたのち非空・`.`/`/`/`\`/NUL・制御
+///   文字を含まないことを検証し、小文字化して保持する
+/// - `Content-Type`: 非空・CR/LF・その他制御文字（`< 0x20` または `0x7f`）を
+///   含まないことを検証する。`Response::with_content_type` の CRLF 検査は
+///   `debug_assert!` のみでリリースビルドでは無効化されるため、本関数が
+///   ヘッダインジェクション（OWASP A03）を遮断する唯一の確実な防御線になる
+/// - 同一拡張子の重複登録は後勝ちで正規化する（先に登録された方を除去する）
+fn validate_mime_overrides(
+    raw: Vec<(String, &'static str)>,
+) -> Result<Vec<(String, &'static str)>, StaticConfigError> {
+    let mut normalized: Vec<(String, &'static str)> = Vec::with_capacity(raw.len());
+    for (ext, content_type) in raw {
+        let ext = ext.strip_prefix('.').unwrap_or(&ext);
+        if ext.is_empty()
+            || ext.contains('.')
+            || ext.contains('/')
+            || ext.contains('\\')
+            || ext.contains('\0')
+            || ext.bytes().any(|b| b < 0x20 || b == 0x7f)
+        {
+            return Err(StaticConfigError::InvalidMimeMapping(format!(
+                "拡張子 {ext:?} が不正（非空・'.'/'/'/'\\'/NUL・制御文字を含められない）"
+            )));
+        }
+        if content_type.is_empty() || content_type.bytes().any(|b| b < 0x20 || b == 0x7f) {
+            return Err(StaticConfigError::InvalidMimeMapping(format!(
+                "拡張子 {ext:?} の Content-Type が不正（非空・CR/LF・制御文字を含められない）"
+            )));
+        }
+        let ext_lower = ext.to_ascii_lowercase();
+        // 後勝ち: 既存の同一拡張子エントリを除去してから追加する。
+        normalized.retain(|(existing, _)| *existing != ext_lower);
+        normalized.push((ext_lower, content_type));
+    }
+    Ok(normalized)
 }
 
 /// `mount` の形式を検証し、正規化済み文字列を返す（[`StaticConfigError::InvalidMount`]、
@@ -278,6 +370,7 @@ fn resolve_and_read(
     segments: &[&str],
     dir_request: bool,
     max_file_bytes: u64,
+    mime_overrides: &[(String, &'static str)],
 ) -> Option<(Vec<u8>, &'static str)> {
     let mut candidate = root.to_path_buf();
     for segment in segments {
@@ -331,7 +424,7 @@ fn resolve_and_read(
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("");
-    let content_type = mime::content_type_for_extension(file_name);
+    let content_type = mime::content_type_for_extension(file_name, mime_overrides);
     Some((bytes, content_type))
 }
 
@@ -450,13 +543,16 @@ pub async fn try_handle_static(head: &RequestHead, config: &StaticFilesConfig) -
 
     let root = config.root.clone();
     let max_file_bytes = config.max_file_bytes;
+    // `(String, &'static str)` の値部分は 'static のため、`Vec` ごと
+    // そのまま move できる（[`StaticFilesConfig::mime_overrides`] の doc）。
+    let mime_overrides = config.mime_overrides.clone();
     // `Vec<&str>` は 'static ではないため、所有権を持つ `String` へ変換して
     // spawn_blocking クロージャへ move する。
     let owned_segments: Vec<String> = segments.iter().map(|s| (*s).to_string()).collect();
 
     let outcome = tokio::task::spawn_blocking(move || {
         let refs: Vec<&str> = owned_segments.iter().map(String::as_str).collect();
-        resolve_and_read(&root, &refs, dir_request, max_file_bytes)
+        resolve_and_read(&root, &refs, dir_request, max_file_bytes, &mime_overrides)
     })
     .await;
 
@@ -905,6 +1001,147 @@ mod tests {
 
         let response = try_handle_static(&head, &config).await.unwrap();
         assert_eq!(response.status, 404);
+    }
+
+    // --- mime オーバーライド API（イシュー #423） ---
+
+    #[tokio::test]
+    async fn webmanifest_is_served_with_manifest_content_type_via_builtin_table() {
+        // オーバーライド未登録でも内蔵テーブルだけで解決される（受け入れ基準本丸）。
+        let dir = TempDir::new();
+        dir.write("manifest.webmanifest", b"{}");
+        let config = config_for(&dir);
+        let head = head_from(b"GET /static/manifest.webmanifest HTTP/1.1\r\n\r\n");
+
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 200);
+        let text = String::from_utf8(response.serialize(false)).unwrap();
+        assert!(text.contains("Content-Type: application/manifest+json\r\n"));
+        assert!(text.contains("X-Content-Type-Options: nosniff\r\n"));
+    }
+
+    #[tokio::test]
+    async fn custom_mime_mapping_is_served_with_registered_content_type() {
+        let dir = TempDir::new();
+        dir.write("file.custom", b"payload");
+        let config = StaticFilesConfig::builder("/static", dir.path())
+            .mime("custom", "application/x-custom")
+            .build()
+            .unwrap();
+        let head = head_from(b"GET /static/file.custom HTTP/1.1\r\n\r\n");
+
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 200);
+        let text = String::from_utf8(response.serialize(false)).unwrap();
+        assert!(text.contains("Content-Type: application/x-custom\r\n"));
+    }
+
+    #[tokio::test]
+    async fn mime_mapping_overrides_builtin_table_entry() {
+        let dir = TempDir::new();
+        dir.write("geo.json", b"{}");
+        let config = StaticFilesConfig::builder("/static", dir.path())
+            .mime("json", "application/geo+json")
+            .build()
+            .unwrap();
+        let head = head_from(b"GET /static/geo.json HTTP/1.1\r\n\r\n");
+
+        let response = try_handle_static(&head, &config).await.unwrap();
+        let text = String::from_utf8(response.serialize(false)).unwrap();
+        assert!(text.contains("Content-Type: application/geo+json\r\n"));
+    }
+
+    #[tokio::test]
+    async fn mime_mapping_matches_case_insensitively() {
+        let dir = TempDir::new();
+        dir.write("FILE.CUSTOM", b"payload");
+        let config = StaticFilesConfig::builder("/static", dir.path())
+            .mime("custom", "application/x-custom")
+            .build()
+            .unwrap();
+        let head = head_from(b"GET /static/FILE.CUSTOM HTTP/1.1\r\n\r\n");
+
+        let response = try_handle_static(&head, &config).await.unwrap();
+        let text = String::from_utf8(response.serialize(false)).unwrap();
+        assert!(text.contains("Content-Type: application/x-custom\r\n"));
+    }
+
+    #[test]
+    fn mime_leading_dot_is_normalized_to_bare_extension() {
+        let dir = TempDir::new();
+        let config = StaticFilesConfig::builder("/static", dir.path())
+            .mime(".custom", "application/x-custom")
+            .build()
+            .unwrap();
+        assert_eq!(
+            config.mime_overrides,
+            vec![("custom".to_string(), "application/x-custom")]
+        );
+    }
+
+    #[test]
+    fn mime_last_registration_for_same_extension_wins() {
+        let dir = TempDir::new();
+        let config = StaticFilesConfig::builder("/static", dir.path())
+            .mime("custom", "application/first")
+            .mime("custom", "application/second")
+            .build()
+            .unwrap();
+        assert_eq!(
+            config.mime_overrides,
+            vec![("custom".to_string(), "application/second")]
+        );
+    }
+
+    #[test]
+    fn build_rejects_empty_mime_extension() {
+        let dir = TempDir::new();
+        let err = StaticFilesConfig::builder("/static", dir.path())
+            .mime("", "application/x-custom")
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, StaticConfigError::InvalidMimeMapping(_)));
+    }
+
+    #[test]
+    fn build_rejects_mime_extension_with_embedded_dot() {
+        let dir = TempDir::new();
+        let err = StaticFilesConfig::builder("/static", dir.path())
+            .mime("a.b", "application/x-custom")
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, StaticConfigError::InvalidMimeMapping(_)));
+    }
+
+    #[test]
+    fn build_rejects_mime_extension_with_path_separator() {
+        let dir = TempDir::new();
+        let err = StaticFilesConfig::builder("/static", dir.path())
+            .mime("a/b", "application/x-custom")
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, StaticConfigError::InvalidMimeMapping(_)));
+    }
+
+    #[test]
+    fn build_rejects_mime_content_type_with_crlf() {
+        // ヘッダインジェクション対策（OWASP A03）: 構築時に確実に拒否する。
+        let dir = TempDir::new();
+        let err = StaticFilesConfig::builder("/static", dir.path())
+            .mime("custom", "text/plain\r\nX-Injected: 1")
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, StaticConfigError::InvalidMimeMapping(_)));
+    }
+
+    #[test]
+    fn build_rejects_empty_mime_content_type() {
+        let dir = TempDir::new();
+        let err = StaticFilesConfig::builder("/static", dir.path())
+            .mime("custom", "")
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, StaticConfigError::InvalidMimeMapping(_)));
     }
 
     #[cfg(unix)]
