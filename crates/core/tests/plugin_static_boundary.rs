@@ -301,3 +301,58 @@ async fn interceptor_map_response_rewrites_static_404_body() {
         "response: {response}"
     );
 }
+
+// --- fallthrough_on_miss（イシュー #419: mount "/" + Router 共存） ---
+
+#[tokio::test]
+async fn root_mount_without_fallthrough_shadows_default_handler_with_404() {
+    // イシュー報告の再現: mount "/" + フォールスルー無効（既定）だと、
+    // 静的層で GET が一律確定してしまい既定 Handler（例 Router の
+    // /healthz）へ一切到達しない。現行挙動を回帰ガードとして固定する。
+    let dir = TempDir::new("root-mount-no-fallthrough");
+    dir.write("index.html", b"<h1>root</h1>");
+    let config = StaticFilesConfig::builder("/", dir.path()).build().unwrap();
+    let server = Server::new().handler(FixedOkHandler).static_files(config);
+
+    let request = b"GET /healthz HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+    assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+}
+
+#[tokio::test]
+async fn root_mount_with_fallthrough_serves_static_file() {
+    let dir = TempDir::new("root-mount-fallthrough-hit");
+    dir.write("index.html", b"<h1>root</h1>");
+    let config = StaticFilesConfig::builder("/", dir.path())
+        .fallthrough_on_miss(true)
+        .build()
+        .unwrap();
+    let server = Server::new().handler(FixedOkHandler).static_files(config);
+
+    let request = b"GET /index.html HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with("<h1>root</h1>"));
+}
+
+#[tokio::test]
+async fn root_mount_with_fallthrough_reaches_default_handler_on_miss() {
+    // イシューの目的そのものの証跡: mount "/" + フォールスルー有効なら、
+    // 静的層で未検出のリクエストが既定 Handler（動的エンドポイント代替の
+    // FixedOkHandler）まで到達する。
+    let dir = TempDir::new("root-mount-fallthrough-miss");
+    dir.write("index.html", b"<h1>root</h1>");
+    let config = StaticFilesConfig::builder("/", dir.path())
+        .fallthrough_on_miss(true)
+        .build()
+        .unwrap();
+    let server = Server::new().handler(FixedOkHandler).static_files(config);
+
+    let request = b"GET /healthz HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with("ok"));
+}

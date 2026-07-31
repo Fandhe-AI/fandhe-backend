@@ -1016,6 +1016,12 @@ impl Server {
     /// 返す。**未登録の場合は feature が有効でも常にフォールスルーする**
     /// （`graphql`・`openapi`・`cors` と同じ設定登録型パターン）。
     ///
+    /// mount `/` で静的サイトと `Router` の動的エンドポイント（例
+    /// `GET /healthz`）を共存させる構成には
+    /// [`fandhe_backend_plugin_static::StaticFilesConfigBuilder::fallthrough_on_miss`]
+    /// を有効にする（既定 `false`。未指定だと未ヒット GET が静的層で一律
+    /// 404 確定し `Router` に到達しない、イシュー #419）。
+    ///
     /// # Examples
     /// ```
     /// use fandhe_backend_core::Server;

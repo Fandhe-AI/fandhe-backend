@@ -39,7 +39,12 @@
 //!   （`starts_with`）であることの検証（シンボリックリンク経由の脱出を拒否）
 //! - ファイル未検出・検証失敗・権限エラー・サイズ超過は**一律 404**
 //!   （存在オラクル・列挙を作らないフェイルクローズ。理由の異なる 403/500 は
-//!   返さない）
+//!   返さない）。ただし [`StaticFilesConfigBuilder::fallthrough_on_miss`]
+//!   （既定 `false`）を有効にした場合のみ、この「一律 404」を「一律 `None`
+//!   （既定 `Handler` へ委譲）」に置き換える opt-in 例外がある。失敗クラス間
+//!   （未検出・字句拒否・サイズ超過等）で応答を区別しないため新たな存在
+//!   オラクルにはならない（イシュー #419、`docs/design/plugin-boundary.md`
+//!   5.11.3 節）
 //! - ディレクトリリスティングは実装しない（A05 対策、恒久方針）
 //! - ファイル I/O（`canonicalize`・`metadata`・`read`）は単一の
 //!   `spawn_blocking` クロージャ内に閉じる（`.claude/rules/coding-rust.md`）
@@ -137,6 +142,10 @@ pub struct StaticFilesConfig {
     /// レスポンスヘッダへ流入する経路を型レベルで排除するための既存設計方針
     /// （`fandhe_backend_http::response::Response::with_content_type` と同じ制約）。
     mime_overrides: Vec<(String, &'static str)>,
+    /// 配信対象を確定できなかった場合に 404 で確定させず既定 `Handler` へ
+    /// フォールスルーするか（既定 `false`、[`StaticFilesConfigBuilder::fallthrough_on_miss`]
+    /// を参照）。
+    fallthrough_on_miss: bool,
 }
 
 impl StaticFilesConfig {
@@ -152,12 +161,13 @@ impl StaticFilesConfig {
             root: root.into(),
             max_file_bytes: DEFAULT_MAX_FILE_BYTES,
             mime_overrides: Vec::new(),
+            fallthrough_on_miss: false,
         }
     }
 }
 
 /// [`StaticFilesConfig`] のビルダー。既定値は「1 ファイル [`DEFAULT_MAX_FILE_BYTES`]
-/// まで」。
+/// まで」「未ヒット時は 404 で確定（フェイルクローズ）」。
 #[derive(Debug, Clone)]
 pub struct StaticFilesConfigBuilder {
     mount: String,
@@ -167,6 +177,7 @@ pub struct StaticFilesConfigBuilder {
     /// 拡張子・`Content-Type` の対。検証・正規化（先頭 `.` 剥離・小文字化・
     /// 後勝ち重複解決）は `build()` に集約する（イシュー #423）。
     mime_overrides: Vec<(String, &'static str)>,
+    fallthrough_on_miss: bool,
 }
 
 impl StaticFilesConfigBuilder {
@@ -207,6 +218,42 @@ impl StaticFilesConfigBuilder {
         self
     }
 
+    /// `GET` かつ `mount` に一致したが配信対象ファイルを確定できなかった
+    /// 場合の挙動を切り替える（既定 `false`）。
+    ///
+    /// - `false`（既定）: 従来どおり [`try_handle_static`] が `Some(404)` を
+    ///   返して処理を確定させる（フェイルクローズ）。
+    /// - `true`: 配信対象を確定できなかったあらゆる結果（ファイル未検出・
+    ///   ディレクトリで `index.html` なし・サイズ超過・シンボリックリンク
+    ///   root 脱出・字句検証で拒否されたセグメント・`spawn_blocking` 失敗を
+    ///   一律含む）で `None` を返し、`crate::plugin::try_intercept`
+    ///   （`crates/core`）を経由して既定 `Handler`（`Router` 等）へ処理を
+    ///   委譲する。mount `/` で静的サイトと動的エンドポイント（例
+    ///   `GET /healthz`）を共存させる構成向け（イシュー #419）。
+    ///
+    /// 有効時、**最終的な 404 の応答責務は下流 `Handler` 側に移る**
+    /// （`Router` に該当ルートがなければコアの既定 404 が返る）。失敗クラス
+    /// を区別せず一律 `None` にするため、有効化しても静的層が返す応答は
+    /// 「200 配信」か「無応答（委譲）」の 2 値のみに留まり、新たな存在
+    /// オラクルにはならない（`docs/design/plugin-boundary.md` 5.11.3 節）。
+    /// 配信可否を決める二層防御（字句検証 + canonicalize 後 root 配下検証）
+    /// 自体は本フラグの影響を一切受けない。
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_static::StaticFilesConfig;
+    ///
+    /// let config = StaticFilesConfig::builder("/", std::env::temp_dir())
+    ///     .fallthrough_on_miss(true)
+    ///     .build()
+    ///     .unwrap();
+    /// let _ = config;
+    /// ```
+    #[must_use]
+    pub fn fallthrough_on_miss(mut self, enabled: bool) -> Self {
+        self.fallthrough_on_miss = enabled;
+        self
+    }
+
     /// 検証付きで [`StaticFilesConfig`] を構築する（フェイルクローズ）。
     ///
     /// - `mount` の形式検証（本モジュール冒頭 doc・[`StaticConfigError::InvalidMount`]）
@@ -238,6 +285,7 @@ impl StaticFilesConfigBuilder {
             root,
             max_file_bytes: self.max_file_bytes,
             mime_overrides,
+            fallthrough_on_miss: self.fallthrough_on_miss,
         })
     }
 }
@@ -444,12 +492,18 @@ fn try_add_header(response: Response, name: &str, value: &str) -> Response {
 /// スルーする（`graphql`・`openapi` と同じ「設定登録型」パターン、
 /// モジュール冒頭 doc を参照）。
 ///
-/// `mount` に一致した場合は必ず `Some` を返す（`try_intercept` が処理を
+/// `mount` に一致し、かつ [`StaticFilesConfigBuilder::fallthrough_on_miss`]
+/// が既定 `false` のままであれば必ず `Some` を返す（`try_intercept` が処理を
 /// 完結させたことを意味する）。ファイル未検出・パス走査試行・サイズ超過等の
 /// あらゆる失敗は一律 404（モジュール冒頭 doc のフェイルクローズ方針）。
 ///
 /// 末尾スラッシュ 1 個（`<mount>/dir/`）は「ディレクトリ要求」として
 /// `dir/index.html` を解決する（イシュー #418、モジュール冒頭 doc 参照）。
+///
+/// `fallthrough_on_miss` を有効にした場合は、`mount` に一致していても配信
+/// 対象を確定できなければ `Some(404)` の代わりに `None` を返し、既定
+/// `Handler` への委譲を呼び出し元に促す（[`StaticFilesConfigBuilder::fallthrough_on_miss`]
+/// の doc を参照、イシュー #419）。
 ///
 /// # ブロッキング I/O の隔離（`.claude/rules/coding-rust.md`）
 ///
@@ -517,6 +571,19 @@ pub async fn try_handle_static(head: &RequestHead, config: &StaticFilesConfig) -
     let path = head.path();
     let tail = strip_mount(path, &config.mount)?;
 
+    // 配信対象を確定できなかった場合の応答を一箇所に集約する。
+    // `fallthrough_on_miss` 有効時は失敗クラスを問わず一律 `None`
+    // （既定 `Handler` へ委譲）にし、無効時は従来どおり一律 404 で確定させる
+    // （モジュール冒頭 doc・`StaticFilesConfigBuilder::fallthrough_on_miss` の doc
+    // に記載した「失敗クラス間で応答を区別しない」オラクル回避方針）。
+    let miss = |config: &StaticFilesConfig| -> Option<Response> {
+        if config.fallthrough_on_miss {
+            None
+        } else {
+            Some(Response::empty(404))
+        }
+    };
+
     // 末尾スラッシュ 1 個は「ディレクトリ要求」（SSG が生成する `/posts/hello/`
     // 形式の URL 互換、イシュー #418）として受理し、`index.html` 解決を試みる。
     // 除去は 1 個のみに限定し、連続スラッシュ由来の空セグメント拒否（下記
@@ -527,9 +594,9 @@ pub async fn try_handle_static(head: &RequestHead, config: &StaticFilesConfig) -
     };
     // `/static//`（mount 直後が連続スラッシュ）は除去後も tail が空のまま
     // 残る。mount 直下の `/static/`（既存挙動、tail が最初から空）とは区別し、
-    // 一律 404 で連続スラッシュ拒否方針を維持する。
+    // 一律 404（フォールスルー有効時は一律 None）で連続スラッシュ拒否方針を維持する。
     if dir_request && tail.is_empty() {
-        return Some(Response::empty(404));
+        return miss(config);
     }
 
     let segments: Vec<&str> = if tail.is_empty() {
@@ -538,7 +605,7 @@ pub async fn try_handle_static(head: &RequestHead, config: &StaticFilesConfig) -
         tail.split('/').collect()
     };
     if !segments.iter().all(|segment| is_safe_segment(segment)) {
-        return Some(Response::empty(404));
+        return miss(config);
     }
 
     let root = config.root.clone();
@@ -557,9 +624,10 @@ pub async fn try_handle_static(head: &RequestHead, config: &StaticFilesConfig) -
     .await;
 
     match outcome {
-        // `spawn_blocking` 自体の失敗（内部 panic 等）もフェイルクローズで 404。
-        Err(_) => Some(Response::empty(404)),
-        Ok(None) => Some(Response::empty(404)),
+        // `spawn_blocking` 自体の失敗（内部 panic 等）もフェイルクローズで 404
+        // （`fallthrough_on_miss` 有効時は同じく `None`）。
+        Err(_) => miss(config),
+        Ok(None) => miss(config),
         Ok(Some((bytes, content_type))) => {
             let response = Response::new(200, bytes).with_content_type(content_type);
             // MIME スニッフィング対策（`.claude/rules/security.md` A05、
@@ -1156,5 +1224,108 @@ mod tests {
 
         let response = try_handle_static(&head, &config).await.unwrap();
         assert_eq!(response.status, 404);
+    }
+
+    // --- fallthrough_on_miss（イシュー #419） ---
+
+    #[tokio::test]
+    async fn default_is_fail_closed_404() {
+        // フラグ未指定（既定 false）なら未検出は従来どおり 404 で確定する
+        // （後方互換の回帰ガード）。
+        let dir = TempDir::new();
+        let config = config_for(&dir);
+        let head = head_from(b"GET /static/does-not-exist.txt HTTP/1.1\r\n\r\n");
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 404);
+    }
+
+    #[tokio::test]
+    async fn fallthrough_returns_none_for_missing_file() {
+        let dir = TempDir::new();
+        let config = StaticFilesConfig::builder("/static", dir.path())
+            .fallthrough_on_miss(true)
+            .build()
+            .unwrap();
+        let head = head_from(b"GET /static/does-not-exist.txt HTTP/1.1\r\n\r\n");
+        assert!(try_handle_static(&head, &config).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn fallthrough_root_mount_returns_none_for_missing_file() {
+        // イシュー #419 の再現構成: mount "/" + フォールスルー有効。
+        let dir = TempDir::new();
+        let config = StaticFilesConfig::builder("/", dir.path())
+            .fallthrough_on_miss(true)
+            .build()
+            .unwrap();
+        let head = head_from(b"GET /healthz HTTP/1.1\r\n\r\n");
+        assert!(try_handle_static(&head, &config).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn fallthrough_still_serves_existing_file() {
+        // フォールスルー有効でもヒット時は通常どおり配信する。
+        let dir = TempDir::new();
+        dir.write("app.js", b"console.log('hi')");
+        let config = StaticFilesConfig::builder("/static", dir.path())
+            .fallthrough_on_miss(true)
+            .build()
+            .unwrap();
+        let head = head_from(b"GET /static/app.js HTTP/1.1\r\n\r\n");
+
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"console.log('hi')");
+    }
+
+    #[tokio::test]
+    async fn fallthrough_returns_none_for_traversal_attempt() {
+        // パストラバーサル試行も一律 None（失敗クラスを区別しないオラクル回避方針）。
+        let dir = TempDir::new();
+        let config = StaticFilesConfig::builder("/static", dir.path())
+            .fallthrough_on_miss(true)
+            .build()
+            .unwrap();
+        let head = head_from(b"GET /static/../secret HTTP/1.1\r\n\r\n");
+        assert!(try_handle_static(&head, &config).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn fallthrough_returns_none_for_dotfile_and_never_serves_it() {
+        // 実在する .env であっても配信されず None（下流へ委譲）になる。
+        let dir = TempDir::new();
+        dir.write(".env", b"SECRET=leak");
+        let config = StaticFilesConfig::builder("/static", dir.path())
+            .fallthrough_on_miss(true)
+            .build()
+            .unwrap();
+        let head = head_from(b"GET /static/.env HTTP/1.1\r\n\r\n");
+        assert!(try_handle_static(&head, &config).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn fallthrough_returns_none_for_oversized_file() {
+        let dir = TempDir::new();
+        dir.write("big.bin", &[0u8; 32]);
+        let config = StaticFilesConfig::builder("/static", dir.path())
+            .max_file_bytes(16)
+            .fallthrough_on_miss(true)
+            .build()
+            .unwrap();
+        let head = head_from(b"GET /static/big.bin HTTP/1.1\r\n\r\n");
+        assert!(try_handle_static(&head, &config).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn fallthrough_falls_through_for_non_get_method() {
+        // 非 GET は fallthrough_on_miss の値によらず従来どおり None。
+        let dir = TempDir::new();
+        dir.write("index.html", b"hi");
+        let config = StaticFilesConfig::builder("/static", dir.path())
+            .fallthrough_on_miss(true)
+            .build()
+            .unwrap();
+        let head = head_from(b"POST /static/index.html HTTP/1.1\r\n\r\n");
+        assert!(try_handle_static(&head, &config).await.is_none());
     }
 }
