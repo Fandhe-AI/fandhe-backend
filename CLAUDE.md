@@ -244,7 +244,12 @@ fandhe-backend/
 │   │                                    # mime(ext, content_type)` で内蔵テーブルにない拡張子を
 │   │                                    # 利用者が追加登録できる（`content_type` は `&'static str`
 │   │                                    # 限定・`build()` 時に拡張子/値の形式検証でヘッダ
-│   │                                    # インジェクションを遮断、イシュー #423）。外部依存ゼロ
+│   │                                    # インジェクションを遮断、イシュー #423）。
+│   │                                    # `StaticFilesConfigBuilder::fallthrough_on_miss`
+│   │                                    # （既定 `false`、イシュー #419）を有効にすると
+│   │                                    # 未ヒット GET を一律 `None` で下流 `Handler`
+│   │                                    # （`Router` 等）へフォールスルーし、mount `/`
+│   │                                    # + 動的エンドポイント共存構成を可能にする。外部依存ゼロ
 │   │                                    # （`fandhe-backend-http` + `tokio` の `rt` feature のみ）、
 │   │                                    # `docs/design/plugin-boundary.md` 5.11 節を参照）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）

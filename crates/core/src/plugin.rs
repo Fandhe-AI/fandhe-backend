@@ -165,6 +165,14 @@ pub(crate) async fn try_intercept(
     // `fandhe_backend_plugin_static` 側の `spawn_blocking` に閉じており、
     // 本関数（ひいては `handle_connection` の非同期タスク）を直接ブロック
     // しない（`.claude/rules/coding-rust.md`）。
+    //
+    // イシュー #419: `StaticFilesConfigBuilder::fallthrough_on_miss` が
+    // 有効な設定では、mount 一致でも配信対象を確定できなかった場合に
+    // `try_handle_static` が `None` を返す。本関数はその `None` を通常の
+    // 「対象外パス」と区別せず同じ経路で下側（既定 `Handler`）へ
+    // フォールスルーするため、mount `/` で静的サイトと `Router` の動的
+    // ルートを共存させられる。コード変更は不要（既存の `if let Some(...)`
+    // が `None` をそのまま透過する）。
     #[cfg(feature = "static")]
     {
         if let Some(config) = server.static_files_config()

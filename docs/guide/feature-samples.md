@@ -216,6 +216,12 @@ curl -si --path-as-is localhost:3005/static/../Cargo.toml
   リスティングを実装しません
 - ファイル I/O は `tokio::task::spawn_blocking` に閉じ、非同期ランタイム
   スレッドをブロックしません
+- `mount` を `"/"` に登録した場合、既定（`fallthrough_on_miss` 未指定 =
+  `false`）だと未ヒット GET も静的層で一律 404 確定し、`Router` に登録した
+  動的エンドポイント（例 `GET /healthz`）へ到達できません。「静的サイト +
+  少数の動的エンドポイント」構成にしたい場合は
+  `StaticFilesConfig::builder("/", root).fallthrough_on_miss(true)` を使い、
+  配信対象を確定できない GET を既定 `Handler` へフォールスルーさせます
 
 `fandhe-backend-plugin-static` へ直接依存しなくても、`static` feature を
 有効化した `fandhe-backend-core` から
