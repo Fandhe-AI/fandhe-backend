@@ -6,7 +6,9 @@
 //! （`Middleware` / `UpgradeHandler` / `RequestGate`、[`extension`] モジュール）を
 //! 実装する最小コアの置き場所。TASK-1.4-1（#69）で 3 拡張点の trait 定義を、
 //! TASK-1.4-2（#70）でコアループ（接続受理・リクエストループ、[`server`]
-//! モジュール）による実接続を提供する。
+//! モジュール）による実接続を提供する。3 拡張点で表現できないリダイレクト・
+//! レスポンス改変（[`interceptor::Interceptor`]、イシュー #420）は feature
+//! ゲート不要の追加拡張点として同モジュールに置く（詳細は [`interceptor`] を参照）。
 //!
 //! # workspace 内での依存方向
 //!
@@ -97,6 +99,7 @@
 //! `docs/design/graceful-shutdown.md` を参照。
 
 pub mod extension;
+pub mod interceptor;
 pub(crate) mod plugin;
 pub mod server;
 pub mod streaming;
@@ -105,6 +108,11 @@ pub mod streaming;
 // （`crates/plugin-*`）はこの再エクスポート経由で `fandhe_backend_core::Middleware`
 // のように参照でき、`extension` モジュールの存在を意識せずに実装できる。
 pub use extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
+
+// ユーザー向けインターセプト・レスポンス改変拡張点（イシュー #420）。
+// 既存 3 拡張点（Middleware/RequestGate/UpgradeHandler）で表現できないリダイレクト・
+// レスポンス改変ユースケースの受け皿。詳細契約は `interceptor` モジュール doc を参照。
+pub use interceptor::Interceptor;
 
 // コアループの主要 API もクレート直下から参照できるよう re-export する。
 pub use server::{BoundServer, Handler, Server, handle_connection};

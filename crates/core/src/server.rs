@@ -53,12 +53,18 @@
 //!       2. RequestGate::check（登録順、最初の Reject を優先。フェイルクローズ）
 //!       3. UpgradeHandler::matches（登録順。マッチしたら読み取りバッファを
 //!          明示解放してから try_handle_upgrade へ委譲）
+//!       3.5. Interceptor::intercept（ユーザー向けインターセプト拡張点、
+//!          イシュー #420。登録順、最初の Some(response) なら以降の
+//!          plugin::try_intercept・Handler::handle をスキップ）
 //!       4. plugin::try_intercept（パスインターセプト型プラグイン。
-//!          Some(response) なら以降の Handler::handle をスキップ）
-//!       5. Handler::handle（未登録時、または try_intercept が None の場合。
+//!          3.5 で確定済みならスキップ。Some(response) なら以降の
+//!          Handler::handle をスキップ）
+//!       5. Handler::handle（未登録時、または 3.5/4 が None の場合。
 //!          未登録時は 404）
+//!       5.4. Interceptor::map_response（ユーザー向けレスポンス改変拡張点、
+//!          イシュー #420。登録順に逐次適用。3.5/4/5 いずれの応答にも適用）
 //!       5.5. plugin::finalize_response（レスポンス後処理型プラグイン。
-//!          try_intercept 応答・Handler::handle 応答の双方に適用）
+//!          5.4 適用後の応答に適用）
 //!       6. レスポンス書き込み → Middleware::on_response
 //!       7. should_keep_alive(head) が false なら接続を閉じる
 //! }
@@ -69,7 +75,10 @@
 //! できるようにするため（フェイルクローズ、`docs/spec/04-requirements.md` REQ-9）。
 //! 同じ理由で `plugin::try_intercept` も `RequestGate` より後（`UpgradeHandler`
 //! の後）に評価し、ゲートの既定拒否がパスインターセプト型プラグインにも及ぶ
-//! ようにする。
+//! ようにする。`Interceptor::intercept`（イシュー #420）も同じ理由で
+//! `RequestGate`/`UpgradeHandler` より後に評価し、ユーザーコードがゲートの
+//! 既定拒否を迂回できないようにする（詳細な設計判断は [`crate::interceptor`]
+//! モジュール doc を参照）。
 
 use std::future::Future;
 use std::io;
@@ -93,6 +102,7 @@ use fandhe_backend_http::request::{HttpVersion, ParseError, RequestHead};
 use fandhe_backend_http::response::Response;
 
 use crate::extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
+use crate::interceptor::Interceptor;
 use crate::streaming::{RecvOutcome, StreamingResponse};
 
 /// `read_request` 1 回あたりの読み取りタイムアウトの既定値（スロークライアント対策）。
@@ -356,6 +366,13 @@ pub struct Server {
     middlewares: Vec<Box<dyn Middleware>>,
     gates: Vec<Box<dyn RequestGate>>,
     upgrade_handlers: Vec<Box<dyn UpgradeHandler>>,
+    /// ユーザー向けインターセプト・レスポンス改変拡張点（イシュー #420）。
+    /// `handle_connection_with_permit` が `RequestGate`/`UpgradeHandler` の後・
+    /// `plugin::try_intercept` の前に `intercept` を、最終応答確定後・
+    /// `plugin::finalize_response` の前に `map_response` を評価する（登録順、
+    /// `crate::interceptor` モジュール doc の評価順序を参照）。feature ゲート
+    /// 不要（外部依存ゼロの純コア機能、`.claude/rules/pay-for-what-you-use.md`）。
+    interceptors: Vec<Box<dyn Interceptor>>,
     handler: Option<Box<dyn Handler>>,
     max_connections: usize,
     max_connection_lifetime: Duration,
@@ -460,6 +477,7 @@ impl Default for Server {
             middlewares: Vec::new(),
             gates: Vec::new(),
             upgrade_handlers: Vec::new(),
+            interceptors: Vec::new(),
             handler: None,
             max_connections: DEFAULT_MAX_CONNECTIONS,
             max_connection_lifetime: DEFAULT_MAX_CONNECTION_LIFETIME,
@@ -671,6 +689,31 @@ impl Server {
     #[must_use]
     pub fn upgrade_handler(mut self, handler: impl UpgradeHandler + 'static) -> Self {
         self.upgrade_handlers.push(Box::new(handler));
+        self
+    }
+
+    /// [`Interceptor`]（イシュー #420）を登録する。複数登録可能で、
+    /// `intercept` は登録順に評価して最初の `Some` が勝ち、`map_response` は
+    /// 登録順に逐次適用する（評価位置・fail-closed 除外は
+    /// [`crate::interceptor`] モジュール doc を参照）。
+    ///
+    /// ```
+    /// use fandhe_backend_core::Server;
+    /// use fandhe_backend_core::interceptor::Interceptor;
+    ///
+    /// struct Noop;
+    /// impl Interceptor for Noop {
+    ///     fn name(&self) -> &'static str {
+    ///         "noop"
+    ///     }
+    /// }
+    ///
+    /// let server = Server::new().interceptor(Noop);
+    /// let _ = server;
+    /// ```
+    #[must_use]
+    pub fn interceptor(mut self, interceptor: impl Interceptor + 'static) -> Self {
+        self.interceptors.push(Box::new(interceptor));
         self
     }
 
@@ -1655,12 +1698,26 @@ pub(crate) async fn handle_connection_with_permit<S>(
             }
         }
 
+        // ユーザー向けインターセプト拡張点（`Interceptor::intercept`、イシュー
+        // #420）は `plugin::try_intercept` より先に評価する。利用者が
+        // 登録済みプラグイン（plugin-static 等）の応答を先取りできるように
+        // するためで、登録順に評価し最初の `Some` が勝つ（`crate::interceptor`
+        // モジュール doc の評価順序を参照）。
+        let intercepted = server
+            .interceptors
+            .iter()
+            .find_map(|interceptor| interceptor.intercept(&request.head, &request.body));
+
         // パスインターセプト型プラグイン（TASK-2.1 / #18）は既定 Handler より
         // 先に評価する。`try_intercept` が `Some` を返した場合はプラグインが
         // 処理を完結させたことを意味し、既定 Handler は呼ばない
         // （モジュール冒頭の処理フロー doc・`crate::plugin::try_intercept` の
-        // doc を参照）。
-        let intercepted = crate::plugin::try_intercept(server, &request.head, &request.body).await;
+        // doc を参照）。ユーザー `Interceptor::intercept` が既に確定させた
+        // 場合はここをスキップする。
+        let intercepted = match intercepted {
+            Some(response) => Some(response),
+            None => crate::plugin::try_intercept(server, &request.head, &request.body).await,
+        };
 
         // レスポンス側 chunked ストリーミング送信（イシュー #319）: `try_intercept` が
         // 委譲しなかった場合のみ、既定 `Handler` の opt-in 拡張点
@@ -1716,6 +1773,20 @@ pub(crate) async fn handle_connection_with_permit<S>(
                 None => Response::empty(404),
             },
         };
+
+        // ユーザー向けレスポンス改変拡張点（`Interceptor::map_response`、
+        // イシュー #420）は `finalize_response`（CORS → 圧縮）より前に適用する。
+        // CORS ヘッダ付与・gzip 圧縮は改変後の最終 body に対して行われるべき
+        // ため（`crate::interceptor` モジュール doc を参照）。登録順に逐次
+        // 適用し、`RequestGate` 拒否応答・パースエラー応答（本関数内の別の
+        // 送出経路）は意図的に通さない（fail-closed、`finalize_response` と
+        // 同一の設計判断）。
+        let response = server
+            .interceptors
+            .iter()
+            .fold(response, |acc, interceptor| {
+                interceptor.map_response(&request.head, acc)
+            });
 
         // レスポンス後処理型シーム（イシュー #305、CORS プラグイン）。
         // `try_intercept` 応答・既定 `Handler` 応答のどちらが確定した場合でも

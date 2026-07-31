@@ -104,6 +104,10 @@ src/server.rs` の `Handler` trait、`fandhe_backend_routes::Router` の `route_
   まま据え置く**（`dyn` 互換性・呼び出しコストの単純さを優先、`docs/design/
   async-handler.md` 2 節）。I/O が必要な場合は上記「ミドルウェア非同期 I/O
   必須化」規約（非同期チャネル送信・別タスクへの委譲）に従う
+- **`Interceptor`（`crates/core/src/interceptor.rs`、イシュー #420）**: 3 拡張点に
+  次いで追加した、ユーザー向けインターセプト・レスポンス改変拡張点。同じ理由
+  （`dyn` 互換性）で同期のまま据え置く。同期ブロッキング I/O 禁止契約も
+  `Middleware` と同一（`crate::interceptor` モジュール doc を参照）
 
 この非対称性は意図的な設計判断であり、3 拡張点を「ハンドラに揃えて async 化する」
 提案は本規約と衝突する。3 拡張点の async 化を検討する場合は
@@ -144,7 +148,7 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
 
 | クレート | 責務 |
 |---------|------|
-| `core` | HTTP/1.1 パーサ・keep-alive・3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）を持つ最小コア |
+| `core` | HTTP/1.1 パーサ・keep-alive・3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）+ ユーザー向けインターセプト・レスポンス改変拡張点（`Interceptor`、イシュー #420、feature ゲート不要）を持つ最小コア |
 | `http` | sans-IO な HTTP プリミティブ（`fandhe-backend-http`）。workspace 内で最下層 |
 | `routes` | ルーティング（`fandhe-backend-routes`）。`server → routes → http::*` の中間層 |
 | `plugin-websocket` | WebSocket（RFC 6455 ハンドシェイク・`UpgradeHandler` 拡張点） |
@@ -205,6 +209,14 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
 同型の固定シグネチャ・cfg-gated な新シームを追加できるか検討する
 （`docs/design/plugin-boundary.md` 5.9 節「レスポンス後処理型パターン」を参照。
 安易な新パターン追加は避け、既存 3 種で表現できないことを確認してから導入する）。
+
+- 上記はプラグイン（feature 着脱）側の受け皿。**利用者コード（アプリ側）向けの
+  リダイレクト・レスポンス改変**が既存 3 種に載らない場合は、`crates/core/src/
+  interceptor.rs` の `Interceptor` trait（イシュー #420、feature ゲート不要の
+  追加拡張点）を検討する。`crate::interceptor` モジュール doc に評価順序・
+  fail-closed 除外・「3 拡張点で表現できない」根拠を明記済み。安易な追加拡張点の
+  増設は避け、既存の `Interceptor`（intercept / map_response の 2 フック）で
+  表現できないか先に確認すること
 
 #### 新規エンドポイント追加手順
 
