@@ -126,7 +126,7 @@ static 等）が処理を完結させなかった場合にのみ `handle_streami
 
 ## 関連ドキュメント
 
-- 拡張点の全体像（`Handler` と 3 拡張点の関係）: [`extension-points.md`](./extension-points.md)
+- 拡張点の全体像（`Handler` と 4 拡張点の関係）: [`extension-points.md`](./extension-points.md)
 - graceful shutdown との組み合わせ（in-flight 接続の完了待ち）:
   [`graceful-shutdown.md`](./graceful-shutdown.md)
 - API・契約の正とする doc comment: `crates/core/src/streaming.rs`・

@@ -11,9 +11,10 @@ API Reference セクションは fandhe-backend の公開 API を横断的に俯
 - [サーバ API（core）](../docs/api/server-api.md) — `fandhe-backend-core` の
   `Server` ビルダー・`BoundServer`・`Handler` trait・`streaming` モジュールの
   契約と feature 前提
-- [3 拡張点契約](../docs/api/extension-api.md) — `Middleware` /
-  `UpgradeHandler` / `RequestGate` の 3 種の拡張点 trait の契約・呼び出し
-  タイミング
+- [3 拡張点契約](../docs/api/extension-api.md) — `extension` モジュールが公開する
+  同期 3 trait（`Middleware` / `UpgradeHandler` / `RequestGate`）の契約・呼び出し
+  タイミング（4 種目の拡張点 `Interceptor` は
+  [拡張点自作ガイド](../docs/guide/extension-points.md)を参照）
 - [HTTP プリミティブ API（http）](../docs/api/http-api.md) — `fandhe-backend-http`
   の公開 API・モジュール間の契約・DoS 上限の俯瞰
 - [ルーティング API（routes）](../docs/api/router-api.md) — `Router` と関連型の

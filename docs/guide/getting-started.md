@@ -101,12 +101,15 @@ curl -v http://127.0.0.1:3000/missing     # 404 応答（未登録パス）
   サーバを起動します
 - **`fandhe_backend_routes::Router`**: パス・メソッドごとにハンドラを登録するルーティング層。
   `impl Handler for Router` により `Server::handler` にそのまま渡せます
-- **3 拡張点**（`fandhe_backend_core::{Middleware, UpgradeHandler, RequestGate}`）:
-  新機能はまずこの 3 種のいずれかに載るか検討します（[`.claude/rules/coding-rust.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/.claude/rules/coding-rust.md)）
+- **4 拡張点**（`fandhe_backend_core::{Middleware, UpgradeHandler, RequestGate}` +
+  `fandhe_backend_core::interceptor::Interceptor`）:
+  新機能はまずこの 4 種のいずれかに載るか検討します（[`.claude/rules/coding-rust.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/.claude/rules/coding-rust.md)）
   - `Middleware`: リクエスト/レスポンスの前後処理（例: `plugin-tracing`）
   - `UpgradeHandler`: プロトコルアップグレード（例: `plugin-websocket` の
     WebSocket ハンドシェイク）
   - `RequestGate`: リクエストの許可/拒否判定
+  - `Interceptor`: リダイレクト・確定済みレスポンスの改変（feature ゲート不要、
+    詳細は[`extension-points.md`](./extension-points.md)）
 
 ## 5. feature 一覧
 

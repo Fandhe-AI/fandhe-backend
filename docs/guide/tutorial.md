@@ -19,9 +19,9 @@ cargo test --doc -p fandhe-backend-core
 
 ## 2. 拡張点を実装する: `Middleware`
 
-コアは 3 種の拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）を公開します。
-ここでは最も単純な `Middleware`（リクエスト数を数えるだけの実装）を例に、
-拡張点の実装パターンを確認します。
+コアは 4 種の拡張点（`Middleware` / `UpgradeHandler` / `RequestGate` /
+`Interceptor`）を公開します。ここでは最も単純な `Middleware`（リクエスト数を数える
+だけの実装）を例に、拡張点の実装パターンを確認します。
 
 `Middleware` trait の完全な実装例（doc test として `cargo test` で検証されます）は
 `crates/core/src/extension.rs` の `Middleware` trait doc comment にあります。要点は次のとおりです。
