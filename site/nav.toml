@@ -107,9 +107,14 @@ source = "docs/api/server-api.md"
 path = "/api/server-api/"
 
 [[section.page]]
-title = "3 拡張点契約"
+title = "同期 3 拡張点契約"
 source = "docs/api/extension-api.md"
 path = "/api/extension-api/"
+
+[[section.page]]
+title = "Interceptor 契約"
+source = "docs/api/interceptor-api.md"
+path = "/api/interceptor-api/"
 
 [[section.page]]
 title = "HTTP プリミティブ API（http）"
