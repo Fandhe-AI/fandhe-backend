@@ -92,3 +92,25 @@ async fn unrelated_path_falls_through_to_default_handler() {
     assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
     assert!(response.ends_with("ok"));
 }
+
+#[tokio::test]
+async fn config_built_via_core_reexport_intercepts_rtc_offer() {
+    // イシュー #435: `fandhe_backend_core::plugin_webrtc::WebRtcConfig`
+    // （プラグインクレートへの直接依存を追加しない再エクスポート経路）
+    // 経由で構築した設定でも、直接依存経路（上のテスト）と同一の配線・
+    // 応答になることを確認する（`plugin_static_boundary.rs` の
+    // `config_built_via_core_reexport_serves_file` と同型パターン、
+    // イシュー #421）。
+    let config = fandhe_backend_core::plugin_webrtc::WebRtcConfig::new();
+    let server = Server::new().webrtc(config).handler(NotCalledHandler);
+
+    let body = b"not json";
+    let request = format!(
+        "POST /rtc/offer HTTP/1.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        std::str::from_utf8(body).unwrap()
+    );
+    let response = roundtrip(&server, request.as_bytes()).await;
+
+    assert!(response.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+}

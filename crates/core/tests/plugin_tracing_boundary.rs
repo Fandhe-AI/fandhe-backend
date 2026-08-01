@@ -174,3 +174,31 @@ async fn excluded_path_emits_no_events_through_middleware_pipeline() {
     // span+2 イベントから統合）= 3。"/health" は 0 件。
     assert_eq!(count.load(Ordering::Relaxed), 3);
 }
+
+#[tokio::test]
+async fn config_built_via_core_reexport_samples_and_records() {
+    // イシュー #435: `fandhe_backend_core::plugin_tracing::TracingConfig`
+    // （プラグインクレートへの直接依存を追加しない再エクスポート経路）
+    // 経由で構築した設定でも、直接依存経路（上のテスト）と同一の配線・
+    // 応答になることを確認する（`plugin_static_boundary.rs` の
+    // `config_built_via_core_reexport_serves_file` と同型パターン、
+    // イシュー #421）。
+    let config =
+        fandhe_backend_core::plugin_tracing::TracingConfig::new(NonZeroU64::new(1).unwrap());
+    let server = Server::new().handler(FixedOkHandler).tracing(config);
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let subscriber = Registry::default().with(CountingLayer(Arc::clone(&count)));
+
+    let (mut client, server_stream) = tokio::io::duplex(65536);
+    let request = pipelined_get_requests(2);
+    client.write_all(&request).await.unwrap();
+    client.shutdown().await.unwrap();
+
+    let _guard = tracing::subscriber::set_default(subscriber);
+    handle_connection(&server, server_stream).await;
+    drop(_guard);
+
+    // interval = 1（全件採択）× 2 リクエスト = 2 イベント。
+    assert_eq!(count.load(Ordering::Relaxed), 2);
+}

@@ -95,7 +95,11 @@ fandhe-backend/
 │   │                                    # `StaticFilesConfig` / `CompressionConfig` を
 │   │                                    # `plugin_static` / `plugin_compression` モジュールとして
 │   │                                    # 再エクスポートし、プラグインクレートへの直接依存を
-│   │                                    # 追加せずに構築可能にする（イシュー #421）。
+│   │                                    # 追加せずに構築可能にする（イシュー #421）。イシュー #435 で
+│   │                                    # 本パターンを残り全設定登録型 feature（`websocket` /
+│   │                                    # `graphql` / `cors` / `tracing` / `openapi` / `webrtc` /
+│   │                                    # `webrtc-proxy`）へ水平展開し、対応する `plugin_*`
+│   │                                    # モジュール経由でも各設定型を構築可能にした。
 │   │                                    # `Interceptor`（`interceptor` モジュール、イシュー #420）で
 │   │                                    # 3 拡張点で表現できないリダイレクト・レスポンス改変を
 │   │                                    # ユーザー向けに提供。`intercept`（ルーティング・プラグイン

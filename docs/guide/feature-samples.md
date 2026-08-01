@@ -34,6 +34,11 @@ curl -v http://127.0.0.1:3007/health   # 200 応答
 確立します。負荷試験用の派生 example として `ws_nfr6`（`current_thread` ランタイム、
 baseline との RPS 比較専用）もあります。
 
+`fandhe-backend-plugin-websocket` へ直接依存しなくても、`websocket` feature を
+有効化した `fandhe-backend-core` から
+`fandhe_backend_core::plugin_websocket::WebSocketConfig` として同じ型を
+参照できます（次回の crates.io リリース以降に反映）。
+
 ## graphql（`fandhe-backend-plugin-graphql`）
 
 `POST /graphql` をパスインターセプトし、`async-graphql` で実クエリを実行します。
@@ -46,6 +51,11 @@ curl -v -X POST http://127.0.0.1:3003/graphql -d '{"query":"{ hello }"}' # ク�
 
 `Server::graphql` にスキーマを登録した場合のみ `POST /graphql` を処理し、未登録時は
 feature 有効でもフォールスルーします（`crates/plugin-graphql` の doc を参照）。
+
+`fandhe-backend-plugin-graphql` へ直接依存しなくても、`graphql` feature を
+有効化した `fandhe-backend-core` から
+`fandhe_backend_core::plugin_graphql::GraphQlConfig` として同じ型を
+参照できます（次回の crates.io リリース以降に反映）。
 
 ## webrtc-proxy（`fandhe-backend-plugin-webrtc-proxy`、MVP 推奨）
 
@@ -62,6 +72,11 @@ let server = Server::new()
 詳細な設計方針（別プロセス切り出し型を選ぶ理由・攻撃表面の考え方）は
 [`docs/design/webrtc-process-isolation.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/webrtc-process-isolation.md) を参照してください。
 
+`fandhe-backend-plugin-webrtc-proxy` へ直接依存しなくても、`webrtc-proxy`
+feature を有効化した `fandhe-backend-core` から
+`fandhe_backend_core::plugin_webrtc_proxy::ProxyConfig` として同じ型を
+参照できます（次回の crates.io リリース以降に反映）。
+
 ## webrtc（`fandhe-backend-plugin-webrtc`、in-process 型）
 
 `webrtc-rs` に直接依存する in-process 型です。攻撃表面が大きいため、通常は
@@ -73,6 +88,11 @@ cargo build --release --example webrtc_nfr6 -p fandhe-backend-core --features we
 
 `POST /rtc/offer` へのシグナリングを扱います。動作確認手順は
 `crates/core/examples/webrtc_nfr6.rs` の doc comment を参照してください。
+
+`fandhe-backend-plugin-webrtc` へ直接依存しなくても、`webrtc` feature を
+有効化した `fandhe-backend-core` から
+`fandhe_backend_core::plugin_webrtc::WebRtcConfig` として同じ型を
+参照できます（次回の crates.io リリース以降に反映）。
 
 ## tracing（`fandhe-backend-plugin-tracing`）
 
@@ -87,6 +107,11 @@ curl -v http://127.0.0.1:3006/health     # 200 応答（計測対象パス）
 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O
 （`tracing-appender` の non-blocking writer）により、RPS への影響を抑えています
 （[`docs/design/tracing-integration.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/tracing-integration.md) 参照）。
+
+`fandhe-backend-plugin-tracing` へ直接依存しなくても、`tracing` feature を
+有効化した `fandhe-backend-core` から
+`fandhe_backend_core::plugin_tracing::TracingConfig` として同じ型を
+参照できます（次回の crates.io リリース以降に反映）。
 
 ## openapi（`fandhe-backend-plugin-openapi`、`gen-cli` feature）
 
@@ -106,6 +131,12 @@ scripts/openapi-two-stage.sh
 
 TypeScript 向け型定義（`ts/src/generated/schema.d.ts`）を連携させる場合は
 [`docs/design/openapi-typescript-pipeline.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/openapi-typescript-pipeline.md) を参照してください。
+
+利用者アプリ独自スキーマを登録する `Server::openapi_with(doc)` 用の設定型
+`OpenApiDoc` は、`fandhe-backend-plugin-openapi` へ直接依存しなくても、
+`openapi` feature を有効化した `fandhe-backend-core` から
+`fandhe_backend_core::plugin_openapi::OpenApiDoc` として参照できます
+（次回の crates.io リリース以降に反映）。
 
 ## cors（`fandhe-backend-plugin-cors`）
 
@@ -142,6 +173,11 @@ curl -si localhost:3004/todos -H 'Origin: https://evil.example'
 独立プロジェクトとしてそのまま `cargo run` できる standalone 版は
 [`examples/with-cors/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/examples/with-cors/)
 にあります。
+
+`fandhe-backend-plugin-cors` へ直接依存しなくても、`cors` feature を
+有効化した `fandhe-backend-core` から
+`fandhe_backend_core::plugin_cors::CorsConfig` として同じ型を
+参照できます（次回の crates.io リリース以降に反映）。
 
 ## compression（`fandhe-backend-plugin-compression`）
 
