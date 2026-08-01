@@ -435,6 +435,38 @@ fn try_add_header(response: Response, name: &str, value: impl Into<String>) -> R
     response.with_header(name, value).unwrap_or(fallback)
 }
 
+/// `Vary` へ `token`（`Accept-Encoding` 想定）を欠落なく反映するヘルパ
+/// （イシュー #461 レビュー指摘の修正）。
+///
+/// `Response::header` は同名ヘッダのうち挿入順で最初の 1 件しか返さない
+/// （`crates/http` の doc を参照）ため、`response.header("vary").is_none()`
+/// による「Vary が 1 件でも既にあれば付与しない」判定は、CORS プラグイン
+/// （`crates/plugin-cors`）が `finalize_response` / `finalize_streaming_head`
+/// で先に `Vary: Origin` を確定させる構成（`Server::cors` +
+/// `Server::compression` 併用）で `Vary: Accept-Encoding` を取りこぼす。
+/// 共有キャッシュが `Origin` のみでバリアント判定し、`Accept-Encoding` を
+/// 送らないクライアントへ圧縮済みバイト列を配信しうる不具合につながる。
+///
+/// 本ヘルパは既存 `Vary` 値（先頭 1 件）を `,` 区切りトークンとして走査し
+/// `token` を大文字小文字無視で含むかのみを確認する。含まれなければ
+/// `try_add_header` で新規 `Vary` ヘッダ行を追加する（`Set-Cookie` と同様、
+/// 同名ヘッダの複数行追加は `Response::with_header` が許容する設計であり、
+/// RFC 9110 上も単一ヘッダのカンマ区切り列挙と等価。既存値への上書き
+/// マージではなく別行追加に留めるのは、`extra_headers` フィールドが
+/// `crates/http` 非公開でこのクレートから書き換えられないため）。
+fn add_vary_token(response: Response, token: &str) -> Response {
+    let already_present = response.header("vary").is_some_and(|existing| {
+        existing
+            .split(',')
+            .any(|part| part.trim().eq_ignore_ascii_case(token))
+    });
+    if already_present {
+        response
+    } else {
+        try_add_header(response, "Vary", token)
+    }
+}
+
 /// gzip コンテナ形式で `data` を圧縮する。
 fn gzip_compress(data: &[u8]) -> Vec<u8> {
     use flate2::Compression;
@@ -508,13 +540,11 @@ pub fn apply_compression(
     }
 
     // 表現が Accept-Encoding に依存して変わりうる時点で Vary を付与する
-    // （圧縮の成否に関わらず、共有キャッシュでの変異混同防止）。重複付与は
-    // しない。
-    let response = if response.header("vary").is_none() {
-        try_add_header(response, "Vary", "Accept-Encoding")
-    } else {
-        response
-    };
+    // （圧縮の成否に関わらず、共有キャッシュでの変異混同防止）。既存の
+    // Vary に Accept-Encoding トークンが含まれる場合のみ重複付与しない
+    // （CORS 由来の `Vary: Origin` 等、別トークンの既存 Vary とは共存
+    // させる、`add_vary_token` の doc・イシュー #461 レビュー指摘を参照）。
+    let response = add_vary_token(response, "Accept-Encoding");
 
     // 条件 6: 二重圧縮防止。
     if response.header("content-encoding").is_some() {
@@ -658,12 +688,11 @@ pub fn begin_streaming_compression(
     }
 
     // 表現が Accept-Encoding に依存して変わりうる時点で Vary を付与する
-    // （`apply_compression` と同一規則、圧縮の成否に関わらず付与）。
-    let response = if response.header("vary").is_none() {
-        try_add_header(response, "Vary", "Accept-Encoding")
-    } else {
-        response
-    };
+    // （`apply_compression` と同一規則、圧縮の成否に関わらず付与）。CORS
+    // （`finalize_streaming_head`）が先に `Vary: Origin` を確定していても
+    // `add_vary_token` が別トークンとして共存させる（イシュー #461
+    // レビュー指摘の修正）。
+    let response = add_vary_token(response, "Accept-Encoding");
 
     // 条件 (d): 二重圧縮防止。
     if response.header("content-encoding").is_some() {
@@ -689,6 +718,18 @@ mod tests {
             ParseOutcome::Complete { head, .. } => head,
             other => panic!("unexpected parse outcome: {other:?}"),
         }
+    }
+
+    /// 直列化済みレスポンスからヘッド部分（`\r\n\r\n` より前）だけを文字列
+    /// として切り出す。gzip 圧縮済み body は UTF-8 として解釈できないため、
+    /// ヘッダのみ検証したいテストで使う。
+    fn head_text(raw: &[u8]) -> String {
+        let sep = b"\r\n\r\n";
+        let pos = raw
+            .windows(sep.len())
+            .position(|w| w == sep)
+            .expect("レスポンスに空行区切りがない");
+        String::from_utf8(raw[..pos].to_vec()).unwrap()
     }
 
     #[test]
@@ -830,6 +871,68 @@ mod tests {
         let mut decoded = String::new();
         decoder.read_to_string(&mut decoded).unwrap();
         assert_eq!(decoded, body);
+    }
+
+    #[test]
+    fn apply_compression_preserves_pre_existing_vary_and_adds_accept_encoding() {
+        // イシュー #461 レビュー指摘の回帰テスト: CORS 等が `finalize_response`
+        // で先に `Vary: Origin` を確定済みの場合でも、圧縮側は
+        // `Accept-Encoding` トークンを別 Vary 行として追加し、既存の
+        // `Origin` を失わないこと（`add_vary_token` の doc を参照）。
+        let config = CompressionConfig::builder().min_size(1).build();
+        let head = head_from(b"GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n");
+        let body = "x".repeat(64);
+        let response = Response::new(200, body.into_bytes())
+            .with_content_type("text/plain")
+            .with_header("Vary", "Origin")
+            .unwrap();
+        let result = apply_compression(&head, &config, response);
+
+        assert_eq!(result.header("content-encoding"), Some("gzip"));
+        // `header()` は挿入順で最初の一致のみを返すため、既存の
+        // `Vary: Origin` が保持されていることをここで確認する。
+        assert_eq!(result.header("vary"), Some("Origin"));
+        // gzip 圧縮済み body は UTF-8 として解釈できないため、ヘッド部分
+        // （`\r\n\r\n` より前）のみ切り出して検証する。
+        let text = head_text(&result.serialize(true));
+        assert!(text.contains("Vary: Origin\r\n"), "text: {text}");
+        assert!(text.contains("Vary: Accept-Encoding\r\n"), "text: {text}");
+    }
+
+    #[test]
+    fn apply_compression_does_not_duplicate_vary_when_already_present() {
+        let config = CompressionConfig::builder().min_size(1).build();
+        let head = head_from(b"GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n");
+        let body = "x".repeat(64);
+        let response = Response::new(200, body.into_bytes())
+            .with_content_type("text/plain")
+            .with_header("Vary", "Accept-Encoding")
+            .unwrap();
+        let result = apply_compression(&head, &config, response);
+
+        let text = head_text(&result.serialize(true));
+        assert_eq!(text.matches("Vary:").count(), 1, "text: {text}");
+    }
+
+    #[test]
+    fn begin_streaming_compression_preserves_pre_existing_vary_and_adds_accept_encoding() {
+        // イシュー #461 レビュー指摘の回帰テスト（ストリーミング経路側）。
+        let config = CompressionConfig::builder()
+            .compress_streaming(true)
+            .build();
+        let head = head_from(b"GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n");
+        let response = Response::empty(200)
+            .with_content_type("text/event-stream")
+            .with_header("Vary", "Origin")
+            .unwrap();
+        let (response, encoder) = begin_streaming_compression(&head, &config, response);
+
+        assert!(encoder.is_some());
+        assert_eq!(response.header("content-encoding"), Some("gzip"));
+        assert_eq!(response.header("vary"), Some("Origin"));
+        let text = String::from_utf8(response.serialize_streaming_head_http10()).unwrap();
+        assert!(text.contains("Vary: Origin\r\n"), "text: {text}");
+        assert!(text.contains("Vary: Accept-Encoding\r\n"), "text: {text}");
     }
 
     #[test]

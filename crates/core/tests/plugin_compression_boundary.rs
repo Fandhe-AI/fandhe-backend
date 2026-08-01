@@ -188,6 +188,11 @@ async fn cors_and_compression_apply_in_sequence() {
     assert!(head.starts_with("HTTP/1.1 200 OK\r\n"));
     assert!(head.contains("Access-Control-Allow-Origin: https://app.example.com\r\n"));
     assert!(head.contains("Content-Encoding: gzip\r\n"));
+    // イシュー #461 レビュー指摘の回帰確認: CORS が先に `Vary: Origin` を
+    // 確定していても、圧縮側の `Vary: Accept-Encoding` が欠落しないこと
+    // （両方の Vary トークンが別ヘッダ行として共存する）。
+    assert!(head.contains("Vary: Origin\r\n"), "head: {head}");
+    assert!(head.contains("Vary: Accept-Encoding\r\n"), "head: {head}");
 
     let mut decoder = flate2::read::GzDecoder::new(body.as_slice());
     let mut decoded = String::new();
@@ -434,6 +439,53 @@ async fn streaming_response_compress_streaming_enabled_roundtrips_multi_chunk() 
         head.contains("Transfer-Encoding: chunked\r\n"),
         "head: {head}"
     );
+
+    let compressed = dechunk(&body);
+    let mut decoder = flate2::read::GzDecoder::new(compressed.as_slice());
+    let mut decoded = String::new();
+    decoder.read_to_string(&mut decoded).unwrap();
+    let expected = "event: a\ndata: ".repeat(50) + &"event: b\ndata: ".repeat(50);
+    assert_eq!(decoded, expected);
+}
+
+#[cfg(feature = "cors")]
+#[tokio::test]
+async fn streaming_response_cors_and_compress_streaming_both_apply_vary_tokens() {
+    // イシュー #461 レビュー指摘の回帰確認（ストリーミング経路）:
+    // `Server::cors` + `Server::compression(compress_streaming(true))` を
+    // 併用し、許可 Origin 付きリクエストがストリーミング応答に来た場合でも
+    // `Vary: Origin`（CORS、`finalize_streaming_head`）と
+    // `Vary: Accept-Encoding`（圧縮、`prepare_streaming_compression`）の
+    // 両方が別ヘッダ行として付与されること。修正前は圧縮側が
+    // `response.header("vary").is_none()` で早期スキップし、
+    // `Accept-Encoding` が欠落していた。
+    use fandhe_backend_plugin_cors::CorsConfig;
+
+    let cors_config = CorsConfig::builder()
+        .allow_origin("https://app.example.com")
+        .build()
+        .unwrap();
+    let compression_config = CompressionConfig::builder()
+        .min_size(1)
+        .compress_streaming(true)
+        .build();
+    let server = Server::new()
+        .handler(StreamingMultiChunkHandler)
+        .cors(cors_config)
+        .compression(compression_config);
+
+    let request = b"GET / HTTP/1.1\r\nOrigin: https://app.example.com\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n";
+    let raw = roundtrip_raw(&server, request).await;
+    let (head, body) = split_response(&raw);
+
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "head: {head}");
+    assert!(
+        head.contains("Access-Control-Allow-Origin: https://app.example.com\r\n"),
+        "head: {head}"
+    );
+    assert!(head.contains("Content-Encoding: gzip\r\n"), "head: {head}");
+    assert!(head.contains("Vary: Origin\r\n"), "head: {head}");
+    assert!(head.contains("Vary: Accept-Encoding\r\n"), "head: {head}");
 
     let compressed = dechunk(&body);
     let mut decoder = flate2::read::GzDecoder::new(compressed.as_slice());
