@@ -20,9 +20,9 @@ publish = false
 # feature（cors / compression / static / openapi / websocket / graphql 等）は
 # 本サンプルの焦点外のため有効化しない（pay-for-what-you-use、
 # .claude/rules/pay-for-what-you-use.md）。
-fandhe-backend-core = { version = "0.1.0", path = "../../crates/core" }
-fandhe-backend-http = { version = "0.1.0", path = "../../crates/http" }
-fandhe-backend-routes = { version = "0.1.0", path = "../../crates/routes" }
+fandhe-backend-core = { version = "0.2.0", path = "../../crates/core" }
+fandhe-backend-http = { version = "0.2.0", path = "../../crates/http" }
+fandhe-backend-routes = { version = "0.2.0", path = "../../crates/routes" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 
 # テスト専用（`cargo test` 時のみビルドされ、配布バイナリの依存には現れない）。
