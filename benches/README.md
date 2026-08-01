@@ -45,6 +45,8 @@ cargo build --release --bin axum-ref
 | `bench-accept.sh` | 上記 3 スクリプトを axum-ref（baseline）・コア側（対象）の順に実行し、比率・絶対差を算出して REQ-1・NFR-1・NFR-2 の基準で判定する受け入れテスト（TASK-1.6-1、#71） |
 | `bench-ws-load.sh` | 10,000 同時 WebSocket 接続の確立成功率・接続あたり RSS 増分（fullscratch/axum 比）・線形性を計測する負荷試験ハーネス（TASK-4.3、#24） |
 | `compression-blocking-bench.sh` | `plugin-compression` の gzip 圧縮本体（`compress_body`）所要時間（body サイズ別）と `spawn_blocking` ディスパッチ往復コストを比較するマイクロベンチ。`blocking_threshold` しきい値決定・ストリーミング圧縮への適用要否判定の根拠（イシュー #468、`benches/reports/issue468-compression-blocking.md`） |
+| `compression-e2e-bench.sh` | compression 有効構成の並行負荷下 E2E 比較（`crates/core/examples/compression_e2e_bench.rs` を使用）。`GET /large`（既定しきい値 64 KiB 以上）への背景負荷と同時に `GET /small`（常にインライン圧縮）を計測し、`spawn_blocking` オフロード（既定）と常時インライン（`BLOCKING_THRESHOLD=max`）の 2 構成で p99 テールレイテンシを比較する（イシュー #473、`benches/reports/issue473-compression-e2e.md`） |
+| `compression-e2e-exclusive.sh` | `compression-e2e-bench.sh` の専有計測 wrapper（flock 相互排他・静穏確認・環境スナップショット。`bench-accept-exclusive.sh` と同型。PASS/FAIL 判定は持たない） |
 
 共通関数は `lib/common.sh` に集約している（サーバ起動/停止・前提ツール検査・中央値算出・
 `RESULT_JSON` 機械可読出力ヘルパー・数値バリデーション）。
@@ -606,3 +608,75 @@ gh run list --workflow bench-schedule.yml --limit 5
 
 詳細な方式比較（相乗り案・別 workflow 案・外部起動案）・退行検知時の通知・一次対応
 フローは `docs/design/bench-scheduled-run.md` を参照。
+
+## compression-e2e-bench.sh / compression-e2e-exclusive.sh — compression E2E p99 比較（イシュー #473）
+
+PR #471（イシュー #468）で `plugin-compression` の gzip 圧縮に `spawn_blocking`
+オフロード（既定しきい値 64 KiB）を追加したが、採否判定はマイクロベンチ
+（`compress_body` 単体の所要時間 vs ディスパッチ往復コスト）のみに基づいており、
+並行負荷下での E2E 検証（巨大応答の圧縮が同居する小応答のテールレイテンシを実際に
+保護しているか）は未実施だった。本節のスクリプトはこの E2E 検証を再現手順付きで
+提供する。
+
+### 計測対象
+
+`crates/core/examples/compression_e2e_bench.rs`（`compression` feature 必須）が
+`/health`・`/large`（既定 256 KiB の `application/json` 応答）・`/small`（4 KiB、
+常にインライン圧縮になる固定サイズ）の 3 エンドポイントを提供する。
+
+`compression-e2e-bench.sh` は次の 2 構成を比較する:
+
+- **構成 A（offload、既定）**: `BLOCKING_THRESHOLD` 未指定（既定 64 KiB）。
+  `/large` の圧縮は `spawn_blocking` へ切り離される
+- **構成 B（inline、比較対象）**: `BLOCKING_THRESHOLD=max`（`usize::MAX`。
+  `CompressionConfigBuilder::blocking_threshold` の doc が明記する「常時インライン」
+  オプトアウト相当）
+
+各構成で、バックグラウンド `oha` が `GET /large` へ負荷を印加し続けている最中に、
+フォアグラウンド `oha` で `GET /small` の RPS・p50・p95・p99 を計測する（加えて
+`/large` 自体の RPS・p99 も比較し、オフロード自体のディスパッチコストによる劣化の
+有無を確認する）。
+
+### 実行手順
+
+```bash
+# 動作確認用の短縮スモーク（配線確認）
+RUNS=3 DURATION=3s CONNECTIONS=16 bash benches/compression-e2e-bench.sh
+
+# 本計測（専有実行枠、既定 RUNS=5 DURATION=15s）
+bash benches/compression-e2e-exclusive.sh
+```
+
+`compression-e2e-exclusive.sh` は `bench-accept-exclusive.sh` と同型の専有実行枠
+（flock 相互排他・静穏確認・環境スナップショット）を使う。**専有ロック取得後・
+静穏確認前**に `compression_e2e_bench` example をビルドする（イシュー #260 PR #268
+Bugbot 指摘 "Pre-lock build breaks exclusivity" の再発防止、`bench-accept-exclusive.sh`
+と同一順序規約）。`FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`（既定 2）は専有ロック
+取得不能・ビルド失敗・静穏未達を表す BLOCKED（PASS へ丸めない）。**本スクリプトは
+`bench-accept.sh` と異なり PASS/FAIL の閾値判定を持たない**（比較計測であり
+受け入れテストではないため）。実測値の判定（しきい値 64 KiB 維持 or 見直し要）は
+`benches/reports/issue473-compression-e2e.md` へ人間可読な形で記録する。
+
+### 専用パラメータ（env で上書き可能）
+
+| 変数 | 既定値 | 意味 |
+|------|-------|------|
+| `LARGE_CONNECTIONS` | `32` | `/large` へのバックグラウンド負荷の同時接続数（`CONNECTIONS`（`/small` 側、既定 128）とは独立） |
+| `LARGE_BODY_SIZE` | 未指定（example 側既定 262144 = 256 KiB） | `/large` の応答サイズ（バイト）。上限 16 MiB（example 側で構築時検証、誤設定による OOM 防止） |
+| `BLOCKING_THRESHOLD`（example 直接起動時のみ） | 未指定（既定 64 KiB） | `compression_e2e_bench` example が受け取る `CompressionConfigBuilder::blocking_threshold`。10 進整数または `max`（`usize::MAX`）。`compression-e2e-bench.sh` は内部で構成 A/B を自動的に切り替えるため、通常は利用者が直接指定する必要はない |
+
+### 週次 CI（bench-schedule.yml）への不採用
+
+本計測は週次 CI へ組み込まない。理由:
+
+- `bench-schedule.yml` の worst-case 予算は既に大きく（専有ロック待ち・静穏待機の
+  再試行・ビルド・計測を含む）、E2E 圧縮計測（2 構成 × RUNS 回 × 混在負荷）の追加は
+  self-hosted runner の負荷抑制方針（`.claude/rules/ci.md`）と衝突する
+- compression は opt-in feature であり、しきい値は
+  `CompressionConfigBuilder::blocking_threshold` で利用者が調整可能。コア性能
+  （REQ-1/NFR-1）のような常時監視対象の要件基準ではない
+- 本節の再現手順により、`crates/plugin-compression` / `crates/core` の
+  `finalize_response` 経路に変更が入った際は手動再実行で退行確認できる
+
+詳細な実測結果・しきい値判定は `benches/reports/issue473-compression-e2e.md`・
+`docs/design/plugin-boundary.md` 5.10.7 節「E2E 検証（イシュー #473）」小節を参照。
