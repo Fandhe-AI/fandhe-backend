@@ -45,8 +45,13 @@ Router 側でも実現不能だった。
 （`Fandhe-AI/fandhe-backend-spec`）の submodule であり、本実装からは直接編集しない。
 「3 拡張点で表現できない場合にのみ新規 trait を追加する」という受け入れ基準の運用上の
 例外事例（`Handler` に続く 2 例目）として、spec リポジトリ側への追随提案は
-out-of-scope-tracking（`.claude/rules/out-of-scope-tracking.md`）に従いユーザー承認
-後に別イシューとして起票する（本 PR 本文に切り出し先を記録する）。
+out-of-scope-tracking（`.claude/rules/out-of-scope-tracking.md`）に従いイシュー #432
+として起票済み。**追随完了**: `Fandhe-AI/fandhe-backend-spec` へ
+[PR #4](https://github.com/Fandhe-AI/fandhe-backend-spec/pull/4) で前提条件・REQ-1・
+REQ-2・REQ-13・制約事項の「拡張点は 3 種類に限定」記述を 4 種類（`Interceptor` 追加）
+へ更新し、マージ済み（`bccb876`）。本リポジトリの `docs/spec` submodule 参照もこの
+コミットへ更新した（イシュー #432）。PoC 記録・完了タスク本文・ロードマップは当時の
+事実の歴史的記録として据え置いている。
 
 ## 設計: trait `Interceptor`（`crates/core/src/interceptor.rs`）
 
