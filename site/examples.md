@@ -1,8 +1,8 @@
 # サンプル集
 
 fandhe-backend には目的の異なる 3 種類のサンプル置き場があります。
-本ページでは、そのうち独立して `cargo run` できる 4 つのサンプル
-（`examples/with-*` 3 種 + `templates/app`）への入口をまとめます。
+本ページでは、そのうち独立して `cargo run` できる 5 つのサンプル
+（`examples/with-*` 4 種 + `templates/app`）への入口をまとめます。
 
 ## 3 種のサンプル置き場の使い分け
 
@@ -23,6 +23,9 @@ fandhe-backend には目的の異なる 3 種類のサンプル置き場があ�
   スキーマ登録 + `POST /graphql` 最小クエリ実行）だけを見せる最小サンプル
 - [with-websocket](./examples/with-websocket.md) — ユーザー定義 WebSocket
   メッセージハンドラ（`WebSocketConfig::with_handler`）だけを見せる最小サンプル
+- [with-interceptor](./examples/with-interceptor.md) — コア拡張点 `Interceptor`
+  の 2 フック（`intercept` によるリダイレクト・`map_response` による
+  レスポンス改変）だけを見せる最小サンプル
 - [templates/app](./examples/templates-app.md) — cors / compression / static /
   openapi を組み合わせた実運用形 ToDo API 雛形
 

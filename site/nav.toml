@@ -83,6 +83,11 @@ source = "site/examples/with-websocket.md"
 path = "/examples/with-websocket/"
 
 [[section.page]]
+title = "with-interceptor"
+source = "site/examples/with-interceptor.md"
+path = "/examples/with-interceptor/"
+
+[[section.page]]
 title = "templates/app"
 source = "site/examples/templates-app.md"
 path = "/examples/templates-app/"

@@ -219,6 +219,9 @@ builder パターン）。
   `finalize_response` と同一の除外方針）
 - `intercept`/`map_response` とも `Middleware` と同じ同期契約（同期ブロッキング I/O
   禁止）。カスタム 404 ページ等の静的コンテンツは起動時にメモリへプリロードしておく
+- リダイレクト（`intercept`）とレスポンスヘッダ付与（`map_response`）の最小配線例は
+  [`examples/with-interceptor/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/examples/with-interceptor)
+  （独立して `cargo run` できるサンプル、[サイト版](/fandhe-backend/examples/with-interceptor/)）を参照
 
 ## セキュリティ・制約
 

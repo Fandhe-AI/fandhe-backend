@@ -309,8 +309,11 @@ fandhe-backend/
 │   ├── with-graphql                   # GraphQL の配線（`Server::graphql` へのスキーマ登録 +
 │   │                                    # `POST /graphql` 最小クエリ実行）を見せるサンプル
 │   │                                    # （イシュー #360）
-│   └── with-websocket                 # ユーザー定義 WebSocket メッセージハンドラ
-│                                        # （`WebSocketConfig::with_handler`）を見せるサンプル
+│   ├── with-websocket                 # ユーザー定義 WebSocket メッセージハンドラ
+│   │                                    # （`WebSocketConfig::with_handler`）を見せるサンプル
+│   └── with-interceptor               # コア拡張点 `Interceptor` の 2 フック（`intercept`
+│                                        # によるリダイレクト・`map_response` によるレスポンス
+│                                        # 改変）を見せる最小サンプル（イシュー #433）
 ├── site/                   # GitHub Pages ドキュメントサイトコンテンツ（index.md・nav.toml・
 │                            # assets/site.css。docs-site SSG ツールで生成対象。base_path=/fandhe-backend）
 │   ├── guides.md                      # Guides セクション索引ページ（イシュー #393）。要約付き
@@ -356,7 +359,7 @@ fandhe-backend/
 │   ├── openapi-ts.sh                  # gen-openapi --check → ts/ の schema.d.ts 鮮度検証 → tsc --noEmit の openapi-typescript 連携パイプライン検証（TASK-6.1、#54）
 │   ├── openapi-ts-negative.sh         # openapi-ts.sh の陰性対照（意図的な型不一致の tsc --noEmit エラー検出）CI 常設検証（TASK-6.2、#55）
 │   ├── clean-worktrees.sh             # .claude/worktrees/ 残存ワークツリーの棚卸し・退避・削除（既定 dry-run、--apply で実削除、イシュー #221）
-│   ├── standalone-crates-io-check.sh  # templates/・examples/ の path 依存を除去し crates.io 公開版のみで build/test 検証（standalone-crates-io.yml から週次 + PR paths で実行、イシュー #371）
+│   ├── standalone-crates-io-check.sh  # templates/・examples/ の path 依存を除去し crates.io 公開版のみで build/test 検証（standalone-crates-io.yml から週次 + PR paths で実行、イシュー #371。対象クレート直下に `.standalone-crates-io-skip`（理由必須）があれば crates.io 未再公開の新 API 依存を理由に build/test を SKIP し、全件 SKIP なら fail-closed で異常終了する。次回 crates.io 再公開時の削除手順は docs/design/crates-io-release.md 8 節、イシュー #433）
 │   ├── docs-site-visual.sh            # 刷新後の docs サイトを headless chromium でライト/ダーク/no-JS ×
 │   │                                    # 複数解像度撮影し `docs/acceptance/issue399-docs-site-visual.md`
 │   │                                    # の視覚証跡一式を生成（イシュー #399。CI 常設化はしない）

@@ -17,6 +17,7 @@ workspace 構成、下記「構成の流儀」節を参照）。
 | [`with-cors/`](./with-cors/) | CORS の 2 層配線（`Router::options_fallback` + `Server::cors`） | `cd examples/with-cors && cargo run` |
 | [`with-graphql/`](./with-graphql/) | GraphQL の配線（`Server::graphql` へのスキーマ登録 + `POST /graphql` 最小クエリ実行） | `cd examples/with-graphql && cargo run` |
 | [`with-websocket/`](./with-websocket/) | ユーザー定義 WebSocket メッセージハンドラ（`WebSocketConfig::with_handler`） | `cd examples/with-websocket && cargo run` |
+| [`with-interceptor/`](./with-interceptor/) | コア拡張点 `Interceptor` の 2 フック（`intercept` によるリダイレクト・`map_response` によるレスポンス改変） | `cd examples/with-interceptor && cargo run` |
 
 ## サンプルコードの重複回避方針
 
@@ -40,6 +41,11 @@ standalone crate（独立 `cargo run`・独自 README・独自テスト）とし
 です。土台にはせず、Issue #179 で追加されたユーザー定義メッセージハンドラ API
 （`WsMessageHandler` / `WebSocketConfig::with_handler`）の利用者向け配線例として
 新規に作成しています。
+
+`examples/with-interceptor/` も `crates/core/examples/` に対応する example が
+存在しないため（`cors_demo.rs`・`graphql_nfr6.rs`・`ws_echo.rs` のような土台
+なし）、`with-websocket/` と同様に新規作成しています。コア拡張点 `Interceptor`
+（イシュー #420）の利用者向け配線例です。
 
 ## 構成の流儀（`templates/app/` と共通）
 

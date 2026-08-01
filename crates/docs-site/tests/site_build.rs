@@ -127,8 +127,9 @@ fn build_site_succeeds_for_the_real_repository_site() {
     // `site/nav.toml` の総ページ数を機械固定する（イシュー #389 受け入れ条件
     // 2: 既存ページ全てがリンク切れなくビルドできること）。ページ数が
     // 変わった場合はこの値も追随する必要がある（イシュー #400/#406/#407 で
-    // Examples・API Reference・Guides 索引ページが追加され 13 → 20 に増加）。
-    assert_eq!(report.written.len(), 20);
+    // Examples・API Reference・Guides 索引ページが追加され 13 → 20 に増加、
+    // イシュー #433 で with-interceptor サンプルページが追加され 20 → 21 に増加）。
+    assert_eq!(report.written.len(), 21);
     assert!(out.0.join("index.html").exists());
 
     // 3 カラム構造（イシュー #389 受け入れ条件 1）: トップページに
@@ -251,7 +252,7 @@ fn build_site_generates_search_index_within_size_limit_for_the_real_repository_s
 }
 
 /// イシュー #396: 実サイトの検索インデックスが `site/nav.toml` の全ページ
-/// （20 ページ、`build_site_succeeds_for_the_real_repository_site` と同数）を
+/// （21 ページ、`build_site_succeeds_for_the_real_repository_site` と同数）を
 /// 含み、`base_path`（`/fandhe-backend`）を保持することを固定する。生の
 /// `< > &` および `U+2028`/`U+2029` を含まないことも合わせて検証する
 /// （[`fandhe_backend_docs_site::search::escape_json_string`] の多層防御
@@ -271,7 +272,7 @@ fn build_site_search_index_covers_all_pages_and_escapes_defense_in_depth_charact
     // `"href":` の出現回数でページ数を数える（JSON パーサを追加依存させない
     // ため文字列探索で代替する。受け入れ条件 4: 外部 JS/依存ライブラリを
     // 追加しない方針とは独立に、テスト側も外部 JSON クレートを増やさない）。
-    assert_eq!(index_json.matches(r#""href":"#).count(), 20);
+    assert_eq!(index_json.matches(r#""href":"#).count(), 21);
 
     for forbidden in ['<', '>', '&', '\u{2028}', '\u{2029}'] {
         assert!(

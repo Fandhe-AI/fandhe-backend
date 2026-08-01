@@ -156,6 +156,11 @@ publish（`cargo publish --workspace`、依存順自動解決）の 3 段構成�
       `docs/spec/` への 4 箇所のリンクが crates.io 掲載時に private リポジトリへの
       リンクとなるため、完全解決は spec リポジトリの public 化待ち
 - [x] 1 節の前提条件がすべて完了している。2026-07-21 実施済み
+- [ ] `examples/*/.standalone-crates-io-skip`（crates.io 未再公開の新 API 依存を理由に
+      `scripts/standalone-crates-io-check.sh` を一時 SKIP しているマーカー、イシュー #433）
+      を全件確認する。今回の公開で当該 API が crates.io 公開版に含まれるようになった
+      マーカーは削除し、`bash scripts/standalone-crates-io-check.sh` を再実行して
+      SKIP なしで通ることを確認する（削除し忘れは検証の穴を恒久化させるため必須）
 
 ## 参照
 
