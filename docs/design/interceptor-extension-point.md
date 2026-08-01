@@ -84,7 +84,9 @@ pub trait Interceptor: Send + Sync {
 5.4. Interceptor::map_response（新規。登録順に逐次適用。`handle_streaming` 経路では
      `write_streaming_response` のヘッド確定時に同じく登録順で適用、イシュー #434）
 5.5. plugin::finalize_response（CORS → 圧縮。map_response の後。ストリーミング応答には
-     未適用のまま、イシュー #319 のスコープ外指定を維持）
+     未適用のまま。ストリーミング応答には代わりに plugin::finalize_streaming_head
+     （CORS のみ、圧縮は対象外）が `write_streaming_response` のヘッド確定時に
+     適用される、イシュー #451）
 6. レスポンス書き込み → Middleware::on_response
 ```
 
@@ -146,8 +148,15 @@ PoC-3 実測根拠のまま変更なし）。
 
 ### スコープ外の明確化
 
-- `plugin::finalize_response`（CORS / compression）のストリーミング適用は引き続き
-  対象外（gzip はストリーム body に適用不能、CORS ヘッダ付与も別途設計が必要なため）
+- `plugin::finalize_response`（`Response` 型前提の通常応答経路専用シーム、CORS →
+  圧縮を逐次適用）自体はストリーミング応答には引き続き適用しない。イシュー #451 で
+  `plugin::finalize_streaming_head`（`finalize_response` の第 4 のシーム）を新設し、
+  `write_streaming_response` のヘッド確定時（`map_response` 適用の直後）に **CORS
+  ヘッダ付与のみ**を適用するようになった。圧縮は gzip がストリーム body 全体を
+  確定させる後処理であり、chunked framing を直接組み立てるストリーミング設計
+  （バックプレッシャ・打ち切りクローズ契約）と両立できないため引き続き対象外
+  （`crates/core/src/plugin.rs` の `finalize_streaming_head` doc・
+  `docs/design/plugin-boundary.md` 5.9.7 節を参照）
 - `RequestGate` 拒否応答・パースエラー応答・Upgrade 失敗 501 / shutdown 503 の除外
   （fail-closed）は変更しない
 

@@ -9,6 +9,7 @@
 
 #![cfg(not(feature = "cors"))]
 
+use fandhe_backend_core::streaming::StreamingResponse;
 use fandhe_backend_core::{Handler, Server, handle_connection};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
@@ -18,6 +19,24 @@ struct FixedOkHandler;
 impl Handler for FixedOkHandler {
     fn handle(&self, _head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
         Box::pin(std::future::ready(Response::new(200, b"ok".to_vec())))
+    }
+}
+
+/// `handle_streaming` で単一チャンクを返すトイハンドラ
+/// （`plugin_cors_boundary.rs` の `StreamingOkHandler` と同型）。
+struct StreamingOkHandler;
+impl Handler for StreamingOkHandler {
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
+        Box::pin(std::future::ready(Response::empty(599)))
+    }
+
+    fn handle_streaming(&self, _head: &RequestHead, _body: &[u8]) -> Option<StreamingResponse> {
+        let (response, writer) = StreamingResponse::channel(200, Some("text/plain"), 4);
+        tokio::spawn(async move {
+            let _ = writer.send(b"chunk".to_vec()).await;
+            let _ = writer.finish().await;
+        });
+        Some(response)
     }
 }
 
@@ -40,4 +59,25 @@ async fn origin_header_is_ignored_when_feature_disabled() {
     let response = roundtrip(&server, request).await;
     assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
     assert!(!response.contains("Access-Control-Allow-Origin"));
+}
+
+/// イシュー #451 の陰性対照: `cors` feature 無効時は `crate::plugin::
+/// finalize_streaming_head` が薄い no-op となり、ストリーミング応答へも
+/// `Origin` ヘッダ付きリクエストで CORS ヘッダが一切付かない
+/// （pay-for-what-you-use）。
+#[tokio::test]
+async fn streaming_response_origin_header_is_ignored_when_feature_disabled() {
+    let server = Server::new().handler(StreamingOkHandler);
+    let request = b"GET / HTTP/1.1\r\nOrigin: https://app.example.com\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "response: {response}"
+    );
+    assert!(
+        !response.contains("Access-Control-Allow-Origin"),
+        "response: {response}"
+    );
+    assert!(response.contains("5\r\nchunk\r\n"), "response: {response}");
+    assert!(response.ends_with("0\r\n\r\n"), "response: {response}");
 }
