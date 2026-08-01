@@ -869,6 +869,36 @@ plugin_compression_boundary.rs` の統合テスト（マルチチャンク round
 `Accept-Encoding` なし/対象外 `Content-Type`/HTTP/1.0/打ち切り/204 の各
 フォールスルー）を参照。
 
+### E2E 検証（イシュー #473）
+
+5.10.7 節冒頭のしきい値決定はマイクロベンチ（`compress_body` 単体の所要
+時間 vs `spawn_blocking` ディスパッチ往復コストの比較）のみに基づいており、
+5 節「E2E レイテンシ改善（テールレイテンシ保護）の位置づけ」（
+`benches/reports/issue468-compression-blocking.md`）が明示的にスコープ外と
+していた並行負荷下の E2E 検証（巨大応答の圧縮が同居する小応答のテール
+レイテンシを実際に保護しているか）を、本イシューで実施した。
+
+**計測方法**: `crates/core/examples/compression_e2e_bench.rs`
+（`benches/compression-e2e-bench.sh` から起動）が `/large`（既定 256 KiB の
+`application/json` 応答、既定しきい値 64 KiB 以上）・`/small`（4 KiB、
+`min_size` 以上・`blocking_threshold` 未満に固定し両構成で常にインライン
+圧縮になるようにする）を提供する。バックグラウンド `oha` が `/large` へ
+負荷を印加し続けている最中に、フォアグラウンド `oha` で `/small` の
+p99 を計測し、構成 A（offload、既定 `blocking_threshold=64 KiB`）と
+構成 B（inline、`blocking_threshold=max`）を比較した（専有計測、
+`benches/compression-e2e-exclusive.sh`）。
+
+**実測結果・しきい値判定・週次 CI 組み込み判断**: `benches/reports/
+issue473-compression-e2e.md` を参照（実測値の転記・判定は本節ではなく
+同レポートに一次情報として記録する）。
+
+**週次 CI（`bench-schedule.yml`）への不採用**: 本 E2E 計測は既定不採用
+とした。理由は `benches/README.md`「compression-e2e-bench.sh /
+compression-e2e-exclusive.sh」節・`benches/reports/
+issue473-compression-e2e.md` を参照（compression が opt-in feature で
+あり常時監視対象の要件基準ではないこと、`bench-schedule.yml` の
+self-hosted runner 負荷抑制方針との衝突が主な理由）。
+
 ## 5.11 パスインターセプト型の `spawn_blocking` ファイル I/O 変種（イシュー #318 で確立）
 
 `fandhe-backend-plugin-static`（静的ファイル配信プラグイン）は `try_intercept`

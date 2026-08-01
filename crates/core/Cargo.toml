@@ -272,6 +272,18 @@ required-features = ["compression"]
 name = "compression_blocking_micro_bench"
 required-features = ["compression"]
 
+# `examples/compression_e2e_bench.rs`（イシュー #473）は
+# `fandhe_backend_plugin_compression::CompressionConfig`（optional dep 経由）を
+# 直接使うため、`compression` feature 無効時に `cargo build --workspace
+# --all-targets` 等がコンパイル対象へ含めて失敗しないよう
+# `required-features` で明示的にゲートする（`compression_demo`・
+# `compression_blocking_micro_bench` と同一パターン。production コード
+# 変更を含まない計測専用 example、`benches/compression-e2e-bench.sh` から
+# 呼ばれる）。
+[[example]]
+name = "compression_e2e_bench"
+required-features = ["compression"]
+
 # `examples/static_demo.rs`（イシュー #318）は `fandhe-backend-plugin-static`（optional dep）を
 # 直接使うため、`static` feature 無効時に `cargo build --workspace --all-targets` 等が
 # コンパイル対象へ含めて失敗しないよう `required-features` で明示的にゲートする
