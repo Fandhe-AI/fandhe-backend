@@ -3,9 +3,10 @@
 //! Fandhe-AI/fandhe-frontend の `crates/docs-site/tests/site_nav.rs` からの
 //! 移植。検証内容（パース成功・ページ登録の網羅・path/source の一意性・
 //! source 実在・ブロックレベルのレンダリング健全性）は同じで、期待値を
-//! fandhe-backend の `site/nav.toml`（トップ + Guides セクション索引 +
-//! `docs/guide/` 7 本 + API Reference セクション索引 + `docs/api/` 5 本 +
-//! `site/examples/` 5 本 = 全 20 ページ）へ合わせている。
+//! fandhe-backend の `site/nav.toml`（トップ + Guides セクション索引 1 +
+//! `docs/guide/` 7 本 + API Reference セクション索引 1 + `docs/api/` 6 本 +
+//! Examples セクション索引 1 + `site/examples/` 5 本 = 全 22 ページ）へ
+//! 合わせている。
 //! `docs/guide/`・`docs/api/`・`site/examples/` の編集・改名でナビ登録と
 //! 実ファイルが乖離した場合に `cargo test` が fail-closed で検知する。
 //!
@@ -70,7 +71,7 @@ fn site_nav_sections_declare_expected_index_paths() {
 
 /// 既存の利用者向けドキュメント（トップ + Guides セクション索引 +
 /// `docs/guide/` の 7 本 + API Reference セクション索引 + `docs/api/` の
-/// 5 本 + `site/examples/` の 5 本 = 全 20 ページ）を
+/// 6 本 + `site/examples/` の 5 本 = 全 22 ページ）を
 /// モジュールスコープの定数として保持する。`site/nav.toml` にページを
 /// 追加・削除した場合はこのリストを実測値へ追随させる必要があり、
 /// 更新を怠ると `site_nav_registers_all_pages_with_expected_paths` が
@@ -97,6 +98,7 @@ const EXPECTED_PAGES: &[(&str, &str)] = &[
     ("site/api.md", "/api/"),
     ("docs/api/server-api.md", "/api/server-api/"),
     ("docs/api/extension-api.md", "/api/extension-api/"),
+    ("docs/api/interceptor-api.md", "/api/interceptor-api/"),
     ("docs/api/http-api.md", "/api/http-api/"),
     ("docs/api/router-api.md", "/api/router-api/"),
     ("docs/api/plugin-config-api.md", "/api/plugin-config-api/"),
@@ -123,7 +125,7 @@ const EXPECTED_PAGE_COUNT: usize = EXPECTED_PAGES.len();
 
 /// 既存の利用者向けドキュメント（[`EXPECTED_PAGES`]、トップ + Guides
 /// セクション索引 + `docs/guide/` の 7 本 + API Reference セクション索引 +
-/// `docs/api/` の 5 本 + `site/examples/` の 5 本 = 全 20 ページ）が
+/// `docs/api/` の 6 本 + `site/examples/` の 5 本 = 全 22 ページ）が
 /// サイト生成対象として漏れなく登録されている。
 #[test]
 fn site_nav_registers_all_pages_with_expected_paths() {

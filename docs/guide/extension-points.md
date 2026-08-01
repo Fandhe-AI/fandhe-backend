@@ -251,5 +251,7 @@ builder パターン）。
   [`docs/design/plugin-boundary.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/plugin-boundary.md)
 - `Interceptor`（3 拡張点で表現できないリダイレクト・レスポンス改変）の設計判断:
   [`docs/design/interceptor-extension-point.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/interceptor-extension-point.md)
+- `Interceptor` の契約リファレンス（公開 API 一覧・評価順序・セキュリティ観点）:
+  [`../api/interceptor-api.md`](../api/interceptor-api.md)
 - 既定 `Handler` の async 化（3 拡張点を同期に据え置く判断）:
   [`docs/design/async-handler.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/async-handler.md)

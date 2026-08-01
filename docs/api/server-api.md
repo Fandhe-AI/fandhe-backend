@@ -36,6 +36,7 @@
 | `middleware` | `fn (impl Middleware + 'static) -> Server` | 観測専用フックを登録（登録順に呼び出し） |
 | `gate` | `fn (impl RequestGate + 'static) -> Server` | 早期拒否ゲートを登録（登録順評価・最初の Reject 優先） |
 | `upgrade_handler` | `fn (impl UpgradeHandler + 'static) -> Server` | Upgrade 委譲判定を登録（登録順に `matches` 評価） |
+| `interceptor` | `fn (impl Interceptor + 'static) -> Server` | インターセプト・レスポンス改変拡張点を登録（複数登録可・登録順評価、詳細は [interceptor-api.md](./interceptor-api.md) 参照） |
 | `handler` | `fn (impl Handler + 'static) -> Server` | 既定ハンドラを登録。未登録時は 404 |
 | `bind` | `async fn (impl ToSocketAddrs) -> io::Result<BoundServer>` | TCP リスナーをバインドし `BoundServer` を返す |
 
@@ -156,6 +157,8 @@ graceful shutdown の詳細な挙動・利用パターンは
 
 - 3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）の契約:
   [extension-api.md](./extension-api.md)
+- `Interceptor`（4 種目の拡張点、インターセプト・レスポンス改変）の契約:
+  [interceptor-api.md](./interceptor-api.md)
 - HTTP プリミティブ（`RequestHead` / `Response` / パーサ群）: [http-api.md](./http-api.md)
 - ルーティング（`Router`）: [router-api.md](./router-api.md)
 - プラグイン設定型: [plugin-config-api.md](./plugin-config-api.md)

@@ -1,4 +1,4 @@
-# 3 拡張点契約リファレンス（Middleware / UpgradeHandler / RequestGate）
+# 同期 3 拡張点契約リファレンス（Middleware / UpgradeHandler / RequestGate）
 
 ## 1. 目的と位置づけ
 
@@ -12,10 +12,9 @@ rustdoc を正とする。
   同期 3 trait（`Middleware` / `UpgradeHandler` / `RequestGate`）を扱う。4 種目の
   `Interceptor`（`interceptor` モジュール、リダイレクト・確定済みレスポンスの改変を
   担う feature ゲート不要のレスポンダ系シーム）は本書のスコープ外であり、
-  [../guide/extension-points.md](../guide/extension-points.md) と
-  [`docs/design/interceptor-extension-point.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/interceptor-extension-point.md)
-  を参照する。プラグイン（`crates/plugin-*`）はこれらの trait を実装する側であり、
-  コアがプラグイン固有シンボルに依存することはない
+  [./interceptor-api.md](./interceptor-api.md) を参照する。プラグイン
+  （`crates/plugin-*`）はこれらの trait を実装する側であり、コアがプラグイン
+  固有シンボルに依存することはない
 - 3 trait はクレート直下にも re-export される（`fandhe_backend_core::Middleware` 等）
 - trait 自体は feature によらず無条件で公開されるが、実装ゼロなら実行時コストもゼロ
   （pay-for-what-you-use に反しない）
@@ -133,8 +132,7 @@ rustdoc を正とする。
   シームであり、公開拡張点ではない。利用者が独自プラグインをこれらのシームへ配線する
   ことはできない（設計判断は `docs/design/plugin-boundary.md` を参照）。利用者が
   実装できる拡張点は本書の 3 trait・`Interceptor`（本書スコープ外、
-  [../guide/extension-points.md](../guide/extension-points.md) 参照）・`Handler` trait
-  に限られる。
+  [./interceptor-api.md](./interceptor-api.md) 参照）・`Handler` trait に限られる。
 - サーバへの登録 API・リクエスト処理全体の設定: [server-api.md](./server-api.md)
 - `RequestHead` の読み取り API（ヘッダ・パス・クエリ・Cookie）: [http-api.md](./http-api.md)
 - 4 拡張点の自作ガイド・実装例: [../guide/extension-points.md](../guide/extension-points.md)
