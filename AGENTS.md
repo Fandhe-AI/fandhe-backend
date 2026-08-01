@@ -194,7 +194,15 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
   EOF 終端で応答する（`Response::serialize_streaming_head_http10` の doc を参照）
 - `crate::plugin::finalize_response`（CORS 等のレスポンス後処理型シーム）は
   `Response` 型を前提とするため `StreamingResponse` には適用しない
-  （イシュー #319 計画時点のスコープ外）
+  （イシュー #319 計画時点のスコープ外を維持）
+- ユーザー向け `Interceptor::map_response`（イシュー #420）はイシュー #434 で
+  ストリーミング応答にも適用対象へ拡張した。`write_streaming_response` が
+  ヘッド確定時（HTTP/1.0・HTTP/1.1 共通、1 回のみ）に `server.interceptors` を
+  登録順に適用し、ステータス・`Content-Type`・追加ヘッダのみを反映する。
+  mapped `Response` の body は producer のチャンクと排他（body を経由しない
+  chunked framing）のため反映されず破棄する契約（`crate::interceptor` モジュール
+  doc の「ストリーミング応答への適用」節・`docs/design/
+  interceptor-extension-point.md` を参照）
 
 ### 変更手順
 

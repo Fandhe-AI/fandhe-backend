@@ -81,8 +81,10 @@ pub trait Interceptor: Send + Sync {
 3.5. Interceptor::intercept（新規。登録順、最初の Some が勝つ）
 4. plugin::try_intercept（intercept が Some なら skip）
 5. Handler::handle / handle_streaming（同上 skip）
-5.4. Interceptor::map_response（新規。登録順に逐次適用）
-5.5. plugin::finalize_response（CORS → 圧縮。map_response の後）
+5.4. Interceptor::map_response（新規。登録順に逐次適用。`handle_streaming` 経路では
+     `write_streaming_response` のヘッド確定時に同じく登録順で適用、イシュー #434）
+5.5. plugin::finalize_response（CORS → 圧縮。map_response の後。ストリーミング応答には
+     未適用のまま、イシュー #319 のスコープ外指定を維持）
 6. レスポンス書き込み → Middleware::on_response
 ```
 
@@ -103,8 +105,51 @@ pub trait Interceptor: Send + Sync {
 - `RequestGate` 拒否応答
 - パースエラー応答（400 等）
 - Upgrade 委譲失敗 501 / shutdown 503
-- ストリーミング応答（`handle_streaming`、`Response` 型前提のため #319 と同じスコープ外
-  扱い）
+
+ストリーミング応答（`handle_streaming`）は当初（本設計時点）#319 と同一理由（`Response`
+型前提のシームであるため）でスコープ外としていたが、イシュー #434 で「ステータス・
+ヘッダのみ」の限定的な適用へ変更した。詳細は次節を参照。
+
+## イシュー #434: ストリーミング応答への `map_response` 適用
+
+### 適用範囲: ステータス + ヘッダのみ。body 改変はスコープ外（破棄）
+
+ストリーミング応答の実データは producer タスクが `crate::streaming::BodyWriter` 経由で
+逐次供給し、chunked framing は `write_streaming_response`（`crates/core/src/server.rs`）が
+`crate::streaming::{encode_chunk, encode_terminator}` で直接組み立てる。`Response::body` を
+経由しないため、`map_response` が返した `Response` の **body は反映されず破棄する**
+（`head_response.body = Vec::new()` を直列化前に明示実行）。
+
+- **不採用案 1: body 差し替えを許す**。バックプレッシャ（bounded mpsc）・応答完全性
+  契約（`finish` 省略時は終端チャンクなしで打ち切りクローズ、イシュー #319）と両立
+  できず、body 全体のバッファリングが必要になり #319 のストリーミング設計そのものを
+  破壊するため不採用
+- **不採用案 2: ストリーミング専用の新規フックを追加する**（例: `map_streaming_head`）。
+  「拡張点は既存 3 種 + レスポンダ系シームで表現できない場合にのみ追加検討」という
+  REQ-2 の原則（本文書冒頭を参照）に対し、既存の `map_response` シグネチャ
+  （`&RequestHead, Response -> Response`）で「ステータス・ヘッダのみ反映・body 破棄」
+  という契約を明文化するだけで表現可能なため、API 表面積を増やさない現行案を採用
+
+### 適用位置: `write_streaming_response` 冒頭で 1 回、HTTP/1.0・HTTP/1.1 両経路共通
+
+従来 HTTP/1.0 経路・HTTP/1.1 経路それぞれで重複していた `head_response`
+（`Response::empty(streaming.status)` + `content_type`）の構築を関数冒頭（バージョン
+分岐前）へ統合し、直後に `server.interceptors` を登録順に fold して `map_response` を
+適用する。**mapped 後の `status`（`head_response.status`）を以降のすべての判定に一貫
+使用する**。特に `Response::is_bodyless_status` 判定（1xx・204・304 で body 送出・
+終端チャンクをスキップ）を mapped status へ切り替えたことで、インターセプタが例えば
+200 → 204 へ書き換えた場合に「ヘッダ側の `Transfer-Encoding` 抑制」と「body 送出・
+終端チャンクのスキップ」が対で成立し、レスポンス分割類の脅威（`serialize_chunked_head`
+doc の RFC 9112 §6.3 コメントと同一脅威）を構造的に防ぐ。`map_response` の呼び出しは
+ヘッド確定時の 1 回のみで、チャンクごとには呼ばない（同期・非ブロッキング契約は
+PoC-3 実測根拠のまま変更なし）。
+
+### スコープ外の明確化
+
+- `plugin::finalize_response`（CORS / compression）のストリーミング適用は引き続き
+  対象外（gzip はストリーム body に適用不能、CORS ヘッダ付与も別途設計が必要なため）
+- `RequestGate` 拒否応答・パースエラー応答・Upgrade 失敗 501 / shutdown 503 の除外
+  （fail-closed）は変更しない
 
 ## ユースケース充足の確認
 
@@ -132,6 +177,11 @@ pub trait Interceptor: Send + Sync {
    （フェイルクローズ維持）
 5. 公開 API に doc comment + doc test が付き、全 feature 構成（なし・個別・全）で
    CI 緑
+6.（イシュー #434）`Handler::handle_streaming` によるストリーミング応答のヘッド
+   （ステータス・`Content-Type`・追加ヘッダ）に登録済み `Interceptor::map_response` が
+   HTTP/1.0・HTTP/1.1 両経路で適用され、`map_response` が返した body は反映されず
+   ワイヤに現れないこと。`Interceptor` 未登録時のストリーミング応答は従来と同一
+   （後方互換）であること
 
 ## セキュリティ考慮事項（OWASP Top 10 観点）
 
@@ -153,6 +203,15 @@ pub trait Interceptor: Send + Sync {
   提示。コア側にバッファ・タイマー等の新規リソースは追加しない
 - **シークレット**: `name()` にリクエスト内容（トークン・PII）を含めない契約を
   `Middleware::name` と同一文言で明記
+- **A03 インジェクション / レスポンス分割・スマグリング（イシュー #434 追加）**:
+  ストリーミング応答でもヘッダ改変経路は通常応答と同じ `Response::with_header`
+  （`Content-Length` / `Transfer-Encoding` / `Connection` は `HeaderError::ReservedName`
+  で構築時拒否、CR/LF/NUL も拒否）に限られ、framing 矛盾ヘッダを注入する経路は型
+  レベルで存在しない。mapped status を `is_bodyless_status` 判定・framing 判定へ
+  一貫使用することで「ヘッダのみ抑制して終端チャンクを送る」型のレスポンス分割を
+  防ぐ（`streaming_map_response_status_rewrite_to_bodyless_suppresses_framing` で
+  固定）。body 破棄により chunked framing の完全性（producer のチャンクのみが
+  ワイヤに乗ること）も維持する（`streaming_map_response_body_is_discarded` で固定）
 
 ## 参照
 
