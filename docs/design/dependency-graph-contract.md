@@ -752,8 +752,7 @@ package/import 名の改名に続き、リポジトリ名・ドキュメント�
 0.2.0 へ一括バンプする機械作業である。`crates/plugin-*/Cargo.toml` への変更を含む
 ため `scripts/extension-closure-gate.sh` の判定対象となり、以下 6 件が
 E（閉包違反候補）と判定された（後続コミットで `examples/with-interceptor/Cargo.toml`
-の 0.2.0 追随バンプを追加したため、当初の 5 件に 1 件加わっている。詳細は本節末尾
-「追加コミット時点の追随」参照）。
+の 0.2.0 追随バンプを追加したため、当初の 5 件に 1 件加わっている。詳細は項目 3・4 参照）。
 
 1. **対象コミット/PR**: PR #444（#437、HEAD sha
    `a6c2c2e5c9ebc4189d7cac400d8ca316bfa173e2`）
@@ -793,10 +792,13 @@ E（閉包違反候補）と判定された（後続コミットで `examples/wi
    から解決できず構造的に FAIL する（`crates-io-release.md` 7.1 節）。同 workflow は
    `ci.yml` の `ci-complete` 集約ゲート（required status check）の対象外であり、
    `scripts/standalone-crates-io-check.sh` の SKIP マーカー機構（イシュー #433 由来）
-   は「全クレート SKIP で PASS 0 件」を fail-closed で拒否する設計のため、5 件中
-   4 件（`examples/with-interceptor` は既存 SKIP 済み）を SKIP マーカーで一律回避
-   する対応は行わない。v0.2.0 publish 完了後に同 workflow を再実行し PASS を確認する
-   （`crates-io-release.md` 8 節「v0.2.0」チェックリスト）
+   は「全クレート SKIP で PASS 0 件」を fail-closed で拒否する設計のため、
+   `standalone-crates-io.yml` が検証対象とする standalone クレート 5 件
+   （`templates/app`・`examples/with-cors`・`examples/with-graphql`・
+   `examples/with-websocket`・`examples/with-interceptor`。上記の E ファイル
+   6 件とは別集計）のうち 4 件（`examples/with-interceptor` は既存 SKIP 済み）を
+   SKIP マーカーで一律回避する対応は行わない。v0.2.0 publish 完了後に同 workflow を
+   再実行し PASS を確認する（`crates-io-release.md` 8 節「v0.2.0」チェックリスト）
 
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 
