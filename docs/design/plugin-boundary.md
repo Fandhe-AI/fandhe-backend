@@ -658,6 +658,18 @@ feature 無効時・`Server::cors` 未登録時は他の設定登録型プラグ
 `plugin_cors_boundary_disabled.rs` / `plugin_compression_boundary.rs` の
 統合テストを参照）。
 
+### 5.9.8 公開 API 化の検討と採否（イシュー #462）
+
+`finalize_response` / `finalize_streaming_head` はいずれも `pub(crate)` の非公開
+シームであり、第 3 のレスポンス後処理型プラグインを外部ユーザーが書けるようにする
+には公開 API 化が必要になる（PR #458 の out-of-scope）という論点を、イシュー #462 で
+検討した。**結論は不採用**。ユーザー向けのレスポンス改変は既に公開拡張点
+`Interceptor::map_response`（イシュー #420、`crates/core/src/interceptor.rs`）が
+提供しており、finalize 系の設計上の利点（5.9.3 節）を実質的に包含しているため、
+「既存拡張点で表現できない場合にのみ新規 trait 追加を検討する」という REQ-2 原則に
+照らして公開化の必然性がない。詳細な比較・不採用根拠・再検討条件は
+[`finalize-seam-public-api.md`](./finalize-seam-public-api.md) を参照。
+
 ## 5.10 レスポンス後処理型パターンの第 2 インスタンス（イシュー #321、圧縮）
 
 `crates/plugin-compression`（`compression` feature）は 5.9 節が確立した
