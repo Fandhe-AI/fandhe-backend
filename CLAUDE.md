@@ -146,7 +146,17 @@ fandhe-backend/
 │   │                                    # opt-in・既定 OFF、HTTP/1.1 chunked 経路限定、
 │   │                                    # `docs/design/interceptor-extension-point.md`・
 │   │                                    # `docs/design/plugin-boundary.md` 5.9.7 節・
-│   │                                    # 5.10.6 節参照）。
+│   │                                    # 5.10.6 節参照）。イシュー #468 で `finalize_response`
+│   │                                    # を `async fn` へ変更し、body 長がしきい値
+│   │                                    # （`CompressionConfigBuilder::blocking_threshold`、
+│   │                                    # 既定 64 KiB）以上の gzip 圧縮を
+│   │                                    # `tokio::task::spawn_blocking` へ切り離すように
+│   │                                    # した（巨大応答の圧縮による tokio ワーカ
+│   │                                    # スレッド長時間占有の緩和、しきい値未満は
+│   │                                    # 従来どおりインライン実行。実測根拠は
+│   │                                    # `benches/reports/
+│   │                                    # issue468-compression-blocking.md`・
+│   │                                    # `docs/design/plugin-boundary.md` 5.10.7 節）。
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む
@@ -268,7 +278,16 @@ fandhe-backend/
 │   │                                    # ストリーミング応答向けチャンク単位 gzip 圧縮も提供
 │   │                                    # （イシュー #461、`compress_streaming` opt-in・
 │   │                                    # 既定 OFF、`crates/core` 側の配線は上記参照。
-│   │                                    # `docs/design/plugin-boundary.md` 5.10.6 節を参照）
+│   │                                    # `docs/design/plugin-boundary.md` 5.10.6 節を参照）。
+│   │                                    # イシュー #468 で `apply_compression` を
+│   │                                    # `plan_compression` / `compress_body` /
+│   │                                    # `attach_compressed` の 3 関数へ分割公開し、
+│   │                                    # `CompressionConfigBuilder::blocking_threshold`
+│   │                                    # （既定 64 KiB）で `crates/core` 側の
+│   │                                    # `spawn_blocking` オフロード判定に使うしきい値を
+│   │                                    # 設定可能にした（本クレート自体は `tokio` に依存
+│   │                                    # せず、依存最小構成を維持。実測根拠は
+│   │                                    # `docs/design/plugin-boundary.md` 5.10.7 節）
 │   ├── plugin-static                  # 静的ファイル配信プラグイン（イシュー #318。パス
 │   │                                    # インターセプト型（`try_intercept`）+ `spawn_blocking`
 │   │                                    # 変種。`crates/core` の `static` feature 経由で

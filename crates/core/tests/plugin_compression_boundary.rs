@@ -201,6 +201,83 @@ async fn cors_and_compression_apply_in_sequence() {
 }
 
 #[tokio::test]
+async fn blocking_threshold_offload_roundtrips_same_as_inline() {
+    // イシュー #468: `blocking_threshold(1)` を指定すると /large（2048
+    // バイト）応答は spawn_blocking オフロード経路（`crate::plugin::
+    // finalize_response` の「巨大応答の spawn_blocking オフロード」節）を
+    // 通る。既存のインライン経路（`registered_with_accept_encoding_
+    // compresses_and_roundtrips`）と同一の応答（Content-Encoding・Vary・
+    // 解凍後 body の一致）になることを確認する。
+    let config = CompressionConfig::builder()
+        .min_size(1)
+        .blocking_threshold(1)
+        .build();
+    let router = build_router();
+    let server = Server::new().handler(router).compression(config);
+
+    let request = b"GET /large HTTP/1.1\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n";
+    let raw = roundtrip_raw(&server, request).await;
+    let (head, body) = split_response(&raw);
+
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(head.contains("Content-Encoding: gzip\r\n"));
+    assert!(head.contains("Vary: Accept-Encoding\r\n"));
+
+    let mut decoder = flate2::read::GzDecoder::new(body.as_slice());
+    let mut decoded = String::new();
+    decoder.read_to_string(&mut decoded).unwrap();
+    assert_eq!(decoded, "x".repeat(2048));
+}
+
+#[tokio::test]
+async fn blocking_threshold_max_keeps_inline_path_below_threshold() {
+    // `blocking_threshold(usize::MAX)`（doc に明記した「実質常時インライン」
+    // 指定）でも通常のインライン経路と同一の結果になることを確認する
+    // （後方互換維持の回帰テスト）。
+    let config = CompressionConfig::builder()
+        .min_size(1)
+        .blocking_threshold(usize::MAX)
+        .build();
+    let router = build_router();
+    let server = Server::new().handler(router).compression(config);
+
+    let request = b"GET /large HTTP/1.1\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n";
+    let raw = roundtrip_raw(&server, request).await;
+    let (head, body) = split_response(&raw);
+
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(head.contains("Content-Encoding: gzip\r\n"));
+
+    let mut decoder = flate2::read::GzDecoder::new(body.as_slice());
+    let mut decoded = String::new();
+    decoder.read_to_string(&mut decoded).unwrap();
+    assert_eq!(decoded, "x".repeat(2048));
+}
+
+#[tokio::test]
+async fn blocking_threshold_offload_falls_back_when_compression_not_beneficial() {
+    // オフロード経路でも既存のフェイルセーフ（圧縮結果が元 body 以上なら
+    // 無圧縮のまま返す）が働くことを確認する（`attach_compressed` の
+    // 契約はオフロード有無に関わらず同一であるべき）。
+    let config = CompressionConfig::builder()
+        .min_size(1)
+        .blocking_threshold(1)
+        .build();
+    let router = Router::new().route("GET", "/tiny", |_head, _body| {
+        Response::new(200, b"a".to_vec()).with_content_type("text/plain")
+    });
+    let server = Server::new().handler(router).compression(config);
+
+    let request = b"GET /tiny HTTP/1.1\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n";
+    let raw = roundtrip_raw(&server, request).await;
+    let (head, body) = split_response(&raw);
+
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(!head.contains("Content-Encoding"));
+    assert_eq!(body, b"a");
+}
+
+#[tokio::test]
 async fn config_built_via_core_reexport_compresses_and_roundtrips() {
     // イシュー #421: `fandhe_backend_core::plugin_compression::CompressionConfig`
     // （プラグインクレートへの直接依存を追加しない再エクスポート経路）

@@ -35,7 +35,11 @@
 //! チャンク単位のストリーミング gzip 圧縮を接続した
 //! （`prepare_streaming_compression` の doc・`crates/plugin-compression/
 //! src/lib.rs` の crate doc「チャンク単位のストリーミング gzip 圧縮」節を
-//! 参照）。
+//! 参照）。イシュー #468 で [`finalize_response`] を `async fn` へ変更し、
+//! body 長がしきい値以上の圧縮を `tokio::task::spawn_blocking` へ切り離す
+//! ようにした（巨大応答の gzip 圧縮が接続タスクの tokio ワーカスレッドを
+//! 長時間占有し他タスクのテールレイテンシへ波及する問題への対処。実測・
+//! 採否根拠は `docs/design/plugin-boundary.md` 5.10.7 節を参照）。
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::OwnedSemaphorePermit;
@@ -363,9 +367,12 @@ fn from_graphql_response(response: fandhe_backend_plugin_graphql::Response) -> R
 /// （`docs/design/plugin-boundary.md` の該当節・`.claude/rules/security.md`
 /// を参照）。
 ///
-/// 同期・`.await` なし（ヘッダ検査と `with_header` 呼び出しのみ）で
-/// `Middleware` の非同期 I/O 禁止規約（`.claude/rules/coding-rust.md`）とは
-/// 独立にコストを抑える。
+/// 同期部分（ヘッダ検査・`with_header` 呼び出し・[`fandhe_backend_plugin_compression::
+/// plan_compression`] 判定）は `Middleware` の非同期 I/O 禁止規約
+/// （`.claude/rules/coding-rust.md`）とは独立にコストを抑える。イシュー #468
+/// で本関数自体は `async fn` へ変更した（下記「巨大応答の spawn_blocking
+/// オフロード」節を参照）が、CORS 適用・圧縮要否判定は引き続き同期のまま
+/// 接続タスク上で行う（軽量なため）。
 ///
 /// # 公開 API 化は不採用（イシュー #462）
 ///
@@ -375,7 +382,35 @@ fn from_graphql_response(response: fandhe_backend_plugin_graphql::Response) -> R
 /// [`crate::interceptor::Interceptor::map_response`] という既存の公開拡張点があり、
 /// 両者の機能差はほぼ解消しているため（比較・不採用根拠は
 /// `docs/design/finalize-seam-public-api.md` を参照）。
-pub(crate) fn finalize_response(
+///
+/// # 巨大応答の spawn_blocking オフロード（イシュー #468）
+///
+/// `compression` feature 有効・`Server::compression` 登録済みの場合、
+/// [`fandhe_backend_plugin_compression::plan_compression`] で圧縮確定
+/// （`CompressionPlan::Compress`）と判定された body 長が
+/// `config.blocking_threshold()` **以上**のときのみ、実際の gzip 圧縮
+/// （[`fandhe_backend_plugin_compression::compress_body`]）を
+/// `tokio::task::spawn_blocking` へ切り離す。しきい値未満は従来どおり
+/// 接続タスク上で同期実行する（ディスパッチオーバーヘッドが圧縮コストを
+/// 上回りやすい小さい応答向けの最適化、`CompressionConfigBuilder::
+/// blocking_threshold` の doc・実測根拠は `docs/design/plugin-boundary.md`
+/// 5.10.7 節を参照）。
+///
+/// オフロード時は body を `Arc<Vec<u8>>` で包み、クロージャへは `clone`
+/// （参照カウント増のみ、コピーなし）を渡す。`join` 完了後は
+/// `Arc::try_unwrap` で元の `Vec<u8>` を回収する（クロージャ側の参照は
+/// 圧縮完了時点で解放済みのため通常は成功する。万一失敗した場合のみ
+/// `(*arc).clone()` へフォールバックし、追加コピーの発生を通常経路では
+/// ゼロにする）。
+///
+/// `spawn_blocking` が `Err`（クロージャ panic・runtime シャットダウン等、
+/// 通常運用では発生しない）を返した場合は圧縮結果を空扱いにし、
+/// [`fandhe_backend_plugin_compression::attach_compressed`] 既存の
+/// フェイルセーフ（圧縮結果が空なら無圧縮のまま返す）へ合流させる。
+/// `Content-Encoding: gzip` は `attach_compressed` が圧縮成功を確認した
+/// 場合のみ付与するため、「gzip を広告して identity body を送る」不整合は
+/// この経路でも構造上起こらない（応答完全性、`.claude/rules/security.md`）。
+pub(crate) async fn finalize_response(
     server: &Server,
     head: &RequestHead,
     response: Response,
@@ -396,7 +431,39 @@ pub(crate) fn finalize_response(
     #[cfg(feature = "compression")]
     {
         if let Some(config) = server.compression_config() {
-            response = fandhe_backend_plugin_compression::apply_compression(head, config, response);
+            use fandhe_backend_plugin_compression::CompressionPlan;
+
+            match fandhe_backend_plugin_compression::plan_compression(head, config, response) {
+                CompressionPlan::Skip(skipped) => response = skipped,
+                CompressionPlan::Compress(mut planned) => {
+                    // body だけを一時的に取り出す（`Response` の他フィールド
+                    // は非公開のため、部分ムーブではなく `mem::take` で
+                    // 借用制約を回避する）。
+                    let body = std::mem::take(&mut planned.body);
+                    let compressed = if body.len() >= config.blocking_threshold() {
+                        // 巨大応答: 圧縮本体のみ spawn_blocking へ切り離す
+                        // （上記関数 doc「巨大応答の spawn_blocking
+                        // オフロード」節を参照）。
+                        let body = std::sync::Arc::new(body);
+                        let body_for_blocking = std::sync::Arc::clone(&body);
+                        let compressed = tokio::task::spawn_blocking(move || {
+                            fandhe_backend_plugin_compression::compress_body(&body_for_blocking)
+                        })
+                        .await
+                        .unwrap_or_default();
+                        planned.body = std::sync::Arc::try_unwrap(body)
+                            .unwrap_or_else(|shared| (*shared).clone());
+                        compressed
+                    } else {
+                        // しきい値未満: 従来どおり接続タスク上で同期実行。
+                        let compressed = fandhe_backend_plugin_compression::compress_body(&body);
+                        planned.body = body;
+                        compressed
+                    };
+                    response =
+                        fandhe_backend_plugin_compression::attach_compressed(planned, compressed);
+                }
+            }
         }
     }
 

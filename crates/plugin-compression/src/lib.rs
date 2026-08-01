@@ -64,15 +64,32 @@
 //! （攻撃の具体的手順はここに記載しない、`.claude/rules/feasibility-guardrail.md`
 //! の方針に準拠）。
 //!
-//! # CPU コストの扱い
+//! # CPU コストの扱い（イシュー #468）
 //!
 //! gzip 圧縮は同期 CPU 処理であり、`finalize_response` を呼ぶ接続タスク内で
 //! 実行される。`Middleware` の「同期ブロッキング I/O 禁止」規約
 //! （`.claude/rules/coding-rust.md`）は I/O が対象であり、本件は CPU 処理の
 //! ため対象外。作業量はコア既存のリクエストボディサイズ上限・ハンドラの
-//! 生成物サイズにより有界（無制限ではない）。巨大応答向けの
-//! `spawn_blocking` 化はスコープ外（後続課題として追跡、
-//! `.claude/rules/out-of-scope-tracking.md`）。
+//! 生成物サイズにより有界（無制限ではない）。
+//!
+//! それでも巨大応答（body 長が [`CompressionConfigBuilder::blocking_threshold`]
+//! 以上）の gzip 圧縮は tokio ワーカスレッドを長時間占有しうるため、
+//! [`apply_compression`] を「判定（[`plan_compression`]）」「圧縮本体
+//! （[`compress_body`]）」「反映（[`attach_compressed`]）」の 3 関数へ分割
+//! 公開する。**`spawn_blocking` の起動・await 自体は本クレートでは行わない**
+//! （`crates/core` の `finalize_response` シームが async 文脈を持つため、
+//! そちら側で `compress_body` を `spawn_blocking` クロージャから呼ぶ構成を
+//! 採る。本クレートに `tokio` 依存を追加せず、依存最小構成（`http` +
+//! `flate2` のみ）を維持するための設計判断、`docs/design/plugin-boundary.md`
+//! 5.10.7 節を参照）。しきい値未満は現行どおり同期インライン実行のままで
+//! よい（ディスパッチオーバーヘッドが圧縮コストに対して相対的に大きくなる
+//! ため）。
+//!
+//! ストリーミング（チャンク単位）圧縮の `spawn_blocking` 化は実測の結果
+//! 不採用と判断した（`docs/design/plugin-boundary.md` 5.10.7 節の実測データ・
+//! 根拠を参照。チャンクは bounded mpsc のバックプレッシャにより典型的に
+//! 小さく、`spawn_blocking` 1 回のディスパッチオーバーヘッドが圧縮時間を
+//! 上回るケースが多いため）。
 //!
 //! # チャンク単位のストリーミング gzip 圧縮（イシュー #461）
 //!
@@ -133,6 +150,15 @@ const DEFAULT_COMPRESSIBLE_TYPES: &[&str] = &[
 /// （小さい応答は圧縮のオーバーヘッドが利益を上回りやすいための閾値）。
 const DEFAULT_MIN_SIZE: usize = 1024;
 
+/// 既定の `spawn_blocking` オフロード閾値（バイト、イシュー #468）。
+///
+/// `crates/core` の `finalize_response` シームがこの値以上の body 長の
+/// 圧縮を `spawn_blocking` へ切り離す（本クレートはこの値を「呼び出し元が
+/// 参照する契約値」として保持するのみで、実際のオフロード判定・実行は
+/// 行わない。[`CompressionConfigBuilder::blocking_threshold`] の doc を
+/// 参照）。実測根拠は `docs/design/plugin-boundary.md` 5.10.7 節。
+const DEFAULT_BLOCKING_THRESHOLD: usize = 64 * 1024;
+
 /// レスポンス圧縮の設定（[`CompressionConfigBuilder`] で構築する）。
 ///
 /// `crates/core` の `Server::compression(config)` に登録した場合のみ
@@ -143,6 +169,7 @@ pub struct CompressionConfig {
     min_size: usize,
     compressible_types: Vec<String>,
     compress_streaming: bool,
+    blocking_threshold: usize,
 }
 
 impl CompressionConfig {
@@ -195,6 +222,17 @@ impl CompressionConfig {
     pub fn compress_streaming(&self) -> bool {
         self.compress_streaming
     }
+
+    /// `spawn_blocking` オフロードのしきい値（バイト、イシュー #468）を
+    /// 返す。既定は 64 KiB
+    /// （[`CompressionConfigBuilder::blocking_threshold`] の doc を参照）。
+    /// この値は `crates/core` の `finalize_response` シームが
+    /// [`plan_compression`] の判定結果と body 長を比較する際にのみ参照する
+    /// 契約値であり、本クレート自体はオフロードを実行しない。
+    #[must_use]
+    pub fn blocking_threshold(&self) -> usize {
+        self.blocking_threshold
+    }
 }
 
 /// [`CompressionConfig`] のビルダー。
@@ -203,6 +241,7 @@ pub struct CompressionConfigBuilder {
     min_size: usize,
     compressible_types: Vec<String>,
     compress_streaming: bool,
+    blocking_threshold: usize,
 }
 
 impl Default for CompressionConfigBuilder {
@@ -216,6 +255,7 @@ impl Default for CompressionConfigBuilder {
             // 既定 OFF（opt-in）。crate doc「チャンク単位のストリーミング
             // gzip 圧縮」節の設計判断を参照。
             compress_streaming: false,
+            blocking_threshold: DEFAULT_BLOCKING_THRESHOLD,
         }
     }
 }
@@ -327,6 +367,41 @@ impl CompressionConfigBuilder {
         self
     }
 
+    /// `spawn_blocking` オフロードのしきい値（バイト）を設定する
+    /// （イシュー #468）。既定は 64 KiB
+    /// （`docs/design/plugin-boundary.md` 5.10.7 節の実測根拠を参照）。
+    ///
+    /// `crates/core` の `finalize_response` シームは、[`plan_compression`]
+    /// が圧縮確定と判定した body 長がこの値**以上**のとき、実際の gzip
+    /// 圧縮（[`compress_body`]）を `tokio::task::spawn_blocking` へ切り離す。
+    /// この値未満は従来どおり接続タスク上で同期実行する
+    /// （ディスパッチオーバーヘッドが圧縮コストに対して相対的に大きくなる
+    /// ため、小さい応答はインラインのほうが有利）。
+    ///
+    /// `usize::MAX` を指定すると実質的に常時インライン実行になる（現行
+    /// 相当の挙動へ後退させたい場合に使う）。`0` を指定すると圧縮確定済み
+    /// 応答は常にオフロードされる。[`CompressionConfigBuilder::min_size`]
+    /// との大小関係に構築時検証は課さない —— `min_size` 未満の body は
+    /// そもそも [`plan_compression`] が「圧縮しない」と判定するため、
+    /// `blocking_threshold < min_size` でも不正な状態にはならず、単に
+    /// 「圧縮対象になった body は常にオフロードされる」設定として機能する。
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_compression::CompressionConfig;
+    ///
+    /// let config = CompressionConfig::builder().blocking_threshold(4096).build();
+    /// assert_eq!(config.blocking_threshold(), 4096);
+    ///
+    /// // 既定は 64 KiB。
+    /// let default_config = CompressionConfig::builder().build();
+    /// assert_eq!(default_config.blocking_threshold(), 64 * 1024);
+    /// ```
+    #[must_use]
+    pub fn blocking_threshold(mut self, blocking_threshold: usize) -> Self {
+        self.blocking_threshold = blocking_threshold;
+        self
+    }
+
     /// [`CompressionConfig`] を構築する。
     ///
     /// 現時点で構築時検証が必要な不正な組み合わせは存在しないため
@@ -338,6 +413,7 @@ impl CompressionConfigBuilder {
             min_size: self.min_size,
             compressible_types: self.compressible_types,
             compress_streaming: self.compress_streaming,
+            blocking_threshold: self.blocking_threshold,
         }
     }
 }
@@ -467,33 +543,127 @@ fn add_vary_token(response: Response, token: &str) -> Response {
     }
 }
 
-/// gzip コンテナ形式で `data` を圧縮する。
-fn gzip_compress(data: &[u8]) -> Vec<u8> {
+/// gzip コンテナ形式で `data` を圧縮する（イシュー #468 で公開化）。
+///
+/// 純粋な CPU 処理のみで I/O を行わない。`crates/core` の
+/// `finalize_response` シームが body 長 [`CompressionConfigBuilder::
+/// blocking_threshold`] 以上のとき `tokio::task::spawn_blocking` クロージャ
+/// から本関数を呼ぶ想定（本クレート自体は `tokio` に依存しないため
+/// オフロードの実行はしない、crate doc「CPU コストの扱い」節を参照）。
+/// しきい値未満は [`apply_compression`] が接続タスク上で直接呼ぶ。
+///
+/// メモリ上の `Vec<u8>` への書き込みのみで I/O エラー要因（ディスク・
+/// ネットワーク）が存在しないため、`write_all`/`finish` の失敗は実質的に
+/// 起こり得ない。それでも `.unwrap()` は避け、失敗時は空の圧縮結果を返して
+/// 呼び出し元（[`attach_compressed`]）の「圧縮結果が元 body 以上なら
+/// 無圧縮のまま返す」フェイルセーフ経路に委ねる
+/// （ライブラリコードでの panic 回避、`.claude/rules/coding-rust.md`）。
+#[must_use]
+pub fn compress_body(data: &[u8]) -> Vec<u8> {
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use std::io::Write;
 
     let mut encoder = GzEncoder::new(Vec::with_capacity(data.len() / 2), Compression::default());
-    // メモリ上の `Vec<u8>` への書き込みのみで I/O エラー要因（ディスク・
-    // ネットワーク）が存在しないため、`write_all`/`finish` の失敗は
-    // 実質的に起こり得ない。それでも `.unwrap()` は避け、失敗時は空の
-    // 圧縮結果を返して呼び出し元（[`apply_compression`]）の「圧縮結果が
-    // 元 body 以上なら無圧縮のまま返す」フェイルセーフ経路に委ねる
-    // （ライブラリコードでの panic 回避、`.claude/rules/coding-rust.md`）。
     if encoder.write_all(data).is_err() {
         return Vec::new();
     }
     encoder.finish().unwrap_or_default()
 }
 
+/// [`plan_compression`] の判定結果（イシュー #468 で導入）。
+///
+/// `apply_compression` の判定部分（条件 2〜6・`Vary` 付与）と圧縮本体
+/// （[`compress_body`]）を切り離すための中間表現。`Skip` は圧縮を行わず
+/// 最終形として確定した `Response`（呼び出し元はそのまま返してよい）、
+/// `Compress` は圧縮条件が確定した未圧縮 `Response`（呼び出し元が
+/// [`compress_body`] → [`attach_compressed`] で body を差し替える）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompressionPlan {
+    /// 圧縮しない（条件不足、または二重圧縮防止）。`Response` は最終形。
+    Skip(Response),
+    /// 圧縮条件（条件 2〜6）が確定した。body は未圧縮のまま。
+    Compress(Response),
+}
+
 /// レスポンス後処理型シーム（`crate::plugin::finalize_response`）から呼ばれる
-/// 圧縮適用の本体。
+/// 圧縮要否の判定本体（イシュー #468 で `apply_compression` から分離）。
 ///
 /// `head`（受理済みリクエスト）・`config`（登録済み設定）・確定済み
 /// `response` を受け取り、モジュール冒頭 doc の圧縮判定（条件 2〜6。
 /// 条件 1 の「登録済みか」は呼び出し元がこの関数を呼ぶかどうかで判定
-/// 済みという契約）をすべて満たす場合のみ body を gzip 圧縮して返す。
-/// いずれか不足時は無改変（ただし `Vary` 付与のみ行いうる）で返す。
+/// 済みという契約）と `Vary` 付与を行う。CPU コストの高い圧縮本体
+/// （[`compress_body`]）は含まないため、この関数自体は軽量（同期・
+/// 非ブロッキング）で呼び出し元（`crates/core`）が spawn_blocking 要否を
+/// 判定する前に必ず同期実行してよい。
+#[must_use]
+pub fn plan_compression(
+    head: &RequestHead,
+    config: &CompressionConfig,
+    response: Response,
+) -> CompressionPlan {
+    // 条件 2: 2xx かつ 204 以外。
+    if response.status == 204 || !(200..300).contains(&response.status) {
+        return CompressionPlan::Skip(response);
+    }
+
+    // 条件 3・4: Content-Type 一致 + 閾値以上のサイズ。
+    let content_type_ok = response
+        .header("content-type")
+        .is_some_and(|ct| config.matches_content_type(ct));
+    let size_ok = response.body.len() >= config.min_size;
+    if !(content_type_ok && size_ok) {
+        return CompressionPlan::Skip(response);
+    }
+
+    // 表現が Accept-Encoding に依存して変わりうる時点で Vary を付与する
+    // （圧縮の成否に関わらず、共有キャッシュでの変異混同防止）。既存の
+    // Vary に Accept-Encoding トークンが含まれる場合のみ重複付与しない
+    // （CORS 由来の `Vary: Origin` 等、別トークンの既存 Vary とは共存
+    // させる、`add_vary_token` の doc・イシュー #461 レビュー指摘を参照）。
+    let response = add_vary_token(response, "Accept-Encoding");
+
+    // 条件 6: 二重圧縮防止。
+    if response.header("content-encoding").is_some() {
+        return CompressionPlan::Skip(response);
+    }
+
+    // 条件 5: Accept-Encoding が gzip を受理。
+    if !accepts_gzip(head) {
+        return CompressionPlan::Skip(response);
+    }
+
+    CompressionPlan::Compress(response)
+}
+
+/// [`plan_compression`] が `Compress` と判定した `response` へ、
+/// [`compress_body`] の圧縮結果 `compressed` を反映する（イシュー #468 で
+/// `apply_compression` から分離）。
+///
+/// 圧縮結果が空（圧縮失敗）または元 body 以上の場合は、`Content-Encoding`
+/// を付与せず `response` を無改変のまま返す（[`apply_compression`] 既存の
+/// フェイルセーフをそのまま踏襲）。`Content-Encoding: gzip` の付与は
+/// この関数（圧縮成功が確定した経路）のみで行うため、「gzip を広告して
+/// identity body を送る」不整合は構造上起こらない。
+#[must_use]
+pub fn attach_compressed(response: Response, compressed: Vec<u8>) -> Response {
+    if compressed.is_empty() || compressed.len() >= response.body.len() {
+        return response;
+    }
+    let mut response = try_add_header(response, "Content-Encoding", "gzip");
+    response.body = compressed;
+    response
+}
+
+/// レスポンス後処理型シーム（`crate::plugin::finalize_response`）から呼ばれる
+/// 圧縮適用の本体。
+///
+/// [`plan_compression`] → [`compress_body`] → [`attach_compressed`] の合成
+/// として実装する（イシュー #468 で 3 関数へ分割、本関数は後方互換の
+/// ままインライン同期実行の従来経路として残す）。`crates/core` の
+/// `finalize_response` は body 長がしきい値以上の場合、本関数を使わず
+/// 3 関数を個別に呼んで `compress_body` を `spawn_blocking` へ切り離す
+/// （`CompressionConfigBuilder::blocking_threshold` の doc を参照）。
 ///
 /// ```
 /// use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
@@ -525,47 +695,13 @@ pub fn apply_compression(
     config: &CompressionConfig,
     response: Response,
 ) -> Response {
-    // 条件 2: 2xx かつ 204 以外。
-    if response.status == 204 || !(200..300).contains(&response.status) {
-        return response;
+    match plan_compression(head, config, response) {
+        CompressionPlan::Skip(response) => response,
+        CompressionPlan::Compress(response) => {
+            let compressed = compress_body(&response.body);
+            attach_compressed(response, compressed)
+        }
     }
-
-    // 条件 3・4: Content-Type 一致 + 閾値以上のサイズ。
-    let content_type_ok = response
-        .header("content-type")
-        .is_some_and(|ct| config.matches_content_type(ct));
-    let size_ok = response.body.len() >= config.min_size;
-    if !(content_type_ok && size_ok) {
-        return response;
-    }
-
-    // 表現が Accept-Encoding に依存して変わりうる時点で Vary を付与する
-    // （圧縮の成否に関わらず、共有キャッシュでの変異混同防止）。既存の
-    // Vary に Accept-Encoding トークンが含まれる場合のみ重複付与しない
-    // （CORS 由来の `Vary: Origin` 等、別トークンの既存 Vary とは共存
-    // させる、`add_vary_token` の doc・イシュー #461 レビュー指摘を参照）。
-    let response = add_vary_token(response, "Accept-Encoding");
-
-    // 条件 6: 二重圧縮防止。
-    if response.header("content-encoding").is_some() {
-        return response;
-    }
-
-    // 条件 5: Accept-Encoding が gzip を受理。
-    if !accepts_gzip(head) {
-        return response;
-    }
-
-    let compressed = gzip_compress(&response.body);
-    if compressed.is_empty() || compressed.len() >= response.body.len() {
-        // 圧縮失敗、または圧縮結果が元 body 以上（既に圧縮済みに近い等）は
-        // 元のレスポンスをそのまま返す（フェイルセーフ）。
-        return response;
-    }
-
-    let mut response = try_add_header(response, "Content-Encoding", "gzip");
-    response.body = compressed;
-    response
 }
 
 /// チャンク単位のストリーミング gzip 圧縮エンコーダ（イシュー #461）。
@@ -871,6 +1007,57 @@ mod tests {
         let mut decoded = String::new();
         decoder.read_to_string(&mut decoded).unwrap();
         assert_eq!(decoded, body);
+    }
+
+    #[test]
+    fn blocking_threshold_default_is_64kib() {
+        let config = CompressionConfig::builder().build();
+        assert_eq!(config.blocking_threshold(), 64 * 1024);
+    }
+
+    #[test]
+    fn blocking_threshold_is_configurable() {
+        let config = CompressionConfig::builder().blocking_threshold(1).build();
+        assert_eq!(config.blocking_threshold(), 1);
+    }
+
+    #[test]
+    fn plan_compression_then_compress_body_then_attach_matches_apply_compression() {
+        // イシュー #468: `crates/core` の spawn_blocking オフロード経路
+        // （plan_compression → compress_body → attach_compressed の個別
+        // 呼び出し）が、既存の一括 `apply_compression` と同一結果になる
+        // ことを確認する（後方互換の回帰テスト）。
+        let config = CompressionConfig::builder().min_size(1).build();
+        let head = head_from(b"GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n");
+        let body = "The quick brown fox jumps over the lazy dog. ".repeat(50);
+        let response =
+            Response::new(200, body.clone().into_bytes()).with_content_type("application/json");
+
+        let expected = apply_compression(&head, &config, response.clone());
+
+        let plan = plan_compression(&head, &config, response);
+        let CompressionPlan::Compress(planned_response) = plan else {
+            panic!("expected CompressionPlan::Compress");
+        };
+        let compressed = compress_body(&planned_response.body);
+        let result = attach_compressed(planned_response, compressed);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn plan_compression_skip_variant_matches_apply_compression_passthrough() {
+        // しきい値未満の body は Skip 判定になり、そのまま返される
+        // （呼び出し元は圧縮本体を呼ばずに済む＝オフロード判定不要）。
+        let config = CompressionConfig::builder().min_size(1024).build();
+        let head = head_from(b"GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n");
+        let response = Response::new(200, b"small".to_vec()).with_content_type("text/plain");
+
+        let plan = plan_compression(&head, &config, response.clone());
+        let CompressionPlan::Skip(result) = plan else {
+            panic!("expected CompressionPlan::Skip");
+        };
+        assert_eq!(result, response);
     }
 
     #[test]

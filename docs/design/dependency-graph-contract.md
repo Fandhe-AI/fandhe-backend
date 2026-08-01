@@ -800,6 +800,50 @@ E（閉包違反候補）と判定された（後続コミットで `examples/wi
    SKIP マーカーで一律回避する対応は行わない。v0.2.0 publish 完了後に同 workflow を
    再実行し PASS を確認する（`crates-io-release.md` 8 節「v0.2.0」チェックリスト）
 
+### 4.17 記載例（#468 / PR #471、巨大応答の gzip 圧縮を spawn_blocking へ切り離す）
+
+イシュー #468「巨大応答の gzip 圧縮を spawn_blocking へ切り離す」（PR #471）は
+`crates/core/src/plugin.rs`（`finalize_response` の `async fn` 化・
+`prepare_streaming_compression` シームへの `spawn_blocking` 呼び出し追加、
+5.10.7 節）と `crates/plugin-compression` の変更（`apply_compression` の
+判定/圧縮本体/反映の 3 関数分割）を含むため `scripts/extension-closure-gate.sh`
+の判定対象となり、以下 2 件が E（閉包違反候補）と判定された
+（`CHANGELOG.md`・`benches/README.md`・`benches/reports/issue468-compression-blocking.md`
+の 3 件も同時に E 判定だが、5.10.7 節・`benches/README.md` に既存の記載があり
+理由明記済みのため対象外）。
+
+1. **対象コミット/PR**: PR #471（#468、HEAD sha
+   `11925aba7e18293bbb5dc74d125c7a66227fc183`）
+2. **E ファイルパス**:
+   - `benches/compression-blocking-bench.sh`
+   - `crates/core/examples/compression_blocking_micro_bench.rs`
+3. **閉じない理由**: `extension-closure-check.sh` の分類規則は `benches/*` を
+   D（ドキュメント・運用）に含めず（4.3 節で既に指摘済みの運用上のギャップと
+   同一）、`crates/core/examples/**` も A（プラグインクレート内）・C（テスト）
+   いずれの glob にも一致しないため、両ファイルとも機械的に E 判定となる。
+   `benches/compression-blocking-bench.sh` は `blocking_threshold`（既定 64 KiB）
+   算出の再現手順を担う計測ハーネス、`crates/core/examples/
+   compression_blocking_micro_bench.rs` はその計測対象となる
+   `compress_body`（CPU バウンド純関数）のマイクロベンチ本体で、
+   `benches/reports/issue468-compression-blocking.md`（既存記載あり）が
+   参照する実測データの生成元である
+4. **正当性根拠**: 両ファイルは `Middleware` / `UpgradeHandler` / `RequestGate`
+   の 3 拡張点 trait・`try_intercept`/`finalize_response` 固定シームの契約・
+   シグネチャを変更しない。`crates/core/examples/
+   compression_blocking_micro_bench.rs` は `fandhe-backend-plugin-compression`
+   の公開 API（`compress_body` 等、5.10.7 節が新設した 3 分割関数の 1 つ）
+   のみを叩く計測専用バイナリで、`crates/core` 本体の実装ロジックを追加しない
+   （`[[example]]` は `cargo build`/`cargo test` の既定対象に含まれるが、
+   バイナリ自体は `finalize_response` 等の拡張点実装からは呼ばれない独立
+   エントリポイント）。`benches/compression-blocking-bench.sh` も同様に
+   計測ハーネスの追加に過ぎず、`server → routes → http::*` の依存方向
+   （1 節）・プラグイン依存逆転エッジ（1.2 節）のいずれにも影響しない。
+   したがって本件は拡張点設計の閉包漏れではなく、
+   `extension-closure-check.sh` の分類規則が `benches/*`・
+   `crates/*/examples/**` を A〜D に含めていないことに起因する運用上の
+   ギャップである（分類規則自体の見直しは 4.3 節・4.9 節〜4.15 節と同一の
+   別 Issue 対象として据え置く、`.claude/rules/out-of-scope-tracking.md`）
+
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 
 `fandhe-backend-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも

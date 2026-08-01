@@ -129,6 +129,19 @@ static 等）が処理を完結させなかった場合にのみ `handle_streami
   [`fandhe_backend_plugin_compression`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/crates/plugin-compression/src/lib.rs)
   の crate doc・`docs/design/plugin-boundary.md` 5.10.6 節を参照）。HTTP/1.0
   経路（EOF 終端）はストリーミング圧縮の対象外で常に identity のまま送出する
+- 通常応答（`Handler::handle`）の gzip 圧縮は body 長がしきい値
+  （`CompressionConfigBuilder::blocking_threshold`、既定 64 KiB）以上の場合
+  `spawn_blocking` へオフロードされるが、**ストリーミング応答のチャンク
+  単位圧縮（`compress_streaming`）は対象外**で常に接続タスク上で実行
+  される。1 チャンクを過大にする実装（例: 数百 KiB 以上を 1 回の
+  `BodyWriter::send` にまとめて送出する）は、そのチャンクの gzip 圧縮が
+  接続タスクの tokio ワーカスレッドを長時間占有しうる。逐次配信の意味論を
+  保つため意図的にチャンク単位で圧縮する設計（`crates/plugin-compression`
+  crate doc「チャンク単位のストリーミング gzip 圧縮」節）である以上、
+  大きな単一チャンクを送出する必要がある場合は通常応答（`apply_compression`
+  経由、オフロード対応済み）を使うことを推奨する（実測根拠・設計判断は
+  `docs/design/plugin-boundary.md` の「巨大応答の gzip 圧縮を
+  spawn_blocking へ切り離す」節を参照）
 
 ## 関連ドキュメント
 
