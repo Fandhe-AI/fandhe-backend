@@ -196,6 +196,14 @@ lockstep 方針に従い公開対象 13 クレートを 0.2.0 へ一括バンプ
 - [x] `cargo publish --workspace --dry-run` が公開対象 13 クレート全件で成功する
 - [ ] Phase B: `v0.2.0` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
       の実行（本イシューのスコープ外、ユーザー承認を得た別プロセスで実施）
+- [ ] Phase B publish 完了後、`standalone-crates-io.yml` を `workflow_dispatch` で
+      再実行し、`templates/app`・`examples/with-cors`・`examples/with-graphql`・
+      `examples/with-websocket` の 4 クレートが `fandhe-backend-core = "^0.2.0"` 等を
+      crates.io 公開版のみで解決できて PASS することを確認する（本節冒頭に記載の
+      「v0.2.0 publish 完了までは構造的に FAIL する」状態の解消確認）。あわせて
+      `examples/with-interceptor/.standalone-crates-io-skip`（イシュー #433）が
+      0.2.0 公開版で解決可能になっていれば削除し、SKIP なしで通ることを再検証する
+      （v0.1.0 チェックリストの同種項目と同一原則。削除し忘れは検証の穴を恒久化させる）
 
 ## 参照
 
