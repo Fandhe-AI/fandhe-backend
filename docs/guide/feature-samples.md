@@ -228,6 +228,36 @@ curl -si --path-as-is localhost:3005/static/../Cargo.toml
 `fandhe_backend_core::plugin_static::StaticFilesConfig` として同じ型を
 参照できます（次回の crates.io リリース以降に反映）。
 
+### Content-Type の推定とカスタムマッピング
+
+配信時の `Content-Type` は外部依存のない内蔵テーブルを拡張子ベースで引いて
+推定します。PWA・SSG 配信で頻出する形式もあらかじめ収録しており、たとえば
+Web App Manifest の `.webmanifest` は `application/manifest+json` として
+そのまま配信できます。テーブルに一致しない拡張子・拡張子なしファイルは
+`application/octet-stream` へフェイルクローズし、常時 `X-Content-Type-Options:
+nosniff` を併せて付与します。
+
+内蔵テーブルにない拡張子や既定の推定を上書きしたい拡張子は、
+`StaticFilesConfigBuilder::mime(ext, content_type)` で個別に登録できます。
+
+```rust,no_run
+use fandhe_backend_plugin_static::StaticFilesConfig;
+
+let config = StaticFilesConfig::builder("/static", "./public")
+    .mime("webmanifest", "application/manifest+json")
+    .build()
+    .unwrap();
+```
+
+- 登録したマッピングは内蔵テーブルより優先されるため、既存拡張子の推定を
+  上書きすることもできます
+- `ext` は先頭の `.` の有無どちらでもよく、大文字小文字も区別しません。
+  同一拡張子を複数回登録した場合は最後の登録が勝ちます
+- `content_type` は `&'static str` 限定です。リクエスト由来の動的な文字列が
+  レスポンスヘッダへ流入する経路を型レベルで排除しています
+- 拡張子・`Content-Type` の形式検証は `build()` に集約されており、不正な
+  値は早期に `Err` として拒否されます
+
 ## hub-wiring（`fandhe-backend-plugin-hub-wiring`）
 
 マルチテナント JWT 検証（RS256 / JWKS）・テナント境界強制を `RequestGate` 拡張点
