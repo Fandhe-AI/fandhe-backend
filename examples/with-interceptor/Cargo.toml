@@ -1,0 +1,38 @@
+[package]
+name = "fandhe-backend-example-with-interceptor"
+version = "0.1.0"
+edition = "2024"
+description = "fandhe-backend のコア拡張点 Interceptor（リダイレクト・レスポンス改変、イシュー #420）だけを見せる最小サンプル（examples/with-interceptor、examples/README.md 参照）。"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# 依存は path 指定（リポジトリ内 workspace の crates/* を直接参照し、CI で
+# 常に最新実装に対して検証する）。本サンプルをリポジトリ外へコピーして
+# 使う場合は `path = "../../crates/..."` を外し、`version = "0.1.0"` のみの
+# crates.io 版参照に切り替えること（`examples/with-cors/Cargo.toml` と同一の注意）。
+[dependencies]
+# Interceptor は feature ゲート不要の純コア拡張点（`crates/core/src/interceptor.rs`
+# のモジュール doc を参照）。よって features は一切指定しない。他プラグイン
+# feature（cors / compression / static / openapi / websocket / graphql 等）は
+# 本サンプルの焦点外のため有効化しない（pay-for-what-you-use、
+# .claude/rules/pay-for-what-you-use.md）。
+fandhe-backend-core = { version = "0.1.0", path = "../../crates/core" }
+fandhe-backend-http = { version = "0.1.0", path = "../../crates/http" }
+fandhe-backend-routes = { version = "0.1.0", path = "../../crates/routes" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+
+# テスト専用（`cargo test` 時のみビルドされ、配布バイナリの依存には現れない）。
+# Interceptor は Server 層（`handle_connection`）で評価されるため、
+# `Router::dispatch` 単体では検証できない。`examples/with-graphql` と同一の
+# duplex ストリーム roundtrip パターンで E2E 検証する。
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread"] }
+
+# root workspace（リポジトリ直下 Cargo.toml の members）から意図的に切り離す。
+# examples/with-interceptor は「フレームワーク利用者へ配布される独立サンプルの
+# 雛形」であり、root workspace に巻き込まれると独立プロジェクトとしての
+# `cargo build`/`cargo test` の挙動を検証できなくなる（examples/with-cors と
+# 同一理由）。root Cargo.toml の `members` は `crates/*` glob のため、本
+# ディレクトリは変更なしに非メンバーのままになる（`cargo metadata` で確認済み）。
+[workspace]
+members = ["."]

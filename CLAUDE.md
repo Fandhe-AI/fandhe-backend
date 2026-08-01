@@ -300,8 +300,11 @@ fandhe-backend/
 │   ├── with-graphql                   # GraphQL の配線（`Server::graphql` へのスキーマ登録 +
 │   │                                    # `POST /graphql` 最小クエリ実行）を見せるサンプル
 │   │                                    # （イシュー #360）
-│   └── with-websocket                 # ユーザー定義 WebSocket メッセージハンドラ
-│                                        # （`WebSocketConfig::with_handler`）を見せるサンプル
+│   ├── with-websocket                 # ユーザー定義 WebSocket メッセージハンドラ
+│   │                                    # （`WebSocketConfig::with_handler`）を見せるサンプル
+│   └── with-interceptor               # コア拡張点 `Interceptor` の 2 フック（`intercept`
+│                                        # によるリダイレクト・`map_response` によるレスポンス
+│                                        # 改変）を見せる最小サンプル（イシュー #433）
 ├── site/                   # GitHub Pages ドキュメントサイトコンテンツ（index.md・nav.toml・
 │                            # assets/site.css。docs-site SSG ツールで生成対象。base_path=/fandhe-backend）
 │   ├── guides.md                      # Guides セクション索引ページ（イシュー #393）。要約付き
