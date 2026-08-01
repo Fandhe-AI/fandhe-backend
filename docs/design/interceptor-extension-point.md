@@ -159,6 +159,11 @@ PoC-3 実測根拠のまま変更なし）。
   `docs/design/plugin-boundary.md` 5.9.7 節を参照）
 - `RequestGate` 拒否応答・パースエラー応答・Upgrade 失敗 501 / shutdown 503 の除外
   （fail-closed）は変更しない
+- `finalize_response` / `finalize_streaming_head` を外部ユーザーへ公開 API 化するか
+  （第 3 のレスポンス後処理型プラグインを外部で書けるようにするか）はイシュー #462 で
+  検討し不採用と判断した。ユーザー向けのレスポンス改変には引き続き本書の
+  `map_response` を使う（詳細・再検討条件は
+  [`finalize-seam-public-api.md`](./finalize-seam-public-api.md) を参照）
 
 ## ユースケース充足の確認
 

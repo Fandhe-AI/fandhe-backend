@@ -153,3 +153,7 @@
   アクセシビリティ・コンテンツ構成・公開範囲規約（`docs/design/` を移設先とする判断）・
   検索インデックス仕様・CI 追随（`docs/api/**` の paths トリガー欠落含む）を #389〜#399
   向けに確定する）
+- [`finalize-seam-public-api.md`](./finalize-seam-public-api.md): `finalize_response` /
+  `finalize_streaming_head`（レスポンス後処理型シーム）の公開 API 化の採否検討
+  （イシュー #462、PR #458 の out-of-scope から切り出し。`Interceptor::map_response`
+  との棲み分け比較・ギャップ分析・不採用根拠 4 点・再検討条件を記述）

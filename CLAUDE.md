@@ -41,6 +41,10 @@ fandhe-backend/
 │   │   ├── interceptor-extension-point.md  # ユーザー向けインターセプト・レスポンス改変
 │   │   │                            # 拡張点 `Interceptor` の設計判断（イシュー #420。3 拡張点で
 │   │   │                            # 表現できない根拠・評価順序・fail-closed 除外を記録）
+│   │   ├── finalize-seam-public-api.md  # `finalize_response` / `finalize_streaming_head`
+│   │   │                            # （レスポンス後処理型シーム）の公開 API 化の採否検討
+│   │   │                            # （イシュー #462。`Interceptor::map_response` との棲み分け・
+│   │   │                            # 不採用根拠・再検討条件を記録。結論は不採用）
 │   │   ├── docs-site-redesign.md  # GitHub Pages docs サイト刷新設計（イシュー #388、
 │   │   │                            # 親 #384。3 カラムレイアウト・依存ゼロ全文検索・
 │   │   │                            # 公開範囲規約（issue/TASK 番号記述の docs/design/ への

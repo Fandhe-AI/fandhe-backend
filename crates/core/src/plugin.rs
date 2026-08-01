@@ -361,6 +361,15 @@ fn from_graphql_response(response: fandhe_backend_plugin_graphql::Response) -> R
 /// 同期・`.await` なし（ヘッダ検査と `with_header` 呼び出しのみ）で
 /// `Middleware` の非同期 I/O 禁止規約（`.claude/rules/coding-rust.md`）とは
 /// 独立にコストを抑える。
+///
+/// # 公開 API 化は不採用（イシュー #462）
+///
+/// 本関数を含むレスポンス後処理型シーム一式（`finalize_response` /
+/// `finalize_streaming_head`）を外部ユーザーへ公開 API 化するかはイシュー #462 で
+/// 検討し、不採用と判断した。ユーザー向けのレスポンス改変には
+/// [`crate::interceptor::Interceptor::map_response`] という既存の公開拡張点があり、
+/// 両者の機能差はほぼ解消しているため（比較・不採用根拠は
+/// `docs/design/finalize-seam-public-api.md` を参照）。
 pub(crate) fn finalize_response(
     server: &Server,
     head: &RequestHead,
@@ -442,6 +451,10 @@ fn apply_cors(server: &Server, head: &RequestHead, response: Response) -> Respon
 /// 返す薄い関数となり、実行時コスト・依存追加をゼロに保つ
 /// （pay-for-what-you-use）。同期・`.await` なしで [`finalize_response`] と
 /// 同じコスト特性を持つ。
+///
+/// 公開 API 化は [`finalize_response`] と同じくイシュー #462 で検討のうえ不採用。
+/// ユーザー向けのレスポンス改変は [`crate::interceptor::Interceptor::map_response`]
+/// を使う（`docs/design/finalize-seam-public-api.md` を参照）。
 pub(crate) fn finalize_streaming_head(
     server: &Server,
     head: &RequestHead,
