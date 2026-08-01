@@ -341,3 +341,26 @@ async fn custom_handler_registered_via_server_websocket_is_reachable() {
     let mut trailing = Vec::new();
     let _ = stream.read_to_end(&mut trailing).await;
 }
+
+#[tokio::test]
+async fn config_built_via_core_reexport_completes_handshake() {
+    // イシュー #435: `fandhe_backend_core::plugin_websocket::WebSocketConfig`
+    // （プラグインクレートへの直接依存を追加しない再エクスポート経路）
+    // 経由で構築した設定でも、直接依存経路（上のテスト）と同一の配線・
+    // 応答になることを確認する（`plugin_static_boundary.rs` の
+    // `config_built_via_core_reexport_serves_file` と同型パターン、
+    // イシュー #421）。
+    let config = fandhe_backend_core::plugin_websocket::WebSocketConfig::default();
+    let server = Server::new().websocket(config).handler(NotCalledHandler);
+    let addr = spawn_server(server).await;
+
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream.write_all(VALID_HANDSHAKE_REQUEST).await.unwrap();
+
+    let response_head = read_response_head(&mut stream).await;
+    assert!(response_head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+
+    stream.write_all(&masked_close_frame()).await.unwrap();
+    let mut trailing = Vec::new();
+    let _ = stream.read_to_end(&mut trailing).await;
+}

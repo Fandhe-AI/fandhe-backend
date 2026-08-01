@@ -122,6 +122,12 @@ async fn missing_authorization_is_rejected_before_handler() {
     let request = b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
     let response = roundtrip(&server_with(&keypair), request).await;
     assert!(response.starts_with("HTTP/1.1 401"), "response: {response}");
+    // イシュー #439: サーバ実応答（ゲート経由）が Content-Type を持つことを
+    // エンドツーエンドで固定する。
+    assert!(
+        response.contains("Content-Type: application/json\r\n"),
+        "response: {response}"
+    );
 }
 
 #[tokio::test]
@@ -221,6 +227,12 @@ async fn missing_org_id_is_rejected_with_403_before_handler() {
     );
     let response = roundtrip(&server_with(&keypair), request.as_bytes()).await;
     assert!(response.starts_with("HTTP/1.1 403"), "response: {response}");
+    // イシュー #439: サーバ実応答（ゲート経由）が Content-Type を持つことを
+    // エンドツーエンドで固定する。
+    assert!(
+        response.contains("Content-Type: application/json\r\n"),
+        "response: {response}"
+    );
 }
 
 #[tokio::test]

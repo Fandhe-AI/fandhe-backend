@@ -829,10 +829,17 @@ plugin_static;` 等）。利用者は `fandhe-backend-core` への依存 + featu
 - ハンドラ本体（`try_handle_static`・`apply_compression` 等）はコア内部の
   非公開 `plugin` モジュール（4.2 節・5.9 節のシーム）から呼ばれる実装詳細で
   あり、本再エクスポート経由での直接利用は想定しない
-- 本パターンは `static` / `compression` の 2 feature のみに適用済み。他の
-  設定登録型 feature（`websocket` / `graphql` / `cors` / `tracing` /
-  `openapi` / `webrtc` 系）への水平展開は本イシューのスコープ外（フォロー
-  アップ候補として記録、[[out-of-scope-tracking]]）
+- イシュー #435 で本パターンを残り全設定登録型 feature（`websocket` /
+  `graphql` / `cors` / `tracing` / `openapi` / `webrtc` / `webrtc-proxy`）へ
+  水平展開済み。`crates/core/src/lib.rs` は 9 feature すべてで
+  `#[cfg(feature = "...")] pub use fandhe_backend_plugin_<name> as
+  plugin_<name>;` を提供し、利用者はいずれの feature でも
+  `fandhe-backend-core` への依存 + feature 指定だけで対応する設定型
+  （`WebSocketConfig` / `GraphQlConfig` / `CorsConfig` / `TracingConfig` /
+  `OpenApiDoc` / `WebRtcConfig` / `ProxyConfig`）を構築できる。各再エクスポート
+  経由での構築が直接依存経路と同一の配線・応答になることは、対応する
+  `crates/core/tests/*_boundary.rs`（feature 有効側）の
+  `config_built_via_core_reexport_*` テストで検証済み。
 
 ## 6. 検証コマンド
 

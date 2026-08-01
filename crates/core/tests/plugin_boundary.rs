@@ -136,3 +136,28 @@ async fn upstream_failure_returns_bad_gateway_with_reason_and_content_type() {
     );
     assert!(response.contains("Content-Type: text/plain; charset=utf-8\r\n"));
 }
+
+#[tokio::test]
+async fn config_built_via_core_reexport_forwards_upstream() {
+    // イシュー #435: `fandhe_backend_core::plugin_webrtc_proxy::ProxyConfig`
+    // （プラグインクレートへの直接依存を追加しない再エクスポート経路）
+    // 経由で構築した設定でも、直接依存経路（上のテスト）と同一の配線・
+    // 応答になることを確認する（`plugin_static_boundary.rs` の
+    // `config_built_via_core_reexport_serves_file` と同型パターン、
+    // イシュー #421）。
+    let upstream_addr = spawn_mock_upstream().await;
+    let config =
+        fandhe_backend_core::plugin_webrtc_proxy::ProxyConfig::new(upstream_addr.to_string());
+    let server = Server::new().webrtc_proxy(config).handler(NotCalledHandler);
+
+    let body = b"offer-sdp";
+    let request = format!(
+        "POST /rtc/offer HTTP/1.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        std::str::from_utf8(body).unwrap()
+    );
+    let response = roundtrip(&server, request.as_bytes()).await;
+
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with("answer-sdp"));
+}

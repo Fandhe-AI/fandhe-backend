@@ -164,3 +164,26 @@ async fn explicit_options_route_still_wins_over_options_fallback() {
     assert!(response.starts_with("HTTP/1.1 299"));
     assert!(response.ends_with("explicit"));
 }
+
+#[tokio::test]
+async fn config_built_via_core_reexport_applies_cors_headers() {
+    // イシュー #435: `fandhe_backend_core::plugin_cors::CorsConfig`
+    // （プラグインクレートへの直接依存を追加しない再エクスポート経路）
+    // 経由で構築した設定でも、直接依存経路（上のテスト）と同一の配線・
+    // 応答になることを確認する（`plugin_static_boundary.rs` の
+    // `config_built_via_core_reexport_serves_file` と同型パターン、
+    // イシュー #421）。
+    let config = fandhe_backend_core::plugin_cors::CorsConfig::builder()
+        .allow_origin("https://app.example.com")
+        .build()
+        .unwrap();
+    let router = build_router(config.clone());
+    let server = Server::new().handler(router).cors(config);
+
+    let request =
+        b"GET /todos HTTP/1.1\r\nOrigin: https://app.example.com\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.contains("Access-Control-Allow-Origin: https://app.example.com\r\n"));
+}

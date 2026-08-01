@@ -246,3 +246,23 @@ async fn openapi_takes_precedence_over_earlier_openapi_with_call() {
     assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
     assert!(response.ends_with(OPENAPI_JSON));
 }
+
+#[tokio::test]
+async fn config_built_via_core_reexport_serves_custom_json() {
+    // イシュー #435: `fandhe_backend_core::plugin_openapi::OpenApiDoc`
+    // （プラグインクレートへの直接依存を追加しない再エクスポート経路）
+    // 経由で構築した設定でも、直接依存経路（上のテスト）と同一の配線・
+    // 応答になることを確認する（`plugin_static_boundary.rs` の
+    // `config_built_via_core_reexport_serves_file` と同型パターン、
+    // イシュー #421）。
+    let doc = fandhe_backend_core::plugin_openapi::OpenApiDoc::from_json(CUSTOM_JSON)
+        .expect("妥当な JSON");
+    let server = Server::new().handler(NotCalledHandler).openapi_with(doc);
+
+    let request = b"GET /openapi.json HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    let response = String::from_utf8_lossy(&response);
+
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with(CUSTOM_JSON));
+}

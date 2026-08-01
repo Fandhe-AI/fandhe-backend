@@ -16,6 +16,7 @@ use crate::jwks::{JwksError, SharedJwks};
 use crate::jwt::TokenError;
 use fandhe_backend_core::extension::{GateOutcome, RequestGate};
 use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
 
 /// [`TenantGate`] の設定。JWKS は [`SharedJwks`] ハンドル経由で保持し、
 /// 利用側サービスが再起動なしで鍵ローテーション（[`SharedJwks::set`]）を
@@ -110,6 +111,12 @@ impl TenantGateConfig {
 ///   （クライアント入力誤りとしてアプリ層の明示的拒否）
 /// - 上記いずれにも該当しない検証成功時のみ `Allow`
 ///
+/// 拒否応答（401/403）は `Content-Type: application/json` を付与した
+/// `Response` を運ぶ（イシュー #439。従来はワイヤ互換のため意図的に
+/// ヘッダなしで据え置いていたが、JSON ボディに対する MIME 誤解釈の余地を
+/// 狭めるため本イシューで付与へ変更した。401/403 の判定ロジック・body は
+/// 無変更）。
+///
 /// JWKS 鍵セットが空（利用側サービスが未注入、またはローテーション中に
 /// 一時的に空へ差し替えた）場合は全リクエストが `UnknownKeyId` により
 /// `401` になる（フェイルオープンにしない、.claude/rules/security.md A01）。
@@ -151,6 +158,18 @@ const UNAUTHORIZED_BODY: &[u8] = br#"{"error":"invalid_token"}"#;
 /// `403` 応答の固定 body。
 const FORBIDDEN_BODY: &[u8] = br#"{"error":"tenant_scope_required"}"#;
 
+/// 401/403 拒否応答を `Content-Type: application/json` 付きで組み立てる
+/// （イシュー #439）。`body` は本ファイル内の固定 JSON 定数のみを渡す
+/// 前提（`&'static [u8]`）で、外部入力を Content-Type へ混入させる経路は
+/// 存在しない。`GateOutcome::reject` ヘルパはヘッダなし構築専用のため、
+/// ヘッダ付き拒否応答はコア doc（`crates/core/src/extension.rs`）の推奨どおり
+/// `GateOutcome::Reject { response }` を直接構築する。
+fn reject_json(status: u16, body: &'static [u8]) -> GateOutcome {
+    GateOutcome::Reject {
+        response: Response::new(status, body.to_vec()).with_content_type("application/json"),
+    }
+}
+
 impl RequestGate for TenantGate {
     fn name(&self) -> &'static str {
         "hub-tenant-gate"
@@ -166,7 +185,7 @@ impl RequestGate for TenantGate {
         // ヒット/ミスで判定結果が変わることはない（TASK-9.3 / #63）。
         match self.config.authenticator.authenticate(head) {
             Ok(_claims) => GateOutcome::Allow,
-            Err(TokenError::MissingOrgId) => GateOutcome::reject(403, FORBIDDEN_BODY.to_vec()),
+            Err(TokenError::MissingOrgId) => reject_json(403, FORBIDDEN_BODY),
             Err(
                 TokenError::MissingToken
                 | TokenError::Malformed
@@ -175,7 +194,7 @@ impl RequestGate for TenantGate {
                 | TokenError::UnknownKeyId
                 | TokenError::InvalidSignature
                 | TokenError::Expired,
-            ) => GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec()),
+            ) => reject_json(401, UNAUTHORIZED_BODY),
         }
     }
 }
@@ -247,7 +266,7 @@ mod tests {
         let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
         assert_eq!(
             gate_for(&keypair).check(&head),
-            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
+            reject_json(401, UNAUTHORIZED_BODY)
         );
     }
 
@@ -258,7 +277,7 @@ mod tests {
         let head = head_from(&raw);
         assert_eq!(
             gate_for(&keypair).check(&head),
-            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
+            reject_json(401, UNAUTHORIZED_BODY)
         );
     }
 
@@ -299,7 +318,7 @@ mod tests {
         let head = head_from(&raw);
         assert_eq!(
             gate_for(&keypair).check(&head),
-            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
+            reject_json(401, UNAUTHORIZED_BODY)
         );
     }
 
@@ -310,7 +329,7 @@ mod tests {
         let head = head_from(&raw);
         assert_eq!(
             gate_for(&keypair).check(&head),
-            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
+            reject_json(401, UNAUTHORIZED_BODY)
         );
     }
 
@@ -322,7 +341,7 @@ mod tests {
         let head = head_from(&raw);
         assert_eq!(
             gate_for(&keypair).check(&head),
-            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
+            reject_json(401, UNAUTHORIZED_BODY)
         );
     }
 
@@ -334,7 +353,7 @@ mod tests {
         let head = head_from(&raw);
         assert_eq!(
             gate_for(&keypair).check(&head),
-            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
+            reject_json(401, UNAUTHORIZED_BODY)
         );
     }
 
@@ -348,10 +367,7 @@ mod tests {
         let head = head_from(&raw);
         let empty_config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#).unwrap();
         let gate = TenantGate::new(empty_config);
-        assert_eq!(
-            gate.check(&head),
-            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
-        );
+        assert_eq!(gate.check(&head), reject_json(401, UNAUTHORIZED_BODY));
     }
 
     #[test]
@@ -362,17 +378,16 @@ mod tests {
         let head = head_from(&raw);
         assert_eq!(
             gate_for(&keypair).check(&head),
-            GateOutcome::reject(403, FORBIDDEN_BODY.to_vec())
+            reject_json(403, FORBIDDEN_BODY)
         );
     }
 
     #[test]
-    fn reject_wire_bytes_are_unchanged_by_gate_outcome_response_migration() {
-        // イシュー #424: `GateOutcome::Reject` が `status`/`body` の個別
-        // フィールドから検証済み `Response` を運ぶ形へ変わっても、
-        // `TenantGate` が払い出す 401/403 応答のワイヤ上バイト列は従来と
-        // 完全同一であること（ヘッダを一切追加しないこと）を固定する
-        // （計画の「応答バイト列は現行と完全同一に保つ」要件）。
+    fn reject_wire_includes_json_content_type() {
+        // イシュー #439: 401/403 拒否応答のワイヤ上バイト列に
+        // `Content-Type: application/json` が 1 行追加されることを固定する
+        // （互換性変更。ステータス行・`Content-Length`・body は #424 時点の
+        // 仕様を維持し、判定ポリシー（401/403 マッピング）自体は変えない）。
         let keypair = test_keypair();
         let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
         let GateOutcome::Reject { response } = gate_for(&keypair).check(&head) else {
@@ -381,7 +396,7 @@ mod tests {
         let wire = String::from_utf8(response.serialize(false)).unwrap();
         assert!(wire.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
         assert!(wire.contains("Content-Length: "));
-        assert!(!wire.contains("Content-Type:"));
+        assert!(wire.contains("Content-Type: application/json\r\n"));
         assert!(!wire.contains("Retry-After:"));
         assert!(wire.ends_with(&String::from_utf8_lossy(UNAUTHORIZED_BODY).into_owned()));
 
@@ -393,7 +408,7 @@ mod tests {
         };
         let wire = String::from_utf8(response.serialize(false)).unwrap();
         assert!(wire.starts_with("HTTP/1.1 403 Forbidden\r\n"));
-        assert!(!wire.contains("Content-Type:"));
+        assert!(wire.contains("Content-Type: application/json\r\n"));
         assert!(wire.ends_with(&String::from_utf8_lossy(FORBIDDEN_BODY).into_owned()));
     }
 
@@ -438,7 +453,7 @@ mod tests {
         // 旧鍵の署名は新 JWKS では検証できず拒否される。
         assert_eq!(
             gate.check(&head_from(&raw)),
-            GateOutcome::reject(401, UNAUTHORIZED_BODY.to_vec())
+            reject_json(401, UNAUTHORIZED_BODY)
         );
 
         let new_token = make_token(&rotated_keypair, TEST_KID, Some("org-1"), 9_999_999_999);
