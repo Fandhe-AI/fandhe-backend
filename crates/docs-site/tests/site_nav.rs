@@ -20,8 +20,8 @@
 use std::path::{Path, PathBuf};
 
 use fandhe_backend_docs_site::markdown::render_markdown;
-use fandhe_backend_docs_site::nav::{Nav, parse_nav, sidebar, validate_sources};
-use fandhe_frontend_core::{Node, render};
+use fandhe_backend_docs_site::nav::{parse_nav, sidebar, validate_sources, Nav};
+use fandhe_frontend_core::{render, Node};
 
 /// `CARGO_MANIFEST_DIR`（`crates/docs-site`）から repo_root を解決する。
 /// テストフィクスチャがクレート内に閉じず repo_root 配下の実ファイルを
@@ -106,6 +106,10 @@ const EXPECTED_PAGES: &[(&str, &str)] = &[
     (
         "site/examples/with-websocket.md",
         "/examples/with-websocket/",
+    ),
+    (
+        "site/examples/with-interceptor.md",
+        "/examples/with-interceptor/",
     ),
     ("site/examples/templates-app.md", "/examples/templates-app/"),
 ];

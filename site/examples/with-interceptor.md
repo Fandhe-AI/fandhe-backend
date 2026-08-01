@@ -1,8 +1,8 @@
 # with-interceptor
 
-`fandhe-backend` のコア拡張点 `Interceptor`（リダイレクト・レスポンス改変、
-イシュー #420）だけを見せる最小サンプルです。独立して `cargo run` できる
-standalone crate として `examples/with-interceptor/` に切り出されています。
+`fandhe-backend` のコア拡張点 `Interceptor`（リダイレクト・レスポンス改変）
+だけを見せる最小サンプルです。独立して `cargo run` できる standalone crate
+として `examples/with-interceptor/` に切り出されています。
 
 ## 何を見せるサンプルか
 

@@ -61,6 +61,15 @@ use fandhe_backend_routes::Router;
 /// （オープンリダイレクト対策、`.claude/rules/security.md` A01/A03 観点）。
 /// パス・クエリは `parse_request_head` 検証済みで CR/LF を含み得ないため、
 /// ヘッダインジェクションも成立しない。
+///
+/// ただし `parse_request_head` は request-target が単一の `/` で始まる
+/// origin-form であることまでは強制しない（`//evil.example/foo/` のような
+/// プロトコル相対 origin-form も構文上は許容されうる）。よって `path()` を
+/// そのまま信用せず、組み立てた `Location` 候補が「先頭が単一の `/`」かつ
+/// 「`\` を含まない」ことを構築後に検証する（先頭 `//` はプロトコル相対 URL、
+/// `\` は一部ブラウザが `/` と同一視しどちらも外部オリジンへのオープン
+/// リダイレクトに繋がるため拒否する）。検証失敗時はリダイレクトせず
+/// `None` を返す（フェイルクローズ）。
 struct TrailingSlashRedirect;
 
 impl Interceptor for TrailingSlashRedirect {
@@ -79,6 +88,13 @@ impl Interceptor for TrailingSlashRedirect {
         if let Some(query) = head.query() {
             location.push('?');
             location.push_str(query);
+        }
+        // オープンリダイレクト対策（許可リスト検証）: サイト相対パスのみを
+        // 許可する。`//`（プロトコル相対）・`\`（一部ブラウザで `/` と
+        // 同一視される）を含む候補は外部オリジンへのリダイレクトに繋がり
+        // うるため拒否する。
+        if !location.starts_with('/') || location.starts_with("//") || location.contains('\\') {
+            return None;
         }
         Response::redirect(301, location).ok()
     }
@@ -213,6 +229,33 @@ mod tests {
 
         assert!(response.starts_with("HTTP/1.1 301 Moved Permanently\r\n"));
         assert!(response.contains("Location: /hello?q=1\r\n"));
+    }
+
+    #[tokio::test]
+    async fn protocol_relative_path_is_not_redirected() {
+        // オープンリダイレクト対策の回帰テスト: `//evil.example/foo/` のような
+        // プロトコル相対パスは正規化しても `Location` に外部オリジンへ
+        // 誘導しうる `//` 始まりの値が残るため、リダイレクトせず
+        // フォールスルーさせる（許可リスト検証、`TrailingSlashRedirect` doc 参照）。
+        let server = new_server();
+        let request = b"GET //evil.example/foo/ HTTP/1.1\r\nConnection: close\r\n\r\n";
+
+        let response = roundtrip(&server, request).await;
+
+        assert!(!response.starts_with("HTTP/1.1 301"));
+        assert!(!response.contains("Location: //evil.example"));
+    }
+
+    #[tokio::test]
+    async fn backslash_path_is_not_redirected() {
+        // `\` はブラウザによって `/` と同一視されるため、`//` と同様に
+        // 外部オリジンへのオープンリダイレクトに繋がりうる（許可リスト検証の回帰）。
+        let server = new_server();
+        let request = b"GET /\\evil.example/foo/ HTTP/1.1\r\nConnection: close\r\n\r\n";
+
+        let response = roundtrip(&server, request).await;
+
+        assert!(!response.starts_with("HTTP/1.1 301"));
     }
 
     #[tokio::test]
