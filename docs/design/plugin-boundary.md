@@ -616,6 +616,47 @@ graphql/openapi 応答が CORS 対象外になってしまう。「レスポン�
 素の関数ポインタで満たせるため、`crates/plugin-cors` は
 `fandhe-backend-routes` にも依存しない。
 
+### 5.9.7 ストリーミング応答ヘッドへの適用（イシュー #451、CORS のみ・圧縮は対象外）
+
+`Handler::handle_streaming`（イシュー #319）が返すストリーミング応答は
+`Response` 型を前提とする `finalize_response` の対象外のまま据え置き
+（イシュー #319 計画時点のスコープ外指定）、代わりに `crate::plugin::
+finalize_streaming_head`（`finalize_response` の第 4 のシーム）を新設した。
+`crate::server::write_streaming_response` が `Interceptor::map_response`
+適用直後・`head_response.body` クリア前に 1 回だけ呼ぶ（通常応答経路の
+「`map_response` の後に `finalize_response`」という順序と揃える）。
+
+**適用範囲は CORS ヘッダ付与のみ**。判定条件（`Server::cors` 登録済み・
+プリフライトでない）は `finalize_response` の CORS 分岐と共有ヘルパ
+（`crate::plugin::apply_cors`）へ抽出し、二重実装による判定ロジックの
+乖離を防いだ（`.claude/rules/security.md` A01/A05「CORS 設定不備」対策）。
+
+**圧縮は意図的に対象外**とする。理由は 5.10.3 節が既に指摘するとおり、
+gzip 圧縮は「最終 body 全体を確定させる後処理」であり、`write_streaming_response`
+の chunked framing はコアが直接組み立て・producer タスクが `BodyWriter`
+経由で逐次供給する設計（バックプレッシャに bounded mpsc を使用、
+`finish` 省略時は終端チャンクなしで打ち切りクローズという応答完全性契約、
+`crate::streaming` モジュール doc）であるため、圧縮を適用するには body
+全体をバッファリングする必要が生じ、#319 が確立したストリーミング設計
+そのものを破壊する。この判断は `crate::interceptor` モジュール doc が
+`map_response` の body 改変を不採用にした判断（5.4 節相当）と同根であり、
+新規フック追加・全 body バッファリングという不採用選択肢を再検討した
+上で見送った。チャンク単位のストリーミング圧縮自体は 5.10.3 節が既に
+挙げている後続課題（#319 のストリーミング送信完了後に着手可能）に
+包含され、新たなスコープ外事項ではない。
+
+CORS はステータス・body に触れないヘッダのみの後処理のため、
+`map_response` 適用後のステータスに基づく `is_bodyless_status` 判定
+（イシュー #434）・`serialize_chunked_head` の
+`debug_assert!(body.is_empty())` 契約のいずれにも影響しない。
+
+feature 無効時・`Server::cors` 未登録時は他の設定登録型プラグインと同じ
+フォールスルーで無改変を返す薄い関数となり、pay-for-what-you-use を維持
+する（`crate::plugin::finalize_streaming_head` の doc・
+`crates/core/tests/plugin_cors_boundary.rs` /
+`plugin_cors_boundary_disabled.rs` / `plugin_compression_boundary.rs` の
+統合テストを参照）。
+
 ## 5.10 レスポンス後処理型パターンの第 2 インスタンス（イシュー #321、圧縮）
 
 `crates/plugin-compression`（`compression` feature）は 5.9 節が確立した
@@ -659,7 +700,10 @@ PoC-3・5.7.4 節）は I/O 待ちで tokio ワーカスレッドを占有する
 切り離す `spawn_blocking` 化・チャンク単位のストリーミング圧縮は
 スコープ外とし、`.claude/rules/out-of-scope-tracking.md` に従い後続課題
 として追跡する（#319 のレスポンス側ストリーミング送信に依存するため、
-その完了後に着手可能になる）。
+その完了後に着手可能になる。イシュー #451 で `finalize_streaming_head`
+がストリーミング応答へ CORS のみを適用する構成を確定させたが、圧縮を
+対象外とした判断・チャンク単位圧縮の後続課題としての位置づけは本節と
+共通、5.9.7 節を参照）。
 
 ### 5.10.4 BREACH 類似リスクと opt-in 設計の関係
 

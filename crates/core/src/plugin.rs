@@ -26,7 +26,11 @@
 //! （圧縮プラグイン）で本シームの第 2 インスタンスを追加し、複数プラグイン
 //! を逐次適用（CORS → 圧縮の順、body を確定させる圧縮を必ず最後に適用）
 //! できるよう構成した（`crates/plugin-compression/src/lib.rs` の crate doc
-//! を参照）。
+//! を参照）。イシュー #451 で 4 つ目のシーム [`finalize_streaming_head`] を
+//! 追加し、`Handler::handle_streaming` によるストリーミング応答のヘッドへ
+//! CORS ヘッダ付与のみを適用できるようにした（圧縮は対象外、
+//! `finalize_streaming_head` の doc・`docs/design/plugin-boundary.md`
+//! 5.9.7 節を参照）。
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::OwnedSemaphorePermit;
@@ -367,11 +371,7 @@ pub(crate) fn finalize_response(
 
     #[cfg(feature = "cors")]
     {
-        if let Some(config) = server.cors_config()
-            && !fandhe_backend_plugin_cors::is_preflight(head)
-        {
-            response = fandhe_backend_plugin_cors::apply_cors_headers(head, config, response);
-        }
+        response = apply_cors(server, head, response);
     }
 
     // イシュー #321: 圧縮は「最終 body を確定させる後処理」のため、他の
@@ -389,6 +389,74 @@ pub(crate) fn finalize_response(
     // feature 構成によっては上の cfg ブロックの一部・全部が消え、引数が
     // 未使用になりうる（`try_intercept` と同じ理由。冒頭の doc を参照）。
     // 参照型（`Copy`）の再読み込みは各分岐での使用有無に関わらず安全。
+    let _ = (server, head);
+
+    response
+}
+
+/// CORS ヘッダ付与ロジック（[`finalize_response`] / [`finalize_streaming_head`]
+/// 共通ヘルパ、イシュー #451 で抽出）。
+///
+/// `server.cors_config()` が `Some`（`Server::cors` 登録済み）かつプリフライト
+/// でない場合のみ [`fandhe_backend_plugin_cors::apply_cors_headers`] を適用する。
+/// 両呼び出し元で判定条件を重複実装すると乖離のリスクがあるため、`cors`
+/// feature 有効時にのみコンパイルされる本関数へ集約する
+/// （`.claude/rules/security.md` A01/A05「CORS 設定不備」対策、判定ロジックの
+/// 単一情報源化）。
+#[cfg(feature = "cors")]
+fn apply_cors(server: &Server, head: &RequestHead, response: Response) -> Response {
+    if let Some(config) = server.cors_config()
+        && !fandhe_backend_plugin_cors::is_preflight(head)
+    {
+        fandhe_backend_plugin_cors::apply_cors_headers(head, config, response)
+    } else {
+        response
+    }
+}
+
+/// ストリーミング応答（[`crate::server::Handler::handle_streaming`]、イシュー
+/// #319）のヘッド確定時に適用するレスポンス後処理型シーム（イシュー #451、
+/// [`finalize_response`] の第 4 のシーム）。
+///
+/// `crate::server::write_streaming_response` が `Interceptor::map_response`
+/// 適用直後・`head_response.body` クリア前に 1 回だけ呼ぶ（通常応答経路の
+/// 「`map_response` の後に `finalize_response`」という順序と揃える、
+/// `crate::interceptor` モジュール doc の評価順序一覧を参照）。
+///
+/// # 適用範囲: CORS のみ・圧縮は対象外（設計判断、イシュー #451）
+///
+/// `cors` feature 有効かつ `Server::cors` 登録時のみ [`apply_cors`] を適用し、
+/// `compression` はストリーミング応答に**適用しない**。gzip は最終 body
+/// 全体を確定させる後処理であり、chunked framing がコアの直接書き出し
+/// ループを経由するストリーミング設計（bounded mpsc バックプレッシャ・
+/// `finish` 省略時は終端チャンクなしで打ち切りクローズという応答完全性
+/// 契約、`crate::streaming` モジュール doc）と両立できない。body 全体を
+/// バッファリングする必要が生じ、イシュー #319 が確立した設計を壊すため
+/// 意図的に対象外とする（`crate::interceptor` モジュール doc が
+/// `map_response` の body 改変を不採用にした判断と同根、
+/// `docs/design/plugin-boundary.md` 5.9.7 節を参照）。チャンク単位の
+/// ストリーミング圧縮は別課題（5.10.3 節、
+/// `.claude/rules/out-of-scope-tracking.md` 対象候補）。
+///
+/// `cors` feature 無効時・`Server::cors` 未登録時は `response` を無改変で
+/// 返す薄い関数となり、実行時コスト・依存追加をゼロに保つ
+/// （pay-for-what-you-use）。同期・`.await` なしで [`finalize_response`] と
+/// 同じコスト特性を持つ。
+pub(crate) fn finalize_streaming_head(
+    server: &Server,
+    head: &RequestHead,
+    response: Response,
+) -> Response {
+    #[allow(unused_mut)]
+    let mut response = response;
+
+    #[cfg(feature = "cors")]
+    {
+        response = apply_cors(server, head, response);
+    }
+
+    // feature 無効時は `server`/`head` が未使用になりうる（`finalize_response`
+    // と同じ理由）。
     let _ = (server, head);
 
     response

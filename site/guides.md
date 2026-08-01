@@ -18,8 +18,8 @@ Guides セクションは fandhe-backend を**使う**ための利用者向け�
   実行可能なサンプル・pay-for-what-you-use の検証手順
 - [チュートリアル](../docs/guide/tutorial.md) — 最小サーバから始め、拡張点
   （`Middleware`）の実装、feature 有効化までを段階的に学ぶ
-- [拡張点自作ガイド](../docs/guide/extension-points.md) — 3 拡張点
-  （`Middleware` / `UpgradeHandler` / `RequestGate`）の契約と自作手順
+- [拡張点自作ガイド](../docs/guide/extension-points.md) — 4 拡張点
+  （`Middleware` / `UpgradeHandler` / `RequestGate` / `Interceptor`）の契約と自作手順
 - [レスポンスストリーミング](../docs/guide/streaming.md) — chunked
   ストリーミング送信（`handle_streaming`）の使い方
 - [graceful shutdown](../docs/guide/graceful-shutdown.md) —

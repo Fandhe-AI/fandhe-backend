@@ -128,9 +128,15 @@ fandhe-backend/
 │   │                                    # （`write_streaming_response` がヘッド確定時に 1 回・
 │   │                                    # 登録順で適用。body は chunked framing がコアの直接
 │   │                                    # 書き出しループを経由するため反映されず破棄する契約。
-│   │                                    # `finalize_response` はストリーミング応答に引き続き
-│   │                                    # 未適用、`docs/design/interceptor-extension-point.md`
-│   │                                    # 参照）。
+│   │                                    # `finalize_response`（CORS → 圧縮を逐次適用する
+│   │                                    # 通常応答経路専用シーム）自体は引き続き未適用。
+│   │                                    # イシュー #451 で第 4 のシーム
+│   │                                    # `finalize_streaming_head` を新設し、`map_response`
+│   │                                    # 適用直後のヘッドへ CORS ヘッダ付与のみを適用する
+│   │                                    # ようにした（圧縮は body 全体を確定させる後処理で
+│   │                                    # ありストリーミング設計と両立できないため対象外、
+│   │                                    # `docs/design/interceptor-extension-point.md`・
+│   │                                    # `docs/design/plugin-boundary.md` 5.9.7 節参照）。
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む

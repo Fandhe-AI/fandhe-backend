@@ -18,10 +18,11 @@ v0.2.0 として公開済みです。`cargo add fandhe-backend-core` で導入�
 
 ## feature プラグイン一覧
 
-最小コア（`fandhe-backend-core`）は HTTP/1.1 サーバと 3 種の拡張点
-（`Middleware` / `UpgradeHandler` / `RequestGate`）のみを持ち、以下はすべて
-Cargo feature で個別に着脱できるプラグインです。多くは `Server` への明示登録
-（opt-in）時のみ動作し、無効化・未登録時は依存・コード・バイナリ増がゼロになります。
+最小コア（`fandhe-backend-core`）は HTTP/1.1 サーバと 4 種の拡張点
+（`Middleware` / `UpgradeHandler` / `RequestGate` / `Interceptor`）のみを持ち、
+以下はすべて Cargo feature で個別に着脱できるプラグインです。多くは `Server` への
+明示登録（opt-in）時のみ動作し、無効化・未登録時は依存・コード・バイナリ増が
+ゼロになります。
 
 | feature | 提供する機能 |
 |---------|-------------|

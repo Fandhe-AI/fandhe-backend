@@ -1,23 +1,27 @@
 # 拡張点自作ガイド
 
-fandhe-backend のコアは、拡張点を 3 種の trait（`Middleware` / `UpgradeHandler` /
-`RequestGate`、定義は `crates/core/src/extension.rs`）に集約する。新機能を追加する
-ときは、まずこの 3 種のいずれかに載るかを検討する（[`.claude/rules/coding-rust.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/.claude/rules/coding-rust.md)
+fandhe-backend のコアは、拡張点を 4 種の trait（`Middleware` / `UpgradeHandler` /
+`RequestGate` / `Interceptor`）に集約する。前 3 者は定義が
+`crates/core/src/extension.rs` にある同期 trait、`Interceptor` は
+`crates/core/src/interceptor.rs` に定義されるレスポンダ系シームである。新機能を
+追加するときは、まずこの 4 種のいずれかに載るかを検討する
+（[`.claude/rules/coding-rust.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/.claude/rules/coding-rust.md)
 の設計原則）。[`tutorial.md`](./tutorial.md) は `Middleware` の一例のみを扱うため、
-本ページでは 3 種の契約を比較した上で、それぞれの自作方法と守るべき規約を示す。
+本ページでは 4 種の契約を比較した上で、それぞれの自作方法と守るべき規約を示す。
 
 各 trait の完全な実装例（doc test として `cargo test --doc -p fandhe-backend-core`
 で検証される）は `crates/core/src/extension.rs` の doc comment を正とする。
 本ページのコード断片は要点の抜粋であり、二重管理をしない（[`README.md`](./README.md)
 の原則）。
 
-## 3 拡張点の契約比較
+## 4 拡張点の契約比較
 
 | trait | 呼ばれるタイミング | できること | できないこと |
 |-------|-------------------|-----------|-------------|
 | `RequestGate` | ルーティング・アップグレード判定より**前** | `GateOutcome::Allow` / `Reject` による早期拒否（認証・認可・同意ゲート等、拒否応答は `Retry-After` 等ヘッダ付きも可） | 判定根拠データ（JWT クレーム等）をコアへ持ち出すこと |
 | `UpgradeHandler` | `RequestGate` 通過後、既定 `Handler` より前 | 長時間接続（WebSocket 等）への**委譲判定**（`matches` が `bool` を返す） | フレーミング・接続奪取後の読み書き（プラグイン側の責務） |
 | `Middleware` | `on_request`: ヘッド受理後・ルーティング前 / `on_response`: レスポンス送出後 | ロギング・メトリクス等の**観測** | リクエスト・レスポンスの変更（`head` は不変参照のみ） |
+| `Interceptor` | `intercept`: `UpgradeHandler` 通過後・パスインターセプト型プラグインより前 / `map_response`: 既定 `Handler` 確定後・レスポンス後処理型プラグインより前 | `Some(response)` によるリダイレクト等の応答確定、確定済み `Response` の書き換え | `RequestGate` 拒否応答・パースエラー応答・Upgrade 委譲失敗応答への適用（fail-closed 除外） |
 
 登録は `Server` の builder メソッドで行い、いずれも複数登録できる。
 
@@ -26,10 +30,11 @@ fandhe-backend のコアは、拡張点を 3 種の trait（`Middleware` / `Upgr
 | `RequestGate` | `Server::gate` | 登録順に評価し、最初の `Reject` を優先 | `plugin-hub-wiring`（`TenantGate`） |
 | `UpgradeHandler` | `Server::upgrade_handler` | 登録順に `matches` を評価 | `plugin-websocket` |
 | `Middleware` | `Server::middleware` | 登録順に `on_request` / `on_response` を呼ぶ | `plugin-tracing` |
+| `Interceptor` | `Server::interceptor` | `intercept` は登録順に評価し最初の `Some` を優先、`map_response` は登録順に逐次適用 | [`examples/with-interceptor`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/examples/with-interceptor) |
 
-### 同期契約（3 trait 共通）
+### 同期契約（4 trait 共通）
 
-3 trait はいずれも**同期 API** である。`async fn` を trait に持ち込むと
+4 trait はいずれも**同期 API** である。`async fn` を trait に持ち込むと
 `Box<dyn Middleware>` 等の trait object としてコアループが拡張点を保持する構成
 （dyn 互換性）が壊れるためである。既定ハンドラ（`Handler::handle`）のみが
 async 契約であり、この非対称は意図的な設計である（`crates/core/src/server.rs` の
@@ -168,10 +173,12 @@ per-request 状態を運ぶ経路がないため）。
 
 ## `Interceptor`（ユーザー向けインターセプト・レスポンス改変）
 
-上記 3 拡張点はいずれも「リクエストを弾く」「観測する」「長時間接続へ委譲する」だけで、
-**リダイレクトを返す**・**確定済みレスポンスの body を差し替える**ことができない。
-この 2 用途向けに `Interceptor` trait（`crates/core/src/interceptor.rs`）を追加した。
-3 拡張点の対象外だが、`Handler` と同じ「レスポンダ系シーム」として feature ゲートなしで
+先行 3 拡張点（`RequestGate` / `UpgradeHandler` / `Middleware`）はいずれも
+「リクエストを弾く」「観測する」「長時間接続へ委譲する」だけで、**リダイレクトを返す**・
+**確定済みレスポンスの body を差し替える**ことができない。この 2 用途向けに
+`Interceptor` trait（`crates/core/src/interceptor.rs`）を追加した。先行 3 拡張点
+いずれでも表現できない場合に限り新規 trait を追加するという原則の下で 4 種目として
+採用されたが、`Handler` と同じ「レスポンダ系シーム」として feature ゲートなしで
 常時利用できる（詳細な設計判断は
 [`docs/design/interceptor-extension-point.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/interceptor-extension-point.md)）。
 
@@ -225,7 +232,7 @@ builder パターン）。
 
 ## セキュリティ・制約
 
-- 3 trait とも `Send + Sync` 境界が必須である。拡張点の実装は複数ワーカー
+- 4 trait とも `Send + Sync` 境界が必須である。拡張点の実装は複数ワーカー
   スレッドから共有参照される（この境界を欠くとビルドが通らない）
 - `Middleware` は `head` を変更してはならない契約だが、コアはこれを型では
   強制しない。実装者が守る規約として doc に明記されている
