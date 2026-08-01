@@ -112,5 +112,9 @@ async fn config_built_via_core_reexport_intercepts_rtc_offer() {
     );
     let response = roundtrip(&server, request.as_bytes()).await;
 
+    // ステータス・Content-Type・body の全件を検証する（PoC-9 教訓・上の
+    // direct-path テストと同一原則。再エクスポート経路でも劣化を見逃さない）。
     assert!(response.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+    assert!(response.contains("Content-Type: application/json\r\n"));
+    assert!(response.ends_with(r#"{"error":"invalid_offer_json"}"#));
 }
