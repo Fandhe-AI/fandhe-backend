@@ -71,8 +71,46 @@
 //! （`.claude/rules/coding-rust.md`）は I/O が対象であり、本件は CPU 処理の
 //! ため対象外。作業量はコア既存のリクエストボディサイズ上限・ハンドラの
 //! 生成物サイズにより有界（無制限ではない）。巨大応答向けの
-//! `spawn_blocking` 化・ストリーミング圧縮はスコープ外（後続課題として
-//! 追跡、`.claude/rules/out-of-scope-tracking.md`）。
+//! `spawn_blocking` 化はスコープ外（後続課題として追跡、
+//! `.claude/rules/out-of-scope-tracking.md`）。
+//!
+//! # チャンク単位のストリーミング gzip 圧縮（イシュー #461）
+//!
+//! [`apply_compression`] は `Response::body` 全体を前提とする通常応答専用で
+//! あり、`Handler::handle_streaming`（#319）の chunked ストリーミング応答
+//! （body を一括保持せず bounded mpsc 経由で逐次供給する設計）には使えない
+//! （`crate::plugin::finalize_streaming_head` の doc・
+//! `docs/design/plugin-boundary.md` 5.9.7 節・5.10.3 節が示す既存の見送り
+//! 判断）。本イシューは body 全体のバッファリングを避けたまま、
+//! [`StreamingGzipEncoder`]（`flate2::write::GzEncoder<Vec<u8>>` を内包し
+//! チャンクごとに sync flush（Z_SYNC_FLUSH 相当）した圧縮済みバイト列を
+//! 即時取り出す）で「recv → 圧縮変換 → chunked framing → write」を
+//! 1 チャンクずつ処理できるようにし、ストリーミング応答の設計（バック
+//! プレッシャ・応答完全性契約）を壊さずに圧縮を接続する。
+//!
+//! ## 採否の設計判断
+//!
+//! - **opt-in（既定 OFF）**: [`CompressionConfigBuilder::compress_streaming`]
+//!   は既定 `false`。既定 ON にすると既存の `Server::compression` 登録
+//!   利用者のストリーミング応答挙動が暗黙に変わるうえ、SSE 等で秘密情報を
+//!   流す利用者に BREACH 類似リスク（本モジュール冒頭の該当節を参照）を
+//!   黙って背負わせるため、フェイルセーフ側（明示 opt-in）へ倒す。
+//! - **`min_size` は非適用**: ストリーミングでは総 body 長が事前に不明で
+//!   閾値判定ができない。ストリーミング応答は実運用上大きいことが
+//!   ほとんどであり、閾値なしで割り切る。
+//! - **チャンクごと sync flush**: `BodyWriter::send` 1 回分が即座にクライアント
+//!   でデコード可能になることを優先し（SSE 的な逐次配信の意味論の保存）、
+//!   チャンクごとに flush する。flush ごとに約 5 バイトのオーバーヘッドが
+//!   生じ、バッファリング一括圧縮より圧縮率は劣る（レイテンシとのトレード
+//!   オフ）。
+//! - **HTTP/1.1 chunked 経路のみ対象**: HTTP/1.0（EOF 終端・フレーミング
+//!   なし）は対象外とし identity のまま返す（クライアント希少・スコープ
+//!   最小化、コア側 `write_streaming_response` の doc を参照）。
+//! - **エンコーダ失敗時は接続クローズ**（fail-closed）: `Content-Encoding:
+//!   gzip` を広告した後にエンコーダがエラーを返した場合、identity バイトへ
+//!   切り替えるとストリーム破壊になるため、通常の書き込みエラーと同様に
+//!   接続を打ち切る（コア側 `write_streaming_response` 内の呼び出し箇所の
+//!   doc を参照）。
 
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
@@ -104,6 +142,7 @@ const DEFAULT_MIN_SIZE: usize = 1024;
 pub struct CompressionConfig {
     min_size: usize,
     compressible_types: Vec<String>,
+    compress_streaming: bool,
 }
 
 impl CompressionConfig {
@@ -148,6 +187,14 @@ impl CompressionConfig {
             }
         })
     }
+
+    /// チャンク単位のストリーミング gzip 圧縮（イシュー #461）が有効かを
+    /// 返す。既定は `false`（opt-in、[`CompressionConfigBuilder::compress_streaming`]
+    /// の doc を参照）。
+    #[must_use]
+    pub fn compress_streaming(&self) -> bool {
+        self.compress_streaming
+    }
 }
 
 /// [`CompressionConfig`] のビルダー。
@@ -155,6 +202,7 @@ impl CompressionConfig {
 pub struct CompressionConfigBuilder {
     min_size: usize,
     compressible_types: Vec<String>,
+    compress_streaming: bool,
 }
 
 impl Default for CompressionConfigBuilder {
@@ -165,6 +213,9 @@ impl Default for CompressionConfigBuilder {
                 .iter()
                 .map(|s| s.to_ascii_lowercase())
                 .collect(),
+            // 既定 OFF（opt-in）。crate doc「チャンク単位のストリーミング
+            // gzip 圧縮」節の設計判断を参照。
+            compress_streaming: false,
         }
     }
 }
@@ -244,6 +295,38 @@ impl CompressionConfigBuilder {
         self
     }
 
+    /// チャンク単位のストリーミング gzip 圧縮（イシュー #461）を有効化する。
+    /// 既定は `false`（opt-in）。
+    ///
+    /// `Handler::handle_streaming`（#319）による chunked ストリーミング応答
+    /// にのみ影響し、通常応答（[`apply_compression`]）の挙動は変えない。
+    /// `min_size` はストリーミングには適用されない（総 body 長が事前に
+    /// 不明なため、crate doc の「採否の設計判断」を参照）。HTTP/1.0 応答
+    /// （EOF 終端）には適用されず常に identity のまま返る。
+    ///
+    /// # BREACH 類似リスクへの注意
+    ///
+    /// SSE 等で秘密情報と攻撃者制御の入力を同一ストリームに混在させる場合は
+    /// 本フラグを有効化しない、または対象エンドポイントを
+    /// [`CompressionConfigBuilder::compressible_types`] から除外すること
+    /// （モジュール冒頭の「BREACH 類似の情報漏洩リスク」節を参照）。
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_compression::CompressionConfig;
+    ///
+    /// let config = CompressionConfig::builder().compress_streaming(true).build();
+    /// assert!(config.compress_streaming());
+    ///
+    /// // 既定は無効（opt-in）。
+    /// let default_config = CompressionConfig::builder().build();
+    /// assert!(!default_config.compress_streaming());
+    /// ```
+    #[must_use]
+    pub fn compress_streaming(mut self, enabled: bool) -> Self {
+        self.compress_streaming = enabled;
+        self
+    }
+
     /// [`CompressionConfig`] を構築する。
     ///
     /// 現時点で構築時検証が必要な不正な組み合わせは存在しないため
@@ -254,6 +337,7 @@ impl CompressionConfigBuilder {
         CompressionConfig {
             min_size: self.min_size,
             compressible_types: self.compressible_types,
+            compress_streaming: self.compress_streaming,
         }
     }
 }
@@ -454,6 +538,147 @@ pub fn apply_compression(
     response
 }
 
+/// チャンク単位のストリーミング gzip 圧縮エンコーダ（イシュー #461）。
+///
+/// `flate2::write::GzEncoder<Vec<u8>>` を内包し、[`encode_chunk`][Self::encode_chunk]
+/// 呼び出しごとに `write_all` + sync flush（`Write::flush` が Z_SYNC_FLUSH
+/// 相当を行う、flate2 の `zio::Writer::flush` 実装を参照）した圧縮済み
+/// バイト列を即時取り出す。body 全体を保持しないため、
+/// `Handler::handle_streaming` の bounded mpsc バックプレッシャ・応答完全性
+/// 契約（`crate::streaming` モジュール doc）と両立できる
+/// （モジュール冒頭「チャンク単位のストリーミング gzip 圧縮」節を参照）。
+///
+/// `crates/core` の第 5 のシーム（`prepare_streaming_compression`）からのみ
+/// 構築される（コンストラクタは非公開、[`begin_streaming_compression`] 経由）。
+pub struct StreamingGzipEncoder {
+    encoder: flate2::write::GzEncoder<Vec<u8>>,
+}
+
+impl StreamingGzipEncoder {
+    fn new() -> Self {
+        Self {
+            encoder: flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default()),
+        }
+    }
+
+    /// `data` を圧縮し、この呼び出し時点までにデコード可能な圧縮済み
+    /// バイト列を返す（sync flush、チャンクごとに約 5 バイトの
+    /// オーバーヘッド。モジュール冒頭の「チャンクごと sync flush」節を
+    /// 参照）。空 `data` は無出力（`Ok(Vec::new())`）で `write_header` すら
+    /// 呼ばない。
+    ///
+    /// メモリ上の `Vec<u8>` への書き込みのみで I/O エラー要因（ディスク・
+    /// ネットワーク）が存在しないため失敗は実質起こり得ないが、`Result` を
+    /// 呼び出し元（コア側 `write_streaming_response`）へそのまま伝播し、
+    /// 万一失敗した場合は接続クローズ（fail-closed）で処理する契約
+    /// （モジュール冒頭「エンコーダ失敗時は接続クローズ」節を参照）。
+    pub fn encode_chunk(&mut self, data: &[u8]) -> std::io::Result<Vec<u8>> {
+        use std::io::Write;
+
+        if data.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.encoder.write_all(data)?;
+        self.encoder.flush()?;
+        Ok(std::mem::take(self.encoder.get_mut()))
+    }
+
+    /// 残余データ + gzip trailer（CRC32・展開後の長さ）を取り出し、
+    /// エンコーダを終端する。
+    pub fn finish(self) -> std::io::Result<Vec<u8>> {
+        self.encoder.finish()
+    }
+}
+
+/// ストリーミング応答（`crates/core` の第 5 のシーム、
+/// `crate::plugin::prepare_streaming_compression`）から呼ばれる、圧縮確定
+/// 判定 + ヘッド改変本体（イシュー #461）。
+///
+/// 以下の全条件を満たす場合のみ `Content-Encoding: gzip` を付与し
+/// `Some(StreamingGzipEncoder)` を返す（モジュール冒頭「採否の設計判断」を
+/// 参照）:
+///
+/// (a) `config.compress_streaming()` が有効（既定 `false`、opt-in）
+/// (b) `response` のステータスが 2xx かつ非 bodyless（[`Response::is_bodyless_status`]、
+///     1xx・204・304 を包含）
+/// (c) 実効 `Content-Type` が `config` の圧縮対象リストに一致
+/// (d) `Content-Encoding` が未設定（二重圧縮防止）
+/// (e) [`accepts_gzip`] が `true`
+///
+/// 条件 (a)〜(c) が成立した時点で圧縮成否に関わらず `Vary: Accept-Encoding`
+/// を付与する（[`apply_compression`] と同一規則。共有キャッシュでの変異
+/// 混同防止）。`min_size`（[`CompressionConfigBuilder::min_size`]）は
+/// ストリーミングでは総 body 長が未知のため適用しない。
+///
+/// # 呼び出し契約（HTTP/1.1 chunked 経路専用）
+///
+/// 呼び出し元はヘッド直列化（`Response::serialize_chunked_head`）の**前**に
+/// 本関数を呼び、`Content-Encoding` 決定後の `Response` をヘッド直列化に
+/// 使う。HTTP/1.0（EOF 終端）経路では呼び出さない契約（モジュール冒頭の
+/// 「HTTP/1.1 chunked 経路のみ対象」節を参照。呼び出し元が feature 有効時
+/// でも HTTP/1.0 分岐へは配線しないことで担保する）。
+///
+/// ```
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+/// use fandhe_backend_http::response::Response;
+/// use fandhe_backend_plugin_compression::{begin_streaming_compression, CompressionConfig};
+///
+/// let config = CompressionConfig::builder().compress_streaming(true).build();
+/// let buf = b"GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n";
+/// let ParseOutcome::Complete { head, .. } = parse_request_head(buf).unwrap() else {
+///     unreachable!()
+/// };
+/// let response = Response::empty(200).with_content_type("text/event-stream");
+/// let (response, encoder) = begin_streaming_compression(&head, &config, response);
+/// assert_eq!(response.header("content-encoding"), Some("gzip"));
+/// assert!(encoder.is_some());
+/// ```
+#[must_use]
+pub fn begin_streaming_compression(
+    head: &RequestHead,
+    config: &CompressionConfig,
+    response: Response,
+) -> (Response, Option<StreamingGzipEncoder>) {
+    // 条件 (a): opt-in。
+    if !config.compress_streaming {
+        return (response, None);
+    }
+
+    // 条件 (b): 2xx かつ非 bodyless（204 は is_bodyless_status に含まれる）。
+    if !(200..300).contains(&response.status) || Response::is_bodyless_status(response.status) {
+        return (response, None);
+    }
+
+    // 条件 (c): Content-Type 一致。
+    let content_type_ok = response
+        .header("content-type")
+        .is_some_and(|ct| config.matches_content_type(ct));
+    if !content_type_ok {
+        return (response, None);
+    }
+
+    // 表現が Accept-Encoding に依存して変わりうる時点で Vary を付与する
+    // （`apply_compression` と同一規則、圧縮の成否に関わらず付与）。
+    let response = if response.header("vary").is_none() {
+        try_add_header(response, "Vary", "Accept-Encoding")
+    } else {
+        response
+    };
+
+    // 条件 (d): 二重圧縮防止。
+    if response.header("content-encoding").is_some() {
+        return (response, None);
+    }
+
+    // 条件 (e): Accept-Encoding が gzip を受理。
+    if !accepts_gzip(head) {
+        return (response, None);
+    }
+
+    let response = try_add_header(response, "Content-Encoding", "gzip");
+    (response, Some(StreamingGzipEncoder::new()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,5 +830,144 @@ mod tests {
         let mut decoded = String::new();
         decoder.read_to_string(&mut decoded).unwrap();
         assert_eq!(decoded, body);
+    }
+
+    #[test]
+    fn streaming_gzip_encoder_roundtrip_multi_chunk() {
+        use std::io::Read;
+
+        let mut encoder = StreamingGzipEncoder::new();
+        let chunks = ["hello, ", "streaming ", "gzip ", "world"];
+        let mut framed = Vec::new();
+        for chunk in chunks {
+            framed.extend(encoder.encode_chunk(chunk.as_bytes()).unwrap());
+        }
+        framed.extend(encoder.finish().unwrap());
+
+        let mut decoder = flate2::read::GzDecoder::new(framed.as_slice());
+        let mut decoded = String::new();
+        decoder.read_to_string(&mut decoded).unwrap();
+        assert_eq!(decoded, chunks.concat());
+    }
+
+    #[test]
+    fn streaming_gzip_encoder_each_chunk_output_independently_decodable() {
+        // sync flush（Z_SYNC_FLUSH 相当）の検証: 各 encode_chunk 呼び出しまでの
+        // 累積出力（trailer 未送出）を都度 decode すると、そこまでに書き込んだ
+        // 平文全体が復元できる（途中経過のバイト列が deflate の flush point で
+        // 完結しており、次チャンクを待たずに decode 可能）。
+        use std::io::Read;
+
+        let mut encoder = StreamingGzipEncoder::new();
+        let mut accumulated_compressed = Vec::new();
+        let mut accumulated_plain = String::new();
+        for chunk in ["first-chunk-", "second-chunk"] {
+            accumulated_compressed.extend(encoder.encode_chunk(chunk.as_bytes()).unwrap());
+            accumulated_plain.push_str(chunk);
+
+            let mut decoder = flate2::read::GzDecoder::new(accumulated_compressed.as_slice());
+            let mut decoded = String::new();
+            // trailer（CRC32・長さ）未送出のため `read_to_string` は
+            // `UnexpectedEof` になりうるが、エラー到達までに読めたバイト列は
+            // ここまでに書き込んだ平文全体と一致するはずである。
+            let _ = decoder.read_to_string(&mut decoded);
+            assert_eq!(decoded, accumulated_plain);
+        }
+    }
+
+    #[test]
+    fn streaming_gzip_encoder_empty_chunk_produces_no_output() {
+        let mut encoder = StreamingGzipEncoder::new();
+        assert_eq!(encoder.encode_chunk(b"").unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn streaming_gzip_encoder_finish_without_chunks_is_valid_empty_gzip() {
+        use std::io::Read;
+
+        let encoder = StreamingGzipEncoder::new();
+        let framed = encoder.finish().unwrap();
+        let mut decoder = flate2::read::GzDecoder::new(framed.as_slice());
+        let mut decoded = String::new();
+        decoder.read_to_string(&mut decoded).unwrap();
+        assert_eq!(decoded, "");
+    }
+
+    #[test]
+    fn begin_streaming_compression_disabled_by_default() {
+        let config = CompressionConfig::builder().build();
+        let head = head_from(b"GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n");
+        let response = Response::empty(200).with_content_type("text/event-stream");
+        let (result, encoder) = begin_streaming_compression(&head, &config, response.clone());
+        assert_eq!(result, response);
+        assert!(encoder.is_none());
+    }
+
+    #[test]
+    fn begin_streaming_compression_enabled_adds_headers_and_encoder() {
+        let config = CompressionConfig::builder()
+            .compress_streaming(true)
+            .build();
+        let head = head_from(b"GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n");
+        let response = Response::empty(200).with_content_type("text/event-stream");
+        let (result, encoder) = begin_streaming_compression(&head, &config, response);
+        assert_eq!(result.header("content-encoding"), Some("gzip"));
+        assert_eq!(result.header("vary"), Some("Accept-Encoding"));
+        assert!(encoder.is_some());
+    }
+
+    #[test]
+    fn begin_streaming_compression_skips_without_accept_encoding() {
+        let config = CompressionConfig::builder()
+            .compress_streaming(true)
+            .build();
+        let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
+        let response = Response::empty(200).with_content_type("text/event-stream");
+        let (result, encoder) = begin_streaming_compression(&head, &config, response);
+        assert_eq!(result.header("content-encoding"), None);
+        // Content-Type 一致は満たすため Vary は付与される。
+        assert_eq!(result.header("vary"), Some("Accept-Encoding"));
+        assert!(encoder.is_none());
+    }
+
+    #[test]
+    fn begin_streaming_compression_skips_non_matching_content_type() {
+        let config = CompressionConfig::builder()
+            .compress_streaming(true)
+            .build();
+        let head = head_from(b"GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n");
+        let response = Response::empty(200).with_content_type("image/png");
+        let (result, encoder) = begin_streaming_compression(&head, &config, response);
+        assert_eq!(result.header("content-encoding"), None);
+        assert_eq!(result.header("vary"), None);
+        assert!(encoder.is_none());
+    }
+
+    #[test]
+    fn begin_streaming_compression_skips_bodyless_status() {
+        let config = CompressionConfig::builder()
+            .compress_streaming(true)
+            .build();
+        let head = head_from(b"GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n");
+        let response = Response::empty(204).with_content_type("text/event-stream");
+        let (result, encoder) = begin_streaming_compression(&head, &config, response.clone());
+        assert_eq!(result, response);
+        assert!(encoder.is_none());
+    }
+
+    #[test]
+    fn begin_streaming_compression_skips_already_encoded() {
+        let config = CompressionConfig::builder()
+            .compress_streaming(true)
+            .build();
+        let head = head_from(b"GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n");
+        let response = Response::empty(200)
+            .with_content_type("text/event-stream")
+            .with_header("Content-Encoding", "br")
+            .unwrap();
+        let (result, encoder) = begin_streaming_compression(&head, &config, response.clone());
+        assert_eq!(result.header("content-encoding"), Some("br"));
+        assert_eq!(result.header("vary"), Some("Accept-Encoding"));
+        assert!(encoder.is_none());
     }
 }

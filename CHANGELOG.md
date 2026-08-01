@@ -58,6 +58,13 @@ crates.io へ公開済み（[`docs/design/crates-io-release.md`](docs/design/cra
   動的エンドポイント共存構成、イシュー
   [#419](https://github.com/Fandhe-AI/fandhe-backend/issues/419)、PR
   [#427](https://github.com/Fandhe-AI/fandhe-backend/pull/427)）
+- `fandhe-backend-plugin-compression`: `CompressionConfigBuilder::compress_streaming`
+  （既定 `false`、opt-in）で `Handler::handle_streaming` の chunked ストリーミング
+  応答へチャンク単位の gzip 圧縮を適用可能に。body 全体をバッファリングしない
+  専用エンコーダ（`StreamingGzipEncoder`）+ コア側の第 5 のシーム
+  （`prepare_streaming_compression`）で、既存のバックプレッシャ・応答完全性契約を
+  壊さずに接続（HTTP/1.1 chunked 経路限定、HTTP/1.0 は対象外。イシュー
+  [#461](https://github.com/Fandhe-AI/fandhe-backend/issues/461)）
 
 ### Fixed
 

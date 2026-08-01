@@ -104,7 +104,7 @@ body 送出ループへ入らず、ヘッド送出のみで応答を完了させ
 | body | 応答全体を組み立ててから `Content-Length` 付きで送信 | チャンク単位で逐次送信（全体サイズ不要） |
 | 契約 | async（`HandlerFuture` を返す） | 同期のまま（チャネルを組み立てて即座に返り、非同期 I/O は producer タスクが担う） |
 | 適する用途 | 通常の API 応答・小さな body | SSE・大きな逐次生成 body・長時間処理の進捗通知 |
-| レスポンス後処理型プラグイン（CORS ヘッダ付与・gzip 圧縮） | 適用される | **適用されない**（`Response` 型前提のシームのため） |
+| レスポンス後処理型プラグイン（CORS ヘッダ付与・gzip 圧縮） | 適用される（`finalize_response`） | CORS ヘッダ付与は適用される（`finalize_streaming_head`）。gzip 圧縮は既定では適用されず、`CompressionConfigBuilder::compress_streaming(true)` の明示 opt-in 時のみチャンク単位で適用される（`prepare_streaming_compression`、HTTP/1.1 chunked 経路限定） |
 
 評価順序にも注意する。パスインターセプト型プラグイン（graphql / openapi /
 static 等）が処理を完結させなかった場合にのみ `handle_streaming` が確認され、
@@ -121,8 +121,14 @@ static 等）が処理を完結させなかった場合にのみ `handle_streami
   強制クローズする（フェイルクローズ）
 - タイムアウト・書き込みエラー・producer 打ち切りの場合、`Middleware::on_response`
   は呼ばれない（「完走した応答のみ観測する」契約）
-- CORS ヘッダ付与・gzip 圧縮（レスポンス後処理型プラグイン）はストリーミング
-  応答には適用されない。必要なヘッダはハンドラ・構成側で別途手当てする
+- CORS ヘッダ付与（`Server::cors` 登録時）はストリーミング応答にも適用される。
+  gzip 圧縮は既定では適用されず、`compress_streaming(true)` を明示 opt-in
+  した場合のみチャンク単位で適用される（BREACH 類似リスクへの配慮から
+  既定 OFF。SSE 等で秘密情報と攻撃者制御入力を混在させる場合は有効化しない、
+  または対象外の `Content-Type` に構成する。詳細は
+  [`fandhe_backend_plugin_compression`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/crates/plugin-compression/src/lib.rs)
+  の crate doc・`docs/design/plugin-boundary.md` 5.10.6 節を参照）。HTTP/1.0
+  経路（EOF 終端）はストリーミング圧縮の対象外で常に identity のまま送出する
 
 ## 関連ドキュメント
 
