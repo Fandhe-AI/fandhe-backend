@@ -1,6 +1,6 @@
 [package]
 name = "fandhe-backend-routes"
-version = "0.2.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -20,7 +20,7 @@ workspace = true
 # 標準ライブラリの Vec のみで足りるため）。`cargo tree -p fandhe-backend-routes` で
 # fandhe-backend-http 以外の依存が増えていないことを確認する。
 [dependencies]
-fandhe-backend-http = { path = "../http", version = "0.2.0" }
+fandhe-backend-http = { workspace = true }
 
 # dev-only（イシュー #315）: async ハンドラ契約（`Router::route_async` /
 # `route_param_async`）の doc test・統合テストで `Future` を駆動するためだけに

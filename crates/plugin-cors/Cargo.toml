@@ -1,6 +1,6 @@
 [package]
 name = "fandhe-backend-plugin-cors"
-version = "0.2.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -31,4 +31,4 @@ workspace = true
 # `fandhe_backend_plugin_cors::preflight_response` を呼び出す構成）。
 # 外部 crates.io 依存はゼロ（std のみで実装）。
 [dependencies]
-fandhe-backend-http = { path = "../http", version = "0.2.0" }
+fandhe-backend-http = { workspace = true }

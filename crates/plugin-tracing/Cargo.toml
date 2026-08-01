@@ -1,6 +1,6 @@
 [package]
 name = "fandhe-backend-plugin-tracing"
-version = "0.2.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -32,7 +32,7 @@ workspace = true
 # - `tracing-appender`: `non_blocking` writer。AGENTS.md「規約: ミドルウェア非同期
 #   I/O 必須化」に従い、既定で非同期・バッファ済み I/O とするための実体
 [dependencies]
-fandhe-backend-http = { path = "../http", version = "0.2.0" }
+fandhe-backend-http = { workspace = true }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = [
   "fmt",

@@ -1,6 +1,6 @@
 [package]
 name = "fandhe-backend-plugin-hub-wiring"
-version = "0.2.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -45,8 +45,8 @@ workspace = true
 # -p fandhe-backend-core` に本クレート・本依存が現れないことで
 # pay-for-what-you-use を機械検証できる）。
 [dependencies]
-fandhe-backend-core = { path = "../core", version = "0.2.0" }
-fandhe-backend-http = { path = "../http", version = "0.2.0" }
+fandhe-backend-core = { workspace = true }
+fandhe-backend-http = { workspace = true }
 ring = "0.17"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }

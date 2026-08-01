@@ -1,6 +1,6 @@
 [package]
 name = "fandhe-backend-plugin-static"
-version = "0.2.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -29,7 +29,7 @@ workspace = true
 # 静的テーブル（`src/mime.rs`）で行うため、外部 crates.io 依存（mime_guess 等）
 # は追加しない。
 [dependencies]
-fandhe-backend-http = { path = "../http", version = "0.2.0" }
+fandhe-backend-http = { workspace = true }
 tokio = { version = "1", default-features = false, features = ["rt"] }
 
 # 単体テスト（`#[cfg(test)] mod tests`）で `#[tokio::test]` マクロ・
