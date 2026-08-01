@@ -20,6 +20,21 @@
 # - `path` 除去件数が 0 件（Cargo.toml 書式ドリフトで sed が空振り）→ exit 1
 # - 除去後に `path =` 指定が残存（除去漏れ）→ exit 1
 # - 1 クレートでも build/test FAIL → exit 1
+# - SKIP マーカーの理由が空 → exit 1（下記 SKIP 節参照）
+# - 全クレートが SKIP され PASS が 0 件（検証が実質何もしていない）→ exit 1
+#
+# SKIP（crates.io 未再公開の新 API 依存、イシュー #433）:
+# `crates/` 側で新規 API を追加後、次の crates.io 再公開（lockstep バージョニング、
+# docs/design/crates-io-release.md）までの間は、その API を使う examples/* は
+# crates.io 公開版のみでは解決できずこの検証を通らない（依存自体を後退させるのは
+# 本末転倒）。対象クレート直下に `.standalone-crates-io-skip` を置くと理由 1 行を
+# 読み取って stage 3 の build/test を SKIP する（PASS 扱いにはしない。集計に
+# SKIP として残し、検証をすり抜けさせない）。ファイルは空であってはならない
+# （理由必須、fail-closed）。
+#
+# 恒久的な抜け道にしない: 次回 crates.io 公開時に
+# `docs/design/crates-io-release.md` の公開手順で該当マーカーを削除し再検証する
+# （同ファイルに手順を明記済み）。
 #
 # 使い方:
 #   bash scripts/standalone-crates-io-check.sh
@@ -159,10 +174,25 @@ echo "== stage 3: crates.io 依存のみで cargo build / cargo test =="
 
 pass_crates=()
 fail_crates=()
+skip_crates=()
 
 for i in "${!crate_dirs[@]}"; do
     crate_dir="${crate_dirs[${i}]}"
     copy_dir="${copy_dirs[${i}]}"
+
+    skip_marker="${crate_dir}/.standalone-crates-io-skip"
+    if [ -f "${skip_marker}" ]; then
+        # fail-closed ガード 3: 理由なしの SKIP は許さない（黙って穴を空けない）。
+        skip_reason="$(tr -d '[:space:]' < "${skip_marker}")"
+        if [ -z "${skip_reason}" ]; then
+            echo "エラー: ${skip_marker} が空です。SKIP する理由を 1 行以上書いてください" >&2
+            exit 1
+        fi
+        skip_reason_display="$(head -n 1 "${skip_marker}")"
+        skip_crates+=("${crate_dir}（${skip_reason_display}）")
+        echo "SKIP: ${crate_dir}（${skip_reason_display}）"
+        continue
+    fi
 
     echo "==> ${crate_dir}: cargo build"
     if (cd "${copy_dir}" && cargo build) \
@@ -177,9 +207,12 @@ done
 # --------------------------------------------------
 # 集計（1 件でも FAIL があれば exit 1、フェイルクローズ）
 # --------------------------------------------------
-echo "== 集計: PASS ${#pass_crates[@]} / FAIL ${#fail_crates[@]} / 全 ${#crate_dirs[@]} クレート =="
+echo "== 集計: PASS ${#pass_crates[@]} / SKIP ${#skip_crates[@]} / FAIL ${#fail_crates[@]} / 全 ${#crate_dirs[@]} クレート =="
 for crate_dir in "${pass_crates[@]}"; do
     echo "  PASS: ${crate_dir}"
+done
+for crate_dir in "${skip_crates[@]}"; do
+    echo "  SKIP: ${crate_dir}"
 done
 for crate_dir in "${fail_crates[@]}"; do
     echo "  FAIL: ${crate_dir}"
@@ -190,4 +223,12 @@ if [ "${#fail_crates[@]}" -ne 0 ]; then
     exit 1
 fi
 
-echo "standalone-crates-io-check.sh: 全クレートが crates.io 公開版のみでビルド・テストできました"
+# fail-closed ガード 4: 全クレートが SKIP され PASS が 0 件なら、この検証は
+# 実質何も検証していない（vacuous green）。ディレクトリ構成ドリフトの検出
+# （ガード「検出 0 件」）と同じ理由で異常終了する。
+if [ "${#pass_crates[@]}" -eq 0 ]; then
+    echo "エラー: 全 ${#crate_dirs[@]} クレートが SKIP され、build/test が 1 件も実行されませんでした" >&2
+    exit 1
+fi
+
+echo "standalone-crates-io-check.sh: 全クレートが crates.io 公開版のみでビルド・テストできました（SKIP ${#skip_crates[@]} 件を除く）"
