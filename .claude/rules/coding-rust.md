@@ -11,8 +11,11 @@ fandhe-backend は「最小コア + Cargo feature 駆動プラグイン」を核
 ## 設計原則
 
 - **pay-for-what-you-use**: 機能はコア外に置き Cargo feature で着脱する（[[pay-for-what-you-use]]）
-- **拡張点は 3 種 trait に集約**: `Middleware` / `UpgradeHandler` / `RequestGate`。
-  新機能はまずこの拡張点に載るか検討する
+- **拡張点は 4 種 trait に集約**: `Middleware` / `UpgradeHandler` / `RequestGate` /
+  `Interceptor`。新機能はまずこの拡張点に載るか検討する。前 3 者は同期 trait
+  （`crates/core/src/extension.rs`）、`Interceptor` はリダイレクト・レスポンス改変を
+  扱う feature ゲート不要のレスポンダ系シーム（`crates/core/src/interceptor.rs`、
+  `docs/design/interceptor-extension-point.md`）
 - コアに重い依存・不要な `unsafe` を持ち込まない。依存追加は `reference-researcher` で妥当性を確認
 
 ## 安全性
