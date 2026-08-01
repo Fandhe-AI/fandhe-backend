@@ -137,7 +137,7 @@ publish（`cargo publish --workspace`、依存順自動解決）の 3 段構成�
   バージョンを分離すると、`fandhe-backend-http` → `fandhe-backend-routes` → `fandhe-backend-core` の依存順
   publish 時にバージョン整合の管理コストが増えるため
 
-### 7.1 v0.2.0 リリース（イシュー #437、機械作業のみ完了・publish は未実施）
+### 7.1 v0.2.0 リリース（イシュー #437、2026-08-01 publish 完了）
 
 v0.1.0 公開（2026-07-21）後に breaking change が 2 件 main に入ったため、7 節の
 lockstep 方針に従い公開対象 13 クレートを 0.2.0 へ一括バンプした。
@@ -151,16 +151,21 @@ lockstep 方針に従い公開対象 13 クレートを 0.2.0 へ一括バンプ
   `version` 併記（`crates/core` 等）+ `templates/app`・`examples/with-*` の依存
   `version` 併記を 0.2.0 へバンプ、`crates/plugin-openapi/openapi.json` の
   `info.version` 再生成、`CHANGELOG.md` 新設、6 節の検証を PASS させたうえでの PR 作成
-- **実 publish（Phase B）は本イシューのスコープ外**。ユーザーが `v0.2.0` タグを
-  push（または `release.yml` を `workflow_dispatch`）し、6 節記載の verify → dry-run →
-  GitHub Environments `crates-io-release` の required reviewers 承認を経て
-  `cargo publish --workspace` が実行される。publish 完了後、本ドキュメント・
+- **実 publish（Phase B）は 2026-08-01 に完了**。`v0.2.0` タグ push により
+  `release.yml` の verify → dry-run → GitHub Environments `crates-io-release` の
+  承認を経て `cargo publish --workspace` が実行され、公開対象 13 クレートすべての
+  0.2.0 が crates.io インデックスへ反映されたことを確認済み。あわせて本ドキュメント・
   README・`docs/guide/getting-started.md`・`site/index.md`・`CHANGELOG.md` の
-  「v0.2.0 準備中」表現を「公開済み（日付）」へ切り替えるフォローアップを別途行う
+  「v0.2.0 準備中」表現を「公開済み（2026-08-01）」へ切り替えた
+- タグ push 初回のリリース CI は verify ジョブの checkout（`submodules: recursive`）が
+  private の `fandhe-backend-spec` submodule を取得できず失敗した。verify は
+  spec 本文を参照しないため submodule 非取得へ修正（PR #453）し、タグを付け直して
+  成功した
 - `standalone-crates-io.yml`（`scripts/standalone-crates-io-check.sh`）は
   crates.io 公開版のみで templates/examples を検証する性質上、v0.2.0 publish
   完了までは構造的に FAIL する（required check 対象外のためマージは阻害しない）。
-  publish 完了後に `workflow_dispatch` で再実行し PASS を確認する
+  publish 完了後に `workflow_dispatch` で再実行し PASS を確認する（実施済み、
+  結果は 8 節チェックリスト参照）
 
 ## 8. 公開前チェックリスト
 
@@ -189,20 +194,21 @@ lockstep 方針に従い公開対象 13 クレートを 0.2.0 へ一括バンプ
       マーカーは削除し、`bash scripts/standalone-crates-io-check.sh` を再実行して
       SKIP なしで通ることを確認する（削除し忘れは検証の穴を恒久化させるため必須）
 
-### v0.2.0（イシュー #437、Phase A 機械作業完了・Phase B publish は未実施）
+### v0.2.0（イシュー #437、2026-08-01 publish 完了）
 
 - [x] 公開対象 13 クレートの `version` および workspace 内 path 依存の `version` 併記が
       すべて 0.2.0 に揃っている（恒久非公開 3 クレートは対象外）
 - [x] `cargo publish --workspace --dry-run` が公開対象 13 クレート全件で成功する
-- [ ] Phase B: `v0.2.0` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
-      の実行（本イシューのスコープ外、ユーザー承認を得た別プロセスで実施）
-- [ ] Phase B publish 完了後、`standalone-crates-io.yml` を `workflow_dispatch` で
+- [x] Phase B: `v0.2.0` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
+      の実行（2026-08-01 実施済み。13 クレートすべての 0.2.0 が crates.io
+      インデックスへ反映されたことを確認済み）
+- [x] Phase B publish 完了後、`standalone-crates-io.yml` を `workflow_dispatch` で
       再実行し、`templates/app`・`examples/with-cors`・`examples/with-graphql`・
       `examples/with-websocket` の 4 クレートが `fandhe-backend-core = "^0.2.0"` 等を
-      crates.io 公開版のみで解決できて PASS することを確認する（本節冒頭に記載の
-      「v0.2.0 publish 完了までは構造的に FAIL する」状態の解消確認）。あわせて
-      `examples/with-interceptor/.standalone-crates-io-skip`（イシュー #433）が
-      0.2.0 公開版で解決可能になっていれば削除し、SKIP なしで通ることを再検証する
+      crates.io 公開版のみで解決できて PASS することを確認する（2026-08-01 実施済み、
+      success）。あわせて `examples/with-interceptor/.standalone-crates-io-skip`
+      （イシュー #433）は Interceptor を収録した 0.2.0 の公開により解消したため削除し、
+      SKIP なしで通ることを PR CI（paths トリガー）で再検証した
       （v0.1.0 チェックリストの同種項目と同一原則。削除し忘れは検証の穴を恒久化させる）
 
 ## 参照

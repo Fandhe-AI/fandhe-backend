@@ -10,7 +10,7 @@ crates.io に公開済みの fandhe-backend を自分のプロジェクトへ組
 
 ## 1. プロジェクトを作成して依存を追加する
 
-crates.io v0.1.0 として公開済み（2026-07-21）です（v0.2.0 は準備中、`CHANGELOG.md` 参照）。
+crates.io v0.2.0 として公開済み（2026-08-01）です（変更履歴は `CHANGELOG.md` 参照）。
 [crates.io](https://crates.io/crates/fandhe-backend-core) から直接依存に追加します。
 
 ```bash
