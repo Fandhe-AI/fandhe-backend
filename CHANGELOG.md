@@ -5,13 +5,13 @@
 （詳細は [`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7 節）。
 恒久非公開クレート（`axum-ref` / `ws-load-client` / `docs-site`）はこの一覧に含めない。
 
-## [0.2.0] - 準備中（crates.io publish は人間承認の別プロセス、未実施）
+## [0.2.0] - 2026-08-01
 
-イシュー [#437](https://github.com/Fandhe-AI/fandhe-backend/issues/437) の Phase A（機械作業）
-時点の内容。実 publish は `v0.2.0` タグ push（または `release.yml` の
-`workflow_dispatch`）→ verify → dry-run → GitHub Environments `crates-io-release` の
-required reviewers 承認を経て実施される（[`docs/design/crates-io-release.md`](docs/design/crates-io-release.md)
-6 節）。
+イシュー [#437](https://github.com/Fandhe-AI/fandhe-backend/issues/437) で公開対象
+13 クレートを lockstep バンプし、`v0.2.0` タグ push → verify → dry-run →
+GitHub Environments `crates-io-release` の承認を経て `release.yml` から
+crates.io へ公開済み（[`docs/design/crates-io-release.md`](docs/design/crates-io-release.md)
+6 節・7.1 節）。
 
 ### BREAKING CHANGES
 

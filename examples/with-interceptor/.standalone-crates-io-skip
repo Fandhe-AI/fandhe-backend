@@ -1,1 +1,0 @@
-Interceptor はイシュー #433 で追加された新規コア拡張点で、crates.io 公開版 fandhe-backend-core 0.1.0（2026-07-21 公開）には未収録のため crates.io 依存のみでは解決できない（unresolved import fandhe_backend_core::Interceptor）。次回 crates.io 再公開（docs/design/crates-io-release.md）で Interceptor を含む新版が公開され次第、本ファイルを削除して再検証すること。
