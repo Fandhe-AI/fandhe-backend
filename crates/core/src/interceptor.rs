@@ -35,8 +35,12 @@
 //! 3.5. Interceptor::intercept（新規。登録順、最初の Some が勝つ）
 //! 4. plugin::try_intercept（intercept が Some なら skip）
 //! 5. Handler::handle / handle_streaming（同上 skip）
-//! 5.4. Interceptor::map_response（新規。登録順に逐次適用）
-//! 5.5. plugin::finalize_response（CORS → 圧縮。map_response の後）
+//! 5.4. Interceptor::map_response（新規。登録順に逐次適用。`handle_streaming` が
+//!      `Some` を返した経路では `crate::server::write_streaming_response` の
+//!      ヘッド確定時に同じく登録順で適用する。下の「ストリーミング応答への
+//!      適用」節を参照、イシュー #434）
+//! 5.5. plugin::finalize_response（CORS → 圧縮。map_response の後。ストリーミング
+//!      応答には未適用のまま、イシュー #319 のスコープ外指定を維持）
 //! 6. レスポンス書き込み → Middleware::on_response
 //! ```
 //!
@@ -59,9 +63,34 @@
 //! - `RequestGate` 拒否応答
 //! - パースエラー応答（400 等、コネクション処理中に確定するもの）
 //! - Upgrade 委譲失敗時の 501 応答・shutdown 中の 503 応答
-//! - ストリーミング応答（[`crate::server::Handler::handle_streaming`]、イシュー
-//!   #319 の `finalize_response` スコープ外指定と同一理由。`Response` 型を
-//!   前提とするシームであるため）
+//!
+//! # ストリーミング応答への適用（ステータス・ヘッダのみ、body 破棄、イシュー #434）
+//!
+//! [`crate::server::Handler::handle_streaming`]（イシュー #319）が返す応答は
+//! `Response` 型を前提とする通常経路（上の 5.4）を通らないが、`map_response`
+//! 自体は `crate::server::write_streaming_response` がヘッド確定時（HTTP/1.0・
+//! HTTP/1.1 共通、1 回のみ）に登録順で適用する。ステータス・
+//! `Content-Type`・追加ヘッダ（`Response::with_header` 等）の改変はここで
+//! 反映されるが、ストリーミング応答の実体（body）は producer タスクが
+//! [`crate::streaming::BodyWriter`] 経由で逐次供給し chunked framing は
+//! コアが直接組み立てるため、`map_response` が返した `Response` の **body は
+//! 反映されず破棄される**。body 差し替えを許すとバックプレッシャ（bounded
+//! mpsc）・応答完全性契約（`finish` 省略時は終端チャンクなしで打ち切り
+//! クローズ、`crate::streaming` モジュール doc の「応答完全性」節）と
+//! 両立できず、body 全体のバッファリングが必要になり #319 の設計と矛盾する
+//! ため、この制約は意図的な設計判断（新規フック追加・全 body バッファリング
+//! は不採用、`docs/design/interceptor-extension-point.md` を参照）。
+//!
+//! `map_response` 適用後のステータスは以降のすべての判定（`Response::
+//! is_bodyless_status` による 1xx/204/304 の body 送出スキップ含む）に一貫
+//! 使用する。インターセプタが 200 → 204 等へ書き換えた場合、ヘッダ側の
+//! framing 抑制と body 送出スキップが対で成立し、レスポンス分割類の脅威
+//! （`Response::serialize_chunked_head` doc の RFC 9112 §6.3 コメントと同一
+//! 脅威）を構造的に防ぐ。
+//!
+//! `plugin::finalize_response`（CORS → 圧縮）はストリーミング応答には
+//! 引き続き適用しない（gzip はストリーム body に適用不能・CORS は別途設計が
+//! 必要なため、イシュー #319 のスコープ外指定を維持）。
 //!
 //! # pay-for-what-you-use との整合
 //!
@@ -174,6 +203,11 @@ pub trait Interceptor: Send + Sync {
     /// （各実装は前段の戻り値を受け取る）。既定実装は受け取った `response`
     /// をそのまま返す（no-op、後方互換）。本モジュール doc の「`map_response`
     /// を通さない応答」に列挙した応答には適用されない。
+    ///
+    /// [`crate::server::Handler::handle_streaming`] によるストリーミング応答
+    /// にも適用されるが（イシュー #434）、`status`・ヘッダのみが反映され
+    /// **body は反映されず破棄される**。詳細な契約は本モジュール doc の
+    /// 「ストリーミング応答への適用」節を参照。
     fn map_response(&self, _head: &RequestHead, response: Response) -> Response {
         response
     }

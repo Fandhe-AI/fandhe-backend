@@ -7,6 +7,7 @@
 //! （`plugin_static_boundary.rs` 等の既存パターンを踏襲）。
 
 use fandhe_backend_core::interceptor::Interceptor;
+use fandhe_backend_core::streaming::StreamingResponse;
 use fandhe_backend_core::{GateOutcome, Handler, RequestGate, Server, handle_connection};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
@@ -278,4 +279,87 @@ async fn keep_alive_serves_two_requests_with_interceptor_registered() {
     let text = String::from_utf8_lossy(&out);
 
     assert_eq!(text.matches("HTTP/1.1 200").count(), 2, "response: {text}");
+}
+
+// --- ストリーミング応答への map_response 適用（イシュー #434） ---
+
+/// `handle_streaming` で単一チャンクを返すトイハンドラ。統合テストからは
+/// `Handler::handle`（通常応答経路）が呼ばれないことを前提に固定 599 応答を
+/// 返す（`crates/core/src/server.rs` のトイ実装と同じ識別用パターン）。
+struct StreamingOkHandler;
+impl Handler for StreamingOkHandler {
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
+        Box::pin(std::future::ready(Response::empty(599)))
+    }
+
+    fn handle_streaming(&self, _head: &RequestHead, _body: &[u8]) -> Option<StreamingResponse> {
+        let (response, writer) = StreamingResponse::channel(200, Some("text/plain"), 4);
+        tokio::spawn(async move {
+            let _ = writer.send(b"chunk".to_vec()).await;
+            let _ = writer.finish().await;
+        });
+        Some(response)
+    }
+}
+
+/// ストリーミング応答ヘッドへヘッダを 2 個追加する `Interceptor` 2 種。
+/// 複数インターセプタの登録順逐次適用を検証するのに使う。
+struct AddFirstHeader;
+impl Interceptor for AddFirstHeader {
+    fn name(&self) -> &'static str {
+        "add-first-header"
+    }
+    fn map_response(&self, _head: &RequestHead, response: Response) -> Response {
+        response
+            .with_header("X-First".to_string(), "1".to_string())
+            .expect("固定ヘッダ値は検証済み")
+    }
+}
+struct AddSecondHeader;
+impl Interceptor for AddSecondHeader {
+    fn name(&self) -> &'static str {
+        "add-second-header"
+    }
+    fn map_response(&self, _head: &RequestHead, response: Response) -> Response {
+        response
+            .with_header("X-Second".to_string(), "2".to_string())
+            .expect("固定ヘッダ値は検証済み")
+    }
+}
+
+#[tokio::test]
+async fn map_response_applies_to_streaming_response_head_in_registration_order() {
+    let server = Server::new()
+        .interceptor(AddFirstHeader)
+        .interceptor(AddSecondHeader)
+        .handler(StreamingOkHandler);
+
+    let response = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+    let text = String::from_utf8_lossy(&response);
+
+    assert!(text.starts_with("HTTP/1.1 200"), "response: {text}");
+    assert!(text.contains("X-First: 1\r\n"), "response: {text}");
+    assert!(text.contains("X-Second: 2\r\n"), "response: {text}");
+    assert!(
+        text.contains("Transfer-Encoding: chunked\r\n"),
+        "response: {text}"
+    );
+    assert!(text.contains("5\r\nchunk\r\n"), "response: {text}");
+    assert!(text.ends_with("0\r\n\r\n"), "response: {text}");
+}
+
+#[tokio::test]
+async fn no_interceptor_registered_preserves_streaming_response_behavior() {
+    // インターセプタ未登録時のストリーミング応答は従来と同一（後方互換、
+    // `crates/core/src/interceptor.rs` モジュール doc の pay-for-what-you-use
+    // 節と対応）。
+    let server = Server::new().handler(StreamingOkHandler);
+
+    let response = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+    let text = String::from_utf8_lossy(&response);
+
+    assert!(text.starts_with("HTTP/1.1 200"), "response: {text}");
+    assert!(!text.contains("X-First"), "response: {text}");
+    assert!(text.contains("5\r\nchunk\r\n"), "response: {text}");
+    assert!(text.ends_with("0\r\n\r\n"), "response: {text}");
 }

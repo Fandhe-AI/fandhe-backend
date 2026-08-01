@@ -111,7 +111,16 @@ fandhe-backend/
 │   │                                    # 拒否応答をゲート実装から返せるようにした（`GateOutcome::
 │   │                                    # reject(status, body)` ヘルパでヘッダなしの従来相当の
 │   │                                    # 構築も可能。ヘッダ検証は `Response::with_header` の
-│   │                                    # 既存フェイルクローズ機構に委ねる）
+│   │                                    # 既存フェイルクローズ機構に委ねる）。`map_response` は
+│   │                                    # イシュー #434 で `Handler::handle_streaming`
+│   │                                    # によるストリーミング応答のヘッド（ステータス・
+│   │                                    # `Content-Type`・追加ヘッダ）にも適用対象を拡張した
+│   │                                    # （`write_streaming_response` がヘッド確定時に 1 回・
+│   │                                    # 登録順で適用。body は chunked framing がコアの直接
+│   │                                    # 書き出しループを経由するため反映されず破棄する契約。
+│   │                                    # `finalize_response` はストリーミング応答に引き続き
+│   │                                    # 未適用、`docs/design/interceptor-extension-point.md`
+│   │                                    # 参照）。
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む

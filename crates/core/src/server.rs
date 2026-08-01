@@ -1735,10 +1735,14 @@ pub(crate) async fn handle_connection_with_permit<S>(
         // ループ反復の残り（レスポンス書き込み・`on_response` 呼び出し・
         // keep-alive 判定）を `write_streaming_response` に委ね、下の通常
         // 一括応答経路（`handler.handle`・`finalize_response`・
-        // `response.serialize`）は使わない。`finalize_response`（CORS 等の
-        // レスポンス後処理型プラグイン）は `Response` 型を前提とするシームで
-        // あり `StreamingResponse` には適用しない（イシュー #319 計画時点の
-        // スコープ外、`.claude/rules/out-of-scope-tracking.md` 対象候補）。
+        // `response.serialize`）は使わない。`Interceptor::map_response`
+        // （イシュー #420）は `write_streaming_response` 内でヘッド確定時に
+        // 適用する（イシュー #434、`crate::interceptor` モジュール doc の
+        // 「ストリーミング応答への適用」節を参照）。`finalize_response`
+        // （CORS 等のレスポンス後処理型プラグイン）は `Response` 型を前提と
+        // するシームであり引き続き `StreamingResponse` には適用しない
+        // （イシュー #319 計画時点のスコープ外を維持、
+        // `.claude/rules/out-of-scope-tracking.md` 対象候補）。
         if intercepted.is_none()
             && let Some(handler) = &server.handler
             && let Some(streaming) = handler.handle_streaming(&request.head, &request.body)
@@ -1849,6 +1853,16 @@ pub(crate) async fn handle_connection_with_permit<S>(
 /// 異なり、producer タスクが [`crate::streaming::BodyWriter`] 経由で送る
 /// チャンクを逐次ソケットへ書き出す。
 ///
+/// # `Interceptor::map_response` の適用（イシュー #434）
+///
+/// HTTP バージョン分岐前、ヘッド確定時に `server.interceptors` を登録順に
+/// 適用する（[`crate::interceptor::Interceptor::map_response`]）。反映される
+/// のは `status`・`Content-Type`・追加ヘッダのみで、mapped `Response` の
+/// body は反映不能なため明示的に破棄する。以降の HTTP バージョン別ヘッド
+/// 直列化・[`Response::is_bodyless_status`] 判定はすべて mapped 後の
+/// `head_response` を参照する（`crate::interceptor` モジュール doc の
+/// 「ストリーミング応答への適用」節を参照）。
+///
 /// # HTTP バージョン別の framing 選択
 ///
 /// - HTTP/1.1: [`Response::serialize_chunked_head`] で `Transfer-Encoding:
@@ -1904,12 +1918,37 @@ where
             .saturating_sub(started.elapsed())
     };
 
+    // ユーザー向けレスポンス改変拡張点（`Interceptor::map_response`、イシュー
+    // #420）をストリーミング応答のヘッド確定時に 1 回だけ適用する（イシュー
+    // #434）。通常応答経路（`handle_connection_with_permit` の
+    // `interceptors.iter().fold` 呼び出し）と同一の登録順逐次適用パターン。
+    //
+    // 適用範囲はステータス・ヘッダのみ。ストリーミング応答の実体は producer
+    // タスクが `BodyWriter` 経由で逐次供給し、chunked framing は本関数が
+    // `crate::streaming::{encode_chunk, encode_terminator}` で直接組み立てる
+    // ため（`Response::body` を経由しない）、`map_response` が返した
+    // `Response` の body は反映不能かつ反映してはならない。反映を許すと
+    // バックプレッシャ（bounded mpsc）・応答完全性契約（`finish` 省略時は
+    // 終端チャンクなしで打ち切りクローズ）と両立できず、body 全体の
+    // バッファリングが必要になり #319 の設計と矛盾する
+    // （`crate::interceptor` モジュール doc・`docs/design/
+    // interceptor-extension-point.md` を参照）。`serialize_chunked_head` /
+    // `serialize_streaming_head_http10` は `debug_assert!(self.body.is_empty())`
+    // を持つため、直列化前に必ずクリアする。
+    let mut head_response = Response::empty(streaming.status);
+    if let Some(content_type) = streaming.content_type {
+        head_response = head_response.with_content_type(content_type);
+    }
+    head_response = server
+        .interceptors
+        .iter()
+        .fold(head_response, |acc, interceptor| {
+            interceptor.map_response(head, acc)
+        });
+    head_response.body = Vec::new();
+
     if head.version == HttpVersion::Http10 {
         // HTTP/1.0: chunked framing を使わず、ヘッドは常に Connection: close。
-        let mut head_response = Response::empty(streaming.status);
-        if let Some(content_type) = streaming.content_type {
-            head_response = head_response.with_content_type(content_type);
-        }
         let head_bytes = head_response.serialize_streaming_head_http10();
         let write_timeout = DEFAULT_WRITE_TIMEOUT.min(remaining_lifetime(connection_started_at));
         if tokio::time::timeout(write_timeout, stream.write_all(&head_bytes))
@@ -1929,8 +1968,12 @@ where
         // ヘッダを持たないため誤終端の余地がない）。keep-alive は HTTP/1.0
         // では常に無効。応答は完走しているため `on_response` を呼ぶ
         // `Some` を返す（`None` は打ち切り・エラー専用の契約、上の doc の
-        // 「戻り値」節を参照）。
-        if Response::is_bodyless_status(streaming.status) {
+        // 「戻り値」節を参照）。判定は `map_response` 適用後のステータス
+        // （`head_response.status`）で行う（イシュー #434）。インターセプタが
+        // 例えば 200 → 204 へ書き換えた場合、ここでボディ送出をスキップする
+        // ことと「ヘッダ側で Transfer-Encoding を出力しない」ことが対で成立し、
+        // ヘッダとボディ有無の不整合によるレスポンス分割類の脅威を防ぐ。
+        if Response::is_bodyless_status(head_response.status) {
             return Some(false);
         }
 
@@ -1981,10 +2024,6 @@ where
         && connection_started_at.elapsed() < server.max_connection_lifetime
         && !shutdown_flag.load(Ordering::Relaxed);
 
-    let mut head_response = Response::empty(streaming.status);
-    if let Some(content_type) = streaming.content_type {
-        head_response = head_response.with_content_type(content_type);
-    }
     let head_bytes = head_response.serialize_chunked_head(keep_alive);
     let write_timeout = DEFAULT_WRITE_TIMEOUT.min(remaining_lifetime(connection_started_at));
     if tokio::time::timeout(write_timeout, stream.write_all(&head_bytes))
@@ -2004,7 +2043,7 @@ where
     // 応答の先頭と誤読されるレスポンス分割（キープアライブ接続上の
     // スマグリング）を招く。応答自体は完走しているため、通常の `End` と
     // 同じく `on_response` を発火させる `Some` を返す。
-    if Response::is_bodyless_status(streaming.status) {
+    if Response::is_bodyless_status(head_response.status) {
         return Some(
             keep_alive
                 && connection_started_at.elapsed() < server.max_connection_lifetime
@@ -3458,5 +3497,162 @@ GET /c HTTP/1.1\r\n\r\n",
             "HTTP/1.0 でも打ち切り（finish なし drop）では on_response を \
              呼ばないはず: {events:?}"
         );
+    }
+
+    // --- ストリーミング応答への Interceptor::map_response 適用（イシュー #434） ---
+
+    /// ストリーミング応答ヘッドへヘッダを追加する `Interceptor`。実際の
+    /// CORS/認可プラグイン等が `map_response` でヘッダ付与する典型例を模す。
+    struct AddHeaderInterceptor {
+        name: &'static str,
+        header: (&'static str, &'static str),
+    }
+    impl Interceptor for AddHeaderInterceptor {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn map_response(&self, _head: &RequestHead, response: Response) -> Response {
+            response
+                .with_header(self.header.0.to_string(), self.header.1.to_string())
+                .expect("test header は検証済み固定値")
+        }
+    }
+
+    /// `map_response` が返した `Response` の body を差し替える `Interceptor`。
+    /// ストリーミング応答では body が反映されず破棄されることを固定する
+    /// ためのテスト専用実装。
+    struct BodyInjectingInterceptor;
+    impl Interceptor for BodyInjectingInterceptor {
+        fn name(&self) -> &'static str {
+            "body-injecting"
+        }
+        fn map_response(&self, _head: &RequestHead, mut response: Response) -> Response {
+            response.body = b"INJECTED".to_vec();
+            response
+        }
+    }
+
+    /// ストリーミング応答のステータスを 204（bodyless）へ書き換える
+    /// `Interceptor`。レスポンス分割回帰テスト用。
+    struct RewriteToNoContentInterceptor;
+    impl Interceptor for RewriteToNoContentInterceptor {
+        fn name(&self) -> &'static str {
+            "rewrite-to-204"
+        }
+        fn map_response(&self, _head: &RequestHead, mut response: Response) -> Response {
+            response.status = 204;
+            response
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_map_response_adds_header_to_chunked_head() {
+        // `map_response` で追加したヘッダが chunked ヘッドに現れ、チャンク
+        // framing・終端チャンクは既存の後方互換テストと同様に不変であること。
+        let handler = StreamingHandler {
+            status: 200,
+            content_type: Some("text/plain"),
+            chunks: vec![b"foo", b"bar"],
+        };
+        let server = Server::new()
+            .handler(handler)
+            .interceptor(AddHeaderInterceptor {
+                name: "add-header",
+                header: ("X-Mapped", "1"),
+            });
+        let response = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("X-Mapped: 1\r\n"));
+        assert!(response.contains("Transfer-Encoding: chunked\r\n"));
+        assert!(response.contains("3\r\nfoo\r\n"));
+        assert!(response.contains("3\r\nbar\r\n"));
+        assert!(response.ends_with("0\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn streaming_map_response_body_is_discarded() {
+        // `map_response` が非空 body の `Response` を返しても、ワイヤに
+        // 現れるのは producer が送ったチャンクのみであること（body 破棄
+        // 契約の固定、`crate::interceptor` モジュール doc を参照）。
+        let handler = StreamingHandler {
+            status: 200,
+            content_type: None,
+            chunks: vec![b"real-chunk"],
+        };
+        let server = Server::new()
+            .handler(handler)
+            .interceptor(BodyInjectingInterceptor);
+        let response = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+
+        assert!(!response.contains("INJECTED"));
+        assert!(response.contains("a\r\nreal-chunk\r\n"));
+        assert!(response.ends_with("0\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn streaming_map_response_status_rewrite_to_bodyless_suppresses_framing() {
+        // 200 → 204 書き換え時、ステータス行が 204・Transfer-Encoding なし・
+        // 終端チャンクなしで応答が完結すること（レスポンス分割防止の回帰）。
+        let handler = StreamingHandler {
+            status: 200,
+            content_type: None,
+            chunks: vec![b"unreachable"],
+        };
+        let server = Server::new()
+            .handler(handler)
+            .interceptor(RewriteToNoContentInterceptor);
+        let response = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+
+        assert!(response.starts_with("HTTP/1.1 204 No Content\r\n"));
+        assert!(!response.contains("Transfer-Encoding"));
+        assert!(!response.contains("unreachable"));
+        assert!(response.ends_with("\r\n\r\n"));
+        assert!(!response.trim_end_matches("\r\n\r\n").ends_with('0'));
+    }
+
+    #[tokio::test]
+    async fn streaming_map_response_applies_on_http10_head() {
+        // HTTP/1.0 経路でも map_response のヘッダ改変が効くこと。
+        let handler = StreamingHandler {
+            status: 200,
+            content_type: Some("text/plain"),
+            chunks: vec![b"foo"],
+        };
+        let server = Server::new()
+            .handler(handler)
+            .interceptor(AddHeaderInterceptor {
+                name: "add-header-http10",
+                header: ("X-Mapped-10", "1"),
+            });
+        let response = roundtrip(&server, b"GET / HTTP/1.0\r\n\r\n").await;
+
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("X-Mapped-10: 1\r\n"));
+        assert!(response.contains("Connection: close\r\n"));
+        assert!(!response.contains("Transfer-Encoding"));
+        // HTTP/1.0 は生データを EOF 終端するため chunk framing を持たない。
+        assert!(response.ends_with("foo"));
+    }
+
+    #[tokio::test]
+    async fn streaming_without_interceptor_is_unaffected_by_map_response_wiring() {
+        // インターセプタ未登録時のストリーミング応答は従来と同一
+        // （後方互換、`crate::interceptor` モジュール doc の
+        // pay-for-what-you-use 節と対応）。
+        let handler = StreamingHandler {
+            status: 200,
+            content_type: Some("text/plain"),
+            chunks: vec![b"foo", b"bar"],
+        };
+        let server = Server::new().handler(handler);
+        let response = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("Transfer-Encoding: chunked\r\n"));
+        assert!(response.contains("Content-Type: text/plain\r\n"));
+        assert!(response.contains("3\r\nfoo\r\n"));
+        assert!(response.contains("3\r\nbar\r\n"));
+        assert!(response.ends_with("0\r\n\r\n"));
     }
 }
