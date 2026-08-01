@@ -119,3 +119,36 @@ async fn unrelated_path_falls_through_to_default_handler() {
     assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
     assert!(response.ends_with("ok"));
 }
+
+#[tokio::test]
+async fn config_built_via_core_reexport_executes_query() {
+    // イシュー #435: `fandhe_backend_core::plugin_graphql::GraphQlConfig`
+    // （プラグインクレートへの直接依存を追加しない再エクスポート経路）
+    // 経由で構築した設定でも、直接依存経路（上のテスト）と同一の配線・
+    // 応答になることを確認する（`plugin_static_boundary.rs` の
+    // `config_built_via_core_reexport_serves_file` と同型パターン、
+    // イシュー #421）。
+    let query = Object::new("Query").field(Field::new(
+        "hello",
+        TypeRef::named_nn(TypeRef::STRING),
+        |_ctx| FieldFuture::new(async move { Ok(Some(Value::from("world"))) }),
+    ));
+    let schema = Schema::build(query.type_name(), None, None)
+        .register(query)
+        .finish()
+        .expect("デモスキーマの構築は静的に妥当なので必ず成功する");
+    let config = fandhe_backend_core::plugin_graphql::GraphQlConfig::new(schema);
+    let server = Server::new().handler(NotCalledHandler).graphql(config);
+
+    let body = br#"{"query":"{ hello }"}"#;
+    let mut request = format!(
+        "POST /graphql HTTP/1.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    request.extend_from_slice(body);
+
+    let response = roundtrip(&server, &request).await;
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.contains(r#""hello":"world"#));
+}

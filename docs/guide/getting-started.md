@@ -29,11 +29,14 @@ cargo add fandhe-backend-core --features websocket
 本ページ 5 節参照）。feature を何も指定しない場合、`fandhe-backend-plugin-*` の
 依存・コードは一切バイナリに含まれません（pay-for-what-you-use、
 [`.claude/rules/pay-for-what-you-use.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/.claude/rules/pay-for-what-you-use.md)）。
-`static` / `compression` feature については `Server::static_files` /
-`Server::compression` へ渡す設定型（`StaticFilesConfig` / `CompressionConfig`）も
-`fandhe_backend_core::plugin_static` / `plugin_compression` として再エクスポートされて
-おり、対応するプラグインクレートへの直接依存を追加する必要はありません
-（**次回の crates.io リリース以降に反映**され、現行公開版 v0.1.0 には未収録です）。
+全設定登録型 feature（`websocket` / `graphql` / `cors` / `tracing` / `openapi` /
+`webrtc` / `webrtc-proxy` / `static` / `compression`）について、
+`Server::<feature>()` 系メソッドへ渡す設定型（`WebSocketConfig` / `GraphQlConfig` /
+`CorsConfig` / `TracingConfig` / `OpenApiDoc` / `WebRtcConfig` / `ProxyConfig` /
+`StaticFilesConfig` / `CompressionConfig`）は `fandhe_backend_core::plugin_<name>`
+として再エクスポートされており、対応するプラグインクレートへの直接依存を
+追加する必要はありません（**次回の crates.io リリース以降に反映**され、
+現行公開版 v0.1.0 には未収録です）。
 
 `cargo new` の代わりに雛形から始めることもできます。複数 feature を組み合わせた
 実運用形の雛形は
@@ -110,13 +113,13 @@ curl -v http://127.0.0.1:3000/missing     # 404 応答（未登録パス）
 | feature | 提供プラグイン | 概要 |
 |---------|---------------|------|
 | （なし・既定） | — | HTTP/1.1 コア + ルーティングのみ |
-| `websocket` | `fandhe-backend-plugin-websocket` | RFC 6455 ハンドシェイク + フレーミング（`UpgradeHandler` 経由） |
-| `graphql` | `fandhe-backend-plugin-graphql` | `POST /graphql` パスインターセプト + `async-graphql` 実行 |
-| `webrtc-proxy` | `fandhe-backend-plugin-webrtc-proxy` | WebRTC シグナリングを別プロセスに切り出すプロキシ型（MVP 推奨） |
-| `webrtc` | `fandhe-backend-plugin-webrtc` | in-process WebRTC（`webrtc-rs` 直接依存、攻撃表面が大きいため通常は `webrtc-proxy` を推奨） |
-| `tracing` | `fandhe-backend-plugin-tracing` | サンプリング付き可観測性（`Middleware` 経由） |
-| `openapi` | `fandhe-backend-plugin-openapi` | `Server::openapi()` / `openapi_with(doc)` 登録時のみ `GET /openapi.json` / `GET /openapi.yaml` を配信 |
-| `cors` | `fandhe-backend-plugin-cors` | `Server::cors(config)` 登録時のみ実リクエスト応答へ CORS ヘッダを付与（プリフライトは `Router::options_fallback` で配線） |
+| `websocket` | `fandhe-backend-plugin-websocket` | RFC 6455 ハンドシェイク + フレーミング（`UpgradeHandler` 経由）。設定型 `WebSocketConfig` は `fandhe_backend_core::plugin_websocket` からも参照可能 |
+| `graphql` | `fandhe-backend-plugin-graphql` | `POST /graphql` パスインターセプト + `async-graphql` 実行。設定型 `GraphQlConfig` は `fandhe_backend_core::plugin_graphql` からも参照可能 |
+| `webrtc-proxy` | `fandhe-backend-plugin-webrtc-proxy` | WebRTC シグナリングを別プロセスに切り出すプロキシ型（MVP 推奨）。設定型 `ProxyConfig` は `fandhe_backend_core::plugin_webrtc_proxy` からも参照可能 |
+| `webrtc` | `fandhe-backend-plugin-webrtc` | in-process WebRTC（`webrtc-rs` 直接依存、攻撃表面が大きいため通常は `webrtc-proxy` を推奨）。設定型 `WebRtcConfig` は `fandhe_backend_core::plugin_webrtc` からも参照可能 |
+| `tracing` | `fandhe-backend-plugin-tracing` | サンプリング付き可観測性（`Middleware` 経由）。設定型 `TracingConfig` は `fandhe_backend_core::plugin_tracing` からも参照可能 |
+| `openapi` | `fandhe-backend-plugin-openapi` | `Server::openapi()` / `openapi_with(doc)` 登録時のみ `GET /openapi.json` / `GET /openapi.yaml` を配信。設定型 `OpenApiDoc` は `fandhe_backend_core::plugin_openapi` からも参照可能 |
+| `cors` | `fandhe-backend-plugin-cors` | `Server::cors(config)` 登録時のみ実リクエスト応答へ CORS ヘッダを付与（プリフライトは `Router::options_fallback` で配線）。設定型 `CorsConfig` は `fandhe_backend_core::plugin_cors` からも参照可能 |
 | `compression` | `fandhe-backend-plugin-compression` | `Server::compression(config)` 登録時のみ条件を満たすレスポンスを gzip 圧縮。設定型 `CompressionConfig` は `fandhe_backend_core::plugin_compression` からも参照可能 |
 | `static` | `fandhe-backend-plugin-static` | `Server::static_files(config)` 登録時のみ静的ファイルを `GET` 配信（二層防御のパストラバーサル対策付き）。設定型 `StaticFilesConfig` は `fandhe_backend_core::plugin_static` からも参照可能 |
 

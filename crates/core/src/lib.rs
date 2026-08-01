@@ -52,7 +52,33 @@
 //!   で登録した `fandhe_backend_plugin_websocket::WebSocketConfig` の指すパス（既定
 //!   `/ws`）への `GET` + `Upgrade: websocket` を `UpgradeHandler` 拡張点経由で
 //!   検知し、`fandhe_backend_plugin_websocket::handle_upgrade` へ完全委譲する（RFC 6455
-//!   ハンドシェイク・フレーミングは `crates/plugin-websocket` 側の責務）。
+//!   ハンドシェイク・フレーミングは `crates/plugin-websocket` 側の責務）。設定型
+//!   `WebSocketConfig` は [`plugin_websocket`] モジュールとして再エクスポートし
+//!   （イシュー #435）、`fandhe-backend-plugin-websocket` へ直接依存せずに構築できる。
+//!   無効時（既定）は依存・コード・`unsafe` を一切含まない。
+//! - `graphql`（TASK-2.4 / #21）: `crates/plugin-graphql` を組み込み、
+//!   [`server::Server::graphql`] へ渡す設定型 `GraphQlConfig` を
+//!   [`plugin_graphql`] モジュールとして再エクスポートする（イシュー #435）。
+//!   利用者は `fandhe-backend-plugin-graphql` へ直接依存せずに
+//!   `fandhe_backend_core::plugin_graphql::GraphQlConfig` を構築できる。
+//!   無効時（既定）は依存・コード・`unsafe` を一切含まない。
+//! - `cors`（イシュー #305）: `crates/plugin-cors` を組み込み、
+//!   [`server::Server::cors`] へ渡す設定型 `CorsConfig` を
+//!   [`plugin_cors`] モジュールとして再エクスポートする（イシュー #435）。
+//!   利用者は `fandhe-backend-plugin-cors` へ直接依存せずに
+//!   `fandhe_backend_core::plugin_cors::CorsConfig` を構築できる。
+//!   無効時（既定）は依存・コード・`unsafe` を一切含まない。
+//! - `tracing`（TASK-10.1 / #56）: `crates/plugin-tracing` を組み込み、
+//!   [`server::Server::tracing`] へ渡す設定型 `TracingConfig` を
+//!   [`plugin_tracing`] モジュールとして再エクスポートする（イシュー #435）。
+//!   利用者は `fandhe-backend-plugin-tracing` へ直接依存せずに
+//!   `fandhe_backend_core::plugin_tracing::TracingConfig` を構築できる。
+//!   無効時（既定）は依存・コード・`unsafe` を一切含まない。
+//! - `openapi`（TASK-2.1 / #256）: `crates/plugin-openapi` を組み込み、
+//!   [`server::Server::openapi_with`] へ渡す設定型 `OpenApiDoc` を
+//!   [`plugin_openapi`] モジュールとして再エクスポートする（イシュー #435）。
+//!   利用者は `fandhe-backend-plugin-openapi` へ直接依存せずに
+//!   `fandhe_backend_core::plugin_openapi::OpenApiDoc` を構築できる。
 //!   無効時（既定）は依存・コード・`unsafe` を一切含まない。
 //! - `static`（イシュー #318）: `crates/plugin-static` を組み込み、
 //!   [`server::Server::static_files`] へ渡す設定型 `StaticFilesConfig` を
@@ -66,6 +92,10 @@
 //!   利用者は `fandhe-backend-plugin-compression` へ直接依存せずに
 //!   `fandhe_backend_core::plugin_compression::CompressionConfig` を構築できる。
 //!   無効時（既定）は依存・コード・`unsafe` を一切含まない。
+//!
+//! `webrtc` / `webrtc-proxy` の設定型 `WebRtcConfig` / `ProxyConfig` も同様に
+//! それぞれ [`plugin_webrtc`] / [`plugin_webrtc_proxy`] モジュールとして
+//! 再エクスポートする（イシュー #435）。
 //!
 //! # 今後のタスクとの対応
 //!
@@ -179,6 +209,194 @@ pub use fandhe_backend_plugin_static as plugin_static;
 /// ```
 #[cfg(feature = "compression")]
 pub use fandhe_backend_plugin_compression as plugin_compression;
+
+/// WebSocket プラグイン（`crates/plugin-websocket`）の再エクスポート
+/// （`websocket` feature 限定、イシュー #435。#421 で `static` /
+/// `compression` に導入したパターンの水平展開）。
+///
+/// [`server::Server::websocket`] へ渡す [`WebSocketConfig`]（および
+/// `WsMessageHandler` 等の付随型）を、`fandhe-backend-plugin-websocket` への
+/// 直接依存を追加せずに構築できるようにする唯一の目的で存在する薄い
+/// 再エクスポート（`plugin_static` と同一の whole-crate パターン）。
+/// アップグレードハンドラ本体（`handle_upgrade` 等）はコア内部の
+/// `crate::server` の `UpgradeHandler` アダプタから呼ばれる実装詳細であり、
+/// 本モジュール経由での利用は想定しない。
+///
+/// [`WebSocketConfig`]: fandhe_backend_plugin_websocket::WebSocketConfig
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_core::plugin_websocket::WebSocketConfig;
+///
+/// let config = WebSocketConfig::default();
+/// assert_eq!(config.path, "/ws");
+/// ```
+#[cfg(feature = "websocket")]
+pub use fandhe_backend_plugin_websocket as plugin_websocket;
+
+/// GraphQL プラグイン（`crates/plugin-graphql`）の再エクスポート
+/// （`graphql` feature 限定、イシュー #435）。
+///
+/// [`server::Server::graphql`] へ渡す [`GraphQlConfig`] を、
+/// `fandhe-backend-plugin-graphql` への直接依存を追加せずに構築できるように
+/// する唯一の目的で存在する薄い再エクスポート（`plugin_static` と同一の
+/// whole-crate パターン）。クエリ実行本体（`try_handle_graphql` 等）はコア
+/// 内部の `crate::plugin::try_intercept` シームから呼ばれる実装詳細であり、
+/// 本モジュール経由での利用は想定しない。クエリ深さ・複雑度制限は
+/// [`GraphQlConfig::new`] の doc のとおりスキーマ登録者（呼び出し元）の責務
+/// のまま変わらない。
+///
+/// [`GraphQlConfig`]: fandhe_backend_plugin_graphql::GraphQlConfig
+/// [`GraphQlConfig::new`]: fandhe_backend_plugin_graphql::GraphQlConfig::new
+///
+/// # Examples
+///
+/// ```
+/// use async_graphql::Value;
+/// use async_graphql::dynamic::{Field, FieldFuture, Object, Schema, TypeRef};
+/// use fandhe_backend_core::plugin_graphql::GraphQlConfig;
+///
+/// let query = Object::new("Query").field(Field::new(
+///     "hello",
+///     TypeRef::named_nn(TypeRef::STRING),
+///     |_ctx| FieldFuture::new(async move { Ok(Some(Value::from("world"))) }),
+/// ));
+/// let schema = Schema::build(query.type_name(), None, None)
+///     .register(query)
+///     .finish()
+///     .unwrap();
+/// let _config = GraphQlConfig::new(schema);
+/// ```
+#[cfg(feature = "graphql")]
+pub use fandhe_backend_plugin_graphql as plugin_graphql;
+
+/// CORS プラグイン（`crates/plugin-cors`）の再エクスポート
+/// （`cors` feature 限定、イシュー #435）。
+///
+/// [`server::Server::cors`] へ渡す [`CorsConfig`]（および
+/// `CorsConfigBuilder` 等の付随型）を、`fandhe-backend-plugin-cors` への
+/// 直接依存を追加せずに構築できるようにする唯一の目的で存在する薄い
+/// 再エクスポート（`plugin_static` と同一の whole-crate パターン）。ヘッダ
+/// 付与本体（`apply_cors_headers` 等）はコア内部の
+/// `crate::plugin::finalize_response` シームから呼ばれる実装詳細であり、
+/// 本モジュール経由での利用は想定しない。プリフライト用 `preflight_response`
+/// は利用者が `Router::options_fallback` へ直接配線する契約（`plugin-cors`
+/// crate doc 参照）も本再エクスポート経由でそのまま利用できる。
+///
+/// [`CorsConfig`]: fandhe_backend_plugin_cors::CorsConfig
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_core::plugin_cors::CorsConfig;
+///
+/// let config = CorsConfig::builder()
+///     .allow_origin("https://app.example.com")
+///     .build();
+/// assert!(config.is_ok());
+/// ```
+#[cfg(feature = "cors")]
+pub use fandhe_backend_plugin_cors as plugin_cors;
+
+/// 可観測性（トレーシング）プラグイン（`crates/plugin-tracing`）の再エクスポート
+/// （`tracing` feature 限定、イシュー #435）。
+///
+/// [`server::Server::tracing`] へ渡す [`TracingConfig`] を、
+/// `fandhe-backend-plugin-tracing` への直接依存を追加せずに構築できるように
+/// する唯一の目的で存在する薄い再エクスポート（`plugin_static` と同一の
+/// whole-crate パターン）。サンプリング・記録本体（`TracingLayer` 等）は
+/// コア内部の `Middleware` アダプタから呼ばれる実装詳細であり、本モジュール
+/// 経由での利用は想定しない。本再エクスポートはグローバルサブスクライバの
+/// 初期化を一切行わない設定構築のみを提供する。
+///
+/// [`TracingConfig`]: fandhe_backend_plugin_tracing::TracingConfig
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_core::plugin_tracing::TracingConfig;
+/// use std::num::NonZeroU64;
+///
+/// let config = TracingConfig::default();
+/// assert_eq!(config.sample_interval, NonZeroU64::new(100).unwrap());
+/// ```
+#[cfg(feature = "tracing")]
+pub use fandhe_backend_plugin_tracing as plugin_tracing;
+
+/// OpenAPI ドキュメント配信プラグイン（`crates/plugin-openapi`）の
+/// 再エクスポート（`openapi` feature 限定、イシュー #435）。
+///
+/// [`server::Server::openapi_with`] へ渡す [`OpenApiDoc`] を、
+/// `fandhe-backend-plugin-openapi` への直接依存を追加せずに構築できるように
+/// する唯一の目的で存在する薄い再エクスポート（`plugin_static` と同一の
+/// whole-crate パターン）。`GET /openapi.json` / `GET /openapi.yaml` の
+/// 配信本体はコア内部の `crate::plugin::try_intercept` シームから呼ばれる
+/// 実装詳細であり、本モジュール経由での利用は想定しない。
+///
+/// [`OpenApiDoc`]: fandhe_backend_plugin_openapi::OpenApiDoc
+/// [`server::Server::openapi_with`]: server::Server::openapi_with
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_core::plugin_openapi::OpenApiDoc;
+///
+/// let doc = OpenApiDoc::from_json(r#"{"openapi":"3.0.0"}"#);
+/// assert!(doc.is_ok());
+/// ```
+#[cfg(feature = "openapi")]
+pub use fandhe_backend_plugin_openapi as plugin_openapi;
+
+/// in-process WebRTC プラグイン（`crates/plugin-webrtc`）の再エクスポート
+/// （`webrtc` feature 限定、イシュー #435）。
+///
+/// [`server::Server::webrtc`] へ渡す [`WebRtcConfig`] を、
+/// `fandhe-backend-plugin-webrtc` への直接依存を追加せずに構築できるように
+/// する唯一の目的で存在する薄い再エクスポート（`plugin_static` と同一の
+/// whole-crate パターン）。シグナリング処理本体（`try_handle_rtc_offer` 等）
+/// はコア内部の `crate::plugin::try_intercept` シームから呼ばれる実装詳細
+/// であり、本モジュール経由での利用は想定しない。`webrtc-proxy` feature も
+/// 同時有効な場合は `webrtc-proxy` が優先される契約（`plugin::try_intercept`
+/// の doc）は本再エクスポートの追加では変わらない。
+///
+/// [`WebRtcConfig`]: fandhe_backend_plugin_webrtc::WebRtcConfig
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_core::plugin_webrtc::WebRtcConfig;
+///
+/// let config = WebRtcConfig::new();
+/// assert_eq!(config.max_offer_bytes(), 64 * 1024);
+/// ```
+#[cfg(feature = "webrtc")]
+pub use fandhe_backend_plugin_webrtc as plugin_webrtc;
+
+/// WebRTC シグナリングプロキシプラグイン（`crates/plugin-webrtc-proxy`）の
+/// 再エクスポート（`webrtc-proxy` feature 限定、イシュー #435）。
+///
+/// [`server::Server::webrtc_proxy`] へ渡す [`ProxyConfig`] を、
+/// `fandhe-backend-plugin-webrtc-proxy` への直接依存を追加せずに構築できる
+/// ようにする唯一の目的で存在する薄い再エクスポート（`plugin_static` と同一
+/// の whole-crate パターン）。転送処理本体（`try_handle_rtc_offer` /
+/// `forward_offer` 等）はコア内部の `crate::plugin::try_intercept` シームから
+/// 呼ばれる実装詳細であり、本モジュール経由での利用は想定しない。上流
+/// アドレスをリクエスト由来の値で決めない SSRF 対策（`ProxyConfig` の doc）
+/// も本再エクスポート経由でそのまま維持される。
+///
+/// [`ProxyConfig`]: fandhe_backend_plugin_webrtc_proxy::ProxyConfig
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_core::plugin_webrtc_proxy::ProxyConfig;
+///
+/// let config = ProxyConfig::new("127.0.0.1:9000");
+/// assert_eq!(config.upstream_addr(), "127.0.0.1:9000");
+/// ```
+#[cfg(feature = "webrtc-proxy")]
+pub use fandhe_backend_plugin_webrtc_proxy as plugin_webrtc_proxy;
 
 /// このクレートのバージョン文字列を返す。
 ///
