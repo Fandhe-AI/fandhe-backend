@@ -1,6 +1,6 @@
 [package]
 name = "fandhe-backend-plugin-webrtc-proxy"
-version = "0.2.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -23,7 +23,7 @@ workspace = true
 # に限定し、`webrtc-rs` 系クレートを一切含まない。`cargo tree -p
 # fandhe-backend-plugin-webrtc-proxy` で `webrtc` 系依存が 0 件であることを継続的に確認する。
 [dependencies]
-fandhe-backend-http = { path = "../http", version = "0.2.0" }
+fandhe-backend-http = { workspace = true }
 tokio = { version = "1", default-features = false, features = ["net", "io-util", "time"] }
 
 # 統合テスト（tests/proxy_e2e.rs）でモック上流サーバ・非同期テストランタイムを使うためのみ。

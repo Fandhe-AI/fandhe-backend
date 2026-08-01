@@ -58,7 +58,12 @@ fandhe-backend/
 │                            # docs サイト刷新（親 #384）の視覚確認・受け入れレポート（イシュー #399。
 │                            # ライト/ダーク × 複数解像度のスクリーンショット証跡 `assets/issue399/`・
 │                            # 実ブラウザ描画でのみ発見できた CSS カスケード順序バグの検出・修正記録）
-├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）
+├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）。
+│                            # `[workspace.package] version` + `[workspace.dependencies]`
+│                            # （内部 13 クレートを path + version で定義）で lockstep
+│                            # バージョン・path 依存の version 併記を一元管理し、各クレートは
+│                            # `version.workspace = true` + `{ workspace = true }` で継承する
+│                            # （イシュー #452。`docs/design/crates-io-release.md` 7.2 節参照）
 ├── rust-toolchain.toml    # stable + rustfmt/clippy
 ├── crates/                # cargo workspace
 │   ├── core                           # 最小コア。`webrtc-proxy`（TASK-2.1、#18）・`webrtc`

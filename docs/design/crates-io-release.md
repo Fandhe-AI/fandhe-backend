@@ -167,6 +167,36 @@ lockstep 方針に従い公開対象 13 クレートを 0.2.0 へ一括バンプ
   publish 完了後に `workflow_dispatch` で再実行し PASS を確認する（実施済み、
   結果は 8 節チェックリスト参照）
 
+### 7.2 version 一元管理への移行（イシュー #452）
+
+v0.2.0 バンプ（7.1 節）は公開対象 13 クレート + workspace 内 path 依存の
+`version` 併記を各クレートの Cargo.toml に分散したまま個別に書き換えており、
+書き換え箇所が多く漏れリスクが高かった。lockstep 方針（本節冒頭）を続ける前提で、
+root `Cargo.toml` の `[workspace.package] version` + `[workspace.dependencies]`
+（内部 13 クレートを `path` + `version` で定義）へ集約し、各クレートは
+`version.workspace = true` + `{ workspace = true }`（optional なものは
+`{ workspace = true, optional = true }`）でこれを継承する形へ統一した。
+
+- 対象は workspace メンバー 16 クレート全部（公開対象 13 + 恒久非公開 3
+  `axum-ref`・`docs-site`・`ws-load-client`）。恒久非公開 3 クレートも
+  `publish = false` のまま 0.2.0 へ追随させ、二重管理を残さない
+- `crates/http/fuzz` は root workspace から `exclude` された独立 workspace
+  のため workspace inheritance を使えず、`version = "0.0.0"` のまま対象外
+- `crates/plugin-hub-wiring` の dev-dependency `fandhe-backend-routes = { path
+  = "../routes" }`（version なし）は意図的に `[workspace.dependencies]` へ
+  含めず現状維持した。`workspace = true` 化すると version が付き、publish
+  時に strip されていた dev 専用依存が公開版 Cargo.toml の内容を変えて
+  しまうため（公開成果物の完全性維持を優先した安全側の判断）
+- **次回バンプの手順**: root `Cargo.toml` の `[workspace.package] version` 1 行
+  + `[workspace.dependencies]` の内部 13 クレートの `version` 値（14 箇所）を
+  書き換える。加えて standalone workspace の `templates/app`・`examples/with-*`
+  （workspace inheritance の対象外）の依存 `version` 併記、
+  `crates/plugin-openapi/openapi.json` の再生成、`CHANGELOG.md` は従来どおり
+  個別に更新する（7.1 節の手順から変わらない）
+- `[workspace.dependencies]` の `version` は `workspace.package.version` を
+  参照できない Cargo の仕様上、`[workspace.package] version` と別に保守する
+  必要があるが、変更が root `Cargo.toml` 1 ファイルに閉じる点は達成している
+
 ## 8. 公開前チェックリスト
 
 実際に publish を実行する際に確認すべき項目。

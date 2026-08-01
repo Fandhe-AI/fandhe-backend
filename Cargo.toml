@@ -31,6 +31,37 @@ exclude = ["crates/http/fuzz"]
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Fandhe-AI/fandhe-backend"
+# lockstep バージョニング（docs/design/crates-io-release.md 7 節）の一元管理点
+# （イシュー #452）。公開対象 13 クレート（http / routes / core / plugin-* 10 種）と
+# 恒久非公開 3 クレート（axum-ref / docs-site / ws-load-client）はすべて
+# `version.workspace = true` でこの値を継承する。次回バンプはこの 1 行 +
+# 下記 `[workspace.dependencies]` の `version` 値のみを書き換えればよい
+# （`crates/http/fuzz` は独立 workspace のため対象外、本ファイル冒頭のコメント参照）。
+version = "0.2.0"
+
+# workspace 内 path 依存の一元管理点（イシュー #452）。公開対象 13 クレート
+# （http / routes / core / plugin-* 10 種）を内部依存として参照する各クレートの
+# Cargo.toml は `{ workspace = true }`（optional なものは
+# `{ workspace = true, optional = true }`）でここを継承し、`path = "../.."` +
+# `version = "0.2.0"` 併記の重複記述を排除する。バンプ時は本表の 13 行の
+# `version` 値を上記 `[workspace.package] version` と揃えて書き換える
+# （`crates/plugin-hub-wiring` の dev-dependency `fandhe-backend-routes` は
+# publish 時に strip される dev 専用の version なし path 依存であり、公開
+# 成果物の内容を変えないため意図的に本表へ含めない）。
+[workspace.dependencies]
+fandhe-backend-http = { path = "crates/http", version = "0.2.0" }
+fandhe-backend-routes = { path = "crates/routes", version = "0.2.0" }
+fandhe-backend-core = { path = "crates/core", version = "0.2.0" }
+fandhe-backend-plugin-compression = { path = "crates/plugin-compression", version = "0.2.0" }
+fandhe-backend-plugin-cors = { path = "crates/plugin-cors", version = "0.2.0" }
+fandhe-backend-plugin-graphql = { path = "crates/plugin-graphql", version = "0.2.0" }
+fandhe-backend-plugin-hub-wiring = { path = "crates/plugin-hub-wiring", version = "0.2.0" }
+fandhe-backend-plugin-openapi = { path = "crates/plugin-openapi", version = "0.2.0" }
+fandhe-backend-plugin-static = { path = "crates/plugin-static", version = "0.2.0" }
+fandhe-backend-plugin-tracing = { path = "crates/plugin-tracing", version = "0.2.0" }
+fandhe-backend-plugin-webrtc = { path = "crates/plugin-webrtc", version = "0.2.0" }
+fandhe-backend-plugin-webrtc-proxy = { path = "crates/plugin-webrtc-proxy", version = "0.2.0" }
+fandhe-backend-plugin-websocket = { path = "crates/plugin-websocket", version = "0.2.0" }
 
 # workspace 全体の lint 既定値。各クレートの Cargo.toml で
 # `[lints] workspace = true` を指定して継承する。
