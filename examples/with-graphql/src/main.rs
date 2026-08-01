@@ -43,8 +43,8 @@
 use async_graphql::Value;
 use async_graphql::dynamic::{Field, FieldFuture, InputValue, Object, Schema, TypeRef};
 use fandhe_backend_core::Server;
+use fandhe_backend_core::plugin_graphql::GraphQlConfig;
 use fandhe_backend_http::response::Response;
-use fandhe_backend_plugin_graphql::GraphQlConfig;
 use fandhe_backend_routes::Router;
 
 /// `hello`（引数なし）・`echo(value: String!)` を持つ最小デモスキーマを組み立てる。

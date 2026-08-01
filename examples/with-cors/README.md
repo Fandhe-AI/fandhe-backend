@@ -9,7 +9,7 @@
 
 - `GET`/`POST /todos` の最小 ToDo API（`Arc<RwLock<Vec<Todo>>>` 共有状態）
 - CORS の 2 層配線:
-  1. `Router::options_fallback` へ `fandhe_backend_plugin_cors::preflight_response` を配線し、
+  1. `Router::options_fallback` へ `fandhe_backend_core::plugin_cors::preflight_response` を配線し、
      プリフライト（`OPTIONS` + `Origin` + `Access-Control-Request-Method`）を完結させる
   2. `Server::cors(CorsConfig)` を登録し、実リクエストへ `Access-Control-Allow-Origin` 等の
      ヘッダを付与する

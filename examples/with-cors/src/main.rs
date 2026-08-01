@@ -7,7 +7,7 @@
 //! の crate doc が述べる 2 層構成をそのまま示す:
 //!
 //! 1. `Router::options_fallback`（イシュー #304）へ
-//!    `fandhe_backend_plugin_cors::preflight_response` を配線し、プリフライトを
+//!    `fandhe_backend_core::plugin_cors::preflight_response` を配線し、プリフライトを
 //!    完結させる
 //! 2. `Server::cors(config)` を登録し、実リクエストへ CORS ヘッダを付与する
 //!    （`crate::plugin::finalize_response`、非公開シーム経由）
@@ -41,8 +41,8 @@
 //! ```
 
 use fandhe_backend_core::Server;
+use fandhe_backend_core::plugin_cors::{CorsConfig, preflight_response};
 use fandhe_backend_http::response::Response;
-use fandhe_backend_plugin_cors::{CorsConfig, preflight_response};
 use fandhe_backend_routes::Router;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
