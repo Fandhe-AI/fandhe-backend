@@ -19,7 +19,9 @@
 
 #![cfg(feature = "cors")]
 
-use fandhe_backend_core::{Server, handle_connection};
+use fandhe_backend_core::streaming::StreamingResponse;
+use fandhe_backend_core::{Handler, Server, handle_connection};
+use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
 use fandhe_backend_plugin_cors::{CorsConfig, preflight_response};
 use fandhe_backend_routes::Router;
@@ -186,4 +188,122 @@ async fn config_built_via_core_reexport_applies_cors_headers() {
 
     assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
     assert!(response.contains("Access-Control-Allow-Origin: https://app.example.com\r\n"));
+}
+
+// --- ストリーミング応答ヘッドへの CORS ヘッダ付与（イシュー #451） ---
+
+/// `handle_streaming` で単一チャンクを返すトイハンドラ。`Handler::handle`
+/// （通常応答経路）は呼ばれない前提で固定 599 応答を返す（`interceptor.rs`
+/// テストの `StreamingOkHandler` と同じ識別用パターン）。
+struct StreamingOkHandler;
+impl Handler for StreamingOkHandler {
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
+        Box::pin(std::future::ready(Response::empty(599)))
+    }
+
+    fn handle_streaming(&self, _head: &RequestHead, _body: &[u8]) -> Option<StreamingResponse> {
+        let (response, writer) = StreamingResponse::channel(200, Some("text/plain"), 4);
+        tokio::spawn(async move {
+            let _ = writer.send(b"chunk".to_vec()).await;
+            let _ = writer.finish().await;
+        });
+        Some(response)
+    }
+}
+
+#[tokio::test]
+async fn streaming_response_head_gains_cors_headers_for_allowed_origin() {
+    // `Server::cors` 登録済みでストリーミングハンドラを呼ぶ経路
+    // （`crate::plugin::finalize_streaming_head`、イシュー #451）が
+    // `write_streaming_response` のヘッドへ CORS ヘッダを付与し、
+    // chunked framing・body は無傷であることを確認する（受け入れ基準 2）。
+    let config = allowed_origin_config();
+    let server = Server::new().handler(StreamingOkHandler).cors(config);
+
+    let request = b"GET / HTTP/1.1\r\nOrigin: https://app.example.com\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+
+    // PoC-9 教訓: ステータスのみでなくヘッダ・body 全件を検証する。
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "response: {response}"
+    );
+    assert!(
+        response.contains("Access-Control-Allow-Origin: https://app.example.com\r\n"),
+        "response: {response}"
+    );
+    assert!(
+        response.contains("Vary: Origin\r\n"),
+        "response: {response}"
+    );
+    assert!(
+        response.contains("Transfer-Encoding: chunked\r\n"),
+        "response: {response}"
+    );
+    assert!(response.contains("5\r\nchunk\r\n"), "response: {response}");
+    assert!(response.ends_with("0\r\n\r\n"), "response: {response}");
+}
+
+#[tokio::test]
+async fn streaming_response_without_origin_header_is_unchanged() {
+    // `Origin` ヘッダなし（同一オリジンリクエスト）は `apply_cors_headers`
+    // 自体の既存契約により無改変（配線確認、`plugin_cors_boundary.rs` の
+    // `same_origin_request_without_origin_header_is_completely_unaffected`
+    // と同一原則）。
+    let config = allowed_origin_config();
+    let server = Server::new().handler(StreamingOkHandler).cors(config);
+
+    let request = b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "response: {response}"
+    );
+    assert!(
+        !response.contains("Access-Control-Allow-Origin"),
+        "response: {response}"
+    );
+    assert!(response.contains("5\r\nchunk\r\n"), "response: {response}");
+}
+
+#[tokio::test]
+async fn streaming_response_from_disallowed_origin_is_untouched() {
+    // 不許可オリジンはフェイルクローズで無改変（ブラウザ側でブロックさせる
+    // 設計、`plugin_cors_boundary.rs` の
+    // `actual_request_from_disallowed_origin_is_untouched` と同一原則）。
+    let config = allowed_origin_config();
+    let server = Server::new().handler(StreamingOkHandler).cors(config);
+
+    let request = b"GET / HTTP/1.1\r\nOrigin: https://evil.example\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "response: {response}"
+    );
+    assert!(
+        !response.contains("Access-Control-Allow-Origin"),
+        "response: {response}"
+    );
+}
+
+#[tokio::test]
+async fn streaming_response_with_cors_unregistered_is_unmodified() {
+    // `Server::cors` 未登録（`cors` feature は有効）は他の設定登録型
+    // プラグインと同じくフォールスルーする
+    // （`crate::plugin::finalize_streaming_head` の doc を参照）。
+    let server = Server::new().handler(StreamingOkHandler);
+
+    let request = b"GET / HTTP/1.1\r\nOrigin: https://app.example.com\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "response: {response}"
+    );
+    assert!(
+        !response.contains("Access-Control-Allow-Origin"),
+        "response: {response}"
+    );
 }

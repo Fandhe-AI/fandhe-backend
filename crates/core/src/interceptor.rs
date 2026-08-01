@@ -40,7 +40,10 @@
 //!      ヘッド確定時に同じく登録順で適用する。下の「ストリーミング応答への
 //!      適用」節を参照、イシュー #434）
 //! 5.5. plugin::finalize_response（CORS → 圧縮。map_response の後。ストリーミング
-//!      応答には未適用のまま、イシュー #319 のスコープ外指定を維持）
+//!      応答には未適用のまま。ストリーミング応答には代わりに
+//!      plugin::finalize_streaming_head（CORS のみ、圧縮は対象外）が
+//!      `write_streaming_response` のヘッド確定時に適用される、イシュー #451。
+//!      下の「ストリーミング応答への適用」節を参照）
 //! 6. レスポンス書き込み → Middleware::on_response
 //! ```
 //!
@@ -88,9 +91,15 @@
 //! （`Response::serialize_chunked_head` doc の RFC 9112 §6.3 コメントと同一
 //! 脅威）を構造的に防ぐ。
 //!
-//! `plugin::finalize_response`（CORS → 圧縮）はストリーミング応答には
-//! 引き続き適用しない（gzip はストリーム body に適用不能・CORS は別途設計が
-//! 必要なため、イシュー #319 のスコープ外指定を維持）。
+//! `plugin::finalize_response`（CORS → 圧縮を逐次適用する通常応答経路専用の
+//! シーム）自体はストリーミング応答には引き続き適用しない。代わりにイシュー
+//! #451 で `plugin::finalize_streaming_head`（`finalize_response` の第 4 の
+//! シーム）を新設し、`write_streaming_response` がヘッド確定時（上の
+//! `map_response` 適用の直後）に CORS ヘッダ付与のみを適用する。圧縮は
+//! gzip がストリーム body 全体を確定させる後処理であり、chunked framing を
+//! 直接組み立てるストリーミング設計（バックプレッシャ・打ち切りクローズ
+//! 契約）と両立できないため引き続き対象外（`crate::plugin::
+//! finalize_streaming_head` の doc を参照）。
 //!
 //! # pay-for-what-you-use との整合
 //!

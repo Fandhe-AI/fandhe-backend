@@ -15,13 +15,17 @@
 //! - `try_intercept` 応答（`graphql` feature 併用時のパスインターセプト型
 //!   プラグイン応答）にも同一の後処理が適用されることを確認する
 //!   （`crate::plugin::finalize_response` の doc の利点を実証）
+//! - ストリーミング応答（`Handler::handle_streaming`）は `crate::plugin::
+//!   finalize_streaming_head`（イシュー #451）を経由するが圧縮は意図的に
+//!   対象外であることを確認する（設計判断の回帰防止）
 //!
 //! feature 無効時の陰性対照は `plugin_compression_boundary_disabled.rs` を参照。
 
 #![cfg(feature = "compression")]
 
 use fandhe_backend_core::interceptor::Interceptor;
-use fandhe_backend_core::{Server, handle_connection};
+use fandhe_backend_core::streaming::StreamingResponse;
+use fandhe_backend_core::{Handler, Server, handle_connection};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
 use fandhe_backend_plugin_compression::CompressionConfig;
@@ -252,4 +256,58 @@ async fn interceptor_map_response_output_is_compressed() {
     let mut decoded = String::new();
     decoder.read_to_string(&mut decoded).unwrap();
     assert_eq!(decoded, "y".repeat(2048));
+}
+
+// --- ストリーミング応答は圧縮対象外（イシュー #451 の設計判断の回帰防止）---
+
+/// `handle_streaming` で閾値超過サイズのチャンクを返すトイハンドラ
+/// （`min_size(1)` の圧縮設定でも常に圧縮対象サイズになる、
+/// `crates/core/tests/interceptor.rs` の `StreamingOkHandler` と同型）。
+struct StreamingOkHandler;
+impl Handler for StreamingOkHandler {
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
+        Box::pin(std::future::ready(Response::empty(599)))
+    }
+
+    fn handle_streaming(&self, _head: &RequestHead, _body: &[u8]) -> Option<StreamingResponse> {
+        let (response, writer) = StreamingResponse::channel(200, Some("text/plain"), 4);
+        tokio::spawn(async move {
+            let _ = writer.send("x".repeat(2048).into_bytes()).await;
+            let _ = writer.finish().await;
+        });
+        Some(response)
+    }
+}
+
+#[tokio::test]
+async fn streaming_response_is_never_compressed() {
+    // `Server::compression` 登録済みでも `crate::plugin::
+    // finalize_streaming_head` は圧縮を適用しない（`finalize_streaming_head`
+    // の doc の設計判断を参照）。ヘッドに `Content-Encoding` が現れず、raw
+    // チャンクがそのまま届くことを確認する。
+    let config = CompressionConfig::builder().min_size(1).build();
+    let server = Server::new()
+        .handler(StreamingOkHandler)
+        .compression(config);
+
+    let request = b"GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n";
+    let raw = roundtrip_raw(&server, request).await;
+    let (head, body) = split_response(&raw);
+
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "head: {head}");
+    assert!(!head.contains("Content-Encoding"), "head: {head}");
+    assert!(
+        head.contains("Transfer-Encoding: chunked\r\n"),
+        "head: {head}"
+    );
+
+    // chunked framing: サイズ行（16 進 800 = 2048）+ 生チャンク + 終端。
+    let expected_chunk_size = format!("{:x}", "x".repeat(2048).len());
+    let body_text = String::from_utf8_lossy(&body);
+    assert!(
+        body_text.starts_with(&format!("{expected_chunk_size}\r\n")),
+        "body: {body_text}"
+    );
+    assert!(body_text.contains(&"x".repeat(2048)), "body: {body_text}");
+    assert!(body_text.ends_with("0\r\n\r\n"), "body: {body_text}");
 }

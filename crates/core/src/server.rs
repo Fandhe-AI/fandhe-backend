@@ -1738,11 +1738,15 @@ pub(crate) async fn handle_connection_with_permit<S>(
         // `response.serialize`）は使わない。`Interceptor::map_response`
         // （イシュー #420）は `write_streaming_response` 内でヘッド確定時に
         // 適用する（イシュー #434、`crate::interceptor` モジュール doc の
-        // 「ストリーミング応答への適用」節を参照）。`finalize_response`
-        // （CORS 等のレスポンス後処理型プラグイン）は `Response` 型を前提と
-        // するシームであり引き続き `StreamingResponse` には適用しない
-        // （イシュー #319 計画時点のスコープ外を維持、
-        // `.claude/rules/out-of-scope-tracking.md` 対象候補）。
+        // 「ストリーミング応答への適用」節を参照）。続けて
+        // `crate::plugin::finalize_streaming_head`（イシュー #451、
+        // `finalize_response` の第 4 のシーム）で CORS ヘッダ付与のみを
+        // 適用する。`finalize_response` 本体（CORS → 圧縮の逐次適用）は
+        // `Response` 型を前提とする通常応答経路専用のまま据え置き、圧縮は
+        // ストリーミング応答へ引き続き未適用とする（body 全体のバッファ
+        // リングが必要になり #319 の設計と矛盾するため意図的に対象外、
+        // `crate::plugin::finalize_streaming_head` の doc・
+        // `docs/design/plugin-boundary.md` 5.9.7 節を参照）。
         if intercepted.is_none()
             && let Some(handler) = &server.handler
             && let Some(streaming) = handler.handle_streaming(&request.head, &request.body)
@@ -1922,16 +1926,20 @@ where
     // #420）をストリーミング応答のヘッド確定時に 1 回だけ適用する（イシュー
     // #434）。通常応答経路（`handle_connection_with_permit` の
     // `interceptors.iter().fold` 呼び出し）と同一の登録順逐次適用パターン。
+    // 続けてレスポンス後処理型シーム（`crate::plugin::
+    // finalize_streaming_head`、イシュー #451。CORS ヘッダ付与のみ、圧縮は
+    // 対象外）を適用する（下の `finalize_streaming_head` 呼び出しを参照）。
     //
     // 適用範囲はステータス・ヘッダのみ。ストリーミング応答の実体は producer
     // タスクが `BodyWriter` 経由で逐次供給し、chunked framing は本関数が
     // `crate::streaming::{encode_chunk, encode_terminator}` で直接組み立てる
-    // ため（`Response::body` を経由しない）、`map_response` が返した
-    // `Response` の body は反映不能かつ反映してはならない。反映を許すと
-    // バックプレッシャ（bounded mpsc）・応答完全性契約（`finish` 省略時は
-    // 終端チャンクなしで打ち切りクローズ）と両立できず、body 全体の
-    // バッファリングが必要になり #319 の設計と矛盾する
-    // （`crate::interceptor` モジュール doc・`docs/design/
+    // ため（`Response::body` を経由しない）、`map_response` /
+    // `finalize_streaming_head` が返した `Response` の body は反映不能かつ
+    // 反映してはならない。反映を許すとバックプレッシャ（bounded mpsc）・
+    // 応答完全性契約（`finish` 省略時は終端チャンクなしで打ち切りクローズ）
+    // と両立できず、body 全体のバッファリングが必要になり #319 の設計と
+    // 矛盾する（`crate::interceptor` モジュール doc・`crate::plugin::
+    // finalize_streaming_head` の doc・`docs/design/
     // interceptor-extension-point.md` を参照）。`serialize_chunked_head` /
     // `serialize_streaming_head_http10` は `debug_assert!(self.body.is_empty())`
     // を持つため、直列化前に必ずクリアする。
@@ -1945,6 +1953,16 @@ where
         .fold(head_response, |acc, interceptor| {
             interceptor.map_response(head, acc)
         });
+
+    // レスポンス後処理型シーム（`crate::plugin::finalize_streaming_head`、
+    // イシュー #451）を `map_response` の直後・body クリアの前に適用する。
+    // 通常応答経路の順序（`map_response` → `finalize_response`）と一致させ、
+    // CORS ヘッダ付与は利用者インターセプタによる改変後の最終ヘッドに対して
+    // 行う。CORS はステータス・body に触れないヘッダのみの後処理のため、
+    // 直後の `is_bodyless_status` 判定・`debug_assert!(body.is_empty())`
+    // 契約には影響しない（`finalize_streaming_head` の doc を参照。圧縮は
+    // 意図的に未適用のまま）。
+    head_response = crate::plugin::finalize_streaming_head(server, head, head_response);
     head_response.body = Vec::new();
 
     if head.version == HttpVersion::Http10 {
