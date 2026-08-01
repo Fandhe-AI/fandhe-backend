@@ -107,6 +107,10 @@ const EXPECTED_PAGES: &[(&str, &str)] = &[
         "site/examples/with-websocket.md",
         "/examples/with-websocket/",
     ),
+    (
+        "site/examples/with-interceptor.md",
+        "/examples/with-interceptor/",
+    ),
     ("site/examples/templates-app.md", "/examples/templates-app/"),
 ];
 
