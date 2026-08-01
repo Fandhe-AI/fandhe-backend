@@ -147,6 +147,7 @@ fn require_org(authenticator: &Authenticator, head: &RequestHead) -> Result<Stri
         .map_err(|err| match err {
             TokenError::MissingOrgId => {
                 Response::new(403, br#"{"error":"tenant_scope_required"}"#.to_vec())
+                    .with_content_type("application/json")
             }
             TokenError::MissingToken
             | TokenError::Malformed
@@ -154,7 +155,8 @@ fn require_org(authenticator: &Authenticator, head: &RequestHead) -> Result<Stri
             | TokenError::MissingKeyId
             | TokenError::UnknownKeyId
             | TokenError::InvalidSignature
-            | TokenError::Expired => Response::new(401, br#"{"error":"invalid_token"}"#.to_vec()),
+            | TokenError::Expired => Response::new(401, br#"{"error":"invalid_token"}"#.to_vec())
+                .with_content_type("application/json"),
         })
 }
 
