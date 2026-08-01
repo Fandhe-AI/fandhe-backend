@@ -220,10 +220,16 @@ builder パターン）。
   より**前**に評価されるため、利用者は登録済みプラグインの応答をインターセプトで
   先取りできる（末尾スラッシュ 301 正規化のユースケース）
 - `map_response` は CORS ヘッダ付与・gzip 圧縮より**前**に適用されるため、書き換え後の
-  body に対して圧縮・ヘッダ付与が効く
-- `RequestGate` 拒否応答・パースエラー応答・Upgrade 委譲失敗応答・ストリーミング応答
-  （`Handler::handle_streaming`）には適用されない（fail-closed。既存の
-  `finalize_response` と同一の除外方針）
+  body に対して圧縮・ヘッダ付与が効く。ストリーミング応答（`Handler::handle_streaming`）
+  でも評価順序は同じ（`map_response` → CORS ヘッダ付与 → 明示 opt-in 時のみチャンク単位の
+  gzip 圧縮（HTTP/1.1 chunked 経路限定））だが、適用対象はヘッドのみである（後述）
+- `RequestGate` 拒否応答・パースエラー応答・Upgrade 委譲失敗応答には適用されない
+  （fail-closed。既存の `finalize_response` と同一の除外方針）
+- ストリーミング応答（`Handler::handle_streaming`）には、ヘッド確定時に 1 回だけ
+  登録順で適用される。反映されるのはステータス・`Content-Type`・追加ヘッダのみで、
+  chunked framing はコアが直接組み立てるため `map_response` が返した `Response` の
+  body は反映されず破棄される契約（詳細は
+  [`Interceptor` 契約リファレンス](../api/interceptor-api.md)の「ストリーミング応答への適用」節を参照）
 - `intercept`/`map_response` とも `Middleware` と同じ同期契約（同期ブロッキング I/O
   禁止）。カスタム 404 ページ等の静的コンテンツは起動時にメモリへプリロードしておく
 - リダイレクト（`intercept`）とレスポンスヘッダ付与（`map_response`）の最小配線例は

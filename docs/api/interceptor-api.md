@@ -54,7 +54,7 @@
 | 5 | パスインターセプト型プラグイン | `intercept` が `Some` を返した場合はスキップ |
 | 6 | `Handler::handle` / `handle_streaming` | 4・5 いずれかで確定済みならスキップ |
 | 7 | **`Interceptor::map_response`** | 登録順に逐次適用 |
-| 8 | レスポンス後処理型プラグイン | 通常応答: `finalize_response`（CORS → 圧縮の順で逐次適用）。ストリーミング応答: `finalize_streaming_head`（CORS ヘッダ付与のみ） |
+| 8 | レスポンス後処理型プラグイン | 通常応答: `finalize_response`（CORS → 圧縮の順で逐次適用）。ストリーミング応答: `finalize_streaming_head`（CORS ヘッダ付与のみ）の次段で、明示 opt-in 時のみ `prepare_streaming_compression`（チャンク単位の gzip 圧縮、HTTP/1.1 chunked 経路限定）を適用 |
 | 9 | レスポンス書き込み → `Middleware::on_response` | 登録順に全件呼び出し |
 
 評価位置の設計判断:
@@ -97,9 +97,12 @@
 `map_response` 適用後のステータスは以降のすべての判定（1xx/204/304 の body 送出
 スキップ含む）に一貫して使用される。レスポンス後処理型プラグインはストリーミング
 応答では `finalize_streaming_head`（CORS ヘッダ付与のみ）が `map_response` 適用
-直後のヘッドへ適用される。圧縮は body 全体を確定させる後処理でありストリーミング
-設計（バックプレッシャ・打ち切りクローズ契約）と両立できないため、ストリーミング
-応答には引き続き対象外である。
+直後のヘッドへ適用される。body 全体を前提とする一括圧縮（`finalize_response` 経由）
+は body 全体のバッファリングが必要でストリーミング設計（バックプレッシャ・打ち切り
+クローズ契約）と両立できないため引き続き対象外だが、`CompressionConfigBuilder::
+compress_streaming(true)` の明示 opt-in 時のみ、`finalize_streaming_head` の次段で
+チャンク単位のストリーミング gzip 圧縮（`prepare_streaming_compression`）が
+HTTP/1.1 chunked 経路限定で適用される（既定 OFF、HTTP/1.0 経路は常に identity）。
 
 ## 6. セキュリティ観点
 
