@@ -180,6 +180,14 @@ root `Cargo.toml` の `[workspace.package] version` + `[workspace.dependencies]`
 - 対象は workspace メンバー 16 クレート全部（公開対象 13 + 恒久非公開 3
   `axum-ref`・`docs-site`・`ws-load-client`）。恒久非公開 3 クレートも
   `publish = false` のまま 0.2.0 へ追随させ、二重管理を残さない
+- `crates/ws-load-client/Cargo.toml` は上記恒久非公開 3 クレートの 1 つで、
+  本移行に伴い `version` 併記行を `version.workspace = true` へ変更した
+  （拡張点閉包判定の E 分類対象。閉じない理由: WebSocket 負荷試験専用の
+  非公開バイナリクレートの Cargo.toml メタデータ変更であり、`crates/plugin-*`
+  の拡張点契約にもコアの拡張点実装にも影響しない。`extension-closure-check.sh`
+  の分類規則 A〜D が `crates/ws-load-client/**` を走査対象に含めていないことに
+  起因する機械的な E 判定で、`crates/axum-ref/Cargo.toml`・
+  `crates/docs-site/Cargo.toml` と同一の運用上のギャップ）
 - `crates/http/fuzz` は root workspace から `exclude` された独立 workspace
   のため workspace inheritance を使えず、`version = "0.0.0"` のまま対象外
 - `crates/plugin-hub-wiring` の dev-dependency `fandhe-backend-routes = { path
