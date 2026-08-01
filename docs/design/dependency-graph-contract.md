@@ -750,8 +750,10 @@ package/import 名の改名に続き、リポジトリ名・ドキュメント�
 （`crates/plugin-*` を含む）と、それらへの workspace 内 path 依存の `version` 併記
 （`crates/core` 等）・`templates/app`・`examples/with-*` の依存 `version` 併記を
 0.2.0 へ一括バンプする機械作業である。`crates/plugin-*/Cargo.toml` への変更を含む
-ため `scripts/extension-closure-gate.sh` の判定対象となり、以下 5 件が
-E（閉包違反候補）と判定された。
+ため `scripts/extension-closure-gate.sh` の判定対象となり、以下 6 件が
+E（閉包違反候補）と判定された（後続コミットで `examples/with-interceptor/Cargo.toml`
+の 0.2.0 追随バンプを追加したため、当初の 5 件に 1 件加わっている。詳細は本節末尾
+「追加コミット時点の追随」参照）。
 
 1. **対象コミット/PR**: PR #444（#437、HEAD sha
    `a6c2c2e5c9ebc4189d7cac400d8ca316bfa173e2`）
@@ -759,6 +761,7 @@ E（閉包違反候補）と判定された。
    - `examples/README.md`
    - `examples/with-cors/Cargo.toml`
    - `examples/with-graphql/Cargo.toml`
+   - `examples/with-interceptor/Cargo.toml`
    - `examples/with-websocket/Cargo.toml`
    - `templates/app/Cargo.toml`
 3. **閉じない理由**: `extension-closure-check.sh` の分類規則（A: `crates/plugin-*/**`、
@@ -768,8 +771,11 @@ E（閉包違反候補）と判定された。
    `templates/app`・`examples/with-cors`・`examples/with-graphql`・
    `examples/with-websocket` の依存 `version` 併記、および `examples/README.md`
    の案内文（`version = "0.1.0"` → `"0.2.0"`）を、対応する `crates/*` の公開
-   バージョンバンプに追随して更新したため、機械的に E 判定となった
-4. **正当性根拠**: 上記 5 件はいずれも `fandhe-backend-plugin-*`・`crates/core` の
+   バージョンバンプに追随して更新したため、機械的に E 判定となった。後続コミットで
+   `origin/main` マージにより取り込まれた `examples/with-interceptor/Cargo.toml`
+   （イシュー #433 で追加されたサンプル）の `fandhe-backend-*` 依存 `version` 併記が
+   0.1.0 のまま残存していたため同様に 0.2.0 へバンプし、同一理由で E 判定となった
+4. **正当性根拠**: 上記 6 件はいずれも `fandhe-backend-plugin-*`・`crates/core` の
    3 拡張点 trait（`Middleware` / `UpgradeHandler` / `RequestGate`）・`Interceptor`
    固定シームの契約・シグネチャを一切変更していない。`templates/app`・
    `examples/with-*` は root workspace 非メンバーの standalone crate
