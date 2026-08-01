@@ -15,12 +15,15 @@ publish = false
 # 見せたい機能（WebSocket）に必要な feature のみ有効化する。他 feature
 # （cors / compression / static / openapi 等）は本サンプルの焦点外のため
 # 有効化しない（pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
+#
+# プラグインクレートへの直接依存は持たない。`websocket` feature 経由で
+# `fandhe_backend_core::plugin_websocket` として再エクスポートされる
+# （イシュー #421・#435）ため、`main.rs` は core 経由のパスのみを参照する。
 fandhe-backend-core = { version = "0.2.0", path = "../../crates/core", features = [
     "websocket",
 ] }
 fandhe-backend-http = { version = "0.2.0", path = "../../crates/http" }
 fandhe-backend-routes = { version = "0.2.0", path = "../../crates/routes" }
-fandhe-backend-plugin-websocket = { version = "0.2.0", path = "../../crates/plugin-websocket" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 # `WsMessageHandler::on_message` の戻り値 `BoxFuture` を組み立てるために
 # 必要（`crates/plugin-websocket` 自身が同じ理由で依存しているのと同一）。

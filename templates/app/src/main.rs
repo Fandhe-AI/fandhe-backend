@@ -46,8 +46,8 @@
 //! ```
 
 use fandhe_backend_core::Server;
+use fandhe_backend_core::plugin_cors::{CorsConfig, preflight_response};
 use fandhe_backend_http::response::Response;
-use fandhe_backend_plugin_cors::{CorsConfig, preflight_response};
 use fandhe_backend_routes::Router;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -274,12 +274,12 @@ async fn main() -> std::io::Result<()> {
     // 案内する URL とも一致させる。
     let static_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static");
     let static_config =
-        fandhe_backend_plugin_static::StaticFilesConfig::builder("/index.html", &static_root)
+        fandhe_backend_core::plugin_static::StaticFilesConfig::builder("/index.html", &static_root)
             .build()
             .expect("templates/app/static/ はリポジトリに同梱されているため構築に成功する");
 
     let openapi_doc =
-        fandhe_backend_plugin_openapi::OpenApiDoc::from_json(include_str!("../openapi.json"))
+        fandhe_backend_core::plugin_openapi::OpenApiDoc::from_json(include_str!("../openapi.json"))
             .expect("templates/app/openapi.json は手書き検証済みの妥当な JSON オブジェクト");
 
     let server = Server::new()
@@ -290,7 +290,7 @@ async fn main() -> std::io::Result<()> {
         // CORS の後、body を確定させる最後の後処理として圧縮を適用する
         // （`Server::compression` の doc・`crates/plugin-compression` の
         // crate doc「圧縮は必ず最後」を参照）。既定しきい値のまま使う。
-        .compression(fandhe_backend_plugin_compression::CompressionConfig::builder().build())
+        .compression(fandhe_backend_core::plugin_compression::CompressionConfig::builder().build())
         .static_files(static_config)
         .openapi_with(openapi_doc)
         // graceful shutdown の待機上限（既定 30 秒から本テンプレートでは
@@ -339,8 +339,9 @@ mod tests {
         // `cargo test` の失敗として検出したいための最小ガード
         // （`OpenApiDoc::from_json` は構文検証 + トップレベルオブジェクト
         // 検証のみ行う、`crates/plugin-openapi/src/custom.rs` の doc を参照）。
-        let doc =
-            fandhe_backend_plugin_openapi::OpenApiDoc::from_json(include_str!("../openapi.json"));
+        let doc = fandhe_backend_core::plugin_openapi::OpenApiDoc::from_json(include_str!(
+            "../openapi.json"
+        ));
         assert!(doc.is_ok());
     }
 

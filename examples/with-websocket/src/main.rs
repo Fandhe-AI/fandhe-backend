@@ -3,7 +3,7 @@
 //!
 //! `crates/core/examples/ws_echo.rs` は負荷計測専用で既定の `EchoHandler` の
 //! ままだが、本サンプルは Issue #179 で追加された
-//! `fandhe_backend_plugin_websocket::handler::WsMessageHandler` の利用者向け
+//! `fandhe_backend_core::plugin_websocket::handler::WsMessageHandler` の利用者向け
 //! 配線例を示す（Next.js の `examples/` 方式、`examples/README.md` 参照）。
 //!
 //! [`PingPongEchoHandler`] は 3 通りの応答を返す:
@@ -42,11 +42,11 @@
 //! ハンドシェイク・メッセージ往復を自動検証する。
 
 use fandhe_backend_core::Server;
-use fandhe_backend_http::response::Response;
-use fandhe_backend_plugin_websocket::WebSocketConfig;
-use fandhe_backend_plugin_websocket::handler::{
+use fandhe_backend_core::plugin_websocket::WebSocketConfig;
+use fandhe_backend_core::plugin_websocket::handler::{
     WsHandlerError, WsMessage, WsMessageHandler, WsOutcome,
 };
+use fandhe_backend_http::response::Response;
 use fandhe_backend_routes::Router;
 use futures_util::future::BoxFuture;
 
