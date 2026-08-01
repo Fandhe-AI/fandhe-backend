@@ -44,6 +44,7 @@ cargo build --release --bin axum-ref
 | `bench-footprint.sh` | 起動時間・アイドル RSS・リリースバイナリサイズ |
 | `bench-accept.sh` | 上記 3 スクリプトを axum-ref（baseline）・コア側（対象）の順に実行し、比率・絶対差を算出して REQ-1・NFR-1・NFR-2 の基準で判定する受け入れテスト（TASK-1.6-1、#71） |
 | `bench-ws-load.sh` | 10,000 同時 WebSocket 接続の確立成功率・接続あたり RSS 増分（fullscratch/axum 比）・線形性を計測する負荷試験ハーネス（TASK-4.3、#24） |
+| `compression-blocking-bench.sh` | `plugin-compression` の gzip 圧縮本体（`compress_body`）所要時間（body サイズ別）と `spawn_blocking` ディスパッチ往復コストを比較するマイクロベンチ。`blocking_threshold` しきい値決定・ストリーミング圧縮への適用要否判定の根拠（イシュー #468、`benches/reports/issue468-compression-blocking.md`） |
 
 共通関数は `lib/common.sh` に集約している（サーバ起動/停止・前提ツール検査・中央値算出・
 `RESULT_JSON` 機械可読出力ヘルパー・数値バリデーション）。

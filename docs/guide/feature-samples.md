@@ -217,6 +217,14 @@ feature を有効化した `fandhe-backend-core` から
 `fandhe_backend_core::plugin_compression::CompressionConfig` として同じ型を
 参照できます（次回の crates.io リリース以降に反映）。
 
+body 長が `blocking_threshold`（既定 64 KiB、`CompressionConfigBuilder::
+blocking_threshold` で調整可）以上の巨大応答は、gzip 圧縮を
+`tokio::task::spawn_blocking` へ切り離し、接続タスクの tokio ワーカ
+スレッドを長時間占有しないようにします。しきい値未満は従来どおり接続
+タスク上でインライン実行します（実測根拠・設計判断は
+`docs/design/plugin-boundary.md` の「巨大応答の gzip 圧縮を
+spawn_blocking へ切り離す」節を参照）。
+
 ## static（`fandhe-backend-plugin-static`）
 
 SPA フロントエンド等の静的ファイルを配信するプラグインです

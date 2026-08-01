@@ -5,6 +5,26 @@
 （詳細は [`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7 節）。
 恒久非公開クレート（`axum-ref` / `ws-load-client` / `docs-site`）はこの一覧に含めない。
 
+## [Unreleased]
+
+### Added
+
+- `fandhe-backend-plugin-compression`: `CompressionConfigBuilder::blocking_threshold`
+  （既定 64 KiB）を追加し、`apply_compression` を `plan_compression` /
+  `compress_body` / `attach_compressed` の 3 関数へ分割公開（イシュー
+  [#468](https://github.com/Fandhe-AI/fandhe-backend/issues/468)）
+
+### Changed
+
+- `fandhe-backend-core`: `finalize_response`（非公開シーム）が body 長
+  `blocking_threshold` 以上の gzip 圧縮を `tokio::task::spawn_blocking` へ
+  切り離すようになりました。接続タスクの tokio ワーカスレッドが巨大応答の
+  圧縮で長時間占有され他タスクのテールレイテンシへ波及する問題への対処
+  （しきい値未満は従来どおりインライン実行、応答は不変。実測根拠は
+  `benches/reports/issue468-compression-blocking.md`・`docs/design/
+  plugin-boundary.md` 5.10.7 節、イシュー
+  [#468](https://github.com/Fandhe-AI/fandhe-backend/issues/468)）
+
 ## [0.2.0] - 2026-08-01
 
 イシュー [#437](https://github.com/Fandhe-AI/fandhe-backend/issues/437) で公開対象

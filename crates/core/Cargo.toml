@@ -261,6 +261,17 @@ required-features = ["cors"]
 name = "compression_demo"
 required-features = ["compression"]
 
+# `examples/compression_blocking_micro_bench.rs`（イシュー #468）は
+# `fandhe_backend_plugin_compression::compress_body`（optional dep 経由）を
+# 直接使うため、`compression` feature 無効時に `cargo build --workspace
+# --all-targets` 等がコンパイル対象へ含めて失敗しないよう
+# `required-features` で明示的にゲートする（`compression_demo` と同一
+# パターン。production コード変更を含まない計測専用 example、
+# `benches/compression-blocking-bench.sh` から呼ばれる）。
+[[example]]
+name = "compression_blocking_micro_bench"
+required-features = ["compression"]
+
 # `examples/static_demo.rs`（イシュー #318）は `fandhe-backend-plugin-static`（optional dep）を
 # 直接使うため、`static` feature 無効時に `cargo build --workspace --all-targets` 等が
 # コンパイル対象へ含めて失敗しないよう `required-features` で明示的にゲートする

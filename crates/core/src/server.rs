@@ -1811,7 +1811,7 @@ pub(crate) async fn handle_connection_with_permit<S>(
         // 同一の後処理を適用する（`crate::plugin::finalize_response` の doc を
         // 参照）。`RequestGate` 拒否応答・パースエラー応答（本関数内の別の
         // 送出経路）は意図的に通さない。
-        let response = crate::plugin::finalize_response(server, &request.head, response);
+        let response = crate::plugin::finalize_response(server, &request.head, response).await;
 
         // #70 Bugbot 指摘（Stale keep-alive after lifetime）: 上の `keep_alive` は
         // `Handler::handle` 呼び出し前、`on_request` 直後の経過時間で決定している。

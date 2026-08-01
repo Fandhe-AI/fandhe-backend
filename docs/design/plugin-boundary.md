@@ -710,8 +710,8 @@ PoC-3・5.7.4 節）は I/O 待ちで tokio ワーカスレッドを占有する
 なるわけではなく、作業量はコア既存のリクエストボディサイズ上限
 （`fandhe_backend_http::body::MAX_BODY_BYTES`）・ハンドラの生成物サイズに
 より有界という前提の上に成り立つ。巨大応答の圧縮を tokio ワーカから
-切り離す `spawn_blocking` 化は引き続きスコープ外とし、
-`.claude/rules/out-of-scope-tracking.md` に従い後続課題として追跡する。
+切り離す `spawn_blocking` 化はイシュー #468 で実装した（5.10.7 節を参照。
+本節が見送っていた後続課題を実測ベースで解消した）。
 チャンク単位のストリーミング圧縮自体はイシュー #461 で実装済み（5.10.6
 節を参照。#319 のレスポンス側ストリーミング送信・イシュー #451 の
 `finalize_streaming_head` 新設に依存していたため、両者の完了後に着手した）。
@@ -766,6 +766,63 @@ gzip エンコーダ内部状態（定数有界）+ 変換中の 1 チャンク�
 `StreamingBodyEncoder::transform` を通してから chunked framing する。
 `#[cfg(feature = "compression")]` は本型・本関数の内部にのみ閉じ、
 `write_streaming_response` 本体を cfg-free に保つ既存原則（PoC-3）を維持する。
+
+### 5.10.7 巨大応答の gzip 圧縮を spawn_blocking へ切り離す（イシュー #468）
+
+5.10.3 節が見送っていた「巨大応答の圧縮による tokio ワーカスレッド長時間
+占有」を、マイクロベンチ実測に基づき解消した。実測データ・再現手順は
+`benches/reports/issue468-compression-blocking.md` を参照。
+
+**設計判断: `spawn_blocking` の起動・await はコア側（`crates/core`）に
+閉じ、`plugin-compression` に `tokio` 依存を追加しない。** `apply_compression`
+を「判定（`plan_compression`、軽量・同期）」「圧縮本体（`compress_body`、
+CPU バウンド純関数）」「反映（`attach_compressed`）」の 3 関数へ分割
+公開し、`crates/core` の `finalize_response`（本イシューで `async fn` へ
+変更）が `plan_compression` の判定結果と body 長を見て、しきい値
+（`CompressionConfigBuilder::blocking_threshold`、既定 64 KiB）以上のときの
+み `compress_body` を `tokio::task::spawn_blocking` クロージャから呼ぶ。
+理由: `plugin-compression` は 5.10.5 節が明文化した「`http` + `flate2` のみ」
+という依存最小構成の下位層プラグインであり、`tokio`（ランタイム依存）を
+持ち込むと `Server::compression` 非経由の利用（テスト・別ランタイム統合）
+にも `tokio` ランタイム前提が波及する。コア側は既に tokio に全面依存し
+`finalize_response` の呼び出し元（`handle_connection_with_permit`）が
+async 文脈を持つため、オフロード判断・実行の責務をコア側へ集約するのが
+自然（pay-for-what-you-use、依存最小構成を維持したままオフロードを実現）。
+
+**しきい値（`blocking_threshold`、既定 64 KiB）の根拠**: 「圧縮時間が
+`spawn_blocking` 1 回のディスパッチ往復コストの約 10 倍以上になる最小
+サイズ」を基準に採用した。実測では 64 KiB 時点で圧縮時間（約 134µs）が
+ディスパッチコスト（約 13µs）の約 10.2 倍となり、この基準を満たす
+（`benches/reports/issue468-compression-blocking.md` 1〜3 節）。しきい値
+未満は従来どおり接続タスク上でインライン実行する（ディスパッチ
+オーバーヘッドが圧縮コストに対して相対的に大きくなり、切り離す利益が
+薄いため）。`usize::MAX` を指定すると実質的に現行相当（常時インライン）
+の挙動へ後退できる（利用者が計測なしで安全にオプトアウトできる設計、
+`CompressionConfigBuilder::blocking_threshold` の doc を参照）。
+
+**body の受け渡し（コピー最小化）**: オフロード時は body を
+`Arc<Vec<u8>>` で包み、`spawn_blocking` クロージャへは参照カウント増のみ
+（コピーなし）の `clone` を渡す。`join` 完了後は `Arc::try_unwrap` で元の
+`Vec<u8>` を回収する（通常経路ではクロージャ側の参照は圧縮完了時点で
+解放済みのため成功する。万一失敗した場合のみ `.clone()` へフォール
+バックし、追加コピーの発生を通常経路ではゼロにする）。
+
+**フェイルセーフ**: `spawn_blocking` が `Err`（クロージャ panic・runtime
+シャットダウン等、通常運用では発生しない）を返した場合は圧縮結果を空
+扱いにし、`attach_compressed` 既存のフェイルセーフ（圧縮結果が空なら
+無圧縮のまま返す）へ合流させる。`Content-Encoding: gzip` は
+`attach_compressed` が圧縮成功を確認した場合のみ付与するため、「gzip を
+広告して identity body を送る」応答完全性の不整合はオフロード経路でも
+構造上起こらない（`.claude/rules/security.md`）。
+
+**ストリーミング（チャンク単位）圧縮への不適用**: 同じ実測データから、
+`Handler::handle_streaming` のチャンク単位圧縮（5.10.6 節）への
+`spawn_blocking` 適用は不採用と判断した。典型的なチャンクサイズでは
+`encode_chunk`（増分エンコード）のコストが `spawn_blocking` のディスパッチ
+コストを下回りやすく、エンコーダ所有権をチャンクごとに move/return する
+実装複雑性に見合う効果が見込めないため（詳細根拠は `benches/reports/
+issue468-compression-blocking.md` 4 節を参照。将来ワークロードの実態に
+応じて再検討しうる、恒久的な決定ではない）。
 
 **設計判断**:
 
