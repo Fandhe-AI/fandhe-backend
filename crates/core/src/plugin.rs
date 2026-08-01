@@ -28,9 +28,14 @@
 //! できるよう構成した（`crates/plugin-compression/src/lib.rs` の crate doc
 //! を参照）。イシュー #451 で 4 つ目のシーム [`finalize_streaming_head`] を
 //! 追加し、`Handler::handle_streaming` によるストリーミング応答のヘッドへ
-//! CORS ヘッダ付与のみを適用できるようにした（圧縮は対象外、
-//! `finalize_streaming_head` の doc・`docs/design/plugin-boundary.md`
-//! 5.9.7 節を参照）。
+//! CORS ヘッダ付与を適用できるようにした（`finalize_streaming_head` の
+//! doc・`docs/design/plugin-boundary.md` 5.9.7 節を参照）。イシュー #461 で
+//! 5 つ目のシーム [`prepare_streaming_compression`] を追加し、body 全体を
+//! バッファリングしない専用エンコーダ（[`StreamingBodyEncoder`]）経由で
+//! チャンク単位のストリーミング gzip 圧縮を接続した
+//! （`prepare_streaming_compression` の doc・`crates/plugin-compression/
+//! src/lib.rs` の crate doc「チャンク単位のストリーミング gzip 圧縮」節を
+//! 参照）。
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::OwnedSemaphorePermit;
@@ -423,20 +428,24 @@ fn apply_cors(server: &Server, head: &RequestHead, response: Response) -> Respon
 /// 「`map_response` の後に `finalize_response`」という順序と揃える、
 /// `crate::interceptor` モジュール doc の評価順序一覧を参照）。
 ///
-/// # 適用範囲: CORS のみ・圧縮は対象外（設計判断、イシュー #451）
+/// # 適用範囲: CORS のみ（設計判断、イシュー #451）
 ///
-/// `cors` feature 有効かつ `Server::cors` 登録時のみ [`apply_cors`] を適用し、
-/// `compression` はストリーミング応答に**適用しない**。gzip は最終 body
-/// 全体を確定させる後処理であり、chunked framing がコアの直接書き出し
-/// ループを経由するストリーミング設計（bounded mpsc バックプレッシャ・
-/// `finish` 省略時は終端チャンクなしで打ち切りクローズという応答完全性
-/// 契約、`crate::streaming` モジュール doc）と両立できない。body 全体を
-/// バッファリングする必要が生じ、イシュー #319 が確立した設計を壊すため
-/// 意図的に対象外とする（`crate::interceptor` モジュール doc が
-/// `map_response` の body 改変を不採用にした判断と同根、
-/// `docs/design/plugin-boundary.md` 5.9.7 節を参照）。チャンク単位の
-/// ストリーミング圧縮は別課題（5.10.3 節、
-/// `.claude/rules/out-of-scope-tracking.md` 対象候補）。
+/// `cors` feature 有効かつ `Server::cors` 登録時のみ [`apply_cors`] を適用する。
+/// gzip 圧縮は body を確定させる後処理であり、通常応答経路
+/// （[`finalize_response`]）の `apply_compression`（body 全体前提）は
+/// chunked framing がコアの直接書き出しループを経由するストリーミング設計
+/// （bounded mpsc バックプレッシャ・`finish` 省略時は終端チャンクなしで
+/// 打ち切りクローズという応答完全性契約、`crate::streaming` モジュール doc）
+/// と両立できないため、本関数には接続しない（`crate::interceptor` モジュール
+/// doc が `map_response` の body 改変を不採用にした判断と同根、
+/// `docs/design/plugin-boundary.md` 5.9.7 節を参照）。
+///
+/// チャンク単位のストリーミング圧縮（イシュー #461）は body 全体を保持
+/// しない専用エンコーダ（[`fandhe_backend_plugin_compression::StreamingGzipEncoder`]）
+/// で実現するため、本関数（ヘッドの CORS 付与のみを担う）とは別の第 5 の
+/// シーム [`prepare_streaming_compression`] へ切り出した
+/// （`crate::server::write_streaming_response` が `finalize_streaming_head`
+/// 呼び出し直後・`serialize_chunked_head` 呼び出し前に呼ぶ）。
 ///
 /// `cors` feature 無効時・`Server::cors` 未登録時は `response` を無改変で
 /// 返す薄い関数となり、実行時コスト・依存追加をゼロに保つ
@@ -460,4 +469,122 @@ pub(crate) fn finalize_streaming_head(
     let _ = (server, head);
 
     response
+}
+
+/// [`prepare_streaming_compression`] が返す、ストリーミング応答 body の
+/// チャンク単位変換器（イシュー #461）。
+///
+/// `compression` feature 無効時、または圧縮が確定しなかった場合は
+/// identity（入力をそのまま返す）として振る舞う。`crate::server::
+/// write_streaming_response` 本体を cfg-free に保つ既存原則（PoC-3、本
+/// モジュール冒頭 doc）を守るため、`#[cfg(feature = "compression")]` は
+/// 本型の内部にのみ閉じる。
+#[cfg(feature = "compression")]
+pub(crate) struct StreamingBodyEncoder {
+    gzip: Option<fandhe_backend_plugin_compression::StreamingGzipEncoder>,
+}
+
+/// `compression` feature 無効時の [`StreamingBodyEncoder`]。フィールドを
+/// 持たず、`transform`/`finish` は入力をそのまま透過する薄い型
+/// （pay-for-what-you-use）。
+#[cfg(not(feature = "compression"))]
+pub(crate) struct StreamingBodyEncoder;
+
+#[cfg(feature = "compression")]
+impl StreamingBodyEncoder {
+    fn identity() -> Self {
+        Self { gzip: None }
+    }
+
+    fn gzip(encoder: fandhe_backend_plugin_compression::StreamingGzipEncoder) -> Self {
+        Self {
+            gzip: Some(encoder),
+        }
+    }
+
+    /// `data` を変換する。圧縮確定時は [`fandhe_backend_plugin_compression::
+    /// StreamingGzipEncoder::encode_chunk`] へ委譲し、未確定時は `data` を
+    /// そのまま返す。`None` はエンコーダ失敗を意味し、呼び出し元
+    /// （`write_streaming_response`）は書き込みエラーと同様に接続クローズを
+    /// 行う契約（`crates/plugin-compression/src/lib.rs` crate doc の
+    /// 「エンコーダ失敗時は接続クローズ」節を参照）。
+    pub(crate) fn transform(&mut self, data: Vec<u8>) -> Option<Vec<u8>> {
+        match self.gzip.as_mut() {
+            Some(encoder) => encoder.encode_chunk(&data).ok(),
+            None => Some(data),
+        }
+    }
+
+    /// 残余データ（圧縮確定時は gzip trailer 含む）を取り出しつつエンコーダを
+    /// 終端する。未確定時は空バイト列（送出不要の意）を返す。
+    pub(crate) fn finish(self) -> Option<Vec<u8>> {
+        match self.gzip {
+            Some(encoder) => encoder.finish().ok(),
+            None => Some(Vec::new()),
+        }
+    }
+}
+
+#[cfg(not(feature = "compression"))]
+impl StreamingBodyEncoder {
+    fn identity() -> Self {
+        Self
+    }
+
+    pub(crate) fn transform(&mut self, data: Vec<u8>) -> Option<Vec<u8>> {
+        Some(data)
+    }
+
+    pub(crate) fn finish(self) -> Option<Vec<u8>> {
+        Some(Vec::new())
+    }
+}
+
+/// ストリーミング応答（[`crate::server::Handler::handle_streaming`]）body の
+/// チャンク単位圧縮を確定させる、第 5 のシーム（イシュー #461、
+/// [`finalize_streaming_head`] の次段）。
+///
+/// `crate::server::write_streaming_response` が [`finalize_streaming_head`]
+/// （CORS ヘッダ付与）呼び出し直後・`Response::serialize_chunked_head`
+/// 呼び出し前に 1 回だけ呼ぶ。返す [`StreamingBodyEncoder`] を body 送出
+/// ループが `RecvOutcome::Chunk` ごとに適用する。
+///
+/// `compression` feature 有効かつ `Server::compression` 登録済みの場合のみ
+/// [`fandhe_backend_plugin_compression::begin_streaming_compression`] へ
+/// 委譲し（`compress_streaming` opt-in 判定は同関数内部が担う、
+/// `crates/plugin-compression/src/lib.rs` の doc を参照）、それ以外は
+/// ヘッドを無改変で返し identity エンコーダを渡す（`cors`・`graphql` 等と
+/// 同じ「設定登録型」フォールスルー、pay-for-what-you-use）。
+///
+/// # HTTP/1.0 経路には接続しない（設計判断、イシュー #461）
+///
+/// 呼び出し元は HTTP/1.1 chunked 経路でのみ本関数を呼ぶ契約
+/// （`crates/plugin-compression/src/lib.rs` の
+/// `begin_streaming_compression` doc「呼び出し契約」節を参照）。HTTP/1.0
+/// （EOF 終端）応答は識別子のまま送出する。
+pub(crate) fn prepare_streaming_compression(
+    server: &Server,
+    head: &RequestHead,
+    response: Response,
+) -> (Response, StreamingBodyEncoder) {
+    #[cfg(feature = "compression")]
+    {
+        if let Some(config) = server.compression_config() {
+            let (response, encoder) =
+                fandhe_backend_plugin_compression::begin_streaming_compression(
+                    head, config, response,
+                );
+            let encoder = match encoder {
+                Some(encoder) => StreamingBodyEncoder::gzip(encoder),
+                None => StreamingBodyEncoder::identity(),
+            };
+            return (response, encoder);
+        }
+    }
+
+    // feature 構成によっては `server`/`head` が未使用になりうる（他の
+    // シームと同じ理由。冒頭の doc を参照）。
+    let _ = (server, head);
+
+    (response, StreamingBodyEncoder::identity())
 }

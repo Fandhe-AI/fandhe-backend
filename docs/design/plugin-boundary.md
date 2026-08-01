@@ -616,7 +616,7 @@ graphql/openapi 応答が CORS 対象外になってしまう。「レスポン�
 素の関数ポインタで満たせるため、`crates/plugin-cors` は
 `fandhe-backend-routes` にも依存しない。
 
-### 5.9.7 ストリーミング応答ヘッドへの適用（イシュー #451、CORS のみ・圧縮は対象外）
+### 5.9.7 ストリーミング応答ヘッドへの適用（イシュー #451、CORS。圧縮の接続は #461・5.10.6 節）
 
 `Handler::handle_streaming`（イシュー #319）が返すストリーミング応答は
 `Response` 型を前提とする `finalize_response` の対象外のまま据え置き
@@ -631,19 +631,20 @@ finalize_streaming_head`（`finalize_response` の第 4 のシーム）を新設
 （`crate::plugin::apply_cors`）へ抽出し、二重実装による判定ロジックの
 乖離を防いだ（`.claude/rules/security.md` A01/A05「CORS 設定不備」対策）。
 
-**圧縮は意図的に対象外**とする。理由は 5.10.3 節が既に指摘するとおり、
-gzip 圧縮は「最終 body 全体を確定させる後処理」であり、`write_streaming_response`
-の chunked framing はコアが直接組み立て・producer タスクが `BodyWriter`
-経由で逐次供給する設計（バックプレッシャに bounded mpsc を使用、
-`finish` 省略時は終端チャンクなしで打ち切りクローズという応答完全性契約、
-`crate::streaming` モジュール doc）であるため、圧縮を適用するには body
-全体をバッファリングする必要が生じ、#319 が確立したストリーミング設計
-そのものを破壊する。この判断は `crate::interceptor` モジュール doc が
-`map_response` の body 改変を不採用にした判断（5.4 節相当）と同根であり、
-新規フック追加・全 body バッファリングという不採用選択肢を再検討した
-上で見送った。チャンク単位のストリーミング圧縮自体は 5.10.3 節が既に
-挙げている後続課題（#319 のストリーミング送信完了後に着手可能）に
-包含され、新たなスコープ外事項ではない。
+**圧縮は本シームには接続しない**。5.10.1 節の `finalize_response`（CORS →
+圧縮）が使う `apply_compression` は body 全体を前提とする実装であり、
+`write_streaming_response` の chunked framing はコアが直接組み立て・
+producer タスクが `BodyWriter` 経由で逐次供給する設計（バックプレッシャに
+bounded mpsc を使用、`finish` 省略時は終端チャンクなしで打ち切りクローズ
+という応答完全性契約、`crate::streaming` モジュール doc）であるため、
+`apply_compression` をそのまま適用するには body 全体をバッファリングする
+必要が生じ、#319 が確立したストリーミング設計そのものを破壊する
+（この判断は `crate::interceptor` モジュール doc が `map_response` の
+body 改変を不採用にした判断（5.4 節相当）と同根）。イシュー #461 は
+「body 全体を前提とする `apply_compression` を本シームへ接続する」という
+不採用選択肢ではなく、body を保持しない専用エンコーダによる**別の第 5 の
+シーム**（`crate::plugin::prepare_streaming_compression`）を新設する形で
+チャンク単位のストリーミング圧縮を実現した（5.10.6 節を参照）。
 
 CORS はステータス・body に触れないヘッダのみの後処理のため、
 `map_response` 適用後のステータスに基づく `is_bodyless_status` 判定
@@ -697,13 +698,11 @@ PoC-3・5.7.4 節）は I/O 待ちで tokio ワーカスレッドを占有する
 なるわけではなく、作業量はコア既存のリクエストボディサイズ上限
 （`fandhe_backend_http::body::MAX_BODY_BYTES`）・ハンドラの生成物サイズに
 より有界という前提の上に成り立つ。巨大応答の圧縮を tokio ワーカから
-切り離す `spawn_blocking` 化・チャンク単位のストリーミング圧縮は
-スコープ外とし、`.claude/rules/out-of-scope-tracking.md` に従い後続課題
-として追跡する（#319 のレスポンス側ストリーミング送信に依存するため、
-その完了後に着手可能になる。イシュー #451 で `finalize_streaming_head`
-がストリーミング応答へ CORS のみを適用する構成を確定させたが、圧縮を
-対象外とした判断・チャンク単位圧縮の後続課題としての位置づけは本節と
-共通、5.9.7 節を参照）。
+切り離す `spawn_blocking` 化は引き続きスコープ外とし、
+`.claude/rules/out-of-scope-tracking.md` に従い後続課題として追跡する。
+チャンク単位のストリーミング圧縮自体はイシュー #461 で実装済み（5.10.6
+節を参照。#319 のレスポンス側ストリーミング送信・イシュー #451 の
+`finalize_streaming_head` 新設に依存していたため、両者の完了後に着手した）。
 
 ### 5.10.4 BREACH 類似リスクと opt-in 設計の関係
 
@@ -726,6 +725,80 @@ TLS 上の圧縮応答で秘密情報と攻撃者制御入力が混在すると�
 と同一の非循環パターンであり、コア側が `optional = true` + `dep:` 構文で
 本クレートへ依存する（6.1 節の `scripts/dep-direction-check.sh` ホワイト
 リスト例外 6 を参照）。
+
+### 5.10.6 チャンク単位のストリーミング gzip 圧縮（イシュー #461）
+
+5.9.7 節・5.10.3 節が「圧縮は body 全体を確定させる後処理であり
+ストリーミング設計（バックプレッシャ・応答完全性契約）と両立できない」
+として見送っていた後続課題を、body 全体をバッファリングしない専用
+エンコーダで解消した。
+
+**採用の結論**: `flate2::write::GzEncoder<Vec<u8>>` へチャンクを
+`write_all` → `flush()`（`Write::flush` が Z_SYNC_FLUSH 相当を行う）すれば、
+そのチャンクまでのデータが即時デコード可能なバイト列として取り出せる
+（`fandhe_backend_plugin_compression::StreamingGzipEncoder::encode_chunk`）。
+書き出しループ内で「recv → 圧縮変換 → chunked framing → write」を 1 チャンク
+ずつ処理でき、bounded mpsc バックプレッシャ・応答完全性契約（`finish` 省略
+時は終端チャンクなしで打ち切りクローズ）のどちらも壊さない。メモリ増は
+gzip エンコーダ内部状態（定数有界）+ 変換中の 1 チャンク分のみで、5.9.7
+節・5.10.3 節が不採用とした「全 body バッファリング」とは別方式のため、
+両節の見送り根拠と矛盾しない。
+
+**第 5 のシーム（`crate::plugin::prepare_streaming_compression`）**:
+`finalize_streaming_head`（CORS ヘッダ付与、5.9.7 節）の次段として新設した。
+`crate::server::write_streaming_response` の HTTP/1.1 分岐でのみ
+`Response::serialize_chunked_head` の直前に 1 回呼び、`Content-Encoding: gzip`
+確定時はヘッドへ付与しつつ `StreamingBodyEncoder`（`compression` feature
+無効時・圧縮未確定時は入力をそのまま返す identity として振る舞う薄い型）
+を返す。以降の body 送出ループは `RecvOutcome::Chunk` ごとに
+`StreamingBodyEncoder::transform` を通してから chunked framing する。
+`#[cfg(feature = "compression")]` は本型・本関数の内部にのみ閉じ、
+`write_streaming_response` 本体を cfg-free に保つ既存原則（PoC-3）を維持する。
+
+**設計判断**:
+
+1. **opt-in（既定 OFF）**: `CompressionConfigBuilder::compress_streaming`
+   は既定 `false`。既定 ON にすると既存の `Server::compression` 登録利用者の
+   ストリーミング応答挙動が暗黙に変わるうえ、SSE 等で秘密情報を流す利用者に
+   5.10.4 節の BREACH 類似リスクを黙って背負わせるため、フェイルセーフ側
+   （明示 opt-in）へ倒す。
+2. **`min_size` は非適用**: ストリーミングでは総 body 長が事前に不明で
+   閾値判定ができない。ストリーミング応答は実運用上大きいことがほとんど
+   であり、閾値なしで割り切る。
+3. **チャンクごと sync flush の圧縮率とレイテンシのトレードオフ**:
+   `BodyWriter::send` 1 回分が即座にクライアントでデコード可能になることを
+   優先し（SSE 的な逐次配信の意味論の保存）、チャンクごとに flush する。
+   flush ごとに約 5 バイトのオーバーヘッドが生じ、バッファリング一括圧縮
+   より圧縮率は劣る。
+4. **HTTP/1.1 chunked 経路のみ対象**: HTTP/1.0（EOF 終端・フレーミングなし）
+   は対象外とし identity のまま返す（クライアント希少・スコープ最小化）。
+5. **適用順は CORS → 圧縮**: 通常応答経路の `finalize_response`（CORS →
+   圧縮固定、5.10.1 節）と同一の規約を踏襲し、`finalize_streaming_head`
+   （CORS）の直後にヘッド確定判定を行う。
+6. **`Content-Encoding: gzip` のヘッド確定条件**: `Response::
+   serialize_chunked_head` の前に、以下の全条件成立時のみ確定する
+   （`fandhe_backend_plugin_compression::begin_streaming_compression`）:
+   (a) `Server::compression` 登録済み + `compress_streaming` 有効、
+   (b) `map_response`・CORS 適用後のステータスが 2xx かつ非 bodyless、
+   (c) 実効 `Content-Type` が `compressible_types` に一致、
+   (d) `Content-Encoding` 未設定（二重圧縮防止）、
+   (e) `accepts_gzip(head)`。`Vary` は非ストリーミング経路と同じく
+   条件 (a)〜(c) 成立時点（表現が Accept-Encoding 依存になった時点）で
+   圧縮成否に関わらず付与する。
+7. **エンコーダ失敗時は接続クローズ（fail-closed）**: `Content-Encoding:
+   gzip` を広告した後にエンコーダがエラーを返した場合、identity バイトへ
+   切り替えるとストリーム破壊になるため、書き込みエラーと同様に
+   `StreamingBodyEncoder::transform`/`finish` の `None` を接続クローズの
+   合図として扱う。打ち切り時（producer が `finish` せず drop）は gzip
+   trailer も chunked 終端も送らないため、クライアントは二重に切断を
+   検知できる（`crate::streaming` モジュール doc の応答完全性契約と同根）。
+
+**検証**: `crates/plugin-compression/src/lib.rs` の単体テスト・doc test
+（`StreamingGzipEncoder` の roundtrip・sync flush 検証、
+`begin_streaming_compression` の条件判定）、`crates/core/tests/
+plugin_compression_boundary.rs` の統合テスト（マルチチャンク roundtrip・
+`Accept-Encoding` なし/対象外 `Content-Type`/HTTP/1.0/打ち切り/204 の各
+フォールスルー）を参照。
 
 ## 5.11 パスインターセプト型の `spawn_blocking` ファイル I/O 変種（イシュー #318 で確立）
 

@@ -10,6 +10,7 @@
 
 #![cfg(not(feature = "compression"))]
 
+use fandhe_backend_core::streaming::StreamingResponse;
 use fandhe_backend_core::{Handler, Server, handle_connection};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
@@ -22,6 +23,25 @@ impl Handler for LargeTextHandler {
         Box::pin(std::future::ready(
             Response::new(200, body.into_bytes()).with_content_type("text/plain"),
         ))
+    }
+}
+
+/// `handle_streaming`（#319）を持つトイハンドラ（イシュー #461 の
+/// 陰性対照: `compression` feature 無効時はストリーミング応答も無改変で
+/// あることを確認する）。
+struct StreamingTextHandler;
+impl Handler for StreamingTextHandler {
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
+        Box::pin(std::future::ready(Response::empty(599)))
+    }
+
+    fn handle_streaming(&self, _head: &RequestHead, _body: &[u8]) -> Option<StreamingResponse> {
+        let (response, writer) = StreamingResponse::channel(200, Some("text/plain"), 4);
+        tokio::spawn(async move {
+            let _ = writer.send("x".repeat(2048).into_bytes()).await;
+            let _ = writer.finish().await;
+        });
+        Some(response)
     }
 }
 
@@ -46,4 +66,22 @@ async fn accept_encoding_header_is_ignored_when_feature_disabled() {
     assert!(!response.contains("Content-Encoding"));
     assert!(!response.contains("Vary"));
     assert!(response.ends_with(&"x".repeat(2048)));
+}
+
+#[tokio::test]
+async fn streaming_response_is_unmodified_when_feature_disabled() {
+    // イシュー #461: `compression` feature 無効時は `crate::plugin::
+    // prepare_streaming_compression` が identity のまま（`StreamingBodyEncoder`
+    // の cfg 分岐、`crates/core/src/plugin.rs` の doc を参照）で、chunked
+    // ストリーミング応答が無改変で届くことを確認する。
+    let server = Server::new().handler(StreamingTextHandler);
+    let request = b"GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n";
+    let response = roundtrip(&server, request).await;
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert!(response.contains("Transfer-Encoding: chunked\r\n"));
+    assert!(!response.contains("Content-Encoding"));
+    let expected_chunk_size = format!("{:x}", "x".repeat(2048).len());
+    assert!(response.contains(&format!("{expected_chunk_size}\r\n")));
+    assert!(response.contains(&"x".repeat(2048)));
+    assert!(response.ends_with("0\r\n\r\n"));
 }

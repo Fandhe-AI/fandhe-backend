@@ -1869,9 +1869,13 @@ pub(crate) async fn handle_connection_with_permit<S>(
 ///
 /// # HTTP バージョン別の framing 選択
 ///
-/// - HTTP/1.1: [`Response::serialize_chunked_head`] で `Transfer-Encoding:
-///   chunked` ヘッドを送り、以降 [`encode_chunk`] / [`encode_terminator`]
-///   でフレーミングしたチャンクを書き出す。
+/// - HTTP/1.1: `crate::plugin::prepare_streaming_compression`（イシュー
+///   #461、`finalize_streaming_head` の次段）でチャンク単位のストリーミング
+///   gzip 圧縮を確定させたのち、[`Response::serialize_chunked_head`] で
+///   `Transfer-Encoding: chunked` ヘッドを送り、以降 producer から届く
+///   チャンクを `StreamingBodyEncoder`（圧縮確定時のみ変換、未確定時は
+///   identity）に通してから [`encode_chunk`] / [`encode_terminator`] で
+///   フレーミングして書き出す。
 /// - HTTP/1.0: chunked を理解しない前提のクライアントへ配慮し
 ///   （`Response::serialize_streaming_head_http10` の doc を参照）、
 ///   フレーミングなしの生データを EOF（本関数の戻りが呼び出し元の
@@ -1960,8 +1964,11 @@ where
     // CORS ヘッダ付与は利用者インターセプタによる改変後の最終ヘッドに対して
     // 行う。CORS はステータス・body に触れないヘッダのみの後処理のため、
     // 直後の `is_bodyless_status` 判定・`debug_assert!(body.is_empty())`
-    // 契約には影響しない（`finalize_streaming_head` の doc を参照。圧縮は
-    // 意図的に未適用のまま）。
+    // 契約には影響しない（`finalize_streaming_head` の doc を参照）。
+    // チャンク単位のストリーミング圧縮（`crate::plugin::
+    // prepare_streaming_compression`、イシュー #461）は HTTP/1.1 chunked
+    // 経路専用のため、ここではまだ適用せず HTTP バージョン分岐後に呼ぶ
+    // （下の該当コメントを参照）。
     head_response = crate::plugin::finalize_streaming_head(server, head, head_response);
     head_response.body = Vec::new();
 
@@ -2042,6 +2049,15 @@ where
         && connection_started_at.elapsed() < server.max_connection_lifetime
         && !shutdown_flag.load(Ordering::Relaxed);
 
+    // 第 5 のシーム（`crate::plugin::prepare_streaming_compression`、イシュー
+    // #461）を `finalize_streaming_head`（CORS）の直後・`serialize_chunked_head`
+    // の前に適用する。HTTP/1.1 chunked 経路専用（`begin_streaming_compression`
+    // の「呼び出し契約」節を参照）で、HTTP/1.0 分岐（上の early return）へは
+    // 接続しない。`Content-Encoding: gzip` 確定時はここでヘッドへ付与し、
+    // 以降の body 送出ループが `body_encoder` 経由でチャンクを圧縮変換する。
+    let (head_response, mut body_encoder) =
+        crate::plugin::prepare_streaming_compression(server, head, head_response);
+
     let head_bytes = head_response.serialize_chunked_head(keep_alive);
     let write_timeout = DEFAULT_WRITE_TIMEOUT.min(remaining_lifetime(connection_started_at));
     if tokio::time::timeout(write_timeout, stream.write_all(&head_bytes))
@@ -2076,6 +2092,16 @@ where
             .ok()?;
         match outcome {
             RecvOutcome::Chunk(data) => {
+                // `body_encoder`（イシュー #461）を chunked framing の前に
+                // 適用する。identity（圧縮未確定）時は入力をそのまま返し、
+                // 圧縮確定時は `StreamingGzipEncoder::encode_chunk` の sync
+                // flush 済み出力を返す（`crate::plugin::StreamingBodyEncoder`
+                // の doc を参照）。`None` はエンコーダ失敗を意味し、
+                // `Content-Encoding: gzip` を広告した後にストリームを
+                // identity へ切り替えると破壊になるため、書き込みエラーと
+                // 同様に接続を打ち切る（fail-closed、`crates/plugin-
+                // compression/src/lib.rs` の該当節を参照）。
+                let data = body_encoder.transform(data)?;
                 let mut framed = Vec::with_capacity(data.len() + 16);
                 encode_chunk(&data, &mut framed);
                 if framed.is_empty() {
@@ -2095,7 +2121,17 @@ where
                 }
             }
             RecvOutcome::End => {
+                // `body_encoder` の残余データ（圧縮確定時は gzip trailer を
+                // 含む）を最後のチャンクとして終端チャンクの直前に送出する。
+                // identity 時は常に空（`StreamingBodyEncoder::finish` の doc
+                // を参照）で、この場合は残余チャンクを一切書かず既存の
+                // 「終端チャンクのみ」の挙動を保つ。`None` はエンコーダ失敗
+                // （fail-closed、上の `Chunk` 分岐と同じ契約）。
+                let residual = body_encoder.finish()?;
                 let mut terminator = Vec::new();
+                if !residual.is_empty() {
+                    encode_chunk(&residual, &mut terminator);
+                }
                 encode_terminator(&mut terminator);
                 let write_timeout =
                     DEFAULT_WRITE_TIMEOUT.min(remaining_lifetime(connection_started_at));

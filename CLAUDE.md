@@ -132,11 +132,17 @@ fandhe-backend/
 │   │                                    # 通常応答経路専用シーム）自体は引き続き未適用。
 │   │                                    # イシュー #451 で第 4 のシーム
 │   │                                    # `finalize_streaming_head` を新設し、`map_response`
-│   │                                    # 適用直後のヘッドへ CORS ヘッダ付与のみを適用する
-│   │                                    # ようにした（圧縮は body 全体を確定させる後処理で
-│   │                                    # ありストリーミング設計と両立できないため対象外、
+│   │                                    # 適用直後のヘッドへ CORS ヘッダ付与を適用する
+│   │                                    # ようにした。イシュー #461 で第 5 のシーム
+│   │                                    # `prepare_streaming_compression` を追加し、body
+│   │                                    # 全体を保持しない専用エンコーダ
+│   │                                    # （`StreamingGzipEncoder`）経由でチャンク単位の
+│   │                                    # ストリーミング gzip 圧縮を接続した
+│   │                                    # （`CompressionConfigBuilder::compress_streaming`
+│   │                                    # opt-in・既定 OFF、HTTP/1.1 chunked 経路限定、
 │   │                                    # `docs/design/interceptor-extension-point.md`・
-│   │                                    # `docs/design/plugin-boundary.md` 5.9.7 節参照）。
+│   │                                    # `docs/design/plugin-boundary.md` 5.9.7 節・
+│   │                                    # 5.10.6 節参照）。
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む
@@ -251,7 +257,14 @@ fandhe-backend/
 │   │                                    # フェイルセーフに圧縮可否を決定。`crates/core` の
 │   │                                    # `compression` feature 経由で `Server::compression(config)`
 │   │                                    # 登録時のみ動作。BREACH 類似の情報漏洩リスクを doc に明記、
-│   │                                    # `docs/design/plugin-boundary.md` 5.10 節を参照）
+│   │                                    # `docs/design/plugin-boundary.md` 5.10 節を参照）。
+│   │                                    # `StreamingGzipEncoder` +
+│   │                                    # `begin_streaming_compression` で
+│   │                                    # `Handler::handle_streaming`（#319）の chunked
+│   │                                    # ストリーミング応答向けチャンク単位 gzip 圧縮も提供
+│   │                                    # （イシュー #461、`compress_streaming` opt-in・
+│   │                                    # 既定 OFF、`crates/core` 側の配線は上記参照。
+│   │                                    # `docs/design/plugin-boundary.md` 5.10.6 節を参照）
 │   ├── plugin-static                  # 静的ファイル配信プラグイン（イシュー #318。パス
 │   │                                    # インターセプト型（`try_intercept`）+ `spawn_blocking`
 │   │                                    # 変種。`crates/core` の `static` feature 経由で
