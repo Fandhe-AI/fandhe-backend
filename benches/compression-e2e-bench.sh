@@ -60,10 +60,23 @@ fi
 
 # 一時ファイル（背景 oha の JSON 結果格納用）。trap で確実に削除する。
 LARGE_JSON_TMP="$(mktemp)"
+
+# バックグラウンドで起動中の /large 用 oha の PID（未起動時は空文字）。
+# フォアグラウンドの /small 実行が失敗する、またはスクリプトが `wait` 前に
+# 中断された場合でもこの PID を EXIT trap から kill し、oha プロセスの
+# 残存によって後続の専有計測（quiescence チェック）がホストをビジー状態と
+# 誤認して BLOCKED を返す事態を防ぐ（PR #474 Bugbot 指摘対応）。
+LARGE_OHA_PID=""
 cleanup_tmp() {
     rm -f "${LARGE_JSON_TMP}"
 }
-trap 'cleanup_tmp; stop_server' EXIT
+cleanup_large_oha() {
+    if [ -n "${LARGE_OHA_PID}" ] && kill -0 "${LARGE_OHA_PID}" 2>/dev/null; then
+        kill "${LARGE_OHA_PID}" 2>/dev/null || true
+        wait "${LARGE_OHA_PID}" 2>/dev/null || true
+    fi
+}
+trap 'cleanup_large_oha; cleanup_tmp; stop_server' EXIT
 
 # 1 構成分の計測を実行する。
 # 引数: $1 構成ラベル（例 "A（offload、既定）"）、$2 BLOCKING_THRESHOLD の
@@ -99,12 +112,14 @@ run_configuration() {
         oha -z "${DURATION}" -c "${LARGE_CONNECTIONS}" --no-tui --output-format json \
             -H 'Accept-Encoding: gzip' "${TARGET_URL}/large" >"${LARGE_JSON_TMP}" 2>&1 &
         local large_pid=$!
+        LARGE_OHA_PID="${large_pid}"
 
         local small_json
         small_json="$(oha -z "${DURATION}" -c "${CONNECTIONS}" --no-tui --output-format json \
             -H 'Accept-Encoding: gzip' "${TARGET_URL}/small")"
 
         wait "${large_pid}"
+        LARGE_OHA_PID=""
         local large_json
         large_json="$(cat "${LARGE_JSON_TMP}")"
 

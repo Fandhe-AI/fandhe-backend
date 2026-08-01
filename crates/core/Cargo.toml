@@ -279,10 +279,15 @@ required-features = ["compression"]
 # `required-features` で明示的にゲートする（`compression_demo`・
 # `compression_blocking_micro_bench` と同一パターン。production コード
 # 変更を含まない計測専用 example、`benches/compression-e2e-bench.sh` から
-# 呼ばれる）。
+# 呼ばれる）。`test = true`（`core-bench` と同一理由）により
+# `#[cfg(test)] mod tests`（`BLOCKING_THRESHOLD`/`LARGE_BODY_SIZE` パーサ・
+# ルータ構築の fail-closed 検証）を `cargo test` の対象へ含める
+# （PR #474 Bugbot 指摘対応。従来は `[[example]]` 既定の `test = false` で
+# 未検証のまま CI green を通過していた）。
 [[example]]
 name = "compression_e2e_bench"
 required-features = ["compression"]
+test = true
 
 # `examples/static_demo.rs`（イシュー #318）は `fandhe-backend-plugin-static`（optional dep）を
 # 直接使うため、`static` feature 無効時に `cargo build --workspace --all-targets` 等が
