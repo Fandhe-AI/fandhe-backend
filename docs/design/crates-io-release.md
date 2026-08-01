@@ -137,9 +137,36 @@ publish（`cargo publish --workspace`、依存順自動解決）の 3 段構成�
   バージョンを分離すると、`fandhe-backend-http` → `fandhe-backend-routes` → `fandhe-backend-core` の依存順
   publish 時にバージョン整合の管理コストが増えるため
 
+### 7.1 v0.2.0 リリース（イシュー #437、機械作業のみ完了・publish は未実施）
+
+v0.1.0 公開（2026-07-21）後に breaking change が 2 件 main に入ったため、7 節の
+lockstep 方針に従い公開対象 13 クレートを 0.2.0 へ一括バンプした。
+
+- **BREAKING CHANGES**（詳細・移行手順は `CHANGELOG.md` 参照）:
+  1. `fandhe-backend-core`: `GateOutcome::Reject` が `{ status, body }` から
+     検証済み `Response` を運ぶ `{ response: Response }` へ変更（イシュー #424、PR #431）
+  2. `fandhe-backend-plugin-static`: `StaticConfigError`（非 `#[non_exhaustive]`）へ
+     `InvalidMimeMapping` バリアントを追加（イシュー #423、PR #430）
+- **本イシューで実施した機械作業**: 公開対象 13 クレート + workspace 内 path 依存の
+  `version` 併記（`crates/core` 等）+ `templates/app`・`examples/with-*` の依存
+  `version` 併記を 0.2.0 へバンプ、`crates/plugin-openapi/openapi.json` の
+  `info.version` 再生成、`CHANGELOG.md` 新設、6 節の検証を PASS させたうえでの PR 作成
+- **実 publish（Phase B）は本イシューのスコープ外**。ユーザーが `v0.2.0` タグを
+  push（または `release.yml` を `workflow_dispatch`）し、6 節記載の verify → dry-run →
+  GitHub Environments `crates-io-release` の required reviewers 承認を経て
+  `cargo publish --workspace` が実行される。publish 完了後、本ドキュメント・
+  README・`docs/guide/getting-started.md`・`site/index.md`・`CHANGELOG.md` の
+  「v0.2.0 準備中」表現を「公開済み（日付）」へ切り替えるフォローアップを別途行う
+- `standalone-crates-io.yml`（`scripts/standalone-crates-io-check.sh`）は
+  crates.io 公開版のみで templates/examples を検証する性質上、v0.2.0 publish
+  完了までは構造的に FAIL する（required check 対象外のためマージは阻害しない）。
+  publish 完了後に `workflow_dispatch` で再実行し PASS を確認する
+
 ## 8. 公開前チェックリスト
 
-実際に publish を実行する際に確認すべき項目（2026-07-21 実施状況）。
+実際に publish を実行する際に確認すべき項目。
+
+### v0.1.0（2026-07-21 実施済み）
 
 - [x] `cargo publish --workspace --dry-run` が公開対象 13 クレート全件で成功する
       （2026-07-21 実施済み）
@@ -156,6 +183,14 @@ publish（`cargo publish --workspace`、依存順自動解決）の 3 段構成�
       `docs/spec/` への 4 箇所のリンクが crates.io 掲載時に private リポジトリへの
       リンクとなるため、完全解決は spec リポジトリの public 化待ち
 - [x] 1 節の前提条件がすべて完了している。2026-07-21 実施済み
+
+### v0.2.0（イシュー #437、Phase A 機械作業完了・Phase B publish は未実施）
+
+- [x] 公開対象 13 クレートの `version` および workspace 内 path 依存の `version` 併記が
+      すべて 0.2.0 に揃っている（恒久非公開 3 クレートは対象外）
+- [x] `cargo publish --workspace --dry-run` が公開対象 13 クレート全件で成功する
+- [ ] Phase B: `v0.2.0` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
+      の実行（本イシューのスコープ外、ユーザー承認を得た別プロセスで実施）
 
 ## 参照
 

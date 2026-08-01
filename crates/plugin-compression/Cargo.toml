@@ -1,6 +1,6 @@
 [package]
 name = "fandhe-backend-plugin-compression"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -29,5 +29,5 @@ workspace = true
 # `.claude/rules/security.md` A06/A08）。推移的依存は miniz_oxide /
 # crc32fast / adler2 程度に留まる。
 [dependencies]
-fandhe-backend-http = { path = "../http", version = "0.1.0" }
+fandhe-backend-http = { path = "../http", version = "0.2.0" }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

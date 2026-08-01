@@ -6,7 +6,7 @@
 GraphQL / WebRTC / OpenAPI 自動生成 / 可観測性などを段階的に拡張できます。
 
 公開対象の 13 クレートは [crates.io](https://crates.io/crates/fandhe-backend-core) に
-v0.1.0 として公開済みです。`cargo add fandhe-backend-core` で導入し、プラグインは
+v0.1.0 として公開済みです（v0.2.0 は準備中）。`cargo add fandhe-backend-core` で導入し、プラグインは
 `cargo add fandhe-backend-core --features websocket` のように feature で有効化します。
 
 ## 2 つの核となる原則
