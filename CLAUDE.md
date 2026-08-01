@@ -13,9 +13,10 @@ OpenAPI 自動生成 / hub 配線 / 可観測性を段階的に拡張できる�
 - **pay-for-what-you-use**: feature を無効化したら依存・コード・`unsafe`・バイナリ増をゼロにする
 - **AI ファースト保守性**: doc test・網羅テスト・CI ガードレールで AI が安全に保守できる状態を保つ
 
-公開対象 13 クレート（http / routes / core / plugin-* 10 種）を crates.io 0.1.0 で公開する
-（lockstep バージョニング。恒久非公開: axum-ref / ws-load-client / docs-site。
-手順・区分は `docs/design/crates-io-release.md` 参照）。
+公開対象 13 クレート（http / routes / core / plugin-* 10 種）を crates.io へ lockstep
+バージョニングで公開する（恒久非公開: axum-ref / ws-load-client / docs-site）。現行公開版は
+0.1.0（2026-07-21）、リポジトリの実装は 0.2.0（イシュー #437。breaking change 2 件を含み
+publish は準備中、`CHANGELOG.md` 参照）。手順・区分は `docs/design/crates-io-release.md` 参照。
 
 仕様書は [Fandhe-AI/fandhe-backend-spec](https://github.com/Fandhe-AI/fandhe-backend-spec) を
 `docs/spec/`（submodule）に取り込む。実装は `docs/spec/06-roadmap.md` の MS-1〜MS-6 に従い、

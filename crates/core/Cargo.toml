@@ -1,6 +1,6 @@
 [package]
 name = "fandhe-backend-core"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -33,8 +33,8 @@ workspace = true
 # `server → routes` を実体化する唯一の workspace 内依存追加。外部 crates.io
 # 依存はここでも増えない（fandhe-backend-routes 自体が fandhe-backend-http のみに依存する中間層）。
 [dependencies]
-fandhe-backend-http = { path = "../http", version = "0.1.0" }
-fandhe-backend-routes = { path = "../routes", version = "0.1.0" }
+fandhe-backend-http = { path = "../http", version = "0.2.0" }
+fandhe-backend-routes = { path = "../routes", version = "0.2.0" }
 tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time", "sync"] }
 
 # TASK-2.1（#18）: `webrtc-proxy` feature 有効時のみ依存として解決される
@@ -44,21 +44,21 @@ tokio = { version = "1", default-features = false, features = ["rt", "net", "io-
 # 生えてしまう挙動）を作らず、`webrtc-proxy` feature 名だけを公開 API とする。
 # feature 無効時は `cargo tree -p fandhe-backend-core` に本行の依存が
 # 一切現れない（`docs/design/plugin-boundary.md` の検証コマンドを参照）。
-fandhe-backend-plugin-webrtc-proxy = { path = "../plugin-webrtc-proxy", version = "0.1.0", optional = true }
+fandhe-backend-plugin-webrtc-proxy = { path = "../plugin-webrtc-proxy", version = "0.2.0", optional = true }
 
 # TASK-8.1（#26）: in-process WebRTC プラグイン（`webrtc-rs` 直接依存）。
 # `webrtc-proxy`（上記、別プロセス切り出し型）とはクレート境界で完全に分離しており、
 # `webrtc` feature 無効時は `cargo tree -p fandhe-backend-core` に本行の依存が
 # 一切現れない（TASK-2.1 と同一のプラグイン境界パターン、
 # .claude/rules/pay-for-what-you-use.md）。
-fandhe-backend-plugin-webrtc = { path = "../plugin-webrtc", version = "0.1.0", optional = true }
+fandhe-backend-plugin-webrtc = { path = "../plugin-webrtc", version = "0.2.0", optional = true }
 
 # TASK-4.1（#22）: `websocket` feature 有効時のみ依存として解決される
 # Upgrade 型プラグインの第 1 号。`fandhe-backend-plugin-websocket` は循環依存を避けるため
 # `fandhe-backend-core` に依存しない（`crates/plugin-websocket/src/lib.rs`
 # の doc・`docs/design/plugin-boundary.md` 6.1 節を参照）。`UpgradeHandler`
 # trait を実装するアダプタはコア側（`crates/core/src/server.rs`）に置く。
-fandhe-backend-plugin-websocket = { path = "../plugin-websocket", version = "0.1.0", optional = true }
+fandhe-backend-plugin-websocket = { path = "../plugin-websocket", version = "0.2.0", optional = true }
 
 # TASK-2.4（#21）で確立した第 2 のパスインターセプト型プラグイン境界
 # インスタンス（REQ-2「少なくとも 2 種のプラグインを feature flag で着脱
@@ -67,7 +67,7 @@ fandhe-backend-plugin-websocket = { path = "../plugin-websocket", version = "0.1
 # 推移的依存（PoC 実測 +95 クレート）は本クレートの内部にのみ現れ、
 # webrtc-proxy と同じく `dep:` 構文で feature 無効時は本行ごと依存グラフ
 # から完全除外される。
-fandhe-backend-plugin-graphql = { path = "../plugin-graphql", version = "0.1.0", optional = true }
+fandhe-backend-plugin-graphql = { path = "../plugin-graphql", version = "0.2.0", optional = true }
 
 # TASK-10.1（#56）: `tracing` feature 有効時のみ依存として解決される可観測性
 # プラグイン。`fandhe-backend-plugin-websocket` と同一の非循環パターンで
@@ -77,7 +77,7 @@ fandhe-backend-plugin-graphql = { path = "../plugin-graphql", version = "0.1.0",
 # に置く。`tracing` feature 無効時は `cargo tree -p fandhe-backend-core` に
 # 本行の依存（および推移的な `tracing` / `tracing-subscriber` / `tracing-appender`）
 # が一切現れない。
-fandhe-backend-plugin-tracing = { path = "../plugin-tracing", version = "0.1.0", optional = true }
+fandhe-backend-plugin-tracing = { path = "../plugin-tracing", version = "0.2.0", optional = true }
 
 # TASK-2.1（#256、REQ-3 の核心接続点）: `openapi` feature 有効時のみ依存として
 # 解決される、`GET /openapi.json` 静的サービング用プラグイン。`webrtc-proxy` /
@@ -87,7 +87,7 @@ fandhe-backend-plugin-tracing = { path = "../plugin-tracing", version = "0.1.0",
 # `Content-Type: application/json` を付けて返す薄いハンドラを実装する。
 # feature 無効時は `cargo tree -p fandhe-backend-core` に本行の依存（および
 # 推移的な `utoipa` 系）が一切現れない。
-fandhe-backend-plugin-openapi = { path = "../plugin-openapi", version = "0.1.0", optional = true }
+fandhe-backend-plugin-openapi = { path = "../plugin-openapi", version = "0.2.0", optional = true }
 
 # イシュー #305（REQ-3 の CORS 実証）: `cors` feature 有効時のみ依存として
 # 解決される「レスポンス後処理型」プラグイン境界の第 1 号（`Middleware` /
@@ -96,7 +96,7 @@ fandhe-backend-plugin-openapi = { path = "../plugin-openapi", version = "0.1.0",
 # の doc を参照）。`fandhe-backend-plugin-websocket` と同一の非循環パターンで
 # `fandhe-backend-core` に依存しない。feature 無効時は
 # `cargo tree -p fandhe-backend-core` に本行の依存が一切現れない。
-fandhe-backend-plugin-cors = { path = "../plugin-cors", version = "0.1.0", optional = true }
+fandhe-backend-plugin-cors = { path = "../plugin-cors", version = "0.2.0", optional = true }
 
 # イシュー #321（レスポンス圧縮）: `compression` feature 有効時のみ依存として
 # 解決される「レスポンス後処理型」プラグイン境界の第 2 インスタンス
@@ -105,7 +105,7 @@ fandhe-backend-plugin-cors = { path = "../plugin-cors", version = "0.1.0", optio
 # `fandhe-backend-plugin-cors` と同一の非循環パターンで `fandhe-backend-core`
 # に依存しない。feature 無効時は `cargo tree -p fandhe-backend-core` に
 # 本行の依存（`flate2` 系推移的依存を含む）が一切現れない。
-fandhe-backend-plugin-compression = { path = "../plugin-compression", version = "0.1.0", optional = true }
+fandhe-backend-plugin-compression = { path = "../plugin-compression", version = "0.2.0", optional = true }
 
 # イシュー #318: `static` feature 有効時のみ依存として解決される、パス
 # インターセプト型の静的ファイル配信プラグイン。`graphql`・`openapi` と同じ
@@ -113,7 +113,7 @@ fandhe-backend-plugin-compression = { path = "../plugin-compression", version = 
 # `fandhe-backend-plugin-websocket`・`fandhe-backend-plugin-cors` と同一の
 # 非循環パターンで `fandhe-backend-core` に依存しない。feature 無効時は
 # `cargo tree -p fandhe-backend-core` に本行の依存が一切現れない。
-fandhe-backend-plugin-static = { path = "../plugin-static", version = "0.1.0", optional = true }
+fandhe-backend-plugin-static = { path = "../plugin-static", version = "0.2.0", optional = true }
 
 # feature 命名規約（`docs/design/plugin-boundary.md`）: プラグインクレート名
 # （`fandhe-backend-plugin-<name>`）から `fandhe-backend-plugin-` 接頭辞を除いた `<name>` を feature 名

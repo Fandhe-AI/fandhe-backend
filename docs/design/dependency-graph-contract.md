@@ -743,6 +743,63 @@ package/import 名の改名に続き、リポジトリ名・ドキュメント�
    含めていないことに起因する運用上のギャップである（分類規則自体の見直しは 4.3 節〜4.14 節
    と同一の別 Issue 対象として据え置く。`.claude/rules/out-of-scope-tracking.md`）
 
+### 4.16 記載例（#437 / PR #444、全公開クレートの 0.2.0 lockstep バージョンバンプ）
+
+イシュー #437「全公開クレートを 0.2.0 へ lockstep バンプし crates.io へ publish する」
+（PR #444）は、7 節記載の lockstep バージョニング方針に従い、公開対象 13 クレート
+（`crates/plugin-*` を含む）と、それらへの workspace 内 path 依存の `version` 併記
+（`crates/core` 等）・`templates/app`・`examples/with-*` の依存 `version` 併記を
+0.2.0 へ一括バンプする機械作業である。`crates/plugin-*/Cargo.toml` への変更を含む
+ため `scripts/extension-closure-gate.sh` の判定対象となり、以下 6 件が
+E（閉包違反候補）と判定された（後続コミットで `examples/with-interceptor/Cargo.toml`
+の 0.2.0 追随バンプを追加したため、当初の 5 件に 1 件加わっている。詳細は項目 3・4 参照）。
+
+1. **対象コミット/PR**: PR #444（#437、HEAD sha
+   `a6c2c2e5c9ebc4189d7cac400d8ca316bfa173e2`）
+2. **E ファイルパス**:
+   - `examples/README.md`
+   - `examples/with-cors/Cargo.toml`
+   - `examples/with-graphql/Cargo.toml`
+   - `examples/with-interceptor/Cargo.toml`
+   - `examples/with-websocket/Cargo.toml`
+   - `templates/app/Cargo.toml`
+3. **閉じない理由**: `extension-closure-check.sh` の分類規則（A: `crates/plugin-*/**`、
+   D: `docs/*`・`scripts/*`・`CLAUDE.md`・`AGENTS.md`・`.github/*`・`deny.toml` 等）は
+   `templates/**`・`examples/**` を走査対象に含めていない（4.9 節・4.10 節・4.12 節〜
+   4.15 節で既に指摘済みの運用上のギャップと同一）。本コミットは
+   `templates/app`・`examples/with-cors`・`examples/with-graphql`・
+   `examples/with-websocket` の依存 `version` 併記、および `examples/README.md`
+   の案内文（`version = "0.1.0"` → `"0.2.0"`）を、対応する `crates/*` の公開
+   バージョンバンプに追随して更新したため、機械的に E 判定となった。後続コミットで
+   `origin/main` マージにより取り込まれた `examples/with-interceptor/Cargo.toml`
+   （イシュー #433 で追加されたサンプル）の `fandhe-backend-*` 依存 `version` 併記が
+   0.1.0 のまま残存していたため同様に 0.2.0 へバンプし、同一理由で E 判定となった
+4. **正当性根拠**: 上記 6 件はいずれも `fandhe-backend-plugin-*`・`crates/core` の
+   3 拡張点 trait（`Middleware` / `UpgradeHandler` / `RequestGate`）・`Interceptor`
+   固定シームの契約・シグネチャを一切変更していない。`templates/app`・
+   `examples/with-*` は root workspace 非メンバーの standalone crate
+   （`publish = false`）であり、変更内容は依存 `version` 要求の数値更新（`path`
+   併記により本リポジトリ内では常にローカル実装で検証される）と、それに追随する
+   案内コメント・README の表記更新のみで、プラグイン実装ロジックが拡張点外へ
+   漏出する変更ではない。したがって本件は拡張点設計の閉包漏れではなく、
+   `extension-closure-check.sh` の分類規則が `templates/**`・`examples/**` を
+   A〜D に含めていないことに起因する運用上のギャップである（分類規則自体の
+   見直しは 4.9 節〜4.15 節と同一の別 Issue 対象として据え置く、
+   `.claude/rules/out-of-scope-tracking.md`）。
+   なお `templates/app`・`examples/with-*`（`examples/with-interceptor` を除く）が
+   crates.io 公開版のみでビルド・テストできるかを検証する `standalone-crates-io.yml`
+   は、v0.2.0 publish 完了までは `version = "0.2.0"` を crates.io（0.1.0 のみ公開済み）
+   から解決できず構造的に FAIL する（`crates-io-release.md` 7.1 節）。同 workflow は
+   `ci.yml` の `ci-complete` 集約ゲート（required status check）の対象外であり、
+   `scripts/standalone-crates-io-check.sh` の SKIP マーカー機構（イシュー #433 由来）
+   は「全クレート SKIP で PASS 0 件」を fail-closed で拒否する設計のため、
+   `standalone-crates-io.yml` が検証対象とする standalone クレート 5 件
+   （`templates/app`・`examples/with-cors`・`examples/with-graphql`・
+   `examples/with-websocket`・`examples/with-interceptor`。上記の E ファイル
+   6 件とは別集計）のうち 4 件（`examples/with-interceptor` は既存 SKIP 済み）を
+   SKIP マーカーで一律回避する対応は行わない。v0.2.0 publish 完了後に同 workflow を
+   再実行し PASS を確認する（`crates-io-release.md` 8 節「v0.2.0」チェックリスト）
+
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 
 `fandhe-backend-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも

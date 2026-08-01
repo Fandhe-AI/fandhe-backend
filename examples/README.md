@@ -54,7 +54,7 @@ standalone crate（独立 `cargo run`・独自 README・独自テスト）とし
 - root workspace（`crates/*` glob）のメンバーにしない。各サンプル自身の
   `Cargo.toml` に `[workspace] members = ["."]` を書き、standalone workspace として切り離す
 - `publish = false`（crates.io には公開しない）
-- 依存は `version = "0.1.0"` + `path = "../../crates/..."` の併記。リポジトリ内では
+- 依存は `version = "0.2.0"` + `path = "../../crates/..."` の併記。リポジトリ内では
   path 参照で常に最新実装を検証し、リポジトリ外へコピーして使う場合は `path` を
   外して crates.io 版参照に切り替える（各 `Cargo.toml` のコメントを参照）
 - 見せたい機能に必要な Cargo feature のみ有効化する（pay-for-what-you-use、
