@@ -163,6 +163,7 @@ fn require_org(authenticator: &Authenticator, head: &RequestHead) -> Result<Stri
         .map_err(|err| match err {
             TokenError::MissingOrgId => {
                 Response::new(403, br#"{"error":"tenant_scope_required"}"#.to_vec())
+                    .with_content_type("application/json")
             }
             TokenError::MissingToken
             | TokenError::Malformed
@@ -170,7 +171,8 @@ fn require_org(authenticator: &Authenticator, head: &RequestHead) -> Result<Stri
             | TokenError::MissingKeyId
             | TokenError::UnknownKeyId
             | TokenError::InvalidSignature
-            | TokenError::Expired => Response::new(401, br#"{"error":"invalid_token"}"#.to_vec()),
+            | TokenError::Expired => Response::new(401, br#"{"error":"invalid_token"}"#.to_vec())
+                .with_content_type("application/json"),
         })
 }
 
@@ -389,6 +391,11 @@ async fn missing_authorization_is_rejected_before_handler() {
     let request = bearer_request("/items", "GET", None, "");
     let response = roundtrip(&server, &request).await;
     assert!(response.starts_with("HTTP/1.1 401"), "response: {response}");
+    // イシュー #439: サーバ実応答が Content-Type を持つことをエンドツーエンドで固定する。
+    assert!(
+        response.contains("Content-Type: application/json\r\n"),
+        "response: {response}"
+    );
     assert_eq!(
         reached.load(Ordering::SeqCst),
         0,
@@ -498,6 +505,11 @@ async fn missing_org_id_is_rejected_with_403_before_handler() {
     let request = bearer_request("/items", "GET", Some(&token), "");
     let response = roundtrip(&server, &request).await;
     assert!(response.starts_with("HTTP/1.1 403"), "response: {response}");
+    // イシュー #439: サーバ実応答が Content-Type を持つことをエンドツーエンドで固定する。
+    assert!(
+        response.contains("Content-Type: application/json\r\n"),
+        "response: {response}"
+    );
     assert_eq!(reached.load(Ordering::SeqCst), 0);
 }
 
