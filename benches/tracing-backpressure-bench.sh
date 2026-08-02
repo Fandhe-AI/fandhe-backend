@@ -22,7 +22,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# WORKSPACE_ROOT・BENCH_TARGET_DIR は lib/common.sh が導出・export する
+# （イシュー #480、BENCH_TARGET_DIR の優先順位は common.sh 冒頭コメント参照）。
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
@@ -32,7 +33,9 @@ source "${SCRIPT_DIR}/lib/common.sh"
 # common.sh 側で export 済みの値をそのまま使う）。
 check_runs_minimum
 
-PROBE_BIN="${WORKSPACE_ROOT}/target/release/examples/backpressure_probe"
+# BENCH_TARGET_DIR は common.sh が導出する実効 target ディレクトリ（イシュー #480、
+# self-hosted runner のホスト共有 CARGO_TARGET_DIR 注入対策）。
+PROBE_BIN="${BENCH_TARGET_DIR}/release/examples/backpressure_probe"
 if [ ! -x "${PROBE_BIN}" ]; then
     echo "エラー: ${PROBE_BIN} が見つかりません。先に" >&2
     echo "  cargo build --release -p fandhe-backend-plugin-tracing --example backpressure_probe" >&2

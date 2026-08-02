@@ -24,6 +24,25 @@ name: bench-schedule
 # 本ファイル冒頭コメントを正とする。BLOCKED（終了コード 2）は再試行しない
 # （フェイルクローズ、計測不能自体を退行検知の対象として起票する）。
 #
+# CARGO_TARGET_DIR のジョブローカル固定（イシュー #480）: 2026-08-02 実行
+# （run 30729910081）で `cargo build --release` 成功直後に
+# `target/release/axum-ref` が見つからず BLOCKED になる事象が発生した。
+# 調査の結果、self-hosted runner フリートは同一 org（Fandhe-AI）の他リポジトリ
+# （fandhe-frontend）の CI が明示的に前提とするとおり、ホスト共有の
+# `CARGO_TARGET_DIR=/cargo-target` をジョブに注入する構成であることが濃厚
+# （一次証拠・タイムライン・確度は
+# benches/reports/issue480-target-dir-investigation.md 参照）。この場合
+# `cargo build` の成果物はリポジトリ直下の `target/` ではなく
+# `/cargo-target` 配下に生成され、`benches/lib/common.sh` 等が既定で参照する
+# `${WORKSPACE_ROOT}/target/release/...` には最初から存在しない。
+#
+# 本 workflow は `env: CARGO_TARGET_DIR: ${{ github.workspace }}/target` を
+# ジョブ全体へ設定し、ホスト共有 `/cargo-target` から意図的に隔離する
+# （fandhe-frontend #1192 で実証済みの「共有 target 上の成果物汚染」リスクの
+# 回避も兼ねる）。`benches/lib/common.sh` の `BENCH_TARGET_DIR` 導出は
+# `CARGO_TARGET_DIR` env を最優先で採用するため、本設定によりベンチ側の
+# バイナリパス既定値もこのジョブローカル target と自動的に一致する。
+#
 # 退行検知時の扱い（フェイルクローズ）: ジョブを失敗（赤）させ、かつ schedule /
 # workflow_dispatch 実行時は `bench-regression` ラベルで Issue を自動起票する
 # （ci.yml dep-audit ジョブの audit-triage 起票ステップと同一パターン。
@@ -65,11 +84,28 @@ jobs:
     # 90 分 + ビルド・計測の実処理分のマージンを確保する
     # （.claude/rules/ci.md「全ジョブに timeout-minutes を設定する」多層防御）。
     timeout-minutes: 240
+    # ジョブローカル target ディレクトリ（イシュー #480、上部コメント参照）。
+    # ホスト共有 `/cargo-target` から隔離し、`cargo build` の成果物が
+    # `benches/lib/common.sh` の既定バイナリパスと確実に一致するようにする。
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - name: Checkout
         # 他ジョブ（ci.yml fmt/clippy/test 等）と同一コミット SHA で固定する
         # （サプライチェーン考慮、.claude/rules/security.md）。
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      # 恒久の診断ステップ（イシュー #480）: 「ビルド成功直後にバイナリが
+      # 見つからない」系の障害は再現性が低く、事後調査が困難だった
+      # （#476 のトリアージで既存ログから CARGO_TARGET_DIR の実測値が
+      # 追えなかった）。今後同種の障害が起きた場合に runner 環境の実効
+      # target ディレクトリをログから即座に確認できるよう、恒久的に記録する。
+      - name: 実効 target dir の診断記録（イシュー #480）
+        run: |
+          echo "CARGO_TARGET_DIR(env)=${CARGO_TARGET_DIR:-<unset>}"
+          echo "github.workspace=${{ github.workspace }}"
+          rustc -vV || true
+          cargo --version || true
 
       # self-hosted runner に rustup が未導入/欠落している場合に備え、
       # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。

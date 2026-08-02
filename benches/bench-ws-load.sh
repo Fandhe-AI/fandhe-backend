@@ -59,9 +59,15 @@ CONNECTION_TIERS="${CONNECTION_TIERS:-1000 5000 10000}"
 SUCCESS_RATE_MIN_PCT="${SUCCESS_RATE_MIN_PCT:-99}"
 AXUM_RATIO_MAX_PCT="${AXUM_RATIO_MAX_PCT:-110}"
 
-FULLSCRATCH_BIN="${FULLSCRATCH_BIN:-${WORKSPACE_ROOT}/target/release/examples/ws_echo}"
+# BENCH_TARGET_DIR は common.sh が導出する実効 target ディレクトリ（イシュー #480、
+# self-hosted runner のホスト共有 CARGO_TARGET_DIR 注入対策）。
+FULLSCRATCH_BIN="${FULLSCRATCH_BIN:-${BENCH_TARGET_DIR}/release/examples/ws_echo}"
+# AXUM_BIN は上記「前提」コメントどおり `--target-dir target/ws-bench` を明示指定して
+# ビルドする専用出力先（cargo の `--target-dir` CLI 引数は `CARGO_TARGET_DIR` env より
+# 優先されるため、ホスト共有 CARGO_TARGET_DIR 注入の影響を受けない。BENCH_TARGET_DIR
+# 化の対象外）。
 AXUM_BIN="${AXUM_BIN:-${WORKSPACE_ROOT}/target/ws-bench/release/axum-ref}"
-CLIENT_BIN="${CLIENT_BIN:-${WORKSPACE_ROOT}/target/release/ws-load-client}"
+CLIENT_BIN="${CLIENT_BIN:-${BENCH_TARGET_DIR}/release/ws-load-client}"
 
 FULLSCRATCH_HOST="${FULLSCRATCH_HOST:-127.0.0.1}"
 FULLSCRATCH_PORT="${FULLSCRATCH_PORT:-3007}"
