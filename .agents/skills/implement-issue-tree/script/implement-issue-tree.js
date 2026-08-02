@@ -2109,17 +2109,8 @@ async function runMergeLoop(item, impl, initialFixCount, initialWorktreePath) {
       // 永続化失敗を明記する。次回実行時は monitor が手順 1 で PR の MERGED 状態を検出して
       // 即 merged を返すため、再監視ループには入らない（冪等）
       {
-        // branch を patch に持たせて deleteBranch: true を渡す 2 段階構成にする理由:
-        // updateState の deleteBranch は patch.branch を削除対象として読むため（本ファイル
-        // 上部の options.deleteBranch 説明・Recover discard 経路と同じ約束）、branch を
-        // 省くと削除対象が空になり無言の no-op になる。
-        // ローカルブランチも消す理由: merge エージェントの `gh pr merge --delete-branch` は
-        // 当該ブランチが追跡中 worktree にチェックアウトされたままの時点で実行されるため
-        // ローカル削除だけが必ず失敗し、リモート削除済みの孤児ブランチが溜まる。
-        // ここでは worktree 削除の後に実行されるため（順序は updateState 側が保証）、
-        // チェックアウト衝突なく削除できる。baseBranch と同名の場合は updateState が握り潰す。
-        const mergedPatch = { status: 'merged', pr: impl.prNumber, fixCount, worktree: currentWorktreePath, branch: impl.branch }
-        const mergedOpts = { cleanupWorktree: currentWorktreePath, deleteBranch: true }
+        const mergedPatch = { status: 'merged', pr: impl.prNumber, fixCount, worktree: currentWorktreePath }
+        const mergedOpts = { cleanupWorktree: currentWorktreePath }
         const mergedOk = await updateState(item.number, mergedPatch, mergedOpts)
         if (!mergedOk) {
           log(`⚠️ issue #${item.number}: merged 状態のリトライ書き込みを試みる`)
