@@ -98,6 +98,10 @@ self-hosted runner がホスト共有の `CARGO_TARGET_DIR=/cargo-target` を
 `CARGO_TARGET_DIR: ${{ github.workspace }}/target` を設定し、ホスト共有
 target から隔離することでこの問題を回避している。
 
+導出ロジックのオフライン・セルフテストは
+`bash scripts/tests/run-bench-target-dir-tests.sh`（cargo/oha/ネットワーク非依存、
+優先順位・相対パス絶対化・cargo/jq 不在時のフォールバックを回帰検証）。
+
 ## 出力の読み方（実行結果例）
 
 以下は `RUNS=5 DURATION=15s CONNECTIONS=128` で `crates/axum-ref` を対象に実行した結果例
