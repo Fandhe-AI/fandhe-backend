@@ -309,14 +309,11 @@ nfr6_run_with_fail_retry() {
     # PASS（0）・BLOCKED（2）は再試行しない。FAIL（1）のみが再試行対象。
     # FAIL が続く限り、残り再試行回数が尽きるまでループする。
     #
-    # BLOCKED（2）は上記の呼び出し対象コマンド側契約により決定論的な環境失敗を
-    # 意味するため、ここで観測ログを出して即座に返す（週次 run のログから
-    # 「契約どおり再試行がスキップされた」ことを追跡可能にする。終了コード・
-    # 戻り値契約自体は変えない、イシュー #479）。
-    if [ "${status}" -eq "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}" ]; then
-        echo "BLOCKED（終了コード ${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}）のため再試行しません（決定論的失敗は再試行対象外）" >&2
-    fi
-
+    # BLOCKED（2）への到達を検知した直後にここで観測ログを出す想定だったが、
+    # 初回呼び出し直後の 1 箇所だけに置くと「1 回目 FAIL → 2 回目以降の再試行で
+    # BLOCKED へ遷移する」ケースでログが出ない（ループ内で status が更新されても
+    # このチェックを再度通らないため）。BLOCKED は初回・再試行ループ内のどちらでも
+    # 発生しうるため、判定はループの後（脱出直後）に一本化する（イシュー #479）。
     while [ "${status}" -eq 1 ] && [ "${retries_left}" -gt 0 ]; do
         echo "FAIL（終了コード 1）を検知。単発ノイズの可能性があるため、静穏確認をやり直して再試行します（残り再試行回数: ${retries_left} → $((retries_left - 1))）" >&2
         retries_left=$((retries_left - 1))
@@ -334,6 +331,17 @@ nfr6_run_with_fail_retry() {
     if [ "${status}" -eq 1 ]; then
         echo "再試行をすべて使い切っても FAIL（終了コード 1）。退行として確定します" >&2
     fi
+
+    # 上記の呼び出し対象コマンド側契約により、決定論的な環境失敗を意味する
+    # BLOCKED（2）に到達した場合はここで観測ログを出す（週次 run のログから
+    # 「契約どおり再試行がスキップされた／打ち切られた」ことを追跡可能にする。
+    # 初回呼び出し直後・再試行ループ内のどちらで BLOCKED へ遷移しても本行を
+    # 必ず通るため、両ケースを 1 箇所で観測できる。終了コード・戻り値契約自体は
+    # 変えない、イシュー #479）。
+    if [ "${status}" -eq "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}" ]; then
+        echo "BLOCKED（終了コード ${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}）のため再試行しません（決定論的失敗は再試行対象外）" >&2
+    fi
+
     return "${status}"
 }
 
