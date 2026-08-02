@@ -1,0 +1,19 @@
+# 開発用 Docker Compose 定義。`make docker-shell` でコンテナに入り、`make docker-test`
+# で環境非依存のテスト実行を再現する。リポジトリを /work へマウントし、cargo レジストリと
+# target をボリュームに逃がして再ビルドを高速化する（ホスト側 target/ とは分離される）。
+services:
+  dev:
+    build: .
+    working_dir: /work
+    volumes:
+      - .:/work
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target-cache:/work/target
+    tty: true
+    stdin_open: true
+
+volumes:
+  cargo-registry:
+  cargo-git:
+  target-cache:

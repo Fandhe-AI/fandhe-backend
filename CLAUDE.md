@@ -34,6 +34,14 @@ fandhe-backend/
 ├── LICENSE-APACHE         # Apache License 2.0（デュアルライセンスの一方、イシュー #94）
 ├── CONTRIBUTING.md        # 貢献ガイド（開発フロー・コミット規約・設計原則・ライセンス同意、イシュー #94）
 ├── skills-lock.json       # 導入スキルのロック
+├── Makefile               # 開発タスクの入口（setup / build / test / lint / audit / docker-*。
+│                            # CI と同一コマンドをローカル再現、`make help` で一覧）
+├── lefthook.yml           # git hooks 定義（pre-commit: cargo fmt --check、commit-msg:
+│                            # Conventional Commits 検証。`make hooks` で配線）
+├── .editorconfig          # エディタ設定統一（Rust 4 スペース・YAML/TOML 等 2 スペース）
+├── Dockerfile             # 開発用コンテナイメージ（rust:slim + rustfmt/clippy。本番配布用ではない）
+├── compose.yaml           # 開発用 Docker Compose（`make docker-shell` / `make docker-test`。
+│                            # cargo レジストリ・target をボリュームで高速化）
 ├── docs/
 │   ├── spec/               # 仕様書 submodule（要件・タスク・ロードマップ）
 │   ├── design/             # リポジトリ側設計ドキュメント（実装フェーズの設計判断を記録）
@@ -407,6 +415,8 @@ fandhe-backend/
 │   ├── dep-audit.sh                   # 全 feature 構成の cargo audit / cargo deny check（ci.yml dep-audit ジョブ）
 │   ├── dep-impact.sh                  # 依存クレート数・バイナリサイズ・unsafe 件数の計測（markdown 出力）
 │   ├── setup-required-checks.sh       # main の required status check（ci-complete）設定（TASK-14.1、#39）
+│   ├── commit-msg-check.sh            # Conventional Commits 形式のシェル検証（lefthook の
+│   │                                    # commit-msg フックから呼ばれる。外部依存なし）
 │   ├── openapi-two-stage.sh           # gen-openapi --check → cargo build --all-features の 2 段階ビルド検証（TASK-3.2、#31）
 │   ├── openapi-ts.sh                  # gen-openapi --check → ts/ の schema.d.ts 鮮度検証 → tsc --noEmit の openapi-typescript 連携パイプライン検証（TASK-6.1、#54）
 │   ├── openapi-ts-negative.sh         # openapi-ts.sh の陰性対照（意図的な型不一致の tsc --noEmit エラー検出）CI 常設検証（TASK-6.2、#55）

@@ -1,0 +1,20 @@
+# Git hooks 定義（lefthook）。`make hooks`（lefthook install）で .git/hooks へ配線する。
+# pre-commit は高速性を優先し cargo fmt --check のみ（clippy / test は CI が担う、
+# .github/workflows/ci.yml）。commit-msg は Conventional Commits 形式を検証する
+# （.claude/rules/conventional-commits.md）。`--no-verify` でのスキップは禁止
+# （CONTRIBUTING.md・.claude/rules/conventional-commits.md）。
+
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      # .rs がステージされたときのみ workspace 全体の整形差分を検査する
+      # （CI の fmt ジョブと同一コマンド。自動修正はしない）
+      glob: "*.rs"
+      run: cargo fmt --all --check
+
+commit-msg:
+  commands:
+    conventional-commits:
+      # 外部依存なしのシェル検証（詳細は scripts/commit-msg-check.sh 冒頭コメント）
+      run: bash scripts/commit-msg-check.sh "{1}"

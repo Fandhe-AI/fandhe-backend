@@ -61,6 +61,10 @@ git submodule update --init
   `plugin-websocket`, `plugin-graphql`, `plugin-openapi`, `bench`, `ci`）。workspace 横断は `global`
 - Breaking Change は `feat!:` または footer に `BREAKING CHANGE: <説明>` を明記します
 - pre-commit / commit-msg フックは必ず通してください（`--no-verify` は使用不可）
+- フックは [lefthook](https://lefthook.dev/)（`lefthook.yml`）で管理します。クローン後に
+  `make setup`（または `make hooks`）で `.git/hooks` へ配線してください。pre-commit は
+  `cargo fmt --all --check`、commit-msg は Conventional Commits 形式検証
+  （`scripts/commit-msg-check.sh`）を実行します
 
 ## 設計原則
 
