@@ -23,11 +23,64 @@ CONNECTIONS="${CONNECTIONS:-128}"
 # 呼び出し元スクリプトの1階層上（benches/ の親）を基準にする。
 WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# 実効 target ディレクトリ（cargo build の実際の出力先）を導出する（イシュー #480）。
+#
+# 背景: 週次ベンチ（bench-schedule.yml）で `cargo build --release` 成功直後に
+# `${WORKSPACE_ROOT}/target/release/axum-ref` が「見つからない」事象が発生した。
+# 調査の結果、self-hosted runner フリートは同一 org（Fandhe-AI）の他リポジトリ
+# （fandhe-frontend）の CI が明示的に前提としているとおり、ホスト共有の
+# `CARGO_TARGET_DIR=/cargo-target` をジョブに注入する構成であることが濃厚（詳細・
+# 一次証拠は benches/reports/issue480-target-dir-investigation.md）。この場合
+# `cargo build` の実際の成果物は `${WORKSPACE_ROOT}/target` ではなく
+# `${CARGO_TARGET_DIR}` 配下に生成され、`${WORKSPACE_ROOT}/target/release/axum-ref`
+# 決め打ちのパスには最初から存在しない（「消失」ではなく「そもそも生成されていない」）。
+#
+# 導出順序（優先度順。副作用・コストの低い順に評価し、`set -euo pipefail` 下で
+# source されるこのファイルが cargo/jq 不在時や manifest 未解決時に落ちないよう
+# 各段を安全側にフォールバックする）:
+#   1. `CARGO_TARGET_DIR` env が非空ならそれをそのまま使う（相対パス指定時は
+#      WORKSPACE_ROOT 基準で絶対化する。cargo 自身の解釈と同じ）。観測された
+#      失敗の直接原因はこの env 注入のため、追加プロセス起動なしで最短経路にする。
+#   2. 上記が未設定なら `cargo metadata --no-deps` の `target_directory`
+#      （`CARGO_TARGET_DIR` env・`.cargo/config.toml` の `build.target-dir` の
+#      両方を正しく反映する cargo 自身の権威値）を使う。ただし `Cargo.lock` は
+#      gitignore 対象で常に存在するとは限らず、`cargo metadata` はロックファイル
+#      未解決時にネットワークアクセス・書き込みを伴いうるため、専有ロック保持中の
+#      呼び出し元（bench-accept-exclusive.sh）で不用意に走らせないよう 1. で
+#      先に短絡させる。失敗時（cargo/jq 不在・manifest 未解決等）は例外を
+#      呼び出し元に伝播させず空文字にフォールバックする。
+#   3. いずれも得られない場合は従来どおり `${WORKSPACE_ROOT}/target`。
+#
+# 注意: ここでは `CARGO_TARGET_DIR` そのものを export しない（cargo の実際の
+# ビルド挙動を暗黙に変えないため）。各スクリプトのバイナリパス既定値の算出にのみ
+# `BENCH_TARGET_DIR` を使う（read-only な参照値）。
+_bench_derive_target_dir() {
+    if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+        case "${CARGO_TARGET_DIR}" in
+            /*) printf '%s\n' "${CARGO_TARGET_DIR}" ;;
+            *) printf '%s\n' "${WORKSPACE_ROOT}/${CARGO_TARGET_DIR}" ;;
+        esac
+        return 0
+    fi
+    if command -v cargo >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+        local dir
+        dir="$(cargo metadata --format-version 1 --no-deps --manifest-path "${WORKSPACE_ROOT}/Cargo.toml" 2>/dev/null \
+            | jq -r '.target_directory // empty' 2>/dev/null || true)"
+        if [ -n "${dir}" ]; then
+            printf '%s\n' "${dir}"
+            return 0
+        fi
+    fi
+    printf '%s\n' "${WORKSPACE_ROOT}/target"
+}
+BENCH_TARGET_DIR="${BENCH_TARGET_DIR:-$(_bench_derive_target_dir)}"
+
 # 計測対象。既定は axum-ref だが、TASK-1.6 でフルスクラッチコアに差し替えて
-# 同一スクリプトを再利用できるようにする。既定値は WORKSPACE_ROOT からの絶対パスに
-# 解決し、カレントディレクトリに依存せず常に同じバイナリを指すようにする
+# 同一スクリプトを再利用できるようにする。既定値は BENCH_TARGET_DIR（実効
+# target ディレクトリ）からの絶対パスに解決し、カレントディレクトリにも
+# 「ビルドが `${WORKSPACE_ROOT}/target` へ出力される」という前提にも依存しない
 # （TARGET_BIN を環境変数で明示的に上書きした場合はその値をそのまま使う）。
-TARGET_BIN="${TARGET_BIN:-${WORKSPACE_ROOT}/target/release/axum-ref}"
+TARGET_BIN="${TARGET_BIN:-${BENCH_TARGET_DIR}/release/axum-ref}"
 TARGET_HOST="${TARGET_HOST:-127.0.0.1}"
 TARGET_PORT="${TARGET_PORT:-3001}"
 TARGET_URL="${TARGET_URL:-http://${TARGET_HOST}:${TARGET_PORT}}"
@@ -177,4 +230,4 @@ validate_numeric() {
     fi
 }
 
-export RUNS DURATION CONNECTIONS TARGET_BIN TARGET_HOST TARGET_PORT TARGET_URL WORKSPACE_ROOT
+export RUNS DURATION CONNECTIONS TARGET_BIN TARGET_HOST TARGET_PORT TARGET_URL WORKSPACE_ROOT BENCH_TARGET_DIR

@@ -408,7 +408,12 @@ fandhe-backend/
 │   │                                    # task-2.4-plugin-accept.md）。`FAIL_RETRIES`（既定 0）で
 │   │                                    # 単発 FAIL の限定再試行に対応（#285、`.github/workflows/
 │   │                                    # bench-schedule.yml` から週次 + workflow_dispatch で定期
-│   │                                    # 実行し、REQ-1/NFR-1 の性能退行を継続検知する）
+│   │                                    # 実行し、REQ-1/NFR-1 の性能退行を継続検知する）。ビルド
+│   │                                    # 成功直後・静穏確認前に baseline/core バイナリの実在を
+│   │                                    # 検査する fail-fast を追加（イシュー #480。self-hosted
+│   │                                    # runner のホスト共有 `CARGO_TARGET_DIR` 注入により決め打ち
+│   │                                    # パスに成果物が見つからない事象への対処、
+│   │                                    # `benches/lib/common.sh` の `BENCH_TARGET_DIR` 導出と対）
 │   └── bench-http.sh / bench-rss.sh / bench-footprint.sh  # RPS・負荷時 RSS・起動時間/バイナリサイズ計測
 ├── scripts/               # CI・運用スクリプト（TASK-15.2 で追加）
 │   ├── README.md                      # 使い方・前提ツール・CI との対応

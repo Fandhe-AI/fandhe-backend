@@ -102,6 +102,50 @@ REPORT_MD へ重複追記される（イシュー #476 で実証、#478 で base
 exit コードを 1 → 2 へ統一して実害を解消済み、#479 で契約自体を
 `nfr6_run_with_fail_retry` の doc comment・`benches/README.md` へ明文化）。
 
+## `CARGO_TARGET_DIR` 隔離と実効パス導出（イシュー #480）
+
+2026-08-02 の週次実行（run 30729910081）で、`cargo build --release` 成功
+直後に `target/release/axum-ref` が見つからず BLOCKED になる事象が発生した
+（詳細な一次証拠・タイムライン・確度の内訳は
+`benches/reports/issue480-target-dir-investigation.md` 参照）。
+
+**根本原因（高確度）**: self-hosted runner フリート（org: Fandhe-AI）は、
+同一 org の他リポジトリ（fandhe-frontend）の CI が明示的に前提とするとおり、
+ホスト共有の `CARGO_TARGET_DIR=/cargo-target` をジョブへ注入する構成である
+可能性が高い。この場合 `cargo build` の成果物はリポジトリ直下の `target/`
+ではなく `/cargo-target` 配下に生成され、`benches/lib/common.sh` 等が決め
+打ちしていた `${WORKSPACE_ROOT}/target/release/...` には最初から存在しない
+（「ビルド成功直後に消失した」のではなく「そのパスには最初から生成されて
+いない」が実態）。実機（runner）への直接アクセスができない開発環境からの
+調査のため「確証」ではなく「高確度の推定」に留まる点、および対応が
+この推定の正否に依存しない設計にしてある点は上記レポートの 4・5 節を参照。
+
+**対応（2 層防御）**:
+
+1. **ジョブローカル `CARGO_TARGET_DIR` の設定**: `bench-accept` ジョブへ
+   `env: CARGO_TARGET_DIR: ${{ github.workspace }}/target` を設定し、
+   ホスト共有 `/cargo-target` から意図的に隔離する。これは
+   `benches/lib/common.sh` 側の対応がなくても単独で症状を解消する
+   （fandhe-frontend #1192 で実証済みの「共有 target 上の成果物汚染」
+   リスクの回避も兼ねる）。
+2. **`BENCH_TARGET_DIR` による実効パス導出**: `benches/lib/common.sh` に
+   実効 target ディレクトリを導出するヘルパーを追加した。優先順位は
+   (a) `CARGO_TARGET_DIR` env（非空なら最優先、相対パスは workspace 基準で
+   絶対化）、(b) `cargo metadata --no-deps` の `target_directory`
+   （`.cargo/config.toml` の `build.target-dir` も正しく反映する cargo
+   自身の権威値。ただし `Cargo.lock` が gitignore 対象でネットワーク
+   アクセスを伴いうるため 専有ロック保持中の呼び出し元では (a) で
+   短絡させる）、(c) 従来どおり `${WORKSPACE_ROOT}/target`。ベンチ各
+   スクリプトの `TARGET_BIN` / `BASELINE_BIN` / `CORE_BIN` 等の既定値は
+   すべてこの `BENCH_TARGET_DIR` を基準にする。2 層目を持つ理由は、
+   1 層目（ジョブローカル env）を将来のリファクタで見落としても実効パスの
+   決め打ち依存が残らないようにするため。
+3. **ビルド直後の fail-fast**: `bench-accept-exclusive.sh` は静穏確認
+   （最大 30 分待機）に入る前にバイナリの実在を検査し、欠如時は
+   `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`（2）で即 BLOCKED 終了する。
+   欠如は静穏待機を待っても解消しないため、待機を浪費せず早期に検出する
+   （`bench-accept.sh` 側の FAIL/BLOCKED 判定〔#478 の担当範囲〕とは独立）。
+
 ## セキュリティ考慮（OWASP Top 10 観点）
 
 - **最小権限（A01/A05）**: workflow 全体は `permissions: contents: read`。
@@ -121,7 +165,11 @@ exit コードを 1 → 2 へ統一して実害を解消済み、#479 で契約�
   ホスト上の他計測との相互排他・週次実行で負荷を抑制する。
 - **サプライチェーン（A06/A08）**: `actions/checkout` は既存 workflow と同一
   コミット SHA に固定する。`oha` 導入は `cargo install --locked` + バージョン
-  固定（dep-audit の cargo-deny/audit 導入ステップと同型）。
+  固定（dep-audit の cargo-deny/audit 導入ステップと同型）。ジョブローカル
+  `CARGO_TARGET_DIR`（イシュー #480）は、ホスト共有 `/cargo-target` 上で
+  他リポジトリ・他 runner ジョブの成果物と混ざる・上書きされるリスク
+  （fandhe-frontend #1192 で実証済み）を排除し、計測対象バイナリの完全性を
+  保証する。
 - **秘密情報・ログ（A09）**: 使用トークンは `${{ github.token }}` のみ。ベンチ
   出力・環境スナップショット（loadavg・プロセス名）に機密は含まれず、Issue
   本文にも計測結果と run URL のみ記載する。

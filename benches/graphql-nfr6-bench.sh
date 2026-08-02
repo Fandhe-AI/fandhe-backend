@@ -34,7 +34,8 @@ _CALLER_DURATION="${DURATION-}"
 _CALLER_CONNECTIONS="${CONNECTIONS-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# WORKSPACE_ROOT・BENCH_TARGET_DIR は lib/common.sh が導出・export する
+# （イシュー #480、BENCH_TARGET_DIR の優先順位は common.sh 冒頭コメント参照）。
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
@@ -42,8 +43,10 @@ RUNS="${RUNS:-5}"
 DURATION="${_CALLER_DURATION:-5s}"
 CONNECTIONS="${_CALLER_CONNECTIONS:-32}"
 
-BASELINE_BIN="${WORKSPACE_ROOT}/target/release/examples/minimal"
-GRAPHQL_BIN="${WORKSPACE_ROOT}/target/release/examples/graphql_nfr6"
+# BENCH_TARGET_DIR は common.sh が導出する実効 target ディレクトリ（イシュー #480、
+# self-hosted runner のホスト共有 CARGO_TARGET_DIR 注入対策）。
+BASELINE_BIN="${BENCH_TARGET_DIR}/release/examples/minimal"
+GRAPHQL_BIN="${BENCH_TARGET_DIR}/release/examples/graphql_nfr6"
 BASELINE_PORT=3000
 GRAPHQL_PORT=3003
 

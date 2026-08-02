@@ -70,6 +70,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=lib/exclusive.sh
 source "${SCRIPT_DIR}/lib/exclusive.sh"
+# lib/common.sh を source して BENCH_TARGET_DIR（実効 target ディレクトリ導出、
+# イシュー #480）を取得する。本スクリプトはサーバ起動等は行わないため
+# TARGET_BIN 等の他の変数は使わないが、common.sh は関数定義 + 変数代入のみで
+# 副作用を持たないため source してよい（doc comment 参照）。
+# shellcheck source=lib/common.sh
+source "${SCRIPT_DIR}/lib/common.sh"
 
 REPORT_MD="${REPORT_MD:-}"
 # 単発 FAIL の限定再試行回数（既定 0 = 再試行なし、従来挙動と同一）。
@@ -116,6 +122,31 @@ if ! cargo build --release --manifest-path "${WORKSPACE_ROOT}/Cargo.toml" >&2 \
     exit "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}"
 fi
 echo "ビルド完了" >&2
+
+# ビルド直後・静穏確認前に baseline/CORE バイナリの実在を検査する（イシュー #480 fail-fast）。
+#
+# 背景: 週次ベンチで「`cargo build --release` 成功直後に
+# `${WORKSPACE_ROOT}/target/release/axum-ref` が見つからない」事象が発生した
+# （self-hosted runner のホスト共有 `CARGO_TARGET_DIR=/cargo-target` 注入が濃厚な原因、
+# benches/reports/issue480-target-dir-investigation.md）。この欠如は静穏確認
+# （最大 30 分）を待っても解消しないため、ここで即座に検出して BLOCKED 終了する。
+# 待機を浪費せず、かつ `bench-accept.sh` 側の判定（FAIL=退行確定）と混同しない
+# （フェイルクローズ、#478 の FAIL/BLOCKED 誤分類とは別観点の対処）。
+# パス導出は `bench-accept.sh` と同一（lib/common.sh の BENCH_TARGET_DIR）を
+# BASELINE_BIN/CORE_BIN の env で共有する。
+_ACCEPT_BASELINE_BIN="${BASELINE_BIN:-${BENCH_TARGET_DIR}/release/axum-ref}"
+_ACCEPT_CORE_BIN="${CORE_BIN:-${BENCH_TARGET_DIR}/release/examples/core-bench}"
+if [ ! -x "${_ACCEPT_BASELINE_BIN}" ] || [ ! -x "${_ACCEPT_CORE_BIN}" ]; then
+    echo "BLOCKED: ビルド成功直後にもかかわらず計測対象バイナリが見つかりません" >&2
+    echo "         baseline: ${_ACCEPT_BASELINE_BIN}（存在: $([ -x "${_ACCEPT_BASELINE_BIN}" ] && echo yes || echo no)）" >&2
+    echo "         core    : ${_ACCEPT_CORE_BIN}（存在: $([ -x "${_ACCEPT_CORE_BIN}" ] && echo yes || echo no)）" >&2
+    echo "         実効 target dir（BENCH_TARGET_DIR=${BENCH_TARGET_DIR}）が cargo の実際の" >&2
+    echo "         ビルド出力先と一致しているか確認してください（CARGO_TARGET_DIR env・" >&2
+    echo "         .cargo/config.toml の build.target-dir が原因で食い違うことがあります。" >&2
+    echo "         イシュー #480、benches/reports/issue480-target-dir-investigation.md 参照）" >&2
+    write_blocked_conclusion "ビルド直後のバイナリ未検出（実効 target dir 不一致の疑い、イシュー #480）のため判定不能"
+    exit "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}"
+fi
 
 echo "--- 静穏確認（LOAD1_MAX=${LOAD1_MAX} QUIESCE_WAIT_SECS=${QUIESCE_WAIT_SECS}） ---" >&2
 if ! wait_for_quiescence; then

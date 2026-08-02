@@ -35,11 +35,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 
 # --- 計測パラメータ（env で上書き可能。既定は lib/common.sh の RUNS/DURATION/CONNECTIONS を継承） ---
-BASELINE_BIN="${BASELINE_BIN:-${WORKSPACE_ROOT}/target/release/axum-ref}"
+# 既定値は BENCH_TARGET_DIR（lib/common.sh が導出する実効 target ディレクトリ、
+# イシュー #480）を基準にする。self-hosted runner がホスト共有
+# `CARGO_TARGET_DIR=/cargo-target` を注入する構成では `${WORKSPACE_ROOT}/target`
+# 決め打ちのパスにビルド成果物が生成されないため（詳細は
+# benches/reports/issue480-target-dir-investigation.md）。
+BASELINE_BIN="${BASELINE_BIN:-${BENCH_TARGET_DIR}/release/axum-ref}"
 # CORE_BIN の既定値は core-bench example の出力パス（TASK-1.6-3 / #168）。
 # `cargo build --release --example core-bench -p fandhe-backend-core` の出力先
 # （下の「ビルド」節を参照）。CORE_BIN で任意のパスに上書き可能。
-CORE_BIN="${CORE_BIN:-${WORKSPACE_ROOT}/target/release/examples/core-bench}"
+CORE_BIN="${CORE_BIN:-${BENCH_TARGET_DIR}/release/examples/core-bench}"
 BASELINE_HOST="${BASELINE_HOST:-127.0.0.1}"
 CORE_HOST="${CORE_HOST:-127.0.0.1}"
 # baseline/core を同時起動しないが、直前の計測の TIME_WAIT 残留と衝突しないよう
@@ -124,6 +129,10 @@ if [ ! -x "${BASELINE_BIN}" ]; then
     echo
     echo "baseline バイナリ（BASELINE_BIN=${BASELINE_BIN}）が見つかりません。"
     echo "'cargo build --release' が成功しているか確認するか、BASELINE_BIN で既存バイナリのパスを指定して再実行してください。"
+    echo "実効 target dir（BENCH_TARGET_DIR=${BENCH_TARGET_DIR}）が cargo の実際のビルド出力先と"
+    echo "一致しているか確認してください（CARGO_TARGET_DIR env・.cargo/config.toml の"
+    echo "build.target-dir が原因で食い違うことがあります。イシュー #480、"
+    echo "benches/reports/issue480-target-dir-investigation.md 参照）"
     if [ -n "${REPORT_MD}" ]; then
         {
             echo
@@ -153,6 +162,9 @@ if [ ! -x "${CORE_BIN}" ]; then
     echo "コア側計測用バイナリ（CORE_BIN=${CORE_BIN}）が見つかりません。"
     echo "'cargo build --release --example core-bench -p fandhe-backend-core' が"
     echo "成功しているか確認するか、CORE_BIN で既存バイナリのパスを指定して再実行してください。"
+    echo "実効 target dir（BENCH_TARGET_DIR=${BENCH_TARGET_DIR}）が cargo の実際のビルド出力先と"
+    echo "一致しているか確認してください（CARGO_TARGET_DIR env・.cargo/config.toml の"
+    echo "build.target-dir が原因で食い違うことがあります。イシュー #480 参照）"
     if [ -n "${REPORT_MD}" ]; then
         {
             echo

@@ -70,11 +70,37 @@ RUNS=3 DURATION=3s CONNECTIONS=16 ./benches/bench-http.sh
 | `RUNS` | `5` | 計測回数（最低 3。中央値評価の前提を満たすため） |
 | `DURATION` | `15s` | oha の負荷印加継続時間 |
 | `CONNECTIONS` | `128` | oha の同時接続数 |
-| `TARGET_BIN` | `target/release/axum-ref` | 計測対象バイナリ（TASK-1.6 でフルスクラッチコアに差し替え可能） |
+| `TARGET_BIN` | `${BENCH_TARGET_DIR}/release/axum-ref` | 計測対象バイナリ（TASK-1.6 でフルスクラッチコアに差し替え可能。`BENCH_TARGET_DIR` は下記「実効 target ディレクトリの導出」参照） |
 | `TARGET_HOST` | `127.0.0.1` | バインド先ホスト（既定でループバックのみ、外部公開しない） |
 | `TARGET_PORT` | `3001` | バインド先ポート |
 | `SAMPLE_INTERVAL_SEC`（bench-rss.sh のみ） | `1` | 負荷印加中の RSS サンプリング間隔（秒） |
 | `RESULT_JSON`（bench-http.sh / bench-rss.sh / bench-footprint.sh） | 未指定 | 指定時、計測結果（中央値・raw 値）を機械可読 JSON として当該パスに書き出す（人間可読 stdout は変更なし）。`bench-accept.sh` が比較判定の入力として使う |
+
+### 実効 target ディレクトリの導出（`BENCH_TARGET_DIR`、イシュー #480）
+
+`lib/common.sh` は `cargo build` の実際の出力先を `BENCH_TARGET_DIR` として
+導出し、`TARGET_BIN` 等のバイナリパス既定値はすべてこれを基準にする
+（`${WORKSPACE_ROOT}/target` 決め打ちは行わない）。導出優先順位:
+
+1. `CARGO_TARGET_DIR` 環境変数が非空ならそのまま使う（相対パスは
+   workspace ルート基準で絶対化）。
+2. 未設定なら `cargo metadata --no-deps` の `target_directory`
+   （`CARGO_TARGET_DIR` env・`.cargo/config.toml` の `build.target-dir` の
+   両方を正しく反映する cargo 自身の権威値）を使う。
+3. いずれも得られない場合は従来どおり `${WORKSPACE_ROOT}/target`。
+
+self-hosted runner がホスト共有の `CARGO_TARGET_DIR=/cargo-target` を
+ジョブへ注入する構成の場合、決め打ちパスにはビルド成果物が生成されず
+「ビルド成功直後にバイナリが見つからない」事象が発生する（詳細な調査は
+`benches/reports/issue480-target-dir-investigation.md`、対応設計は
+`docs/design/bench-scheduled-run.md` 参照）。週次実行
+（`.github/workflows/bench-schedule.yml`）はジョブへ
+`CARGO_TARGET_DIR: ${{ github.workspace }}/target` を設定し、ホスト共有
+target から隔離することでこの問題を回避している。
+
+導出ロジックのオフライン・セルフテストは
+`bash scripts/tests/run-bench-target-dir-tests.sh`（cargo/oha/ネットワーク非依存、
+優先順位・相対パス絶対化・cargo/jq 不在時のフォールバックを回帰検証）。
 
 ## 出力の読み方（実行結果例）
 
@@ -183,7 +209,8 @@ cargo build --release
 cargo build --release --example core-bench -p fandhe-backend-core
 
 # 既定パラメータ（RUNS=5 DURATION=15s CONNECTIONS=128）で実行
-# CORE_BIN 既定値は target/release/examples/core-bench（TASK-1.6-3 / #168）。
+# CORE_BIN 既定値は ${BENCH_TARGET_DIR}/release/examples/core-bench（TASK-1.6-3 / #168、
+# BENCH_TARGET_DIR の導出は上記「実効 target ディレクトリの導出」参照）。
 # ビルド漏れ等で baseline / CORE_BIN いずれかのバイナリが存在しない場合は
 # 判定を実施せず BLOCKED（終了コード 2）で終わる（イシュー #478）
 ./benches/bench-accept.sh

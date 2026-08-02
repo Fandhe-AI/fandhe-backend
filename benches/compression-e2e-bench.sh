@@ -31,15 +31,32 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# common.sh の既定 TARGET_BIN/TARGET_PORT（axum-ref・3001）は他ベンチと
-# 衝突するため、source 前に本スクリプト専用の既定値へ差し替える
-# （common.sh 側は「呼び出し元が明示的に上書きした場合はその値をそのまま使う」
-# 契約のため、ここでの export が優先される）。
-export TARGET_BIN="${TARGET_BIN:-${SCRIPT_DIR}/../target/release/examples/compression_e2e_bench}"
+# TARGET_BIN の実効 target ディレクトリ（BENCH_TARGET_DIR、イシュー #480）は
+# common.sh の source 後でないと導出できない一方、common.sh は「TARGET_BIN が
+# 未設定なら axum-ref の既定値で埋める」契約のため、source 前に呼び出し元が
+# 明示指定していたかどうかをここで記録しておく（`${TARGET_BIN+x}` は変数が
+# 未設定なら空、設定済みなら値の中身によらず "x" になる存在検査）。
+_TARGET_BIN_USER_SET="${TARGET_BIN+x}"
+
+# TARGET_PORT は common.sh の既定（axum-ref 用・3001）と衝突するため、
+# source 前に本スクリプト専用の既定値へ差し替える（common.sh 側は「呼び出し元が
+# 明示的に上書きした場合はその値をそのまま使う」契約のため、ここでの export が
+# 優先される）。
 export TARGET_PORT="${TARGET_PORT:-3011}"
 
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
+
+# 呼び出し元が TARGET_BIN を明示指定していなかった場合のみ、BENCH_TARGET_DIR
+# （common.sh が導出する実効 target ディレクトリ）を基準に本スクリプト専用の
+# 既定値（compression_e2e_bench example）へ差し替える。common.sh は source 時に
+# 独自既定（axum-ref）で TARGET_BIN を埋めてしまうため、ここで明示的に
+# 上書きする必要がある（明示指定済みの場合は common.sh がその値をそのまま
+# 使用済みのため触らない）。
+if [ -z "${_TARGET_BIN_USER_SET}" ]; then
+    export TARGET_BIN="${BENCH_TARGET_DIR}/release/examples/compression_e2e_bench"
+fi
+unset _TARGET_BIN_USER_SET
 
 check_dependencies
 check_runs_minimum
