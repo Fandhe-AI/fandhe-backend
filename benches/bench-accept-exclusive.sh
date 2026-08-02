@@ -44,7 +44,10 @@
 # （bench-schedule.yml）」節を参照。0（既定）は再試行なしの従来挙動のまま。
 # BLOCKED（終了コード 2）は再試行しない（計測環境自体が壊れているため意味がなく、
 # フェイルクローズで即座に BLOCKED を返す。再試行前の静穏確認自体が得られなかった
-# 場合も同様に BLOCKED を返す）。
+# 場合も同様に BLOCKED を返す）。呼び出し対象コマンド（`bench-accept.sh`）が決定論的な
+# 環境失敗を exit 1 で返さないこと（exit 1 は非決定的な計測 FAIL 専用）という契約は
+# `nfr6_run_with_fail_retry`（`benches/lib/exclusive.sh`）の doc comment・
+# `benches/README.md` の再試行規約節を参照（イシュー #479）。
 #
 # 終了コード: `bench-accept.sh` の終了コードをそのまま透過する
 # （0 = 全項目 PASS、1 = 1 件以上 FAIL、2 = baseline（axum-ref）/ CORE_BIN いずれかの

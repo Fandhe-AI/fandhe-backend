@@ -93,6 +93,15 @@ self-hosted runner のリソース逼迫（他ジョブとの同時実行等）�
 `QUIESCE_WAIT_SECS` の見直しや runner 増強を検討する（本イシューのスコープ外、
 必要であれば別途 Issue 化する）。
 
+`nfr6_run_with_fail_retry`（`benches/lib/exclusive.sh`）は呼び出し対象コマンドに
+「決定論的な環境失敗は終了コード 1（FAIL）で返さず BLOCKED（終了コード 2）で
+返す」契約を課している。この契約が守られないと、決定論的失敗をノイズ起因の
+FAIL と誤認して無意味な再試行（静穏待機込み）が発生し、`bench-accept.sh` の
+追記型レポート生成が複数回呼ばれて同一文言の「## 結論」セクションが
+REPORT_MD へ重複追記される（イシュー #476 で実証、#478 で baseline 欠如の
+exit コードを 1 → 2 へ統一して実害を解消済み、#479 で契約自体を
+`nfr6_run_with_fail_retry` の doc comment・`benches/README.md` へ明文化）。
+
 ## `CARGO_TARGET_DIR` 隔離と実効パス導出（イシュー #480）
 
 2026-08-02 の週次実行（run 30729910081）で、`cargo build --release` 成功
