@@ -85,8 +85,10 @@ CI に常設されておらず**、2026-07-18 の再計測 PASS（`benches/repor
 
 ### BLOCKED の扱い
 
-BLOCKED（専有ロック取得不能・ビルド失敗・静穏未達のいずれか）は計測そのものが
-成立しなかったことを意味し、PASS へは丸めない。継続的に BLOCKED になる場合は
+BLOCKED（専有ロック取得不能・ビルド失敗・静穏未達・baseline / `CORE_BIN`
+バイナリ未整備のいずれか）は計測そのものが成立しなかったことを意味し、PASS へは
+丸めない（イシュー #478 で baseline バイナリ欠如も本 BLOCKED 契約へ統一し、
+「性能退行 FAIL」との誤起票を解消した）。継続的に BLOCKED になる場合は
 self-hosted runner のリソース逼迫（他ジョブとの同時実行等）を疑い、
 `QUIESCE_WAIT_SECS` の見直しや runner 増強を検討する（本イシューのスコープ外、
 必要であれば別途 Issue 化する）。
