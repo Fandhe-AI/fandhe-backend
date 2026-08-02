@@ -68,6 +68,38 @@ git submodule update --init
 
 実装着手の最初のタスクは TASK-1.1（`cargo workspace`・CI 基盤整備）です。
 
+## 開発環境の構築
+
+開発タスクは `Makefile` に集約しています。クローン後に `make setup` を実行すると
+仕様書 submodule の取得と git hooks（lefthook）の配線が完了します。
+
+```bash
+git clone git@github.com:Fandhe-AI/fandhe-backend.git
+cd fandhe-backend
+make setup    # submodule 取得 + lefthook install（pre-commit / commit-msg フック配線）
+
+make help     # ターゲット一覧
+make build    # デフォルト構成のビルド
+make test-all # 全 feature 有効のテスト（doc test 含む）
+make lint     # cargo fmt --check + clippy -D warnings（CI と同一コマンド）
+```
+
+git hooks は [lefthook](https://lefthook.dev/)（`lefthook.yml`）で管理し、pre-commit で
+`cargo fmt --all --check`、commit-msg で Conventional Commits 形式検証
+（`scripts/commit-msg-check.sh`、外部依存なし）を行います。`--no-verify` での
+スキップは禁止です（[`CONTRIBUTING.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/CONTRIBUTING.md) 参照）。
+
+ホスト環境に Rust ツールチェーンを入れずに開発する場合は Docker を使えます
+（`Dockerfile` / `compose.yaml`）:
+
+```bash
+make docker-build  # 開発用イメージのビルド
+make docker-shell  # コンテナのシェルに入る（リポジトリを /work にマウント）
+make docker-test   # コンテナ内で make test-all を実行
+```
+
+エディタ設定は `.editorconfig` で統一しています（Rust は rustfmt と同じ 4 スペース）。
+
 ## コントリビュート
 
 開発フロー・コミット規約・設計原則は [`CONTRIBUTING.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/CONTRIBUTING.md) を参照してください。

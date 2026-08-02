@@ -44,5 +44,7 @@
 ## 厳守事項
 
 - **`--no-verify` 禁止**。pre-commit / commit-msg フックを必ず通す
+  （フックは lefthook で管理: `lefthook.yml`・`scripts/commit-msg-check.sh`、
+  配線は `make hooks`。導入は `lefthook` skill を参照）
 - コミット作成は `create-commit` skill、PR は `create-pr` skill を使う
 - commitlint の詳細は `commitlint` skill を参照

@@ -1,0 +1,27 @@
+# EditorConfig（https://editorconfig.org）: エディタ間でインデント・改行・文字コードを
+# 統一する。Rust は rustfmt（4 スペース）と整合させ、YAML / TOML / Markdown 等は
+# リポジトリ内の既存スタイル（2 スペース）に合わせる。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.rs]
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml,json,toml,js,ts,css,html,sh}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+indent_style = space
+indent_size = 2
+# Markdown は行末 2 スペースが改行の意味を持つため削除しない
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab
