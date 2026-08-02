@@ -278,6 +278,25 @@ retry_status=$?
 assert_eq "BLOCKED（2）は終了コードをそのまま透過する" "2" "${retry_status}"
 assert_eq "BLOCKED ケースは再試行せず呼び出し回数 1 回のみ" "1" "${CALL_COUNT}"
 
+# ケース 4b: 1 → 2（初回 FAIL → 再試行で BLOCKED へ遷移）は再試行ループ「途中」で
+# BLOCKED を返す経路を固定する（イシュー #479。ケース 4「初回から BLOCKED」だけでは
+# ループ内で status が 1 → 2 へ遷移した場合に while 条件
+# `[ "${status}" -eq 1 ]` が偽になり即座にループを抜けることを検証できていなかった）。
+# 呼び出し対象コマンド側の契約（決定論的失敗は exit 1 を返さない）が破られても、
+# 本関数側は BLOCKED を検知した時点で 3 回目の再試行を発生させないことを確認する。
+CALL_COUNT=0
+fail_then_blocked() {
+    CALL_COUNT=$((CALL_COUNT + 1))
+    if [ "${CALL_COUNT}" -eq 1 ]; then
+        return 1
+    fi
+    return 2
+}
+nfr6_run_with_fail_retry 2 fail_then_blocked
+retry_status=$?
+assert_eq "1 回目 FAIL・2 回目 BLOCKED は最終的に終了コード 2" "2" "${retry_status}"
+assert_eq "1→2 ケースの呼び出し回数は 2 回（3 回目の再試行は発生しない）" "2" "${CALL_COUNT}"
+
 # ケース 5: FAIL_RETRIES=0（再試行回数 0）指定時は初回 FAIL がそのまま最終結果になる
 # （既定値・従来挙動の回帰防止）
 CALL_COUNT=0

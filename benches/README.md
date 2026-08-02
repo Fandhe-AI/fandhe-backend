@@ -583,6 +583,13 @@ REQ-1/NFR-1（`docs/spec/04-requirements.md`）の判定は `bench-accept.sh` /
   取得不能・ビルド失敗・静穏未達・baseline / `CORE_BIN` バイナリ未整備）ため
   再試行しても意味がなく、フェイルクローズで即座に BLOCKED を返す（イシュー #478
   で baseline 欠如も本契約に統一）。
+  **呼び出し対象コマンド側の契約（イシュー #479）**: 決定論的な環境失敗
+  （バイナリ欠如・依存ツール欠如等）は終了コード 1（FAIL）で返してはならない。
+  終了コード 1 は非決定的な計測 FAIL 専用であり、決定論的失敗を exit 1 で返すと
+  `nfr6_run_with_fail_retry` がノイズと誤認して無意味な静穏待機を挟んだ再試行を
+  行い、`bench-accept.sh` の追記型レポート生成が複数回呼ばれて同一文言の
+  「## 結論」セクションが重複追記される（#476 で実証）。決定論的失敗は
+  `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`（既定 2）で返すこと。
 - **再試行前の静穏確認（`wait_for_quiescence`）が `QUIESCE_WAIT_SECS` 待っても
   得られなかった場合も BLOCKED として扱う**（PR #291 Bugbot 指摘対応）。ホストが
   混雑しているだけの状態を、直前の FAIL 結果をそのまま採用して性能退行と誤検知

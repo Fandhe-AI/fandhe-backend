@@ -261,6 +261,17 @@ snapshot_environment() {
 # 再試行しない（0 を再試行すると偶然の 1 回 PASS を過大評価しうる。2 は計測環境
 # 自体が壊れているため再試行しても無意味、フェイルクローズで即座に BLOCKED を返す）。
 #
+# 呼び出し対象コマンド側の契約（イシュー #479）: 終了コード 1（FAIL）は
+# **非決定的な計測 FAIL 専用**とする。baseline バイナリ欠如・依存ツール欠如等の
+# 決定論的な環境失敗を exit 1 で返すと、本関数がノイズと誤認して無意味な静穏待機
+# （最大 `QUIESCE_WAIT_SECS`）を挟んだ再試行を行い、`bench-accept.sh` の
+# 追記型レポート生成（`write_report_conclusion`）が複数回呼ばれて同一文言の
+# 「## 結論」セクションが REPORT_MD へ重複追記される（#476 で実証）。呼び出し
+# 対象コマンドは決定論的な環境失敗を `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`
+# （2、BLOCKED）で返す契約とし、本関数はそれをそのまま再試行せず返す
+# （#478 で baseline 欠如の exit コードを 1 → 2 へ統一し実害を解消、本イシューで
+# 契約をここに明文化）。
+#
 # 引数:
 #   $1          残り再試行回数（0 以上の整数。呼び出し元の `FAIL_RETRIES` をそのまま渡す。
 #               `FAIL_RETRIES=N` を指定すると、FAIL が続く限り最大 N 回まで再試行する
@@ -297,6 +308,15 @@ nfr6_run_with_fail_retry() {
 
     # PASS（0）・BLOCKED（2）は再試行しない。FAIL（1）のみが再試行対象。
     # FAIL が続く限り、残り再試行回数が尽きるまでループする。
+    #
+    # BLOCKED（2）は上記の呼び出し対象コマンド側契約により決定論的な環境失敗を
+    # 意味するため、ここで観測ログを出して即座に返す（週次 run のログから
+    # 「契約どおり再試行がスキップされた」ことを追跡可能にする。終了コード・
+    # 戻り値契約自体は変えない、イシュー #479）。
+    if [ "${status}" -eq "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}" ]; then
+        echo "BLOCKED（終了コード ${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}）のため再試行しません（決定論的失敗は再試行対象外）" >&2
+    fi
+
     while [ "${status}" -eq 1 ] && [ "${retries_left}" -gt 0 ]; do
         echo "FAIL（終了コード 1）を検知。単発ノイズの可能性があるため、静穏確認をやり直して再試行します（残り再試行回数: ${retries_left} → $((retries_left - 1))）" >&2
         retries_left=$((retries_left - 1))
