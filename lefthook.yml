@@ -4,6 +4,10 @@
 # （.claude/rules/conventional-commits.md）。`--no-verify` でのスキップは禁止
 # （CONTRIBUTING.md・.claude/rules/conventional-commits.md）。
 
+# lefthook バイナリ不在時にフックを警告のみ（exit 0）で素通しさせず、コミットを失敗させる
+# （フック必須方針の fail-closed 化。バイナリ導入は `make hooks` / lefthook skill 参照）
+assert_lefthook_installed: true
+
 pre-commit:
   parallel: true
   commands:
