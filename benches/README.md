@@ -211,7 +211,8 @@ cargo build --release --example core-bench -p fandhe-backend-core
 # 既定パラメータ（RUNS=5 DURATION=15s CONNECTIONS=128）で実行
 # CORE_BIN 既定値は ${BENCH_TARGET_DIR}/release/examples/core-bench（TASK-1.6-3 / #168、
 # BENCH_TARGET_DIR の導出は上記「実効 target ディレクトリの導出」参照）。
-# ビルド漏れ等でバイナリが存在しない場合は判定を実施せず BLOCKED（終了コード 2）で終わる
+# ビルド漏れ等で baseline / CORE_BIN いずれかのバイナリが存在しない場合は
+# 判定を実施せず BLOCKED（終了コード 2）で終わる（イシュー #478）
 ./benches/bench-accept.sh
 
 # コア側バイナリを明示指定して実行（既定値を上書きしたい場合）
@@ -230,7 +231,7 @@ CORE_BIN=target/release/axum-ref CORE_PORT=3102 ./benches/bench-accept.sh
 |--------|------|
 | `0` | 全項目 PASS |
 | `1` | 1 件以上 FAIL（性能基準未達） |
-| `2` | BLOCKED（`CORE_BIN` が指すバイナリが存在せず判定不能。baseline 側バイナリ欠如も `1` で別途エラー終了） |
+| `2` | BLOCKED（baseline / `CORE_BIN` いずれかのバイナリが存在せず判定不能。イシュー #478 で baseline 欠如も本コードへ統一し、性能 FAIL（`1`）との混同を解消） |
 
 ### 現状（TASK-1.6-3 / #168 実測済み）
 
@@ -547,7 +548,8 @@ REPORT_MD=benches/reports/task-2.4-plugin-accept.md bash benches/bench-accept-ex
 そのまま透過する。
 
 終了コードは `bench-accept.sh` の終了コードをそのまま透過する（0 = 全項目 PASS、
-1 = 1 件以上 FAIL、2 = `CORE_BIN` 未整備で BLOCKED）。事前ビルド失敗・専有ロック取得
+1 = 1 件以上 FAIL、2 = baseline / `CORE_BIN` いずれかのバイナリ未整備で BLOCKED、
+イシュー #478）。事前ビルド失敗・専有ロック取得
 不能・静穏未達で計測に着手できなかった場合も `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`
 （既定 2）で BLOCKED（PASS へは丸めない）。
 
@@ -559,8 +561,9 @@ PASS/FAIL/SKIP を判定する（レポート不在・「## 結論」セクシ�
 追記するため、レポートを手編集しなくても再計測結果を機械的に受け入れゲートへ
 反映できる（他セクションへの過去実測の引用に埋め込まれた総合判定文言は判定対象に
 含めない。複数「## 結論」セクションが存在する場合はレポート末尾に近い方＝直近の
-再計測結果を採用する。イシュー #260 Bugbot 指摘対応）。**BLOCKED（`CORE_BIN` 未整備・
-事前ビルド失敗・専有ロック取得不能・静穏未達のいずれか）で終了する場合も、
+再計測結果を採用する。イシュー #260 Bugbot 指摘対応）。**BLOCKED（baseline /
+`CORE_BIN` 未整備・事前ビルド失敗・専有ロック取得不能・静穏未達のいずれか）で
+終了する場合も、
 `bench-accept.sh` / `bench-accept-exclusive.sh` は必ず新しい「## 結論」セクションを
 （総合判定行なしで）REPORT_MD に追記する。判定ロジック（`lib/
 plugin-mechanism-conclusion-verdict.awk`）は「## 結論」セクションが見つかるたびに
@@ -604,8 +607,9 @@ REQ-1/NFR-1（`docs/spec/04-requirements.md`）の判定は `bench-accept.sh` /
 - **PASS（0）は再試行しない**（偶然の 1 回 PASS を過大評価しないため、初回 PASS を
   そのまま採用する）。
 - **BLOCKED（終了コード 2）は再試行しない**。計測環境自体が壊れている（専有ロック
-  取得不能・ビルド失敗・静穏未達）ため再試行しても意味がなく、フェイルクローズで
-  即座に BLOCKED を返す。
+  取得不能・ビルド失敗・静穏未達・baseline / `CORE_BIN` バイナリ未整備）ため
+  再試行しても意味がなく、フェイルクローズで即座に BLOCKED を返す（イシュー #478
+  で baseline 欠如も本契約に統一）。
 - **再試行前の静穏確認（`wait_for_quiescence`）が `QUIESCE_WAIT_SECS` 待っても
   得られなかった場合も BLOCKED として扱う**（PR #291 Bugbot 指摘対応）。ホストが
   混雑しているだけの状態を、直前の FAIL 結果をそのまま採用して性能退行と誤検知

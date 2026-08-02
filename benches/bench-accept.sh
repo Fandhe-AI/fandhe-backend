@@ -110,7 +110,9 @@ echo "core    : ${CORE_BIN}（${CORE_HOST}:${CORE_PORT}）"
 echo
 
 # baseline（axum-ref）は TASK-1.2 の成果物として常に存在する前提。存在しない場合は
-# ビルド漏れであり、判定不能として明確にエラー終了する（ブロック扱いとは区別する）。
+# ビルド漏れであり、CORE_BIN 欠如（後続分岐）と同じ BLOCKED（終了コード 2）として扱う
+# （イシュー #478。旧実装は exit 1 で性能 FAIL と同一コードだったため、
+# bench-schedule.yml の起票分岐が環境問題を「性能退行 FAIL」と誤起票していた）。
 if [ "${SKIP_BUILD}" = "1" ]; then
     echo "== ビルド: SKIP_BUILD=1 のためスキップ（呼び出し元が事前ビルド済みの前提） =="
 else
@@ -123,13 +125,31 @@ fi
 echo
 
 if [ ! -x "${BASELINE_BIN}" ]; then
-    echo "エラー: baseline バイナリ ${BASELINE_BIN} が見つかりません。'cargo build --release' を確認してください" >&2
-    echo "        実効 target dir（BENCH_TARGET_DIR=${BENCH_TARGET_DIR}）が cargo の実際の" >&2
-    echo "        ビルド出力先と一致しているか確認してください（CARGO_TARGET_DIR env・" >&2
-    echo "        .cargo/config.toml の build.target-dir が原因で食い違うことがあります。" >&2
-    echo "        イシュー #480、benches/reports/issue480-target-dir-investigation.md 参照）" >&2
+    echo "## 判定結果: BLOCKED"
+    echo
+    echo "baseline バイナリ（BASELINE_BIN=${BASELINE_BIN}）が見つかりません。"
+    echo "'cargo build --release' が成功しているか確認するか、BASELINE_BIN で既存バイナリのパスを指定して再実行してください。"
+    echo "実効 target dir（BENCH_TARGET_DIR=${BENCH_TARGET_DIR}）が cargo の実際のビルド出力先と"
+    echo "一致しているか確認してください（CARGO_TARGET_DIR env・.cargo/config.toml の"
+    echo "build.target-dir が原因で食い違うことがあります。イシュー #480、"
+    echo "benches/reports/issue480-target-dir-investigation.md 参照）"
+    if [ -n "${REPORT_MD}" ]; then
+        {
+            echo
+            echo "## 判定結果: BLOCKED"
+            echo
+            echo "baseline バイナリ（\`BASELINE_BIN=${BASELINE_BIN}\`）が見つからないため、"
+            echo "axum-ref との比較判定を実施できませんでした。"
+            echo "'cargo build --release' の成功を確認してから再実行してください。"
+        } >>"${REPORT_MD}"
+    fi
+    # 「## 結論」セクションを必ず追記して古い PASS/FAIL を上書きする（stale PASS 防止、
+    # イシュー #260 Bugbot 指摘対応）。
     write_report_conclusion "BLOCKED（baseline バイナリ未整備のため判定不能。既存の古い判定は無効）"
-    exit 1
+    # CORE_BIN 欠如（後続分岐）と同じ BLOCKED 専用終了コード。exit 1（性能 FAIL）と
+    # 区別することで bench-schedule.yml の起票分岐・nfr6_run_with_fail_retry の
+    # 非再試行契約（exit 1 のみ再試行）に正しく乗せる（イシュー #478）。
+    exit 2
 fi
 
 # コア側計測用バイナリが未整備の場合（TASK-1.4-2 #70・TASK-1.5 #14 未マージ）は、

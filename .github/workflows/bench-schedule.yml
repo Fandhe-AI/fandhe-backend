@@ -177,7 +177,7 @@ jobs:
             verdict="FAIL（退行確定。FAIL_RETRIES=1 を使い切っても 2 連続 FAIL）"
           else
             title_prefix="bench-regression: REQ-1/NFR-1 計測が BLOCKED（計測不能）"
-            verdict="BLOCKED（専有ロック取得不能・ビルド失敗・静穏未達のいずれか。計測不能自体も継続検証体制の喪失として扱う）"
+            verdict="BLOCKED（専有ロック取得不能・ビルド失敗・静穏未達・baseline / CORE_BIN バイナリ未整備のいずれか。計測不能自体も継続検証体制の喪失として扱う）"
           fi
 
           # ラベルは冪等に作成する（既存でも失敗させない。ci.yml dep-audit ジョブと同型）。
