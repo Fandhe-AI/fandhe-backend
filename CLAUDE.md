@@ -71,7 +71,9 @@ fandhe-backend/
 │   │                            # シグネチャ変更は不要（3 層構造）、
 │   │                            # `fandhe_backend_plugin_websocket::handle_upgrade`
 │   │                            # は breaking change として扱う方針を記録。コード
-│   │                            # 実装は後続の #491〜#493 が担う）
+│   │                            # 実装は #491（コア配線）・#492（plugin-websocket
+│   │                            # の Close ハンドシェイク実装）・#493（両経路の
+│   │                            # 統合テスト・既知の限界 doc 更新）で完了済み）
 │   ├── guide/              # 利用者向けガイド（Getting Started・feature 構成別サンプル・
 │   │                        # チュートリアル、TASK-11.5 / #95）。「どう作るか」の docs/design/ とは
 │   │                        # 責務分離、「どう使うか」を扱う
