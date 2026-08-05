@@ -215,24 +215,22 @@ grace 超過時 `JoinSet::shutdown` による強制 abort の対象にはなら�
 
 ## 6. 既知の限界・スコープ外
 
-- **listener 差し替え瞬間の accept backlog 喪失**: rebind コマンドは 3-way
-  race で accept より優先してポーリングされる（4 節）ため、旧 listener を
-  差し替える直前の 1 poll で「OS レベルでは 3-way handshake が完了しカーネル
-  の accept backlog に滞留しているが、まだ `listener.accept()` を呼んで
-  いなかった」接続が存在しうる。差し替え後は旧 `TcpListener` を即座に
-  `drop` する設計（1 節・3.1 節、fail-closed の構造的保証と表裏一体）のため、
-  この滞留分は `accept()` されないままソケットごと破棄され、クライアントから
-  見ると接続確立後に RST を受け取る形になる。これは「旧 listener を即座に
-  閉じる」という意図された設計の帰結であり、バグではない。許容している理由は
-  次の 2 点: (i) TCP クライアントは接続確立後の RST を通常のネットワーク
-  エラーとして扱い、大半の HTTP クライアント実装はリトライ可能である、
-  (ii) backlog 滞留自体が極めて短い時間窓（1 poll 分）に限られ、実運用の
-  デプロイ手順（新旧アドレスを跨ぐロードバランサ切り替え等）では滞留量が
-  無視できるほど小さいと想定される。この滞留を厳密にゼロにするには
-  listener 差し替え前に残存 backlog を drain する仕組みが要るが、
-  「rebind を accept より優先しないと新 listener 差し替え前の古い listener
-  で新規接続を受理してしまう」という 4 節の競合回避方針とトレードオフの
-  関係にあり、本イシューのスコープ外とする
+- **listener 差し替え瞬間の accept backlog 喪失（有界 drain で緩和済み、
+  イシュー #501）**: rebind コマンドは 3-way race で accept より優先して
+  ポーリングされる（4 節）ため、旧 listener を差し替える直前の 1 poll で
+  「OS レベルでは 3-way handshake が完了しカーネルの accept backlog に
+  滞留しているが、まだ `listener.accept()` を呼んでいなかった」接続が
+  存在しうる。listener 差し替え（`crates/core/src/server.rs` の
+  `drain_listener_backlog`）直前に、この滞留分を非ブロッキング・有界
+  （`REBIND_BACKLOG_DRAIN_LIMIT` 件・`connection_limit` permit ゲート
+  範囲内）に回収してサーブすることで、大半のケースで RST を回避する
+  （7 節で採用設計を記録）。ただし緩和であり根絶ではない。次のケースは
+  今も従来どおり RST を受ける: (i) `max_connections` 到達で permit が
+  枯渇していた滞留分（permit ゲートを迂回しないフェイルクローズ設計を
+  優先）、(ii) `REBIND_BACKLOG_DRAIN_LIMIT`（既定 1024 件）を超えた滞留分、
+  (iii) drain 中に `poll_accept` がエラーを返した以降の滞留分。これらは
+  「旧 listener を即座に閉じる」という意図された設計の帰結であり、バグ
+  ではない
 - **WebSocket 委譲セッションと世代 drain（解消済み）**:
   `handle_connection_with_permit` から `UpgradeHandler` 経由で WebSocket
   専用タスク（`fandhe_backend_plugin_websocket` 側の `tokio::spawn`）へ
@@ -275,7 +273,43 @@ grace 超過時 `JoinSet::shutdown` による強制 abort の対象にはなら�
 いずれも [[out-of-scope-tracking]] に従い、Issue 起票はユーザー承認を得てから
 行う。
 
-## 7. 検証
+## 7. accept backlog 滞留接続の有界 drain（イシュー #501）
+
+6 節の「listener 差し替え瞬間の accept backlog 喪失」を緩和するため、
+listener 差し替え直前に旧 backlog を有界 drain してサーブする方式を採用した。
+
+### 7.1 比較検討
+
+| 案 | 内容 | 採否 | 根拠 |
+|----|------|------|------|
+| A. 現状維持（何もしない） | RST を許容し続ける | 不採用 | RST 窓は小さいが、案 B が既存不変条件（fail-closed・rebind 優先ポーリング・permit ゲート）を一切壊さずゼロコスト級で実現できるため、緩和しない理由がない |
+| B. **非ブロッキング有界 drain（採用）** | listener 差し替え直前に、`poll_accept` を 1 回も await せず（Ready の間だけ）最大 `REBIND_BACKLOG_DRAIN_LIMIT` 件・かつ `connection_limit` の `try_acquire_owned` が成功する範囲で旧 backlog を回収し、旧世代接続としてサーブする | **採用** | 時間有界性が構造的に成立する（Pending を見た瞬間・permit 枯渇・件数上限・accept エラーのいずれでも即打ち切り）。`max_connections` の permit ゲートを迂回しない。4 節の「rebind を accept より優先する」方針とも矛盾しない（drain は差し替え処理の内部で旧 listener に対してのみ行う） |
+| C. タイムアウト付き await drain（例: 数十 ms 待つ） | drain 中に新規到着分も拾える | 不採用 | rebind 完了通知（`reply.send`）が遅延し、旧アドレスへ接続し続ける攻撃者が drain 窓を延ばせる（DoS 面で有界性が弱い）。「差し替えの即時性」という rebind の契約を毀損する |
+| D. 旧 listener を別タスクで保持し続けて drain | 滞留ゼロを保証 | 不採用 | 旧アドレスのポートが解放されず、「旧アドレスへの新規 connect は拒否される」という #485 受け入れ基準 1 と正面衝突する |
+
+### 7.2 実装
+
+`crates/core/src/server.rs` の `drain_listener_backlog`（非公開ヘルパ）が
+`std::future::poll_fn` で `TcpListener::poll_accept` を 1 回だけポーリング
+する非ブロッキング操作を最大 `REBIND_BACKLOG_DRAIN_LIMIT`（既定 1024）回
+繰り返す。各回で `connection_limit`（同時接続数セマフォ）の
+`try_acquire_owned` に先に成功した場合のみ `poll_accept` を試み、
+`Pending`・`Err`・permit 枯渇のいずれかで即座に打ち切る。回収した接続は
+`run_until` の `Raced::Rebind` 分岐内で listener 差し替え前の（既に
+`shutdown_flag=true` にした）旧世代 `join_set` へ積まれ、5 節の
+`spawn_generation_drain` による grace 付き背景 drain へそのまま合流する。
+
+### 7.3 残存する限界
+
+- `max_connections` 到達時（permit 枯渇時）に drain できなかった滞留分は
+  従来どおり RST（permit ゲートを迂回する方が DoS 耐性上悪化するため
+  意図的に許容しない）
+- `REBIND_BACKLOG_DRAIN_LIMIT` 超過分・drain 中の `poll_accept` エラー
+  以降の滞留分も従来どおり RST
+- drain の「Ready の間だけ」判定と同時刻に到着中の接続（3-way handshake
+  未完了分）は対象外
+
+## 8. 検証
 
 ```bash
 cargo build -p fandhe-backend-core                  # feature なし

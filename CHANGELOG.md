@@ -103,6 +103,18 @@
   plugin-boundary.md` 5.10.7 節、イシュー
   [#468](https://github.com/Fandhe-AI/fandhe-backend/issues/468)）
 
+### Fixed
+
+- `fandhe-backend-core`: `rebind()`（イシュー
+  [#485](https://github.com/Fandhe-AI/fandhe-backend/issues/485)）で listener を
+  差し替える際、旧 listener の accept backlog に滞留していた「3-way handshake
+  完了済みだが未 `accept()`」の接続が RST を受け取っていた事象を緩和しました。
+  差し替え直前に非ブロッキング・有界（`REBIND_BACKLOG_DRAIN_LIMIT` 件・
+  `max_connections` の permit ゲート範囲内）に旧 backlog を drain してサーブする
+  ようになります。permit 枯渇時の滞留分は引き続き RST（`docs/design/rebind.md`
+  7 節、イシュー
+  [#501](https://github.com/Fandhe-AI/fandhe-backend/issues/501)）
+
 ## [0.2.0] - 2026-08-01
 
 イシュー [#437](https://github.com/Fandhe-AI/fandhe-backend/issues/437) で公開対象
