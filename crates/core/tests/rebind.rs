@@ -32,6 +32,14 @@
 //!   を一度も呼ばない経路では通常どおり動作する（機能的回帰なしの固定。
 //!   チャネル非生成（ゼロコスト）自体は非公開フィールドのためここでは
 //!   直接検証できず、コードレビューで担保する）
+//! - `rebind_serves_connection_racing_with_swap`: 旧 listener の accept
+//!   backlog 滞留接続の有界 drain（イシュー #501）。listener 差し替えと
+//!   競合するクライアント接続が、差し替え前に accept された場合・backlog
+//!   から drain された場合のどちらでも 200 でサーブされる（回帰検知）
+//! - `rebind_backlog_drain_fails_closed_when_permits_exhausted`: イシュー
+//!   #501 の fail-closed 契約。`max_connections` 枯渇時は backlog を
+//!   drain せず即座に rebind を完了し（grace を待たない）、滞留接続は
+//!   従来どおり応答なしで閉じる
 
 use fandhe_backend_core::extension::{
     GateContext, GateOutcome, Middleware, RequestGate, UpgradeHandler,
@@ -47,6 +55,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::Notify;
 use tokio::time::timeout;
 
 /// 固定 200 応答を返すだけのトイハンドラ。
@@ -693,6 +702,201 @@ async fn run_until_without_rebind_handle_behaves_as_before() {
         .expect("rebind_handle 未呼び出しでも通常どおり応答するはず");
     let text = String::from_utf8_lossy(&response);
     assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "実際: {text}");
+
+    run_task.abort();
+}
+
+/// 唯一の permit を占有し続ける slow ハンドラ（呼び出し即座に `started` を
+/// 発火し、`release` が発火するまで応答を保留する）。
+/// `rebind_backlog_drain_fails_closed_when_permits_exhausted` の permit
+/// 枯渇シナリオを決定的に組み立てるために使う。
+struct SlowHandler {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+    // rebind 後に新アドレスへ届く後続リクエストは、この同じ `Handler` に
+    // 再びディスパッチされる（サーバ全体で 1 個の `Handler` を共有する
+    // 契約）。`release`（`tokio::sync::Notify`）は保存できる permit が
+    // 最大 1 個のため、最初のリクエストだけを保留対象にし、以降は即座に
+    // 200 を返す（`seen_first` で判別）。
+    seen_first: AtomicUsize,
+}
+impl Handler for SlowHandler {
+    fn handle(&self, _head: &RequestHead, _body: &[u8]) -> HandlerFuture {
+        if self.seen_first.swap(1, Ordering::SeqCst) == 0 {
+            // `Handler::handle` 自体は同期呼び出し（返す `Future` を await
+            // するのは呼び出し側）のため、ここでの `notify_one` は「permit
+            // が消費され handler に到達した」ことを呼び出し元より前に確定
+            // させる（accept ループはリクエストを読み終えてから `handle`
+            // を呼ぶため、permit は既にこの時点で保持されている）。
+            self.started.notify_one();
+            let release = Arc::clone(&self.release);
+            Box::pin(async move {
+                release.notified().await;
+                Response::empty(200)
+            })
+        } else {
+            Box::pin(std::future::ready(Response::empty(200)))
+        }
+    }
+}
+
+/// 受け入れ基準「有界サーブ」の統合テスト（イシュー #501）。
+///
+/// listener 差し替えと競合するクライアント接続を反復発行し、差し替え前に
+/// 通常 accept された場合・backlog から有界 drain された場合のいずれでも
+/// 200 で応答することを検証する（`drain_listener_backlog` 導入前は、
+/// backlog 滞留に競合したクライアントが RST を受け取り失敗しうる回帰検知
+/// テスト）。
+///
+/// `TcpStream::connect` の完了（3-way handshake 完了）を rebind 発行の
+/// **前**に確定させる。これにより「listener が既に閉じられており SYN 自体
+/// が拒否される」（accept backlog 云々とは無関係な `ConnectionRefused`）
+/// という別種の競合を排除しつつ、「connect 完了後・`listener.accept()` に
+/// よる実際の accept 前」という本イシューが対象とする backlog 滞留の窓は
+/// 温存する（`run_until` の accept ループは別タスクで独立して進行するため、
+/// connect 完了時点でまだ userspace `accept()` されているとは限らない）。
+#[tokio::test(flavor = "multi_thread")]
+async fn rebind_serves_connection_racing_with_swap() {
+    let server = Server::new().handler(FixedHandler);
+    let mut bound = server.bind("127.0.0.1:0").await.unwrap();
+    let mut old_addr = bound.local_addr().unwrap();
+    let rebind = bound.rebind_handle();
+
+    let run_task = tokio::spawn(async move { bound.run().await });
+
+    for iteration in 0..10u32 {
+        // connect 自体は rebind 発行前に完了させる（3-way handshake 完了を
+        // 保証。listener がまだ開いているうちに接続を確立する）。この時点
+        // でサーバ側が既に `accept()` 済みかどうかは問わない
+        // （accept 済みなら通常経路、未 accept なら backlog 滞留として
+        // 後続の rebind の drain 対象になる）。
+        let mut stream = TcpStream::connect(old_addr).await.unwrap_or_else(|e| {
+            panic!("iteration={iteration}: listener が開いている間の connect は成功するはず: {e}")
+        });
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+
+        // レスポンス読み取りを rebind と並行して発行する（`tokio::spawn` +
+        // multi_thread ランタイムで実並行を確保し、「差し替え直前に accept
+        // される」「backlog から drain される」両方のタイミングを再現
+        // しうるようにする）。
+        let client_task: tokio::task::JoinHandle<Vec<u8>> =
+            tokio::spawn(async move { read_response(&mut stream).await });
+
+        let new_addr = timeout(Duration::from_secs(5), rebind.rebind("127.0.0.1:0"))
+            .await
+            .unwrap_or_else(|_| {
+                panic!("iteration={iteration}: rebind はタイムアウトせず完了するはず")
+            })
+            .unwrap_or_else(|e| panic!("iteration={iteration}: rebind は成功するはず: {e}"));
+
+        let response = timeout(Duration::from_secs(5), client_task)
+            .await
+            .unwrap_or_else(|_| {
+                panic!("iteration={iteration}: クライアントタスクは有界時間内に終わるはず")
+            })
+            .expect("client task は panic しないはず");
+
+        let text = String::from_utf8_lossy(&response);
+        assert!(
+            text.starts_with("HTTP/1.1 200 OK\r\n"),
+            "iteration={iteration}: 旧 listener の accept backlog 滞留接続も \
+             有界 drain でサーブされ 200 になるはず（実際: {text}）"
+        );
+
+        old_addr = new_addr;
+    }
+
+    run_task.abort();
+}
+
+/// 受け入れ基準「fail-closed（permit ゲートを迂回しない）」の統合テスト
+/// （イシュー #501）。`max_connections(1)` で唯一の permit を slow
+/// ハンドラに占有させた状態で 2 本目の接続を backlog に滞留させ、rebind を
+/// 発行する。検証: (a) drain は permit 枯渇で即座に打ち切られ、rebind は
+/// grace 期間を待たず速やかに完了する、(b) 滞留接続は従来どおり応答なしで
+/// 閉じられる（RST/EOF）、(c) slow ハンドラ完了・permit 解放後は新アドレス
+/// が通常どおり 200 で応答する。
+#[tokio::test]
+async fn rebind_backlog_drain_fails_closed_when_permits_exhausted() {
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let server = Server::new()
+        .handler(SlowHandler {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+            seen_first: AtomicUsize::new(0),
+        })
+        .max_connections(1)
+        .shutdown_grace_period(Duration::from_secs(5));
+    let mut bound = server.bind("127.0.0.1:0").await.unwrap();
+    let old_addr = bound.local_addr().unwrap();
+    let rebind = bound.rebind_handle();
+
+    let run_task = tokio::spawn(async move { bound.run().await });
+
+    // 唯一の permit を占有する slow ハンドラへのリクエストを送る。
+    let mut slow_client = TcpStream::connect(old_addr).await.unwrap();
+    slow_client
+        .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+
+    // ハンドラが実際に呼ばれた（= permit 消費済み）ことを決定的に待つ。
+    timeout(Duration::from_secs(5), started.notified())
+        .await
+        .expect("slow ハンドラは有界時間内に呼ばれるはず");
+
+    // permit 枯渇中に 2 本目の接続を張る。accept ループは次周の permit
+    // 取得待ちでブロックしているため `listener.accept()` 自体が呼ばれず、
+    // この接続は kernel の accept backlog に確実に滞留する。
+    let mut backlog_client = TcpStream::connect(old_addr).await.unwrap();
+    // TCP 3-way handshake 完了・backlog への到着を待つ猶予。
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // (a) permit 枯渇時は drain が即座に打ち切られるため、grace（5 秒）を
+    // 待たず速やかに完了する。
+    let new_addr = timeout(Duration::from_secs(1), rebind.rebind("127.0.0.1:0"))
+        .await
+        .expect("permit 枯渇時も rebind は grace を待たず速やかに完了するはず")
+        .expect("bind 可能な新アドレスへの rebind は成功するはず");
+
+    // (b) drain されなかった滞留接続は旧 listener の drop と共に閉じられる
+    // （応答なしのフェイルクローズ、従来どおりの挙動）。
+    let mut probe = [0u8; 1];
+    let read_result = timeout(Duration::from_secs(5), backlog_client.read(&mut probe)).await;
+    match read_result {
+        Ok(Ok(0)) => {}  // 正常クローズ（EOF）
+        Ok(Err(_)) => {} // リセット等のエラーも許容
+        Ok(Ok(n)) => panic!("permit 枯渇時の滞留接続に応答が届くべきではない（{n} バイト）"),
+        Err(_) => panic!("permit 枯渇時の滞留接続は有界時間内に閉じられるはず"),
+    }
+
+    // slow ハンドラを解放し permit を返却する。
+    release.notify_one();
+    let slow_head = timeout(Duration::from_secs(5), read_response_head(&mut slow_client))
+        .await
+        .expect("slow ハンドラ解放後は応答が届くはず");
+    assert!(
+        slow_head.starts_with("HTTP/1.1 200 OK\r\n"),
+        "実際: {slow_head}"
+    );
+
+    // (c) permit 解放後、新アドレスは通常どおり 200 で応答する。
+    let mut new_client = TcpStream::connect(new_addr).await.unwrap();
+    new_client
+        .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let new_head = timeout(Duration::from_secs(5), read_response_head(&mut new_client))
+        .await
+        .expect("permit 解放後は新アドレスへのリクエストが応答するはず");
+    assert!(
+        new_head.starts_with("HTTP/1.1 200 OK\r\n"),
+        "実際: {new_head}"
+    );
 
     run_task.abort();
 }

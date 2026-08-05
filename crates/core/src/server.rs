@@ -202,6 +202,18 @@ const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(10);
 /// [`Server::shutdown_grace_period`] で行う。
 const DEFAULT_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(30);
 
+/// rebind（イシュー #485）時に旧 listener の accept backlog から drain する
+/// 接続件数の上限（イシュー #501）。
+///
+/// `rebind` は listener を差し替える直前に旧 listener を drop するため、
+/// kernel の accept backlog に滞留していた「3-way handshake 完了済みだが
+/// 未 `accept()`」の接続はサーブされず RST を受け取っていた
+/// （`docs/design/rebind.md` 6 節）。この上限は
+/// [`drain_listener_backlog`] が回収する件数を有界にし、攻撃者が旧
+/// アドレスへ接続を送り続けても rebind の完了通知を遅延させない
+/// （リソース枯渇 DoS 対策、`.claude/rules/security.md`）。
+const REBIND_BACKLOG_DRAIN_LIMIT: usize = 1024;
+
 /// リクエストに対する最終応答を生成する、コアが公開する既定ハンドラ拡張点。
 ///
 /// 3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）とは異なり
@@ -1526,6 +1538,54 @@ fn spawn_generation_drain(
     });
 }
 
+/// `rebind()`（イシュー #485）で旧 listener を drop する直前に、kernel の
+/// accept backlog に滞留していた「3-way handshake 完了済みだが未
+/// `accept()`」の接続を非ブロッキング・有界に回収する（イシュー #501）。
+///
+/// `run_until` の `Raced::Rebind` 分岐から、listener 差し替え（`listener =
+/// new_listener`）の**前**に呼ばれる。ここで回収した接続は旧世代
+/// （差し替え前の `current_shutdown_flag`・`current_cancel`）としてサーブし、
+/// `run_until` 側で旧世代 `join_set` へ積むことで
+/// [`spawn_generation_drain`] の grace 付き drain 対象に自動的に合流する
+/// （`docs/design/rebind.md` 7 節を参照）。
+///
+/// # 有界性（DoS 対策、`.claude/rules/security.md`）
+///
+/// 本関数は実行中一度も `Poll::Pending` で待機しない
+/// （`std::future::poll_fn` が常に `Poll::Ready` を返すため `async fn` で
+/// あっても時間有界）。以下のいずれかで直ちに打ち切る:
+/// - `max`（[`REBIND_BACKLOG_DRAIN_LIMIT`]）件に達した
+/// - `connection_limit` の permit が枯渇した（`try_acquire_owned` 失敗。
+///   同時接続数上限を迂回しないフェイルクローズ、permit 枯渇時の滞留分は
+///   従来どおり drain されず RST を受ける）
+/// - backlog が空（`poll_accept` が `Pending` を返した）
+/// - `poll_accept` がエラーを返した
+///
+/// `Pending` を観測した時点で `listener` への waker 登録が残りうるが、
+/// 呼び出し元がこの直後に `listener` を drop するため無害（登録された
+/// waker は listener と共に破棄される）。
+async fn drain_listener_backlog(
+    listener: &TcpListener,
+    connection_limit: &Arc<Semaphore>,
+    max: usize,
+) -> Vec<(TcpStream, SocketAddr, OwnedSemaphorePermit)> {
+    let mut drained = Vec::new();
+    for _ in 0..max {
+        // permit ゲートを迂回しない（fail-closed）。枯渇したら残りは
+        // 従来どおり旧 listener の drop と共に破棄される。
+        let Ok(permit) = Arc::clone(connection_limit).try_acquire_owned() else {
+            break;
+        };
+        match std::future::poll_fn(|cx| Poll::Ready(listener.poll_accept(cx))).await {
+            Poll::Ready(Ok((stream, peer_addr))) => drained.push((stream, peer_addr, permit)),
+            // Pending = backlog 空。Err（ECONNABORTED 等）も fail-closed で
+            // 打ち切る。いずれの分岐でも `permit` はスコープアウトで自動解放。
+            Poll::Ready(Err(_)) | Poll::Pending => break,
+        }
+    }
+    drained
+}
+
 impl BoundServer {
     /// バインドしたローカルアドレスを返す。`0` ポート指定時の実ポート確認に使う。
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -1656,16 +1716,22 @@ impl BoundServer {
     /// 1. その時点までの「旧世代」向け `shutdown_flag` を `true` にする
     ///    （旧世代の keep-alive 接続は `Connection: close` で早期に閉じる。
     ///    通常の graceful shutdown と同じ機構）
-    /// 2. listener を新しい `TcpListener`（[`RebindHandle::rebind`] が
+    /// 2. 旧 listener を差し替える前に、accept backlog に滞留していた
+    ///    接続を `drain_listener_backlog`（非公開関数）で非ブロッキング・有界に回収し、
+    ///    旧世代接続としてサーブする（イシュー #501。`REBIND_BACKLOG_DRAIN_LIMIT`
+    ///    件・`connection_limit` の permit ゲート範囲内に限定され、`run_until`
+    ///    自体を待機させない。`docs/design/rebind.md` 7 節を参照）
+    /// 3. listener を新しい `TcpListener`（[`RebindHandle::rebind`] が
     ///    bind 済み）へ差し替える。以降の accept は新アドレスに対してのみ
     ///    行われる
-    /// 3. 旧世代のコネクションタスク一式を現行の `JoinSet` から切り離し、
-    ///    独立した背景タスクで `Server::shutdown_grace_period` を上限に
-    ///    drain する（超過分は強制クローズ）。この drain は `run_until`
-    ///    自体をブロックせず、新世代の accept ループと並行して進む
-    /// 4. 新世代用の `shutdown_flag` を用意し、以降 accept する接続はこちらを使う
+    /// 4. 旧世代のコネクションタスク一式（上記 2 で回収した分を含む）を
+    ///    現行の `JoinSet` から切り離し、独立した背景タスクで
+    ///    `Server::shutdown_grace_period` を上限に drain する（超過分は
+    ///    強制クローズ）。この drain は `run_until` 自体をブロックせず、
+    ///    新世代の accept ループと並行して進む
+    /// 5. 新世代用の `shutdown_flag` を用意し、以降 accept する接続はこちらを使う
     ///
-    /// `RebindHandle::rebind` は差し替え完了（上記 2 の直後）を待って
+    /// `RebindHandle::rebind` は差し替え完了（上記 3 の直後）を待って
     /// `Ok(new_addr)` を返す。新アドレスへの bind 自体が失敗した場合は
     /// `run_until` の状態に一切影響しない（fail-closed、
     /// `RebindHandle::rebind` の doc を参照）。設計判断の詳細は
@@ -1789,6 +1855,35 @@ impl BoundServer {
                     // `docs/design/rebind.md` を参照）。
                     // 1. 旧世代フラグを立て、keep-alive 接続を早期クローズ側へ倒す。
                     current_shutdown_flag.store(true, Ordering::Relaxed);
+                    // 1.5. 旧 listener を drop する前に accept backlog を有界
+                    // drain し、旧世代接続としてサーブする（イシュー #501、
+                    // `drain_listener_backlog` の doc を参照）。旧フラグは
+                    // 直前で既に true にしたため、各接続は 1 リクエスト
+                    // 処理後に `Connection: close` で閉じ、Upgrade は 503 で
+                    // 拒否される（`handle_connection_with_permit` の既存
+                    // shutdown_flag 契約にそのまま合流する）。
+                    for (stream, peer_addr, permit) in drain_listener_backlog(
+                        &listener,
+                        &connection_limit,
+                        REBIND_BACKLOG_DRAIN_LIMIT,
+                    )
+                    .await
+                    {
+                        let server = Arc::clone(&server);
+                        let shutdown_flag = Arc::clone(&current_shutdown_flag);
+                        let cancel = current_cancel.handle();
+                        join_set.spawn(async move {
+                            handle_connection_with_permit(
+                                &server,
+                                stream,
+                                Some(permit),
+                                &shutdown_flag,
+                                Some(peer_addr),
+                                cancel,
+                            )
+                            .await;
+                        });
+                    }
                     // 2. listener を差し替える。以降の accept は新アドレスのみ。
                     listener = new_listener;
                     // 3. 旧世代の JoinSet を切り離し、grace 付きで背景 drain する
@@ -4300,5 +4395,90 @@ GET /c HTTP/1.1\r\n\r\n",
         assert!(response.contains("3\r\nfoo\r\n"));
         assert!(response.contains("3\r\nbar\r\n"));
         assert!(response.ends_with("0\r\n\r\n"));
+    }
+
+    // `drain_listener_backlog`（イシュー #501）の単体テスト。実 `TcpListener`
+    // を bind し、意図的に `accept()` を呼ばずにクライアント接続することで
+    // kernel の accept backlog を決定的に作る。
+
+    /// `TcpListener` を bind し、`n` 本のクライアント接続を確立して backlog に
+    /// 滞留させる。テスト側は `accept()` を一切呼ばないため、返した listener
+    /// の backlog には確実に `n` 件が滞留している。
+    async fn listener_with_backlog(n: usize) -> TcpListener {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind は成功する");
+        let addr = listener.local_addr().expect("local_addr は成功する");
+        for _ in 0..n {
+            // 接続確立後は何も送受信せず即座に drop してよい。3-way
+            // handshake が完了した時点で kernel backlog に積まれる。
+            let _ = TcpStream::connect(addr).await.expect("connect は成功する");
+        }
+        // backlog への到着は非同期のため、テストの決定性を保つ短い猶予を
+        // 置く（`try_acquire`/`poll_accept` はここでは呼ばない）。
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        listener
+    }
+
+    #[tokio::test]
+    async fn drain_backlog_collects_pending_connections() {
+        let listener = listener_with_backlog(3).await;
+        let connection_limit = Arc::new(Semaphore::new(10));
+
+        let drained = drain_listener_backlog(&listener, &connection_limit, 10).await;
+
+        assert_eq!(drained.len(), 3);
+        // 3 件分の permit が消費されたまま drained 側が保持している
+        // （呼び出し元が回収した接続をサーブする前提、permit ゲートを
+        // 迂回しないフェイルクローズ設計）。
+        assert_eq!(connection_limit.available_permits(), 7);
+    }
+
+    #[tokio::test]
+    async fn drain_backlog_stops_at_permit_exhaustion() {
+        let listener = listener_with_backlog(2).await;
+        // permit を 1 個しか持たないセマフォ: 2 件目の drain 試行は
+        // `try_acquire_owned` が失敗し、そこで即座に打ち切られる
+        // （同時接続数上限を迂回しない fail-closed 契約）。
+        let connection_limit = Arc::new(Semaphore::new(1));
+
+        let drained = drain_listener_backlog(&listener, &connection_limit, 10).await;
+
+        assert_eq!(drained.len(), 1);
+        assert_eq!(connection_limit.available_permits(), 0);
+    }
+
+    #[tokio::test]
+    async fn drain_backlog_stops_at_max_cap() {
+        let listener = listener_with_backlog(2).await;
+        let connection_limit = Arc::new(Semaphore::new(10));
+
+        // `max=1` により 2 件目の滞留接続は回収されない（件数上限による
+        // 有界性、`REBIND_BACKLOG_DRAIN_LIMIT` の doc を参照）。
+        let drained = drain_listener_backlog(&listener, &connection_limit, 1).await;
+
+        assert_eq!(drained.len(), 1);
+        assert_eq!(connection_limit.available_permits(), 9);
+    }
+
+    #[tokio::test]
+    async fn drain_backlog_returns_empty_when_no_pending() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind は成功する");
+        let connection_limit = Arc::new(Semaphore::new(10));
+
+        // backlog が空の状態で await してもハングしない
+        // （`poll_accept` の最初の `Pending` で即座に打ち切る非ブロッキング
+        // 契約、`drain_listener_backlog` の doc「有界性」を参照）。
+        let drained = tokio::time::timeout(
+            Duration::from_millis(200),
+            drain_listener_backlog(&listener, &connection_limit, 10),
+        )
+        .await
+        .expect("backlog 空でもタイムアウトせず即座に返る");
+
+        assert!(drained.is_empty());
+        assert_eq!(connection_limit.available_permits(), 10);
     }
 }
