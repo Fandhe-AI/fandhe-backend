@@ -57,7 +57,10 @@ assert_contains() {
     local desc="$1"
     local haystack="$2"
     local needle="$3"
-    if printf '%s' "${haystack}" | grep -qF -- "${needle}"; then
+    # #511/#514: パイプ経由の grep -q 判定は set -euo pipefail 下で SIGPIPE/EPIPE により
+    # 誤 FAIL・誤 pass を招くため bash 組み込みパターンマッチを使う。needle は必ず
+    # ダブルクォートで囲み glob メタ文字を文字どおりに扱わせる。
+    if [[ "${haystack}" == *"${needle}"* ]]; then
         pass "${desc}"
     else
         fail "${desc}（'${needle}' が出力に含まれません）"

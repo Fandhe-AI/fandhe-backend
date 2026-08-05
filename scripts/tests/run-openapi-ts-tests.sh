@@ -57,7 +57,9 @@ if [ "${actual}" -eq 0 ]; then
 else
     fail "-h が exit 0 で終了しなかった（実際: ${actual}）"
 fi
-if printf '%s' "${help_output}" | grep -qF -- "--update"; then
+# #511/#514: パイプ経由の grep -q 判定は set -euo pipefail 下で SIGPIPE/EPIPE により
+# 誤 FAIL を招くため bash 組み込みパターンマッチを使う。
+if [[ "${help_output}" == *"--update"* ]]; then
     pass "-h の出力に --update の説明が含まれる"
 else
     fail "-h の出力に --update の説明が含まれない"
@@ -80,7 +82,9 @@ if [ "${actual}" -ne 0 ]; then
 else
     fail "node/npm が PATH にない場合でも exit 0 になった（fail-closed 違反）"
 fi
-if printf '%s' "${no_tool_output}" | grep -qF -- "volta install"; then
+# #511/#514: パイプ経由の grep -q 判定は set -euo pipefail 下で SIGPIPE/EPIPE により
+# 誤 FAIL を招くため bash 組み込みパターンマッチを使う。
+if [[ "${no_tool_output}" == *"volta install"* ]]; then
     pass "node/npm 不在時に導入コマンド（volta install）を案内する"
 else
     fail "node/npm 不在時に導入コマンドの案内が出力されない"

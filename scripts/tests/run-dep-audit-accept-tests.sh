@@ -91,7 +91,9 @@ licenses_complete() {
     local section lic
     section="$(extract_toml_section "licenses" "${file}")"
     for lic in "${required_licenses[@]}"; do
-        printf '%s\n' "${section}" | grep -qF "\"${lic}\"" || return 1
+        # #511/#514: パイプ経由の grep -q 判定は set -euo pipefail 下で SIGPIPE/EPIPE
+        # により誤 FAIL を招くため bash 組み込みパターンマッチを使う。
+        [[ "${section}" == *"\"${lic}\""* ]] || return 1
     done
     return 0
 }
@@ -191,7 +193,25 @@ ignore_classify() {
     local file="$1"
     local advisories_section ignore_block ignore_inner ignore_inner_stripped
     advisories_section="$(extract_toml_section "advisories" "${file}")"
-    if ! printf '%s\n' "${advisories_section}" | grep -q '^ignore[ \t]*='; then
+    # #511/#514: grep -q '^ignore[ \t]*=' は行頭アンカー付き正規表現を行単位で照合する。
+    # 複数行 advisories_section への単純な bash =~ 置換は文字列全体を対象にするため
+    # 行境界を越えて意図せず一致しうる。行単位ループで grep の行指向セマンティクスを
+    # 保存しつつ、here-string でパイプ由来の SIGPIPE/EPIPE の余地も排除する。
+    # 元の grep パターンはブラケット式中の `\t` をエスケープとして解釈せず、空白・
+    # バックスラッシュ・`t` の 3 文字クラスとして扱う（GNU grep 実測で確認済み。
+    # 実タブは対象外という原文の挙動）。bash の `=~` も非 `$'...'` の通常クォート
+    # 文字列であれば同一のブラケット式解釈になるため、$'...' でタブを実文字化せず
+    # そのままの文字列で渡し、原文の判定条件を厳密に保存する。
+    local ignore_key_pattern='^ignore[ \t]*='
+    local ignore_key_found=0
+    local advisories_line
+    while IFS= read -r advisories_line; do
+        if [[ "${advisories_line}" =~ ${ignore_key_pattern} ]]; then
+            ignore_key_found=1
+            break
+        fi
+    done <<< "${advisories_section}"
+    if [ "${ignore_key_found}" -ne 1 ]; then
         echo "missing"
         return
     fi

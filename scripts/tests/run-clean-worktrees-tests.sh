@@ -21,22 +21,29 @@ pass() {
     PASS_COUNT=$((PASS_COUNT + 1))
 }
 
+# haystack に needle が固定文字列として含まれるかを判定する（#511/#514: パイプ経由の
+# grep -q 判定は set -euo pipefail 下で SIGPIPE/EPIPE により誤 FAIL・誤 pass を招くため
+# bash 組み込みパターンマッチを使う。needle は必ずダブルクォートで囲み glob メタ文字を
+# 文字どおりに扱わせる）。
 assert_contains() {
     local desc="$1"
     local haystack="$2"
     local needle="$3"
-    if printf '%s' "${haystack}" | grep -qF -- "${needle}"; then
+    if [[ "${haystack}" == *"${needle}"* ]]; then
         pass "${desc}"
     else
         fail "${desc}（'${needle}' が出力に含まれません）"
     fi
 }
 
+# haystack に needle が含まれないことを判定する（assert_contains の否定版。#511/#514:
+# パイプ経由の grep -q 判定は EPIPE で誤って pass 側へ倒れる fail-open の潜在欠陥も
+# 併せ持つため、bash 組み込み判定で構造的に排除する）。
 assert_not_contains() {
     local desc="$1"
     local haystack="$2"
     local needle="$3"
-    if printf '%s' "${haystack}" | grep -qF -- "${needle}"; then
+    if [[ "${haystack}" == *"${needle}"* ]]; then
         fail "${desc}（'${needle}' が出力に含まれています）"
     else
         pass "${desc}"
