@@ -87,6 +87,18 @@ impl StdError for WsHandlerError {
 /// `WebSocketConfig::with_handler` で登録する（`WebSocketConfig` は
 /// `Arc<dyn WsMessageHandler>` として保持するため、`Send + Sync + 'static`
 /// を要求する）。
+///
+/// # 中断安全性の契約（イシュー #499）
+///
+/// `on_message` が返す `Future` は、コアの世代キャンセルシグナル（最終
+/// graceful shutdown・rebind 世代 drain）発火時に**任意の `await` 点で
+/// drop されうる**（`crate::session` が `race_cancel` でキャンセルと
+/// race させるため。Rust async の標準的なキャンセル意味論であり、
+/// `tokio::select!` / `tokio::time::timeout` と同型）。実装は中断されても
+/// 不変条件を壊さない（drop-safe な）ことを要求され、完了保証が必要な処理
+/// （外部リソースへの書き込み確定等）は本 trait の `await` から切り離し、
+/// `tokio::spawn` で独立したタスクとして実行する。中断された場合、返す
+/// はずだった `WsOutcome::Reply` の返信は破棄され、送出されない。
 pub trait WsMessageHandler: Send + Sync + 'static {
     /// 診断用のハンドラ名（`UpgradeHandler::name` と同じ流儀）。
     fn name(&self) -> &'static str;
