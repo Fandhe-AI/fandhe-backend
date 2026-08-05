@@ -236,7 +236,9 @@ grace 超過強制クローズの対象にはならない。詳細・許容根�
   伝播しない。これは `BoundServer::run_until` の doc「既知の限界」節
   （イシュー #313 由来、shutdown 時の WS 委譲セッション扱い）と同一の
   制約であり、rebind はこれを新たに悪化させるものではなく既存の限界を
-  そのまま引き継ぐ
+  そのまま引き継ぐ。この制約への恒久対応の設計はイシュー #490
+  （[`docs/design/ws-cancellation-propagation.md`](ws-cancellation-propagation.md)）
+  で確定した。コード実装は後続の #491〜#493 が担う
 - **旧世代の背景 drain タスクは detached**: `spawn_generation_drain` が
   `tokio::spawn` するタスクの `JoinHandle` は保持しない。旧世代の permit は
   共有セマフォ経由で最終 shutdown の待ち合わせに含まれる（5.2 節）ため

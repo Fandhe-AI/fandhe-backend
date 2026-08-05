@@ -171,7 +171,10 @@ force-close を過ぎても動き続けうる（Bugbot 指摘、review comment
   委譲済みセッションには遡及しない）。ただし in-flight 完了待ちは permit
   回収のタイムアウトで実装されており、WS セッションが permit を握った
   まま生き続けても `run_until` 自体は grace + ε 以内に必ず戻る
-  （`BoundServer::run_until` の doc「既知の限界」を参照）
+  （`BoundServer::run_until` の doc「既知の限界」を参照）。この制約への
+  恒久対応の設計はイシュー #490
+  （[`docs/design/ws-cancellation-propagation.md`](ws-cancellation-propagation.md)）
+  で確定した。コード実装は後続の #491〜#493 が担う
 - **OS シグナル（SIGTERM/SIGINT）ヘルパーのコア提供**: 現状は利用者側で
   Future を用意する設計とし、コアはシグナルハンドラを持たない（4 節）
 
