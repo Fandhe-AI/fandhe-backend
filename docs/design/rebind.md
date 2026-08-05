@@ -178,6 +178,32 @@ rebind 時点で「旧世代」に属していても `spawn_generation_drain` �
 grace 超過強制クローズの対象にはならない。詳細・許容根拠は 6 節「WebSocket
 委譲セッションは世代 drain の強制クローズ対象外」を参照。
 
+### 5.5 shutdown 確定と rebind チャネルの関係（Bugbot 指摘対応）
+
+`race_shutdown_or_accept` が `Raced::Shutdown` を返した直後（grace drain 開始前）に、
+`run_until` は `rebind_rx`（受信側）を明示的に `drop` してチャネルを閉じる。この
+タイミングを grace drain の**前**に置くのは、drain の間ずっとチャネルを開けたまま
+にすると次の 2 つの問題が生じるため:
+
+1. shutdown 確定後に発行された（または送信済みで reply 待ちだった）
+   `RebindHandle::rebind` 呼び出しが、`send` / `reply_rx` 双方で最大
+   `Server::shutdown_grace_period` までブロックし続けてしまう
+2. 呼び出し側が既に bind 済みの新 `TcpListener` が `RebindCommand` として
+   チャネルバッファに滞留したまま、`rebind_rx` が drop されるまでポートを
+   保持し続けてしまう（実際には誰にも使われない listener が、無駄にポートを
+   専有し続ける）
+
+`rebind_rx` を shutdown 確定時点で即座に drop することで、(a) 以後の
+`RebindHandle::rebind` の `send` は即座に失敗し `run_until` 終了済みと同じ
+`Err` を fail-fast で返す、(b) 送信済みで `reply_rx` 待ちだったコマンドも
+チャネルクローズにより即座にブロックが解消し `Err` を返す、(c) そのコマンドが
+保持していた新 `TcpListener` も同時に drop されポートが速やかに解放される。
+
+`RebindHandle::rebind` の doc「# エラー」節にも同様の契約を明記した。回帰テストは
+`crates/core/tests/rebind.rs` を参照（shutdown 送出後の `rebind` が grace 期間を
+待たず短時間で `Err` になること・rebind で使ったポートが shutdown 後すぐ再利用
+可能になることを検証）。
+
 ## 6. 既知の限界・スコープ外
 
 - **listener 差し替え瞬間の accept backlog 喪失**: rebind コマンドは 3-way

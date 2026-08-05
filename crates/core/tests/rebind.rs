@@ -17,6 +17,13 @@
 //! - `rebind_force_closes_old_generation_after_grace_period`: 短い
 //!   `shutdown_grace_period` + 居座り接続で、旧世代接続が grace 超過後に
 //!   強制クローズされる
+//! - `rebind_after_shutdown_fails_fast_without_waiting_grace_period`:
+//!   shutdown 確定後に発行した `rebind` が grace 期間の終了を待たず速やかに
+//!   `Err` を返す（Bugbot 指摘対応、`rebind_rx` を shutdown 確定直後に
+//!   閉じる修正の回帰テスト）
+//! - `rebind_after_shutdown_releases_bound_port_promptly`: shutdown 確定後の
+//!   `rebind` が呼び出し元で bind した新 `TcpListener` が、grace 期間を
+//!   待たず速やかに drop されポートが解放される（同上）
 //! - `rebind_preserves_registered_extension_points`: `Middleware` /
 //!   `RequestGate` / `UpgradeHandler` / `Interceptor` / `Handler` を登録した
 //!   状態で rebind しても、新アドレスへのリクエストで拡張点が引き続き
@@ -334,6 +341,165 @@ async fn rebind_force_closes_old_generation_after_grace_period() {
     }
 
     run_task.abort();
+}
+
+/// 受け入れ基準「shutdown 確定後の rebind は fail-fast」の統合テスト
+/// （Bugbot 指摘対応、イシュー #485。`run_until` は shutdown 確定直後
+/// （grace drain 開始前）に `rebind_rx` を閉じるため、以後の `rebind` は
+/// grace 期間の終了を待たず速やかに `Err` を返す）。
+///
+/// grace 期間を長め（数秒）に設定したうえで shutdown を発火させ、その直後に
+/// 発行した `rebind` が grace 期間の終了を待たず短時間で `Err` を返すことを
+/// 確認する。
+#[tokio::test]
+async fn rebind_after_shutdown_fails_fast_without_waiting_grace_period() {
+    let grace = Duration::from_secs(5);
+    let server = Server::new()
+        .handler(FixedHandler)
+        .shutdown_grace_period(grace);
+    let mut bound = server.bind("127.0.0.1:0").await.unwrap();
+    let addr = bound.local_addr().unwrap();
+    let rebind = bound.rebind_handle();
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let run_task = tokio::spawn(async move {
+        bound
+            .run_until(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+
+    // shutdown 後の in-flight 完了待ち（grace drain）を実際に grace 期間
+    // 一杯まで働かせるため、accept 済みかつ in-flight（未完結）の接続を
+    // 1 本作っておく。これがないと待つべき in-flight 接続が存在せず drain が
+    // 即座に完了してしまい、`rebind_rx` を早期に閉じない旧実装でも
+    // `run_until` 自体が速やかに終了して本テストが偽陽性で通ってしまう
+    // （`rebind_fails_closed_does_not_disrupt_in_flight_request` と同一パターン。
+    // 1 本目のリクエストを完走させて accept 済みであることを決定的に確認して
+    // から、2 本目のリクエストの先頭のみ送って in-flight にする）。
+    let mut idle_stream = TcpStream::connect(addr).await.unwrap();
+    idle_stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+        .await
+        .unwrap();
+    let first_head = timeout(Duration::from_secs(5), read_response_head(&mut idle_stream))
+        .await
+        .expect("1 本目のリクエストは accept 済みとして完走するはず");
+    assert!(
+        first_head.starts_with("HTTP/1.1 200 OK\r\n"),
+        "実際: {first_head}"
+    );
+    idle_stream.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
+
+    // shutdown を発火させ、accept ループが `Raced::Shutdown` に入るまで
+    // 短い猶予を与える。
+    shutdown_tx.send(()).unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let started = std::time::Instant::now();
+    let rebind_result = timeout(Duration::from_secs(1), rebind.rebind("127.0.0.1:0"))
+        .await
+        .expect("shutdown 確定後の rebind は grace 期間を待たず速やかに完了するはず");
+    let elapsed = started.elapsed();
+
+    assert!(
+        rebind_result.is_err(),
+        "shutdown 確定後の rebind は Err を返すはず"
+    );
+    assert!(
+        elapsed < grace,
+        "shutdown 確定後の rebind は grace 期間（{grace:?}）を待たずに完了するはず\
+         （実際: {elapsed:?}）"
+    );
+
+    let _ = timeout(grace + Duration::from_secs(5), run_task)
+        .await
+        .expect("run_until は grace 期間内に終了するはず");
+}
+
+/// 受け入れ基準「rebind で bind したポートは shutdown 後すぐ再利用可能」
+/// の統合テスト（Bugbot 指摘対応、イシュー #485）。
+///
+/// shutdown 確定後に発行した `rebind` が呼び出し元で bind した新
+/// `TcpListener` は、`rebind_rx` が shutdown 確定直後に閉じられることで
+/// 速やかに drop されポートが解放されているはずである。同一アドレスへの
+/// 再 bind が grace 期間を待たず短時間で成功することで確認する。
+#[tokio::test]
+async fn rebind_after_shutdown_releases_bound_port_promptly() {
+    let grace = Duration::from_secs(5);
+    let server = Server::new()
+        .handler(FixedHandler)
+        .shutdown_grace_period(grace);
+    let mut bound = server.bind("127.0.0.1:0").await.unwrap();
+    let addr = bound.local_addr().unwrap();
+    let rebind = bound.rebind_handle();
+
+    // rebind 先として使う固定アドレスを一旦確保してから解放し、OS 割当の
+    // ポート番号を先に確定させておく。
+    let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let run_task = tokio::spawn(async move {
+        bound
+            .run_until(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+
+    // shutdown 後の in-flight 完了待ち（grace drain）を実際に grace 期間
+    // 一杯まで働かせるため、accept 済みかつ in-flight（未完結）の接続を
+    // 1 本作っておく（上のテストと同一パターン・同じ理由。これがないと
+    // 偽陽性で通ってしまう）。
+    let mut idle_stream = TcpStream::connect(addr).await.unwrap();
+    idle_stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+        .await
+        .unwrap();
+    let first_head = timeout(Duration::from_secs(5), read_response_head(&mut idle_stream))
+        .await
+        .expect("1 本目のリクエストは accept 済みとして完走するはず");
+    assert!(
+        first_head.starts_with("HTTP/1.1 200 OK\r\n"),
+        "実際: {first_head}"
+    );
+    idle_stream.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
+
+    shutdown_tx.send(()).unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let started = std::time::Instant::now();
+    let _ = timeout(
+        Duration::from_secs(1),
+        rebind.rebind(target_addr.to_string()),
+    )
+    .await
+    .expect("shutdown 確定後の rebind は速やかに完了するはず");
+    assert!(
+        started.elapsed() < grace,
+        "shutdown 確定後の rebind は grace 期間を待たずに完了するはず"
+    );
+
+    // rebind() 内部で bind した listener は、上記完了時点で速やかに
+    // drop されポートが解放されているはず。grace 期間を待たず同じ
+    // アドレスへ再 bind できることで確認する。
+    let rebound = timeout(
+        Duration::from_secs(1),
+        tokio::net::TcpListener::bind(target_addr),
+    )
+    .await
+    .expect("bind はタイムアウトせず完了するはず");
+    assert!(
+        rebound.is_ok(),
+        "rebind が使ったポートは grace 期間を待たず解放されているはず"
+    );
+
+    let _ = timeout(grace + Duration::from_secs(5), run_task)
+        .await
+        .expect("run_until は grace 期間内に終了するはず");
 }
 
 /// 呼び出しごとにカウントを増やすトイ `Middleware`。

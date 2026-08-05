@@ -1320,6 +1320,11 @@ impl RebindHandle {
     /// - `addr` への bind に失敗した場合
     /// - `run_until` が既に終了している（一度も呼ばれていない、または
     ///   shutdown 済み）場合
+    /// - `run_until` が shutdown を受理した直後（grace drain 開始前）に
+    ///   `rebind_rx` を閉じる（イシュー #485）ため、shutdown 確定以降に
+    ///   呼び出した・呼び出し中だった `rebind` は grace 期間の終了を待たず
+    ///   速やかに `Err` を返す。bind 済みの新 `TcpListener` も同様に速やかに
+    ///   drop されポートを保持し続けない
     ///
     /// # Examples
     /// ```no_run
@@ -1716,7 +1721,22 @@ impl BoundServer {
             };
 
             match race_shutdown_or_accept(shutdown.as_mut(), rebind_rx.as_mut(), accept_fut).await {
-                Raced::Shutdown => break,
+                Raced::Shutdown => {
+                    // shutdown 確定時点で rebind チャネルを即座に閉じる
+                    // （grace drain 開始前。Bugbot 指摘対応、イシュー #485）。
+                    // 閉じずに握ったままだと、以降の `RebindHandle::rebind` 呼び出しが
+                    // `send`/`reply_rx` で最大 `shutdown_grace_period` までブロックし、
+                    // 呼び出し側が bind 済みの新 `TcpListener` もチャネルバッファに
+                    // 滞留したままポートを保持し続けてしまう。ここで
+                    // `rebind_rx` を drop してチャネルを閉じることで、(a) 以後の
+                    // `rebind()` の `send` は即座に失敗し fail-fast で `Err` を返す
+                    // （既存の「run_until 終了済み」契約に合流）、(b) 送信済みで
+                    // reply 待ちのコマンドも `reply_rx` が即クローズされてブロック
+                    // が解消し、コマンドが保持する新 listener も直ちに drop されて
+                    // ポートが解放される。
+                    drop(rebind_rx.take());
+                    break;
+                }
                 Raced::Rebind(RebindCommand {
                     listener: new_listener,
                     reply,
