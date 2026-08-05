@@ -476,13 +476,22 @@ where
                         stream, &head, leftover, &config,
                     ));
                 std::future::poll_fn(|cx| {
-                    if handle_fut.as_mut().poll(cx).is_ready() {
+                    // 世代キャンセルを最優先でポーリングする
+                    // （`race_shutdown_or_accept` と同じ優先順位、上の関数
+                    // doc「世代キャンセルシグナル」を参照）。タスク起動時点
+                    // で既に cancel が ready（shutdown/rebind がハンドシェイク
+                    // 開始前の `shutdown_flag` チェックを追い越した場合）に
+                    // `handle_fut` を 1 ポーリング分でも先に進めてしまうと、
+                    // ハンドシェイクが `101 Switching Protocols` まで進行した
+                    // 直後にこの future が drop され、クライアントが
+                    // Switching Protocols 応答の直後に即座にハードクローズ
+                    // されうる。cancel を先に評価することでこのレースを防ぐ。
+                    // #492 で Close frame 送信へ置換されるまでの中間ハード
+                    // クローズ。
+                    if cancel_fut.as_mut().poll(cx).is_ready() {
                         return std::task::Poll::Ready(());
                     }
-                    // 世代キャンセル発火（上の関数 doc「世代キャンセル
-                    // シグナル」を参照）。#492 で Close frame 送信へ置換
-                    // されるまでの中間ハードクローズ。
-                    if cancel_fut.as_mut().poll(cx).is_ready() {
+                    if handle_fut.as_mut().poll(cx).is_ready() {
                         return std::task::Poll::Ready(());
                     }
                     std::task::Poll::Pending
