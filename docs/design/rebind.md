@@ -167,7 +167,7 @@ rebind の前後で再登録は一切不要である。`Handler`（`Server` の�
 評価順序・契約（`crates/core/src/server.rs` モジュール冒頭 doc の「1 接続あたりの
 処理フロー」）は不変。
 
-### 5.4 WebSocket 委譲セッションは世代 drain の対象外
+### 5.4 WebSocket 委譲セッションは `JoinSet` の drain 対象外だが、世代キャンセルは伝播する
 
 5 節の手順 3（旧世代 `JoinSet` の切り離し・背景 drain）が対象とするのは
 `run_until` が管理する `JoinSet` に積まれたコネクションタスクのみである。
@@ -175,8 +175,16 @@ rebind の前後で再登録は一切不要である。`Handler`（`Server` の�
 `fandhe_backend_plugin_websocket` 側の専用タスクへ permit ごと `move`
 された WebSocket セッションは、この `JoinSet` の外側で独立に走っているため、
 rebind 時点で「旧世代」に属していても `spawn_generation_drain` の
-grace 超過強制クローズの対象にはならない。詳細・許容根拠は 6 節「WebSocket
-委譲セッションは世代 drain の強制クローズ対象外」を参照。
+grace 超過時 `JoinSet::shutdown` による強制 abort の対象にはならない。
+
+ただしイシュー #490〜#492 で、`spawn_generation_drain` の冒頭にて世代
+キャンセル（`crate::plugin::GenerationCancel::fire`）を明示的に発火し、
+委譲済みの WS 専用タスクへ伝播する経路を実装済みである。旧世代 WS
+セッションは正常な Close ハンドシェイク（close code 1001 Going Away →
+`CLOSE_GRACE`（固定 10 秒）上限で応答待ち）で終端し、`JoinSet` 強制 abort
+のようなハードクローズには依存しない。permit は共有セマフォ経由のため
+`run_until` 自体の最終 graceful shutdown・以降の drain 待ちには反映される。
+詳細・統合テストは 6 節「WebSocket 委譲セッションと世代 drain」を参照。
 
 ### 5.5 shutdown 確定と rebind チャネルの関係（Bugbot 指摘対応）
 
@@ -224,21 +232,26 @@ grace 超過強制クローズの対象にはならない。詳細・許容根�
   「rebind を accept より優先しないと新 listener 差し替え前の古い listener
   で新規接続を受理してしまう」という 4 節の競合回避方針とトレードオフの
   関係にあり、本イシューのスコープ外とする
-- **WebSocket 委譲セッションは世代 drain の強制クローズ対象外**:
+- **WebSocket 委譲セッションと世代 drain（解消済み）**:
   `handle_connection_with_permit` から `UpgradeHandler` 経由で WebSocket
   専用タスク（`fandhe_backend_plugin_websocket` 側の `tokio::spawn`）へ
   permit ごと `move` された接続は、rebind 時点の「旧世代」`JoinSet`
   （5 節）の外にあるため、`spawn_generation_drain` の grace 超過時
-  `JoinSet::shutdown` による強制クローズの対象に含まれない。permit は
-  共有セマフォ経由のため、`run_until` 自体の最終 graceful shutdown・
-  次回以降の rebind の drain 待ちには（grace 超過後は強制打ち切りで）
-  含まれる（5.2 節）が、WS セッションそのものへ明示的なキャンセルは
-  伝播しない。これは `BoundServer::run_until` の doc「既知の限界」節
-  （イシュー #313 由来、shutdown 時の WS 委譲セッション扱い）と同一の
-  制約であり、rebind はこれを新たに悪化させるものではなく既存の限界を
-  そのまま引き継ぐ。この制約への恒久対応の設計はイシュー #490
-  （[`docs/design/ws-cancellation-propagation.md`](ws-cancellation-propagation.md)）
-  で確定した。コード実装は後続の #491〜#493 が担う
+  `JoinSet::shutdown` による強制 abort の対象には今も含まれない。
+  イシュー #490（[`docs/design/ws-cancellation-propagation.md`](ws-cancellation-propagation.md)）
+  で設計し、#491（コア配線）・#492（`fandhe_backend_plugin_websocket` 側の
+  Close ハンドシェイク実装）で実装済みの世代キャンセル伝播機構により、
+  `spawn_generation_drain` の冒頭発火が WS 委譲タスクへ明示的なキャンセル
+  シグナルとして伝わり、正常な Close ハンドシェイク（close code 1001
+  Going Away → `CLOSE_GRACE`（固定 10 秒）上限で応答待ち）で終端する。
+  Close に応答しないクライアントも `CLOSE_GRACE` 有界で強制終端され、
+  無期限に生存し続けることはない。permit は共有セマフォ経由のため
+  `run_until` 自体の最終 graceful shutdown・次回以降の rebind の drain
+  待ちには（`CLOSE_GRACE` 経由での解放を含め）反映される（5.2 節）。
+  両経路（最終 shutdown・rebind 世代 drain）の end-to-end 検証はイシュー
+  #493 の統合テスト（`crates/core/tests/ws_cancellation.rs`）が、居座り
+  クライアントの有界終端・rebind 反復での permit 単調消費なしを含めて
+  担保する
 - **旧世代の背景 drain タスクは detached**: `spawn_generation_drain` が
   `tokio::spawn` するタスクの `JoinHandle` は保持しない。旧世代の permit は
   共有セマフォ経由で最終 shutdown の待ち合わせに含まれる（5.2 節）ため

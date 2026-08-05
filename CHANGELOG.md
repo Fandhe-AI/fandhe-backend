@@ -75,7 +75,13 @@
   [#492](https://github.com/Fandhe-AI/fandhe-backend/issues/492)）。#491 が
   導入した中間実装（キャンセル発火時に `Future` を drop する TCP
   ハードクローズ）を置き換え、WS プロトコルレベルで正常な切断を行います
-  （breaking change、上記 BREAKING CHANGES 節を参照）。
+  （breaking change、上記 BREAKING CHANGES 節を参照）。両経路（最終
+  shutdown・rebind 世代 drain）の end-to-end 検証は、Close に応答しない
+  居座りクライアントの有界終端・rebind 反復での permit 単調消費なしを
+  含めてイシュー [#493](https://github.com/Fandhe-AI/fandhe-backend/issues/493)
+  の統合テスト（`crates/core/tests/ws_cancellation.rs`）が担保します
+  （`BoundServer::run_until` / `RebindHandle::rebind` の doc「既知の限界」
+  から、解消済みの WS 除外記述も同イシューで更新済み）。
 
 ### Changed
 

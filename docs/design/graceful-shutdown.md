@@ -163,18 +163,26 @@ force-close を過ぎても動き続けうる（Bugbot 指摘、review comment
   keep-alive 接続はこのフラグに即応しない（次の read タイムアウト、または
   grace 超過の強制クローズで確実に閉じる）。`tokio::sync::Notify` 等による
   即時中断は本イシューのスコープ外
-- **WebSocket 専用タスクへのキャンセル伝播**: shutdown_flag 受信前に
-  既に Upgrade へ委譲済みの WebSocket 専用タスク（`fandhe_backend_plugin_websocket`
-  側の `tokio::spawn`）は `run_until` が管理する `JoinSet` の外にあるため、
-  grace 超過時の強制 abort 対象にはならない（shutdown_flag 受信後の
-  「新規」Upgrade は 7.1 節の是正で 503 拒否されるようになったが、既存の
-  委譲済みセッションには遡及しない）。ただし in-flight 完了待ちは permit
-  回収のタイムアウトで実装されており、WS セッションが permit を握った
-  まま生き続けても `run_until` 自体は grace + ε 以内に必ず戻る
-  （`BoundServer::run_until` の doc「既知の限界」を参照）。この制約への
-  恒久対応の設計はイシュー #490
+- **WebSocket 専用タスクへのキャンセル伝播（解消済み）**: shutdown_flag
+  受信前に既に Upgrade へ委譲済みの WebSocket 専用タスク
+  （`fandhe_backend_plugin_websocket` 側の `tokio::spawn`）は今も
+  `run_until` が管理する `JoinSet` の外にあるため、grace 超過時の
+  `JoinSet` 強制 abort 対象にはならない（shutdown_flag 受信後の「新規」
+  Upgrade は 7.1 節の是正で 503 拒否される）。ただしイシュー #490
   （[`docs/design/ws-cancellation-propagation.md`](ws-cancellation-propagation.md)）
-  で確定した。コード実装は後続の #491〜#493 が担う
+  で設計し、#491（コア配線）・#492（`fandhe_backend_plugin_websocket` 側の
+  Close ハンドシェイク実装）で実装済みの世代キャンセル伝播機構により、
+  shutdown_flag セット直後に既存の委譲済みセッションへも明示的な
+  キャンセルシグナルが伝わり、正常な Close ハンドシェイク（close code
+  1001 Going Away → `CLOSE_GRACE`（固定 10 秒）上限で応答待ち）で終端
+  する。残る限界は、Close に応答しないクライアントは `run_until` 復帰後
+  も最大 `CLOSE_GRACE` まで detached タスクとして生存しうる点のみで、
+  `run_until` 自体の「grace + ε 以内に必ず戻る」フェイルセーフ（permit
+  回収タイムアウト）は不変（`BoundServer::run_until` の doc「既知の限界」
+  を参照）。両経路（最終 shutdown・rebind 世代 drain）の end-to-end 検証は
+  イシュー #493 の統合テスト（`crates/core/tests/ws_cancellation.rs`）が、
+  居座りクライアントの有界終端・rebind 反復での permit 単調消費なしを
+  含めて担保する
 - **OS シグナル（SIGTERM/SIGINT）ヘルパーのコア提供**: 現状は利用者側で
   Future を用意する設計とし、コアはシグナルハンドラを持たない（4 節）
 
