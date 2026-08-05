@@ -73,7 +73,10 @@ fandhe-backend/
 │   │                            # は breaking change として扱う方針を記録。コード
 │   │                            # 実装は #491（コア配線）・#492（plugin-websocket
 │   │                            # の Close ハンドシェイク実装）・#493（両経路の
-│   │                            # 統合テスト・既知の限界 doc 更新）で完了済み）
+│   │                            # 統合テスト・既知の限界 doc 更新）で完了済み。
+│   │                            # #499（10 節）でキャンセルの適用範囲を受信待ちから
+│   │                            # ユーザーハンドラ実行中・返信/Close 送出中へ拡大し、
+│   │                            # `race_cancel` による即時打ち切り意味論を採用）
 │   ├── guide/              # 利用者向けガイド（Getting Started・feature 構成別サンプル・
 │   │                        # チュートリアル、TASK-11.5 / #95）。「どう作るか」の docs/design/ とは
 │   │                        # 責務分離、「どう使うか」を扱う
@@ -335,7 +338,14 @@ fandhe-backend/
 │   │                                    # 正常な Close ハンドシェイク（close code 1001 Going
 │   │                                    # Away → 応答を最大 10 秒待つ有界ドレイン）で切断する
 │   │                                    # （イシュー #492。`crates/core` 側の配線・設計は
-│   │                                    # `docs/design/ws-cancellation-propagation.md` 参照）
+│   │                                    # `docs/design/ws-cancellation-propagation.md` 参照）。
+│   │                                    # イシュー #499 でキャンセルの適用範囲を受信待ちから
+│   │                                    # ユーザーハンドラ実行中・`WsOutcome::Reply`/`Close`
+│   │                                    # 送出中へ拡大し、`race_cancel` で当該 `Future` を
+│   │                                    # 即座に打ち切って Close ハンドシェイクへ分岐する
+│   │                                    # （シグネチャ変更なし。`on_message` が返す `Future`
+│   │                                    # は任意の `await` 点で drop されうる契約へ変更、
+│   │                                    # `docs/design/ws-cancellation-propagation.md` 10 節）
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O

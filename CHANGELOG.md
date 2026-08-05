@@ -38,11 +38,38 @@
      されない」挙動になります）。キャンセル発火時は、ハンドシェイク開始前
      なら 101 応答を送出せず終了、セッション確立後なら正常な Close
      ハンドシェイク（close code 1001 Going Away・固定 reason）を送出し、
-     応答（または EOF）を最大 10 秒（内部定数 `CLOSE_GRACE`）待ってから
-     終了します。
+     応答（または EOF）を最大 `WebSocketConfig::close_grace`（既定 10 秒、
+     イシュー [#500](https://github.com/Fandhe-AI/fandhe-backend/issues/500)
+     でビルダー設定可能化）待ってから終了します。
+
+### Changed
+
+- `fandhe-backend-plugin-websocket`: `handle_upgrade` のキャンセル `Future`
+  （イシュー [#492](https://github.com/Fandhe-AI/fandhe-backend/issues/492)）
+  の適用範囲を、受信待ちだけでなくユーザーハンドラ（`WsMessageHandler::
+  on_message`）実行中・`WsOutcome::Reply`/`WsOutcome::Close` の送出中にも
+  拡大し、即座に打ち切って正常な Close ハンドシェイク（close code 1001
+  Going Away）へ分岐するようにしました（イシュー
+  [#499](https://github.com/Fandhe-AI/fandhe-backend/issues/499)、設計は
+  `docs/design/ws-cancellation-propagation.md` 10 節）。シグネチャ変更は
+  ありません。
+  - **移行時の注意（BREAKING CHANGE ではないが挙動変更）**: `on_message` が
+    返す `Future` は shutdown・rebind 世代 drain の発火時に**任意の
+    `await` 点で drop されうる**契約へ変更されました。中断されると困る
+    副作用（完了保証が必要な書き込み等）を伴うハンドラ実装は、当該処理を
+    `tokio::spawn` でセッションから切り離してください
+    （`WsMessageHandler::on_message` の doc を参照）。
 
 ### Added
 
+- `fandhe-backend-plugin-websocket`: `WebSocketConfig::with_close_grace` を
+  追加し、キャンセル発火時・アイドルタイムアウト発火時の両経路が共有する
+  Close handshake ドレイン猶予（既定 10 秒）を利用者が設定可能にしました
+  （イシュー [#500](https://github.com/Fandhe-AI/fandhe-backend/issues/500)）。
+  `Duration::ZERO`（即終端）・既定より大きい値も受け付けます（クランプなし。
+  DoS 観点の考慮は `WebSocketConfig::close_grace` の doc を参照）。無効化
+  （無期限待ち）を許す `Option<Duration>` にはせず、常に有界な `Duration`
+  として設計しています（フェイルクローズ）
 - `fandhe-backend-core`: 稼働中の `BoundServer` へ listener 差し替え（rebind）を
   指示できる `BoundServer::rebind_handle` / `RebindHandle::rebind` を追加
   （イシュー [#485](https://github.com/Fandhe-AI/fandhe-backend/issues/485)）。

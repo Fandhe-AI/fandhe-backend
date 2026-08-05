@@ -45,7 +45,7 @@ shutdown（#313）・rebind 世代 drain（#485/#488）双方のキャンセル�
 | 委譲シーム | `crates/core/src/plugin.rs` `try_handle_upgrade`（`pub(crate)`） | permit を take → `tokio::spawn` で detached 化 → `fandhe_backend_plugin_websocket::handle_upgrade` へ完全委譲 |
 | 呼び出し元 | `crates/core/src/server.rs` `handle_connection_with_permit` | shutdown_flag 受信後の新規 Upgrade は 503 拒否済み（既委譲分が本イシューの対象） |
 | 世代管理 | 同上 `run_until` | 世代 = `shutdown_flag`（`Arc<AtomicBool>`）+ `CancelSafeJoinSet` のペア。rebind 時に旧世代の flag を true → `mem::replace` で JoinSet 切り離し → `spawn_generation_drain` |
-| WS セッション受信ループ | `crates/plugin-websocket/src/session.rs` `run_session` | `idle_timeout` 有効時は各受信待ちを `tokio::time::timeout` で監視。`handle_idle_timeout` が Close ハンドシェイク（Close frame 送信 → 相手の Close 応答を `CLOSE_GRACE` 上限で待機）を既に実装済み |
+| WS セッション受信ループ | `crates/plugin-websocket/src/session.rs` `run_session` | `idle_timeout` 有効時は各受信待ちを `tokio::time::timeout` で監視。`handle_idle_timeout` が Close ハンドシェイク（Close frame 送信 → 相手の Close 応答を `WebSocketConfig::close_grace`（既定 10 秒、イシュー #500 で設定可能化）上限で待機）を既に実装済み |
 | コアの tokio feature | `crates/core/Cargo.toml` | `rt` / `net` / `io-util` / `time` / `sync` の 5 つに限定 |
 | plugin-websocket の tokio feature | `crates/plugin-websocket/Cargo.toml` | `io-util` / `time` のみ（**`sync` を持たない**）。`crates/core` に依存しない設計（`docs/design/plugin-boundary.md` 6.1 節、循環依存回避） |
 
@@ -66,7 +66,8 @@ plugin-websocket 側の追加要件／cancel-safety（取りこぼしの有無�
 - 案 D は grace 超過時に TCP を即座に切るだけで、WS プロトコルレベルの
   正常な Close ハンドシェイク（#492 が担う予定の Close frame 送信）を
   実行する機会を奪う。`session.rs` の `handle_idle_timeout` が既に
-  「Close frame 送信 → 相手の応答を `CLOSE_GRACE` 上限で待つ」という
+  「Close frame 送信 → 相手の応答を `WebSocketConfig::close_grace`（既定
+  10 秒）上限で待つ」という
   正常クローズパターンを実装済みであり、キャンセル伝播もこれと同じ
   「まず正常終了を試み、それ自体にも上限を設ける」設計に揃えるべきである。
   よって D は棄却する。
@@ -227,7 +228,7 @@ plugin-websocket 側の追加要件／cancel-safety（取りこぼしの有無�
 
 **採用: (c) の簡略形として、drain 開始時に 1 回だけ発火する（実質 (b)
 と同じタイミング）が、WS セッション側の応答は「正常 Close を試みて
-`CLOSE_GRACE` 上限で打ち切る」という #492 が実装予定の有界動作に委ねる**。
+`WebSocketConfig::close_grace`（既定 10 秒）上限で打ち切る」という #492 が実装予定の有界動作に委ねる**。
 理由:
 
 - (a)（grace 超過時のみ発火）は、grace 期間中の待機を丸ごと「何もせず
@@ -238,7 +239,7 @@ plugin-websocket 側の追加要件／cancel-safety（取りこぼしの有無�
 - drain 開始時点で発火すれば、WS セッション側は `Server::
   shutdown_grace_period` の期間をまるごと正常 Close の試行に使える。
   `session.rs` の既存 `handle_idle_timeout` パターン（Close frame 送信
-  → `CLOSE_GRACE` 上限で応答待ち）をキャンセル経路にもそのまま適用でき、
+  → `WebSocketConfig::close_grace`（既定 10 秒）上限で応答待ち）をキャンセル経路にもそのまま適用でき、
   実装の一貫性が高い
 - 「grace 超過時の強制クローズへの包含」という既存の不変条件は、
   `run_until` 自体の待ち合わせ（`docs/design/rebind.md` 5.2 節
@@ -330,8 +331,9 @@ cargo tree -p fandhe-backend-plugin-websocket -e features
 | 後続イシュー | 実装対象 | 本設計の対応節 |
 |-------------|---------|---------------|
 | #491（コア配線） | 世代構造体へキャンセル `watch::Sender` を追加、`try_handle_upgrade` でキャンセル `Future`（3.2 節 (i)）を構築して `handle_upgrade` へ渡す、`spawn_generation_drain` シグネチャ拡張、最終 shutdown・rebind 両経路での発火配線 | 5 節・6 節 |
-| #492（Close frame 送信） | `fandhe_backend_plugin_websocket::handle_upgrade` へキャンセル `Future` 引数を追加（breaking change）、`run_session` の受信待ちとキャンセル `Future` を race させ、発火時は `handle_idle_timeout` と同型の Close ハンドシェイク（Close frame 送信 → `CLOSE_GRACE` 上限で応答待ち）を実行 | 3 節・4.2 節・5.2 節 |
+| #492（Close frame 送信） | `fandhe_backend_plugin_websocket::handle_upgrade` へキャンセル `Future` 引数を追加（breaking change）、`run_session` の受信待ちとキャンセル `Future` を race させ、発火時は `handle_idle_timeout` と同型の Close ハンドシェイク（Close frame 送信 → `WebSocketConfig::close_grace`（既定 10 秒、イシュー #500 で設定可能化）上限で応答待ち）を実行 | 3 節・4.2 節・5.2 節 |
 | #493（統合テスト・doc 更新） | 最終 shutdown・rebind 双方でのキャンセル伝播を検証する統合テスト、`BoundServer::run_until` doc「既知の限界」・`docs/design/graceful-shutdown.md` 8 節・`docs/design/rebind.md` 5.4 節/6 節の記述更新（本設計が解決したことを反映） | 全節 |
+| #499（ハンドラ実行中・Reply 送出中の即時反映） | `run_session` のユーザーハンドラ呼び出し（Text/Binary）・`apply_outcome` の `ws.send`/`ws.close` を `race_cancel` で包み、キャンセル発火時に打ち切って `handle_cancellation` へ分岐 | 10 節 |
 
 ### 受け入れ条件との対応
 
@@ -385,7 +387,69 @@ cargo tree -p fandhe-backend-plugin-websocket -e features
 いずれも [[out-of-scope-tracking]] に従い、Issue 化はユーザー承認を得て
 から行う。
 
-## 10. WS 以外への水平展開（イシュー #498）
+
+## 10. ハンドラ実行中・Reply 送出中のキャンセル意味論（#499）
+
+#492 時点では `run_session` の**受信待ち**（`ws.next()`）でのみキャンセルを
+最優先ポーリングしており、ユーザーハンドラ（`WsMessageHandler::on_message`）
+の `await` 中・`WsOutcome::Reply`/`WsOutcome::Close` の送出中（`ws.send`/
+`ws.close`）はキャンセルを観測しない既知の制約があった（`session` モジュール
+doc に明記済み）。長時間かかるハンドラ・送信バッファ満杯の slow client が
+あると、キャンセル反映が次の受信待ち復帰まで遅延し、grace 内のクローズが
+遅れる（permit 解放の遅延）。本節はこの制約を解消する設計判断を記録する。
+
+### 10.1 意味論の 3 案比較
+
+| 案 | 概要 | 評価 |
+|----|------|------|
+| (a) 完走を待つ（現状） | ハンドラ・送出完了後の次の受信待ちで反映 | 本イシューが問題視する挙動そのもの。長時間ハンドラで grace を食い潰す |
+| **(b) 即時打ち切り（採用）** | `race_cancel` でハンドラ Future・送出 Future を race し、キャンセル発火時に drop して `handle_cancellation` へ即分岐 | 5 節が採用した「drain 開始時に発火し、grace 期間をまるごと正常 Close の試行に使う」意味論と整合する。Future の drop は `tokio::select!`/`tokio::time::timeout` と同型の Rust async 標準のキャンセル意味論で、追加の設定・タイマー不要 |
+| (c) 上限付きで待つ | キャンセル発火後もハンドラを上限 X 秒まで poll し続け、超過で drop | 新たな時間定数が増え、grace 内クローズの遅延が X 秒分残る。外側に permit 回収 timeout のフェイルセーフが既にあるため、中間の猶予層は複雑さに見合う利得がない |
+
+(b) を採用する。5 節の意味論（drain 開始時に発火し grace をまるごと正常
+Close の試行に使う）と、ハンドラ完走待ち（案 a）は「grace を Close
+ハンドシェイクに充てる」意図と矛盾するため案 a は棄却する。案 c は
+`CLOSE_GRACE`（10 秒、外側フェイルセーフ）と別に新たな待機上限を持ち込み、
+既存の 2 層フェイルセーフ構造（`run_until` の permit 回収 timeout・
+`CLOSE_GRACE`）に 3 層目を追加するだけの複雑さに見合わない。
+
+### 10.2 ハンドラ Future の中断安全性契約
+
+Future の drop によるキャンセルは Rust async の標準機構であり、ハンドラ
+実装者への契約は次のとおり明記する（`WsMessageHandler::on_message` の
+doc・`.claude/rules/coding-rust.md` の並行性規約と同一原則）:
+
+- `on_message` が返す `Future` は shutdown/rebind 時に**任意の `await` 点で
+  drop されうる**
+- 中断されては困る副作用（完了保証が必要な書き込み等）は `tokio::spawn` で
+  セッションから切り離して実行する（既存の「並行処理したい場合は自前に
+  `tokio::spawn` する」建て付けと同一）
+- キャンセル発火済みでメッセージ受信済みの場合、`race_cancel` はキャンセル
+  最優先のためハンドラは呼ばれない
+
+### 10.3 Reply 送出中の打ち切りのワイヤ安全性
+
+`ws.send()` の Future を drop しても、フレーミングバッファ（書き込み位置を
+含む）は Future ではなく `WebSocketStream` 本体が保持するため、後続の
+`ws.close()` が未送出バイトの続きから flush する。フレーム途中で切れた
+不正バイト列が独立に送出されることはない。この性質は
+`crates/plugin-websocket/tests/cancellation.rs` の統合テストで
+「打ち切り後もクライアントが有効な Close frame を受信できる」ことを
+検証する（tokio-tungstenite の `Sink<Message>` 実装が内部バッファを
+Future 跨ぎで保持する挙動に依拠する）。
+
+### 10.4 実装への反映
+
+`crates/plugin-websocket/src/session.rs` の `run_session` のハンドラ呼び出し
+（Text/Binary）を `race_cancel` で包み、キャンセル発火時は `handle_cancellation`
+へ分岐する。`apply_outcome` は戻り値を `Result<bool, WsError>` から
+`SessionFlow`（`Continue`/`Closed`/`Cancelled` の 3 値）へ拡張し、
+`WsOutcome::Reply` の各 `ws.send`・`WsOutcome::Close` の `ws.close` を
+`race_cancel` で包む。既存の `handle_cancellation` → `close_and_drain`
+（`CLOSE_GRACE` 有界化・`ConnectionClosed`/`AlreadyClosed` 許容）は無変更で
+共有する。
+
+## 11. WS 以外への水平展開（イシュー #498）
 
 9 節でスコープ外とした「WS 以外の Upgrade/長時間接続プラグインへの水平展開」を、
 イシュー #498 で棚卸し・実装した。対象は「長時間タスク委譲・長寿命リソース保持を
@@ -393,7 +457,7 @@ cargo tree -p fandhe-backend-plugin-websocket -e features
 （`crates/core` の `CancelSafeJoinSet` の grace 超過強制クローズ対象に自然に含まれる）
 は対象外とする。
 
-### 10.1 棚卸し結果
+### 11.1 棚卸し結果
 
 | プラグイン / 経路 | 委譲パターン | 世代管理外の長時間タスク・リソース | 判定 |
 |---|---|---|---|
@@ -407,7 +471,7 @@ cargo tree -p fandhe-backend-plugin-websocket -e features
 
 → 実装を伴う展開対象は **plugin-webrtc のみ**。
 
-### 10.2 plugin-webrtc への展開設計
+### 11.2 plugin-webrtc への展開設計
 
 **採用方式: レジストリ drain 型（watch 購読型ではない）**。
 
@@ -459,7 +523,7 @@ close()` を伴う非同期 I/O）は `tokio::spawn` した detached タスク�
 これにより `run_until` の「grace + ε 以内に必ず戻る」既存保証（5.3 節）に
 新たな待機ステップを追加しない。
 
-### 10.3 競合（発火とシグナリング完了の race）の扱い
+### 11.3 競合（発火とシグナリング完了の race）の扱い
 
 - **最終 shutdown**: `WebRtcConfig::begin_terminal_drain` が立てるフラグにより、
   終端 drain 開始後に完了したシグナリング（`complete_signaling` 内の
@@ -475,7 +539,7 @@ close()` を伴う非同期 I/O）は `tokio::spawn` した detached タスク�
   ただしこの残余 race は `WebRtcConfig::signaling_timeout`（既定 10 秒）で有界
   であり、無期限に残ることはない
 
-### 10.4 pay-for-what-you-use・テスト境界
+### 11.4 pay-for-what-you-use・テスト境界
 
 - コア側の新規コード（`SessionDrain`）は全て `#[cfg(feature = "webrtc")]` に
   閉じる。既存 `GenerationCancel`（`websocket` feature ゲート）は変更せず、
@@ -500,3 +564,4 @@ close()` を伴う非同期 I/O）は `tokio::spawn` した detached タスク�
 [`WebRtcConfig::begin_terminal_drain`]: ../../crates/plugin-webrtc/src/config.rs
 [`WebRtcConfig::activate_slot`]: ../../crates/plugin-webrtc/src/config.rs
 [`crate::plugin::SessionDrain`]: ../../crates/core/src/plugin.rs
+

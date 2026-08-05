@@ -181,7 +181,8 @@ grace 超過時 `JoinSet::shutdown` による強制 abort の対象にはなら�
 キャンセル（`crate::plugin::GenerationCancel::fire`）を明示的に発火し、
 委譲済みの WS 専用タスクへ伝播する経路を実装済みである。旧世代 WS
 セッションは正常な Close ハンドシェイク（close code 1001 Going Away →
-`CLOSE_GRACE`（固定 10 秒）上限で応答待ち）で終端し、`JoinSet` 強制 abort
+`WebSocketConfig::close_grace`（既定 10 秒、イシュー #500 で設定可能化）
+上限で応答待ち）で終端し、`JoinSet` 強制 abort
 のようなハードクローズには依存しない。permit は共有セマフォ経由のため
 `run_until` 自体の最終 graceful shutdown・以降の drain 待ちには反映される。
 詳細・統合テストは 6 節「WebSocket 委譲セッションと世代 drain」を参照。
@@ -243,11 +244,11 @@ grace 超過時 `JoinSet::shutdown` による強制 abort の対象にはなら�
   Close ハンドシェイク実装）で実装済みの世代キャンセル伝播機構により、
   `spawn_generation_drain` の冒頭発火が WS 委譲タスクへ明示的なキャンセル
   シグナルとして伝わり、正常な Close ハンドシェイク（close code 1001
-  Going Away → `CLOSE_GRACE`（固定 10 秒）上限で応答待ち）で終端する。
-  Close に応答しないクライアントも `CLOSE_GRACE` 有界で強制終端され、
-  無期限に生存し続けることはない。permit は共有セマフォ経由のため
-  `run_until` 自体の最終 graceful shutdown・次回以降の rebind の drain
-  待ちには（`CLOSE_GRACE` 経由での解放を含め）反映される（5.2 節）。
+  Going Away → `WebSocketConfig::close_grace`（既定 10 秒）上限で応答待ち）
+  で終端する。Close に応答しないクライアントも `close_grace` 有界で強制
+  終端され、無期限に生存し続けることはない。permit は共有セマフォ経由の
+  ため `run_until` 自体の最終 graceful shutdown・次回以降の rebind の
+  drain 待ちには（`close_grace` 経由での解放を含め）反映される（5.2 節）。
   両経路（最終 shutdown・rebind 世代 drain）の end-to-end 検証はイシュー
   #493 の統合テスト（`crates/core/tests/ws_cancellation.rs`）が、居座り
   クライアントの有界終端・rebind 反復での permit 単調消費なしを含めて
