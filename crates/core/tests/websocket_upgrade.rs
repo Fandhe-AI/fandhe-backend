@@ -14,7 +14,9 @@
 
 #![cfg(feature = "websocket")]
 
-use fandhe_backend_core::{GateOutcome, Handler, RequestGate, Server, handle_connection};
+use fandhe_backend_core::{
+    GateContext, GateOutcome, Handler, RequestGate, Server, handle_connection,
+};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
 use fandhe_backend_plugin_websocket::WebSocketConfig;
@@ -40,7 +42,7 @@ impl RequestGate for DenyAllGate {
     fn name(&self) -> &'static str {
         "deny-all"
     }
-    fn check(&self, _head: &RequestHead) -> GateOutcome {
+    fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
         GateOutcome::reject(403, Vec::new())
     }
 }

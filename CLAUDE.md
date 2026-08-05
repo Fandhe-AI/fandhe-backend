@@ -165,6 +165,17 @@ fandhe-backend/
 │   │                                    # `benches/reports/
 │   │                                    # issue468-compression-blocking.md`・
 │   │                                    # `docs/design/plugin-boundary.md` 5.10.7 節）。
+│   │                                    # イシュー #486 で `RequestGate::check` へ
+│   │                                    # `ctx: &GateContext` 引数を追加し、accept した
+│   │                                    # ソケットの実 peer address（`GateContext::
+│   │                                    # peer_addr`）を gate 実装から参照可能にした
+│   │                                    # （BREAKING CHANGE、`CHANGELOG.md` 移行手順・
+│   │                                    # `docs/design/gate-peer-addr.md` 参照）。
+│   │                                    # `tokio::io::duplex` 等の非ソケット経路では
+│   │                                    # `None` になるフェイルクローズ契約。実 peer
+│   │                                    # address を注入したい呼び出し元向けに新設の
+│   │                                    # 公開 API `handle_connection_with_peer_addr`
+│   │                                    # も追加した。
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む

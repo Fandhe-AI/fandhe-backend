@@ -14,7 +14,7 @@ use crate::auth::Authenticator;
 use crate::jwks::JwksKeySet;
 use crate::jwks::{JwksError, SharedJwks};
 use crate::jwt::TokenError;
-use fandhe_backend_core::extension::{GateOutcome, RequestGate};
+use fandhe_backend_core::extension::{GateContext, GateOutcome, RequestGate};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
 
@@ -175,14 +175,17 @@ impl RequestGate for TenantGate {
         "hub-tenant-gate"
     }
 
-    fn check(&self, head: &RequestHead) -> GateOutcome {
+    fn check(&self, head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
         // `check()` は同期・非ブロッキング（I/O なし）で Tokio ワーカーを
         // 塞がない契約を維持する（`crates/core/src/extension.rs` doc）。
         // `Authenticator::authenticate` はロックを短時間保持するのみで、
         // 実際の署名検証（キャッシュミス時のみ）中はロックを保持しない
         // （.claude/rules/coding-rust.md）。判定ポリシー（401/403 マッピング）は
         // 従来の `verify_token` 直接呼び出しと完全に同一であり、キャッシュ
-        // ヒット/ミスで判定結果が変わることはない（TASK-9.3 / #63）。
+        // ヒット/ミスで判定結果が変わることはない（TASK-9.3 / #63）。テナント
+        // 境界判定はトークンクレーム（`org_id`）のみに基づき、`ctx` の実 peer
+        // address は本ゲートの判定に使用しない（イシュー #486、`GateContext`
+        // 追加は既存 gate 実装への影響を最小化する非対応追随のみ）。
         match self.config.authenticator.authenticate(head) {
             Ok(_claims) => GateOutcome::Allow,
             Err(TokenError::MissingOrgId) => reject_json(403, FORBIDDEN_BODY),
@@ -265,7 +268,7 @@ mod tests {
         let keypair = test_keypair();
         let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
         assert_eq!(
-            gate_for(&keypair).check(&head),
+            gate_for(&keypair).check(&head, &GateContext::new(None)),
             reject_json(401, UNAUTHORIZED_BODY)
         );
     }
@@ -276,7 +279,7 @@ mod tests {
         let raw = b"GET / HTTP/1.1\r\nAuthorization: Basic abcdef\r\n\r\n".to_vec();
         let head = head_from(&raw);
         assert_eq!(
-            gate_for(&keypair).check(&head),
+            gate_for(&keypair).check(&head, &GateContext::new(None)),
             reject_json(401, UNAUTHORIZED_BODY)
         );
     }
@@ -287,7 +290,10 @@ mod tests {
         let token = make_token(&keypair, TEST_KID, Some("org-1"), 9_999_999_999);
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
-        assert_eq!(gate_for(&keypair).check(&head), GateOutcome::Allow);
+        assert_eq!(
+            gate_for(&keypair).check(&head, &GateContext::new(None)),
+            GateOutcome::Allow
+        );
     }
 
     #[test]
@@ -296,7 +302,10 @@ mod tests {
         let token = make_token(&keypair, TEST_KID, Some("org-1"), 9_999_999_999);
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: bEaReR {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
-        assert_eq!(gate_for(&keypair).check(&head), GateOutcome::Allow);
+        assert_eq!(
+            gate_for(&keypair).check(&head, &GateContext::new(None)),
+            GateOutcome::Allow
+        );
     }
 
     #[test]
@@ -308,7 +317,10 @@ mod tests {
         let token = make_token(&keypair, TEST_KID, Some("org-1"), 9_999_999_999);
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer   {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
-        assert_eq!(gate_for(&keypair).check(&head), GateOutcome::Allow);
+        assert_eq!(
+            gate_for(&keypair).check(&head, &GateContext::new(None)),
+            GateOutcome::Allow
+        );
     }
 
     #[test]
@@ -317,7 +329,7 @@ mod tests {
         let raw = b"GET / HTTP/1.1\r\nAuthorization: Bearer \r\n\r\n".to_vec();
         let head = head_from(&raw);
         assert_eq!(
-            gate_for(&keypair).check(&head),
+            gate_for(&keypair).check(&head, &GateContext::new(None)),
             reject_json(401, UNAUTHORIZED_BODY)
         );
     }
@@ -328,7 +340,7 @@ mod tests {
         let raw = b"GET / HTTP/1.1\r\nAuthorization: Bearer not-a-jwt\r\n\r\n".to_vec();
         let head = head_from(&raw);
         assert_eq!(
-            gate_for(&keypair).check(&head),
+            gate_for(&keypair).check(&head, &GateContext::new(None)),
             reject_json(401, UNAUTHORIZED_BODY)
         );
     }
@@ -340,7 +352,7 @@ mod tests {
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
         assert_eq!(
-            gate_for(&keypair).check(&head),
+            gate_for(&keypair).check(&head, &GateContext::new(None)),
             reject_json(401, UNAUTHORIZED_BODY)
         );
     }
@@ -352,7 +364,7 @@ mod tests {
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
         assert_eq!(
-            gate_for(&keypair).check(&head),
+            gate_for(&keypair).check(&head, &GateContext::new(None)),
             reject_json(401, UNAUTHORIZED_BODY)
         );
     }
@@ -367,7 +379,10 @@ mod tests {
         let head = head_from(&raw);
         let empty_config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#).unwrap();
         let gate = TenantGate::new(empty_config);
-        assert_eq!(gate.check(&head), reject_json(401, UNAUTHORIZED_BODY));
+        assert_eq!(
+            gate.check(&head, &GateContext::new(None)),
+            reject_json(401, UNAUTHORIZED_BODY)
+        );
     }
 
     #[test]
@@ -377,7 +392,7 @@ mod tests {
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
         assert_eq!(
-            gate_for(&keypair).check(&head),
+            gate_for(&keypair).check(&head, &GateContext::new(None)),
             reject_json(403, FORBIDDEN_BODY)
         );
     }
@@ -390,7 +405,9 @@ mod tests {
         // 仕様を維持し、判定ポリシー（401/403 マッピング）自体は変えない）。
         let keypair = test_keypair();
         let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
-        let GateOutcome::Reject { response } = gate_for(&keypair).check(&head) else {
+        let GateOutcome::Reject { response } =
+            gate_for(&keypair).check(&head, &GateContext::new(None))
+        else {
             panic!("expected Reject for missing Authorization header");
         };
         let wire = String::from_utf8(response.serialize(false)).unwrap();
@@ -403,7 +420,9 @@ mod tests {
         let token = make_token(&keypair, TEST_KID, None, 9_999_999_999);
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
-        let GateOutcome::Reject { response } = gate_for(&keypair).check(&head) else {
+        let GateOutcome::Reject { response } =
+            gate_for(&keypair).check(&head, &GateContext::new(None))
+        else {
             panic!("expected Reject for missing org_id");
         };
         let wire = String::from_utf8(response.serialize(false)).unwrap();
@@ -420,7 +439,7 @@ mod tests {
         let token = make_token(&keypair, TEST_KID, Some("org-1"), 1);
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
-        match gate_for(&keypair).check(&head) {
+        match gate_for(&keypair).check(&head, &GateContext::new(None)) {
             GateOutcome::Reject { response } => {
                 let body_str = String::from_utf8_lossy(&response.body);
                 assert!(!body_str.contains(&token));
@@ -446,19 +465,25 @@ mod tests {
         let old_token = make_token(&keypair, TEST_KID, Some("org-1"), 9_999_999_999);
         let raw =
             format!("GET / HTTP/1.1\r\nAuthorization: Bearer {old_token}\r\n\r\n").into_bytes();
-        assert_eq!(gate.check(&head_from(&raw)), GateOutcome::Allow);
+        assert_eq!(
+            gate.check(&head_from(&raw), &GateContext::new(None)),
+            GateOutcome::Allow
+        );
 
         shared.set(JwksKeySet::from_json(&jwks_json_for(&rotated_keypair, TEST_KID)).unwrap());
 
         // 旧鍵の署名は新 JWKS では検証できず拒否される。
         assert_eq!(
-            gate.check(&head_from(&raw)),
+            gate.check(&head_from(&raw), &GateContext::new(None)),
             reject_json(401, UNAUTHORIZED_BODY)
         );
 
         let new_token = make_token(&rotated_keypair, TEST_KID, Some("org-1"), 9_999_999_999);
         let raw2 =
             format!("GET / HTTP/1.1\r\nAuthorization: Bearer {new_token}\r\n\r\n").into_bytes();
-        assert_eq!(gate.check(&head_from(&raw2)), GateOutcome::Allow);
+        assert_eq!(
+            gate.check(&head_from(&raw2), &GateContext::new(None)),
+            GateOutcome::Allow
+        );
     }
 }
