@@ -42,6 +42,25 @@
   （既定 64 KiB）を追加し、`apply_compression` を `plan_compression` /
   `compress_body` / `attach_compressed` の 3 関数へ分割公開（イシュー
   [#468](https://github.com/Fandhe-AI/fandhe-backend/issues/468)）
+- `fandhe-backend-core`: `UpgradeHandler` 経由で WebSocket へ委譲された接続へ、
+  最終 graceful shutdown（#313）・rebind 世代 drain（#485/#488）双方の世代
+  キャンセルシグナルを配線しました（イシュー
+  [#491](https://github.com/Fandhe-AI/fandhe-backend/issues/491)、設計は
+  [#490](https://github.com/Fandhe-AI/fandhe-backend/issues/490)・
+  `docs/design/ws-cancellation-propagation.md`）。世代ごとの
+  `tokio::sync::watch` チャネルを drain 開始時（最終 shutdown は
+  `shutdown_flag` を立てた直後、rebind は背景 drain タスクの冒頭）に 1 回
+  発火し、委譲済み WS 専用タスクへ伝播します。新規依存・tokio feature 追加は
+  ゼロ（コアの既存 `sync` feature 内で完結、`plugin-websocket` への委譲境界は
+  キャンセル `Future` として渡し `sync` feature を要求しない）。
+  **現時点の挙動は中間実装**であり、キャンセル発火時は
+  `fandhe_backend_plugin_websocket::handle_upgrade` の `Future` を drop する
+  ハードクローズ（TCP を即座に切断）を行います。WS プロトコルレベルの正常な
+  Close フレーム送信への置き換えはイシュー
+  [#492](https://github.com/Fandhe-AI/fandhe-backend/issues/492) が担い、
+  その際 `handle_upgrade` のシグネチャへキャンセル `Future` 引数を追加する
+  breaking change が入る予定です（本エントリはその変更が実際に入る #492 側で
+  更新）。
 
 ### Changed
 

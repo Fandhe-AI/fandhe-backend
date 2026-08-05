@@ -1272,19 +1272,26 @@ impl RebindHandle {
     /// 実行、新世代の accept ループは並行して動き続ける）。詳細な設計判断は
     /// `docs/design/rebind.md` を参照。
     ///
-    /// # 既知の限界（WebSocket 委譲セッションは drain 対象外）
+    /// # WebSocket 委譲セッションは `JoinSet` の drain 対象外（キャンセルは伝播する）
     ///
-    /// 上記の世代別 drain が対象とするのは `run_until` が管理する
-    /// コネクションタスク一式のみである。`UpgradeHandler` の委譲が成立し
-    /// `handle_connection_with_permit` から WebSocket 専用タスクへ permit
-    /// ごと `move` された接続は、この管理対象の外にあるため、grace 超過時の
-    /// 強制クローズには含まれない。permit は世代を跨いで共有する
-    /// `connection_limit` セマフォ経由のため、`run_until` 自体の最終
-    /// graceful shutdown・以降の drain 待ちには（grace 超過後の打ち切りを
-    /// 含め）反映されるが、WS セッションそのものへ明示的なキャンセルは
-    /// 伝播しない。これは [`BoundServer::run_until`] の doc「既知の限界」節
-    /// （イシュー #313 由来）と同一の制約であり、`rebind` はこれを新たに
-    /// 悪化させるものではない（`docs/design/rebind.md` 5.4・6 節を参照）。
+    /// 上記の世代別 drain（`JoinSet::shutdown` による強制 abort）が対象と
+    /// するのは `run_until` が管理するコネクションタスク一式のみである。
+    /// `UpgradeHandler` の委譲が成立し `handle_connection_with_permit` から
+    /// WebSocket 専用タスクへ permit ごと `move` された接続は、この管理
+    /// 対象の外にあるため、grace 超過時の `JoinSet` 強制 abort には含まれ
+    /// ない。permit は世代を跨いで共有する `connection_limit` セマフォ経由
+    /// のため、`run_until` 自体の最終 graceful shutdown・以降の drain 待ち
+    /// には（grace 超過後の打ち切りを含め）反映される。
+    ///
+    /// イシュー #491（`docs/design/ws-cancellation-propagation.md`）で、
+    /// この drain タスクの冒頭にて世代キャンセル（`crate::plugin::
+    /// GenerationCancel::fire`）を発火し、WS 委譲タスクへ明示的な
+    /// キャンセルシグナルを伝播する経路を追加した。#492 で
+    /// `fandhe_backend_plugin_websocket::handle_upgrade` が正常な Close
+    /// ハンドシェイクを実装するまでの中間実装として、現状は発火時に
+    /// `handle_upgrade` の `Future` を drop するハードクローズを行う
+    /// （`crate::plugin::try_handle_upgrade` の doc「世代キャンセル
+    /// シグナル」を参照）。
     ///
     /// # キャンセル安全性・並行呼び出し
     ///
@@ -1488,8 +1495,18 @@ impl Drop for CancelSafeJoinSet {
 /// 「セマフォは世代を跨いで単一共有」を参照）、`run_until` 自体の最終
 /// shutdown が行う `acquire_many_owned(permit_total)` はこの背景タスクの
 /// 完了（または強制クローズ）を暗黙に待つことになる。
-fn spawn_generation_drain(mut old_join_set: CancelSafeJoinSet, grace: Duration) {
+/// `old_cancel` はこの世代（`old_join_set`）に対応する
+/// [`crate::plugin::GenerationCancel`]（イシュー #491）。drain タスクの
+/// 冒頭で 1 回だけ発火し（`docs/design/ws-cancellation-propagation.md` 5.2
+/// 節「drain 開始時に発火」）、この世代の WS 委譲タスクへキャンセルを
+/// 伝播する。`websocket` feature 無効時 `fire()` は no-op（型 doc を参照）。
+fn spawn_generation_drain(
+    mut old_join_set: CancelSafeJoinSet,
+    old_cancel: crate::plugin::GenerationCancel,
+    grace: Duration,
+) {
     tokio::spawn(async move {
+        old_cancel.fire();
         let drained = tokio::time::timeout(grace, async {
             while old_join_set.join_next().await.is_some() {}
         })
@@ -1654,11 +1671,20 @@ impl BoundServer {
     /// リクエストにのみ適用される。shutdown_flag 受信前に既に Upgrade へ
     /// 委譲済みの WebSocket 専用タスク（`fandhe_backend_plugin_websocket`
     /// 側の `tokio::spawn`）は本関数が管理する `JoinSet` の外にあるため、
-    /// grace 超過時の強制 abort 対象にはならない。ただし in-flight 完了
-    /// 待ちは permit 回収のタイムアウトで実装されており、WS セッションが
-    /// permit を握ったまま生き続けても `run_until` 自体は grace + ε 以内に
-    /// 必ず戻る（WS セッションへの明示的キャンセル伝播は本イシューの
-    /// スコープ外）。
+    /// grace 超過時の `JoinSet` 強制 abort 対象にはならない。ただし
+    /// in-flight 完了待ちは permit 回収のタイムアウトで実装されており、
+    /// `run_until` 自体は grace + ε 以内に必ず戻る（既存フェイルセーフ、
+    /// イシュー #491 でも置き換えていない）。
+    ///
+    /// イシュー #491 で、`current_shutdown_flag.store(true, ...)` の直後
+    /// （下記実装を参照）に世代キャンセル（`crate::plugin::
+    /// GenerationCancel::fire`）を発火し、委譲済みの WS 専用タスクへ
+    /// 明示的なキャンセルシグナルを伝播する経路を追加した。#492 で
+    /// `fandhe_backend_plugin_websocket::handle_upgrade` が正常な Close
+    /// ハンドシェイクを実装するまでの中間実装として、現状は発火時に
+    /// `handle_upgrade` の `Future` を drop するハードクローズを行う
+    /// （`crate::plugin::try_handle_upgrade` の doc「世代キャンセル
+    /// シグナル」・`docs/design/ws-cancellation-propagation.md` を参照）。
     pub async fn run_until<F>(self, shutdown: F) -> io::Result<()>
     where
         F: Future<Output = ()>,
@@ -1685,6 +1711,11 @@ impl BoundServer {
         // listener を差し替えるたびに、旧フラグを `true` にして新フラグへ
         // 差し替える（`race_shutdown_or_accept` の `Raced::Rebind` 分岐を参照）。
         let mut current_shutdown_flag = shutdown_flag;
+        // 「現行世代」のキャンセル発火源（イシュー #491）。`shutdown_flag` と
+        // 同じタイミングで世代交代する（`Raced::Rebind` 分岐・最終 shutdown
+        // 直後を参照。`docs/design/ws-cancellation-propagation.md` 5.1 節
+        // 「両経路が同一の世代構造体を発火源として共有する」）。
+        let mut current_cancel = crate::plugin::GenerationCancel::new();
 
         loop {
             // 完了済みタスクを反復のたびに全件回収する（1 件だけ回収すると
@@ -1748,10 +1779,17 @@ impl BoundServer {
                     // 2. listener を差し替える。以降の accept は新アドレスのみ。
                     listener = new_listener;
                     // 3. 旧世代の JoinSet を切り離し、grace 付きで背景 drain する
-                    // （`run_until` 自体はブロックしない）。
+                    // （`run_until` 自体はブロックしない）。旧世代のキャンセル
+                    // 発火源（イシュー #491）も同時に切り離し、drain タスク
+                    // 冒頭での発火（`spawn_generation_drain` の doc を参照）へ
+                    // 委ねる。
                     let old_join_set =
                         std::mem::replace(&mut join_set, CancelSafeJoinSet(JoinSet::new()));
-                    spawn_generation_drain(old_join_set, server.shutdown_grace_period);
+                    let old_cancel = std::mem::replace(
+                        &mut current_cancel,
+                        crate::plugin::GenerationCancel::new(),
+                    );
+                    spawn_generation_drain(old_join_set, old_cancel, server.shutdown_grace_period);
                     // 4. 新世代用のフラグを用意する。
                     current_shutdown_flag = Arc::new(AtomicBool::new(false));
                     // 差し替え完了を通知する。呼び出し側（`RebindHandle::rebind`）が
@@ -1765,6 +1803,10 @@ impl BoundServer {
                 Raced::Completed(Some((stream, peer_addr, permit))) => {
                     let server = Arc::clone(&server);
                     let shutdown_flag = Arc::clone(&current_shutdown_flag);
+                    // この接続が属する世代のキャンセルハンドル（イシュー
+                    // #491）。WS 委譲が確定した場合のみ
+                    // `crate::plugin::try_handle_upgrade` 内で消費される。
+                    let cancel = current_cancel.handle();
                     join_set.spawn(async move {
                         // permit は WebSocket 委譲時に `handle_connection_with_permit`
                         // 内部で専用タスクへ move されうる（TASK-4.2 / #23、
@@ -1777,6 +1819,7 @@ impl BoundServer {
                             Some(permit),
                             &shutdown_flag,
                             Some(peer_addr),
+                            cancel,
                         )
                         .await;
                     });
@@ -1789,6 +1832,11 @@ impl BoundServer {
         // `current_shutdown_flag` は「現行世代」（rebind 済みなら差し替え後の
         // もの）を指す。旧世代のフラグは rebind の時点で既に `true` 済み。
         current_shutdown_flag.store(true, Ordering::Relaxed);
+        // 現行世代のキャンセルを発火する（イシュー #491、設計 5.3 節
+        // 「shutdown_flag を true にする直後に watch::Sender::send(true) を
+        // 追加するだけ」）。`run_until` 自体の制御フローには分岐が増えず、
+        // grace 待ち・強制クローズの実装は不変（下記コメント参照）。
+        current_cancel.fire();
         drop(listener);
 
         // 2. in-flight 完了待ち（grace 上限）。
@@ -1856,7 +1904,17 @@ where
     // `BoundServer::run_until` を経由しない呼び出し（直接統合テスト等）は
     // シャットダウン対象にならないため、常に `false` のローカルフラグを渡す。
     let no_shutdown = Arc::new(AtomicBool::new(false));
-    handle_connection_with_permit(server, stream, None, &no_shutdown, None).await;
+    // 世代の概念がない直接呼び出し経路のため、発火しないキャンセルハンドル
+    // を渡す（イシュー #491、`crate::plugin::UpgradeCancel` の doc を参照）。
+    handle_connection_with_permit(
+        server,
+        stream,
+        None,
+        &no_shutdown,
+        None,
+        crate::plugin::UpgradeCancel::disabled(),
+    )
+    .await;
 }
 
 /// [`handle_connection`] に実 peer address を注入できる版（イシュー #486）。
@@ -1888,7 +1946,17 @@ pub async fn handle_connection_with_peer_addr<S>(
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let no_shutdown = Arc::new(AtomicBool::new(false));
-    handle_connection_with_permit(server, stream, None, &no_shutdown, Some(peer_addr)).await;
+    // 世代の概念がない直接呼び出し経路のため、発火しないキャンセルハンドル
+    // を渡す（イシュー #491、`crate::plugin::UpgradeCancel` の doc を参照）。
+    handle_connection_with_permit(
+        server,
+        stream,
+        None,
+        &no_shutdown,
+        Some(peer_addr),
+        crate::plugin::UpgradeCancel::disabled(),
+    )
+    .await;
 }
 
 /// [`handle_connection`] の内部実装（`pub(crate)`、TASK-4.2 / #23）。
@@ -1913,12 +1981,19 @@ pub async fn handle_connection_with_peer_addr<S>(
 /// 接続の生存期間中は不変のため、ループ先頭で 1 回だけ [`GateContext`] を
 /// 構築し（`Copy` 型のためコピーコストは無視できる）、以降の
 /// `RequestGate::check` 呼び出しへ都度渡す。
+///
+/// `cancel`（[`crate::plugin::UpgradeCancel`]、イシュー #491）は接続が
+/// 属する世代のキャンセルハンドル。Upgrade 委譲が確定した場合のみ
+/// `crate::plugin::try_handle_upgrade` へそのまま渡す（それ以外の分岐では
+/// 使われず drop される。世代キャンセルは WS 委譲タスクのみが対象、
+/// `docs/design/ws-cancellation-propagation.md` を参照）。
 pub(crate) async fn handle_connection_with_permit<S>(
     server: &Server,
     mut stream: S,
     mut permit: Option<OwnedSemaphorePermit>,
     shutdown_flag: &Arc<AtomicBool>,
     peer_addr: Option<std::net::SocketAddr>,
+    cancel: crate::plugin::UpgradeCancel,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -2067,6 +2142,7 @@ pub(crate) async fn handle_connection_with_permit<S>(
                 leftover,
                 server,
                 &mut permit,
+                cancel,
             )
             .await
             {
@@ -2779,7 +2855,15 @@ mod tests {
         client.shutdown().await.unwrap();
 
         let shutdown_flag = Arc::new(AtomicBool::new(true));
-        handle_connection_with_permit(server, server_stream, None, &shutdown_flag, None).await;
+        handle_connection_with_permit(
+            server,
+            server_stream,
+            None,
+            &shutdown_flag,
+            None,
+            crate::plugin::UpgradeCancel::disabled(),
+        )
+        .await;
 
         let mut out = Vec::new();
         client.read_to_end(&mut out).await.unwrap();
