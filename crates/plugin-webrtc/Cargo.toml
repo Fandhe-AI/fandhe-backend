@@ -32,8 +32,16 @@ serde_json = "1"
 # 接続受理・I/O は webrtc クレート自身の tokio ランタイム利用に委ねる。
 tokio = { version = "1", default-features = false, features = ["time"] }
 
-# 統合テスト（tests/webrtc_datachannel.rs）でループバック HTTP サーバ・クライアント側
-# RTCPeerConnection を動かすためのみ。本体ビルド（lib.rs 以下）には影響しない。
+# 統合テスト（tests/webrtc_datachannel.rs, tests/session_drain.rs 等）でループバック
+# HTTP サーバ・クライアント側 RTCPeerConnection を動かすためのみ。本体ビルド
+# （lib.rs 以下）には影響しない。
+#
+# `fandhe-backend-core`（`webrtc` feature 有効）は tests/rebind_force_close.rs
+# （イシュー #498 レビュー対応）が `Server`/`BoundServer::rebind_handle` 経由の
+# 実 rebind 配線を検証するために使う。`crates/core` の通常依存が本クレートを
+# 参照するため dev-dependencies としては循環になるが、Cargo は dev-dependency
+# のみで閉じる循環（本体ビルドの依存グラフには現れない）をサポートしており、
+# 本クレートの通常ビルド・pay-for-what-you-use には影響しない。
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = [
   "net",
@@ -42,3 +50,4 @@ tokio = { version = "1", default-features = false, features = [
   "macros",
   "rt-multi-thread",
 ] }
+fandhe-backend-core = { workspace = true, features = ["webrtc"] }

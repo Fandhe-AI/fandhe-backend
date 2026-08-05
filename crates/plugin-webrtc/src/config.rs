@@ -196,19 +196,33 @@ impl WebRtcConfig {
     ///
     /// # 終端 drain との競合（イシュー #498）
     ///
-    /// [`WebRtcConfig::terminal_draining`] が `true`（`drain::drain_for_shutdown` 呼び出し
-    /// 済み）の場合は登録を拒否し、予約枠も即座に解放したうえで `false` を返す
-    /// （フェイルクローズ。`.claude/rules/security.md`）。呼び出し元は戻り値が `false` の
-    /// 場合、受け取った `pc` を自身で明示的に `close()` する契約とする（最終 shutdown
-    /// 開始後に生成された `RTCPeerConnection` をレジストリの生存管理外へ漏らさないため）。
-    /// 戻り値が `true` の場合は通常どおりレジストリが `pc` の生存を保持する。
+    /// [`WebRtcConfig::terminal_draining`] の判定は `registry` の `Mutex` ロック区間内
+    /// （`Active` への遷移と同一クリティカルセクション）で行う。`terminal_draining` の
+    /// 読み取りをロック外で行うと、`drain::drain_for_shutdown` が
+    /// `begin_terminal_drain()`（フラグ設定）→ `close_active_peers`
+    /// （`take_active_peers` でロックを取り既存 `Active` を除去）と進む間に割り込んだ
+    /// 呼び出しがフラグを `false` のまま読み取ってロックを獲得し、`take_active_peers`
+    /// の対象漏れ（`Reserved` のまま）だった枠を drain 完了後に `Active` 化してしまう
+    /// TOCTOU が生じる（終端 drain 後に生成された接続が二度と close トリガを受けず
+    /// 残存する回帰）。ロック内で判定することで、`begin_terminal_drain` が
+    /// `take_active_peers` のロック獲得より必ず先行する（`drain_for_shutdown` の呼び出し
+    /// 順）という前提のもと、本メソッドの判定は「`take_active_peers` の直前」または
+    /// 「`take_active_peers` の直後」のいずれかに一意に順序付けられ、後者であっても
+    /// フラグは既に `true` になっているため確実に拒否できる。
+    ///
+    /// フラグが `true`（`drain::drain_for_shutdown` 呼び出し済み）の場合は登録を拒否し、
+    /// 予約枠も即座に解放したうえで `false` を返す（フェイルクローズ。
+    /// `.claude/rules/security.md`）。呼び出し元は戻り値が `false` の場合、受け取った
+    /// `pc` を自身で明示的に `close()` する契約とする（最終 shutdown 開始後に生成された
+    /// `RTCPeerConnection` をレジストリの生存管理外へ漏らさないため）。戻り値が `true`
+    /// の場合は通常どおりレジストリが `pc` の生存を保持する。
     #[must_use]
     pub(crate) fn activate_slot(&self, slot_id: u64, pc: Arc<RTCPeerConnection>) -> bool {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         if self.terminal_draining.load(Ordering::Acquire) {
-            self.release_slot(slot_id);
+            registry.retain(|(id, _)| *id != slot_id);
             return false;
         }
-        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = registry.iter_mut().find(|(id, _)| *id == slot_id) {
             entry.1 = RegistrySlot::Active(pc);
         }
@@ -369,5 +383,64 @@ mod tests {
         config.begin_terminal_drain();
         config.begin_terminal_drain();
         assert!(config.terminal_draining.load(Ordering::Acquire));
+    }
+
+    /// レビュー対応（イシュー #498）: `activate_slot` の判定と `Active` 遷移を
+    /// `registry` の単一 `Mutex` ロック区間で行う修正の直接的な回帰テスト。
+    ///
+    /// `take_active_peers`（`drain_for_shutdown` が呼ぶ）が完了した**後**に
+    /// `activate_slot` が呼ばれても、`begin_terminal_drain` 済みであれば `Active` へ
+    /// 遷移させず `false` を返し、予約枠も解放することを実 `RTCPeerConnection` で
+    /// 確認する。修正前の実装（ロック外で `terminal_draining` を読む）ではこの
+    /// 呼び出し順でも `activate_slot` が独立にロック外でフラグを読む一瞬前に
+    /// フラグが立っていなければ `true` を返しうる契約不備があったため、本テストは
+    /// 「`begin_terminal_drain` → `take_active_peers` → `activate_slot` の順で
+    /// 呼んでも漏れなく拒否される」という最低限の直列シナリオを固定する
+    /// （真の並行 TOCTOU 自体は `registry` の `Mutex` による排他が構造的に防ぐため、
+    /// マルチスレッド注入によるレース再現テストは行わない）。
+    #[tokio::test]
+    async fn activate_slot_rejects_pc_even_after_take_active_peers_already_ran() {
+        use webrtc::api::APIBuilder;
+        use webrtc::api::interceptor_registry::register_default_interceptors;
+        use webrtc::api::media_engine::MediaEngine;
+        use webrtc::interceptor::registry::Registry;
+        use webrtc::peer_connection::configuration::RTCConfiguration;
+
+        let config = WebRtcConfig::new();
+        let slot_id = config.reserve_slot().expect("予約できる");
+
+        // 終端 drain 開始 → 既存 Active の drain（0 件、no-op）を、
+        // `activate_slot` 呼び出しより先に完了させておく
+        // （「`take_active_peers` が先に走り切った後で `activate_slot` が来る」
+        // という、レビュー指摘のシナリオの帰結を再現する）。
+        config.begin_terminal_drain();
+        assert!(config.take_active_peers().is_empty());
+
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs().unwrap();
+        let mut registry = Registry::new();
+        registry = register_default_interceptors(registry, &mut media_engine).unwrap();
+        let api = APIBuilder::new()
+            .with_media_engine(media_engine)
+            .with_interceptor_registry(registry)
+            .build();
+        let pc = Arc::new(
+            api.new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap(),
+        );
+
+        let activated = config.activate_slot(slot_id, Arc::clone(&pc));
+        assert!(
+            !activated,
+            "終端 drain 開始後の activate_slot は false を返すはず（フェイルクローズ）"
+        );
+        assert!(
+            config.take_active_peers().is_empty(),
+            "activate_slot が false を返した以上、pc は Active としてレジストリに\
+             残っていないはず（残っていれば #498 の TOCTOU が再発している）"
+        );
+
+        let _ = pc.close().await;
     }
 }

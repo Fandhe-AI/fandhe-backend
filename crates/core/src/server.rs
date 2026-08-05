@@ -1297,6 +1297,21 @@ impl RebindHandle {
     /// キャンセルシグナル」・統合テスト `crates/core/tests/
     /// ws_cancellation.rs`（イシュー #493）を参照）。
     ///
+    /// # `Server::webrtc` 登録済みの場合、rebind と無関係な進行中 WebRTC 通話も強制切断される
+    ///
+    /// [`Server::webrtc`] にスキーマ登録済みの場合、`rebind` 呼び出しのたびに
+    /// `crate::plugin::SessionDrain` が発火し、`fandhe_backend_plugin_webrtc::
+    /// WebRtcConfig` のプロセス内レジストリ上の**アクティブな `RTCPeerConnection` を
+    /// 全件**明示的に `close()` する（イシュー #498）。この drain は
+    /// リスニングアドレスの世代（新旧）を区別せず、rebind 発火時点でレジストリに
+    /// 存在するアクティブ接続すべてが対象になる。したがって、単なるリスニング
+    /// ポート切り替えのつもりで `rebind` を呼んでも、rebind と無関係な旧世代・新世代
+    /// 問わずすべての進行中 WebRTC 通話が強制切断されうる。WS 委譲セッション
+    /// （上記「旧世代」drain）とは異なり `Server::shutdown_grace_period` の猶予も
+    /// 適用されず、`per_close_timeout`（有界タイムアウト）内で即座に close が試みられる
+    /// 点に注意すること（設計判断・棲み分けは `docs/design/ws-cancellation-propagation.md`
+    /// 10 節、`crate::plugin::SessionDrain` の doc を参照）。
+    ///
     /// # キャンセル安全性・並行呼び出し
     ///
     /// - **呼び出し元タスクのキャンセル**: `tx.send` が成功したあと

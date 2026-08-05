@@ -213,7 +213,22 @@ fandhe-backend/
 │   │                                    # 明示 close を伝播するようにした（WS 以外の
 │   │                                    # 長時間委譲プラグインへの水平展開第 1 弾、
 │   │                                    # `docs/design/ws-cancellation-propagation.md`
-│   │                                    # 10 節参照）。
+│   │                                    # 10 節参照）。`RebindHandle::rebind` の doc に
+│   │                                    # 「`Server::webrtc` 登録済みの場合、rebind と
+│   │                                    # 無関係な進行中の WebRTC 通話もレジストリ全件が
+│   │                                    # 強制切断される」という副作用を明記した
+│   │                                    # （レビュー対応。実接続を確立し
+│   │                                    # `BoundServer::rebind_handle().rebind()` 経由で
+│   │                                    # force-close されることを end-to-end で検証する
+│   │                                    # `crates/plugin-webrtc/tests/
+│   │                                    # rebind_force_close.rs` を追加。同クレートの
+│   │                                    # `WebRtcConfig::activate_slot` は
+│   │                                    # `terminal_draining` の判定を `registry` の
+│   │                                    # `Mutex` ロック外で読んでいたため、終端 drain
+│   │                                    # （`drain_for_shutdown`）と並行するシグナリング
+│   │                                    # 完了が drain 後に `Active` 化してしまう TOCTOU
+│   │                                    # が起こりえた。判定を `Active` 遷移と同一ロック
+│   │                                    # 区間へ統合し修正した）。
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む
