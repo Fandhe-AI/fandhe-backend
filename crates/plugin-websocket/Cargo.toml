@@ -57,11 +57,16 @@ futures-util = { version = "0.3", default-features = false, features = [
 
 # 統合テスト（tests/handshake_e2e.rs）で `tokio::io::duplex` + マルチスレッド
 # ランタイム・非同期テストマクロを使うためのみ。本体ビルド（lib.rs 以下）には
-# 影響しない。
+# 影響しない。`sync` feature は tests/cancellation.rs（イシュー #492）が
+# キャンセルトリガに `tokio::sync::oneshot` を使うために追加した。本体
+# （`handle_upgrade` はキャンセルを `Future` として受け取るのみ）は
+# `tokio::sync` に依存しないため、公開依存グラフ・バイナリには影響しない
+# （上記クレート doc「キャンセル Future の受け渡し」節を参照）。
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = [
   "io-util",
   "macros",
   "rt-multi-thread",
+  "sync",
   "time",
 ] }

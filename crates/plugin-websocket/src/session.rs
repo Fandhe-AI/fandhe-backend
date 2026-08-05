@@ -13,12 +13,26 @@
 //! `tokio::time::timeout` で監視し、アイドル（無通信）が続く接続を正常な
 //! Close ハンドシェイクで切断する（リソース枯渇 DoS 対策、Issue #175。
 //! 詳細は [`run_session`] の doc を参照）。
+//!
+//! `crate::handle_upgrade` から渡されるキャンセル `Future`（コアの世代
+//! キャンセルシグナル、イシュー #492）も各受信待ちで最優先ポーリングし、
+//! 発火時はアイドルタイムアウトと同型の正常な Close ハンドシェイク
+//! （close code 1001 Going Away）で切断する（[`handle_cancellation`] の
+//! doc を参照。既存のユーザーハンドラ `await` 中・`WsOutcome::Reply` 送出
+//! 中はキャンセルを観測せず、次の受信待ちへ復帰した時点で反映される
+//! 既知の制約がある。停滞時の最終フェイルセーフは `run_until` の permit
+//! 回収 timeout が既存どおり担保する）。
 
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
+use tokio_tungstenite::tungstenite::protocol::frame::Utf8Bytes;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig as TungsteniteConfig};
 
 use futures_util::{SinkExt, StreamExt};
@@ -26,6 +40,7 @@ use futures_util::{SinkExt, StreamExt};
 use crate::config::WebSocketConfig;
 use crate::error::WsError;
 use crate::handler::{WsMessage, WsOutcome};
+use crate::race_cancel;
 
 /// タイムアウト発火後、サーバ側が送出した Close フレームへのクライアント
 /// 応答（または EOF）を待つ上限（10 秒）。
@@ -74,13 +89,20 @@ const CLOSE_GRACE: Duration = Duration::from_secs(10);
 /// 上限超過メッセージはハンドラへ届く前にプロトコルエラーとして拒否される
 /// （`ws.next()` が `Err` を返す）。ハンドラ呼び出し前のサイズ検証という
 /// 既存の安全性方針を後退させない。
-pub(crate) async fn run_session<S>(
+///
+/// `cancel` は `crate::handle_upgrade` が pin 済みで渡すキャンセル `Future`
+/// （イシュー #492）。各受信待ちで最優先ポーリングし、発火時は
+/// [`handle_cancellation`] へ分岐する（優先順位はアイドルタイムアウトより
+/// 高い。TOCTOU 回避の詳細は `crate::race_cancel` の doc を参照）。
+pub(crate) async fn run_session<S, C>(
     stream: S,
     leftover: Vec<u8>,
     config: &WebSocketConfig,
+    mut cancel: Pin<&mut C>,
 ) -> Result<(), WsError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
+    C: Future<Output = ()>,
 {
     let ws_config = TungsteniteConfig::default()
         .max_message_size(Some(config.max_message_size))
@@ -91,11 +113,22 @@ where
 
     loop {
         let message = match config.idle_timeout {
-            Some(idle_timeout) => match tokio::time::timeout(idle_timeout, ws.next()).await {
-                Ok(message) => message,
-                Err(_elapsed) => return handle_idle_timeout(ws).await,
+            Some(idle_timeout) => {
+                match race_cancel(
+                    cancel.as_mut(),
+                    tokio::time::timeout(idle_timeout, ws.next()),
+                )
+                .await
+                {
+                    None => return handle_cancellation(ws).await,
+                    Some(Ok(message)) => message,
+                    Some(Err(_elapsed)) => return handle_idle_timeout(ws).await,
+                }
+            }
+            None => match race_cancel(cancel.as_mut(), ws.next()).await {
+                None => return handle_cancellation(ws).await,
+                Some(message) => message,
             },
-            None => ws.next().await,
         };
 
         let Some(message) = message else {
@@ -160,28 +193,60 @@ where
     }
 }
 
-/// アイドルタイムアウト発火時の切断シーケンス（正常な Close ハンドシェイク）。
-///
-/// サーバ側から Close フレームを送出し、[`CLOSE_GRACE`] を上限にクライアント
-/// からの Close 応答（または EOF・エラー）をドレインする。相手が既に
-/// 切断済みのケース（`ConnectionClosed` / `AlreadyClosed`）や `CLOSE_GRACE`
-/// 超過は、アイドル切断そのものは意図どおり完了しているため異常とは扱わず
-/// `Ok(())` を返す（呼び出し元 `run_session` の唯一の呼び出し箇所）。
-async fn handle_idle_timeout<S>(mut ws: WebSocketStream<S>) -> Result<(), WsError>
+/// アイドルタイムアウト発火時の切断シーケンス（正常な Close ハンドシェイク、
+/// close code 1000 Normal Closure）。[`close_and_drain`] へ委譲する
+/// （呼び出し元 `run_session` の唯一の呼び出し箇所）。
+async fn handle_idle_timeout<S>(ws: WebSocketStream<S>) -> Result<(), WsError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    // Close 送出自体が失敗した場合（相手が既に切断済み等）も、アイドル切断の
-    // 目的は達成されているため、ドレインへ進まず正常終了として扱う。
-    if let Err(err) = ws.close(None).await {
-        return match err {
-            tokio_tungstenite::tungstenite::Error::ConnectionClosed
-            | tokio_tungstenite::tungstenite::Error::AlreadyClosed => Ok(()),
-            other => Err(other.into()),
-        };
-    }
+    close_and_drain(ws, None).await
+}
 
-    let drain = async {
+/// キャンセル `Future`（`crate::handle_upgrade` 経由でコアの世代キャンセル
+/// シグナルへ接続、イシュー #492）発火時の切断シーケンス。
+///
+/// `handle_idle_timeout` と同型だが、close code は 1001 Going Away
+/// （サーバ側都合による切断であることを示す）を使い、reason は固定文字列
+/// のみで内部状態・エラー詳細・機密を含めない
+/// （`docs/design/ws-cancellation-propagation.md` 8 節）。呼び出し元
+/// `run_session` の唯一の呼び出し箇所。
+async fn handle_cancellation<S>(ws: WebSocketStream<S>) -> Result<(), WsError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let close_frame = CloseFrame {
+        code: CloseCode::Away,
+        reason: Utf8Bytes::from_static("going away"),
+    };
+    close_and_drain(ws, Some(close_frame)).await
+}
+
+/// Close フレーム送出 → クライアント応答（または EOF・エラー）のドレインを
+/// [`CLOSE_GRACE`] で有界化する共通ヘルパー（[`handle_idle_timeout`] /
+/// [`handle_cancellation`] で共有）。
+///
+/// Close 送出自体が失敗した場合（相手が既に切断済み等）も、切断そのものの
+/// 目的は達成されているため、ドレインへ進まず正常終了として扱う。Close
+/// 応答を返さないクライアントに接続を無期限保持させないため、送出 →
+/// ドレインの全体を [`CLOSE_GRACE`] で区切る（二次 DoS 対策、Issue #175・
+/// イシュー #492 で送出自体の停滞も有界化対象へ拡張）。
+async fn close_and_drain<S>(
+    mut ws: WebSocketStream<S>,
+    close_frame: Option<CloseFrame>,
+) -> Result<(), WsError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let sequence = async {
+        if let Err(err) = ws.close(close_frame).await {
+            return match err {
+                tokio_tungstenite::tungstenite::Error::ConnectionClosed
+                | tokio_tungstenite::tungstenite::Error::AlreadyClosed => Ok(()),
+                other => Err(other),
+            };
+        }
+
         loop {
             match ws.next().await {
                 // Close 応答（または相手からの追加フレーム）を消費し続け、
@@ -191,16 +256,13 @@ where
                     tokio_tungstenite::tungstenite::Error::ConnectionClosed
                     | tokio_tungstenite::tungstenite::Error::AlreadyClosed,
                 ))
-                | None => break,
+                | None => return Ok(()),
                 Some(Err(other)) => return Err(other),
             }
         }
-        Ok(())
     };
 
-    // Close 応答を返さないクライアントに接続を無期限保持させない
-    // （[`CLOSE_GRACE`] の doc を参照、二次 DoS 対策）。
-    match tokio::time::timeout(CLOSE_GRACE, drain).await {
+    match tokio::time::timeout(CLOSE_GRACE, sequence).await {
         Ok(Ok(())) => Ok(()),
         Err(_timeout_elapsed) => Ok(()),
         Ok(Err(err)) => Err(err.into()),

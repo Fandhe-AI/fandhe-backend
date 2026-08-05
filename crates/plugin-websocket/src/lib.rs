@@ -43,6 +43,12 @@
 //!    が設定されている場合、受信アイドルが続く接続は正常な Close
 //!    ハンドシェイクで切断する（リソース枯渇 DoS 対策、Issue #175。詳細は
 //!    `session` モジュールの doc を参照）
+//! 5. コア（`run_until`）から渡されるキャンセル `Future`（`handle_upgrade`
+//!    第 5 引数、イシュー #492）が発火した場合も、アイドルタイムアウトと
+//!    同型の正常な Close ハンドシェイク（close code 1001 Going Away）で
+//!    切断する。ハンドシェイク開始前に既に発火済みなら 101 応答自体を
+//!    送出せず即座に終了する（詳細は [`handle_upgrade`] の doc・`session`
+//!    モジュールの doc を参照）
 //!
 //! # workspace 内での依存方向
 //!
@@ -63,12 +69,28 @@
 //! （詳細は `Cargo.toml` のコメントを参照）。`websocket` feature 無効時は
 //! コア（`fandhe-backend-core`）の依存グラフから本クレート自体が除外
 //! される（`cargo tree -p fandhe-backend-core` で確認可能）。
+//!
+//! # キャンセル `Future` の受け渡し（イシュー #492）
+//!
+//! [`handle_upgrade`] はコアから世代キャンセルシグナル（最終 graceful
+//! shutdown・rebind 世代 drain）を通知する `Future` を受け取る
+//! （`docs/design/ws-cancellation-propagation.md` 3.2 節 (i)）。委譲境界を
+//! `tokio::sync::watch::Receiver` ではなく `Future` として越えることで、
+//! 本クレートは `tokio` の `sync` feature を要求しない（本体依存は上記の
+//! とおり `io-util`/`time` のみのまま）。統合テスト（`tests/cancellation.rs`）
+//! はキャンセルトリガに `tokio::sync::oneshot` を使うため、
+//! `[dev-dependencies]` にのみ `sync` feature を追加する（`Cargo.toml` の
+//! コメントを参照。本体ビルド・公開依存グラフには影響しない）。
 
 mod config;
 mod error;
 pub mod handler;
 mod handshake;
 mod session;
+
+use std::future::Future;
+use std::pin::Pin;
+use std::task::Poll;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
@@ -94,12 +116,26 @@ pub fn matches(head: &RequestHead, config: &WebSocketConfig) -> bool {
 /// フレームを取りこぼさないため `WebSocketStream::from_partially_read` へ
 /// そのまま引き渡す）。
 ///
-/// 戻り値 `Ok(())` は接続が正常に終了した（Close フレーム受信・EOF 等）
-/// ことを意味する。`Err` はハンドシェイク検証違反（400/426 応答は送出済み）
-/// またはフレーミング処理中の I/O・プロトコルエラーを意味する。呼び出し元
-/// （`crates/core`）はこのエラーを panic に変換せず、接続クローズとして
-/// 扱う契約とする（コア境界を越えて panic させない、
-/// `.claude/rules/coding-rust.md`）。
+/// 戻り値 `Ok(())` は接続が正常に終了した（Close フレーム受信・EOF・
+/// キャンセル発火に伴う正常な Close ハンドシェイク完了等）ことを意味する。
+/// `Err` はハンドシェイク検証違反（400/426 応答は送出済み）またはフレーミング
+/// 処理中の I/O・プロトコルエラーを意味する。呼び出し元（`crates/core`）は
+/// このエラーを panic に変換せず、接続クローズとして扱う契約とする
+/// （コア境界を越えて panic させない、`.claude/rules/coding-rust.md`）。
+///
+/// `cancel` はコアの世代キャンセルシグナル（最終 graceful shutdown・rebind
+/// 世代 drain、イシュー #490〜#492）が発火したときに解決する `Future`。
+/// キャンセル不要な呼び出し元（テスト等）は `std::future::pending::<()>()`
+/// を渡せる。**BREAKING CHANGE**（イシュー #492。0.1.0 系からの移行は
+/// `CHANGELOG.md` を参照）:
+/// - ハンドシェイク開始前に既に発火済みなら 101 応答を送出せず即座に
+///   `Ok(())` で終了する（クライアントへ Switching Protocols を見せない）
+/// - ハンドシェイク応答（101/400/426）の書き込み中に発火した場合も打ち切る
+///   （停滞した slow client でも有界時間で解放するため）
+/// - セッション確立後に発火した場合は、`config.idle_timeout` 発火時と同型の
+///   正常な Close ハンドシェイク（close code 1001 Going Away・固定 reason）
+///   を試み、[`session`] モジュール内定数 `CLOSE_GRACE`（10 秒）を上限に
+///   打ち切る（詳細は `session` モジュールの doc を参照）
 ///
 /// # Examples
 ///
@@ -131,35 +167,114 @@ pub fn matches(head: &RequestHead, config: &WebSocketConfig) -> bool {
 ///     client_side.write_all(&[0x88, 0x80, 0, 0, 0, 0]).await.unwrap();
 /// });
 ///
-/// let result = handle_upgrade(server_side, &head, Vec::new(), &config).await;
+/// // キャンセル不要な呼び出しは `std::future::pending` を渡す。
+/// let result = handle_upgrade(
+///     server_side,
+///     &head,
+///     Vec::new(),
+///     &config,
+///     std::future::pending::<()>(),
+/// )
+/// .await;
 /// assert!(result.is_ok());
 /// # }
 /// ```
-pub async fn handle_upgrade<S>(
+pub async fn handle_upgrade<S, C>(
     mut stream: S,
     head: &RequestHead,
     leftover: Vec<u8>,
     config: &WebSocketConfig,
+    cancel: C,
 ) -> Result<(), WsError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
+    C: Future<Output = ()>,
 {
+    let mut cancel = std::pin::pin!(cancel);
+
+    // ハンドシェイク開始前に一度だけ非ブロッキングでキャンセル済みかを
+    // 確認する。`crates/core/src/plugin.rs` の中間実装（#491）が採用していた
+    // 「キャンセルを最優先でポーリングする」順序を踏襲し、101 応答を送出した
+    // 直後にハードクローズする TOCTOU を避ける（発火済みなら 101 を一切
+    // 送出しない）。
+    let already_cancelled =
+        std::future::poll_fn(|cx| Poll::Ready(cancel.as_mut().poll(cx).is_ready())).await;
+    if already_cancelled {
+        return Ok(());
+    }
+
     let validated = match handshake::validate(head) {
         Ok(validated) => validated,
         Err(WsError::UnsupportedVersion) => {
-            stream.write_all(&handshake::serialize_426()).await?;
+            write_racing_cancel(&mut stream, cancel.as_mut(), &handshake::serialize_426()).await?;
             return Err(WsError::UnsupportedVersion);
         }
         Err(err @ WsError::InvalidHandshake(_)) => {
-            stream.write_all(&handshake::serialize_400()).await?;
+            write_racing_cancel(&mut stream, cancel.as_mut(), &handshake::serialize_400()).await?;
             return Err(err);
         }
         Err(err) => return Err(err),
     };
 
-    stream
-        .write_all(&handshake::serialize_101(&validated.accept_key))
-        .await?;
+    // 101 応答の書き込み自体も cancel と race させる。停滞した slow client
+    // （書き込みバッファが埋まり `write_all` が進まない）に対しても有界時間
+    // で解放できるようにするため（上記関数 doc「BREAKING CHANGE」節を参照）。
+    let cancelled_before_101 = write_racing_cancel(
+        &mut stream,
+        cancel.as_mut(),
+        &handshake::serialize_101(&validated.accept_key),
+    )
+    .await?;
+    if cancelled_before_101 {
+        return Ok(());
+    }
 
-    session::run_session(stream, leftover, config).await
+    session::run_session(stream, leftover, config, cancel).await
+}
+
+/// `bytes` を `stream` へ書き込みつつ `cancel` と race する。キャンセルが
+/// 先に発火した場合は書き込みを打ち切って `Ok(true)` を返し（呼び出し元は
+/// 応答が完了しなかったものとして扱う）、書き込みが完了した場合は
+/// `Ok(false)` を返す。書き込み自体の I/O エラーは [`WsError`] へ変換して
+/// 伝播する（[`handle_upgrade`] のハンドシェイク応答書き込み 3 箇所
+/// （101/400/426）で共有する）。
+async fn write_racing_cancel<S, C>(
+    stream: &mut S,
+    cancel: Pin<&mut C>,
+    bytes: &[u8],
+) -> Result<bool, WsError>
+where
+    S: AsyncWrite + Unpin,
+    C: Future<Output = ()>,
+{
+    match race_cancel(cancel, stream.write_all(bytes)).await {
+        None => Ok(true),
+        Some(Ok(())) => Ok(false),
+        Some(Err(err)) => Err(err.into()),
+    }
+}
+
+/// `cancel` と `fut` を race させる。`cancel` を最優先でポーリングし
+/// （TOCTOU 回避、上記 doc を参照）、先に発火すれば `None` を返す。`fut` が
+/// 先に完了すれば `Some(fut の出力)` を返す。`session` モジュールの受信
+/// ループ・アイドルタイムアウト経路と本モジュールのハンドシェイク応答
+/// 書き込みで共有する手動 race ヘルパー（`std::future::poll_fn` +
+/// `std::pin::pin!` のみで構成、追加依存なし。`crates/core/src/plugin.rs`
+/// の中間実装が使っていたパターンと同型）。
+pub(crate) async fn race_cancel<C, F>(mut cancel: Pin<&mut C>, fut: F) -> Option<F::Output>
+where
+    C: Future<Output = ()>,
+    F: Future,
+{
+    let mut fut = std::pin::pin!(fut);
+    std::future::poll_fn(|cx| {
+        if cancel.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(None);
+        }
+        if let Poll::Ready(output) = fut.as_mut().poll(cx) {
+            return Poll::Ready(Some(output));
+        }
+        Poll::Pending
+    })
+    .await
 }

@@ -1,20 +1,24 @@
-//! 世代キャンセルシグナルの WS 委譲タスクへの配線（イシュー #491）の
+//! 世代キャンセルシグナルの WS 委譲タスクへの配線（イシュー #491・#492）の
 //! 統合テスト。
 //!
 //! `docs/design/ws-cancellation-propagation.md` が確定した設計（世代別
 //! `tokio::sync::watch` + drain 開始時発火）を、最終 graceful shutdown
 //! （#313）・rebind 世代 drain（#485/#488）の両経路について実 TCP 接続で
-//! 検証する。`crates/core/src/plugin.rs` の `try_handle_upgrade` は本イシュー
-//! の実装で、発火時に `handle_upgrade` の `Future` を drop してタスクを
-//! 打ち切る中間ハードクローズを行う（#492 で Close frame 送信へ置換予定、
-//! `try_handle_upgrade` の doc「世代キャンセルシグナル」を参照）。
+//! 検証する。`crates/core/src/plugin.rs` の `try_handle_upgrade` はキャンセル
+//! `Future` を `fandhe_backend_plugin_websocket::handle_upgrade` の第 5 引数
+//! として渡すのみで、切断シーケンス（正常な Close ハンドシェイク、close
+//! code 1001 Going Away → `CLOSE_GRACE` 上限で応答待ち）は `handle_upgrade`
+//! 側が担う（イシュー #492、`try_handle_upgrade` の doc「世代キャンセル
+//! シグナル」を参照）。
 //!
 //! - `final_shutdown_cancels_delegated_websocket_session`: 最終 shutdown
-//!   発火後、委譲済み WS セッションが有界時間内にクローズされ、`run_until`
-//!   も grace を待ち切らず速やかに戻ることを確認する
+//!   発火後、委譲済み WS セッションが有界時間内に Close フレーム（1001）を
+//!   受信して EOF に至り、`run_until` も grace を待ち切らず速やかに戻ることを
+//!   確認する
 //! - `rebind_cancels_old_generation_websocket_session`: rebind 発火後、
-//!   旧世代の WS セッションが有界時間内にクローズされ、新世代アドレスへの
-//!   通常 HTTP リクエストは継続して処理されることを確認する
+//!   旧世代の WS セッションが有界時間内に Close フレーム（1001）を受信して
+//!   EOF に至り、新世代アドレスへの通常 HTTP リクエストは継続して処理される
+//!   ことを確認する
 //! - 既存 `graceful_shutdown.rs` / `rebind.rs` / `websocket_upgrade.rs` /
 //!   `websocket_respawn.rs` / `websocket_upgrade_disabled.rs` が無変更で
 //!   pass すること（非退行、受け入れ条件 4）はテストスイート全体の実行で
@@ -31,6 +35,51 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
+
+/// クライアント側の生 TCP ストリームから Close フレーム（RFC 6455）を
+/// 有界時間内に読み切り、close code が 1001（Going Away）であることを
+/// 検証する（`crates/plugin-websocket/src/session.rs` の
+/// `handle_cancellation` が送出するフレームと対応、イシュー #492）。
+///
+/// フレーミング実装自体（reason 文字列・応答ドレイン等）は
+/// `plugin-websocket` 側の `tests/cancellation.rs` が既に検証済みのため、
+/// 本テストはヘッダ + close code の 4 バイトのみを検証する最小限の手読み
+/// パーサとする（`tokio-tungstenite` 等のクライアントライブラリは使わず、
+/// 本テストが検証したい対象 — `try_handle_upgrade` からの配線 — に絞る）。
+/// 呼び出し元は検証後、`ws_client` を drop してサーバ側のドレインを即座に
+/// 完了させる（クライアントが Close 応答を返さないケースの検証は
+/// `plugin-websocket` 側の `cancellation.rs` が担う。本テストの主眼は
+/// `run_until` の早期復帰・permit 解放であり、`CLOSE_GRACE` 全体を待たせ
+/// ないため）。
+async fn read_close_frame_1001(stream: &mut TcpStream, bound: Duration) {
+    let mut header = [0u8; 2];
+    timeout(bound, stream.read_exact(&mut header))
+        .await
+        .expect("Close フレームヘッダは有界時間内に届くはず")
+        .expect("Close フレームヘッダの読み取りに失敗した");
+    // RFC 6455: 先頭バイトは FIN(1) + opcode(0x8 = Close)、2 バイト目は
+    // MASK(0, サーバ→クライアントは非マスク) + payload length。
+    assert_eq!(
+        header[0] & 0x0f,
+        0x8,
+        "opcode は Close(0x8) のはず: {header:?}"
+    );
+    let payload_len = (header[1] & 0x7f) as usize;
+    assert!(
+        payload_len >= 2,
+        "close code を含む payload のはず（payload_len={payload_len}）"
+    );
+    let mut payload = vec![0u8; payload_len];
+    timeout(bound, stream.read_exact(&mut payload))
+        .await
+        .expect("Close フレーム payload は有界時間内に届くはず")
+        .expect("Close フレーム payload の読み取りに失敗した");
+    let code = u16::from_be_bytes([payload[0], payload[1]]);
+    assert_eq!(
+        code, 1001,
+        "close code は 1001 Going Away のはず: {payload:?}"
+    );
+}
 
 /// 固定 200 応答を返すだけのトイハンドラ（`rebind.rs` と同一パターン）。
 /// 新世代アドレスでの通常 HTTP リクエスト継続処理を検証するために使う。
@@ -69,8 +118,8 @@ async fn read_response_head(stream: &mut TcpStream) -> String {
 /// true にする直後に発火する」）。
 ///
 /// WS セッションを張ったまま shutdown を発火し、(a) クライアント側が有界
-/// 時間内に EOF を観測すること、(b) `run_until` 自体が
-/// `shutdown_grace_period` を待ち切らずに速やかに `Ok(())` で戻ること
+/// 時間内に Close フレーム（1001 Going Away）を受信すること、(b) `run_until`
+/// 自体が `shutdown_grace_period` を待ち切らずに速やかに `Ok(())` で戻ること
 /// （permit がキャンセルにより早期解放されるため）の 2 点を検証する。
 #[tokio::test(flavor = "multi_thread")]
 async fn final_shutdown_cancels_delegated_websocket_session() {
@@ -105,20 +154,15 @@ async fn final_shutdown_cancels_delegated_websocket_session() {
     // shutdown を発火する。
     shutdown_tx.send(()).unwrap();
 
-    // (a) WS セッションが有界時間内にクローズされる（キャンセル発火 →
-    // `try_handle_upgrade` が `handle_upgrade` の Future を drop）ことを
-    // 確認する。grace（10 秒）よりも十分短い上限で観測できるはず。
-    let mut probe = [0u8; 1];
-    let read_result = timeout(Duration::from_secs(5), ws_client.read(&mut probe)).await;
-    match read_result {
-        Ok(Ok(0)) => {} // 正常クローズ（EOF）
-        Ok(Ok(n)) => panic!("キャンセル後にデータを受信すべきではない（{n} バイト）"),
-        Ok(Err(_)) => {} // リセット等のエラーもクローズの一種として許容
-        Err(_) => panic!(
-            "shutdown 発火後、WS セッションは grace（{grace:?}）を待たず\
-             有界時間内にクローズされるはず"
-        ),
-    }
+    // (a) WS セッションが有界時間内に Close フレーム（1001 Going Away）を
+    // 送出する（キャンセル発火 → `handle_upgrade` が正常な Close
+    // ハンドシェイクを開始、イシュー #492）ことを確認する。grace（10 秒）
+    // よりも十分短い上限で観測できるはず。
+    read_close_frame_1001(&mut ws_client, Duration::from_secs(5)).await;
+    // クライアント側から即座に接続を閉じ、サーバ側のドレインを
+    // `CLOSE_GRACE` 全体を待たずに完了させる（run_until の早期復帰を
+    // 検証する本テストの主眼のため）。
+    drop(ws_client);
 
     // (b) `run_until` 自体も grace を待ち切らず速やかに戻る（既存の
     // 「grace + ε 以内に必ず戻る」フェイルセーフに加え、キャンセルにより
@@ -141,8 +185,8 @@ async fn final_shutdown_cancels_delegated_websocket_session() {
 /// セッションへ伝播することを確認する（設計 5.2 節「drain 開始時に発火」）。
 ///
 /// 旧世代で WS セッションを張ったまま rebind し、(a) 旧世代の WS クライアント
-/// が有界時間内に EOF を観測すること、(b) 新アドレスでの通常 HTTP リクエスト
-/// が継続して処理されることを確認する。
+/// が有界時間内に Close フレーム（1001 Going Away）を受信すること、(b) 新
+/// アドレスでの通常 HTTP リクエストが継続して処理されることを確認する。
 #[tokio::test(flavor = "multi_thread")]
 async fn rebind_cancels_old_generation_websocket_session() {
     let grace = Duration::from_secs(10);
@@ -189,18 +233,10 @@ async fn rebind_cancels_old_generation_websocket_session() {
         "実際: {new_gen_head}"
     );
 
-    // (a) 旧世代 WS セッションが有界時間内にクローズされることを確認する。
-    let mut probe = [0u8; 1];
-    let read_result = timeout(Duration::from_secs(5), ws_client.read(&mut probe)).await;
-    match read_result {
-        Ok(Ok(0)) => {}
-        Ok(Ok(n)) => panic!("キャンセル後にデータを受信すべきではない（{n} バイト）"),
-        Ok(Err(_)) => {}
-        Err(_) => panic!(
-            "rebind 発火後、旧世代の WS セッションは grace（{grace:?}）を待たず\
-             有界時間内にクローズされるはず"
-        ),
-    }
+    // (a) 旧世代 WS セッションが有界時間内に Close フレーム（1001 Going
+    // Away）を受信することを確認する（イシュー #492）。
+    read_close_frame_1001(&mut ws_client, Duration::from_secs(5)).await;
+    drop(ws_client);
 
     run_task.abort();
 }
