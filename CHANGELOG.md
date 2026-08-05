@@ -12,8 +12,9 @@
 公開対象 13 クレートを lockstep バンプ（`docs/design/crates-io-release.md` 7.3 節）。
 実 publish（`v0.3.0` タグ push → verify → dry-run → GitHub Environments
 `crates-io-release` の required reviewers 承認 → `cargo publish --workspace`）は
-人間承認の別プロセスとして本バンプ PR のマージ後に実施する
-（[`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 6 節）。
+2026-08-05 に実施完了（release run 31012481870、13 クレートすべてが crates.io
+インデックスへ反映されたことを確認済み。詳細は
+[`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7.3 節・8 節チェックリスト参照）。
 
 ### BREAKING CHANGES
 
