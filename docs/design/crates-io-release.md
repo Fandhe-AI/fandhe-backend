@@ -205,6 +205,35 @@ root `Cargo.toml` の `[workspace.package] version` + `[workspace.dependencies]`
   参照できない Cargo の仕様上、`[workspace.package] version` と別に保守する
   必要があるが、変更が root `Cargo.toml` 1 ファイルに閉じる点は達成している
 
+### 7.3 v0.3.0 リリース（2026-08-05 バンプ実施、publish は準備中）
+
+v0.2.0 公開（2026-08-01）後に breaking change が 2 件 main に入ったため、7 節の
+lockstep 方針に従い公開対象 13 クレートを 0.3.0 へ一括バンプした。
+**タグ push・実 publish（Phase B）は本バンプ PR のマージ後に実施する**（6 節の
+verify → dry-run → GitHub Environments `crates-io-release` の人間承認を経る
+別プロセス。本節は Phase A（機械作業）完了時点の記録）。
+
+- **BREAKING CHANGES**（詳細・移行手順は `CHANGELOG.md` 参照）:
+  1. `fandhe-backend-core`: `RequestGate::check` へ `ctx: &GateContext` 引数を追加
+     （イシュー #486、PR #487）
+  2. `fandhe-backend-plugin-websocket`: `handle_upgrade` へキャンセル `Future`
+     引数（第 5 引数）を追加（イシュー #492、設計 #490）
+- **実施した機械作業**: 7.2 節の一元管理手順に従い、root `Cargo.toml` の
+  `[workspace.package] version` + `[workspace.dependencies]` の内部 13 クレート
+  `version` 値（計 14 箇所）を 0.3.0 へ書き換え。加えて standalone workspace
+  （`templates/app`・`examples/with-*` 4 件）の依存 `version` 併記、
+  `crates/plugin-openapi/openapi.json` / `openapi.yaml` の `info.version` 再生成
+  （`scripts/openapi-two-stage.sh --update`）、`CHANGELOG.md` の `[Unreleased]` →
+  `[0.3.0] - 2026-08-05` 改題を実施した（`crates/plugin-webrtc/tests-e2e` は
+  `crates/http/fuzz` と同じ root workspace exclude の独立 workspace で
+  `version = "0.0.0"`・path 依存に version 併記なしのため対象外）
+- `standalone-crates-io.yml`（`scripts/standalone-crates-io-check.sh`）は
+  crates.io 公開版のみで templates/examples を検証する性質上、v0.3.0 publish
+  完了までは構造的に FAIL する（required check 対象外のためマージは阻害しない。
+  v0.2.0 時（7.1 節）と同一のニワトリ卵問題であり、`.standalone-crates-io-skip`
+  マーカーは全件 SKIP を fail-closed で拒否する設計のため追加しない）。
+  publish 完了後に `workflow_dispatch` で再実行し PASS を確認する
+
 ## 8. 公開前チェックリスト
 
 実際に publish を実行する際に確認すべき項目。
