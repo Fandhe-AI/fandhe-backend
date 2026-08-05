@@ -332,6 +332,7 @@ cargo tree -p fandhe-backend-plugin-websocket -e features
 | #491（コア配線） | 世代構造体へキャンセル `watch::Sender` を追加、`try_handle_upgrade` でキャンセル `Future`（3.2 節 (i)）を構築して `handle_upgrade` へ渡す、`spawn_generation_drain` シグネチャ拡張、最終 shutdown・rebind 両経路での発火配線 | 5 節・6 節 |
 | #492（Close frame 送信） | `fandhe_backend_plugin_websocket::handle_upgrade` へキャンセル `Future` 引数を追加（breaking change）、`run_session` の受信待ちとキャンセル `Future` を race させ、発火時は `handle_idle_timeout` と同型の Close ハンドシェイク（Close frame 送信 → `CLOSE_GRACE` 上限で応答待ち）を実行 | 3 節・4.2 節・5.2 節 |
 | #493（統合テスト・doc 更新） | 最終 shutdown・rebind 双方でのキャンセル伝播を検証する統合テスト、`BoundServer::run_until` doc「既知の限界」・`docs/design/graceful-shutdown.md` 8 節・`docs/design/rebind.md` 5.4 節/6 節の記述更新（本設計が解決したことを反映） | 全節 |
+| #499（ハンドラ実行中・Reply 送出中の即時反映） | `run_session` のユーザーハンドラ呼び出し（Text/Binary）・`apply_outcome` の `ws.send`/`ws.close` を `race_cancel` で包み、キャンセル発火時に打ち切って `handle_cancellation` へ分岐 | 10 節 |
 
 ### 受け入れ条件との対応
 
@@ -383,3 +384,64 @@ cargo tree -p fandhe-backend-plugin-websocket -e features
 
 いずれも [[out-of-scope-tracking]] に従い、Issue 化はユーザー承認を得て
 から行う。
+
+## 10. ハンドラ実行中・Reply 送出中のキャンセル意味論（#499）
+
+#492 時点では `run_session` の**受信待ち**（`ws.next()`）でのみキャンセルを
+最優先ポーリングしており、ユーザーハンドラ（`WsMessageHandler::on_message`）
+の `await` 中・`WsOutcome::Reply`/`WsOutcome::Close` の送出中（`ws.send`/
+`ws.close`）はキャンセルを観測しない既知の制約があった（`session` モジュール
+doc に明記済み）。長時間かかるハンドラ・送信バッファ満杯の slow client が
+あると、キャンセル反映が次の受信待ち復帰まで遅延し、grace 内のクローズが
+遅れる（permit 解放の遅延）。本節はこの制約を解消する設計判断を記録する。
+
+### 10.1 意味論の 3 案比較
+
+| 案 | 概要 | 評価 |
+|----|------|------|
+| (a) 完走を待つ（現状） | ハンドラ・送出完了後の次の受信待ちで反映 | 本イシューが問題視する挙動そのもの。長時間ハンドラで grace を食い潰す |
+| **(b) 即時打ち切り（採用）** | `race_cancel` でハンドラ Future・送出 Future を race し、キャンセル発火時に drop して `handle_cancellation` へ即分岐 | 5 節が採用した「drain 開始時に発火し、grace 期間をまるごと正常 Close の試行に使う」意味論と整合する。Future の drop は `tokio::select!`/`tokio::time::timeout` と同型の Rust async 標準のキャンセル意味論で、追加の設定・タイマー不要 |
+| (c) 上限付きで待つ | キャンセル発火後もハンドラを上限 X 秒まで poll し続け、超過で drop | 新たな時間定数が増え、grace 内クローズの遅延が X 秒分残る。外側に permit 回収 timeout のフェイルセーフが既にあるため、中間の猶予層は複雑さに見合う利得がない |
+
+(b) を採用する。5 節の意味論（drain 開始時に発火し grace をまるごと正常
+Close の試行に使う）と、ハンドラ完走待ち（案 a）は「grace を Close
+ハンドシェイクに充てる」意図と矛盾するため案 a は棄却する。案 c は
+`CLOSE_GRACE`（10 秒、外側フェイルセーフ）と別に新たな待機上限を持ち込み、
+既存の 2 層フェイルセーフ構造（`run_until` の permit 回収 timeout・
+`CLOSE_GRACE`）に 3 層目を追加するだけの複雑さに見合わない。
+
+### 10.2 ハンドラ Future の中断安全性契約
+
+Future の drop によるキャンセルは Rust async の標準機構であり、ハンドラ
+実装者への契約は次のとおり明記する（`WsMessageHandler::on_message` の
+doc・`.claude/rules/coding-rust.md` の並行性規約と同一原則）:
+
+- `on_message` が返す `Future` は shutdown/rebind 時に**任意の `await` 点で
+  drop されうる**
+- 中断されては困る副作用（完了保証が必要な書き込み等）は `tokio::spawn` で
+  セッションから切り離して実行する（既存の「並行処理したい場合は自前に
+  `tokio::spawn` する」建て付けと同一）
+- キャンセル発火済みでメッセージ受信済みの場合、`race_cancel` はキャンセル
+  最優先のためハンドラは呼ばれない
+
+### 10.3 Reply 送出中の打ち切りのワイヤ安全性
+
+`ws.send()` の Future を drop しても、フレーミングバッファ（書き込み位置を
+含む）は Future ではなく `WebSocketStream` 本体が保持するため、後続の
+`ws.close()` が未送出バイトの続きから flush する。フレーム途中で切れた
+不正バイト列が独立に送出されることはない。この性質は
+`crates/plugin-websocket/tests/cancellation.rs` の統合テストで
+「打ち切り後もクライアントが有効な Close frame を受信できる」ことを
+検証する（tokio-tungstenite の `Sink<Message>` 実装が内部バッファを
+Future 跨ぎで保持する挙動に依拠する）。
+
+### 10.4 実装への反映
+
+`crates/plugin-websocket/src/session.rs` の `run_session` のハンドラ呼び出し
+（Text/Binary）を `race_cancel` で包み、キャンセル発火時は `handle_cancellation`
+へ分岐する。`apply_outcome` は戻り値を `Result<bool, WsError>` から
+`SessionFlow`（`Continue`/`Closed`/`Cancelled` の 3 値）へ拡張し、
+`WsOutcome::Reply` の各 `ws.send`・`WsOutcome::Close` の `ws.close` を
+`race_cancel` で包む。既存の `handle_cancellation` → `close_and_drain`
+（`CLOSE_GRACE` 有界化・`ConnectionClosed`/`AlreadyClosed` 許容）は無変更で
+共有する。

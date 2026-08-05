@@ -15,13 +15,27 @@
 //! 詳細は [`run_session`] の doc を参照）。
 //!
 //! `crate::handle_upgrade` から渡されるキャンセル `Future`（コアの世代
-//! キャンセルシグナル、イシュー #492）も各受信待ちで最優先ポーリングし、
-//! 発火時はアイドルタイムアウトと同型の正常な Close ハンドシェイク
-//! （close code 1001 Going Away）で切断する（[`handle_cancellation`] の
-//! doc を参照。既存のユーザーハンドラ `await` 中・`WsOutcome::Reply` 送出
-//! 中はキャンセルを観測せず、次の受信待ちへ復帰した時点で反映される
-//! 既知の制約がある。停滞時の最終フェイルセーフは `run_until` の permit
-//! 回収 timeout が既存どおり担保する）。
+//! キャンセルシグナル、イシュー #492）は受信待ちだけでなく、ユーザー
+//! ハンドラ実行中（`WsMessageHandler::on_message` の `await`）・
+//! `WsOutcome::Reply` / `WsOutcome::Close` の送出中でも最優先ポーリングし、
+//! 発火時は当該処理中の `Future` を即座に drop したうえでアイドル
+//! タイムアウトと同型の正常な Close ハンドシェイク（close code 1001
+//! Going Away）へ分岐する（イシュー #499。[`handle_cancellation`] の
+//! doc・`docs/design/ws-cancellation-propagation.md` 10 節を参照）。
+//!
+//! # ハンドラ Future の中断安全性契約（イシュー #499）
+//!
+//! `on_message` が返す `Future` は shutdown・rebind 世代 drain の発火時に
+//! 任意の `await` 点で drop されうる（Rust async の標準的なキャンセル
+//! 意味論、`tokio::select!` / `tokio::time::timeout` と同型）。ハンドラ
+//! 実装は中断されても不変条件を壊さない（drop-safe な）ことを要求され、
+//! 完了保証が必要な処理（外部への書き込み確定等）は `tokio::spawn` で
+//! セッションから切り離して実行する（詳細は [`crate::handler`] モジュール
+//! の doc を参照）。`WsOutcome::Reply` の送出打ち切りについても、
+//! `WebSocketStream` がフレーミングバッファの書き込み位置をストリーム
+//! 本体側で保持するため、打ち切り後に送出する Close フレームが未送出
+//! バイトの続きとして破損した状態で流出することはない
+//! （ワイヤ安全性、`ws-cancellation-propagation.md` 10 節）。
 
 use std::future::Future;
 use std::pin::Pin;
@@ -91,9 +105,12 @@ const CLOSE_GRACE: Duration = Duration::from_secs(10);
 /// 既存の安全性方針を後退させない。
 ///
 /// `cancel` は `crate::handle_upgrade` が pin 済みで渡すキャンセル `Future`
-/// （イシュー #492）。各受信待ちで最優先ポーリングし、発火時は
-/// [`handle_cancellation`] へ分岐する（優先順位はアイドルタイムアウトより
-/// 高い。TOCTOU 回避の詳細は `crate::race_cancel` の doc を参照）。
+/// （イシュー #492）。各受信待ちに加え、ユーザーハンドラ実行中・
+/// [`apply_outcome`] による返信/Close 送出中でも最優先ポーリングし、発火時は
+/// 実行中の `Future` を drop したうえで [`handle_cancellation`] へ分岐する
+/// （優先順位はアイドルタイムアウトより高い。TOCTOU 回避の詳細は
+/// `crate::race_cancel` の doc を参照。イシュー #499 で受信待ち以外の区間へ
+/// 適用範囲を拡大した）。
 pub(crate) async fn run_session<S, C>(
     stream: S,
     leftover: Vec<u8>,
@@ -137,21 +154,35 @@ where
         let message = message?;
         match message {
             Message::Text(text) => {
-                let outcome = config
-                    .handler
-                    .on_message(WsMessage::Text(text.as_str().to_owned()))
-                    .await?;
-                if apply_outcome(&mut ws, outcome).await? {
-                    break;
+                let Some(outcome) = race_cancel(
+                    cancel.as_mut(),
+                    config
+                        .handler
+                        .on_message(WsMessage::Text(text.as_str().to_owned())),
+                )
+                .await
+                else {
+                    return handle_cancellation(ws).await;
+                };
+                match apply_outcome(&mut ws, outcome?, cancel.as_mut()).await? {
+                    SessionFlow::Continue => {}
+                    SessionFlow::Closed => break,
+                    SessionFlow::Cancelled => return handle_cancellation(ws).await,
                 }
             }
             Message::Binary(bin) => {
-                let outcome = config
-                    .handler
-                    .on_message(WsMessage::Binary(bin.into()))
-                    .await?;
-                if apply_outcome(&mut ws, outcome).await? {
-                    break;
+                let Some(outcome) = race_cancel(
+                    cancel.as_mut(),
+                    config.handler.on_message(WsMessage::Binary(bin.into())),
+                )
+                .await
+                else {
+                    return handle_cancellation(ws).await;
+                };
+                match apply_outcome(&mut ws, outcome?, cancel.as_mut()).await? {
+                    SessionFlow::Continue => {}
+                    SessionFlow::Closed => break,
+                    SessionFlow::Cancelled => return handle_cancellation(ws).await,
                 }
             }
             Message::Close(_) => {
@@ -168,12 +199,36 @@ where
     Ok(())
 }
 
+/// [`apply_outcome`] の戻り値。セッションループ（[`run_session`]）が次に
+/// 取るべき動作を表す（イシュー #499 で `Result<bool, WsError>` から
+/// 拡張し、キャンセル打ち切りを独立した分岐として表現できるようにした）。
+enum SessionFlow {
+    /// 返信送出まで完了し、セッションを継続する（`WsOutcome::Reply`）。
+    Continue,
+    /// Close ハンドシェイクを開始済みで、セッションを正常終了する
+    /// （`WsOutcome::Close`）。
+    Closed,
+    /// 送出中にキャンセルが発火し、当該 `Future` を打ち切った。呼び出し元は
+    /// [`handle_cancellation`] へ分岐する。
+    Cancelled,
+}
+
 /// [`crate::handler::WsMessageHandler::on_message`] の戻り値をセッション
-/// ループへ反映する。`Ok(true)` はセッション終了（`WsOutcome::Close`）を
-/// 意味し、呼び出し元はループを抜ける。
-async fn apply_outcome<S>(ws: &mut WebSocketStream<S>, outcome: WsOutcome) -> Result<bool, WsError>
+/// ループへ反映する。`WsOutcome::Reply` の各 `ws.send` / `WsOutcome::Close`
+/// の `ws.close` を `cancel` と race させ（イシュー #499）、キャンセルが
+/// 送出中に発火した場合は当該 `Future` を drop して
+/// [`SessionFlow::Cancelled`] を返す。`ws` は呼び出し元が引き続き所有する
+/// ため、打ち切り後も `WebSocketStream` 内部のフレーミングバッファ状態
+/// （書き込み位置）は保たれ、後続の Close 送出が破損したバイト列を生まない
+/// （モジュール doc の「ワイヤ安全性」節を参照）。
+async fn apply_outcome<S, C>(
+    ws: &mut WebSocketStream<S>,
+    outcome: WsOutcome,
+    mut cancel: Pin<&mut C>,
+) -> Result<SessionFlow, WsError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
+    C: Future<Output = ()>,
 {
     match outcome {
         WsOutcome::Reply(messages) => {
@@ -182,13 +237,19 @@ where
                     WsMessage::Text(t) => Message::Text(t.into()),
                     WsMessage::Binary(b) => Message::Binary(b.into()),
                 };
-                ws.send(frame).await?;
+                match race_cancel(cancel.as_mut(), ws.send(frame)).await {
+                    None => return Ok(SessionFlow::Cancelled),
+                    Some(result) => result?,
+                }
             }
-            Ok(false)
+            Ok(SessionFlow::Continue)
         }
         WsOutcome::Close => {
-            ws.close(None).await?;
-            Ok(true)
+            match race_cancel(cancel.as_mut(), ws.close(None)).await {
+                None => return Ok(SessionFlow::Cancelled),
+                Some(result) => result?,
+            }
+            Ok(SessionFlow::Closed)
         }
     }
 }
