@@ -100,9 +100,19 @@
 //! let result = runtime.block_on(try_handle_rtc_offer(&head, b"", &config));
 //! assert!(result.is_none());
 //! ```
+//!
+//! # セッション drain API（イシュー #498）
+//!
+//! WS 委譲タスクの世代キャンセル機構（イシュー #489〜#497）の水平展開第 1 弾として、
+//! [`close_active_peers`] / [`drain_for_shutdown`] を追加した。`crates/core` の
+//! `webrtc` feature 配線（`SessionDrain`）が最終 graceful shutdown・rebind 世代 drain
+//! の両経路から呼ぶ（[`crate::drain`] モジュール doc・
+//! `docs/design/ws-cancellation-propagation.md` 10 節を参照）。
 
 pub mod config;
+pub mod drain;
 pub mod handler;
 
 pub use config::WebRtcConfig;
+pub use drain::{close_active_peers, drain_for_shutdown};
 pub use handler::{OFFER_PATH, try_handle_rtc_offer};

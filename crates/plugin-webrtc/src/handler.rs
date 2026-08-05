@@ -274,7 +274,17 @@ async fn complete_signaling(
     // register_close_handler が担う（レジストリの単調増加を防ぐ）。
     pc_cell.lock().unwrap_or_else(|e| e.into_inner()).take();
     register_close_handler(&pc, config, slot_id);
-    config.activate_slot(slot_id, pc);
+    // イシュー #498: 最終 graceful shutdown（`WebRtcConfig::begin_terminal_drain`）が
+    // 本呼び出しと競合し、`activate_slot` がレジストリ登録を拒否（`false`）した場合は
+    // 生成済みの pc をレジストリの生存管理外へ漏らさないよう、ここで明示的に close する
+    // （フェイルクローズ、`.claude/rules/security.md`）。close はネットワーク I/O を
+    // 伴いうるため、200 応答の返却をブロックしないようバックグラウンドタスクで実行する
+    // （`try_handle_rtc_offer` のタイムアウト分岐と同じ方針）。
+    if !config.activate_slot(slot_id, Arc::clone(&pc)) {
+        tokio::spawn(async move {
+            let _ = pc.close().await;
+        });
+    }
 
     Response::new(200, answer_bytes).with_content_type("application/json")
 }
@@ -459,7 +469,10 @@ mod tests {
             .await
             .expect("RTCPeerConnection の生成に失敗した");
         register_close_handler(&pc, &config, slot_id);
-        config.activate_slot(slot_id, Arc::clone(&pc));
+        assert!(
+            config.activate_slot(slot_id, Arc::clone(&pc)),
+            "terminal drain 前の activate_slot は登録に成功するはず"
+        );
 
         assert!(
             config.reserve_slot().is_none(),
