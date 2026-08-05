@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-05
+
+公開対象 13 クレートを lockstep バンプ（`docs/design/crates-io-release.md` 7.3 節）。
+実 publish（`v0.3.0` タグ push → verify → dry-run → GitHub Environments
+`crates-io-release` の required reviewers 承認 → `cargo publish --workspace`）は
+人間承認の別プロセスとして本バンプ PR のマージ後に実施する
+（[`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 6 節）。
+
 ### BREAKING CHANGES
 
 1. **`fandhe-backend-core`**: `RequestGate::check` のシグネチャへ `ctx: &GateContext`
