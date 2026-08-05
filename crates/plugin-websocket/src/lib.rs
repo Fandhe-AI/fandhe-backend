@@ -134,8 +134,8 @@ pub fn matches(head: &RequestHead, config: &WebSocketConfig) -> bool {
 ///   （停滞した slow client でも有界時間で解放するため）
 /// - セッション確立後に発火した場合は、`config.idle_timeout` 発火時と同型の
 ///   正常な Close ハンドシェイク（close code 1001 Going Away・固定 reason）
-///   を試み、`session` モジュール内定数 `CLOSE_GRACE`（10 秒）を上限に
-///   打ち切る（詳細は `session` モジュールの doc を参照）
+///   を試み、`WebSocketConfig::close_grace`（既定 10 秒、イシュー #500 で
+///   設定可能化）を上限に打ち切る（詳細は `session` モジュールの doc を参照）
 ///
 /// # Examples
 ///
