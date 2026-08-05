@@ -1,0 +1,46 @@
+[package]
+# `RebindHandle::rebind` 経由の実接続 force-close e2e テスト専用クレート（イシュー #507）。
+#
+# core（`webrtc` feature）と plugin-webrtc を同時に参照するテストは、`crates/plugin-webrtc`
+# の通常 dev-dependencies に置くと package レベルの循環（core → plugin-webrtc（通常依存）と
+# plugin-webrtc → core（dev-dependency）が同一 workspace の `cargo metadata` 上に同時に
+# 現れる）となり、`cargo metadata` ベースの pay-for-what-you-use 検証
+# （`scripts/pay-for-what-you-use-check.sh` (c) `cargo geiger`）を偽陽性 FAIL させる（PR #506、
+# イシュー #498 で一度追加し `0d52018` で削除した経緯）。
+#
+# root `Cargo.toml` の `[workspace] exclude` + 本ファイルの空 `[workspace]` テーブルで
+# 独立 workspace 化することで、root workspace の `cargo metadata` / `cargo geiger` の
+# resolve グラフに一切現れなくする（`crates/http/fuzz` と同パターン）。実行は
+# `scripts/webrtc-e2e.sh` 経由（CI は `.github/workflows/ci.yml` の `webrtc-e2e` ジョブ）。
+name = "fandhe-backend-plugin-webrtc-e2e"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# 本クレート自身を独立 workspace のルートとして明示する（空 [workspace] テーブル）。
+# 未指定だと cargo はディレクトリツリーを上方に辿って最初に見つかる [workspace] を持つ
+# Cargo.toml（root）を「所属先」とみなそうとし、`members`/`exclude` のどちらにも
+# 明示されていないネスト package として扱われて `cargo metadata`/build 系コマンドが
+# エラーになる（`crates/http/fuzz/Cargo.toml` の同名コメント参照）。
+[workspace]
+
+[dependencies]
+# `Server::webrtc` / `BoundServer::rebind_handle` / `plugin_webrtc::WebRtcConfig`
+# 再エクスポート（イシュー #435）を使う。`fandhe-backend-plugin-webrtc` への直接
+# path 依存は張らず、core 経由の再エクスポートで依存を最小化する。
+fandhe-backend-core = { path = "../../core", features = ["webrtc"] }
+# クライアント側 `RTCPeerConnection`。plugin-webrtc 本体の依存と同一メジャー系列を
+# 維持する（更新時は両方揃えること）。
+webrtc = "0.17"
+serde_json = "1"
+tokio = { version = "1", default-features = false, features = [
+  "net",
+  "io-util",
+  "time",
+  "macros",
+  "rt-multi-thread",
+] }
+
+[[test]]
+name = "rebind_force_close"
+path = "tests/rebind_force_close.rs"

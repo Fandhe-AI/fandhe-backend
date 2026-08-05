@@ -316,6 +316,16 @@ fandhe-backend/
 │   │                                    # のみ `WebRtcConfig::begin_terminal_drain` で以降の新規登録を拒否する
 │   │                                    # フェイルクローズ判定を伴う。設計・棲み分けは
 │   │                                    # `docs/design/ws-cancellation-propagation.md` 10 節を参照）
+│   │   └── tests-e2e/                  # `RebindHandle::rebind` 経由の実接続 force-close e2e
+│   │                                    # テスト専用 standalone crate（root workspace から
+│   │                                    # exclude、`crates/http/fuzz` と同パターン、イシュー
+│   │                                    # #507）。core（`webrtc` feature）と本クレートを
+│   │                                    # 同時参照するテストを通常 dev-dependencies に置くと
+│   │                                    # package レベルの循環で `cargo metadata`（`cargo
+│   │                                    # geiger` 等）ベースの pay-for-what-you-use 検証を
+│   │                                    # 偽陽性 FAIL させる（PR #506）ため独立 workspace 化
+│   │                                    # した。実行は `scripts/webrtc-e2e.sh`（CI は
+│   │                                    # `webrtc-e2e` ジョブ）
 │   ├── plugin-graphql                 # GraphQL プラグイン（パスインターセプト型、TASK-2.4、#21 で境界確立。
 │   │                                    # REQ-2 の「2 種のプラグイン着脱」受け入れ基準は当初 webrtc-proxy と
 │   │                                    # 共に実証（#21。実 WebSocket が並行実装中だったための代替ペア）、
@@ -532,6 +542,9 @@ fandhe-backend/
 │   ├── docs-site-visual.sh            # 刷新後の docs サイトを headless chromium でライト/ダーク/no-JS ×
 │   │                                    # 複数解像度撮影し `docs/acceptance/issue399-docs-site-visual.md`
 │   │                                    # の視覚証跡一式を生成（イシュー #399。CI 常設化はしない）
+│   ├── webrtc-e2e.sh                  # `crates/plugin-webrtc/tests-e2e`（standalone crate）で
+│   │                                    # `RebindHandle::rebind` の実接続 force-close e2e テストを
+│   │                                    # `cargo test` 実行する（stable のみ、イシュー #507）
 │   └── accept/            # 受け入れ検証スクリプト（TASK-1.6-2 で追加、以降 REQ-2/5/6/8/13 分も収録）
 │       ├── README.md                  # 検証基準・前提ツール・実行方法
 │       ├── lib/common.sh              # PASS/FAIL/SKIP/WARN 集計の共通関数

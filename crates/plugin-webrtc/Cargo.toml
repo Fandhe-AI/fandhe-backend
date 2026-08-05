@@ -47,8 +47,9 @@ tokio = { version = "1", default-features = false, features = ["time"] }
 # geiger 検証）を誤って FAIL させることが判明したため、該当テストと本依存を
 # 削除した（`cargo build -p fandhe-backend-core --no-default-features` 自体は
 # 汚染されないことを確認済みで実害はないが、検証ツールを偽陽性にする）。
-# e2e カバレッジの再設計（root workspace から独立した standalone crate 化、
-# `crates/http/fuzz` と同パターン）は別途 Issue で追跡する。
+# e2e カバレッジは `tests-e2e/`（root workspace から独立した standalone crate、
+# `crates/http/fuzz` と同パターン、イシュー #507）として再設計済み。実行は
+# `scripts/webrtc-e2e.sh` 経由（CI は `.github/workflows/ci.yml` の `webrtc-e2e` ジョブ）。
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = [
   "net",

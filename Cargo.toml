@@ -25,7 +25,15 @@ members = ["crates/*"]
 # fuzz 専用依存が混入してしまう（pay-for-what-you-use 違反、
 # .claude/rules/pay-for-what-you-use.md）。`scripts/fuzz.sh` が独立
 # workspace として `cargo +<pinned-nightly> fuzz` 経由でのみビルド・実行する。
-exclude = ["crates/http/fuzz"]
+#
+# `crates/plugin-webrtc/tests-e2e` は `RebindHandle::rebind` 経由の実接続
+# force-close e2e テスト専用クレート（イシュー #507）。core（`webrtc` feature）と
+# plugin-webrtc を同時に参照するため、root workspace に含めると `cargo metadata`
+# の resolve グラフ上で core → plugin-webrtc の依存が常時可視となり
+# pay-for-what-you-use 検証（`scripts/pay-for-what-you-use-check.sh` (c) `cargo
+# geiger` 検証）を偽陽性 FAIL させる（PR #506）。同じく独立 workspace として
+# `scripts/webrtc-e2e.sh` 経由でのみビルド・実行する。
+exclude = ["crates/http/fuzz", "crates/plugin-webrtc/tests-e2e"]
 
 [workspace.package]
 edition = "2024"
