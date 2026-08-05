@@ -36,12 +36,19 @@ tokio = { version = "1", default-features = false, features = ["time"] }
 # HTTP サーバ・クライアント側 RTCPeerConnection を動かすためのみ。本体ビルド
 # （lib.rs 以下）には影響しない。
 #
-# `fandhe-backend-core`（`webrtc` feature 有効）は tests/rebind_force_close.rs
-# （イシュー #498 レビュー対応）が `Server`/`BoundServer::rebind_handle` 経由の
-# 実 rebind 配線を検証するために使う。`crates/core` の通常依存が本クレートを
-# 参照するため dev-dependencies としては循環になるが、Cargo は dev-dependency
-# のみで閉じる循環（本体ビルドの依存グラフには現れない）をサポートしており、
-# 本クレートの通常ビルド・pay-for-what-you-use には影響しない。
+# `fandhe-backend-core`（`webrtc` feature 有効）を dev-dependency として追加し
+# `Server`/`BoundServer::rebind_handle` 経由の実 rebind 配線を検証する e2e テスト
+# （イシュー #498 レビュー対応）は一時 tests/rebind_force_close.rs として追加した
+# ものの、`crates/core` の通常依存が本クレートを参照するため dev-dependency
+# 追加は package レベルの循環になり、`cargo metadata`（`cargo geiger` 等が内部で
+# 使う、workspace 全体を単一の resolve グラフとして解決するツール）では
+# dev-dependency 経由の循環でも本クレートが常時コアの依存グラフへ現れてしまい
+# pay-for-what-you-use 検証（`scripts/pay-for-what-you-use-check.sh` (c) cargo
+# geiger 検証）を誤って FAIL させることが判明したため、該当テストと本依存を
+# 削除した（`cargo build -p fandhe-backend-core --no-default-features` 自体は
+# 汚染されないことを確認済みで実害はないが、検証ツールを偽陽性にする）。
+# e2e カバレッジの再設計（root workspace から独立した standalone crate 化、
+# `crates/http/fuzz` と同パターン）は別途 Issue で追跡する。
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = [
   "net",
@@ -50,4 +57,3 @@ tokio = { version = "1", default-features = false, features = [
   "macros",
   "rt-multi-thread",
 ] }
-fandhe-backend-core = { workspace = true, features = ["webrtc"] }

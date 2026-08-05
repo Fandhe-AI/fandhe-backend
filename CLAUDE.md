@@ -223,15 +223,26 @@ fandhe-backend/
 │   │                                    # （レビュー対応。実接続を確立し
 │   │                                    # `BoundServer::rebind_handle().rebind()` 経由で
 │   │                                    # force-close されることを end-to-end で検証する
-│   │                                    # `crates/plugin-webrtc/tests/
-│   │                                    # rebind_force_close.rs` を追加。同クレートの
-│   │                                    # `WebRtcConfig::activate_slot` は
+│   │                                    # `crates/plugin-webrtc/tests/rebind_force_close.rs`
+│   │                                    # を一時追加したが、`fandhe-backend-core`
+│   │                                    # （`webrtc` feature）への dev-dependency
+│   │                                    # 追加が package レベルの循環を生み、`cargo
+│   │                                    # metadata` ベースの pay-for-what-you-use
+│   │                                    # 検証（`cargo geiger`）を偽陽性で FAIL させる
+│   │                                    # ことが判明したため削除した（実ビルドの依存
+│   │                                    # グラフ自体は汚染されない。standalone crate
+│   │                                    # 化による再設計は別途 Issue で追跡）。同
+│   │                                    # クレートの `WebRtcConfig::activate_slot` は
 │   │                                    # `terminal_draining` の判定を `registry` の
 │   │                                    # `Mutex` ロック外で読んでいたため、終端 drain
 │   │                                    # （`drain_for_shutdown`）と並行するシグナリング
 │   │                                    # 完了が drain 後に `Active` 化してしまう TOCTOU
 │   │                                    # が起こりえた。判定を `Active` 遷移と同一ロック
-│   │                                    # 区間へ統合し修正した）。
+│   │                                    # 区間へ統合し修正した（この回帰テストは
+│   │                                    # `crates/plugin-webrtc/src/config.rs` の
+│   │                                    # `activate_slot_rejects_pc_even_after_
+│   │                                    # take_active_peers_already_ran` として
+│   │                                    # 引き続き実 `RTCPeerConnection` で検証する）。
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む

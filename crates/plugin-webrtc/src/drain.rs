@@ -76,8 +76,8 @@ pub async fn close_active_peers(config: &WebRtcConfig, per_close_timeout: Durati
 
 /// 最終 graceful shutdown 向けの drain（イシュー #498）。
 ///
-/// [`WebRtcConfig::begin_terminal_drain`] を呼んで以降の新規登録
-/// （[`WebRtcConfig::activate_slot`]）を拒否させたうえで、[`close_active_peers`] で
+/// `WebRtcConfig::begin_terminal_drain`（`pub(crate)`）を呼んで以降の新規登録
+/// （`WebRtcConfig::activate_slot`）を拒否させたうえで、[`close_active_peers`] で
 /// 既存のアクティブ接続を明示的に close する。`WebRtcConfig` は `Clone` で世代を跨いで
 /// 共有されるため、以降このプロセスで新たに生成される `RTCPeerConnection` は
 /// （シグナリング自体は継続しても）レジストリへ登録されず即座に close される
