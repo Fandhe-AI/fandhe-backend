@@ -292,6 +292,17 @@ where
 /// 応答を返さないクライアントに接続を無期限保持させないため、送出 →
 /// ドレインの全体を [`CLOSE_GRACE`] で区切る（二次 DoS 対策、Issue #175・
 /// イシュー #492 で送出自体の停滞も有界化対象へ拡張）。
+///
+/// `tokio_tungstenite::tungstenite::Error::SendAfterClosing` も
+/// `ConnectionClosed` / `AlreadyClosed` と同様に成功として扱う。
+/// [`apply_outcome`] の `WsOutcome::Close` 送出中（`ws.close(None)`）に
+/// キャンセルが発火すると [`SessionFlow::Cancelled`] 経由で本関数
+/// （[`handle_cancellation`]）へ再度到達し、`ws.close` を 2 回目呼び出す
+/// ケースがある。1 回目の呼び出しで Close フレームが既にキューイング済み
+/// の場合、tungstenite は 2 回目を `SendAfterClosing` で拒否するが、Close
+/// 送出そのものは 1 回目で達成済みのため、これを致命的エラーとして扱うと
+/// ドレイン・フラッシュが不当にスキップされる（イシュー #499、
+/// PR #504 レビュー指摘）。
 async fn close_and_drain<S>(
     mut ws: WebSocketStream<S>,
     close_frame: Option<CloseFrame>,
@@ -303,7 +314,10 @@ where
         if let Err(err) = ws.close(close_frame).await {
             return match err {
                 tokio_tungstenite::tungstenite::Error::ConnectionClosed
-                | tokio_tungstenite::tungstenite::Error::AlreadyClosed => Ok(()),
+                | tokio_tungstenite::tungstenite::Error::AlreadyClosed
+                | tokio_tungstenite::tungstenite::Error::Protocol(
+                    tokio_tungstenite::tungstenite::error::ProtocolError::SendAfterClosing,
+                ) => Ok(()),
                 other => Err(other),
             };
         }

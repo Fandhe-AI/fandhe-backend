@@ -21,6 +21,10 @@
 //!    届く（ワイヤ安全性）
 //! 8. （イシュー #499）7 と同様に送出停滞させたままクライアントが応答しない
 //!    場合も `CLOSE_GRACE` 以内にサーバタスクが終了する（フェイルクローズ）
+//! 9. （PR #504 レビュー指摘）`WsOutcome::Close` 送出中（`ws.close(None)`）に
+//!    発火した場合、`handle_cancellation` が呼ぶ 2 回目の `ws.close` が
+//!    `SendAfterClosing` で拒否されてもセッションが `Err` で終わらず正常
+//!    終了すること（二重 close の回帰ガード）
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -534,5 +538,108 @@ async fn cancellation_during_reply_send_terminates_even_if_client_ignores_close(
     assert!(
         result.is_ok(),
         "server must terminate within CLOSE_GRACE even if reply send was truncated: {result:?}"
+    );
+}
+
+/// 受信したメッセージに対して常に `WsOutcome::Close`（サーバ起点の Close
+/// ハンドシェイク開始）を返すハンドラ（PR #504 レビュー指摘の回帰テスト用）。
+struct CloseHandler;
+
+impl WsMessageHandler for CloseHandler {
+    fn name(&self) -> &'static str {
+        "close-on-message"
+    }
+
+    fn on_message(
+        &self,
+        _msg: WsMessage,
+    ) -> BoxFuture<'_, Result<WsOutcome, fandhe_backend_plugin_websocket::handler::WsHandlerError>>
+    {
+        Box::pin(async move { Ok(WsOutcome::Close) })
+    }
+}
+
+/// PR #504 レビュー指摘（Bugbot、`crates/plugin-websocket/src/session.rs`
+/// L246-252・L166-170・L302-308）の回帰テスト。
+///
+/// ハンドラが `WsOutcome::Close` を返し、`apply_outcome` の `ws.close(None)`
+/// が（極小容量 duplex によるバックプレッシャで）実際の書き込み完了前に
+/// キャンセルで打ち切られると、`SessionFlow::Cancelled` 経由で
+/// `handle_cancellation` が呼ばれ `ws.close(Some(close_frame))` を 2 回目
+/// 呼び出す。1 回目の呼び出しで tungstenite 内部状態が既に「クローズ送出
+/// 済み」へ遷移していた場合、2 回目は `SendAfterClosing` エラーで拒否
+/// される。`close_and_drain` がこれを致命的エラーとして扱うと
+/// `run_session` 全体が `Err` で終了し、ドレイン・フラッシュがスキップ
+/// される（修正前の不具合）。修正後は `SendAfterClosing` を
+/// `ConnectionClosed` / `AlreadyClosed` と同様に成功として扱い、
+/// セッションは正常終了 (`Ok(())`) する。
+#[tokio::test]
+async fn cancellation_during_close_send_does_not_fail_on_double_close() {
+    let head = match parse_request_head(handshake_request_bytes()).unwrap() {
+        ParseOutcome::Complete { head, .. } => head,
+        ParseOutcome::Incomplete => unreachable!(),
+    };
+
+    let config = WebSocketConfig::default().with_handler(CloseHandler);
+
+    // `ws.close(None)` のフレームはヘッダのみの 2 バイトと極小のため、
+    // 確実にバックプレッシャで停滞させるには duplex 容量を 2 バイト未満
+    // （1 バイト）にする必要がある（クライアントが読み取りを再開するまで
+    // 書き込みが `Pending` のまま止まる）。
+    let (server_side, mut client_side) = tokio::io::duplex(1);
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let server_task = tokio::spawn(async move {
+        handle_upgrade(server_side, &head, Vec::new(), &config, async move {
+            let _ = cancel_rx.await;
+        })
+        .await
+    });
+
+    let response = read_http_response_line(&mut client_side).await;
+    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+
+    let mut client: WebSocketStream<_> =
+        WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+
+    client
+        .send(Message::Text("trigger".into()))
+        .await
+        .expect("send text");
+
+    // クライアントは意図的に読み取らず放置し、極小 duplex を埋めて
+    // `ws.close(None)` の送出を停滞させる猶予を与えてからキャンセルを
+    // 発火する。
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    cancel_tx.send(()).unwrap();
+
+    // クライアントが読み取りを再開すると、破損しない Close フレームを
+    // 受信できること（2 回目の close 呼び出しによる不正な二重フレーム・
+    // パニックが発生していないこと）を確認する。
+    let mut saw_valid_close = false;
+    for _ in 0..64 {
+        match tokio::time::timeout(Duration::from_secs(5), client.next()).await {
+            Ok(Some(Ok(Message::Close(_)))) => {
+                saw_valid_close = true;
+                break;
+            }
+            Ok(Some(Ok(_))) => continue,
+            Ok(Some(Err(err))) => panic!("wire must not be corrupted after double close: {err}"),
+            Ok(None) => break,
+            Err(_) => panic!("client should not hang waiting for close frame"),
+        }
+    }
+    assert!(saw_valid_close, "expected a close frame to arrive");
+
+    let _ = client.next().await;
+
+    let result = tokio::time::timeout(Duration::from_secs(15), server_task)
+        .await
+        .expect("server task must not hang beyond CLOSE_GRACE")
+        .unwrap();
+    assert!(
+        result.is_ok(),
+        "cancellation racing WsOutcome::Close send must end the session normally, \
+         not fail on the resulting SendAfterClosing from the second close call: {result:?}"
     );
 }
