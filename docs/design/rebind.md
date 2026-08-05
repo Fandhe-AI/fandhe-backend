@@ -321,3 +321,48 @@ cargo tree -p fandhe-backend-core -e features        # tokio feature が 5 つ�
 cargo clippy -p fandhe-backend-core --all-targets --all-features -- -D warnings
 cargo fmt --check
 ```
+
+## 9. 拡張点閉包ゲートの理由明記（イシュー #507、`Makefile` 変更）
+
+`scripts/extension-closure-gate.sh`（`docs/design/dependency-graph-contract.md` 4 節）は
+`crates/plugin-webrtc/tests-e2e`（7 節・本書冒頭参照）新設に伴う変更ファイルのうち、
+ルート直下の設定ファイルを A〜D いずれのカテゴリにも該当しない E（閉包違反候補）と
+機械判定する。同ファイルの分類規則は `crates/plugin-*/**`（A）・`crates/core/
+{Cargo.toml,src/plugin.rs,src/server.rs,src/lib.rs}`（B）・`crates/core/tests/**` /
+`crates/plugin-*/tests/**`（C）・`docs/*`・`scripts/*`・`CLAUDE.md`・`AGENTS.md`・
+`.github/*`・`deny.toml`（D）のみを許可対象とし、リポジトリルート直下の `.gitignore` /
+`Cargo.toml` / `Makefile` はいずれも対象外のため機械的に E 判定となる（4.3・4.4 節と
+同種の運用上のギャップ）。`docs/design/dependency-graph-contract.md` 4.2 節の様式に従い、
+3 件まとめて理由を記載する。
+
+1. **対象コミット/PR**: PR #508（イシュー #507、`test/507-webrtc-rebind-e2e-standalone`）
+2. **E ファイルパス**:
+   - `.gitignore`
+   - `Cargo.toml`
+   - `Makefile`
+3. **閉じない理由**: `extension-closure-check.sh` の分類規則がプラグインクレート内
+   （A）・コア側許容シーム（B）・テスト（C）・`docs/*`・`scripts/*` 等（D）の glob の
+   みを許可対象とし、リポジトリルート直下の設定ファイルをいずれのカテゴリにも含めて
+   いないため、`.gitignore` / `Cargo.toml` / `Makefile` への変更は内容の如何を問わず
+   機械的に E 判定となる
+4. **正当性根拠**: 3 件とも `crates/plugin-webrtc` の実装ロジックそのものではなく、
+   standalone crate `crates/plugin-webrtc/tests-e2e`（7 節）を root workspace の
+   外側で独立に運用するための周辺設定に過ぎない。
+   - `Cargo.toml`: root workspace の `exclude` に `crates/plugin-webrtc/tests-e2e` を
+     追加し、`cargo metadata` の resolve グラフから同クレートを外す（core →
+     plugin-webrtc の依存が pay-for-what-you-use 検証（`cargo geiger`）を偽陽性
+     FAIL させる問題（PR #506）の再発防止、7 節参照）。既存の `crates/http/fuzz`
+     exclude と同一パターンで、拡張点契約・依存方向（1 節）には影響しない
+   - `.gitignore`: 上記 standalone crate 独自の `target/` ビルド成果物
+     （`crates/plugin-webrtc/tests-e2e/target/`）を無視対象に追加するのみで、
+     `crates/http/fuzz/target/` の既存エントリと同型
+   - `Makefile`: `webrtc-e2e` ターゲット（`bash scripts/webrtc-e2e.sh` の薄い委譲）を
+     追加し、他の `make` ターゲット（`build` / `test` / `lint` 等）と同じ「CI と
+     同一コマンドをローカル再現する」入口を提供するのみで、拡張点契約
+     （`Middleware` / `UpgradeHandler` / `RequestGate` / `try_intercept` /
+     `finalize_response`）・依存方向のいずれも変更しない
+   - `extension-closure-check.sh` の D カテゴリにルート直下の設定ファイル
+     （`.gitignore` / ルート `Cargo.toml` / `Makefile`）を追加する是正は
+     4.3 節と同種の運用上のギャップであり、拡張点設計の閉包漏れではないため
+     本書の理由記載で対応し、`extension-closure-check.sh` 自体の改修は別 Issue
+     （`.claude/rules/out-of-scope-tracking.md`）で扱う
