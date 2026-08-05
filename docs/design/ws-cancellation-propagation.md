@@ -45,7 +45,7 @@ shutdown（#313）・rebind 世代 drain（#485/#488）双方のキャンセル�
 | 委譲シーム | `crates/core/src/plugin.rs` `try_handle_upgrade`（`pub(crate)`） | permit を take → `tokio::spawn` で detached 化 → `fandhe_backend_plugin_websocket::handle_upgrade` へ完全委譲 |
 | 呼び出し元 | `crates/core/src/server.rs` `handle_connection_with_permit` | shutdown_flag 受信後の新規 Upgrade は 503 拒否済み（既委譲分が本イシューの対象） |
 | 世代管理 | 同上 `run_until` | 世代 = `shutdown_flag`（`Arc<AtomicBool>`）+ `CancelSafeJoinSet` のペア。rebind 時に旧世代の flag を true → `mem::replace` で JoinSet 切り離し → `spawn_generation_drain` |
-| WS セッション受信ループ | `crates/plugin-websocket/src/session.rs` `run_session` | `idle_timeout` 有効時は各受信待ちを `tokio::time::timeout` で監視。`handle_idle_timeout` が Close ハンドシェイク（Close frame 送信 → 相手の Close 応答を `CLOSE_GRACE` 上限で待機）を既に実装済み |
+| WS セッション受信ループ | `crates/plugin-websocket/src/session.rs` `run_session` | `idle_timeout` 有効時は各受信待ちを `tokio::time::timeout` で監視。`handle_idle_timeout` が Close ハンドシェイク（Close frame 送信 → 相手の Close 応答を `WebSocketConfig::close_grace`（既定 10 秒、イシュー #500 で設定可能化）上限で待機）を既に実装済み |
 | コアの tokio feature | `crates/core/Cargo.toml` | `rt` / `net` / `io-util` / `time` / `sync` の 5 つに限定 |
 | plugin-websocket の tokio feature | `crates/plugin-websocket/Cargo.toml` | `io-util` / `time` のみ（**`sync` を持たない**）。`crates/core` に依存しない設計（`docs/design/plugin-boundary.md` 6.1 節、循環依存回避） |
 
@@ -66,7 +66,8 @@ plugin-websocket 側の追加要件／cancel-safety（取りこぼしの有無�
 - 案 D は grace 超過時に TCP を即座に切るだけで、WS プロトコルレベルの
   正常な Close ハンドシェイク（#492 が担う予定の Close frame 送信）を
   実行する機会を奪う。`session.rs` の `handle_idle_timeout` が既に
-  「Close frame 送信 → 相手の応答を `CLOSE_GRACE` 上限で待つ」という
+  「Close frame 送信 → 相手の応答を `WebSocketConfig::close_grace`（既定
+  10 秒）上限で待つ」という
   正常クローズパターンを実装済みであり、キャンセル伝播もこれと同じ
   「まず正常終了を試み、それ自体にも上限を設ける」設計に揃えるべきである。
   よって D は棄却する。
@@ -227,7 +228,7 @@ plugin-websocket 側の追加要件／cancel-safety（取りこぼしの有無�
 
 **採用: (c) の簡略形として、drain 開始時に 1 回だけ発火する（実質 (b)
 と同じタイミング）が、WS セッション側の応答は「正常 Close を試みて
-`CLOSE_GRACE` 上限で打ち切る」という #492 が実装予定の有界動作に委ねる**。
+`WebSocketConfig::close_grace`（既定 10 秒）上限で打ち切る」という #492 が実装予定の有界動作に委ねる**。
 理由:
 
 - (a)（grace 超過時のみ発火）は、grace 期間中の待機を丸ごと「何もせず
@@ -238,7 +239,7 @@ plugin-websocket 側の追加要件／cancel-safety（取りこぼしの有無�
 - drain 開始時点で発火すれば、WS セッション側は `Server::
   shutdown_grace_period` の期間をまるごと正常 Close の試行に使える。
   `session.rs` の既存 `handle_idle_timeout` パターン（Close frame 送信
-  → `CLOSE_GRACE` 上限で応答待ち）をキャンセル経路にもそのまま適用でき、
+  → `WebSocketConfig::close_grace`（既定 10 秒）上限で応答待ち）をキャンセル経路にもそのまま適用でき、
   実装の一貫性が高い
 - 「grace 超過時の強制クローズへの包含」という既存の不変条件は、
   `run_until` 自体の待ち合わせ（`docs/design/rebind.md` 5.2 節
@@ -330,7 +331,7 @@ cargo tree -p fandhe-backend-plugin-websocket -e features
 | 後続イシュー | 実装対象 | 本設計の対応節 |
 |-------------|---------|---------------|
 | #491（コア配線） | 世代構造体へキャンセル `watch::Sender` を追加、`try_handle_upgrade` でキャンセル `Future`（3.2 節 (i)）を構築して `handle_upgrade` へ渡す、`spawn_generation_drain` シグネチャ拡張、最終 shutdown・rebind 両経路での発火配線 | 5 節・6 節 |
-| #492（Close frame 送信） | `fandhe_backend_plugin_websocket::handle_upgrade` へキャンセル `Future` 引数を追加（breaking change）、`run_session` の受信待ちとキャンセル `Future` を race させ、発火時は `handle_idle_timeout` と同型の Close ハンドシェイク（Close frame 送信 → `CLOSE_GRACE` 上限で応答待ち）を実行 | 3 節・4.2 節・5.2 節 |
+| #492（Close frame 送信） | `fandhe_backend_plugin_websocket::handle_upgrade` へキャンセル `Future` 引数を追加（breaking change）、`run_session` の受信待ちとキャンセル `Future` を race させ、発火時は `handle_idle_timeout` と同型の Close ハンドシェイク（Close frame 送信 → `WebSocketConfig::close_grace`（既定 10 秒、イシュー #500 で設定可能化）上限で応答待ち）を実行 | 3 節・4.2 節・5.2 節 |
 | #493（統合テスト・doc 更新） | 最終 shutdown・rebind 双方でのキャンセル伝播を検証する統合テスト、`BoundServer::run_until` doc「既知の限界」・`docs/design/graceful-shutdown.md` 8 節・`docs/design/rebind.md` 5.4 節/6 節の記述更新（本設計が解決したことを反映） | 全節 |
 
 ### 受け入れ条件との対応

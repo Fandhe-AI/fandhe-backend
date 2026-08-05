@@ -42,15 +42,6 @@ use crate::error::WsError;
 use crate::handler::{WsMessage, WsOutcome};
 use crate::race_cancel;
 
-/// タイムアウト発火後、サーバ側が送出した Close フレームへのクライアント
-/// 応答（または EOF）を待つ上限（10 秒）。
-///
-/// Close 応答を返さない（無視する）クライアントが「クローズ送出済みだが
-/// 応答待ち」の状態で接続を無期限に保持し続けると、アイドルタイムアウト
-/// そのものが二次的な DoS の抜け道になる。固定の猶予で必ず接続を終端させ
-/// fail-closed にする（Issue #175）。
-const CLOSE_GRACE: Duration = Duration::from_secs(10);
-
 /// 101 応答送出済みのストリームを受け取り、WebSocket セッション終了まで
 /// 処理する。
 ///
@@ -77,8 +68,8 @@ const CLOSE_GRACE: Duration = Duration::from_secs(10);
 /// `tokio::time::timeout` する。フレーム（Ping/Pong を含む全種別）を 1 つ
 /// 受信するたびにタイマーは実質リセットされる。`d` 以内に何も届かなければ
 /// アイドルと判定し、サーバ側から Close フレーム（1000 Normal Closure）を
-/// 送出したうえで、[`CLOSE_GRACE`] を上限にクライアントの Close 応答（または
-/// EOF）をドレインしてから `Ok(())` で終了する（ポリシー駆動の正常終了。
+/// 送出したうえで、`config.close_grace`（既定 10 秒）を上限にクライアントの
+/// Close 応答（または EOF）をドレインしてから `Ok(())` で終了する（ポリシー駆動の正常終了。
 /// プロトコル違反ではないため `WsError` の新規 variant は追加しない）。
 /// `idle_timeout` が `None`（`without_idle_timeout` による明示的無効化）の
 /// 場合は従来どおり無期限に受信を待つ。
@@ -120,13 +111,15 @@ where
                 )
                 .await
                 {
-                    None => return handle_cancellation(ws).await,
+                    None => return handle_cancellation(ws, config.close_grace).await,
                     Some(Ok(message)) => message,
-                    Some(Err(_elapsed)) => return handle_idle_timeout(ws).await,
+                    Some(Err(_elapsed)) => {
+                        return handle_idle_timeout(ws, config.close_grace).await;
+                    }
                 }
             }
             None => match race_cancel(cancel.as_mut(), ws.next()).await {
-                None => return handle_cancellation(ws).await,
+                None => return handle_cancellation(ws, config.close_grace).await,
                 Some(message) => message,
             },
         };
@@ -196,11 +189,14 @@ where
 /// アイドルタイムアウト発火時の切断シーケンス（正常な Close ハンドシェイク、
 /// close code 1000 Normal Closure）。[`close_and_drain`] へ委譲する
 /// （呼び出し元 `run_session` の唯一の呼び出し箇所）。
-async fn handle_idle_timeout<S>(ws: WebSocketStream<S>) -> Result<(), WsError>
+async fn handle_idle_timeout<S>(
+    ws: WebSocketStream<S>,
+    close_grace: Duration,
+) -> Result<(), WsError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    close_and_drain(ws, None).await
+    close_and_drain(ws, None, close_grace).await
 }
 
 /// キャンセル `Future`（`crate::handle_upgrade` 経由でコアの世代キャンセル
@@ -211,7 +207,10 @@ where
 /// のみで内部状態・エラー詳細・機密を含めない
 /// （`docs/design/ws-cancellation-propagation.md` 8 節）。呼び出し元
 /// `run_session` の唯一の呼び出し箇所。
-async fn handle_cancellation<S>(ws: WebSocketStream<S>) -> Result<(), WsError>
+async fn handle_cancellation<S>(
+    ws: WebSocketStream<S>,
+    close_grace: Duration,
+) -> Result<(), WsError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -219,21 +218,23 @@ where
         code: CloseCode::Away,
         reason: Utf8Bytes::from_static("going away"),
     };
-    close_and_drain(ws, Some(close_frame)).await
+    close_and_drain(ws, Some(close_frame), close_grace).await
 }
 
 /// Close フレーム送出 → クライアント応答（または EOF・エラー）のドレインを
-/// [`CLOSE_GRACE`] で有界化する共通ヘルパー（[`handle_idle_timeout`] /
-/// [`handle_cancellation`] で共有）。
+/// `close_grace`（`WebSocketConfig::close_grace`、既定 10 秒）で有界化する
+/// 共通ヘルパー（[`handle_idle_timeout`] / [`handle_cancellation`] で共有）。
 ///
 /// Close 送出自体が失敗した場合（相手が既に切断済み等）も、切断そのものの
 /// 目的は達成されているため、ドレインへ進まず正常終了として扱う。Close
 /// 応答を返さないクライアントに接続を無期限保持させないため、送出 →
-/// ドレインの全体を [`CLOSE_GRACE`] で区切る（二次 DoS 対策、Issue #175・
-/// イシュー #492 で送出自体の停滞も有界化対象へ拡張）。
+/// ドレインの全体を `close_grace` で区切る（二次 DoS 対策、Issue #175・
+/// イシュー #492 で送出自体の停滞も有界化対象へ拡張、イシュー #500 で
+/// 猶予値を `WebSocketConfig` から設定可能にした）。
 async fn close_and_drain<S>(
     mut ws: WebSocketStream<S>,
     close_frame: Option<CloseFrame>,
+    close_grace: Duration,
 ) -> Result<(), WsError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -262,7 +263,7 @@ where
         }
     };
 
-    match tokio::time::timeout(CLOSE_GRACE, sequence).await {
+    match tokio::time::timeout(close_grace, sequence).await {
         Ok(Ok(())) => Ok(()),
         Err(_timeout_elapsed) => Ok(()),
         Ok(Err(err)) => Err(err.into()),

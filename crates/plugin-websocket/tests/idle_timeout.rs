@@ -3,7 +3,9 @@
 //! `handshake_e2e.rs` と同様、`tokio::io::duplex` + `tokio-tungstenite`
 //! クライアントで `handle_upgrade` を駆動し、`WebSocketConfig::idle_timeout`
 //! の発火・非発火・無効化・Ping による維持・Close 無視クライアントへの
-//! 猶予（`CLOSE_GRACE`）を検証する。
+//! 猶予（`WebSocketConfig::close_grace`）を検証する。イシュー #500 で
+//! `close_grace` を利用者設定可能にした際、アイドルタイムアウト経路への
+//! 配線退行がないことも本ファイルで検証する。
 
 use std::time::Duration;
 
@@ -235,25 +237,50 @@ async fn disabled_idle_timeout_does_not_close_connection() {
 }
 
 /// 受け入れ基準(2): タイムアウト発火後にクライアントが Close 応答を返さ
-/// なくても、サーバタスクが猶予（`CLOSE_GRACE`）内に終了すること
-/// （二次 DoS 対策）。`CLOSE_GRACE` はモジュール非公開の実装定数（10 秒）
-/// のため、ここでは十分な余裕（15 秒）を見た有界待ちで検証する。
+/// なくても、サーバタスクが猶予（`WebSocketConfig::close_grace`、既定
+/// 10 秒）内に終了すること（二次 DoS 対策）。ここでは十分な余裕（15 秒）を
+/// 見た有界待ちで検証する。
 #[tokio::test]
 async fn server_terminates_even_if_client_ignores_close() {
     let config = WebSocketConfig::default().with_idle_timeout(Duration::from_millis(200));
     let (client, server_task) = handshake(config).await;
 
     // クライアントは Close フレームを受信しても応答せず、ストリームを
-    // 保持したまま放置する（drop すると duplex が EOF を返し `CLOSE_GRACE`
+    // 保持したまま放置する（drop すると duplex が EOF を返し close_grace
     // を検証できなくなるため、明示的に forget して接続を握ったままにする）。
     std::mem::forget(client);
 
     let result = tokio::time::timeout(Duration::from_secs(15), server_task)
         .await
-        .expect("server task must not hang beyond CLOSE_GRACE")
+        .expect("server task must not hang beyond close_grace")
         .unwrap();
     assert!(
         result.is_ok(),
-        "server must terminate within CLOSE_GRACE even if client ignores close: {result:?}"
+        "server must terminate within close_grace even if client ignores close: {result:?}"
+    );
+}
+
+/// 受け入れ基準(3)（イシュー #500）: `with_idle_timeout` +
+/// `with_close_grace` を併用した場合、アイドルタイムアウト経路（
+/// `handle_idle_timeout`）でも設定した `close_grace` が反映されること。
+/// `close_and_drain` は `handle_idle_timeout` / `handle_cancellation` の
+/// 共有ヘルパーだが、アイドル経路側の配線退行も個別に防ぐ。
+#[tokio::test]
+async fn configured_close_grace_is_applied_on_idle_timeout() {
+    let config = WebSocketConfig::default()
+        .with_idle_timeout(Duration::from_millis(200))
+        .with_close_grace(Duration::from_millis(200));
+    let (client, server_task) = handshake(config).await;
+
+    // Close 応答を返さず接続を保持したまま放置する（上記と同じ理由）。
+    std::mem::forget(client);
+
+    let result = tokio::time::timeout(Duration::from_secs(5), server_task)
+        .await
+        .expect("configured close_grace (200ms) must terminate well within the default 10s window")
+        .unwrap();
+    assert!(
+        result.is_ok(),
+        "server must terminate within the configured close_grace: {result:?}"
     );
 }

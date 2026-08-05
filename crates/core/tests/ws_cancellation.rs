@@ -7,7 +7,8 @@
 //! 検証する。`crates/core/src/plugin.rs` の `try_handle_upgrade` はキャンセル
 //! `Future` を `fandhe_backend_plugin_websocket::handle_upgrade` の第 5 引数
 //! として渡すのみで、切断シーケンス（正常な Close ハンドシェイク、close
-//! code 1001 Going Away → `CLOSE_GRACE` 上限で応答待ち）は `handle_upgrade`
+//! code 1001 Going Away → `WebSocketConfig::close_grace`（既定 10 秒）上限で
+//! 応答待ち）は `handle_upgrade`
 //! 側が担う（イシュー #492、`try_handle_upgrade` の doc「世代キャンセル
 //! シグナル」を参照）。
 //!
@@ -23,10 +24,11 @@
 //!   （イシュー #493）: Close フレームを受信しても応答・切断せず居座る
 //!   クライアントに対しても、(a) `run_until` 自体は permit 回収タイムアウトの
 //!   フェイルセーフにより有界時間内に必ず復帰し、(b) サーバ側は
-//!   `CLOSE_GRACE`（`crates/plugin-websocket/src/session.rs` 固定 10 秒）を
-//!   上限に接続を強制終端することを end-to-end で検証する（設計 5.3 節・
-//!   8 節。「grace 超過後にクローズ」という受け入れ条件を、確定済み設計の
-//!   意味論——非協調クライアントは `CLOSE_GRACE` 有界で終端——で検証する）
+//!   `WebSocketConfig::close_grace`（既定 10 秒、イシュー #500 で設定可能
+//!   化）を上限に接続を強制終端することを end-to-end で検証する（設計 5.3
+//!   節・8 節。「grace 超過後にクローズ」という受け入れ条件を、確定済み
+//!   設計の意味論——非協調クライアントは `close_grace` 有界で終端——で
+//!   検証する）
 //! - `repeated_rebind_releases_ws_permits_without_monotonic_consumption`
 //!   （イシュー #493）: `max_connections(1)` の極小構成で rebind を 3 回
 //!   反復し、旧世代 WS セッションの permit が世代を跨いで単調消費されず
@@ -62,8 +64,8 @@ use tokio::time::timeout;
 /// 呼び出し元は検証後、`ws_client` を drop してサーバ側のドレインを即座に
 /// 完了させる（クライアントが Close 応答を返さないケースの検証は
 /// `plugin-websocket` 側の `cancellation.rs` が担う。本テストの主眼は
-/// `run_until` の早期復帰・permit 解放であり、`CLOSE_GRACE` 全体を待たせ
-/// ないため）。
+/// `run_until` の早期復帰・permit 解放であり、`WebSocketConfig::close_grace`
+/// 全体を待たせないため）。
 async fn read_close_frame_1001(stream: &mut TcpStream, bound: Duration) {
     let mut header = [0u8; 2];
     timeout(bound, stream.read_exact(&mut header))
@@ -173,8 +175,8 @@ async fn final_shutdown_cancels_delegated_websocket_session() {
     // よりも十分短い上限で観測できるはず。
     read_close_frame_1001(&mut ws_client, Duration::from_secs(5)).await;
     // クライアント側から即座に接続を閉じ、サーバ側のドレインを
-    // `CLOSE_GRACE` 全体を待たずに完了させる（run_until の早期復帰を
-    // 検証する本テストの主眼のため）。
+    // `WebSocketConfig::close_grace` 全体を待たずに完了させる（run_until の
+    // 早期復帰を検証する本テストの主眼のため）。
     drop(ws_client);
 
     // (b) `run_until` 自体も grace を待ち切らず速やかに戻る（既存の
@@ -262,13 +264,13 @@ async fn rebind_cancels_old_generation_websocket_session() {
 /// クライアントは Close フレーム（1001）を有界時間内に**読むが、応答も
 /// 切断もせず居座る**。この状態でも (a) `run_until` が permit 回収
 /// タイムアウトのフェイルセーフにより有界時間内に必ず `Ok(())` で復帰し、
-/// (b) サーバ側は `CLOSE_GRACE`（固定 10 秒、`crates/plugin-websocket/src/
-/// session.rs`）を上限にソケットを強制終端して EOF を観測させることを
-/// 確認する（設計 5.3 節「Close に応答しないクライアントも `CLOSE_GRACE`
+/// (b) サーバ側は `WebSocketConfig::close_grace`（既定 10 秒、イシュー
+/// #500 で設定可能化）を上限にソケットを強制終端して EOF を観測させることを
+/// 確認する（設計 5.3 節「Close に応答しないクライアントも `close_grace`
 /// で有界に終端する」、8 節「既知の限界」との対応）。
 ///
 /// grace（1 秒）に対して検証上限を大きく取り（(a) は 8 秒、(b) は
-/// `CLOSE_GRACE` 10 秒 + 余裕の 20 秒）、self-hosted runner の輻輳下でも
+/// `close_grace` 既定 10 秒 + 余裕の 20 秒）、self-hosted runner の輻輳下でも
 /// flaky にならないようにする。経過時間の下限は assert しない（輻輳下では
 /// 上振れうるため、有界性のみを検証する）。
 #[tokio::test(flavor = "multi_thread")]
@@ -313,18 +315,18 @@ async fn final_shutdown_returns_within_grace_even_if_ws_client_ignores_close() {
         .expect("run_until タスクが panic しないこと")
         .expect("run_until は Ok(()) を返すはず");
 
-    // (b) 居座りクライアントは `CLOSE_GRACE`（10 秒）を上限にサーバ側から
-    // 強制終端され EOF（read が 0 バイト）を観測する。「grace 超過後も
-    // 接続が生き続ける」旧制約（#492 実装前のハードクローズ経路に依存した
-    // 記述）が解消済みであることを end-to-end で確認する。
+    // (b) 居座りクライアントは `WebSocketConfig::close_grace`（既定 10 秒）
+    // を上限にサーバ側から強制終端され EOF（read が 0 バイト）を観測する。
+    // 「grace 超過後も接続が生き続ける」旧制約（#492 実装前のハードクローズ
+    // 経路に依存した記述）が解消済みであることを end-to-end で確認する。
     let mut trailing = [0u8; 1];
     let n = timeout(Duration::from_secs(20), ws_client.read(&mut trailing))
         .await
-        .expect("居座りクライアントも CLOSE_GRACE 有界で強制終端されるはず")
+        .expect("居座りクライアントも close_grace 有界で強制終端されるはず")
         .expect("強制終端は EOF（Ok(0)）として観測されるはず、エラーではない");
     assert_eq!(
         n, 0,
-        "CLOSE_GRACE 超過後はサーバ側から接続が閉じられ EOF になるはず"
+        "close_grace 超過後はサーバ側から接続が閉じられ EOF になるはず"
     );
 }
 

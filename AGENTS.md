@@ -437,11 +437,12 @@ Issue #175 対応。`crates/plugin-websocket` のセッション処理
 新規 variant を追加せず `Ok(())` を返す）。Close 応答を返さない（無視する）
 クライアントが「クローズ送出済みだが応答待ち」の状態で接続を無期限に保持し続ける
 経路を防ぐため、クライアントの Close 応答（または EOF）のドレインには固定の
-猶予（`session.rs` の `CLOSE_GRACE` 定数、10 秒）を設け、超過時も `Ok(())` で
+猶予（`WebSocketConfig::close_grace`、既定 10 秒・ビルダー
+`with_close_grace` で設定可能、イシュー #500）を設け、超過時も `Ok(())` で
 確実に接続を終端する（fail-closed）。
 
 ### 検証
 
 発火・非発火（通信継続で維持）・Ping のみでの維持・無効化・Close 無視クライアント
-への `CLOSE_GRACE` 適用は `crates/plugin-websocket/tests/idle_timeout.rs` の統合
+への `close_grace` 適用は `crates/plugin-websocket/tests/idle_timeout.rs` の統合
 テストで検証する。

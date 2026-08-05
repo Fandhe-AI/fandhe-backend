@@ -1288,10 +1288,12 @@ impl RebindHandle {
     /// GenerationCancel::fire`）を発火し、WS 委譲タスクへ明示的な
     /// キャンセルシグナルを伝播する経路を追加した。#492 で
     /// `fandhe_backend_plugin_websocket::handle_upgrade` が正常な Close
-    /// ハンドシェイク（close code 1001 Going Away を送出し、`CLOSE_GRACE`
-    /// 上限でクライアント応答を待つ）を実装済みで、キャンセル発火後は
+    /// ハンドシェイク（close code 1001 Going Away を送出し、
+    /// `WebSocketConfig::close_grace`（既定 10 秒）上限でクライアント応答を
+    /// 待つ）を実装済みで、キャンセル発火後は
     /// ハードクローズではなくこの正常終端シーケンスを経由する。Close に
-    /// 応答しないクライアントは `CLOSE_GRACE` 有界で終端し、detached
+    /// 応答しないクライアントは `WebSocketConfig::close_grace`（既定 10 秒）
+    /// 有界で終端し、detached
     /// タスクとして残ることがあるが `run_until`／`rebind` 自体の復帰には
     /// 影響しない（`crate::plugin::try_handle_upgrade` の doc「世代
     /// キャンセルシグナル」・統合テスト `crates/core/tests/
@@ -1685,10 +1687,12 @@ impl BoundServer {
     /// GenerationCancel::fire`）を発火し、委譲済みの WS 専用タスクへ
     /// 明示的なキャンセルシグナルを伝播する経路を追加した。#492 で
     /// `fandhe_backend_plugin_websocket::handle_upgrade` が正常な Close
-    /// ハンドシェイク（close code 1001 Going Away を送出し、`CLOSE_GRACE`
-    /// 上限でクライアント応答を待つ）を実装済みで、キャンセル発火後は
+    /// ハンドシェイク（close code 1001 Going Away を送出し、
+    /// `WebSocketConfig::close_grace`（既定 10 秒）上限でクライアント応答を
+    /// 待つ）を実装済みで、キャンセル発火後は
     /// ハードクローズではなくこの正常終端シーケンスを経由する。Close に
-    /// 応答しないクライアントは `CLOSE_GRACE` 有界で終端し、detached
+    /// 応答しないクライアントは `WebSocketConfig::close_grace`（既定 10 秒）
+    /// 有界で終端し、detached
     /// タスクとして残ることがあるが `run_until` 自体の「grace + ε 以内に
     /// 必ず戻る」フェイルセーフ（上記 permit 回収タイムアウト）には影響
     /// しない（`crate::plugin::try_handle_upgrade` の doc「世代キャンセル
