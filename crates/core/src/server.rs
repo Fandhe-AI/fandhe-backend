@@ -91,7 +91,7 @@ use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::JoinSet;
 
 use fandhe_backend_http::body::BodyError;
@@ -1100,6 +1100,8 @@ impl Server {
             connection_limit,
             permit_total,
             shutdown_flag: Arc::new(AtomicBool::new(false)),
+            rebind_tx: None,
+            rebind_rx: None,
         })
     }
 }
@@ -1193,42 +1195,231 @@ pub struct BoundServer {
     /// フラグ（イシュー #313）。[`BoundServer::run_until`] がシャットダウン
     /// 検知時に `true` を立て、[`handle_connection_with_permit`] の
     /// keep-alive 判定に反映される（処理中のリクエストは完走させつつ、
-    /// 以降は `Connection: close` を付けて早期に接続を閉じる）。
+    /// 以降は `Connection: close` を付けて早期に接続を閉じる）。`rebind()`
+    /// による listener 差し替え（イシュー #485）でも、差し替え直前の
+    /// 「旧世代」の接続にだけ同じ役割のフラグを立てる（本フィールドは
+    /// 常に「現行世代」を指す。世代交代の詳細は `RebindHandle::rebind` の
+    /// doc・`docs/design/rebind.md` を参照）。
     shutdown_flag: Arc<AtomicBool>,
+    /// [`BoundServer::rebind_handle`] が初回呼び出し時に生成する `mpsc`
+    /// チャネルの送信側（イシュー #485）。2 回目以降の `rebind_handle` 呼び出しは
+    /// これを `clone` して返すだけで、チャネル自体は再生成しない。
+    /// `rebind_handle` を一度も呼ばなければ `None` のままであり、チャネルも
+    /// 生成されない（pay-for-what-you-use。呼ばない利用者には mpsc の
+    /// ランタイムコストを一切払わせない）。
+    rebind_tx: Option<mpsc::Sender<RebindCommand>>,
+    /// `rebind_tx` と対になる受信側。[`BoundServer::run_until`] が `self` から
+    /// 取り出し、accept ループ内で shutdown・rebind コマンド・accept の
+    /// 3-way race に使う。`rebind_handle` が一度も呼ばれなければ `None` のまま
+    /// （その場合 `run_until` は rebind コマンドを一切ポーリングしない）。
+    rebind_rx: Option<mpsc::Receiver<RebindCommand>>,
 }
 
-/// [`BoundServer::run_until`] が shutdown Future と accept Future を競合
-/// させた結果（本モジュール内の非公開ヘルパー、tokio `macros` feature
-/// （`select!` が要求する）を追加しないための選択。`std::future::poll_fn` +
-/// `std::pin::pin!` で同等のことを最小依存で実現する）。
+/// [`RebindHandle::rebind`] が [`BoundServer::run_until`] の accept ループへ
+/// 送る、listener 差し替え 1 回分の指示（イシュー #485、非公開）。
+///
+/// `listener` は `RebindHandle::rebind` が呼び出し元で bind 済みの新規
+/// `TcpListener`（bind 失敗時はそもそもこの構造体が作られない、fail-closed）。
+/// `reply` は `run_until` 側が実際に listener を差し替えた直後に `()` を
+/// 送って完了を通知するための oneshot。`RebindHandle::rebind` はこれの
+/// 受信をもって「新アドレスへの差し替えが完了した」とみなし `local_addr` を
+/// 返す。
+struct RebindCommand {
+    listener: TcpListener,
+    reply: oneshot::Sender<()>,
+}
+
+/// 稼働中の [`BoundServer::run_until`] へ、リスニングアドレスの差し替えを
+/// 指示するためのハンドル（イシュー #485）。[`BoundServer::rebind_handle`]
+/// から得る。
+///
+/// `Clone` 可能で複数タスク・複数回の呼び出しに使い回せる。内部は
+/// `run_until` の accept ループへコマンドを送る `mpsc::Sender` のみを保持する
+/// 薄いラッパー。
+///
+/// # セキュリティ
+///
+/// [`RebindHandle::rebind`] に渡すアドレスへ、HTTP リクエスト由来の値
+/// （クエリパラメータ・ヘッダ等の外部入力）を直接渡さないこと。信頼できない
+/// 値を bind 先に使うと、意図しないインターフェースへの待受につながる
+/// （`.claude/rules/security.md` の入力検証観点）。運用者が制御する設定値・
+/// 環境変数からのみ呼び出すこと。
+#[derive(Clone)]
+pub struct RebindHandle {
+    tx: mpsc::Sender<RebindCommand>,
+}
+
+impl RebindHandle {
+    /// `addr` へ新規 `TcpListener` を bind し、成功したら稼働中の
+    /// [`BoundServer::run_until`] accept ループへ listener の差し替えを
+    /// 依頼する。差し替えが完了したら実際にバインドされたアドレスを返す。
+    ///
+    /// # fail-closed（bind 失敗時は旧 listener・in-flight に無影響）
+    ///
+    /// bind 自体はこのメソッド内で完結する。アドレス使用中等で bind に
+    /// 失敗した場合は `Err` を返すのみで、`run_until` へは何も送信しない
+    /// ため、旧 listener・処理中の接続には一切影響しない。
+    ///
+    /// # 差し替え後の挙動（世代別 drain）
+    ///
+    /// 差し替え成功後は新規接続のみ新アドレスで受理され、旧アドレスの
+    /// listener は即座に閉じられる（以降の新規接続は OS レベルで拒否）。
+    /// 旧アドレス経由で確立済みの in-flight 接続（「旧世代」）は
+    /// [`Server::shutdown_grace_period`] を上限に完走を待ち、超過分は
+    /// 強制クローズする。これは [`BoundServer::run_until`] の graceful
+    /// shutdown（イシュー #313）と同じ仕組みを世代ごとに独立して適用した
+    /// もので、drain 待ちは `run_until` 自体をブロックしない（背景タスクで
+    /// 実行、新世代の accept ループは並行して動き続ける）。詳細な設計判断は
+    /// `docs/design/rebind.md` を参照。
+    ///
+    /// # 既知の限界（WebSocket 委譲セッションは drain 対象外）
+    ///
+    /// 上記の世代別 drain が対象とするのは `run_until` が管理する
+    /// コネクションタスク一式のみである。`UpgradeHandler` の委譲が成立し
+    /// `handle_connection_with_permit` から WebSocket 専用タスクへ permit
+    /// ごと `move` された接続は、この管理対象の外にあるため、grace 超過時の
+    /// 強制クローズには含まれない。permit は世代を跨いで共有する
+    /// `connection_limit` セマフォ経由のため、`run_until` 自体の最終
+    /// graceful shutdown・以降の drain 待ちには（grace 超過後の打ち切りを
+    /// 含め）反映されるが、WS セッションそのものへ明示的なキャンセルは
+    /// 伝播しない。これは [`BoundServer::run_until`] の doc「既知の限界」節
+    /// （イシュー #313 由来）と同一の制約であり、`rebind` はこれを新たに
+    /// 悪化させるものではない（`docs/design/rebind.md` 5.4・6 節を参照）。
+    ///
+    /// # キャンセル安全性・並行呼び出し
+    ///
+    /// - **呼び出し元タスクのキャンセル**: `tx.send` が成功したあと
+    ///   `reply_rx.await` の完了前に、この `rebind` を呼んでいる Future
+    ///   自体が外部キャンセルされた場合（例: 呼び出し元が `tokio::select!`
+    ///   や `timeout` で打ち切られた場合）、`run_until` 側は既に受理した
+    ///   コマンドの処理を独立に進めるため listener の差し替えは実行され
+    ///   うる。しかしキャンセルされた呼び出し元は差し替え後のアドレスを
+    ///   受け取れない（`Ok(new_addr)` の返却前に Future が破棄されるため）。
+    ///   差し替え自体の成否を確実に知りたい場合は、キャンセルせず
+    ///   `rebind` の完了を待つこと。待てない事情がある場合は、意図した
+    ///   アドレスへ改めて `rebind` を呼び出して結果を確認するか、新
+    ///   アドレスへの実際の疎通確認（TCP 接続確立の成否）を運用側で行うこと。
+    ///   `BoundServer` は `run_until(self, ...)` へ move されるため、
+    ///   `rebind` 呼び出し元から `BoundServer::local_addr()` を参照すること
+    ///   はできない
+    /// - **複数ハンドル・複数タスクからの並行呼び出し**: `RebindHandle` は
+    ///   `Clone` 可能で、複製したハンドルや別タスクから同時に `rebind` を
+    ///   呼び出せる。内部の `mpsc::channel` は容量 1（3.2 節）で直列化
+    ///   されるため各コマンドは 1 つずつ処理されるが、処理順序は呼び出し順
+    ///   （`send` の到着順）に一致する保証のみで、「先に呼び出しを開始した
+    ///   側が先に有効になる」とは限らない。後から処理されたコマンドが
+    ///   最終的に有効な listener になり、先行して呼び出した側も
+    ///   `reply_rx` の完了をもって `Ok` を返すため、複数の並行呼び出しが
+    ///   すべて成功しつつ、実際に有効なアドレスは最後に処理されたものだけ
+    ///   という状態になりうる。同一プロセス内から並行に複数の rebind を
+    ///   発行する運用は避け、単一の呼び出し元（デプロイスクリプト等）から
+    ///   逐次呼び出すこと
+    ///
+    /// # エラー
+    ///
+    /// - `addr` への bind に失敗した場合
+    /// - `run_until` が既に終了している（一度も呼ばれていない、または
+    ///   shutdown 済み）場合
+    /// - `run_until` が shutdown を受理した直後（grace drain 開始前）に
+    ///   `rebind_rx` を閉じる（イシュー #485）ため、shutdown 確定以降に
+    ///   呼び出した・呼び出し中だった `rebind` は grace 期間の終了を待たず
+    ///   速やかに `Err` を返す。bind 済みの新 `TcpListener` も同様に速やかに
+    ///   drop されポートを保持し続けない
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> std::io::Result<()> {
+    /// use fandhe_backend_core::Server;
+    ///
+    /// let mut bound = Server::new().bind("127.0.0.1:0").await?;
+    /// let rebind = bound.rebind_handle();
+    /// tokio::spawn(async move { bound.run().await });
+    ///
+    /// let new_addr = rebind.rebind("127.0.0.1:0").await?;
+    /// let _ = new_addr;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn rebind(&self, addr: impl ToSocketAddrs) -> io::Result<SocketAddr> {
+        let listener = TcpListener::bind(addr).await?;
+        let local_addr = listener.local_addr()?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(RebindCommand {
+                listener,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| {
+                io::Error::other("rebind: BoundServer::run_until はすでに終了しています")
+            })?;
+        reply_rx.await.map_err(|_| {
+            io::Error::other("rebind: BoundServer::run_until が差し替え完了前に終了しました")
+        })?;
+        Ok(local_addr)
+    }
+}
+
+/// [`BoundServer::run_until`] が shutdown Future・rebind コマンド・accept
+/// Future を競合させた結果（本モジュール内の非公開ヘルパー、tokio `macros`
+/// feature（`select!` が要求する）を追加しないための選択。
+/// `std::future::poll_fn` + `std::pin::pin!` で同等のことを最小依存で実現する）。
 enum Raced<T> {
     /// shutdown Future が先に完了した。
     Shutdown,
-    /// accept 側の Future が（shutdown より先に、または shutdown なしで）完了した。
+    /// [`RebindHandle::rebind`]（イシュー #485）からの listener 差し替え
+    /// 指示を受信した。
+    Rebind(RebindCommand),
+    /// accept 側の Future が（shutdown・rebind より先に、またはどちらも
+    /// なしで）完了した。
     Completed(T),
 }
 
 /// `shutdown`（1 度だけ pin して以後のループ反復をまたいで poll し続ける
-/// 必要がある。呼び出し側が `Pin<&mut S>` を渡す契約）と `accept`
+/// 必要がある。呼び出し側が `Pin<&mut S>` を渡す契約）・`rebind_rx`
+/// （[`BoundServer::rebind_handle`] が一度も呼ばれていなければ `None`。
+/// `None` の間は常に pending 扱いでポーリングしない）・`accept`
 /// （反復ごとに新規生成される Future）を競合させる。
 ///
 /// `tokio::select!` は `macros` feature（proc-macro 系推移依存）を要求する
 /// ため使わない（`crates/core/Cargo.toml` の tokio feature コメント・
 /// `.claude/rules/pay-for-what-you-use.md` を参照）。`accept` は cancel-safe
-/// （`shutdown` が先に完了して drop されても、取得済み permit が自動解放
-/// されるだけで接続を取りこぼさない。`BoundServer::run_until` の doc を参照）。
-async fn race_shutdown_or_accept<S, A>(mut shutdown: Pin<&mut S>, accept: A) -> Raced<A::Output>
+/// （`shutdown`・`rebind` のどちらかが先に完了して drop されても、取得済み
+/// permit が自動解放されるだけで接続を取りこぼさない。`BoundServer::run_until`
+/// の doc を参照）。
+///
+/// ポーリング優先順位は shutdown > rebind > accept の固定順（イシュー #485）。
+/// shutdown を最優先するのは既存の graceful shutdown（イシュー #313）と
+/// 同じ理由（shutdown 直後の新規受理・差し替えを避ける）。rebind を accept
+/// より先にポーリングするのは、同一 poll で両方 Ready になりうる場合に
+/// 新規接続を「差し替え前の古い listener」で受理してしまう競合を避けるため。
+async fn race_shutdown_or_accept<S, A>(
+    mut shutdown: Pin<&mut S>,
+    mut rebind_rx: Option<&mut mpsc::Receiver<RebindCommand>>,
+    accept: A,
+) -> Raced<A::Output>
 where
     S: Future<Output = ()>,
     A: Future,
 {
     let mut accept = std::pin::pin!(accept);
     std::future::poll_fn(move |cx| {
-        // shutdown を先にポーリングする: shutdown・accept が同一 poll で
-        // 同時に Ready になりうる場合でも「shutdown 優先」を保証し、
-        // shutdown 直後に新規接続を受理してしまう競合を避ける。
+        // shutdown を最優先でポーリングする（既存 doc の理由をそのまま踏襲）。
         if shutdown.as_mut().poll(cx).is_ready() {
             return Poll::Ready(Raced::Shutdown);
+        }
+        // rebind コマンドは shutdown の次に優先してポーリングする。
+        // `rebind_rx` が `None`（`rebind_handle` 未呼び出し）の間はチャネル
+        // 自体が存在しないため常に pending 扱いになる。送信側が全て drop
+        // された場合（`RebindHandle` が全て破棄された場合）は
+        // `poll_recv` が `Poll::Ready(None)` を返しうるが、これは
+        // 「今後 rebind コマンドは来ない」ことを意味するだけで shutdown
+        // 相当ではないため無視し、以降は accept のみをポーリングし続ける。
+        if let Some(rx) = rebind_rx.as_mut()
+            && let Poll::Ready(Some(cmd)) = rx.poll_recv(cx)
+        {
+            return Poll::Ready(Raced::Rebind(cmd));
         }
         match accept.as_mut().poll(cx) {
             Poll::Ready(value) => Poll::Ready(Raced::Completed(value)),
@@ -1280,10 +1471,78 @@ impl Drop for CancelSafeJoinSet {
     }
 }
 
+/// `rebind()`（イシュー #485）で listener を差し替える際、差し替え直前
+/// までに accept 済みだった「旧世代」のコネクションタスク一式（`old_join_set`）
+/// を、`run_until` 自体をブロックせずに独立した背景タスクで drain する。
+///
+/// `run_until` の最終 graceful shutdown（イシュー #313）と同じ
+/// 「grace 期間内に全タスク完了を待ち、超過分は強制クローズ」の手順を
+/// 世代単位で適用する。`old_join_set` は `run_until` の accept ループから
+/// `std::mem::replace` で切り離された時点で新規タスクが追加されることはない
+/// （新規 accept は差し替え後の listener・新しい `JoinSet` へ積まれる）ため、
+/// 「完了済みタスクを尽くす」だけで安全に drain できる。
+///
+/// 生成する `tokio::spawn` タスクは detached（`JoinHandle` を保持しない）。
+/// これは許容される: 旧世代の各コネクションが握る permit は現行世代と
+/// 共有の `connection_limit` セマフォ由来であり（`Server::bind` の doc
+/// 「セマフォは世代を跨いで単一共有」を参照）、`run_until` 自体の最終
+/// shutdown が行う `acquire_many_owned(permit_total)` はこの背景タスクの
+/// 完了（または強制クローズ）を暗黙に待つことになる。
+fn spawn_generation_drain(mut old_join_set: CancelSafeJoinSet, grace: Duration) {
+    tokio::spawn(async move {
+        let drained = tokio::time::timeout(grace, async {
+            while old_join_set.join_next().await.is_some() {}
+        })
+        .await;
+        if drained.is_err() {
+            eprintln!(
+                "fandhe_backend_core::server: rebind による旧世代接続の drain が猶予期間（{grace:?}）を超過したため強制クローズします"
+            );
+            old_join_set.shutdown().await;
+        }
+    });
+}
+
 impl BoundServer {
     /// バインドしたローカルアドレスを返す。`0` ポート指定時の実ポート確認に使う。
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
+    }
+
+    /// 稼働中の [`BoundServer::run_until`] へ listener 差し替え（rebind、
+    /// イシュー #485）を指示するための [`RebindHandle`] を返す。
+    ///
+    /// `run_until`（または `run`）を呼ぶ**前**に呼び出す契約。初回呼び出しで
+    /// 容量 1 の `mpsc` チャネルを遅延生成し（本メソッドを一度も呼ばなければ
+    /// チャネルは作られない、pay-for-what-you-use）、2 回目以降は既存の
+    /// 送信側を `clone` して返すだけで済む（`RebindHandle` 自体も `Clone`
+    /// 可能なため、複数箇所へ配りたい場合は返り値を `clone` する方が簡潔）。
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> std::io::Result<()> {
+    /// use fandhe_backend_core::Server;
+    ///
+    /// let mut bound = Server::new().bind("127.0.0.1:0").await?;
+    /// let rebind = bound.rebind_handle();
+    /// tokio::spawn(async move { bound.run().await });
+    /// let _new_addr = rebind.rebind("127.0.0.1:0").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn rebind_handle(&mut self) -> RebindHandle {
+        if let Some(tx) = &self.rebind_tx {
+            return RebindHandle { tx: tx.clone() };
+        }
+        // 容量 1: `RebindHandle::rebind` は listener を bind 済みの状態で
+        // 1 コマンドを送るだけであり、`run_until` 側がそれを処理するまで
+        // 次のコマンドを受け付ける必要はない（DoS 耐性、コマンド滞留を
+        // 有界化する。`.claude/rules/security.md` のリソース枯渇対策）。
+        let (tx, rx) = mpsc::channel(1);
+        self.rebind_tx = Some(tx.clone());
+        self.rebind_rx = Some(rx);
+        RebindHandle { tx }
     }
 
     /// accept ループを回し、コネクションごとに [`handle_connection`] を spawn する。
@@ -1363,6 +1622,32 @@ impl BoundServer {
     /// comment 3615287445、"Cancel aborts in-flight connections" の是正。
     /// 従来の detached `tokio::spawn` 時代の挙動を維持）。
     ///
+    /// # 稼働中の再バインド（`rebind`、イシュー #485）
+    ///
+    /// [`BoundServer::rebind_handle`] を `run_until` 呼び出し前に取得して
+    /// おくと、accept ループを止めずに listening アドレスを差し替えられる。
+    /// accept ループは shutdown・rebind コマンド・accept の 3-way race
+    /// （優先順位は shutdown > rebind > accept）で回っており、rebind
+    /// コマンドを受理すると次の手順を踏む:
+    ///
+    /// 1. その時点までの「旧世代」向け `shutdown_flag` を `true` にする
+    ///    （旧世代の keep-alive 接続は `Connection: close` で早期に閉じる。
+    ///    通常の graceful shutdown と同じ機構）
+    /// 2. listener を新しい `TcpListener`（[`RebindHandle::rebind`] が
+    ///    bind 済み）へ差し替える。以降の accept は新アドレスに対してのみ
+    ///    行われる
+    /// 3. 旧世代のコネクションタスク一式を現行の `JoinSet` から切り離し、
+    ///    独立した背景タスクで `Server::shutdown_grace_period` を上限に
+    ///    drain する（超過分は強制クローズ）。この drain は `run_until`
+    ///    自体をブロックせず、新世代の accept ループと並行して進む
+    /// 4. 新世代用の `shutdown_flag` を用意し、以降 accept する接続はこちらを使う
+    ///
+    /// `RebindHandle::rebind` は差し替え完了（上記 2 の直後）を待って
+    /// `Ok(new_addr)` を返す。新アドレスへの bind 自体が失敗した場合は
+    /// `run_until` の状態に一切影響しない（fail-closed、
+    /// `RebindHandle::rebind` の doc を参照）。設計判断の詳細は
+    /// `docs/design/rebind.md` を参照。
+    ///
     /// # 既知の限界
     ///
     /// 上記の 503 拒否は shutdown_flag 受信「後」に到着した Upgrade
@@ -1379,11 +1664,15 @@ impl BoundServer {
         F: Future<Output = ()>,
     {
         let BoundServer {
-            listener,
+            mut listener,
             server,
             connection_limit,
             permit_total,
             shutdown_flag,
+            // `rebind_tx`（送信側）は使わない: 送信側は `RebindHandle` 経由で
+            // 呼び出し元が保持しており、`run_until` 側は受信側だけを消費する。
+            rebind_tx: _,
+            mut rebind_rx,
         } = self;
 
         let mut shutdown = std::pin::pin!(shutdown);
@@ -1392,6 +1681,10 @@ impl BoundServer {
         // （`CancelSafeJoinSet` の doc・Bugbot 指摘 review comment
         // 3615287445 を参照）。
         let mut join_set = CancelSafeJoinSet(JoinSet::new());
+        // 「現行世代」の shutdown フラグ。`rebind()`（イシュー #485）で
+        // listener を差し替えるたびに、旧フラグを `true` にして新フラグへ
+        // 差し替える（`race_shutdown_or_accept` の `Raced::Rebind` 分岐を参照）。
+        let mut current_shutdown_flag = shutdown_flag;
 
         loop {
             // 完了済みタスクを反復のたびに全件回収する（1 件だけ回収すると
@@ -1401,9 +1694,10 @@ impl BoundServer {
 
             // セマフォが閉じられることはない（`close()` を呼ぶ経路がない）ため
             // `acquire_owned` は必ず成功する。accept 側の Future は
-            // 「permit 取得 → accept」を 1 つの Future にまとめる。shutdown が
-            // 先に完了してこの Future が drop されても、取得済み permit は
-            // 自動解放されるだけで接続を取りこぼさない（cancel-safe）。
+            // 「permit 取得 → accept」を 1 つの Future にまとめる。shutdown・
+            // rebind のどちらかが先に完了してこの Future が drop されても、
+            // 取得済み permit は自動解放されるだけで接続を取りこぼさない
+            // （cancel-safe）。
             let connection_limit_for_accept = Arc::clone(&connection_limit);
             let accept_fut = async {
                 let permit = connection_limit_for_accept
@@ -1426,12 +1720,51 @@ impl BoundServer {
                 }
             };
 
-            match race_shutdown_or_accept(shutdown.as_mut(), accept_fut).await {
-                Raced::Shutdown => break,
+            match race_shutdown_or_accept(shutdown.as_mut(), rebind_rx.as_mut(), accept_fut).await {
+                Raced::Shutdown => {
+                    // shutdown 確定時点で rebind チャネルを即座に閉じる
+                    // （grace drain 開始前。Bugbot 指摘対応、イシュー #485）。
+                    // 閉じずに握ったままだと、以降の `RebindHandle::rebind` 呼び出しが
+                    // `send`/`reply_rx` で最大 `shutdown_grace_period` までブロックし、
+                    // 呼び出し側が bind 済みの新 `TcpListener` もチャネルバッファに
+                    // 滞留したままポートを保持し続けてしまう。ここで
+                    // `rebind_rx` を drop してチャネルを閉じることで、(a) 以後の
+                    // `rebind()` の `send` は即座に失敗し fail-fast で `Err` を返す
+                    // （既存の「run_until 終了済み」契約に合流）、(b) 送信済みで
+                    // reply 待ちのコマンドも `reply_rx` が即クローズされてブロック
+                    // が解消し、コマンドが保持する新 listener も直ちに drop されて
+                    // ポートが解放される。
+                    drop(rebind_rx.take());
+                    break;
+                }
+                Raced::Rebind(RebindCommand {
+                    listener: new_listener,
+                    reply,
+                }) => {
+                    // 世代別 drain（`run_until` の doc「稼働中の再バインド」・
+                    // `docs/design/rebind.md` を参照）。
+                    // 1. 旧世代フラグを立て、keep-alive 接続を早期クローズ側へ倒す。
+                    current_shutdown_flag.store(true, Ordering::Relaxed);
+                    // 2. listener を差し替える。以降の accept は新アドレスのみ。
+                    listener = new_listener;
+                    // 3. 旧世代の JoinSet を切り離し、grace 付きで背景 drain する
+                    // （`run_until` 自体はブロックしない）。
+                    let old_join_set =
+                        std::mem::replace(&mut join_set, CancelSafeJoinSet(JoinSet::new()));
+                    spawn_generation_drain(old_join_set, server.shutdown_grace_period);
+                    // 4. 新世代用のフラグを用意する。
+                    current_shutdown_flag = Arc::new(AtomicBool::new(false));
+                    // 差し替え完了を通知する。呼び出し側（`RebindHandle::rebind`）が
+                    // 既に `reply_rx` を drop していても（呼び出し元タスクが
+                    // キャンセルされた等）送信失敗は無視してよい
+                    // （通知を受け取る相手がいないだけで、差し替え自体は完了済み）。
+                    let _ = reply.send(());
+                    continue;
+                }
                 Raced::Completed(None) => continue,
                 Raced::Completed(Some((stream, peer_addr, permit))) => {
                     let server = Arc::clone(&server);
-                    let shutdown_flag = Arc::clone(&shutdown_flag);
+                    let shutdown_flag = Arc::clone(&current_shutdown_flag);
                     join_set.spawn(async move {
                         // permit は WebSocket 委譲時に `handle_connection_with_permit`
                         // 内部で専用タスクへ move されうる（TASK-4.2 / #23、
@@ -1453,7 +1786,9 @@ impl BoundServer {
 
         // 1. accept 停止: 以降の keep-alive 判定を早期クローズ側へ倒し、
         // リスニングソケットを閉じて新規接続を OS レベルで拒否する。
-        shutdown_flag.store(true, Ordering::Relaxed);
+        // `current_shutdown_flag` は「現行世代」（rebind 済みなら差し替え後の
+        // もの）を指す。旧世代のフラグは rebind の時点で既に `true` 済み。
+        current_shutdown_flag.store(true, Ordering::Relaxed);
         drop(listener);
 
         // 2. in-flight 完了待ち（grace 上限）。

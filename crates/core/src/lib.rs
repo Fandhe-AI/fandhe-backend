@@ -159,8 +159,10 @@ pub use interceptor::Interceptor;
 // コアループの主要 API もクレート直下から参照できるよう re-export する。
 // `handle_connection_with_peer_addr` は `RequestGate::check` へ実 peer address
 // を伝搬させたいカスタム accept ループ向けの公開 API（イシュー #486）。
+// `RebindHandle`（イシュー #485）は稼働中の `BoundServer::run_until` へ
+// listener 差し替えを指示するハンドル（`BoundServer::rebind_handle` で取得）。
 pub use server::{
-    BoundServer, Handler, Server, handle_connection, handle_connection_with_peer_addr,
+    BoundServer, Handler, RebindHandle, Server, handle_connection, handle_connection_with_peer_addr,
 };
 
 // レスポンス側 chunked ストリーミング送信（イシュー #319）の opt-in API。
