@@ -38,8 +38,9 @@
      されない」挙動になります）。キャンセル発火時は、ハンドシェイク開始前
      なら 101 応答を送出せず終了、セッション確立後なら正常な Close
      ハンドシェイク（close code 1001 Going Away・固定 reason）を送出し、
-     応答（または EOF）を最大 10 秒（内部定数 `CLOSE_GRACE`）待ってから
-     終了します。
+     応答（または EOF）を最大 `WebSocketConfig::close_grace`（既定 10 秒、
+     イシュー [#500](https://github.com/Fandhe-AI/fandhe-backend/issues/500)
+     でビルダー設定可能化）待ってから終了します。
 
 ### Changed
 
@@ -61,6 +62,14 @@
 
 ### Added
 
+- `fandhe-backend-plugin-websocket`: `WebSocketConfig::with_close_grace` を
+  追加し、キャンセル発火時・アイドルタイムアウト発火時の両経路が共有する
+  Close handshake ドレイン猶予（既定 10 秒）を利用者が設定可能にしました
+  （イシュー [#500](https://github.com/Fandhe-AI/fandhe-backend/issues/500)）。
+  `Duration::ZERO`（即終端）・既定より大きい値も受け付けます（クランプなし。
+  DoS 観点の考慮は `WebSocketConfig::close_grace` の doc を参照）。無効化
+  （無期限待ち）を許す `Option<Duration>` にはせず、常に有界な `Duration`
+  として設計しています（フェイルクローズ）
 - `fandhe-backend-core`: 稼働中の `BoundServer` へ listener 差し替え（rebind）を
   指示できる `BoundServer::rebind_handle` / `RebindHandle::rebind` を追加
   （イシュー [#485](https://github.com/Fandhe-AI/fandhe-backend/issues/485)）。

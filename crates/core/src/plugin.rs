@@ -423,14 +423,15 @@ fn from_plugin_response(response: fandhe_backend_plugin_webrtc_proxy::Response) 
 /// `fandhe_backend_plugin_websocket::handle_upgrade` の第 5 引数として
 /// そのまま渡す（設計 3.2 節 (i)「委譲境界はキャンセル `Future` として渡す」）。
 /// 発火時の切断シーケンス（ハンドシェイク前なら 101 を送出せず終了、
-/// セッション確立後なら Close frame 送信 → `CLOSE_GRACE` 上限で応答待ち）は
+/// セッション確立後なら Close frame 送信 → `WebSocketConfig::close_grace`
+/// （既定 10 秒）上限で応答待ち）は
 /// `handle_upgrade`（`crates/plugin-websocket/src/lib.rs`・`session.rs`）が
 /// 担う。コア側はキャンセル `Future` の生成・受け渡しのみに責務を限定し、
 /// 手動 race（`std::future::poll_fn` 等）は行わない（イシュー #491 時点の
 /// 中間実装が担っていたハードクローズ・TOCTOU 回避のための優先ポーリングは
 /// `handle_upgrade` 側の `race_cancel`/`already_cancelled` チェックへ移った）。
 /// permit はタスク完了（= `handle_upgrade` の戻り）まで保持され、Close
-/// ハンドシェイク完了（`CLOSE_GRACE` 上限）で解放される。上記「permit の
+/// ハンドシェイク完了（`WebSocketConfig::close_grace` 上限）で解放される。上記「permit の
 /// 契約」を破らない。
 pub(crate) async fn try_handle_upgrade<S>(
     stream: S,

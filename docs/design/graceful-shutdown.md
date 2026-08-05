@@ -174,9 +174,10 @@ force-close を過ぎても動き続けうる（Bugbot 指摘、review comment
   Close ハンドシェイク実装）で実装済みの世代キャンセル伝播機構により、
   shutdown_flag セット直後に既存の委譲済みセッションへも明示的な
   キャンセルシグナルが伝わり、正常な Close ハンドシェイク（close code
-  1001 Going Away → `CLOSE_GRACE`（固定 10 秒）上限で応答待ち）で終端
-  する。残る限界は、Close に応答しないクライアントは `run_until` 復帰後
-  も最大 `CLOSE_GRACE` まで detached タスクとして生存しうる点のみで、
+  1001 Going Away → `WebSocketConfig::close_grace`（既定 10 秒、イシュー
+  #500 で設定可能化）上限で応答待ち）で終端する。残る限界は、Close に
+  応答しないクライアントは `run_until` 復帰後も最大 `close_grace` まで
+  detached タスクとして生存しうる点のみで、
   `run_until` 自体の「grace + ε 以内に必ず戻る」フェイルセーフ（permit
   回収タイムアウト）は不変（`BoundServer::run_until` の doc「既知の限界」
   を参照）。両経路（最終 shutdown・rebind 世代 drain）の end-to-end 検証は

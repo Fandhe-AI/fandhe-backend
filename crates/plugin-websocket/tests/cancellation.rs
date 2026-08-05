@@ -9,8 +9,8 @@
 //! 1. ハンドシェイク前に cancel 済み → 101 を送出せず即座に `Ok(())` 終了
 //! 2. セッション確立後に発火 → Close frame（1001 Going Away）を受信し、
 //!    クライアントが Close 応答を返せばサーバタスクが有界時間内に終了
-//! 3. Close 応答を無視するクライアント → `CLOSE_GRACE` 以内にサーバタスクが
-//!    終了する（フェイルクローズ）
+//! 3. Close 応答を無視するクライアント → `WebSocketConfig::close_grace`
+//!    （既定 10 秒）以内にサーバタスクが終了する（フェイルクローズ）
 //! 4. cancel が pending のまま通常の echo セッションが動作する（回帰ガード）
 //! 5. （イシュー #499）ユーザーハンドラ実行中に発火 → ハンドラの `Future` が
 //!    即座に drop され、Close frame（1001 Going Away）が有界時間内に届く
@@ -20,11 +20,14 @@
 //!    発火 → 送出を打ち切り、後続の Close フレームが有効なバイト列として
 //!    届く（ワイヤ安全性）
 //! 8. （イシュー #499）7 と同様に送出停滞させたままクライアントが応答しない
-//!    場合も `CLOSE_GRACE` 以内にサーバタスクが終了する（フェイルクローズ）
+//!    場合も `WebSocketConfig::close_grace` 以内にサーバタスクが終了する
+//!    （フェイルクローズ）
 //! 9. （PR #504 レビュー指摘）`WsOutcome::Close` 送出中（`ws.close(None)`）に
 //!    発火した場合、`handle_cancellation` が呼ぶ 2 回目の `ws.close` が
 //!    `SendAfterClosing` で拒否されてもセッションが `Err` で終わらず正常
 //!    終了すること（二重 close の回帰ガード）
+//! 10. （イシュー #500）`with_close_grace` で設定した猶予が実際に適用される
+//!     こと（短縮した猶予・`Duration::ZERO` の両方を検証）
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -169,7 +172,7 @@ async fn cancellation_after_handshake_sends_close_frame_1001() {
 }
 
 /// 受け入れ条件(3): キャンセル発火後、クライアントが Close 応答を返さなくて
-/// も、サーバタスクが `CLOSE_GRACE`（実装内部定数・非公開、10 秒）以内に
+/// も、サーバタスクが `WebSocketConfig::close_grace`（既定 10 秒）以内に
 /// 終了すること（フェイルクローズ。`idle_timeout.rs` の
 /// `server_terminates_even_if_client_ignores_close` と同一パターン）。
 #[tokio::test]
@@ -196,17 +199,97 @@ async fn cancellation_terminates_even_if_client_ignores_close() {
     cancel_tx.send(()).unwrap();
 
     // クライアントは Close フレームを受信しても応答せず、接続を保持したまま
-    // 放置する（drop すると duplex が EOF を返し `CLOSE_GRACE` を検証
+    // 放置する（drop すると duplex が EOF を返し close_grace の効果を検証
     // できなくなるため、明示的に forget する）。
     std::mem::forget(client_side);
 
     let result = tokio::time::timeout(Duration::from_secs(15), server_task)
         .await
-        .expect("server task must not hang beyond CLOSE_GRACE")
+        .expect("server task must not hang beyond close_grace")
         .unwrap();
     assert!(
         result.is_ok(),
-        "server must terminate within CLOSE_GRACE even if client ignores close: {result:?}"
+        "server must terminate within close_grace even if client ignores close: {result:?}"
+    );
+}
+
+/// 受け入れ条件(5)（イシュー #500）: `WebSocketConfig::with_close_grace` で
+/// 既定（10 秒）より大幅に短い猶予を設定した場合、その値が実際に
+/// `close_and_drain` へ反映されること。Close 応答を無視するクライアントに
+/// 対しても、既定 10 秒よりずっと短い外側タイムアウト（5 秒）以内にサーバ
+/// タスクが終了することで、設定値が有効化されていることを証明する
+/// （既定のまま反映されていなければ 5 秒では終了しない）。
+#[tokio::test]
+async fn configured_close_grace_is_applied_on_cancellation() {
+    let head = match parse_request_head(handshake_request_bytes()).unwrap() {
+        ParseOutcome::Complete { head, .. } => head,
+        ParseOutcome::Incomplete => unreachable!(),
+    };
+    let config = WebSocketConfig::default().with_close_grace(Duration::from_millis(200));
+
+    let (server_side, mut client_side) = tokio::io::duplex(64 * 1024);
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let server_task = tokio::spawn(async move {
+        handle_upgrade(server_side, &head, Vec::new(), &config, async move {
+            let _ = cancel_rx.await;
+        })
+        .await
+    });
+
+    let response = read_http_response_line(&mut client_side).await;
+    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+
+    cancel_tx.send(()).unwrap();
+
+    // Close 応答を返さず接続を保持したまま放置する（上記(3)と同じ理由）。
+    std::mem::forget(client_side);
+
+    let result = tokio::time::timeout(Duration::from_secs(5), server_task)
+        .await
+        .expect("configured close_grace (200ms) must terminate well within the default 10s window")
+        .unwrap();
+    assert!(
+        result.is_ok(),
+        "server must terminate within the configured close_grace: {result:?}"
+    );
+}
+
+/// 受け入れ条件(5)（イシュー #500・0 の扱い）: `close_grace` に
+/// `Duration::ZERO` を設定すると、Close 送出後のドレインを即座に打ち切って
+/// 終端すること（doc に明記した「0 は安全側の即終端」という契約の実挙動
+/// 保証）。
+#[tokio::test]
+async fn zero_close_grace_terminates_immediately() {
+    let head = match parse_request_head(handshake_request_bytes()).unwrap() {
+        ParseOutcome::Complete { head, .. } => head,
+        ParseOutcome::Incomplete => unreachable!(),
+    };
+    let config = WebSocketConfig::default().with_close_grace(Duration::ZERO);
+
+    let (server_side, mut client_side) = tokio::io::duplex(64 * 1024);
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let server_task = tokio::spawn(async move {
+        handle_upgrade(server_side, &head, Vec::new(), &config, async move {
+            let _ = cancel_rx.await;
+        })
+        .await
+    });
+
+    let response = read_http_response_line(&mut client_side).await;
+    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+
+    cancel_tx.send(()).unwrap();
+    std::mem::forget(client_side);
+
+    let result = tokio::time::timeout(Duration::from_secs(2), server_task)
+        .await
+        .expect("close_grace = Duration::ZERO must terminate immediately")
+        .unwrap();
+    assert!(
+        result.is_ok(),
+        "server must terminate immediately with close_grace = Duration::ZERO: {result:?}"
     );
 }
 

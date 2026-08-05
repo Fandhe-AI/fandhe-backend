@@ -20,6 +20,17 @@ use crate::handler::{WsMessageHandler, default_handler};
 /// `.claude/rules/security.md`。Issue #175）。
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Close handshake ドレイン猶予の既定値（10 秒）。
+///
+/// アイドルタイムアウト切断（Issue #175）・コアからのキャンセル切断
+/// （イシュー #492）の両経路が共有する `crate::session::close_and_drain` の
+/// 上限。Close フレーム送出からクライアント応答（または EOF）待ちまでの
+/// 全体をこの値で有界化し、Close 応答を返さないクライアントが接続を
+/// 無期限保持する二次的な DoS の抜け道を塞ぐ（`.claude/rules/security.md`）。
+/// イシュー #500 でこの値を利用者が調整できるビルダー
+/// （[`WebSocketConfig::with_close_grace`]）へ切り出した。
+const DEFAULT_CLOSE_GRACE: Duration = Duration::from_secs(10);
+
 /// WebSocket アップグレードを受け付けるパス・DoS 安全側のフレーム制限。
 ///
 /// `Default` はアップグレード対象パスを `/ws` とし、`max_message_size` /
@@ -54,6 +65,28 @@ pub struct WebSocketConfig {
     /// する（[`without_idle_timeout`][Self::without_idle_timeout] による
     /// 明示操作でのみ無効化を許し、暗黙に保護が外れないようにする）。
     pub idle_timeout: Option<Duration>,
+    /// Close handshake（サーバ側からの Close フレーム送出 → クライアント
+    /// 応答またはEOF待ち）を打ち切るまでの猶予（既定 10 秒）。
+    ///
+    /// アイドルタイムアウト発火時（`idle_timeout`）・コアからのキャンセル
+    /// シグナル発火時（イシュー #492）の両経路で共有される
+    /// `crate::session::close_and_drain` がこの値で
+    /// `tokio::time::timeout` する。
+    ///
+    /// **`Option<Duration>` にしていない（無効化不可）**: この上限は
+    /// 「Close 応答を返さないクライアントが接続を無期限保持する」二次的な
+    /// DoS を防ぐ安全性の下限そのものであり、`idle_timeout` のような明示的
+    /// 無効化手段は提供しない（fail-closed、`.claude/rules/security.md`）。
+    ///
+    /// - `Duration::ZERO` を設定すると Close 送出後すぐにドレインを打ち切り
+    ///   即座に接続を終端する。Close フレームの配送は保証されなくなるが、
+    ///   接続自体は即終端されるため安全側に倒れる。下限のクランプはしない。
+    /// - 既定 10 秒より大幅に大きい値を設定すると、Close 応答を返さない
+    ///   クライアントがその時間だけ接続（fd・タスク・メモリ）を保持し続け、
+    ///   二次 DoS の猶予窓が拡大する。利用者の明示 opt-in であることを
+    ///   前提に上限のクランプはしないが、既定値（10 秒）からの大幅な
+    ///   引き上げは推奨しない。
+    pub close_grace: Duration,
     /// Text/Binary メッセージ受信ごとに呼ばれるユーザー定義ハンドラ
     /// （Issue #179）。既定は [`crate::handler::EchoHandler`]（後方互換）。
     ///
@@ -70,6 +103,7 @@ impl fmt::Debug for WebSocketConfig {
             .field("max_message_size", &self.max_message_size)
             .field("max_frame_size", &self.max_frame_size)
             .field("idle_timeout", &self.idle_timeout)
+            .field("close_grace", &self.close_grace)
             .field("handler", &self.handler.name())
             .finish()
     }
@@ -82,6 +116,7 @@ impl Default for WebSocketConfig {
             max_message_size: 1024 * 1024,
             max_frame_size: 256 * 1024,
             idle_timeout: Some(DEFAULT_IDLE_TIMEOUT),
+            close_grace: DEFAULT_CLOSE_GRACE,
             handler: default_handler(),
         }
     }
@@ -139,6 +174,28 @@ impl WebSocketConfig {
     #[must_use]
     pub fn without_idle_timeout(mut self) -> Self {
         self.idle_timeout = None;
+        self
+    }
+
+    /// Close handshake ドレイン猶予（[`close_grace`][Self::close_grace]）を
+    /// 指定した値に変更する（イシュー #500）。
+    ///
+    /// `Duration::ZERO` や既定値（10 秒）より大幅に大きい値も受け付ける
+    /// （クランプなし）。それぞれの挙動・DoS 観点の考慮は
+    /// [`close_grace`][Self::close_grace] フィールドの doc を参照。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use fandhe_backend_plugin_websocket::WebSocketConfig;
+    ///
+    /// let config = WebSocketConfig::default().with_close_grace(Duration::from_secs(3));
+    /// assert_eq!(config.close_grace, Duration::from_secs(3));
+    /// ```
+    #[must_use]
+    pub fn with_close_grace(mut self, close_grace: Duration) -> Self {
+        self.close_grace = close_grace;
         self
     }
 
