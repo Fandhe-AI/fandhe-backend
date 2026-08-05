@@ -717,6 +717,40 @@ jobs:
         run: bash scripts/fuzz.sh --max-total-time 60
 
   # --------------------------------------------------
+  # WebRTC rebind force-close e2e テスト（イシュー #507）。
+  # `crates/plugin-webrtc/tests-e2e`（root workspace から exclude 済みの standalone
+  # crate、`crates/http/fuzz` と同パターン）を独立 workspace としてビルド・テストする。
+  # `RebindHandle::rebind` が確立済み `RTCPeerConnection` を実際に force-close することを
+  # 実 ICE/DTLS シグナリングで検証する end-to-end カバレッジ。stable のみで動作する。
+  # --------------------------------------------------
+  webrtc-e2e:
+    name: WebRTC rebind e2e（standalone crate、#507）
+    runs-on: self-hosted
+    if: github.event_name != 'schedule'
+    # webrtc 依存ツリー（約 +189 クレート、PoC-5）の cold build を考慮した上限。
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      # self-hosted runner に rustup が未導入/欠落している場合に備え、
+      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
+      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
+      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
+      - name: Ensure rustup is installed
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          fi
+
+      - name: Sync toolchain (rust-toolchain.toml)
+        run: rustup show
+
+      - name: scripts/webrtc-e2e.sh
+        run: bash scripts/webrtc-e2e.sh
+
+  # --------------------------------------------------
   # コア全体の行カバレッジ計測（TASK-11.5-2、#78）。
   # 親タスク TASK-11.5（#37、docs/spec/05-tasks.md）が要求する「コア全体の自動テスト行
   # カバレッジ 80% 以上」の受け入れ確認を CI に組み込む退行ゲート。80% 未満でジョブが
@@ -794,12 +828,13 @@ jobs:
     runs-on: self-hosted
     # 失敗・スキップ時にも必ず実行して fail-closed で判定する。
     # schedule（日次 dep-audit のみ）実行時は
-    # fmt/clippy/test/unsafe-triage/fuzz-smoke/openapi-two-stage/openapi-ts が意図的に
-    # skipped になる（doc ジョブには schedule 除外の if がなく実行される既存挙動だが、
-    # ci-complete 自体が schedule 時は丸ごとスキップされるため判定ロジックには影響しない）。
+    # fmt/clippy/test/unsafe-triage/fuzz-smoke/webrtc-e2e/openapi-two-stage/openapi-ts が
+    # 意図的に skipped になる（doc ジョブには schedule 除外の if がなく実行される既存
+    # 挙動だが、ci-complete 自体が schedule 時は丸ごとスキップされるため判定ロジックには
+    # 影響しない）。
     # 完遂判定の対象外（required check としては pull_request/push イベントのみを想定する）。
     if: ${{ always() && github.event_name != 'schedule' }}
-    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, pay-for-what-you-use, fuzz-smoke, openapi-two-stage, openapi-ts, actionlint]
+    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, pay-for-what-you-use, fuzz-smoke, webrtc-e2e, openapi-two-stage, openapi-ts, actionlint]
     timeout-minutes: 5
     steps:
       - name: 完遂判定（全 needs ジョブが success であること）
@@ -816,6 +851,7 @@ jobs:
           RESULT_UNSAFE_TRIAGE: ${{ needs.unsafe-triage.result }}
           RESULT_PAY_FOR_WHAT_YOU_USE: ${{ needs.pay-for-what-you-use.result }}
           RESULT_FUZZ_SMOKE: ${{ needs.fuzz-smoke.result }}
+          RESULT_WEBRTC_E2E: ${{ needs.webrtc-e2e.result }}
           RESULT_OPENAPI_TWO_STAGE: ${{ needs.openapi-two-stage.result }}
           RESULT_OPENAPI_TS: ${{ needs.openapi-ts.result }}
           RESULT_ACTIONLINT: ${{ needs.actionlint.result }}
@@ -828,6 +864,7 @@ jobs:
                       "unsafe-triage:${RESULT_UNSAFE_TRIAGE}" \
                       "pay-for-what-you-use:${RESULT_PAY_FOR_WHAT_YOU_USE}" \
                       "fuzz-smoke:${RESULT_FUZZ_SMOKE}" \
+                      "webrtc-e2e:${RESULT_WEBRTC_E2E}" \
                       "openapi-two-stage:${RESULT_OPENAPI_TWO_STAGE}" \
                       "openapi-ts:${RESULT_OPENAPI_TS}" \
                       "actionlint:${RESULT_ACTIONLINT}"; do

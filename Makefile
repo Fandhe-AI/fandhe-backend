@@ -6,7 +6,7 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help setup hooks build build-all test test-all fmt fmt-check clippy lint audit doc \
-	docker-build docker-shell docker-test
+	webrtc-e2e docker-build docker-shell docker-test
 
 help: ## ターゲット一覧を表示する
 	@grep -E '^[a-z][a-z-]*:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -49,6 +49,9 @@ audit: ## 全 feature 構成の依存監査（cargo audit / cargo deny check）
 
 doc: ## rustdoc を生成する
 	cargo doc --workspace --all-features --no-deps
+
+webrtc-e2e: ## RebindHandle::rebind の実接続 force-close e2e テスト（standalone crate、#507）
+	bash scripts/webrtc-e2e.sh
 
 docker-build: ## 開発用 Docker イメージをビルドする
 	docker compose build dev
