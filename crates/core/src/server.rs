@@ -1717,7 +1717,7 @@ impl BoundServer {
     ///    （旧世代の keep-alive 接続は `Connection: close` で早期に閉じる。
     ///    通常の graceful shutdown と同じ機構）
     /// 2. 旧 listener を差し替える前に、accept backlog に滞留していた
-    ///    接続を [`drain_listener_backlog`] で非ブロッキング・有界に回収し、
+    ///    接続を `drain_listener_backlog`（非公開関数）で非ブロッキング・有界に回収し、
     ///    旧世代接続としてサーブする（イシュー #501。`REBIND_BACKLOG_DRAIN_LIMIT`
     ///    件・`connection_limit` の permit ゲート範囲内に限定され、`run_until`
     ///    自体を待機させない。`docs/design/rebind.md` 7 節を参照）
