@@ -27,6 +27,17 @@
 
 ### Added
 
+- `fandhe-backend-core`: 稼働中の `BoundServer` へ listener 差し替え（rebind）を
+  指示できる `BoundServer::rebind_handle` / `RebindHandle::rebind` を追加
+  （イシュー [#485](https://github.com/Fandhe-AI/fandhe-backend/issues/485)）。
+  `rebind()` は呼び出し側で新規 `TcpListener` を bind してから accept ループへ
+  差し替えを依頼する構造のため、bind 失敗時は旧 listener・in-flight 接続に
+  一切影響しない（fail-closed）。差し替え直前までの「旧世代」接続は
+  `Server::shutdown_grace_period` を上限に完走を待ち、超過分は強制クローズする
+  （`run_until` 自体はブロックしない、詳細は
+  `docs/design/rebind.md` を参照）。`rebind_handle` を一度も呼ばなければ
+  `mpsc` チャネルは生成されず、既存の `run()` / `run_until` の挙動は不変
+  （pay-for-what-you-use）
 - `fandhe-backend-plugin-compression`: `CompressionConfigBuilder::blocking_threshold`
   （既定 64 KiB）を追加し、`apply_compression` を `plan_compression` /
   `compress_body` / `attach_compressed` の 3 関数へ分割公開（イシュー

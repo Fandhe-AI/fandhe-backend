@@ -175,7 +175,20 @@ fandhe-backend/
 │   │                                    # `None` になるフェイルクローズ契約。実 peer
 │   │                                    # address を注入したい呼び出し元向けに新設の
 │   │                                    # 公開 API `handle_connection_with_peer_addr`
-│   │                                    # も追加した。
+│   │                                    # も追加した。イシュー #485 で
+│   │                                    # `BoundServer::rebind_handle` /
+│   │                                    # `RebindHandle::rebind` を追加し、稼働中の
+│   │                                    # accept ループを止めずに listening アドレスを
+│   │                                    # 差し替え可能にした（`rebind()` は呼び出し側で
+│   │                                    # 新規 `TcpListener` を bind してから差し替えを
+│   │                                    # 依頼する構造のため bind 失敗時は旧 listener・
+│   │                                    # in-flight に無影響、fail-closed）。差し替え
+│   │                                    # 直前までの「旧世代」接続は
+│   │                                    # `Server::shutdown_grace_period` を上限に
+│   │                                    # `run_until` 自体をブロックせず背景 drain し、
+│   │                                    # 超過分は強制クローズする（既存の graceful
+│   │                                    # shutdown・拡張点の評価順序は不変、
+│   │                                    # `docs/design/rebind.md` 参照）。
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む
