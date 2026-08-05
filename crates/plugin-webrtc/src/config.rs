@@ -191,8 +191,8 @@ impl WebRtcConfig {
     /// 予約枠（`Reserved`）をシグナリング成功済みの接続（`Active`）へ遷移させる。
     ///
     /// [`crate::handler::complete_signaling`] がシグナリング成功時に呼ぶ。対象の
-    /// `slot_id` が既に除去済み（タイムアウト等との競合）の場合は何もしない
-    /// （呼び出し元が `pc` の生存管理に責任を持つ）。
+    /// `slot_id` が既に除去済み（タイムアウト等との競合）の場合はレジストリを変更せず
+    /// `false` を返す（呼び出し元が `pc` の生存管理に責任を持つ契約、下記参照）。
     ///
     /// # 終端 drain との競合（イシュー #498）
     ///
@@ -210,12 +210,13 @@ impl WebRtcConfig {
     /// 「`take_active_peers` の直後」のいずれかに一意に順序付けられ、後者であっても
     /// フラグは既に `true` になっているため確実に拒否できる。
     ///
-    /// フラグが `true`（`drain::drain_for_shutdown` 呼び出し済み）の場合は登録を拒否し、
+    /// フラグが `true`（`drain::drain_for_shutdown` 呼び出し済み）の場合、または対象
+    /// `slot_id` が既に除去済み（タイムアウト等との競合）の場合は登録を拒否し、
     /// 予約枠も即座に解放したうえで `false` を返す（フェイルクローズ。
     /// `.claude/rules/security.md`）。呼び出し元は戻り値が `false` の場合、受け取った
-    /// `pc` を自身で明示的に `close()` する契約とする（最終 shutdown 開始後に生成された
-    /// `RTCPeerConnection` をレジストリの生存管理外へ漏らさないため）。戻り値が `true`
-    /// の場合は通常どおりレジストリが `pc` の生存を保持する。
+    /// `pc` を自身で明示的に `close()` する契約とする（最終 shutdown 開始後に生成された、
+    /// またはレジストリに枠が存在しない `RTCPeerConnection` をレジストリの生存管理外へ
+    /// 漏らさないため）。戻り値が `true` の場合のみレジストリが `pc` の生存を保持する。
     #[must_use]
     pub(crate) fn activate_slot(&self, slot_id: u64, pc: Arc<RTCPeerConnection>) -> bool {
         let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
@@ -223,10 +224,13 @@ impl WebRtcConfig {
             registry.retain(|(id, _)| *id != slot_id);
             return false;
         }
-        if let Some(entry) = registry.iter_mut().find(|(id, _)| *id == slot_id) {
-            entry.1 = RegistrySlot::Active(pc);
+        match registry.iter_mut().find(|(id, _)| *id == slot_id) {
+            Some(entry) => {
+                entry.1 = RegistrySlot::Active(pc);
+                true
+            }
+            None => false,
         }
-        true
     }
 
     /// 枠（予約中・アクティブ問わず）をレジストリから除去する。
@@ -439,6 +443,56 @@ mod tests {
             config.take_active_peers().is_empty(),
             "activate_slot が false を返した以上、pc は Active としてレジストリに\
              残っていないはず（残っていれば #498 の TOCTOU が再発している）"
+        );
+
+        let _ = pc.close().await;
+    }
+
+    /// レビュー対応（イシュー #498、Cursor Bugbot 指摘）: 対象 `slot_id` が
+    /// レジストリに存在しない（タイムアウト等で既に `release_slot` 済みの
+    /// missing-slot レース）場合、`activate_slot` は `false` を返し、
+    /// レジストリへ `Active` エントリを新規作成しないことを固定する。
+    ///
+    /// 修正前は `registry.iter_mut().find(..)` が `None` を返す（＝該当枠なし）
+    /// 経路でも無条件に `true` を返しており、呼び出し元（`handler::
+    /// complete_signaling`）が明示 `close()` パスをスキップしてしまっていた。
+    #[tokio::test]
+    async fn activate_slot_returns_false_for_missing_slot() {
+        use webrtc::api::APIBuilder;
+        use webrtc::api::interceptor_registry::register_default_interceptors;
+        use webrtc::api::media_engine::MediaEngine;
+        use webrtc::interceptor::registry::Registry;
+        use webrtc::peer_connection::configuration::RTCConfiguration;
+
+        let config = WebRtcConfig::new();
+        let slot_id = config.reserve_slot().expect("予約できる");
+        // タイムアウト等の競合により、activate_slot 到達前に枠が除去済みの状況を再現する。
+        config.release_slot(slot_id);
+
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs().unwrap();
+        let mut registry = Registry::new();
+        registry = register_default_interceptors(registry, &mut media_engine).unwrap();
+        let api = APIBuilder::new()
+            .with_media_engine(media_engine)
+            .with_interceptor_registry(registry)
+            .build();
+        let pc = Arc::new(
+            api.new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap(),
+        );
+
+        let activated = config.activate_slot(slot_id, Arc::clone(&pc));
+        assert!(
+            !activated,
+            "既に除去済みの slot_id への activate_slot は false を返すはず\
+             （呼び出し元が pc を明示的に close する契約）"
+        );
+        assert!(
+            config.take_active_peers().is_empty(),
+            "activate_slot が false を返した以上、pc は Active としてレジストリに\
+             登録されていないはず"
         );
 
         let _ = pc.close().await;

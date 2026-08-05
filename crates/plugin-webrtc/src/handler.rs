@@ -275,11 +275,13 @@ async fn complete_signaling(
     pc_cell.lock().unwrap_or_else(|e| e.into_inner()).take();
     register_close_handler(&pc, config, slot_id);
     // イシュー #498: 最終 graceful shutdown（`WebRtcConfig::begin_terminal_drain`）が
-    // 本呼び出しと競合し、`activate_slot` がレジストリ登録を拒否（`false`）した場合は
-    // 生成済みの pc をレジストリの生存管理外へ漏らさないよう、ここで明示的に close する
-    // （フェイルクローズ、`.claude/rules/security.md`）。close はネットワーク I/O を
-    // 伴いうるため、200 応答の返却をブロックしないようバックグラウンドタスクで実行する
-    // （`try_handle_rtc_offer` のタイムアウト分岐と同じ方針）。
+    // 本呼び出しと競合した場合、または対象 slot がタイムアウト等で既に除去済みの
+    // missing-slot レースの場合、`activate_slot` はレジストリ登録を拒否（`false`）する。
+    // いずれの場合も生成済みの pc をレジストリの生存管理外へ漏らさないよう、ここで
+    // 明示的に close する（フェイルクローズ、`.claude/rules/security.md`）。close は
+    // ネットワーク I/O を伴いうるため、200 応答の返却をブロックしないよう
+    // バックグラウンドタスクで実行する（`try_handle_rtc_offer` のタイムアウト分岐と
+    // 同じ方針）。
     if !config.activate_slot(slot_id, Arc::clone(&pc)) {
         tokio::spawn(async move {
             let _ = pc.close().await;
