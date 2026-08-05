@@ -6,6 +6,12 @@
 #
 # 各テストは独立した assert 関数で実行し、失敗があれば非 0 で終了する
 # （フェイルクローズ、.claude/rules/security.md）。
+#
+# #511: assert 関数は `printf '%s' "$haystack" | grep -qF -- "$needle"` のような
+# パイプを使わない。`set -euo pipefail` 下では grep -q の早期終了で printf 側が
+# SIGPIPE/EPIPE を受け、needle がマッチしているのにパイプライン全体が非 0 になり
+# 誤 FAIL する flake（CI run 31011587701 で実測）が起こりうる。bash 組み込みの
+# `[[ "$haystack" == *"$needle"* ]]` はプロセス生成・パイプを伴わず決定的に判定できる。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,14 +42,34 @@ assert_exit_code() {
     fi
 }
 
+# haystack に needle が固定文字列として含まれるかを判定する（#511: パイプ
+# を使う `printf | grep -q` 型実装は SIGPIPE/EPIPE 由来の誤 FAIL を招くため
+# bash 組み込みパターンマッチを使う。needle は必ずダブルクォートで囲み glob
+# メタ文字を文字どおりに扱わせる）。
 assert_contains() {
     local desc="$1"
     local haystack="$2"
     local needle="$3"
-    if printf '%s' "${haystack}" | grep -qF -- "${needle}"; then
+    if [[ "${haystack}" == *"${needle}"* ]]; then
         pass "${desc}"
     else
         fail "${desc}（'${needle}' が出力に含まれません）"
+    fi
+}
+
+# haystack に needle が含まれないことを判定する（assert_contains の否定版）。
+# #511 の修正前は各呼び出し箇所で `printf | grep -q` を直接使っており、EPIPE で
+# パイプラインが非 0 になった場合に「含まれていない」側（pass）へ誤って倒れる
+# fail-open の潜在欠陥も併せ持っていた。bash 組み込み判定はこの経路自体が
+# ないため、誤 pass・誤 fail のいずれも構造的に起こらない。
+assert_not_contains() {
+    local desc="$1"
+    local haystack="$2"
+    local needle="$3"
+    if [[ "${haystack}" == *"${needle}"* ]]; then
+        fail "${desc}（'${needle}' が出力に混入しています）"
+    else
+        pass "${desc}"
     fi
 }
 
@@ -60,16 +86,8 @@ assert_exit_code "audit-clean は exit 0" 0 "${exit_clean}"
 assert_contains "audit-clean のレポートに『該当なし』が3回分含まれる" "${out_clean}" "該当なし"
 # #226: 該当エントリがない区分には検証方法・リスク欄を出力しない設計を固定する
 # （非空分岐限定の出力であることの negative assert）。
-if printf '%s' "${out_clean}" | grep -qF "検証方法:"; then
-    fail "audit-clean（該当なし）のレポートに検証方法欄が誤って出力されている"
-else
-    pass "audit-clean（該当なし）のレポートに検証方法欄が出力されない"
-fi
-if printf '%s' "${out_clean}" | grep -qF "リスク:"; then
-    fail "audit-clean（該当なし）のレポートにリスク欄が誤って出力されている"
-else
-    pass "audit-clean（該当なし）のレポートにリスク欄が出力されない"
-fi
+assert_not_contains "audit-clean（該当なし）のレポートに検証方法欄が出力されない" "${out_clean}" "検証方法:"
+assert_not_contains "audit-clean（該当なし）のレポートにリスク欄が出力されない" "${out_clean}" "リスク:"
 
 echo "===== audit-triage.sh: audit-patched.json ====="
 set +e
@@ -122,11 +140,7 @@ bash "${SCRIPTS_DIR}/audit-triage.sh" --input "${FIXTURES_DIR}/audit-unpatched-w
 set -e
 vuln_ids_content="$(cat "${VULN_IDS_TMP}")"
 assert_contains "--vuln-ids-output に要エスカレーションの advisory ID を含む" "${vuln_ids_content}" "RUSTSEC-2099-0002"
-if printf '%s' "${vuln_ids_content}" | grep -qF "RUSTSEC-2099-0003"; then
-    fail "--vuln-ids-output に warnings（情報・記録のみ区分）の advisory ID RUSTSEC-2099-0003 が混入している"
-else
-    pass "--vuln-ids-output に warnings の advisory ID が混入しない"
-fi
+assert_not_contains "--vuln-ids-output に warnings の advisory ID が混入しない" "${vuln_ids_content}" "RUSTSEC-2099-0003"
 rm -f "${VULN_IDS_TMP}"
 
 VULN_IDS_CLEAN_TMP="$(mktemp)"
