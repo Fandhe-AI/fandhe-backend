@@ -38,6 +38,7 @@
 
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
+use std::net::SocketAddr;
 use std::time::Duration;
 
 /// リクエスト/レスポンスを**観測するだけ**のフック。
@@ -191,18 +192,88 @@ impl GateOutcome {
     }
 }
 
+/// [`RequestGate::check`] へ渡す接続コンテキスト（イシュー #486）。
+///
+/// accept したソケットの実 peer address を gate 実装から参照可能にするための
+/// 型。`RequestHead`（`crates/http`、バイト列から構築される sans-IO 型）へ
+/// 接続層の情報を混入させると依存方向（`server → routes → http`）と責務境界が
+/// 崩れるため、`check` の引数として別途渡す設計とした
+/// （`docs/design/gate-peer-addr.md` 3.1 節）。
+///
+/// フィールドは非公開とし、将来の項目追加（`local_addr` 等）を非破壊にする。
+/// `Copy` 型でヒープ割当を持たないため、gate 未登録時は元より、登録時も
+/// 接続あたりの追加コストは実質ゼロ（pay-for-what-you-use、
+/// `.claude/rules/pay-for-what-you-use.md`）。
+///
+/// # `peer_addr` が `None` になる経路
+///
+/// [`crate::handle_connection`]（`tokio::io::duplex` 等の非ソケット統合テスト
+/// 経由の呼び出しを含む）は実 peer が存在しないため `None` を渡す。
+/// **peer addr を判定に必要とする gate 実装は、`None` の場合は必ず
+/// [`GateOutcome::Reject`] を返すこと**（フェイルクローズ、`RequestGate` の
+/// doc を参照）。
+///
+/// # プロキシ配下の意味論
+///
+/// リバースプロキシ・ロードバランサ配下では `peer_addr` はプロキシ自身の
+/// アドレスになる（本フレームワークは v1 では TLS 終端をリバースプロキシに
+/// 委ねる方針、`docs/design/v1-scope-tls-multipart.md`）。`X-Forwarded-For` /
+/// `Forwarded` ヘッダ（クライアント申告値であり偽装可能）とは別物であり、
+/// IP ベースの認可判定では偽装不能な `peer_addr` を用いること。
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_core::extension::GateContext;
+/// use std::net::SocketAddr;
+///
+/// let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+/// let ctx = GateContext::new(Some(addr));
+/// assert_eq!(ctx.peer_addr(), Some(addr));
+///
+/// let ctx_none = GateContext::new(None);
+/// assert_eq!(ctx_none.peer_addr(), None);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GateContext {
+    peer_addr: Option<SocketAddr>,
+}
+
+impl GateContext {
+    /// peer addr 付きコンテキストを構築する。
+    ///
+    /// 実ソケット経路（[`crate::handle_connection_with_peer_addr`]）だけでなく、
+    /// gate 実装の単体テストからも直接構築できるよう公開コンストラクタとする。
+    #[must_use]
+    pub fn new(peer_addr: Option<SocketAddr>) -> Self {
+        Self { peer_addr }
+    }
+
+    /// accept したソケットの実 peer address を返す。
+    ///
+    /// 実ソケットを経由しない経路（`tokio::io::duplex` 等）では `None`。
+    /// `None` の意味論は本型の doc「`peer_addr` が `None` になる経路」を参照。
+    #[must_use]
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        self.peer_addr
+    }
+}
+
 /// 早期拒否可能な拡張点。認証・認可・同意ゲート等、ルーティング前に
 /// リクエストを弾く判断をコアに提供する。
 ///
 /// 実装は**フェイルクローズ**を契約とする: 判定に必要な情報が欠落・不正な
 /// 場合、あるいは判定不能な場合は必ず [`GateOutcome::Reject`] を返し、
 /// 疑わしきは通過させない（`docs/spec/04-requirements.md` REQ-9・
-/// `.claude/rules/security.md` の認可既定拒否の方針に従う）。
+/// `.claude/rules/security.md` の認可既定拒否の方針に従う）。peer address に
+/// 基づく判定（CIDR 照合等）を行う実装は、`ctx.peer_addr()` が `None` の場合
+/// も同様に必ず [`GateOutcome::Reject`] を返すこと（イシュー #486、
+/// [`GateContext`] の doc を参照）。
 ///
 /// # Examples
 ///
 /// ```
-/// use fandhe_backend_core::extension::{GateOutcome, RequestGate};
+/// use fandhe_backend_core::extension::{GateContext, GateOutcome, RequestGate};
 /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
 ///
 /// /// `Authorization` ヘッダの有無だけを見るトイ実装（フェイルクローズ）。
@@ -213,7 +284,7 @@ impl GateOutcome {
 ///         "require-auth-header"
 ///     }
 ///
-///     fn check(&self, head: &fandhe_backend_http::request::RequestHead) -> GateOutcome {
+///     fn check(&self, head: &fandhe_backend_http::request::RequestHead, _ctx: &GateContext) -> GateOutcome {
 ///         match head.header("authorization") {
 ///             Some(_) => GateOutcome::Allow,
 ///             None => GateOutcome::reject(401, Vec::new()),
@@ -222,20 +293,21 @@ impl GateOutcome {
 /// }
 ///
 /// let gate = RequireAuthHeader;
+/// let ctx = GateContext::new(None);
 ///
 /// let buf = b"GET / HTTP/1.1\r\nAuthorization: Bearer x\r\n\r\n";
 /// let head = match parse_request_head(buf).unwrap() {
 ///     ParseOutcome::Complete { head, .. } => head,
 ///     ParseOutcome::Incomplete => unreachable!(),
 /// };
-/// assert_eq!(gate.check(&head), GateOutcome::Allow);
+/// assert_eq!(gate.check(&head, &ctx), GateOutcome::Allow);
 ///
 /// let buf = b"GET / HTTP/1.1\r\n\r\n";
 /// let head = match parse_request_head(buf).unwrap() {
 ///     ParseOutcome::Complete { head, .. } => head,
 ///     ParseOutcome::Incomplete => unreachable!(),
 /// };
-/// assert_eq!(gate.check(&head), GateOutcome::reject(401, Vec::new()));
+/// assert_eq!(gate.check(&head, &ctx), GateOutcome::reject(401, Vec::new()));
 /// ```
 ///
 /// # ヘッダ付き拒否応答の例（`429 Retry-After`、イシュー #424）
@@ -245,7 +317,7 @@ impl GateOutcome {
 /// `GateOutcome::Reject` を組み立てる。
 ///
 /// ```
-/// use fandhe_backend_core::extension::{GateOutcome, RequestGate};
+/// use fandhe_backend_core::extension::{GateContext, GateOutcome, RequestGate};
 /// use fandhe_backend_http::request::{RequestHead, parse_request_head, ParseOutcome};
 /// use fandhe_backend_http::response::Response;
 ///
@@ -257,7 +329,7 @@ impl GateOutcome {
 ///         "always-rate-limited"
 ///     }
 ///
-///     fn check(&self, _head: &RequestHead) -> GateOutcome {
+///     fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
 ///         let response = Response::new(429, b"{\"error\":\"rate limited\"}".to_vec())
 ///             .with_content_type("application/json")
 ///             .with_header("Retry-After", "30")
@@ -267,12 +339,13 @@ impl GateOutcome {
 /// }
 ///
 /// let gate = AlwaysRateLimited;
+/// let ctx = GateContext::new(None);
 /// let buf = b"GET / HTTP/1.1\r\n\r\n";
 /// let head = match parse_request_head(buf).unwrap() {
 ///     ParseOutcome::Complete { head, .. } => head,
 ///     ParseOutcome::Incomplete => unreachable!(),
 /// };
-/// let GateOutcome::Reject { response } = gate.check(&head) else {
+/// let GateOutcome::Reject { response } = gate.check(&head, &ctx) else {
 ///     unreachable!("AlwaysRateLimited は常に Reject を返す");
 /// };
 /// let wire = response.serialize(false);
@@ -286,8 +359,10 @@ pub trait RequestGate: Send + Sync {
     fn name(&self) -> &'static str;
 
     /// リクエストヘッドを検査し、許可/拒否を判定する。判定不能・情報欠落時は
-    /// 必ず [`GateOutcome::Reject`] を返すこと（フェイルクローズ）。
-    fn check(&self, head: &RequestHead) -> GateOutcome;
+    /// 必ず [`GateOutcome::Reject`] を返すこと（フェイルクローズ）。`ctx` は
+    /// accept したソケットの実 peer address を運ぶ（イシュー #486、
+    /// [`GateContext`] の doc を参照）。
+    fn check(&self, head: &RequestHead, ctx: &GateContext) -> GateOutcome;
 }
 
 #[cfg(test)]
@@ -397,7 +472,7 @@ mod tests {
             "allow-all"
         }
 
-        fn check(&self, _head: &RequestHead) -> GateOutcome {
+        fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
             GateOutcome::Allow
         }
     }
@@ -410,7 +485,7 @@ mod tests {
             "fail-closed"
         }
 
-        fn check(&self, head: &RequestHead) -> GateOutcome {
+        fn check(&self, head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
             match head.header("authorization") {
                 Some(_) => GateOutcome::Allow,
                 None => GateOutcome::reject(401, Vec::new()),
@@ -418,17 +493,36 @@ mod tests {
         }
     }
 
+    /// `ctx.peer_addr()` が `None` の場合に必ず拒否する契約（イシュー #486の
+    /// フェイルクローズ規約）を検証するトイ実装。
+    struct PeerRequiredGate;
+
+    impl RequestGate for PeerRequiredGate {
+        fn name(&self) -> &'static str {
+            "peer-required"
+        }
+
+        fn check(&self, _head: &RequestHead, ctx: &GateContext) -> GateOutcome {
+            match ctx.peer_addr() {
+                Some(_) => GateOutcome::Allow,
+                None => GateOutcome::reject(403, Vec::new()),
+            }
+        }
+    }
+
     #[test]
     fn request_gate_allow_outcome() {
         let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
-        assert_eq!(AllowAllGate.check(&head), GateOutcome::Allow);
+        let ctx = GateContext::new(None);
+        assert_eq!(AllowAllGate.check(&head, &ctx), GateOutcome::Allow);
     }
 
     #[test]
     fn request_gate_fail_closed_rejects_missing_authorization() {
         let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
+        let ctx = GateContext::new(None);
         assert_eq!(
-            FailClosedGate.check(&head),
+            FailClosedGate.check(&head, &ctx),
             GateOutcome::reject(401, Vec::new())
         );
     }
@@ -436,7 +530,38 @@ mod tests {
     #[test]
     fn request_gate_fail_closed_allows_with_authorization() {
         let head = head_from(b"GET / HTTP/1.1\r\nAuthorization: Bearer x\r\n\r\n");
-        assert_eq!(FailClosedGate.check(&head), GateOutcome::Allow);
+        let ctx = GateContext::new(None);
+        assert_eq!(FailClosedGate.check(&head, &ctx), GateOutcome::Allow);
+    }
+
+    #[test]
+    fn gate_context_new_and_peer_addr_roundtrip() {
+        let addr: std::net::SocketAddr = "192.0.2.1:8080".parse().unwrap();
+        let ctx = GateContext::new(Some(addr));
+        assert_eq!(ctx.peer_addr(), Some(addr));
+
+        let ctx_none = GateContext::new(None);
+        assert_eq!(ctx_none.peer_addr(), None);
+    }
+
+    #[test]
+    fn request_gate_peer_required_rejects_when_peer_addr_missing() {
+        // peer addr 必須の gate が `None`（duplex 等の非ソケット経路）で
+        // フェイルクローズすることを固定する（イシュー #486）。
+        let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
+        let ctx = GateContext::new(None);
+        assert_eq!(
+            PeerRequiredGate.check(&head, &ctx),
+            GateOutcome::reject(403, Vec::new())
+        );
+    }
+
+    #[test]
+    fn request_gate_peer_required_allows_when_peer_addr_present() {
+        let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
+        let addr: std::net::SocketAddr = "203.0.113.5:54321".parse().unwrap();
+        let ctx = GateContext::new(Some(addr));
+        assert_eq!(PeerRequiredGate.check(&head, &ctx), GateOutcome::Allow);
     }
 
     #[test]

@@ -7,6 +7,24 @@
 
 ## [Unreleased]
 
+### BREAKING CHANGES
+
+1. **`fandhe-backend-core`**: `RequestGate::check` のシグネチャへ `ctx: &GateContext`
+   引数を追加しました（イシュー
+   [#486](https://github.com/Fandhe-AI/fandhe-backend/issues/486)）。
+   `GateContext::peer_addr()` で accept したソケットの実 peer address を
+   `RequestGate` 実装から参照できるようになります（`X-Forwarded-For` 等の
+   偽装可能なヘッダとは別物で、実 TCP 接続の peer を運びます）。
+   - **移行手順**: 既存の `fn check(&self, head: &RequestHead) -> GateOutcome` を
+     `fn check(&self, head: &RequestHead, _ctx: &GateContext) -> GateOutcome`
+     へ書き換えるだけで従来どおり動作します。peer address に基づく判定
+     （CIDR 照合等）を追加したい実装は `ctx.peer_addr()` を参照してください。
+     `tokio::io::duplex` 等の非ソケット経路（`handle_connection`）では常に
+     `None` になるため、peer addr を判定に必須とする実装は `None` の場合に
+     必ず `GateOutcome::Reject` を返してください（フェイルクローズ、
+     `GateContext` の doc を参照）。実 peer address を注入したい呼び出し元は
+     新設の `handle_connection_with_peer_addr` を使ってください。
+
 ### Added
 
 - `fandhe-backend-plugin-compression`: `CompressionConfigBuilder::blocking_threshold`

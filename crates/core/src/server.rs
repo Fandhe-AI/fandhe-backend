@@ -101,7 +101,7 @@ use fandhe_backend_http::connection::{RequestError, read_request_with_limit, sho
 use fandhe_backend_http::request::{HttpVersion, ParseError, RequestHead};
 use fandhe_backend_http::response::Response;
 
-use crate::extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
+use crate::extension::{GateContext, GateOutcome, Middleware, RequestGate, UpgradeHandler};
 use crate::interceptor::Interceptor;
 use crate::streaming::{RecvOutcome, StreamingResponse};
 
@@ -1411,7 +1411,10 @@ impl BoundServer {
                     .await
                     .expect("connection_limit semaphore is never closed");
                 match listener.accept().await {
-                    Ok((stream, _peer_addr)) => Some((stream, permit)),
+                    // `peer_addr` はイシュー #486 で `GateContext` 経由
+                    // `RequestGate::check` へ伝搬する（下記 spawn 先を参照）。
+                    // 以前は破棄していた値。
+                    Ok((stream, peer_addr)) => Some((stream, peer_addr, permit)),
                     Err(err) => {
                         // permit はここで（スコープを抜けると同時に）解放され、
                         // 次のループ先頭で再取得される。`run_until` の doc を参照。
@@ -1426,7 +1429,7 @@ impl BoundServer {
             match race_shutdown_or_accept(shutdown.as_mut(), accept_fut).await {
                 Raced::Shutdown => break,
                 Raced::Completed(None) => continue,
-                Raced::Completed(Some((stream, permit))) => {
+                Raced::Completed(Some((stream, peer_addr, permit))) => {
                     let server = Arc::clone(&server);
                     let shutdown_flag = Arc::clone(&shutdown_flag);
                     join_set.spawn(async move {
@@ -1440,6 +1443,7 @@ impl BoundServer {
                             stream,
                             Some(permit),
                             &shutdown_flag,
+                            Some(peer_addr),
                         )
                         .await;
                     });
@@ -1505,6 +1509,11 @@ impl BoundServer {
 /// shutdown（イシュー #313）のシグナルも `BoundServer::run_until` 経由でしか
 /// 発生しないため、本関数は「シャットダウンなし」（常に `false`）のフラグを
 /// 内部で用意して渡す。
+///
+/// `tokio::io::duplex` 等の非ソケット経路であるため、`RequestGate::check` へ
+/// 渡す [`GateContext::peer_addr`] は常に `None` になる（イシュー #486）。
+/// 実 peer address を注入したい呼び出し元は [`handle_connection_with_peer_addr`]
+/// を使う。
 pub async fn handle_connection<S>(server: &Server, stream: S)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -1512,7 +1521,39 @@ where
     // `BoundServer::run_until` を経由しない呼び出し（直接統合テスト等）は
     // シャットダウン対象にならないため、常に `false` のローカルフラグを渡す。
     let no_shutdown = Arc::new(AtomicBool::new(false));
-    handle_connection_with_permit(server, stream, None, &no_shutdown).await;
+    handle_connection_with_permit(server, stream, None, &no_shutdown, None).await;
+}
+
+/// [`handle_connection`] に実 peer address を注入できる版（イシュー #486）。
+///
+/// カスタム accept ループ・`tokio::io::duplex` 以外の非標準ソケット経路から
+/// [`RequestGate::check`] へ実 peer address を伝搬させたい呼び出し元向けの
+/// 公開 API。`BoundServer::run_until` が内部で呼ぶ経路（実 TCP accept）とは
+/// 独立しており、両者は同じ `handle_connection_with_permit` に収斂する。
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn example() -> std::io::Result<()> {
+/// use fandhe_backend_core::{Server, handle_connection_with_peer_addr};
+/// use tokio::net::TcpListener;
+///
+/// let server = Server::new();
+/// let listener = TcpListener::bind("127.0.0.1:0").await?;
+/// let (stream, peer_addr) = listener.accept().await?;
+/// handle_connection_with_peer_addr(&server, stream, peer_addr).await;
+/// # Ok(())
+/// # }
+/// ```
+pub async fn handle_connection_with_peer_addr<S>(
+    server: &Server,
+    stream: S,
+    peer_addr: std::net::SocketAddr,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let no_shutdown = Arc::new(AtomicBool::new(false));
+    handle_connection_with_permit(server, stream, None, &no_shutdown, Some(peer_addr)).await;
 }
 
 /// [`handle_connection`] の内部実装（`pub(crate)`、TASK-4.2 / #23）。
@@ -1532,14 +1573,21 @@ where
 /// 早期クローズ側へ倒すが、**処理中のリクエストへの応答は必ず完走させる**
 /// （このフラグはループ先頭・次リクエストへ進むかどうかの判定にのみ関与し、
 /// 現在処理中のリクエストを中断させることはない）。
+///
+/// `peer_addr` は accept したソケットの実 peer address（イシュー #486）。
+/// 接続の生存期間中は不変のため、ループ先頭で 1 回だけ [`GateContext`] を
+/// 構築し（`Copy` 型のためコピーコストは無視できる）、以降の
+/// `RequestGate::check` 呼び出しへ都度渡す。
 pub(crate) async fn handle_connection_with_permit<S>(
     server: &Server,
     mut stream: S,
     mut permit: Option<OwnedSemaphorePermit>,
     shutdown_flag: &Arc<AtomicBool>,
+    peer_addr: Option<std::net::SocketAddr>,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let gate_ctx = GateContext::new(peer_addr);
     let mut buf = RecvBuffer::new();
     // 接続の総生存期間・keep-alive 中の総リクエスト数を計測する（#70 レビュー
     // 指摘、`.claude/rules/security.md` のリソース枯渇観点。DEFAULT_READ_TIMEOUT の
@@ -1619,7 +1667,7 @@ pub(crate) async fn handle_connection_with_permit<S>(
 
         // RequestGate はルーティング・アップグレードより先に評価する
         // （フェイルクローズ、モジュール冒頭の doc を参照）。
-        if let Some(rejection) = first_rejection(&server.gates, &request.head) {
+        if let Some(rejection) = first_rejection(&server.gates, &request.head, &gate_ctx) {
             let GateOutcome::Reject { response } = rejection else {
                 unreachable!("first_rejection only returns Reject outcomes")
             };
@@ -2171,9 +2219,14 @@ where
 }
 
 /// 登録順に `gates` を評価し、最初の [`GateOutcome::Reject`] を返す。
-/// 全件 `Allow` の場合は `None`。
-fn first_rejection(gates: &[Box<dyn RequestGate>], head: &RequestHead) -> Option<GateOutcome> {
-    gates.iter().find_map(|gate| match gate.check(head) {
+/// 全件 `Allow` の場合は `None`。`ctx` は実 peer address を運ぶ
+/// [`GateContext`]（イシュー #486）。
+fn first_rejection(
+    gates: &[Box<dyn RequestGate>],
+    head: &RequestHead,
+    ctx: &GateContext,
+) -> Option<GateOutcome> {
+    gates.iter().find_map(|gate| match gate.check(head, ctx) {
         GateOutcome::Allow => None,
         reject @ GateOutcome::Reject { .. } => Some(reject),
     })
@@ -2235,7 +2288,7 @@ fn _assert_handle_connection_accepts_tcp_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extension::{GateOutcome, Middleware, RequestGate, UpgradeHandler};
+    use crate::extension::{GateContext, GateOutcome, Middleware, RequestGate, UpgradeHandler};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::AsyncReadExt;
@@ -2263,7 +2316,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "require-auth"
         }
-        fn check(&self, head: &RequestHead) -> GateOutcome {
+        fn check(&self, head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
             match head.header("authorization") {
                 Some(_) => GateOutcome::Allow,
                 None => GateOutcome::reject(401, b"unauthorized".to_vec()),
@@ -2277,7 +2330,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "always-reject"
         }
-        fn check(&self, _head: &RequestHead) -> GateOutcome {
+        fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
             GateOutcome::reject(self.0, Vec::new())
         }
     }
@@ -2290,7 +2343,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "rate-limit"
         }
-        fn check(&self, _head: &RequestHead) -> GateOutcome {
+        fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
             let response = Response::new(429, b"{\"error\":\"rate limited\"}".to_vec())
                 .with_content_type("application/json")
                 .with_header("Retry-After", "30")
@@ -2304,8 +2357,35 @@ mod tests {
         fn name(&self) -> &'static str {
             "allow-all"
         }
-        fn check(&self, _head: &RequestHead) -> GateOutcome {
+        fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
             GateOutcome::Allow
+        }
+    }
+
+    /// 観測した `GateContext::peer_addr()` を記録し、実 TCP accept 経路で
+    /// 実 peer address が正しく伝搬することを検証する e2e テスト用ゲート
+    /// （イシュー #486）。常に `Allow` を返し接続処理を妨げない。
+    struct RecordingPeerAddrGate {
+        observed: std::sync::Mutex<Vec<Option<std::net::SocketAddr>>>,
+    }
+    impl RequestGate for RecordingPeerAddrGate {
+        fn name(&self) -> &'static str {
+            "recording-peer-addr"
+        }
+        fn check(&self, _head: &RequestHead, ctx: &GateContext) -> GateOutcome {
+            self.observed.lock().unwrap().push(ctx.peer_addr());
+            GateOutcome::Allow
+        }
+    }
+    // `Server::gate` は所有権を取って `Box<dyn RequestGate>` へ格納するため、
+    // テスト側が観測結果を読み取れるよう `Arc` 越しに委譲実装する（トレイトは
+    // 本クレート内のローカル trait のため orphan rule に抵触しない）。
+    impl RequestGate for Arc<RecordingPeerAddrGate> {
+        fn name(&self) -> &'static str {
+            (**self).name()
+        }
+        fn check(&self, head: &RequestHead, ctx: &GateContext) -> GateOutcome {
+            (**self).check(head, ctx)
         }
     }
 
@@ -2364,7 +2444,7 @@ mod tests {
         client.shutdown().await.unwrap();
 
         let shutdown_flag = Arc::new(AtomicBool::new(true));
-        handle_connection_with_permit(server, server_stream, None, &shutdown_flag).await;
+        handle_connection_with_permit(server, server_stream, None, &shutdown_flag, None).await;
 
         let mut out = Vec::new();
         client.read_to_end(&mut out).await.unwrap();
@@ -3148,6 +3228,86 @@ GET /c HTTP/1.1\r\n\r\n",
             .unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+    }
+
+    #[tokio::test]
+    async fn request_gate_receives_real_peer_addr_over_tcp() {
+        // 実 TCP accept 経路で `GateContext::peer_addr()` がクライアント側の
+        // `local_addr()` と一致することを検証する e2e テスト（イシュー #486）。
+        let gate = Arc::new(RecordingPeerAddrGate {
+            observed: std::sync::Mutex::new(Vec::new()),
+        });
+        let server = Server::new().gate(Arc::clone(&gate));
+        let bound = server.bind("127.0.0.1:0").await.unwrap();
+        let addr = bound.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = bound.run().await;
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let client_local_addr = client.local_addr().unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut out = Vec::new();
+        client.read_to_end(&mut out).await.unwrap();
+
+        let observed = gate.observed.lock().unwrap();
+        assert_eq!(
+            observed.as_slice(),
+            &[Some(client_local_addr)],
+            "gate が観測した peer_addr はクライアントの local_addr と一致するはず"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_connection_duplex_path_yields_none_peer_addr() {
+        // `tokio::io::duplex`（非ソケット）経路では `GateContext::peer_addr()` が
+        // 常に `None` であることを固定する（イシュー #486、`GateContext` の
+        // doc「`peer_addr` が `None` になる経路」）。
+        let gate = Arc::new(RecordingPeerAddrGate {
+            observed: std::sync::Mutex::new(Vec::new()),
+        });
+        let server = Server::new().gate(Arc::clone(&gate));
+        let (mut client, server_stream) = tokio::io::duplex(8192);
+        use tokio::io::AsyncWriteExt as _;
+        client
+            .write_all(b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        client.shutdown().await.unwrap();
+        handle_connection(&server, server_stream).await;
+
+        let observed = gate.observed.lock().unwrap();
+        assert_eq!(observed.as_slice(), &[None]);
+    }
+
+    #[tokio::test]
+    async fn handle_connection_with_peer_addr_injects_supplied_addr() {
+        // `handle_connection_with_peer_addr`（公開 API、イシュー #486）が
+        // 注入した `SocketAddr` を gate へ届けることを検証する。実ソケットの
+        // 代わりに `tokio::io::duplex` を使い、注入経路そのもの
+        // （`peer_addr: Some(..)` を明示指定した場合の伝搬）に焦点を絞る
+        // （実 TCP accept 経路の検証は
+        // `request_gate_receives_real_peer_addr_over_tcp` が別途担う）。
+        let gate = Arc::new(RecordingPeerAddrGate {
+            observed: std::sync::Mutex::new(Vec::new()),
+        });
+        let server = Server::new().gate(Arc::clone(&gate));
+        let (mut client, server_stream) = tokio::io::duplex(8192);
+        use tokio::io::AsyncWriteExt as _;
+        client
+            .write_all(b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        client.shutdown().await.unwrap();
+
+        let injected_addr: std::net::SocketAddr = "203.0.113.9:9999".parse().unwrap();
+        handle_connection_with_peer_addr(&server, server_stream, injected_addr).await;
+
+        let observed = gate.observed.lock().unwrap();
+        assert_eq!(observed.as_slice(), &[Some(injected_addr)]);
     }
 
     #[test]

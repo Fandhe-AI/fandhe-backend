@@ -8,7 +8,9 @@
 
 use fandhe_backend_core::interceptor::Interceptor;
 use fandhe_backend_core::streaming::StreamingResponse;
-use fandhe_backend_core::{GateOutcome, Handler, RequestGate, Server, handle_connection};
+use fandhe_backend_core::{
+    GateContext, GateOutcome, Handler, RequestGate, Server, handle_connection,
+};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -219,7 +221,7 @@ impl RequestGate for RequireAuthHeader {
         "require-auth-header"
     }
 
-    fn check(&self, head: &RequestHead) -> GateOutcome {
+    fn check(&self, head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
         match head.header("authorization") {
             Some(_) => GateOutcome::Allow,
             None => GateOutcome::reject(401, Vec::new()),

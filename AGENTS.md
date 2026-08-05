@@ -114,6 +114,12 @@ src/server.rs` の `Handler` trait、`fandhe_backend_routes::Router` の `route_
 `docs/design/async-handler.md` の再評価条件（8 節）に従い設計文書を更新してから
 着手すること。
 
+`RequestGate::check` はイシュー #486 で `ctx: &GateContext` 引数を追加した
+（`crates/core/src/extension.rs`）。`GateContext::peer_addr()` は accept した
+ソケットの実 peer address を運ぶが、この変更は上記の同期契約そのものには
+影響しない（`GateContext` は `Copy` 型の単純な値渡しであり、`async fn` 化や
+I/O を一切伴わない）。詳細は `docs/design/gate-peer-addr.md` を参照。
+
 ## AI エージェント向け変更ガイド
 
 TASK-11.3（#35、`docs/spec/05-tasks.md` Phase 3 / MS-3、`docs/spec/04-requirements.md`
