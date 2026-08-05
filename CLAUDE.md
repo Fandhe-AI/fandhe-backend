@@ -204,7 +204,45 @@ fandhe-backend/
 │   │                                    # `run_until` 自体をブロックせず背景 drain し、
 │   │                                    # 超過分は強制クローズする（既存の graceful
 │   │                                    # shutdown・拡張点の評価順序は不変、
-│   │                                    # `docs/design/rebind.md` 参照）。
+│   │                                    # `docs/design/rebind.md` 参照）。WS 委譲タスクの
+│   │                                    # 世代キャンセル機構（`GenerationCancel`/
+│   │                                    # `UpgradeCancel`、`websocket` feature ゲート、
+│   │                                    # イシュー #489〜#497）に続き、イシュー #498 で
+│   │                                    # `SessionDrain`（`webrtc` feature ゲート、独立
+│   │                                    # シーム）を新設し、`Server::webrtc` 登録済みの
+│   │                                    # `RTCPeerConnection`（`plugin-webrtc` の
+│   │                                    # `WebRtcConfig::registry`）へも最終 graceful
+│   │                                    # shutdown・rebind 世代 drain 両経路から有界な
+│   │                                    # 明示 close を伝播するようにした（WS 以外の
+│   │                                    # 長時間委譲プラグインへの水平展開第 1 弾、
+│   │                                    # `docs/design/ws-cancellation-propagation.md`
+│   │                                    # 10 節参照）。`RebindHandle::rebind` の doc に
+│   │                                    # 「`Server::webrtc` 登録済みの場合、rebind と
+│   │                                    # 無関係な進行中の WebRTC 通話もレジストリ全件が
+│   │                                    # 強制切断される」という副作用を明記した
+│   │                                    # （レビュー対応。実接続を確立し
+│   │                                    # `BoundServer::rebind_handle().rebind()` 経由で
+│   │                                    # force-close されることを end-to-end で検証する
+│   │                                    # `crates/plugin-webrtc/tests/rebind_force_close.rs`
+│   │                                    # を一時追加したが、`fandhe-backend-core`
+│   │                                    # （`webrtc` feature）への dev-dependency
+│   │                                    # 追加が package レベルの循環を生み、`cargo
+│   │                                    # metadata` ベースの pay-for-what-you-use
+│   │                                    # 検証（`cargo geiger`）を偽陽性で FAIL させる
+│   │                                    # ことが判明したため削除した（実ビルドの依存
+│   │                                    # グラフ自体は汚染されない。standalone crate
+│   │                                    # 化による再設計は別途 Issue で追跡）。同
+│   │                                    # クレートの `WebRtcConfig::activate_slot` は
+│   │                                    # `terminal_draining` の判定を `registry` の
+│   │                                    # `Mutex` ロック外で読んでいたため、終端 drain
+│   │                                    # （`drain_for_shutdown`）と並行するシグナリング
+│   │                                    # 完了が drain 後に `Active` 化してしまう TOCTOU
+│   │                                    # が起こりえた。判定を `Active` 遷移と同一ロック
+│   │                                    # 区間へ統合し修正した（この回帰テストは
+│   │                                    # `crates/plugin-webrtc/src/config.rs` の
+│   │                                    # `activate_slot_rejects_pc_even_after_
+│   │                                    # take_active_peers_already_ran` として
+│   │                                    # 引き続き実 `RTCPeerConnection` で検証する）。
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む
@@ -267,7 +305,17 @@ fandhe-backend/
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
 │   ├── plugin-webrtc                  # in-process WebRTC プラグイン（`webrtc-rs` 直接依存、TASK-8.1、#26。
 │   │                                    # `crates/core` の `webrtc` feature 経由で配線。攻撃表面が大きいため
-│   │                                    # `plugin-webrtc-proxy` が MVP 推奨、クレート境界で完全分離）
+│   │                                    # `plugin-webrtc-proxy` が MVP 推奨、クレート境界で完全分離）。
+│   │                                    # `close_active_peers` / `drain_for_shutdown`（`drain` モジュール）で
+│   │                                    # `WebRtcConfig::registry` 上のアクティブな `RTCPeerConnection` を
+│   │                                    # 1 接続あたり有界タイムアウトで明示的に close する API を追加した
+│   │                                    # （イシュー #498。WS 委譲タスクの世代キャンセル機構（#489〜#497）を
+│   │                                    # WS 以外の長時間委譲プラグインへ水平展開する第 1 弾。`crates/core` 側は
+│   │                                    # `SessionDrain`（`webrtc` feature ゲート、独立シーム）が最終 graceful
+│   │                                    # shutdown・rebind 世代 drain の両経路から発火する。`drain_for_shutdown`
+│   │                                    # のみ `WebRtcConfig::begin_terminal_drain` で以降の新規登録を拒否する
+│   │                                    # フェイルクローズ判定を伴う。設計・棲み分けは
+│   │                                    # `docs/design/ws-cancellation-propagation.md` 10 節を参照）
 │   ├── plugin-graphql                 # GraphQL プラグイン（パスインターセプト型、TASK-2.4、#21 で境界確立。
 │   │                                    # REQ-2 の「2 種のプラグイン着脱」受け入れ基準は当初 webrtc-proxy と
 │   │                                    # 共に実証（#21。実 WebSocket が並行実装中だったための代替ペア）、

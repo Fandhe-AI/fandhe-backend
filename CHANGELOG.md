@@ -109,6 +109,26 @@
   の統合テスト（`crates/core/tests/ws_cancellation.rs`）が担保します
   （`BoundServer::run_until` / `RebindHandle::rebind` の doc「既知の限界」
   から、解消済みの WS 除外記述も同イシューで更新済み）。
+- `fandhe-backend-plugin-webrtc`: `close_active_peers` / `drain_for_shutdown`
+  （`drain` モジュール）を追加しました。`WebRtcConfig::registry` 上のアクティブな
+  `RTCPeerConnection` を、1 接続あたり有界タイムアウトで明示的に `close()`
+  します。`drain_for_shutdown` は加えて `WebRtcConfig::begin_terminal_drain`
+  を呼び、以降のシグナリング成功をレジストリへ登録させずフェイルクローズで
+  拒否します（イシュー
+  [#498](https://github.com/Fandhe-AI/fandhe-backend/issues/498)）。追加のみで
+  breaking change ではありません
+- `fandhe-backend-core`: WS 委譲タスクの世代キャンセル機構（#489〜#497）を WS
+  以外の長時間委譲プラグインへ水平展開する第 1 弾として、`SessionDrain`
+  （`webrtc` feature ゲート、`GenerationCancel`/`UpgradeCancel` とは独立した
+  新シーム）を追加しました。`Server::webrtc` 登録済みの `WebRtcConfig` へ、
+  最終 graceful shutdown（#313）は `crate::plugin::SessionDrain::fire(true)`
+  （`drain_for_shutdown` 相当）、rebind 世代 drain（#485/#488）は
+  `fire(false)`（`close_active_peers` 相当）を発火します（イシュー
+  [#498](https://github.com/Fandhe-AI/fandhe-backend/issues/498)、設計は
+  `docs/design/ws-cancellation-propagation.md` 10 節）。棚卸しの結果、他の
+  プラグイン（graphql / openapi / cors / compression / static / tracing /
+  webrtc-proxy）は展開不要と判断しています（同 10.1 節）。新規依存・tokio
+  feature 追加はゼロ
 
 ### Changed
 

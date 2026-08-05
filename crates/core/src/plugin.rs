@@ -187,6 +187,101 @@ impl UpgradeCancel {
     }
 }
 
+/// WebRTC セッション（`RTCPeerConnection`）の有界 drain シーム（イシュー #498、
+/// `docs/design/ws-cancellation-propagation.md` 10 節「WS 以外への水平展開」）。
+///
+/// [`GenerationCancel`]/[`UpgradeCancel`]（WS 委譲タスク向け、`watch` チャネルによる
+/// 世代別購読）とは独立した新シームとして追加する。`plugin-webrtc` はパスインターセプト
+/// 型プラグイン（`try_intercept` から呼ばれ、リクエスト/レスポンスは完結するがセッション
+/// 自体はプロセス内レジストリ `WebRtcConfig::registry` で世代非依存に生存し続ける）で
+/// あり、`UpgradeHandler` のような 1 コネクション 1 世代購読の構造を持たないため、
+/// 「発火時点のアクティブ接続スナップショットを close する」レジストリ drain 型で実現
+/// する（`fandhe_backend_plugin_webrtc::{close_active_peers, drain_for_shutdown}` へ
+/// 委譲）。`webrtc` feature 無効時・`Server::webrtc` 未登録時はいずれもフィールドを
+/// 持たない ZST/no-op になる（pay-for-what-you-use、[[pay-for-what-you-use]]）。
+///
+/// `Clone` は `WebRtcConfig` 自体が `Arc` ベースで安価に共有可能なことに従う
+/// （`run_until` が世代交代のたびに `spawn_generation_drain` へ複製を渡し、自身は
+/// 最終 shutdown まで元のインスタンスを保持し続けるために必要、`GenerationCancel`
+/// が世代ごとに新規構築されるのとは対照的な「単一インスタンスを使い回す」設計）。
+#[derive(Clone)]
+pub(crate) struct SessionDrain {
+    #[cfg(feature = "webrtc")]
+    config: Option<fandhe_backend_plugin_webrtc::WebRtcConfig>,
+}
+
+/// 1 接続あたりの `RTCPeerConnection::close()` 打ち切りタイムアウト（イシュー #498）。
+///
+/// `run_until` の「grace + ε 以内に必ず戻る」保証（既存の permit 回収タイムアウト、
+/// `server.rs` の doc を参照）を [`SessionDrain::fire`] 自体が妨げないよう、`fire` は
+/// この定数を使う drain 処理を detached タスクへ切り離す（`fire` 自体は同期関数のまま
+/// 即座に戻る）。WS 側の `CLOSE_GRACE`（`crates/plugin-websocket`）と役割は同様だが、
+/// DTLS/SCTP のクローズシーケンスは Close frame 応答待ちと性質が異なるため独立した
+/// 定数として定義する。
+#[cfg(feature = "webrtc")]
+const SESSION_DRAIN_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+impl SessionDrain {
+    /// `Server` に登録済みの [`fandhe_backend_plugin_webrtc::WebRtcConfig`]（あれば）を
+    /// 束縛して構築する。`run_until` が世代交代（rebind）・最終 shutdown のいずれの
+    /// タイミングでも呼べるよう、`GenerationCancel` のような世代単位の再構築は行わず
+    /// `run_until` の開始時に 1 度だけ構築する（`WebRtcConfig` 自体が世代を跨いで
+    /// 共有される設計のため、世代ごとに作り直す必要がない）。
+    pub(crate) fn new(server: &Server) -> Self {
+        #[cfg(feature = "webrtc")]
+        {
+            Self {
+                config: server.webrtc_config().cloned(),
+            }
+        }
+        #[cfg(not(feature = "webrtc"))]
+        {
+            let _ = server;
+            Self {}
+        }
+    }
+
+    /// drain を発火する。`is_final` が `true` なら最終 graceful shutdown 相当
+    /// （[`fandhe_backend_plugin_webrtc::drain_for_shutdown`]、以降の新規登録を拒否した
+    /// うえで既存接続を close）、`false` なら rebind 世代 drain 相当
+    /// （[`fandhe_backend_plugin_webrtc::close_active_peers`]、スナップショットの close
+    /// のみ）を呼ぶ（両者の使い分け根拠は `docs/design/ws-cancellation-propagation.md`
+    /// 10 節を参照）。
+    ///
+    /// 呼び出し元（`run_until`・`spawn_generation_drain`）をブロックしないよう、実際の
+    /// drain 処理は `tokio::spawn` した detached タスクへ切り離す（`GenerationCancel::
+    /// fire` が同期的に `watch::Sender::send_replace` するだけで完結するのとは異なり、
+    /// 本シームの drain 処理は `RTCPeerConnection::close()` という有界だが非ゼロ時間の
+    /// 非同期 I/O を伴うため）。`Server::webrtc` 未登録（`config` が `None`）の場合は
+    /// 何もしない。
+    pub(crate) fn fire(&self, is_final: bool) {
+        #[cfg(feature = "webrtc")]
+        {
+            if let Some(config) = self.config.clone() {
+                tokio::spawn(async move {
+                    if is_final {
+                        fandhe_backend_plugin_webrtc::drain_for_shutdown(
+                            &config,
+                            SESSION_DRAIN_CLOSE_TIMEOUT,
+                        )
+                        .await;
+                    } else {
+                        fandhe_backend_plugin_webrtc::close_active_peers(
+                            &config,
+                            SESSION_DRAIN_CLOSE_TIMEOUT,
+                        )
+                        .await;
+                    }
+                });
+            }
+        }
+        #[cfg(not(feature = "webrtc"))]
+        {
+            let _ = is_final;
+        }
+    }
+}
+
 /// 登録済みプラグインへパスインターセプトを試みる。
 ///
 /// `RequestGate` → `UpgradeHandler` の評価を通過し、既定 `Handler::handle` を
@@ -898,5 +993,51 @@ mod cancel_tests {
             result.is_err(),
             "disabled() のハンドルは発火源を持たないため解決しないはず"
         );
+    }
+}
+
+/// [`SessionDrain`]（イシュー #498、世代キャンセル機構の WS 以外への水平展開第 1 弾）
+/// のユニットテスト。
+///
+/// 実 `RTCPeerConnection` を close する核心の振る舞い（`WebRtcConfig::
+/// begin_terminal_drain`・`activate_slot` のフェイルクローズ判定・
+/// `take_active_peers`）は `crates/plugin-webrtc/tests/session_drain.rs` が実
+/// ICE/DTLS で直接検証する（`crates/core` に `webrtc-rs` 由来の dev-dep を持ち込ま
+/// ない既存方針、`crates/core/tests/plugin_boundary_webrtc.rs` の crate doc を参照）。
+/// 本モジュールはコア側の配線契約——`Server::webrtc` 未登録時・`webrtc` feature
+/// 無効時の no-op、登録済み時の `fire` が panic しないこと——に責務を限定する。
+#[cfg(all(test, feature = "webrtc"))]
+mod session_drain_tests {
+    use super::{Server, SessionDrain};
+
+    /// `Server::webrtc` 未登録（`webrtc_config()` が `None`）の場合、
+    /// `SessionDrain::fire` は `is_final` いずれの値でも panic せず即座に戻る
+    /// （`fandhe_backend_plugin_webrtc` への委譲自体が発生しない no-op 経路）。
+    #[tokio::test]
+    async fn fire_is_noop_when_webrtc_not_registered() {
+        let server = Server::new();
+        let drain = SessionDrain::new(&server);
+
+        drain.fire(true);
+        drain.fire(false);
+
+        // detached タスクへ切り離された処理（登録ありの場合）が万一残っていても
+        // 本テストの完了を妨げないことを確認するため、一呼吸置く。
+        tokio::task::yield_now().await;
+    }
+
+    /// `Server::webrtc` 登録済み・Active な接続が 0 件の状態で `fire` を呼んでも
+    /// panic しないこと（`fandhe_backend_plugin_webrtc::{close_active_peers,
+    /// drain_for_shutdown}` が空レジストリに対して安全な no-op であることの、
+    /// コア側呼び出し経路を通した確認）。
+    #[tokio::test]
+    async fn fire_does_not_panic_with_empty_registry() {
+        let server = Server::new().webrtc(fandhe_backend_plugin_webrtc::WebRtcConfig::new());
+        let drain = SessionDrain::new(&server);
+
+        drain.fire(false);
+        drain.fire(true);
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }

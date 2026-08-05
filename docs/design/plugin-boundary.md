@@ -1057,6 +1057,28 @@ plugin_static;` 等）。利用者は `fandhe-backend-core` への依存 + featu
   `crates/core/tests/*_boundary.rs`（feature 有効側）の
   `config_built_via_core_reexport_*` テストで検証済み。
 
+## 5.13 パスインターセプト型のセッション drain 変種（イシュー #498）
+
+`webrtc`（4 節のパスインターセプト型パターン）は応答が完結した後も、応答返却の
+契機とは非同期に生存し続けるリソース（`RTCPeerConnection`）をプロセス内レジストリ
+（`WebRtcConfig::registry`）で保持する点が、他のパスインターセプト型プラグイン
+（graphql・openapi・static、いずれも接続タスク内で完結）と異なる。この「応答完結後も
+生存するリソース」は、`crates/core` の `CancelSafeJoinSet`（接続タスク単位の grace
+超過強制クローズ）の対象に含まれない。
+
+WS 委譲タスクの世代キャンセル機構（5 節の Upgrade 型パターン、`GenerationCancel`/
+`UpgradeCancel`）は「1 コネクション 1 世代購読」の構造を前提とするため、この形の
+セッションには直接適用できない。イシュー #498 は「発火時点のアクティブセッション
+スナップショットを close する」レジストリ drain 型（`crate::plugin::SessionDrain`、
+`crates/plugin-webrtc::drain` の `close_active_peers`/`drain_for_shutdown`）という
+別パターンを新設し、パスインターセプト型プラグインが応答完結後も長寿命リソースを
+保持する場合の水平展開先とした。設計判断・既知の限界の詳細は
+`docs/design/ws-cancellation-propagation.md` 10 節を参照。
+
+後続で同種の「応答完結後も生存するリソースを持つパスインターセプト型プラグイン」を
+追加する場合は、`GenerationCancel`/`UpgradeCancel` の再利用ではなく本パターン
+（独立した `Session*Drain` シーム + プラグイン側のレジストリ drain API）を検討する。
+
 ## 6. 検証コマンド
 
 | 検証 | コマンド | 期待結果 |

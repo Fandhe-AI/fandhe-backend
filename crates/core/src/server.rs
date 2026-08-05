@@ -1311,6 +1311,21 @@ impl RebindHandle {
     /// キャンセルシグナル」・統合テスト `crates/core/tests/
     /// ws_cancellation.rs`（イシュー #493）を参照）。
     ///
+    /// # `Server::webrtc` 登録済みの場合、rebind と無関係な進行中 WebRTC 通話も強制切断される
+    ///
+    /// [`Server::webrtc`] にスキーマ登録済みの場合、`rebind` 呼び出しのたびに
+    /// `crate::plugin::SessionDrain` が発火し、`fandhe_backend_plugin_webrtc::
+    /// WebRtcConfig` のプロセス内レジストリ上の**アクティブな `RTCPeerConnection` を
+    /// 全件**明示的に `close()` する（イシュー #498）。この drain は
+    /// リスニングアドレスの世代（新旧）を区別せず、rebind 発火時点でレジストリに
+    /// 存在するアクティブ接続すべてが対象になる。したがって、単なるリスニング
+    /// ポート切り替えのつもりで `rebind` を呼んでも、rebind と無関係な旧世代・新世代
+    /// 問わずすべての進行中 WebRTC 通話が強制切断されうる。WS 委譲セッション
+    /// （上記「旧世代」drain）とは異なり `Server::shutdown_grace_period` の猶予も
+    /// 適用されず、`per_close_timeout`（有界タイムアウト）内で即座に close が試みられる
+    /// 点に注意すること（設計判断・棲み分けは `docs/design/ws-cancellation-propagation.md`
+    /// 10 節、`crate::plugin::SessionDrain` の doc を参照）。
+    ///
     /// # キャンセル安全性・並行呼び出し
     ///
     /// - **呼び出し元タスクのキャンセル**: `tx.send` が成功したあと
@@ -1518,13 +1533,23 @@ impl Drop for CancelSafeJoinSet {
 /// 冒頭で 1 回だけ発火し（`docs/design/ws-cancellation-propagation.md` 5.2
 /// 節「drain 開始時に発火」）、この世代の WS 委譲タスクへキャンセルを
 /// 伝播する。`websocket` feature 無効時 `fire()` は no-op（型 doc を参照）。
+///
+/// `session_drain` は [`crate::plugin::SessionDrain`]（イシュー #498。WS 以外の
+/// 長時間委譲プラグインへの水平展開第 1 弾、`docs/design/
+/// ws-cancellation-propagation.md` 10 節）。WebRTC セッションは世代非依存の
+/// プロセス内レジストリで管理されるため、`old_cancel` のような世代別ハンドルでは
+/// なく `run_until` 全体で共有する 1 個のインスタンスをそのまま受け取り、
+/// `fire(false)`（rebind 相当、以降の新規登録は拒否しないスナップショット
+/// drain）を同じタイミングで呼ぶ。
 fn spawn_generation_drain(
     mut old_join_set: CancelSafeJoinSet,
     old_cancel: crate::plugin::GenerationCancel,
+    session_drain: crate::plugin::SessionDrain,
     grace: Duration,
 ) {
     tokio::spawn(async move {
         old_cancel.fire();
+        session_drain.fire(false);
         let drained = tokio::time::timeout(grace, async {
             while old_join_set.join_next().await.is_some() {}
         })
@@ -1795,6 +1820,12 @@ impl BoundServer {
         // 直後を参照。`docs/design/ws-cancellation-propagation.md` 5.1 節
         // 「両経路が同一の世代構造体を発火源として共有する」）。
         let mut current_cancel = crate::plugin::GenerationCancel::new();
+        // WS 以外の長時間委譲プラグイン（現状は WebRTC のみ）向けのセッション drain
+        // シーム（イシュー #498）。`current_cancel` とは異なり世代ごとに作り直さず、
+        // `run_until` の生存期間全体で 1 個のインスタンスを使い回す（`SessionDrain`
+        // 型 doc の「単一インスタンスを使い回す」設計を参照。`WebRtcConfig` 自体が
+        // 世代を跨いで共有されるため、世代別に分ける意味がない）。
+        let session_drain = crate::plugin::SessionDrain::new(&server);
 
         loop {
             // 完了済みタスクを反復のたびに全件回収する（1 件だけ回収すると
@@ -1897,7 +1928,12 @@ impl BoundServer {
                         &mut current_cancel,
                         crate::plugin::GenerationCancel::new(),
                     );
-                    spawn_generation_drain(old_join_set, old_cancel, server.shutdown_grace_period);
+                    spawn_generation_drain(
+                        old_join_set,
+                        old_cancel,
+                        session_drain.clone(),
+                        server.shutdown_grace_period,
+                    );
                     // 4. 新世代用のフラグを用意する。
                     current_shutdown_flag = Arc::new(AtomicBool::new(false));
                     // 差し替え完了を通知する。呼び出し側（`RebindHandle::rebind`）が
@@ -1945,6 +1981,14 @@ impl BoundServer {
         // 追加するだけ」）。`run_until` 自体の制御フローには分岐が増えず、
         // grace 待ち・強制クローズの実装は不変（下記コメント参照）。
         current_cancel.fire();
+        // WebRTC セッションの終端 drain を発火する（イシュー #498）。以降の新規
+        // シグナリング成功はレジストリへ登録されず即座に close される
+        // （`fandhe_backend_plugin_webrtc::drain_for_shutdown` の doc・`SessionDrain::
+        // fire` の doc を参照）。`current_cancel.fire()` と同じ直後のタイミングで
+        // 呼ぶことで、両シームの発火順序を揃える（`docs/design/
+        // ws-cancellation-propagation.md` 5.3 節と同型の「shutdown_flag を true に
+        // した直後」の位置づけ）。
+        session_drain.fire(true);
         drop(listener);
 
         // 2. in-flight 完了待ち（grace 上限）。

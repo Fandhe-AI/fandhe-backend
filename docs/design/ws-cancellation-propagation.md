@@ -380,11 +380,13 @@ cargo tree -p fandhe-backend-plugin-websocket -e features
 - `webrtc-proxy` 等、WebSocket 以外の Upgrade/長時間接続プラグインへの
   同機構の水平展開。将来必要になった場合は
   [[out-of-scope-tracking]] に従いユーザー承認を得て別途 Issue 化する
+  → **イシュー #498 で棚卸し・部分実装済み（下記 10 節）**
 - rebind の accept backlog 喪失（`docs/design/rebind.md` 6 節の別の
   既知の限界。本設計とは独立の課題）
 
 いずれも [[out-of-scope-tracking]] に従い、Issue 化はユーザー承認を得て
 から行う。
+
 
 ## 10. ハンドラ実行中・Reply 送出中のキャンセル意味論（#499）
 
@@ -446,3 +448,120 @@ Future 跨ぎで保持する挙動に依拠する）。
 `race_cancel` で包む。既存の `handle_cancellation` → `close_and_drain`
 （`CLOSE_GRACE` 有界化・`ConnectionClosed`/`AlreadyClosed` 許容）は無変更で
 共有する。
+
+## 11. WS 以外への水平展開（イシュー #498）
+
+9 節でスコープ外とした「WS 以外の Upgrade/長時間接続プラグインへの水平展開」を、
+イシュー #498 で棚卸し・実装した。対象は「長時間タスク委譲・長寿命リソース保持を
+行うプラグイン」であり、リクエスト/レスポンスが接続タスク内で完結するプラグイン
+（`crates/core` の `CancelSafeJoinSet` の grace 超過強制クローズ対象に自然に含まれる）
+は対象外とする。
+
+### 11.1 棚卸し結果
+
+| プラグイン / 経路 | 委譲パターン | 世代管理外の長時間タスク・リソース | 判定 |
+|---|---|---|---|
+| plugin-websocket | `UpgradeHandler` + detached spawn（permit move） | あり | **実装済み**（#489〜#497、本設計 1〜9 節） |
+| **plugin-webrtc** | パスインターセプト（`try_handle_rtc_offer`）。シグナリング自体は `signaling_timeout` 有界・接続タスク内 | **あり**: 応答返却後も `RTCPeerConnection`（`WebRtcConfig::registry` の `RegistrySlot::Active` が `Arc` 保持）+ webrtc-rs 内部タスクが `CancelSafeJoinSet`・permit の外で生存し続ける | **展開対象（#498 で実装）** |
+| plugin-webrtc-proxy | パスインターセプト。`forward_offer` は `request_timeout` 有界・接続タスク内（`tokio::spawn` は全てテストコード内） | なし（実 WebRTC 処理は別プロセスでフレームワークのライフサイクル外、`docs/design/webrtc-process-isolation.md`） | 展開不要 |
+| plugin-graphql / openapi / cors / compression | リクエスト/レスポンス完結型（接続タスク内 = `CancelSafeJoinSet` の grace 超過強制クローズ対象） | なし | 展開不要 |
+| plugin-static | `spawn_blocking`（接続タスクが await で待つ有界 I/O） | なし | 展開不要 |
+| plugin-tracing | non_blocking writer のバックグラウンドスレッド（プロセス寿命・世代非依存、`WorkerGuard` で flush 管理） | 世代キャンセルの対象外（別機構、プロセス終了時に flush する設計） | 展開不要（将来必要になれば別途 [[out-of-scope-tracking]] で検討） |
+| `Handler::handle_streaming` / async ハンドラ | 接続タスク内で完結（`CancelSafeJoinSet` 対象） | なし | コア既存機構でカバー済み |
+
+→ 実装を伴う展開対象は **plugin-webrtc のみ**。
+
+### 11.2 plugin-webrtc への展開設計
+
+**採用方式: レジストリ drain 型（watch 購読型ではない）**。
+
+WebRTC の `RTCPeerConnection` セッションは、WS のような「1 コネクション 1 世代」の
+構造を持たない。`try_handle_rtc_offer` はパスインターセプト型（リクエスト/レスポンス
+完結型）であり、シグナリング用の TCP 接続自体は 200 応答の送出と同時に完了する
+（permit も通常どおり接続タスク終了時に解放される）。しかし応答後も
+`RTCPeerConnection`（`WebRtcConfig::registry` の `RegistrySlot::Active` が
+`Arc<RTCPeerConnection>` を保持）はプロセス内レジストリで**世代非依存**に生存し
+続ける。`WebRtcConfig` 自体が `Clone`（`Arc` ベース）で世代を跨いで共有される設計
+（`rebind` 前後で同一インスタンスを使い回す）であるため、WS のような「世代ごとに
+新しい `watch::Sender` を作り、1 コネクションごとに `subscribe` する」構造を適用
+できない。
+
+代わりに、**発火時点のアクティブ接続スナップショットを close する「レジストリ
+drain 型」** を採用した:
+
+- [`WebRtcConfig::take_active_peers`]（`crates/plugin-webrtc/src/config.rs`）が
+  レジストリから `Active` エントリのみを一括除去し、保持していた
+  `Arc<RTCPeerConnection>` を返す（`Reserved`＝シグナリング進行中のエントリは
+  対象外のままレジストリに残す）
+- [`close_active_peers`]（`crates/plugin-webrtc/src/drain.rs`）が上記スナップショット
+  を受け取り、1 接続あたり `per_close_timeout` を上限に並行して `RTCPeerConnection::
+  close()`（DTLS/SCTP の正規クローズシーケンス、WS の Close frame 送出に相当する
+  正常終了手順）を実行する
+- [`drain_for_shutdown`] は [`close_active_peers`] に加えて
+  [`WebRtcConfig::begin_terminal_drain`] を呼び、以降の
+  [`WebRtcConfig::activate_slot`] 呼び出しをフェイルクローズで拒否させる
+  （最終 shutdown 専用。`registry`・`terminal_draining` フラグは `Clone` で共有
+  されるため、この呼び出しは `WebRtcConfig` の全クローンに波及する）
+
+コア側は [`crate::plugin::SessionDrain`]（`crates/core/src/plugin.rs`、`webrtc`
+feature ゲート）という独立した新シームを追加した。`GenerationCancel`/
+`UpgradeCancel`（WS 専用、`watch` チャネルによる世代別購読）とは feature ゲート・
+構造とも混ぜず、`WebRtcConfig` を世代を跨いで 1 個だけ保持する設計にした
+（`GenerationCancel` が世代ごとに再構築されるのとは対照的）。
+
+発火タイミングは本設計 5.2 節の WS 側と統一する:
+
+- **最終 shutdown**: `current_cancel.fire()`（`crates/core/src/server.rs`）の直後で
+  `session_drain.fire(true)` を呼ぶ（`drain_for_shutdown` 相当。以降の新規登録を
+  拒否する）
+- **rebind**: `spawn_generation_drain` の drain タスク冒頭、`old_cancel.fire()` と
+  同位置で `session_drain.fire(false)` を呼ぶ（`close_active_peers` 相当。
+  `WebRtcConfig` は新世代とも共有されるため、終端 drain フラグは立てない）
+
+`fire` 自体は同期関数のまま即座に戻り、実際の drain 処理（`RTCPeerConnection::
+close()` を伴う非同期 I/O）は `tokio::spawn` した detached タスクへ切り離す。
+これにより `run_until` の「grace + ε 以内に必ず戻る」既存保証（5.3 節）に
+新たな待機ステップを追加しない。
+
+### 11.3 競合（発火とシグナリング完了の race）の扱い
+
+- **最終 shutdown**: `WebRtcConfig::begin_terminal_drain` が立てるフラグにより、
+  終端 drain 開始後に完了したシグナリング（`complete_signaling` 内の
+  `activate_slot` 呼び出し）はレジストリへ登録されず `false` を返す。呼び出し元
+  （`crates/plugin-webrtc/src/handler.rs`）はこれを見て生成済みの
+  `RTCPeerConnection` を明示的に `close()` する（フェイルクローズ、
+  [[security]]）。判定と登録は `WebRtcConfig::registry` の単一 `Mutex` ロック
+  区間で行うため、TOCTOU は生じない
+- **rebind**: `WebRtcConfig` は新世代と共有され続けるため、終端 drain フラグは
+  立てない（スナップショット方式のみ）。発火（`take_active_peers` によるスナップ
+  ショット取得）から新規シグナリングが `activate_slot` に到達するまでの間に
+  完了したシグナリングは、新世代の接続と区別できず生き残る**既知の限界**である。
+  ただしこの残余 race は `WebRtcConfig::signaling_timeout`（既定 10 秒）で有界
+  であり、無期限に残ることはない
+
+### 11.4 pay-for-what-you-use・テスト境界
+
+- コア側の新規コード（`SessionDrain`）は全て `#[cfg(feature = "webrtc")]` に
+  閉じる。既存 `GenerationCancel`（`websocket` feature ゲート）は変更せず、
+  独立した新シームとして追加した（feature ゲートを混ぜない）
+- `webrtc` feature 有効・`Server::webrtc` 未登録時（`webrtc_config()` が
+  `None`）は `SessionDrain::fire` が即座に no-op で戻る。新規外部依存・tokio
+  feature 追加なし（`close()` は既存 `webrtc-rs` API）
+- `crates/core/tests/plugin_boundary_webrtc.rs` が既に確立していた方針
+  （「実データチャネル疎通の検証は `crates/plugin-webrtc/tests/` に委ね、
+  `crates/core` に `webrtc-rs` 由来の dev-dep を持ち込まない」）を踏襲し、
+  実 ICE/DTLS を伴う drain の核心的な振る舞い検証は
+  `crates/plugin-webrtc/tests/session_drain.rs`
+  （`close_active_peers_closes_established_connection`・
+  `drain_for_shutdown_rejects_subsequent_activation`）に置いた。
+  `crates/core/tests/webrtc_cancellation.rs` はコア側の配線契約
+  （`SessionDrain::fire` が正しいタイミングで呼ばれ、accept ループ・
+  シグナリング処理を破壊しないこと）の検証に責務を限定する
+
+[`WebRtcConfig::take_active_peers`]: ../../crates/plugin-webrtc/src/config.rs
+[`close_active_peers`]: ../../crates/plugin-webrtc/src/drain.rs
+[`drain_for_shutdown`]: ../../crates/plugin-webrtc/src/drain.rs
+[`WebRtcConfig::begin_terminal_drain`]: ../../crates/plugin-webrtc/src/config.rs
+[`WebRtcConfig::activate_slot`]: ../../crates/plugin-webrtc/src/config.rs
+[`crate::plugin::SessionDrain`]: ../../crates/core/src/plugin.rs
+
