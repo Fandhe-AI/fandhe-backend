@@ -142,8 +142,16 @@ async fn spawn_session(
         ParseOutcome::Incomplete => unreachable!(),
     };
     let (server_side, mut client_side) = tokio::io::duplex(64 * 1024);
-    let server_task =
-        tokio::spawn(async move { handle_upgrade(server_side, &head, Vec::new(), &config).await });
+    let server_task = tokio::spawn(async move {
+        handle_upgrade(
+            server_side,
+            &head,
+            Vec::new(),
+            &config,
+            std::future::pending::<()>(),
+        )
+        .await
+    });
 
     let response = read_http_response_line(&mut client_side).await;
     assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));

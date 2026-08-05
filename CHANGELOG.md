@@ -24,6 +24,22 @@
      必ず `GateOutcome::Reject` を返してください（フェイルクローズ、
      `GateContext` の doc を参照）。実 peer address を注入したい呼び出し元は
      新設の `handle_connection_with_peer_addr` を使ってください。
+2. **`fandhe-backend-plugin-websocket`**: `handle_upgrade` のシグネチャへ
+   キャンセル `Future` 引数 `cancel: C where C: Future<Output = ()>` を
+   追加しました（イシュー
+   [#492](https://github.com/Fandhe-AI/fandhe-backend/issues/492)、設計は
+   [#490](https://github.com/Fandhe-AI/fandhe-backend/issues/490)・
+   `docs/design/ws-cancellation-propagation.md`）。コア（`fandhe-backend-core`）
+   の `UpgradeHandler` 経由の呼び出しは自動的に世代キャンセルシグナルを渡す
+   ため影響を受けません。`handle_upgrade` を直接呼び出しているコード
+   （テスト等）が対象です。
+   - **移行手順**: キャンセル不要な呼び出しは第 5 引数に
+     `std::future::pending::<()>()` を渡してください（従来と同じ「キャンセル
+     されない」挙動になります）。キャンセル発火時は、ハンドシェイク開始前
+     なら 101 応答を送出せず終了、セッション確立後なら正常な Close
+     ハンドシェイク（close code 1001 Going Away・固定 reason）を送出し、
+     応答（または EOF）を最大 10 秒（内部定数 `CLOSE_GRACE`）待ってから
+     終了します。
 
 ### Added
 
@@ -53,14 +69,13 @@
   発火し、委譲済み WS 専用タスクへ伝播します。新規依存・tokio feature 追加は
   ゼロ（コアの既存 `sync` feature 内で完結、`plugin-websocket` への委譲境界は
   キャンセル `Future` として渡し `sync` feature を要求しない）。
-  **現時点の挙動は中間実装**であり、キャンセル発火時は
-  `fandhe_backend_plugin_websocket::handle_upgrade` の `Future` を drop する
-  ハードクローズ（TCP を即座に切断）を行います。WS プロトコルレベルの正常な
-  Close フレーム送信への置き換えはイシュー
-  [#492](https://github.com/Fandhe-AI/fandhe-backend/issues/492) が担い、
-  その際 `handle_upgrade` のシグネチャへキャンセル `Future` 引数を追加する
-  breaking change が入る予定です（本エントリはその変更が実際に入る #492 側で
-  更新）。
+- `fandhe-backend-plugin-websocket`: `handle_upgrade` がキャンセル `Future`
+  発火時に正常な Close ハンドシェイク（close code 1001 Going Away → 応答を
+  最大 10 秒待つ有界ドレイン）で切断するようになりました（イシュー
+  [#492](https://github.com/Fandhe-AI/fandhe-backend/issues/492)）。#491 が
+  導入した中間実装（キャンセル発火時に `Future` を drop する TCP
+  ハードクローズ）を置き換え、WS プロトコルレベルで正常な切断を行います
+  （breaking change、上記 BREAKING CHANGES 節を参照）。
 
 ### Changed
 

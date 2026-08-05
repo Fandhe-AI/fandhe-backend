@@ -289,7 +289,14 @@ fandhe-backend/
 │   │                                    # 拡張点配線、Upgrade 型プラグイン境界パターンの第 1 号。
 │   │                                    # ユーザー定義メッセージハンドラ API（`WsMessageHandler`、
 │   │                                    # `WebSocketConfig::with_handler`、既定は `EchoHandler` で
-│   │                                    # 後方互換維持、Issue #179）を追加）
+│   │                                    # 後方互換維持、Issue #179）を追加）。`handle_upgrade`
+│   │                                    # がキャンセル `Future` 引数（第 5 引数、BREAKING
+│   │                                    # CHANGE）を受け取り、コアの世代キャンセルシグナル
+│   │                                    # （最終 graceful shutdown・rebind 世代 drain）発火時に
+│   │                                    # 正常な Close ハンドシェイク（close code 1001 Going
+│   │                                    # Away → 応答を最大 10 秒待つ有界ドレイン）で切断する
+│   │                                    # （イシュー #492。`crates/core` 側の配線・設計は
+│   │                                    # `docs/design/ws-cancellation-propagation.md` 参照）
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O

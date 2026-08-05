@@ -41,9 +41,6 @@
 //! 長時間占有し他タスクのテールレイテンシへ波及する問題への対処。実測・
 //! 採否根拠は `docs/design/plugin-boundary.md` 5.10.7 節を参照）。
 
-#[cfg(feature = "websocket")]
-use std::future::Future;
-
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::OwnedSemaphorePermit;
 
@@ -418,22 +415,23 @@ fn from_plugin_response(response: fandhe_backend_plugin_webrtc_proxy::Response) 
 /// で panic しても `tokio::spawn` のタスク境界で隔離され、コアの accept
 /// ループへは波及しない。
 ///
-/// # 世代キャンセルシグナル（イシュー #491）
+/// # 世代キャンセルシグナル（イシュー #491・#492）
 ///
 /// `cancel`（[`UpgradeCancel`]、呼び出し元 `handle_connection_with_permit`
-/// 経由で `run_until` の世代から伝搬）は spawn 済みタスク内で
-/// `handle_upgrade` と `tokio::select!` で race させる。キャンセルが
-/// `handle_upgrade` より先に解決した場合、`handle_upgrade` の `Future` を
-/// drop してタスクを打ち切る（TCP を即座に閉じるハードクローズ）。
-///
-/// これは `fandhe_backend_plugin_websocket::handle_upgrade` へキャンセル
-/// `Future` を渡して正常な Close ハンドシェイク（Close frame 送信 →
-/// `CLOSE_GRACE` 上限で応答待ち）を実行させる最終形（イシュー #492 が担う）
-/// までの**中間実装**である。`docs/design/ws-cancellation-propagation.md`
-/// 5.2 節が要求する「drain 開始時に発火」というタイミング契約自体は本
-/// 実装で既に満たされ、受け入れ条件（キャンセルが WS 委譲タスクへ通知
-/// されること）を独立に検証できる。permit は select 完了までタスクが
-/// 保持し続けるため、ハードクローズ時も上記「permit の契約」を破らない。
+/// 経由で `run_until` の世代から伝搬）は [`UpgradeCancel::into_future`] で
+/// `Future` へ変換したうえで、spawn 済みタスク内で
+/// `fandhe_backend_plugin_websocket::handle_upgrade` の第 5 引数として
+/// そのまま渡す（設計 3.2 節 (i)「委譲境界はキャンセル `Future` として渡す」）。
+/// 発火時の切断シーケンス（ハンドシェイク前なら 101 を送出せず終了、
+/// セッション確立後なら Close frame 送信 → `CLOSE_GRACE` 上限で応答待ち）は
+/// `handle_upgrade`（`crates/plugin-websocket/src/lib.rs`・`session.rs`）が
+/// 担う。コア側はキャンセル `Future` の生成・受け渡しのみに責務を限定し、
+/// 手動 race（`std::future::poll_fn` 等）は行わない（イシュー #491 時点の
+/// 中間実装が担っていたハードクローズ・TOCTOU 回避のための優先ポーリングは
+/// `handle_upgrade` 側の `race_cancel`/`already_cancelled` チェックへ移った）。
+/// permit はタスク完了（= `handle_upgrade` の戻り）まで保持され、Close
+/// ハンドシェイク完了（`CLOSE_GRACE` 上限）で解放される。上記「permit の
+/// 契約」を破らない。
 pub(crate) async fn try_handle_upgrade<S>(
     stream: S,
     head: &RequestHead,
@@ -458,44 +456,20 @@ where
             // 「permit の契約」を参照）。呼び出し元には `None` が残り、
             // 通常の permit drop 経路は何も解放しない。
             let permit = permit.take();
-            let mut cancel_fut = cancel.into_future();
+            let cancel_fut = cancel.into_future();
             tokio::spawn(async move {
                 // セッションが終了する（このタスクの future が完了する）まで
                 // permit を保持し、`max_connections` のカウントから漏れない
                 // ようにする。
                 let _permit = permit;
-                // `handle_upgrade` とキャンセル `Future` を race させる。
-                // `tokio::select!` は `macros` feature を要求し、コアの
-                // tokio feature 構成（`rt`/`net`/`io-util`/`time`/`sync` の
-                // 5 つに限定、`Cargo.toml` 冒頭の doc・設計 6.3 節「新規
-                // tokio feature 追加なし」）へ新規 feature を足すことになる
-                // ため使わない。`std::future::poll_fn` + `std::pin::pin!`
-                // （いずれも std 標準、追加依存なし）で手動 race する。
-                let mut handle_fut =
-                    std::pin::pin!(fandhe_backend_plugin_websocket::handle_upgrade(
-                        stream, &head, leftover, &config,
-                    ));
-                std::future::poll_fn(|cx| {
-                    // 世代キャンセルを最優先でポーリングする
-                    // （`race_shutdown_or_accept` と同じ優先順位、上の関数
-                    // doc「世代キャンセルシグナル」を参照）。タスク起動時点
-                    // で既に cancel が ready（shutdown/rebind がハンドシェイク
-                    // 開始前の `shutdown_flag` チェックを追い越した場合）に
-                    // `handle_fut` を 1 ポーリング分でも先に進めてしまうと、
-                    // ハンドシェイクが `101 Switching Protocols` まで進行した
-                    // 直後にこの future が drop され、クライアントが
-                    // Switching Protocols 応答の直後に即座にハードクローズ
-                    // されうる。cancel を先に評価することでこのレースを防ぐ。
-                    // #492 で Close frame 送信へ置換されるまでの中間ハード
-                    // クローズ。
-                    if cancel_fut.as_mut().poll(cx).is_ready() {
-                        return std::task::Poll::Ready(());
-                    }
-                    if handle_fut.as_mut().poll(cx).is_ready() {
-                        return std::task::Poll::Ready(());
-                    }
-                    std::task::Poll::Pending
-                })
+                // キャンセル発火時の切断シーケンス（101 送出前なら送出せず
+                // 終了、セッション確立後なら Close frame 送信 → 有界応答待ち）
+                // は `handle_upgrade` 側の責務（上の関数 doc「世代キャンセル
+                // シグナル」を参照）。エラーは接続の静かなクローズとして扱い
+                // panic に変換しない（呼び出し元契約、上の関数 doc を参照）。
+                let _ = fandhe_backend_plugin_websocket::handle_upgrade(
+                    stream, &head, leftover, &config, cancel_fut,
+                )
                 .await;
             });
             return None;
