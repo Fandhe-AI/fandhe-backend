@@ -41,6 +41,9 @@
 //! 長時間占有し他タスクのテールレイテンシへ波及する問題への対処。実測・
 //! 採否根拠は `docs/design/plugin-boundary.md` 5.10.7 節を参照）。
 
+#[cfg(feature = "websocket")]
+use std::future::Future;
+
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::OwnedSemaphorePermit;
 
@@ -48,6 +51,144 @@ use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
 
 use crate::server::Server;
+
+/// 世代（`shutdown_flag` + `CancelSafeJoinSet` のペア、`crates/core/src/
+/// server.rs` の `BoundServer::run_until` を参照）ごとに 1 個保持する
+/// キャンセル発火源（イシュー #491、`docs/design/ws-cancellation-propagation.md`
+/// 5.1 節）。
+///
+/// 最終 graceful shutdown（イシュー #313）・rebind 世代 drain（イシュー
+/// #485/#488）の両経路が同一の世代構造体（同一 `watch::Sender`）を発火源
+/// として共有する（設計 5.1 節）。`websocket` feature 無効時はフィールドを
+/// 持たない ZST になり、`fire`・`subscribe` は no-op（pay-for-what-you-use、
+/// 設計 6.1 節）。
+pub(crate) struct GenerationCancel {
+    #[cfg(feature = "websocket")]
+    tx: tokio::sync::watch::Sender<bool>,
+}
+
+impl GenerationCancel {
+    /// 新しい世代のキャンセル発火源を構築する。`run_until` が世代交代の
+    /// たび（rebind 時・`BoundServer::bind` 時）に呼ぶ。`websocket` feature
+    /// 無効時は `watch::channel` を生成せずゼロコストで戻る。
+    pub(crate) fn new() -> Self {
+        #[cfg(feature = "websocket")]
+        {
+            let (tx, _rx) = tokio::sync::watch::channel(false);
+            Self { tx }
+        }
+        #[cfg(not(feature = "websocket"))]
+        {
+            Self {}
+        }
+    }
+
+    /// この世代のキャンセルを発火する。最終 shutdown は
+    /// `current_shutdown_flag.store(true, ...)` の直後、rebind は
+    /// `spawn_generation_drain` が生成する drain タスクの冒頭で 1 回だけ
+    /// 呼ぶ（設計 5.2 節「drain 開始時に 1 回だけ発火する」）。複数回
+    /// 呼んでも冪等（`true` を送り続けるだけ）。
+    pub(crate) fn fire(&self) {
+        #[cfg(feature = "websocket")]
+        {
+            // `watch::Sender::send` は「アクティブな受信側が 0 件」の場合、
+            // 内部値を更新せず `Err` を返す（実測で確認: `Server::bind` 直後
+            // でまだ 1 本も接続が委譲されていない世代・全 WS セッションが
+            // 既に終了済みの世代では受信側が 0 件になりうる）。これでは
+            // 「fire() が先に起きてから subscribe した新規レシーバが現在値
+            // として true を観測できる」という設計 3.1 節の前提（値は常に
+            // 最新を保持し続ける）が成立しない。`send_replace` は受信側の
+            // 有無に関わらず内部値を無条件に更新するため、こちらを使う
+            // （戻り値の旧値は使わないため破棄）。
+            self.tx.send_replace(true);
+        }
+    }
+
+    /// この世代に属する 1 コネクション分のキャンセルハンドル（[`UpgradeCancel`]）
+    /// を発行する。`run_until` が接続を spawn する際に呼び、
+    /// `handle_connection_with_permit` → `try_handle_upgrade` へ伝搬する。
+    pub(crate) fn handle(&self) -> UpgradeCancel {
+        #[cfg(feature = "websocket")]
+        {
+            UpgradeCancel {
+                rx: Some(self.tx.subscribe()),
+            }
+        }
+        #[cfg(not(feature = "websocket"))]
+        {
+            UpgradeCancel {}
+        }
+    }
+}
+
+/// 1 コネクション分のキャンセル購読ハンドル（[`GenerationCancel::handle`]
+/// が発行、イシュー #491）。`Clone` 可能（`watch::Receiver` は `Clone`）。
+///
+/// [`handle_connection`][crate::server::handle_connection] /
+/// [`handle_connection_with_peer_addr`][crate::server::handle_connection_with_peer_addr]
+/// （`BoundServer::run_until` を経由しない直接呼び出し）は
+/// [`UpgradeCancel::disabled`] を渡す。これらの経路には世代の概念がなく、
+/// 発火するキャンセルシグナル自体が存在しないため（`handle_connection` の
+/// doc「シャットダウンなし」と同じ扱い）。
+pub(crate) struct UpgradeCancel {
+    #[cfg(feature = "websocket")]
+    rx: Option<tokio::sync::watch::Receiver<bool>>,
+}
+
+impl UpgradeCancel {
+    /// 発火しないハンドル（`BoundServer::run_until` を経由しない直接呼び出し
+    /// 向け、上記型 doc を参照）。
+    pub(crate) fn disabled() -> Self {
+        #[cfg(feature = "websocket")]
+        {
+            Self { rx: None }
+        }
+        #[cfg(not(feature = "websocket"))]
+        {
+            Self {}
+        }
+    }
+
+    /// キャンセル発火を待つ `Future` へ変換する（設計 3.2 節 (i)。委譲境界
+    /// 越しに `watch::Receiver` を直接渡さず `Future` として渡すことで、
+    /// `plugin-websocket` 側に `tokio` の `sync` feature を要求しない）。
+    ///
+    /// # TOCTOU 回避（設計 3.1 節「消費側の必須実装」）
+    ///
+    /// 内部で [`tokio::sync::watch::Receiver::wait_for`] を使う。単純な
+    /// `changed()` は「レシーバ生成後に届いた変更」しか検出できず、
+    /// `fire()` が先に呼ばれてから本メソッドで新規 subscribe した場合に
+    /// 永久に解決しなくなる（`GenerationCancel::handle` が `fire()` より
+    /// 後に呼ばれる競合が実際に起こりうる: 委譲確定はリクエスト処理と
+    /// 非同期に進むため）。`wait_for(|&v| v)` は現在値を先に確認してから
+    /// 待つため、生成時点で既に `true` ならその場で即解決し、取りこぼしが
+    /// 起きない。
+    ///
+    /// `disabled()`（`rx = None`）の場合は `std::future::pending()` を返し、
+    /// 永久に解決しない（世代を持たない呼び出し経路向け、上記型 doc を
+    /// 参照）。
+    ///
+    /// `websocket` feature 無効時は [`try_handle_upgrade`] が本メソッドを
+    /// 呼ばない（websocket 分岐自体が消える）ため `#[cfg(feature =
+    /// "websocket")]` で閉じ、dead code 警告を防ぐ（pay-for-what-you-use）。
+    #[cfg(feature = "websocket")]
+    pub(crate) fn into_future(
+        self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        match self.rx {
+            Some(mut rx) => Box::pin(async move {
+                // 送信側（`GenerationCancel`）が全 drop された場合
+                // （通常運用では起こらない: `run_until` が世代交代まで
+                // 保持し続ける）、`wait_for` は `Err` を返す。これは
+                // 「世代自体が終了した」ことを意味するため、キャンセル
+                // なし扱いにはせず、キャンセル済みとして即座に解決する
+                // 安全側の処理とする（設計 8 節「シグナル取りこぼし」）。
+                let _ = rx.wait_for(|&v| v).await;
+            }),
+            None => Box::pin(std::future::pending()),
+        }
+    }
+}
 
 /// 登録済みプラグインへパスインターセプトを試みる。
 ///
@@ -276,12 +417,30 @@ fn from_plugin_response(response: fandhe_backend_plugin_webrtc_proxy::Response) 
 /// 呼び出し元がさらにフォールバック応答を重ねて送る必要はない）。新タスク内
 /// で panic しても `tokio::spawn` のタスク境界で隔離され、コアの accept
 /// ループへは波及しない。
+///
+/// # 世代キャンセルシグナル（イシュー #491）
+///
+/// `cancel`（[`UpgradeCancel`]、呼び出し元 `handle_connection_with_permit`
+/// 経由で `run_until` の世代から伝搬）は spawn 済みタスク内で
+/// `handle_upgrade` と `tokio::select!` で race させる。キャンセルが
+/// `handle_upgrade` より先に解決した場合、`handle_upgrade` の `Future` を
+/// drop してタスクを打ち切る（TCP を即座に閉じるハードクローズ）。
+///
+/// これは `fandhe_backend_plugin_websocket::handle_upgrade` へキャンセル
+/// `Future` を渡して正常な Close ハンドシェイク（Close frame 送信 →
+/// `CLOSE_GRACE` 上限で応答待ち）を実行させる最終形（イシュー #492 が担う）
+/// までの**中間実装**である。`docs/design/ws-cancellation-propagation.md`
+/// 5.2 節が要求する「drain 開始時に発火」というタイミング契約自体は本
+/// 実装で既に満たされ、受け入れ条件（キャンセルが WS 委譲タスクへ通知
+/// されること）を独立に検証できる。permit は select 完了までタスクが
+/// 保持し続けるため、ハードクローズ時も上記「permit の契約」を破らない。
 pub(crate) async fn try_handle_upgrade<S>(
     stream: S,
     head: &RequestHead,
     leftover: Vec<u8>,
     server: &Server,
     permit: &mut Option<OwnedSemaphorePermit>,
+    cancel: UpgradeCancel,
 ) -> Option<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -299,14 +458,35 @@ where
             // 「permit の契約」を参照）。呼び出し元には `None` が残り、
             // 通常の permit drop 経路は何も解放しない。
             let permit = permit.take();
+            let mut cancel_fut = cancel.into_future();
             tokio::spawn(async move {
                 // セッションが終了する（このタスクの future が完了する）まで
                 // permit を保持し、`max_connections` のカウントから漏れない
                 // ようにする。
                 let _permit = permit;
-                let _ = fandhe_backend_plugin_websocket::handle_upgrade(
-                    stream, &head, leftover, &config,
-                )
+                // `handle_upgrade` とキャンセル `Future` を race させる。
+                // `tokio::select!` は `macros` feature を要求し、コアの
+                // tokio feature 構成（`rt`/`net`/`io-util`/`time`/`sync` の
+                // 5 つに限定、`Cargo.toml` 冒頭の doc・設計 6.3 節「新規
+                // tokio feature 追加なし」）へ新規 feature を足すことになる
+                // ため使わない。`std::future::poll_fn` + `std::pin::pin!`
+                // （いずれも std 標準、追加依存なし）で手動 race する。
+                let mut handle_fut =
+                    std::pin::pin!(fandhe_backend_plugin_websocket::handle_upgrade(
+                        stream, &head, leftover, &config,
+                    ));
+                std::future::poll_fn(|cx| {
+                    if handle_fut.as_mut().poll(cx).is_ready() {
+                        return std::task::Poll::Ready(());
+                    }
+                    // 世代キャンセル発火（上の関数 doc「世代キャンセル
+                    // シグナル」を参照）。#492 で Close frame 送信へ置換
+                    // されるまでの中間ハードクローズ。
+                    if cancel_fut.as_mut().poll(cx).is_ready() {
+                        return std::task::Poll::Ready(());
+                    }
+                    std::task::Poll::Pending
+                })
                 .await;
             });
             return None;
@@ -315,7 +495,7 @@ where
 
     #[cfg(not(feature = "websocket"))]
     {
-        let _ = (head, &leftover, server, &permit);
+        let _ = (head, &leftover, server, &permit, cancel);
     }
 
     Some(stream)
@@ -667,4 +847,72 @@ pub(crate) fn prepare_streaming_compression(
     let _ = (server, head);
 
     (response, StreamingBodyEncoder::identity())
+}
+
+/// [`GenerationCancel`] / [`UpgradeCancel`]（イシュー #491）の TOCTOU 回避を
+/// 直接検証するユニットテスト（`docs/design/ws-cancellation-propagation.md`
+/// 3.1 節「消費側の必須実装」の直接検証、実装計画 4 節のテスト計画 3 に対応）。
+///
+/// 統合テスト（`crates/core/tests/ws_cancellation.rs`）は最終 shutdown・
+/// rebind 経路を実 TCP 接続で検証するが、「発火後に subscribe したレシーバが
+/// 即座に解決するか」という TOCTOU 回避の核心は世代構造体を直接操作する
+/// ユニットテストの方が決定的に検証できる（タイミング依存の実接続シナリオを
+/// 経由しないため）。
+#[cfg(all(test, feature = "websocket"))]
+mod cancel_tests {
+    use super::{GenerationCancel, UpgradeCancel};
+    use std::time::Duration;
+
+    /// 発火**後**に生成したハンドルの `into_future()` が即座に解決すること
+    /// （設計 3.1 節「委譲確定と発火の競合」いずれの順序でも取りこぼしなく
+    /// 検出できる」の直接検証）。単純な `changed()` ベースの実装であれば、
+    /// この呼び出し順序では永久に解決しない（設計 3.1 節が明記する失敗
+    /// パターン）。
+    #[tokio::test]
+    async fn fires_before_subscribe_still_resolves_immediately() {
+        let generation = GenerationCancel::new();
+        generation.fire();
+
+        // 発火後に subscribe した新規ハンドル。
+        let cancel = generation.handle();
+        let fut = cancel.into_future();
+
+        tokio::time::timeout(Duration::from_secs(1), fut)
+            .await
+            .expect(
+                "fire() 後に subscribe したハンドルの into_future() は\
+                 即座に解決するはず（wait_for ベースで TOCTOU を回避）",
+            );
+    }
+
+    /// 発火**前**に生成したハンドルも、後続の `fire()` で解決すること
+    /// （通常の通知経路の非退行確認）。
+    #[tokio::test]
+    async fn fires_after_subscribe_resolves_on_fire() {
+        let generation = GenerationCancel::new();
+        let cancel = generation.handle();
+        let fut = cancel.into_future();
+
+        generation.fire();
+
+        tokio::time::timeout(Duration::from_secs(1), fut)
+            .await
+            .expect("fire() 後、既存の subscribe 済みハンドルも解決するはず");
+    }
+
+    /// [`UpgradeCancel::disabled`]（世代を持たない直接呼び出し経路向け）の
+    /// `into_future()` は永久に解決しないこと（`handle_connection` /
+    /// `handle_connection_with_peer_addr` が世代なしで発火しないハンドルを
+    /// 渡す契約の直接検証）。
+    #[tokio::test]
+    async fn disabled_never_resolves() {
+        let cancel = UpgradeCancel::disabled();
+        let fut = cancel.into_future();
+
+        let result = tokio::time::timeout(Duration::from_millis(200), fut).await;
+        assert!(
+            result.is_err(),
+            "disabled() のハンドルは発火源を持たないため解決しないはず"
+        );
+    }
 }
