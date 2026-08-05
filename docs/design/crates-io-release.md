@@ -205,13 +205,17 @@ root `Cargo.toml` の `[workspace.package] version` + `[workspace.dependencies]`
   参照できない Cargo の仕様上、`[workspace.package] version` と別に保守する
   必要があるが、変更が root `Cargo.toml` 1 ファイルに閉じる点は達成している
 
-### 7.3 v0.3.0 リリース（2026-08-05 バンプ実施、publish は準備中）
+### 7.3 v0.3.0 リリース（イシュー #506、2026-08-05 publish 完了）
 
 v0.2.0 公開（2026-08-01）後に breaking change が 2 件 main に入ったため、7 節の
 lockstep 方針に従い公開対象 13 クレートを 0.3.0 へ一括バンプした。
-**タグ push・実 publish（Phase B）は本バンプ PR のマージ後に実施する**（6 節の
-verify → dry-run → GitHub Environments `crates-io-release` の人間承認を経る
-別プロセス。本節は Phase A（機械作業）完了時点の記録）。
+
+- **実 publish（Phase B）は 2026-08-05 に完了**。`v0.3.0` タグ push により
+  `release.yml` の verify → dry-run → GitHub Environments `crates-io-release` の
+  承認を経て `cargo publish --workspace` が実行され、公開対象 13 クレートすべての
+  0.3.0 が crates.io インデックスへ反映されたことを確認済み（release run 31012481870。
+  あわせて本ドキュメント・`CHANGELOG.md` の「publish は準備中」表現を「公開済み
+  （2026-08-05）」へ切り替えた）。
 
 - **BREAKING CHANGES**（詳細・移行手順は `CHANGELOG.md` 参照）:
   1. `fandhe-backend-core`: `RequestGate::check` へ `ctx: &GateContext` 引数を追加
@@ -232,7 +236,7 @@ verify → dry-run → GitHub Environments `crates-io-release` の人間承認�
   完了までは構造的に FAIL する（required check 対象外のためマージは阻害しない。
   v0.2.0 時（7.1 節）と同一のニワトリ卵問題であり、`.standalone-crates-io-skip`
   マーカーは全件 SKIP を fail-closed で拒否する設計のため追加しない）。
-  publish 完了後に `workflow_dispatch` で再実行し PASS を確認する
+  publish 完了後に `workflow_dispatch` で再実行し PASS を確認（実施済み、success）
 
 ## 8. 公開前チェックリスト
 
@@ -277,6 +281,20 @@ verify → dry-run → GitHub Environments `crates-io-release` の人間承認�
       （イシュー #433）は Interceptor を収録した 0.2.0 の公開により解消したため削除し、
       SKIP なしで通ることを PR CI（paths トリガー）で再検証した
       （v0.1.0 チェックリストの同種項目と同一原則。削除し忘れは検証の穴を恒久化させる）
+
+### v0.3.0（イシュー #506、2026-08-05 publish 完了）
+
+- [x] 公開対象 13 クレートの `version` および workspace 内 path 依存の `version` 併記が
+      すべて 0.3.0 に揃っている（恒久非公開 3 クレートは対象外）
+- [x] `cargo publish --workspace --dry-run` が公開対象 13 クレート全件で成功する
+- [x] Phase B: `v0.3.0` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
+      の実行（2026-08-05 実施済み。13 クレートすべての 0.3.0 が crates.io
+      インデックスへ反映されたことを確認済み。release run 31012481870）
+- [x] Phase B publish 完了後、`standalone-crates-io.yml` を `workflow_dispatch` で
+      再実行し、`templates/app`・`examples/with-cors`・`examples/with-graphql`・
+      `examples/with-websocket`・`examples/with-interceptor` の 5 クレートが
+      `fandhe-backend-core = "^0.3.0"` 等を crates.io 公開版のみで解決できて PASS することを
+      確認する（2026-08-05 実施済み、success）
 
 ## 参照
 
