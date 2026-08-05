@@ -52,10 +52,26 @@ n1_judge() {
     for i in "${!markers[@]}"; do
         local marker="${markers[$i]}"
         local code="${expected[$i]}"
-        if ! printf '%s\n' "${content}" | grep -qF "${marker}"; then
+        # #511/#514: 元実装（grep -F marker | grep -q code）は行単位で「marker を含む行が
+        # code も含むか」を判定する。複数行 content への単純な bash 部分文字列一致へ
+        # 置換すると行境界を越えて一致しうるため、行単位ループで grep の行指向
+        # セマンティクスを保存する。here-string でパイプを使わず SIGPIPE/EPIPE の
+        # 余地も排除する。
+        local marker_found=0
+        local code_on_marker_line=0
+        local line
+        while IFS= read -r line; do
+            if [[ "${line}" == *"${marker}"* ]]; then
+                marker_found=1
+                if [[ "${line}" == *"${code}"* ]]; then
+                    code_on_marker_line=1
+                fi
+            fi
+        done <<< "${content}"
+        if [ "${marker_found}" -ne 1 ]; then
             return 1
         fi
-        if ! printf '%s\n' "${content}" | grep -F "${marker}" | grep -q "${code}"; then
+        if [ "${code_on_marker_line}" -ne 1 ]; then
             return 1
         fi
     done
@@ -83,7 +99,9 @@ if [ "${actual}" -eq 0 ]; then
 else
     fail "-h が exit 0 で終了しなかった（実際: ${actual}）"
 fi
-if printf '%s' "${help_output}" | grep -qF -- "陰性対照"; then
+# #511/#514: パイプ経由の grep -q 判定は set -euo pipefail 下で SIGPIPE/EPIPE により
+# 誤 FAIL を招くため bash 組み込みパターンマッチを使う。
+if [[ "${help_output}" == *"陰性対照"* ]]; then
     pass "-h の出力に陰性対照の説明が含まれる"
 else
     fail "-h の出力に陰性対照の説明が含まれない"
@@ -103,7 +121,9 @@ if [ "${actual}" -ne 0 ]; then
 else
     fail "node/npm が PATH にない場合でも exit 0 になった（fail-closed 違反）"
 fi
-if printf '%s' "${no_tool_output}" | grep -qF -- "volta install"; then
+# #511/#514: パイプ経由の grep -q 判定は set -euo pipefail 下で SIGPIPE/EPIPE により
+# 誤 FAIL を招くため bash 組み込みパターンマッチを使う。
+if [[ "${no_tool_output}" == *"volta install"* ]]; then
     pass "node/npm 不在時に導入コマンド（volta install）を案内する"
 else
     fail "node/npm 不在時に導入コマンドの案内が出力されない"

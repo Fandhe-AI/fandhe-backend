@@ -7,8 +7,8 @@
 # 各テストは独立した assert 関数で実行し、失敗があれば非 0 で終了する
 # （フェイルクローズ、.claude/rules/security.md）。
 #
-# #511: assert 関数は `printf '%s' "$haystack" | grep -qF -- "$needle"` のような
-# パイプを使わない。`set -euo pipefail` 下では grep -q の早期終了で printf 側が
+# #511/#514: assert 関数は `printf '%s' "$haystack"` を grep -qF へパイプで渡すような
+# 実装を使わない。`set -euo pipefail` 下では grep -q の早期終了で printf 側が
 # SIGPIPE/EPIPE を受け、needle がマッチしているのにパイプライン全体が非 0 になり
 # 誤 FAIL する flake（CI run 31011587701 で実測）が起こりうる。bash 組み込みの
 # `[[ "$haystack" == *"$needle"* ]]` はプロセス生成・パイプを伴わず決定的に判定できる。
@@ -42,8 +42,8 @@ assert_exit_code() {
     fi
 }
 
-# haystack に needle が固定文字列として含まれるかを判定する（#511: パイプ
-# を使う `printf | grep -q` 型実装は SIGPIPE/EPIPE 由来の誤 FAIL を招くため
+# haystack に needle が固定文字列として含まれるかを判定する（#511/#514: パイプで
+# printf を grep -q へつなぐ型実装は SIGPIPE/EPIPE 由来の誤 FAIL を招くため
 # bash 組み込みパターンマッチを使う。needle は必ずダブルクォートで囲み glob
 # メタ文字を文字どおりに扱わせる）。
 assert_contains() {
@@ -58,9 +58,9 @@ assert_contains() {
 }
 
 # haystack に needle が含まれないことを判定する（assert_contains の否定版）。
-# #511 の修正前は各呼び出し箇所で `printf | grep -q` を直接使っており、EPIPE で
-# パイプラインが非 0 になった場合に「含まれていない」側（pass）へ誤って倒れる
-# fail-open の潜在欠陥も併せ持っていた。bash 組み込み判定はこの経路自体が
+# #511/#514 の修正前は各呼び出し箇所で printf を grep -q へパイプで直接つなぐ実装を
+# 使っており、EPIPE でパイプラインが非 0 になった場合に「含まれていない」側（pass）へ
+# 誤って倒れる fail-open の潜在欠陥も併せ持っていた。bash 組み込み判定はこの経路自体が
 # ないため、誤 pass・誤 fail のいずれも構造的に起こらない。
 assert_not_contains() {
     local desc="$1"

@@ -43,7 +43,10 @@ assert_contains() {
     local desc="$1"
     local haystack="$2"
     local needle="$3"
-    if printf '%s' "${haystack}" | grep -qF -- "${needle}"; then
+    # #511/#514: パイプ経由の grep -q 判定は set -euo pipefail 下で SIGPIPE/EPIPE により
+    # 誤 FAIL・誤 pass を招くため bash 組み込みパターンマッチを使う。needle は必ず
+    # ダブルクォートで囲み glob メタ文字を文字どおりに扱わせる。
+    if [[ "${haystack}" == *"${needle}"* ]]; then
         pass "${desc}"
     else
         fail "${desc}（'${needle}' が出力に含まれません）"
@@ -88,7 +91,19 @@ assert_exit_code "T-15 fixture は規約適合（exit 0）" 0 "${exit_t15}"
 assert_contains "T-15 の判定区分を報告する" "${out_t15}" "不可（明確な拒否）"
 # 8・10 節: fixture 自体に実行可能な攻撃コード・エクスプロイト手順を含めない回帰検知。
 t15_content="$(cat "${FIXTURES_DIR}/feasibility-t15-clear-vulnerability.md")"
-if printf '%s' "${t15_content}" | grep -qE '\$\(|`[^`]*`|sh -c|/bin/sh|system\('; then
+# #511/#514: grep -qE は行単位で照合するため、複数行文字列への単純な bash =~ 置換は
+# `[^`]*` のようなパターンが行をまたいで意図せず一致し判定の意味が変わりうる。行単位
+# ループで grep の行指向セマンティクスを保存しつつ、here-string でパイプ由来の
+# SIGPIPE/EPIPE の余地も排除する。
+t15_pattern='\$\(|`[^`]*`|sh -c|/bin/sh|system\('
+t15_hit=0
+while IFS= read -r t15_line; do
+    if [[ "${t15_line}" =~ ${t15_pattern} ]]; then
+        t15_hit=1
+        break
+    fi
+done <<< "${t15_content}"
+if [ "${t15_hit}" -eq 1 ]; then
     fail "T-15 fixture に実行可能なコード片らしき記述が含まれています（規約 8・10 節違反の疑い）"
 else
     pass "T-15 fixture は説明のみで実行可能な攻撃コードを含まない"
