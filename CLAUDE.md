@@ -57,10 +57,21 @@ fandhe-backend/
 │   │   │                            # 親 #384。3 カラムレイアウト・依存ゼロ全文検索・
 │   │   │                            # 公開範囲規約（issue/TASK 番号記述の docs/design/ への
 │   │   │                            # 集約）を fandhe-frontend 設計正典から翻訳、#389〜#399 の根拠）
-│   │   └── v1-scope-tls-multipart.md  # TLS 終端・multipart/form-data の v1 スコープ方針
-│   │                                    # （フレームワーク本体では扱わず、TLS はリバース
-│   │                                    # プロキシ前提・multipart は raw body 受理のみ、
-│   │                                    # イシュー #322。docs/spec 除外事項表 #8・#9 と対応）
+│   │   ├── v1-scope-tls-multipart.md  # TLS 終端・multipart/form-data の v1 スコープ方針
+│   │   │                            # （フレームワーク本体では扱わず、TLS はリバース
+│   │   │                            # プロキシ前提・multipart は raw body 受理のみ、
+│   │   │                            # イシュー #322。docs/spec 除外事項表 #8・#9 と対応）
+│   │   └── ws-cancellation-propagation.md  # WS 委譲タスクへのキャンセル伝播機構の設計
+│   │                            # （イシュー #490、REQ-4。最終 graceful shutdown（#313）・
+│   │                            # rebind 世代 drain（#485/#488）双方の grace 超過
+│   │                            # 強制クローズ対象外にある WebSocket 委譲セッション
+│   │                            # へキャンセルを伝播する機構を設計。世代別
+│   │                            # `tokio::sync::watch` + 委譲境界はキャンセル
+│   │                            # `Future` として受け渡す方式を採用、`UpgradeHandler`
+│   │                            # シグネチャ変更は不要（3 層構造）、
+│   │                            # `fandhe_backend_plugin_websocket::handle_upgrade`
+│   │                            # は breaking change として扱う方針を記録。コード
+│   │                            # 実装は後続の #491〜#493 が担う）
 │   ├── guide/              # 利用者向けガイド（Getting Started・feature 構成別サンプル・
 │   │                        # チュートリアル、TASK-11.5 / #95）。「どう作るか」の docs/design/ とは
 │   │                        # 責務分離、「どう使うか」を扱う

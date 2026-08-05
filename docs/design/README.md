@@ -157,3 +157,11 @@
   `finalize_streaming_head`（レスポンス後処理型シーム）の公開 API 化の採否検討
   （イシュー #462、PR #458 の out-of-scope から切り出し。`Interceptor::map_response`
   との棲み分け比較・ギャップ分析・不採用根拠 4 点・再検討条件を記述）
+- [`ws-cancellation-propagation.md`](./ws-cancellation-propagation.md): WS 委譲タスク
+  へのキャンセル伝播機構の設計（イシュー #490。最終 graceful shutdown（#313）・rebind
+  世代 drain（#485/#488）双方の grace 超過強制クローズの対象外にある WebSocket 委譲
+  セッションへキャンセルを伝播する機構を設計。世代別 `tokio::sync::watch` チャネル +
+  委譲境界ではキャンセル `Future` として受け渡す方式の採用理由、`UpgradeHandler`
+  シグネチャ変更不要の 3 層構造根拠、`fandhe_backend_plugin_websocket::handle_upgrade`
+  の breaking change 方針、新規依存・tokio feature 追加なしの確認を記述。コード実装は
+  後続の #491（コア配線）・#492（Close frame 送信）・#493（統合テスト・doc 更新）が担う）
