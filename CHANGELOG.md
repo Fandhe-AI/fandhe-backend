@@ -42,6 +42,24 @@
      イシュー [#500](https://github.com/Fandhe-AI/fandhe-backend/issues/500)
      でビルダー設定可能化）待ってから終了します。
 
+### Changed
+
+- `fandhe-backend-plugin-websocket`: `handle_upgrade` のキャンセル `Future`
+  （イシュー [#492](https://github.com/Fandhe-AI/fandhe-backend/issues/492)）
+  の適用範囲を、受信待ちだけでなくユーザーハンドラ（`WsMessageHandler::
+  on_message`）実行中・`WsOutcome::Reply`/`WsOutcome::Close` の送出中にも
+  拡大し、即座に打ち切って正常な Close ハンドシェイク（close code 1001
+  Going Away）へ分岐するようにしました（イシュー
+  [#499](https://github.com/Fandhe-AI/fandhe-backend/issues/499)、設計は
+  `docs/design/ws-cancellation-propagation.md` 10 節）。シグネチャ変更は
+  ありません。
+  - **移行時の注意（BREAKING CHANGE ではないが挙動変更）**: `on_message` が
+    返す `Future` は shutdown・rebind 世代 drain の発火時に**任意の
+    `await` 点で drop されうる**契約へ変更されました。中断されると困る
+    副作用（完了保証が必要な書き込み等）を伴うハンドラ実装は、当該処理を
+    `tokio::spawn` でセッションから切り離してください
+    （`WsMessageHandler::on_message` の doc を参照）。
+
 ### Added
 
 - `fandhe-backend-plugin-websocket`: `WebSocketConfig::with_close_grace` を
