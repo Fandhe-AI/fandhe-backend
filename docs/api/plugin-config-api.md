@@ -34,11 +34,19 @@ RFC 6455 ハンドシェイク検証・101 応答・tokio-tungstenite へのフ�
 | 項目 | 内容 |
 |------|------|
 | Config 型 | `WebSocketConfig`（`Default` 実装あり） |
-| builder メソッド | `with_path` / `with_max_message_size` / `with_max_frame_size` / `with_idle_timeout` / `without_idle_timeout` / `with_handler` |
-| 既定値 | `path = "/ws"`、`max_message_size = 1 MiB`、`max_frame_size = 256 KiB`、`idle_timeout = Some(60 秒)` |
+| builder メソッド | `with_path` / `with_max_message_size` / `with_max_frame_size` / `with_idle_timeout` / `without_idle_timeout` / `with_handler` / `with_close_grace` |
+| 既定値 | `path = "/ws"`、`max_message_size = 1 MiB`、`max_frame_size = 256 KiB`、`idle_timeout = Some(60 秒)`、`close_grace = 10 秒` |
 | メッセージハンドラ | `with_handler(impl WsMessageHandler)` で差し替え。既定は `EchoHandler`（後方互換） |
 
 - 注意: サイズ上限はメモリ枯渇 DoS 対策。アイドルタイムアウトは既定で有効（fail-safe）であり、無効化は `without_idle_timeout` の明示操作でのみ可能
+- 注意: `close_grace`（`with_close_grace`）はコアの世代キャンセル（最終 graceful
+  shutdown・rebind 世代 drain）発火時の Close ハンドシェイク猶予。
+  `fandhe_backend_plugin_websocket::handle_upgrade` の第 5 引数（キャンセル
+  `Future`）が発火すると close code 1001 Going Away を送出し、`close_grace` を
+  上限にクライアント応答を有界に待つ（v0.3.0 での BREAKING CHANGE）。
+  `WsMessageHandler::on_message` が返す `Future` は任意の
+  `await` 点で drop されうる契約（
+  [`docs/design/ws-cancellation-propagation.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/ws-cancellation-propagation.md)）
 
 ### 2.2 plugin-graphql（`graphql`）
 
@@ -140,8 +148,18 @@ in-process WebRTC（`webrtc-rs` 直接依存）。`POST /rtc/offer` を同一プ
 | Config 型 | `WebRtcConfig` |
 | 構築・builder | `WebRtcConfig::new()` + `with_max_offer_bytes` / `with_max_peer_connections` / `with_signaling_timeout`（getter: `max_offer_bytes` / `max_peer_connections` / `signaling_timeout`） |
 | 既定値 | `max_offer_bytes = 64 KiB`、`max_peer_connections = 64`、`signaling_timeout = 10 秒` |
+| drain API | `close_active_peers(&config, per_close_timeout)` / `drain_for_shutdown(&config, per_close_timeout)`（`drain` モジュール） |
 
 - 注意: `webrtc-rs` の依存ツリーが大きく攻撃表面が広いため、クレート境界で完全分離されている。まず `plugin-webrtc-proxy` の採用を検討すること
+- 注意: `close_active_peers` / `drain_for_shutdown` はいずれも `WebRtcConfig::registry`
+  上のアクティブな `RTCPeerConnection` を 1 接続あたり `per_close_timeout` の有界
+  タイムアウトで並行に明示 close する。`drain_for_shutdown` のみ
+  `WebRtcConfig::begin_terminal_drain` で以降の新規登録を拒否するフェイルクローズ
+  判定を伴う（`close_active_peers` は rebind 用途を想定し新規登録は拒否しない）。
+  コアの `SessionDrain`（`webrtc` feature ゲート、独立シーム）が最終 graceful
+  shutdown・rebind の両経路から自動でこれらを呼ぶため、通常は利用側が直接呼ぶ
+  必要はない（[`docs/design/ws-cancellation-propagation.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/ws-cancellation-propagation.md)
+  10 節を参照）
 
 ### 2.10 plugin-hub-wiring（feature なし・依存逆転型）
 
