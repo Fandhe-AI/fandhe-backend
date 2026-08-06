@@ -670,6 +670,11 @@ impl Server {
     /// フェイルクローズ、`.claude/rules/security.md` のリソース枯渇・
     /// 可用性観点）。
     ///
+    /// drain 開始時点で idle 状態にある keep-alive 接続がこの猶予期間中
+    /// どう扱われるか（即座には閉じない・猶予期間内の後続リクエストは
+    /// 受理・完走する等）は `BoundServer::run_until` の doc「idle
+    /// keep-alive 接続の扱い（公開契約、イシュー #518）」を参照。
+    ///
     /// ```
     /// use std::time::Duration;
     /// use fandhe_backend_core::server::Server;
@@ -1284,6 +1289,12 @@ impl RebindHandle {
     /// 実行、新世代の accept ループは並行して動き続ける）。詳細な設計判断は
     /// `docs/design/rebind.md` を参照。
     ///
+    /// 旧世代の idle keep-alive 接続がこの drain 期間中どう扱われるか
+    /// （即座には閉じない・猶予期間内の後続リクエストは受理・完走する等）
+    /// は `BoundServer::run_until` の doc「idle keep-alive 接続の扱い
+    /// （公開契約、イシュー #518）」に定める契約が最終 graceful shutdown と
+    /// 同一のまま適用される。
+    ///
     /// # WebSocket 委譲セッションは `JoinSet` の drain 対象外（キャンセルは伝播する）
     ///
     /// 上記の世代別 drain（`JoinSet::shutdown` による強制 abort）が対象と
@@ -1761,6 +1772,46 @@ impl BoundServer {
     /// `run_until` の状態に一切影響しない（fail-closed、
     /// `RebindHandle::rebind` の doc を参照）。設計判断の詳細は
     /// `docs/design/rebind.md` を参照。
+    ///
+    /// # idle keep-alive 接続の扱い（公開契約、イシュー #518）
+    ///
+    /// drain（本節の最終 graceful shutdown・上記「稼働中の再バインド」の
+    /// 旧世代 drain のいずれも同一機構）開始時点で、リクエスト待ちの
+    /// idle 状態にある keep-alive 接続をどう扱うかは、以下 (a)〜(d) を
+    /// **公開契約**（[`docs/design/versioning-policy.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/versioning-policy.md)
+    /// の破壊的変更手続きの対象）として保証する。下流の利用側が drain
+    /// 期間中の可用性を見込んで実装する際の前提として利用してよい：
+    ///
+    /// - **(a) 即座には閉じない**: drain 開始を理由に idle 接続を強制
+    ///   クローズしない（1 節手順 1・「稼働中の再バインド」手順 1 で
+    ///   `shutdown_flag` を立てるのみで、read 待ち自体は中断しない）
+    /// - **(b) 猶予期間内の後続リクエストは受理・完走する**: grace 超過の
+    ///   強制クローズ（下記 (d)）までに当該接続へ到着した通常の HTTP
+    ///   リクエストは拒否されず処理される。応答には `Connection: close`
+    ///   が付与され、以降その接続では次のリクエストを受け付けない
+    ///   （接続あたり drain 後に処理する後続リクエストは最大 1 件）。
+    ///   `read_timeout` / `max_connection_lifetime` /
+    ///   `max_requests_per_connection` / [`RequestGate`] 拒否等の既存上限は
+    ///   drain 中も従来どおり適用される
+    /// - **(c) Upgrade は例外**: (b) と異なり、`UpgradeHandler` がマッチする
+    ///   リクエストは上記「既知の限界」節のとおり 503 で拒否する
+    /// - **(d) 有界クローズのフェイルセーフは不変**: 後続リクエストが
+    ///   来ない場合、接続は read タイムアウト到達、または
+    ///   [`Server::shutdown_grace_period`] 超過時の強制クローズにより、
+    ///   grace + ε 以内に必ず閉じる
+    ///
+    /// 一方、以下は**実装詳細**（保証しない・予告なく変更されうる）：
+    ///
+    /// - 後続リクエストが来ない場合に接続が閉じる具体的なタイミング
+    ///   （read タイムアウト到達か grace 超過強制クローズかの別）
+    /// - shutdown シグナル発火から各コネクションタスクへ `shutdown_flag` が
+    ///   可視化されるまでの微小な遅延窓
+    ///
+    /// idle 接続への即時中断（`tokio::sync::Notify` 等による wakeup）は
+    /// 現状未実装であり、`docs/design/graceful-shutdown.md` 8 節でスコープ外
+    /// としている。本契約化により、将来これを実装する場合は (a)(b) を
+    /// 変更する破壊的変更として扱う必要がある（詳細・判断根拠は
+    /// `docs/design/graceful-shutdown.md` 7.2 節を参照）。
     ///
     /// # 既知の限界
     ///
