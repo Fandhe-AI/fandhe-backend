@@ -48,7 +48,7 @@ async 契約であり、この非対称は意図的な設計である（`crates/
 検証済み `Response` を直接運ぶ設計になっている。
 
 ```rust,ignore
-use fandhe_backend_core::{GateOutcome, RequestGate};
+use fandhe_backend_core::{GateContext, GateOutcome, RequestGate};
 use fandhe_backend_http::request::RequestHead;
 
 /// `X-Api-Key` ヘッダの有無だけを見る例（フェイルクローズ）。
@@ -59,7 +59,7 @@ impl RequestGate for ApiKeyGate {
         "api-key-gate"
     }
 
-    fn check(&self, head: &RequestHead) -> GateOutcome {
+    fn check(&self, head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
         match head.header("x-api-key") {
             Some(_) => GateOutcome::Allow,
             // 判定不能・情報欠落時は必ず Reject（フェイルクローズ）。
@@ -76,7 +76,7 @@ let server = Server::new().handler(router).gate(ApiKeyGate);
 （`with_header` / `with_content_type`）で組み立ててから `Reject` へ渡す。
 
 ```rust,ignore
-use fandhe_backend_core::{GateOutcome, RequestGate};
+use fandhe_backend_core::{GateContext, GateOutcome, RequestGate};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
 
@@ -87,7 +87,7 @@ impl RequestGate for RateLimitGate {
         "rate-limit-gate"
     }
 
-    fn check(&self, _head: &RequestHead) -> GateOutcome {
+    fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
         let response = Response::new(429, b"{\"error\":\"rate limited\"}".to_vec())
             .with_content_type("application/json")
             .with_header("Retry-After", "30")
@@ -108,6 +108,19 @@ impl RequestGate for RateLimitGate {
   （レスポンス分割・ヘッダインジェクション対策）
 - 拒否レスポンス送出後も、登録済み `Middleware` の `on_response` は呼ばれる
   （観測の一貫性）
+- `check` の第 2 引数 `ctx: &GateContext`（イシュー #486）は accept したソケットの
+  実 peer address を `ctx.peer_addr() -> Option<SocketAddr>` で提供する
+  （IP ベース認可・レート制限のキー等に利用可能）。`tokio::io::duplex` 等の
+  非ソケット経路では `None` になるフェイルクローズ契約であり、**peer address
+  に基づく判定を行う実装は `None` の場合も必ず `Reject` を返すこと**
+  （疑わしきは通過させない）
+- リバースプロキシ・ロードバランサ配下では `peer_addr` はプロキシ自身の
+  アドレスになる（`X-Forwarded-For` / `Forwarded` ヘッダはクライアント申告値
+  であり偽装可能なため別物）。実 peer address を注入したい呼び出し元向けに
+  `handle_connection_with_peer_addr` が公開 API として用意されている
+  （詳細は `GateContext` の doc・
+  [`docs/design/gate-peer-addr.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/gate-peer-addr.md)
+  参照）
 
 プロダクション水準の実例は `crates/plugin-hub-wiring` の `TenantGate`
 （JWT 検証・テナント境界強制を `RequestGate` だけで実現）を参照する。

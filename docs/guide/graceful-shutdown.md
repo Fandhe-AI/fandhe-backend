@@ -89,6 +89,59 @@ Future を `shutdown` として渡せばよい。
 よる強制クローズも働かないため、確実に片付けたい場合はキャンセルではなく
 `shutdown` Future の完了で止めること。
 
+## 稼働中の listener 差し替え（rebind）
+
+`BoundServer::run_until` の accept ループを止めずに listening アドレスを
+差し替えたい場合（イシュー #485）は `RebindHandle` を使う。
+
+| API | 役割 |
+|-----|------|
+| `BoundServer::rebind_handle()` | `run_until` へ move する前の `BoundServer` から `RebindHandle` を取得する |
+| `RebindHandle::rebind(addr)` | `addr` へ新規 `TcpListener` を bind してから、稼働中の accept ループへ listener の差し替えを依頼する |
+
+`rebind` は呼び出し側で新規 bind を完了させてから差し替えを依頼する構造の
+ため、`addr` への bind に失敗した場合は旧 listener・処理中の接続に一切影響
+しない（fail-closed）。差し替え成功後は新規接続のみ新アドレスで受理され、
+旧アドレスの listener は即座に閉じられる。差し替え直前までに旧アドレス経由
+で確立済みだった「旧世代」接続は `Server::shutdown_grace_period` を上限に
+**背景タスクで** drain され（`run_until` 自体・新世代の accept ループは
+ブロックされない）、超過分は強制クローズする（最終 graceful shutdown と
+同じ仕組みを世代ごとに独立適用したもの、詳細は
+[`docs/design/rebind.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/rebind.md)）。
+
+旧世代の WebSocket 委譲セッションへは世代キャンセルが伝播し、正常な Close
+ハンドシェイク（close code 1001 Going Away → `WebSocketConfig::close_grace`
+上限のドレイン）で切断される（イシュー #489〜#499、
+[`docs/design/ws-cancellation-propagation.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/ws-cancellation-propagation.md)）。
+
+`Server::shutdown_grace_period` に基づく背景 shutdown が確定した以降に呼んだ
+（または呼び出し中だった）`rebind` は、grace 期間の終了を待たず速やかに
+`Err` を返す。
+
+**副作用（`Server::webrtc` 登録時）**: `Server::webrtc` にスキーマ登録済みの
+場合、`rebind` 呼び出しのたびに `WebRtcConfig::registry` 上のアクティブな
+`RTCPeerConnection` が**新旧世代を区別せず全件**強制切断される（WS 委譲
+セッションのような `shutdown_grace_period` の猶予は適用されない）。単なる
+リスニングポート切り替えのつもりで `rebind` を呼んでも、rebind と無関係な
+進行中の WebRTC 通話まで切断されうる点に注意する（`RebindHandle::rebind`
+doc・上記 `docs/design/ws-cancellation-propagation.md` 10 節を参照）。
+
+```rust,ignore
+use fandhe_backend_core::Server;
+
+let mut bound = Server::new().handler(router).bind("127.0.0.1:3001").await?;
+let rebind = bound.rebind_handle();
+tokio::spawn(async move { bound.run().await });
+
+// 新アドレスへ bind してから差し替えを依頼する。
+let new_addr = rebind.rebind("127.0.0.1:3002").await?;
+```
+
+**セキュリティ**: `rebind` に渡すアドレスへ、HTTP リクエスト由来の値
+（クエリパラメータ・ヘッダ等の外部入力）を直接渡さないこと。運用者が制御
+する設定値・環境変数からのみ呼び出す（`.claude/rules/security.md` の入力
+検証観点、`RebindHandle` の doc に準拠）。
+
 ## セキュリティ・制約
 
 - **フェイルクローズ**: grace 超過時は残存接続を強制クローズし、`run_until` が
