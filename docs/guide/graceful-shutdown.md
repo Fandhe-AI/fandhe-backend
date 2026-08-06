@@ -142,6 +142,36 @@ let new_addr = rebind.rebind("127.0.0.1:3002").await?;
 する設定値・環境変数からのみ呼び出す（`.claude/rules/security.md` の入力
 検証観点、`RebindHandle` の doc に準拠）。
 
+## drain 中の idle keep-alive 接続の扱い（イシュー #518）
+
+drain（`run_until` の最終 graceful shutdown・`RebindHandle::rebind` の旧世代
+drain のいずれも同一機構）開始時点で、リクエスト待ちの idle 状態にある
+keep-alive 接続をどう扱うかは、次の 4 点を**公開契約**（後方互換性の対象。
+`docs/design/versioning-policy.md` の破壊的変更手続きを経ない限り変更しない）
+として保証する。
+
+1. drain 開始を理由として idle keep-alive 接続を即座に閉じない
+2. grace 超過の強制クローズまでに到着した通常のリクエストは拒否されず
+   受理・完走する。応答には `Connection: close` が付与され、以降その接続
+   では次のリクエストを受け付けない（接続あたり drain 後に処理する後続
+   リクエストは最大 1 件）
+3. WebSocket 等の Upgrade リクエストは上記「セキュリティ・制約」節の
+   とおり 503 で拒否される（2 の例外）
+4. 後続リクエストが来ない場合を含め、接続は `shutdown_grace_period` + ε
+   以内に必ず閉じる（強制クローズによる有界性。フェイルセーフ）
+
+一方、後続リクエストが来ない場合に接続が具体的にいつ閉じるか（read
+タイムアウト到達か grace 超過強制クローズかの別）は**実装詳細**であり
+保証しない。
+
+この契約により、drain 期間中も既存の keep-alive 接続でアプリケーションの
+最後のリクエストを 1 件処理させてから終了させる、といった利用側の実装が
+安全に成立する。詳細な判断根拠・回帰テストは
+[`docs/design/graceful-shutdown.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/graceful-shutdown.md)
+7.2 節、rebind 経由の同一契約は
+[`docs/design/rebind.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/rebind.md)
+5.6 節を参照。
+
 ## セキュリティ・制約
 
 - **フェイルクローズ**: grace 超過時は残存接続を強制クローズし、`run_until` が

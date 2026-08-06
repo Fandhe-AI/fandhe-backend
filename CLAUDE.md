@@ -242,6 +242,18 @@ fandhe-backend/
 │   │                                    # `activate_slot_rejects_pc_even_after_
 │   │                                    # take_active_peers_already_ran` として
 │   │                                    # 引き続き実 `RTCPeerConnection` で検証する）。
+│   │                                    # イシュー #518 で、drain（最終 graceful
+│   │                                    # shutdown・rebind 旧世代 drain の両経路）
+│   │                                    # 開始時点で idle（リクエスト待ち）状態にある
+│   │                                    # keep-alive 接続の扱いを `BoundServer::
+│   │                                    # run_until` の doc へ公開契約として明記した
+│   │                                    # （#313 実装当初から一貫していた既存挙動の
+│   │                                    # 明文化であり挙動変更なし。即座には閉じない・
+│   │                                    # 猶予期間内の後続リクエストは受理・完走し
+│   │                                    # `Connection: close` を伴う・Upgrade は 503
+│   │                                    # 拒否・grace + ε 以内に必ず閉じる、の 4 点。
+│   │                                    # `docs/design/graceful-shutdown.md` 7.2 節・
+│   │                                    # `docs/design/rebind.md` 5.6 節参照）。
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む
