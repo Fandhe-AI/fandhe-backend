@@ -171,11 +171,15 @@ Fandhe-AI/local-llm-server がこの挙動（drain 開始後も idle keep-alive 
 破壊的変更手続きの対象）として `BoundServer::run_until` の doc へ明記した:
 
 - (a) drain 開始を理由として idle keep-alive 接続を即座に閉じない
-- (b) grace 超過の強制クローズまでに到着した通常リクエストは受理・完走され、
-  応答に `Connection: close` が付与されて以降その接続では次のリクエストを
-  受け付けない（接続あたり drain 後に処理する後続リクエストは最大 1 件）。
-  `read_timeout` / `max_connection_lifetime` / `max_requests_per_connection` /
-  `RequestGate` 拒否等の既存上限は drain 中も従来どおり適用される
+- (b) grace 期限内に処理が完了する範囲で、通常リクエストを受理・完走する。
+  保証されるのは「到着」ではなく「到着かつ grace 期限内の完了」であり、
+  grace 直前に到着してもハンドラの処理が grace 期限をまたぐ場合は (d) の
+  強制クローズが優先し、処理途中でも abort されうる。grace 期限内に完了
+  した場合、応答に `Connection: close` が付与されて以降その接続では次の
+  リクエストを受け付けない（接続あたり drain 後に処理する後続リクエストは
+  最大 1 件）。`read_timeout` / `max_connection_lifetime` /
+  `max_requests_per_connection` / `RequestGate` 拒否等の既存上限は drain 中も
+  従来どおり適用される
 - (c) Upgrade リクエストは 7.1 節のとおり 503 で拒否される（(b) の例外）
 - (d) 接続は grace + ε 以内に必ず閉じる（強制クローズのフェイルセーフ、
   6 節）

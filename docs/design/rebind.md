@@ -223,8 +223,11 @@ server.rs` の `handle_connection_with_permit`）へ合流する。そのため�
 （`BoundServer::run_until` の doc「idle keep-alive 接続の扱い（公開契約、
 イシュー #518）」・`docs/design/graceful-shutdown.md` 7.2 節）に従う:
 即座には閉じられず、旧世代 drain 猶予期間（`Server::shutdown_grace_period`）
-内に到着した後続リクエストは受理・完走し `Connection: close` を伴って
-応答した後に接続が閉じる。回帰テストは `crates/core/tests/rebind.rs` の
+の期限内に処理が完了する範囲で後続リクエストを受理・完走し
+`Connection: close` を伴って応答した後に接続が閉じる（保証されるのは
+「到着」ではなく「到着かつ grace 期限内の完了」であり、grace 超過時は
+強制クローズが優先し処理途中でも abort されうる）。回帰テストは
+`crates/core/tests/rebind.rs` の
 `rebind_serves_request_arriving_on_idle_old_generation_connection_then_closes`
 を参照。
 

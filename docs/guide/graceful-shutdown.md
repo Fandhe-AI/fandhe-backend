@@ -142,7 +142,7 @@ let new_addr = rebind.rebind("127.0.0.1:3002").await?;
 する設定値・環境変数からのみ呼び出す（`.claude/rules/security.md` の入力
 検証観点、`RebindHandle` の doc に準拠）。
 
-## drain 中の idle keep-alive 接続の扱い（イシュー #518）
+## drain 中の idle keep-alive 接続の扱い
 
 drain（`run_until` の最終 graceful shutdown・`RebindHandle::rebind` の旧世代
 drain のいずれも同一機構）開始時点で、リクエスト待ちの idle 状態にある
@@ -151,10 +151,13 @@ keep-alive 接続をどう扱うかは、次の 4 点を**公開契約**（後�
 として保証する。
 
 1. drain 開始を理由として idle keep-alive 接続を即座に閉じない
-2. grace 超過の強制クローズまでに到着した通常のリクエストは拒否されず
-   受理・完走する。応答には `Connection: close` が付与され、以降その接続
-   では次のリクエストを受け付けない（接続あたり drain 後に処理する後続
-   リクエストは最大 1 件）
+2. grace 期限内に処理が完了する範囲で、通常のリクエストは拒否されず
+   受理・完走する。保証されるのは「到着」ではなく「到着かつ grace 期限内の
+   完了」であり、grace 直前に到着してもハンドラの処理が grace 期限をまたぐ
+   場合は下記 4 の強制クローズが優先し、処理途中でも abort されうる。
+   grace 期限内に完了した場合、応答には `Connection: close` が付与され、
+   以降その接続では次のリクエストを受け付けない（接続あたり drain 後に
+   処理する後続リクエストは最大 1 件）
 3. WebSocket 等の Upgrade リクエストは上記「セキュリティ・制約」節の
    とおり 503 で拒否される（2 の例外）
 4. 後続リクエストが来ない場合を含め、接続は `shutdown_grace_period` + ε

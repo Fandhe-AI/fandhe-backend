@@ -15,9 +15,10 @@
   [#518](https://github.com/Fandhe-AI/fandhe-backend/issues/518)）。挙動の
   変更はなく、#313 実装当初から一貫していた既存挙動を**公開契約**として
   明文化したものです：drain 開始を理由に idle keep-alive 接続を即座には
-  閉じない・grace 超過までに到着した後続リクエストは受理・完走し
-  `Connection: close` を伴って応答する・Upgrade リクエストは 503 で拒否
-  される・接続は grace + ε 以内に必ず閉じる、の 4 点。詳細・判断根拠は
+  閉じない・grace 期限内に処理が完了する範囲で後続リクエストを受理・完走し
+  `Connection: close` を伴って応答する（grace 超過時は強制クローズが優先し
+  処理途中でも abort されうる）・Upgrade リクエストは 503 で拒否される・
+  接続は grace + ε 以内に必ず閉じる、の 4 点。詳細・判断根拠は
   [`docs/design/graceful-shutdown.md`](docs/design/graceful-shutdown.md) 7.2 節、
   rebind 経由の同一契約は
   [`docs/design/rebind.md`](docs/design/rebind.md) 5.6 節、利用者向け解説は

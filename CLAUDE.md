@@ -249,8 +249,10 @@ fandhe-backend/
 │   │                                    # run_until` の doc へ公開契約として明記した
 │   │                                    # （#313 実装当初から一貫していた既存挙動の
 │   │                                    # 明文化であり挙動変更なし。即座には閉じない・
-│   │                                    # 猶予期間内の後続リクエストは受理・完走し
-│   │                                    # `Connection: close` を伴う・Upgrade は 503
+│   │                                    # grace 期限内に完了する範囲で後続リクエストを
+│   │                                    # 受理・完走し `Connection: close` を伴う
+│   │                                    # （grace 超過時は強制クローズが優先し処理
+│   │                                    # 途中でも abort されうる）・Upgrade は 503
 │   │                                    # 拒否・grace + ε 以内に必ず閉じる、の 4 点。
 │   │                                    # `docs/design/graceful-shutdown.md` 7.2 節・
 │   │                                    # `docs/design/rebind.md` 5.6 節参照）。
