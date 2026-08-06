@@ -14,6 +14,12 @@
 //! - `rebind_drains_old_generation_keep_alive_connection`: 旧世代の
 //!   keep-alive 接続は rebind 後も in-flight を完走し `Connection: close`
 //!   が付与される
+//! - `rebind_serves_request_arriving_on_idle_old_generation_connection_then_closes`:
+//!   rebind 完了時点で idle（リクエスト待ち）状態にあった旧世代 keep-alive
+//!   接続は即座には閉じられず、旧世代 drain 猶予期間内に到着した後続
+//!   リクエストを受理・完走したのち `Connection: close` を付けて閉じる
+//!   （`RebindHandle::rebind` の doc が参照する `BoundServer::run_until` の
+//!   「idle keep-alive 接続の扱い（公開契約、イシュー #518）」の回帰防止）
 //! - `rebind_force_closes_old_generation_after_grace_period`: 短い
 //!   `shutdown_grace_period` + 居座り接続で、旧世代接続が grace 超過後に
 //!   強制クローズされる
@@ -309,6 +315,94 @@ async fn rebind_drains_old_generation_keep_alive_connection() {
         "rebind 後に完結した旧世代リクエストへの応答は Connection: close を伴うはず\
          （実際: {response_head}）"
     );
+
+    run_task.abort();
+}
+
+/// イシュー #518「idle keep-alive 接続の扱いをリファレンスへ明記」の回帰
+/// テスト（rebind 経由の旧世代 drain 版）。`RebindHandle::rebind` の doc
+/// 「旧世代の idle keep-alive 接続がこの drain 期間中どう扱われるか」で
+/// 参照する契約（`BoundServer::run_until` の doc「idle keep-alive 接続の
+/// 扱い（公開契約、イシュー #518）」）が、最終 graceful shutdown だけでなく
+/// rebind の旧世代 drain でも同一に適用されることを固定する。
+///
+/// `rebind_drains_old_generation_keep_alive_connection` と異なり、2 本目の
+/// リクエストは rebind 完了（`Ok(new_addr)` 返却）を待った**後**にゼロから
+/// 送信する（rebind 発行前に部分送信しない）。これにより「rebind による
+/// 旧世代 flag 設定を境に、完全に idle だった keep-alive 接続に到着した
+/// 新規リクエストが受理される」契約 (b) を検証する（Fandhe-AI/local-llm-server
+/// が実測のみを根拠に依存していたシナリオそのもの）。
+#[tokio::test]
+async fn rebind_serves_request_arriving_on_idle_old_generation_connection_then_closes() {
+    let server = Server::new()
+        .handler(FixedHandler)
+        .shutdown_grace_period(Duration::from_secs(10));
+    let mut bound = server.bind("127.0.0.1:0").await.unwrap();
+    let old_addr = bound.local_addr().unwrap();
+    let rebind = bound.rebind_handle();
+
+    let run_task = tokio::spawn(async move { bound.run().await });
+
+    // 旧アドレスへリクエスト 1（`Connection: close` なし）を完走させ、
+    // 接続を idle（次のリクエスト待ち）状態にする。
+    let mut stream = TcpStream::connect(old_addr).await.unwrap();
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+        .await
+        .unwrap();
+    let first_head = timeout(Duration::from_secs(5), read_response_head(&mut stream))
+        .await
+        .expect("リクエスト 1 は rebind 前に正常応答するはず");
+    assert!(
+        first_head.starts_with("HTTP/1.1 200 OK\r\n"),
+        "実際: {first_head}"
+    );
+    assert!(
+        !first_head.to_lowercase().contains("connection: close"),
+        "keep-alive のリクエスト 1 応答に Connection: close が付いてはならない\
+         （実際: {first_head}）"
+    );
+
+    // rebind を発行し、差し替え完了（旧世代 flag 設定済みが保証される
+    // 同期点）を待つ。この接続はこの時点で完全に idle（受理も送信途中も
+    // なし）である。
+    let _new_addr = timeout(Duration::from_secs(5), rebind.rebind("127.0.0.1:0"))
+        .await
+        .expect("rebind はタイムアウトせず完了するはず")
+        .expect("bind 可能な新アドレスへの rebind は成功するはず");
+
+    // 契約 (a) の確認: rebind 完了後も idle 接続は即座には閉じられて
+    // いない。書き込みが成功することで、まだソケットが有効なことを
+    // 確認する。
+    // 契約 (b) の確認: 旧世代 drain 猶予期間内に到着したリクエスト 2 は
+    // 拒否されず受理・完走し、`Connection: close` を伴って応答する。
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+        .await
+        .expect("rebind 後も idle 旧世代 keep-alive 接続は即座には閉じられていないはず");
+    let second_head = timeout(Duration::from_secs(5), read_response_head(&mut stream))
+        .await
+        .expect("旧世代 drain 猶予期間内の後続リクエストは受理・完走するはず");
+    assert!(
+        second_head.starts_with("HTTP/1.1 200 OK\r\n"),
+        "旧世代 drain 中の後続リクエストへの正常応答を期待（実際: {second_head}）"
+    );
+    assert!(
+        second_head.to_lowercase().contains("connection: close"),
+        "旧世代 drain 中に完結したリクエストへの応答は Connection: close を伴うはず\
+         （実際: {second_head}）"
+    );
+
+    // 応答後、接続は閉じられる（read が EOF またはエラーで終わる）。
+    let mut probe = [0u8; 1];
+    let read_result = timeout(Duration::from_secs(5), stream.read(&mut probe))
+        .await
+        .expect("Connection: close 応答後の read はタイムアウトせず終了するはず");
+    match read_result {
+        Ok(0) => {} // 正常クローズ（EOF）
+        Ok(n) => panic!("Connection: close 応答後にデータを受信すべきではない（{n} バイト）"),
+        Err(_) => {} // リセット等のエラーも許容
+    }
 
     run_task.abort();
 }

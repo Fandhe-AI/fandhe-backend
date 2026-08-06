@@ -213,6 +213,24 @@ grace 超過時 `JoinSet::shutdown` による強制 abort の対象にはなら�
 待たず短時間で `Err` になること・rebind で使ったポートが shutdown 後すぐ再利用
 可能になることを検証）。
 
+### 5.6 idle keep-alive 接続の扱い（イシュー #518 の契約を継承）
+
+5 節手順 1 で旧世代向け `shutdown_flag` を `true` にする処理は、最終
+graceful shutdown（`run_until` 終了時）と同一の機構（`crates/core/src/
+server.rs` の `handle_connection_with_permit`）へ合流する。そのため、旧
+世代の idle（リクエスト待ち）keep-alive 接続がこの drain 期間中どう
+扱われるかも、最終 graceful shutdown と完全に同一の**公開契約**
+（`BoundServer::run_until` の doc「idle keep-alive 接続の扱い（公開契約、
+イシュー #518）」・`docs/design/graceful-shutdown.md` 7.2 節）に従う:
+即座には閉じられず、旧世代 drain 猶予期間（`Server::shutdown_grace_period`）
+の期限内に処理が完了する範囲で後続リクエストを受理・完走し
+`Connection: close` を伴って応答した後に接続が閉じる（保証されるのは
+「到着」ではなく「到着かつ grace 期限内の完了」であり、grace 超過時は
+強制クローズが優先し処理途中でも abort されうる）。回帰テストは
+`crates/core/tests/rebind.rs` の
+`rebind_serves_request_arriving_on_idle_old_generation_connection_then_closes`
+を参照。
+
 ## 6. 既知の限界・スコープ外
 
 - **listener 差し替え瞬間の accept backlog 喪失（有界 drain で緩和済み、

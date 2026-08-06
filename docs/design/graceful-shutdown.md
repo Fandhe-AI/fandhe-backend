@@ -157,12 +157,61 @@ force-close を過ぎても動き続けうる（Bugbot 指摘、review comment
 `Connection: close` で接続を閉じるよう是正した（shutdown_flag 受信前に
 既に委譲済みのセッションは対象外、8 節参照）。
 
+### 7.2 idle keep-alive 接続と後続リクエスト受理の公開契約（イシュー #518）
+
+7 節の実装（`shutdown_flag` は keep-alive 判定にのみ関与し、read 待ち自体を
+中断しない）は #313 導入当初から一貫した挙動だったが、公開契約か実装詳細か
+がリファレンス（rustdoc・ガイド）に明記されていなかった。下流の
+Fandhe-AI/local-llm-server がこの挙動（drain 開始後も idle keep-alive 接続は
+閉じられず、猶予期間内の後続リクエストを処理し続ける）に**実測のみ**を
+根拠に依存し E2E テスト（local-llm-server PR #557）を追加していたため、
+リファレンス上の保証がないまま実装変更で黙って陳腐化するリスクがあった。
+
+イシュー #518 で次を**公開契約**（`docs/design/versioning-policy.md` の
+破壊的変更手続きの対象）として `BoundServer::run_until` の doc へ明記した:
+
+- (a) drain 開始を理由として idle keep-alive 接続を即座に閉じない
+- (b) grace 期限内に処理が完了する範囲で、通常リクエストを受理・完走する。
+  保証されるのは「到着」ではなく「到着かつ grace 期限内の完了」であり、
+  grace 直前に到着してもハンドラの処理が grace 期限をまたぐ場合は (d) の
+  強制クローズが優先し、処理途中でも abort されうる。grace 期限内に完了
+  した場合、応答に `Connection: close` が付与されて以降その接続では次の
+  リクエストを受け付けない（接続あたり drain 後に処理する後続リクエストは
+  最大 1 件）。`read_timeout` / `max_connection_lifetime` /
+  `max_requests_per_connection` / `RequestGate` 拒否等の既存上限は drain 中も
+  従来どおり適用される
+- (c) Upgrade リクエストは 7.1 節のとおり 503 で拒否される（(b) の例外）
+- (d) 接続は grace + ε 以内に必ず閉じる（強制クローズのフェイルセーフ、
+  6 節）
+
+一方、後続リクエストが来ない場合に接続が閉じる具体的タイミング（read
+タイムアウト到達か grace 超過強制クローズかの別）・shutdown シグナル発火から
+各接続タスクにフラグが可視化されるまでの微小な遅延窓は、引き続き**実装
+詳細**（保証しない）として扱う。
+
+判断根拠: 下流（local-llm-server）が既に (a)(b) に依存しており、実装側も
+#313 当初から一貫した挙動であること。契約化に伴い、8 節の「アイドル
+keep-alive 接続への即時 wakeup」改善は、実施するなら破壊的変更手続きを
+要する。この区分により、フェイルセーフ（(d) の有界クローズ）は不変のまま
+陳腐化リスク（#518 の動機）を解消できる。
+
+契約 (a)(b) は `crates/core/tests/graceful_shutdown.rs` の
+`shutdown_serves_request_arriving_on_idle_keep_alive_connection_then_closes`・
+`crates/core/tests/rebind.rs` の
+`rebind_serves_request_arriving_on_idle_old_generation_connection_then_closes`
+（最終 graceful shutdown・rebind 旧世代 drain の両経路）で回帰テストとして
+固定した。
+
 ## 8. 既知の限界・スコープ外
 
 - **アイドル keep-alive 接続への即時 wakeup**: read 待ち中のアイドル
   keep-alive 接続はこのフラグに即応しない（次の read タイムアウト、または
   grace 超過の強制クローズで確実に閉じる）。`tokio::sync::Notify` 等による
-  即時中断は本イシューのスコープ外
+  即時中断は本イシューのスコープ外。**7.2 節（イシュー #518）でこの挙動
+  自体（即座には閉じない・猶予期間内の後続リクエストは受理する）を公開
+  契約化したため、即時クローズ化を実装する場合は `docs/design/
+  versioning-policy.md` 4 節の破壊的変更手続き（`feat!:` /
+  `BREAKING CHANGE:`）が必要になる**
 - **WebSocket 専用タスクへのキャンセル伝播（解消済み）**: shutdown_flag
   受信前に既に Upgrade へ委譲済みの WebSocket 専用タスク
   （`fandhe_backend_plugin_websocket` 側の `tokio::spawn`）は今も
