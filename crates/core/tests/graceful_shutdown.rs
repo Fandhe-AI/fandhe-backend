@@ -16,6 +16,12 @@
 //!   された場合でも、in-flight 接続は abort されず完走できる（Bugbot 指摘
 //!   review comment 3615287445 の回帰防止、"Cancel aborts in-flight
 //!   connections"）
+//! - `shutdown_serves_request_arriving_on_idle_keep_alive_connection_then_closes`:
+//!   drain 開始時点で idle（リクエスト待ち）状態にあった keep-alive 接続は
+//!   即座には閉じられず、猶予期間内に到着した後続リクエストを受理・完走した
+//!   のち `Connection: close` を付けて閉じる（`BoundServer::run_until` の doc
+//!   「idle keep-alive 接続の扱い（公開契約、イシュー #518）」の契約 (a)(b)
+//!   の回帰防止）
 
 use fandhe_backend_core::{Handler, Server};
 use fandhe_backend_http::request::RequestHead;
@@ -330,4 +336,111 @@ async fn run_until_future_cancelled_externally_lets_in_flight_connection_complet
         1,
         "ハンドラは 1 回だけ呼ばれ、in-flight 接続が完走したはず"
     );
+}
+
+/// イシュー #518「idle keep-alive 接続の扱いをリファレンスへ明記」の回帰
+/// テスト。`BoundServer::run_until` の doc「idle keep-alive 接続の扱い
+/// （公開契約、イシュー #518）」の契約 (a)(b) を実接続で固定する:
+///
+/// - (a) drain 開始時点で idle（リクエスト待ち）状態の keep-alive 接続は
+///   即座には閉じられない
+/// - (b) 猶予期間内に到着した後続リクエストは受理・完走し、応答に
+///   `Connection: close` が付与されたのち接続が閉じる
+///
+/// shutdown_flag 伝播レースを避けるため、新規接続が拒否されるように
+/// なるまでポーリングして「shutdown が観測可能」な状態を確定させてから
+/// 後続リクエストを送る（`shutdown_rejects_new_connections_after_signal`
+/// と同一のレース排除パターン）。
+#[tokio::test]
+async fn shutdown_serves_request_arriving_on_idle_keep_alive_connection_then_closes() {
+    let server = Server::new()
+        .handler(FixedHandler)
+        .shutdown_grace_period(Duration::from_secs(10));
+    let bound = server.bind("127.0.0.1:0").await.unwrap();
+    let addr = bound.local_addr().unwrap();
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let run_task = tokio::spawn(async move {
+        bound
+            .run_until(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+
+    // リクエスト 1（`Connection: close` を付けず keep-alive のまま）を
+    // 完走させ、接続を idle（次のリクエスト待ち）状態にする。
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+        .await
+        .unwrap();
+    let first_head = timeout(Duration::from_secs(5), read_response_head(&mut stream))
+        .await
+        .expect("リクエスト 1 は shutdown 前に正常応答するはず");
+    assert!(
+        first_head.starts_with("HTTP/1.1 200 OK\r\n"),
+        "リクエスト 1 への正常応答を期待（実際: {first_head}）"
+    );
+    assert!(
+        !first_head.to_lowercase().contains("connection: close"),
+        "keep-alive のリクエスト 1 応答に Connection: close が付いてはならない\
+         （実際: {first_head}）"
+    );
+
+    // shutdown を発火する。
+    shutdown_tx.send(()).unwrap();
+
+    // shutdown が観測可能（新規接続が拒否される）になるまでポーリングし、
+    // 「idle 接続の read 待ちが shutdown 発火だけでは中断されない」契約 (a)
+    // の検証を、shutdown_flag 未伝播による偽陽性なしで行えるようにする。
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if TcpStream::connect(addr).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("shutdown はポーリング上限内に観測可能になるはず（新規接続が拒否される）");
+
+    // 契約 (a) の確認: ここまで idle 接続は生きている（相手からクローズ
+    // されていない）。書き込みが成功することで、まだソケットが有効な
+    // ことを確認する。
+    // 契約 (b) の確認: 猶予期間内に到着した後続リクエスト（リクエスト 2）
+    // は拒否されず受理・完走し、`Connection: close` を伴って応答する。
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+        .await
+        .expect("shutdown 後も idle keep-alive 接続は即座には閉じられていないはず");
+    let second_head = timeout(Duration::from_secs(5), read_response_head(&mut stream))
+        .await
+        .expect("drain 猶予期間内の後続リクエストは受理・完走するはず");
+    assert!(
+        second_head.starts_with("HTTP/1.1 200 OK\r\n"),
+        "drain 中の後続リクエストへの正常応答を期待（実際: {second_head}）"
+    );
+    assert!(
+        second_head.to_lowercase().contains("connection: close"),
+        "drain 中に完結したリクエストへの応答は Connection: close を伴うはず\
+         （実際: {second_head}）"
+    );
+
+    // 応答後、接続は閉じられる（read が EOF またはエラーで終わる）。
+    let mut probe = [0u8; 1];
+    let read_result = timeout(Duration::from_secs(5), stream.read(&mut probe))
+        .await
+        .expect("Connection: close 応答後の read はタイムアウトせず終了するはず");
+    match read_result {
+        Ok(0) => {} // 正常クローズ（EOF）
+        Ok(n) => panic!("Connection: close 応答後にデータを受信すべきではない（{n} バイト）"),
+        Err(_) => {} // リセット等のエラーも許容
+    }
+
+    timeout(Duration::from_secs(5), run_task)
+        .await
+        .expect("run_until はリクエスト 2 完走後に戻るはず")
+        .expect("run_until タスクが panic しないこと")
+        .expect("run_until は Ok(()) を返すはず");
 }
