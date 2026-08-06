@@ -92,7 +92,7 @@ Future を `shutdown` として渡せばよい。
 ## 稼働中の listener 差し替え（rebind）
 
 `BoundServer::run_until` の accept ループを止めずに listening アドレスを
-差し替えたい場合（イシュー #485）は `RebindHandle` を使う。
+差し替えたい場合は `RebindHandle` を使う。
 
 | API | 役割 |
 |-----|------|
@@ -111,7 +111,7 @@ Future を `shutdown` として渡せばよい。
 
 旧世代の WebSocket 委譲セッションへは世代キャンセルが伝播し、正常な Close
 ハンドシェイク（close code 1001 Going Away → `WebSocketConfig::close_grace`
-上限のドレイン）で切断される（イシュー #489〜#499、
+上限のドレイン）で切断される（
 [`docs/design/ws-cancellation-propagation.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/ws-cancellation-propagation.md)）。
 
 `Server::shutdown_grace_period` に基づく背景 shutdown が確定した以降に呼んだ

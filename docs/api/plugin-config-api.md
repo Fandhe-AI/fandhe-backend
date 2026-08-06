@@ -43,9 +43,9 @@ RFC 6455 ハンドシェイク検証・101 応答・tokio-tungstenite へのフ�
   shutdown・rebind 世代 drain）発火時の Close ハンドシェイク猶予。
   `fandhe_backend_plugin_websocket::handle_upgrade` の第 5 引数（キャンセル
   `Future`）が発火すると close code 1001 Going Away を送出し、`close_grace` を
-  上限にクライアント応答を有界に待つ（v0.3.0 での BREAKING CHANGE、イシュー
-  #492/#496）。`WsMessageHandler::on_message` が返す `Future` は任意の
-  `await` 点で drop されうる契約（イシュー #499、
+  上限にクライアント応答を有界に待つ（v0.3.0 での BREAKING CHANGE）。
+  `WsMessageHandler::on_message` が返す `Future` は任意の
+  `await` 点で drop されうる契約（
   [`docs/design/ws-cancellation-propagation.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/ws-cancellation-propagation.md)）
 
 ### 2.2 plugin-graphql（`graphql`）
@@ -148,7 +148,7 @@ in-process WebRTC（`webrtc-rs` 直接依存）。`POST /rtc/offer` を同一プ
 | Config 型 | `WebRtcConfig` |
 | 構築・builder | `WebRtcConfig::new()` + `with_max_offer_bytes` / `with_max_peer_connections` / `with_signaling_timeout`（getter: `max_offer_bytes` / `max_peer_connections` / `signaling_timeout`） |
 | 既定値 | `max_offer_bytes = 64 KiB`、`max_peer_connections = 64`、`signaling_timeout = 10 秒` |
-| drain API | `close_active_peers(&config, per_close_timeout)` / `drain_for_shutdown(&config, per_close_timeout)`（`drain` モジュール、イシュー #498） |
+| drain API | `close_active_peers(&config, per_close_timeout)` / `drain_for_shutdown(&config, per_close_timeout)`（`drain` モジュール） |
 
 - 注意: `webrtc-rs` の依存ツリーが大きく攻撃表面が広いため、クレート境界で完全分離されている。まず `plugin-webrtc-proxy` の採用を検討すること
 - 注意: `close_active_peers` / `drain_for_shutdown` はいずれも `WebRtcConfig::registry`

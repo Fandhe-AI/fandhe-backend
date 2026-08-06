@@ -54,7 +54,7 @@ rustdoc を正とする。
 | `name` | `fn (&self) -> &'static str` | 診断・ログ表示用の静的識別名 |
 | `check` | `fn (&self, &RequestHead, &GateContext) -> GateOutcome` | リクエストヘッドと接続コンテキストを検査し許可/拒否を判定 |
 
-`ctx: &GateContext`（イシュー #486、BREAKING CHANGE）は accept したソケットの実
+`ctx: &GateContext`（BREAKING CHANGE）は accept したソケットの実
 peer address を `GateContext::peer_addr() -> Option<SocketAddr>` として提供する。
 `crate::handle_connection`（`tokio::io::duplex` 等の非ソケット経路を含む）からの
 呼び出しでは実 peer が存在しないため `None` になる。peer address を判定に用いる
@@ -71,8 +71,8 @@ gate 実装は、`None` の場合も必ず `GateOutcome::Reject` を返すこと
 | `Reject` | `response: Response` | 拒否。検証済みの `Response`（`crates/http`）をそのまま応答として送出する |
 
 許可/拒否の判定結果のみを運び、JWT クレーム・`org_id` 等のプラグイン固有データを
-コアへ持ち込まない。`Reject` の `response` はイシュー #424 で `status: u16` /
-`body: Vec<u8>` の個別フィールドから検証済み `Response` を直接運ぶ形へ変更された。
+コアへ持ち込まない。`Reject` の `response` は `status: u16` /
+`body: Vec<u8>` の個別フィールドではなく、検証済み `Response` を直接運ぶ形になっている。
 `Response` の構築時検証（CR/LF/NUL 拒否・`Content-Length`/`Connection`/
 `Transfer-Encoding` の予約名拒否）を経た値のみが渡せるため、任意文字列を無検証で
 ヘッダ・ステータス行へ書き出す経路は存在しない（レスポンス分割・ヘッダ

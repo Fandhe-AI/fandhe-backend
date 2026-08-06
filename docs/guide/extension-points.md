@@ -108,7 +108,7 @@ impl RequestGate for RateLimitGate {
   （レスポンス分割・ヘッダインジェクション対策）
 - 拒否レスポンス送出後も、登録済み `Middleware` の `on_response` は呼ばれる
   （観測の一貫性）
-- `check` の第 2 引数 `ctx: &GateContext`（イシュー #486）は accept したソケットの
+- `check` の第 2 引数 `ctx: &GateContext` は accept したソケットの
   実 peer address を `ctx.peer_addr() -> Option<SocketAddr>` で提供する
   （IP ベース認可・レート制限のキー等に利用可能）。`tokio::io::duplex` 等の
   非ソケット経路では `None` になるフェイルクローズ契約であり、**peer address
