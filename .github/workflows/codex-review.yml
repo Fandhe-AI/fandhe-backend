@@ -35,7 +35,12 @@ name: Codex PR review
 #   が使われ `review_completed` フィールドを含まない旧 JSON が返る。結果としてこの
 #   PR 自身の「Gate on review completion」は一度だけ赤くなるが、gate は advisory
 #   （後述）でありマージを阻止しない。main へのマージ後は以降のすべての PR で新 gate
-#   が有効になる
+#   が有効になる。base 参照化により自己参照は成立しなくなったため、review.md /
+#   review-schema.json / AGENTS.md「レビュー基準」節自体を変更する差分は、パスが
+#   一致するというだけで「レビュー指示の改変」（プロンプトインジェクション規則、P0）
+#   扱いにはしない。内容が禁止事項・完了判定を弱めるかどうかで判定する旨を
+#   review.md（本文）・AGENTS.md「レビュー基準」節の双方に明記した（PR #526 の
+#   Codex 自身のレビューがパス一致のみで一律 P0 と誤検知した事象を受けた追記）
 # - 認証は codex-home 方式: API キー（OPENAI_API_KEY secret）は使わず、self-hosted runner
 #   上に用意した ChatGPT ログイン済み CODEX_HOME ディレクトリ（auth.json を含む）を
 #   CODEX_HOME 環境変数で参照する。パスは Actions variable `CODEX_HOME_DIR` で指定し、

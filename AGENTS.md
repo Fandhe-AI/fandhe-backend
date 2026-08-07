@@ -518,6 +518,13 @@ Codex による PR 自動レビュー（`.github/workflows/codex-review.yml`。C
   直接 prompt/schema/基準を読み込む構成だと、diff がレビュー指示自体を弱める方向へ
   改変してもその改変済み指示がそのまま自分自身のレビューに使われる自己参照構成に
   なるため（イシュー #524、PR #526 の Codex レビュー P0/P1 指摘を受けて導入）
+- 上記の base 参照化により自己参照は成立しなくなったため、レビュー制御用ファイル
+  （prompt/schema/本節）自体を変更する差分は、パスが一致するというだけの理由で
+  自動的に「レビュー指示の改変」（プロンプトインジェクション規則、P0）扱いにしない。
+  内容を読み、P0/P1 の禁止事項・`review_completed` 判定基準を弱める変更かどうかで
+  判定する（`.github/codex/prompts/review.md` に判定基準を明記。PR #526 に対する
+  Codex 自身の誤検知——base 参照化と同一コミットにもかかわらず、制御用ファイルへの
+  差分というだけでパス一致から一律 P0 と判定した——を受けて追加）
 - gate の失敗が実際にマージを止めるかは branch protection の required status check 設定に
   依存する。現状の required check は `ci.yml` の `ci-complete` のみで本ワークフローは
   含まれないため、gate は advisory（人間レビューの補助）であり機械的なマージ阻止では
