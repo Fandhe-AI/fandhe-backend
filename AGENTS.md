@@ -446,3 +446,67 @@ Issue #175 対応。`crates/plugin-websocket` のセッション処理
 発火・非発火（通信継続で維持）・Ping のみでの維持・無効化・Close 無視クライアント
 への `close_grace` 適用は `crates/plugin-websocket/tests/idle_timeout.rs` の統合
 テストで検証する。
+
+## レビュー基準（Codex PR 自動レビュー）
+
+Codex による PR 自動レビュー（`.github/workflows/codex-review.yml`。Codex は本ファイルを
+自動読込する）と人間レビューが共通で用いる基準。Codex code review は既定で P0/P1 のみを
+表示・報告対象とするため、本プロジェクトとして必ず検出したい項目は下記で優先度を明示的に
+格上げして定義する。ここに列挙のない一般的な品質問題は Codex 側の既定の重要度判断に従う。
+
+### 優先度の定義
+
+| 優先度 | 意味 | CI ゲート |
+|--------|------|-----------|
+| P0 | マージ不可。脆弱性・データ破壊・契約破壊に直結 | ジョブ失敗 |
+| P1 | 修正必須。設計原則・拡張点契約・運用規約への違反 | ジョブ失敗 |
+| P2 | 修正推奨。可読性・保守性・テスト網羅の改善 | 通過（コメントのみ） |
+| P3 | 任意。好みの範囲の提案 | 通過（コメントのみ） |
+
+### 命名規則
+
+- クレート名は `fandhe-backend-<name>` / `fandhe-backend-plugin-<name>`、feature 名は
+  ケバブケース。ディレクトリ名（`crates/<name>`）はプレフィックスなし
+- Rust 識別子は Rust API Guidelines と周辺コードの慣例に従う（モジュール・関数・feature
+  内部識別子は snake_case、型・trait は UpperCamelCase、定数は SCREAMING_SNAKE_CASE）
+- コミット・PR タイトルは Conventional Commits（`.claude/rules/conventional-commits.md`。
+  type/scope は英語規約、description は日本語可）
+- 逸脱は P2。ただし公開 API（crates.io 公開 13 クレートの公開シンボル）の命名逸脱は
+  破壊的変更なしに直せなくなるため P1
+
+### 禁止事項（明示的に P0/P1 へ格上げ）
+
+- **feature ゲート漏れ**（feature 無効時に依存・コード・`unsafe`・バイナリ増が残る
+  pay-for-what-you-use 違反、`.claude/rules/pay-for-what-you-use.md`）: **P1**
+- **`// SAFETY:` コメントのない `unsafe`**、および不変条件の根拠が不十分な `unsafe`: **P0**
+- **ライブラリコード（`crates/**`）での `.unwrap()` / `.expect()`**（テスト・examples を
+  除く。panic をライブラリ境界の外へ漏らす経路全般を含む）: **P1**
+- **`Middleware` フック内の同期ブロッキング I/O**（本ファイル「規約: ミドルウェア非同期
+  I/O 必須化」違反）、および **ロック保持中の `.await`**: **P1**
+- **CI ワークフローの規約違反**（`runs-on: self-hosted` 以外の指定・`timeout-minutes`
+  欠落・`pull_request_target` 等の secrets 露出トリガー追加、`.claude/rules/ci.md`）: **P1**
+- **公開 API の doc comment / doc test 欠落**（AI ファースト保守性、
+  `.claude/rules/code-comment-style.md`）: **P2**（セキュリティ上の契約・fail-closed
+  条件が未記載の場合は **P1**）
+
+### セキュリティ観点（明示的に P0 へ格上げ、`.claude/rules/security.md`）
+
+- 入力検証の欠落・後退（HTTP パーサ・ルーティング・プラグイン入口での境界・サイズ上限・
+  エンコーディング検証。既存の DoS 上限やタイムアウトを撤廃・緩和する差分を含む）
+- シークレット（API キー・トークン・パスワード）・PII のコード・ログ・CI 設定への混入
+- インジェクション経路（ヘッダ・ログ・GraphQL・シェル実行）
+- パストラバーサル・シンボリックリンク脱出等、OWASP Top 10 に直結する欠陥
+- fail-closed で設計された既存分岐の fail-open 化
+
+### 運用
+
+- gate（P0/P1 でジョブ失敗）の判定は `.github/codex/review-schema.json` に従う構造化
+  出力を `jq` で判定する。基準の追加・格上げは本節の編集のみで反映される
+- gate の失敗が実際にマージを止めるかは branch protection の required status check 設定に
+  依存する。現状の required check は `ci.yml` の `ci-complete` のみで本ワークフローは
+  含まれないため、gate は advisory（人間レビューの補助）であり機械的なマージ阻止では
+  ない。また PR の差分自体が本節・レビュー指示文を書き換えられる以上、本レビューは
+  セキュリティ境界ではなく、最終判断は人間レビューが担う。required check 化する場合は
+  `CODEX_HOME_DIR` 未設定時のジョブ skip との両立を別途設計する
+- rustfmt / clippy / テスト成否は既存 CI（`ci.yml`）が機械判定するため、本レビューの
+  対象外とする

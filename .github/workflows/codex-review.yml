@@ -1,0 +1,191 @@
+name: Codex PR review
+
+# Codex CLI（codex exec 直接実行）による PR 自動レビュー。
+# openai/codex-action は使わない: 同 action は openai-api-key 未指定だと Responses API proxy
+# が起動せず server info ファイルが書かれない一方、Read server info ステップは prompt 指定
+# だけでも実行されるため、codex exec 前に必ず失敗する（v1 の pin SHA
+# 52fe01ec の action.yml / src/readServerInfo.ts で確認済み）。ChatGPT ログイン済み
+# CODEX_HOME を使う本方式では CLI を直接叩く必要がある。呼び出し形（stdin プロンプト +
+# --output-last-message + --output-schema）は同 action の src/runCodexExec.ts と同一。
+# - レビュー基準はリポジトリルート AGENTS.md「レビュー基準（Codex PR 自動レビュー）」節
+#   （Codex が AGENTS.md を自動読込するため、人間レビューと基準を共有できる）
+# - 指摘は `--output-schema`（.github/codex/review-schema.json）で構造化 JSON に固定し、
+#   P0/P1 指摘が 1 件でもあれば gate ステップで jq 判定してジョブを失敗させる
+# - 認証は codex-home 方式: API キー（OPENAI_API_KEY secret）は使わず、self-hosted runner
+#   上に用意した ChatGPT ログイン済み CODEX_HOME ディレクトリ（auth.json を含む）を
+#   CODEX_HOME 環境変数で参照する。パスは Actions variable `CODEX_HOME_DIR` で指定し、
+#   **未設定の間は全ジョブを skip する**（runner 側の準備が済むまでレビューを実行しない
+#   fail-closed ガード。有効化 = org/repo の variable `CODEX_HOME_DIR` にマウント先パスを
+#   設定する、が唯一のスイッチ）。runner 側のセットアップは Fandhe-AI/local-server の
+#   gha-runner 手順（runner コンテナへのホストディレクトリマウント + codex login --device-auth）
+#   で行う。auth.json はパスワード同等のため、runner 上ではパーミッションを絞り
+#   （700/600）、この runner を Fandhe-AI 外のリポジトリへ共有しない
+#   （.agents/skills/openai-codex/scripts/auth.md の警告に従う）
+# - self-hosted runner（.claude/rules/ci.md）のため、fork からの PR では実行しない
+#   （untrusted コードの実行防止。fork の変更で codex-home の資格情報を触らせない）
+# - コメント投稿は公式例と同じ 2 ジョブ分離パターン（codex ジョブは contents: read のみで
+#   資格情報を扱い、書き込み権限（pull-requests: write）を持つジョブには渡さない）
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codex:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    # (1) CODEX_HOME_DIR 未設定（runner 未準備）の間は実行しない
+    # (2) fork PR では untrusted コードを self-hosted runner で実行しない（fail-closed）
+    if: >-
+      vars.CODEX_HOME_DIR != '' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    outputs:
+      final_message: ${{ steps.collect.outputs.final_message }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v5（ci.yml と同一 SHA 固定）
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: "24"
+
+      # runner 上の auth.json へ触れるジョブのため、CLI もバージョン固定で導入する
+      # （タグ差し替え・latest 汚染型のサプライチェーン攻撃を遮断）
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex@0.146.1
+
+      # codex-action の drop-sudo / Verify sudo privilege removed 相当の防御。
+      # 直接実行では action の sudo 剥奪が効かないため、ジョブユーザーが passwordless
+      # sudo を保持する runner では実行を拒否する（プロンプトインジェクションで
+      # --sandbox read-only を脱出した場合の権限昇格への多層防御）。永続 runner で
+      # 不可逆に sudo を剥奪すると他ジョブへ影響するため、剥奪ではなく fail-closed の
+      # 事前検証とし、「ジョブユーザーに sudo を与えない」ことを runner 構築側
+      # （Fandhe-AI/local-server の gha-runner 手順）の要件とする
+      - name: Verify sudo is not available
+        run: |
+          if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            echo "::error::runner のジョブユーザーが passwordless sudo を保持しています。codex exec を中止します（runner をジョブユーザー sudo なし構成にしてください）"
+            exit 1
+          fi
+          echo "sudo なしを確認（実行継続）"
+
+      # CLI が読み書きするファイルを PR の checkout 内容から切り離す多層防御:
+      # (1) 出力先は PR が symlink を仕込めない $RUNNER_TEMP に置く（checkout 内の
+      #     予測可能パスへ書くと、同名の絶対パス symlink コミットで runner 上の
+      #     任意ファイル上書きに転用されうる）
+      # (2) prompt / schema は「symlink でない通常ファイル」であることを検証してから
+      #     渡す（symlink 化で runner 上の任意ファイルをプロンプトへ読み込ませる
+      #     経路を遮断、fail-closed）
+      - name: Verify review input files
+        run: |
+          for f in .github/codex/prompts/review.md .github/codex/review-schema.json; do
+            if [ -L "$f" ] || [ ! -f "$f" ]; then
+              echo "::error::$f が通常ファイルではありません（symlink・欠落を拒否）"
+              exit 1
+            fi
+          done
+          echo "入力ファイル検証 OK"
+
+      # runner 上のログイン済み CODEX_HOME（ChatGPT 認証、CLI が refresh_token で
+      # 自動更新する）を CODEX_HOME 環境変数で参照する。レビューは読み取りのみで
+      # よいため sandbox は read-only を明示する。
+      # codex の stdout（最終メッセージ）/ stderr（進行ログ）は Actions ログへ直接
+      # 流さず一旦ファイルへバッファし、資格情報パターンをマスクしてから公開する
+      # （後段のスキャンより先にログへ生出力が露出する経路を塞ぐ。マスクは表示用で、
+      # 後段の fail-closed スキャンは生の JSON に対して行う）
+      - name: Run Codex review
+        env:
+          CODEX_HOME: ${{ vars.CODEX_HOME_DIR }}
+        run: |
+          status=0
+          codex exec \
+            --sandbox read-only \
+            --output-schema .github/codex/review-schema.json \
+            --output-last-message "$RUNNER_TEMP/codex-review.json" \
+            - < .github/codex/prompts/review.md \
+            > "$RUNNER_TEMP/codex-exec.log" 2>&1 || status=$?
+          sed -E \
+            -e 's/eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}(\.[A-Za-z0-9_-]+)?/[REDACTED_JWT]/g' \
+            -e 's/(^|[^A-Za-z0-9_])rt[._][A-Za-z0-9._~-]{20,}/\1[REDACTED_REFRESH_TOKEN]/g' \
+            -e 's/sk-[A-Za-z0-9_-]{20,}/[REDACTED_KEY]/g' \
+            -e 's/ghp_[A-Za-z0-9]{20,}/[REDACTED_TOKEN]/g' \
+            -e 's/github_pat_[A-Za-z0-9_]{20,}/[REDACTED_TOKEN]/g' \
+            "$RUNNER_TEMP/codex-exec.log"
+          exit "$status"
+
+      # 出力を公開（PR コメント投稿・ジョブ出力化）する前の資格情報混入検査。
+      # read-only sandbox は読み取りを妨げないため、プロンプトインジェクション等で
+      # auth.json のトークン（JWT）や API キーがレビュー結果へ混ざった場合に備え、
+      # パターン検出時は出力へ載せず fail-closed でジョブを失敗させる
+      - name: Scan output for credentials
+        run: |
+          if grep -qE 'eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}|(^|[^A-Za-z0-9_])rt[._][A-Za-z0-9._~-]{20,}|sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}' "$RUNNER_TEMP/codex-review.json"; then
+            echo "::error::レビュー出力に資格情報らしきパターンを検出したため公開を中止します"
+            exit 1
+          fi
+          echo "資格情報パターン: 検出なし"
+
+      # jq -c で単一行 JSON へ正規化してジョブ出力にする（不正 JSON はここで fail し、
+      # post_feedback は投稿対象なしとして skip される）
+      - name: Collect final message
+        id: collect
+        run: echo "final_message=$(jq -c . "$RUNNER_TEMP/codex-review.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Gate on P0/P1 findings
+        run: |
+          count="$(jq '[.findings[] | select(.priority == "P0" or .priority == "P1")] | length' "$RUNNER_TEMP/codex-review.json")"
+          if [ "${count}" -gt 0 ]; then
+            echo "::error::Codex レビューで P0/P1 指摘が ${count} 件検出されました（詳細は PR コメント参照）"
+            exit 1
+          fi
+          echo "P0/P1 指摘なし（gate 通過）"
+
+  # gate 失敗時（needs.codex.result == 'failure'）でもレビュー結果コメントは投稿する
+  post_feedback:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    needs: codex
+    if: ${{ always() && needs.codex.outputs.final_message != '' }}
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Post Codex feedback
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const raw = process.env.CODEX_FINAL_MESSAGE;
+            let body;
+            try {
+              const result = JSON.parse(raw);
+              const icon = { P0: '🟥', P1: '🟧', P2: '🟨', P3: '⬜' };
+              const findings = (result.findings ?? [])
+                .map(f => `- ${icon[f.priority] ?? '⬜'} **${f.priority}** ${f.title}（\`${f.location}\`）\n  ${String(f.detail).replace(/\n/g, '\n  ')}`)
+                .join('\n');
+              body = `## Codex PR レビュー\n\n${result.summary}\n\n`
+                + (findings ? `### 指摘\n\n${findings}` : '指摘はありません。');
+            } catch {
+              // スキーマ外の出力でもレビュー内容は握りつぶさずそのまま提示する
+              body = `## Codex PR レビュー\n\n${raw}`;
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body,
+            });
+        env:
+          CODEX_FINAL_MESSAGE: ${{ needs.codex.outputs.final_message }}
