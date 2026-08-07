@@ -2,10 +2,15 @@ name: docs-site
 
 # docs サイト（crates/docs-site による SSG、Fandhe-AI/fandhe-frontend の
 # 同名 workflow からの移植）を main push 時にビルドし GitHub Pages へ公開する。
+# deploy 部分（upload-pages-artifact → deploy-pages）は Fandhe-AI/actions の
+# 共通 reusable workflow `pages-deploy.yml` へ移設済み（イシュー #540。
+# 実装本体・fail-closed 検証の詳細は同リポジトリの `pages-deploy/README.md`
+# 参照。呼び出し側 wrapper 化の先行事例は `codex-review.yml`、#532）。
 #
 # 前提（手動操作）: リポジトリ Settings → Pages → Source を
 # "GitHub Actions" に設定済みであること。未設定の場合 build ジョブは成功し
-# deploy ジョブのみが失敗する。CLI で有効化する場合のコマンド:
+# deploy ジョブ（共通 workflow 側）のみが失敗する。CLI で有効化する場合の
+# コマンド:
 #   gh api -X POST repos/Fandhe-AI/fandhe-backend/pages -f build_type=workflow
 #
 # 既知の制約: レンダラ側クレート（crates.io の fandhe-frontend-core /
@@ -33,7 +38,10 @@ permissions:
 
 concurrency:
   group: docs-site-pages
-  cancel-in-progress: false # Pages デプロイ中断による中途半端な公開状態を避ける
+  # Pages デプロイ中断による中途半端な公開状態を避ける。reusable workflow
+  # （deploy ジョブ）側のトップレベル concurrency は呼び出し元に対して機能しない
+  # ため、本 workflow（呼び出し側）に必須の設定。
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -77,27 +85,34 @@ jobs:
           test -s "${RUNNER_TEMP}/docs-site-dist/assets/site.js"
           test -s "${RUNNER_TEMP}/docs-site-dist/assets/search-index.json"
 
-      - name: Upload Pages artifact
-        # 要: runner に tar がインストール済み（upload-pages-artifact が内部で使用。
-        #     Linux self-hosted プールでは通常常設だが、ci.md 規約に従い前提を明示）
-        # actions/upload-pages-artifact v5.0.0（commit SHA 固定）
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
+      - name: Upload dist artifact
+        # dist を汎用 artifact（名前は共通側既定の pages-dist）として渡す。
+        # Pages 専用形式への変換（upload-pages-artifact）は pages-deploy 共通側が担う。
+        # include-hidden-files: 既定 false では dotfile が upload 段階で脱落し
+        # サイレント未配信になるため常時 true（deploy 側は共通 workflow が常時有効）。
+        # 現行 SSG（crates/docs-site）の生成物に dotfile は存在しないため公開物は
+        # 従来と同一のまま、将来 dotfile が増えた場合の脱落だけを防ぐ安全側の設定。
+        # actions/upload-artifact v7.0.1（commit SHA 固定、tag の実コミット SHA を
+        # GitHub API で解決済み）
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          name: pages-dist
           path: ${{ runner.temp }}/docs-site-dist
+          if-no-files-found: error
+          include-hidden-files: true
 
   deploy:
     name: Deploy to GitHub Pages
     needs: build
-    runs-on: self-hosted
-    timeout-minutes: 10
+    # reusable workflow は呼び出し側が付与した以上の権限を持てないため、
+    # 共通側ジョブが必要とする 2 権限をここでも付与する（A01/A05: deploy ジョブ
+    # 限定の最小権限。runs-on / timeout-minutes / environment / steps は共通側が
+    # ジョブレベルで定義するため本 wrapper には不要）
     permissions:
-      pages: write # Pages デプロイ作成に必要（デプロイジョブのみに限定、A01/A05 対策）
-      id-token: write # OIDC によるデプロイ元検証に必要（同上）
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy
-        id: deployment
-        # actions/deploy-pages v5.0.0（commit SHA 固定）
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128
+      pages: write # Pages デプロイ作成に必要
+      id-token: write # OIDC によるデプロイ元検証に必要
+    uses: Fandhe-AI/actions/.github/workflows/pages-deploy.yml@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+    with:
+      # upload-artifact は path 直下の内容を artifact ルートへ置くため、
+      # dist ディレクトリ自体を path に指定した本 workflow では "." を指定する
+      dist-dir: "."
