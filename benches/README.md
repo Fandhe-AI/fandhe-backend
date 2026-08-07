@@ -718,3 +718,5 @@ Bugbot 指摘 "Pre-lock build breaks exclusivity" の再発防止、`bench-accep
 
 詳細な実測結果・しきい値判定は `benches/reports/issue473-compression-e2e.md`・
 `docs/design/plugin-boundary.md` 5.10.7 節「E2E 検証（イシュー #473）」小節を参照。
+
+<!-- codex-review ワークフローの end-to-end 再試験（fandhe-backend #525）用の無害な変更。マージしない試験 PR で使用する。 -->
