@@ -11,7 +11,15 @@ name: Codex PR review
 #   prompt（.github/codex/prompts/review.md）が `git show HEAD^1:AGENTS.md` で
 #   ベースブランチ側の内容を明示的に読ませる（Codex の cwd 自動読込機能に頼ると
 #   checkout（PR 側）の AGENTS.md を読んでしまい、下記の自己参照問題が AGENTS.md にも
-#   及ぶため使わない）
+#   及ぶため使わない）。CLI 自体の project-doc 自動読込（cwd = checkout ルートに
+#   `.git` があるため project root と判定され、そこから cwd までの各階層の
+#   AGENTS.md を自動でコンテキストへ注入する既定動作、project_doc_max_bytes 既定
+#   32 KiB）はプロンプト側の指示だけでは塞げない。checkout（HEAD 側、= PR 差分が
+#   改変しうる）AGENTS.md がこの自動読込経路で prompt の指示を経由せず混入し、
+#   上記の「base 側を明示的に読ませる」契約を素通りしうるため、`codex exec` に
+#   `--config project_doc_max_bytes=0` を渡して当該自動読込自体を無効化する
+#   （イシュー #524 の PR #526 に対する Codex 自身のレビューで P0 指摘。詳細は
+#   下記 `Run Codex review` ステップのコメント）
 # - 指摘は `--output-schema`（.github/codex/review-schema.json）で構造化 JSON に固定し、
 #   gate は 2 段で判定する: (1) `review_completed == true` の確認（fail-closed。runner の
 #   sandbox 制約等でレビュー手順自体を完遂できなかった場合に findings 空の正常系 JSON が
@@ -129,6 +137,21 @@ jobs:
       # (3) 出力先は PR が書き込めない $RUNNER_TEMP に置く（checkout 内の予測可能
       #     パスへ書くと、同名の絶対パス symlink コミットで runner 上の任意ファイル
       #     上書きに転用されうる）
+      # (4) 上記 (1)〜(3) は prompt/schema の明示的な受け渡しを対象とするが、Codex
+      #     CLI 自体には `.git` のあるディレクトリ（= 今回の cwd である checkout
+      #     ルート）を project root とみなし、その配下の AGENTS.md をコマンド起動
+      #     時に自動でコンテキストへ注入する既定動作がある。これは checkout（HEAD
+      #     側、PR 差分が改変しうる）の AGENTS.md を読むため、prompt が「base 側の
+      #     AGENTS.md を明示的に読め」と指示していても、CLI 自体の自動読込までは
+      #     防げない（イシュー #524 の PR #526 に対する Codex 自身のレビューで P0
+      #     指摘）。`Run Codex review` ステップで `--config project_doc_max_bytes=0`
+      #     を渡し自動読込機構自体を無効化することに加え、本ステップでも checkout
+      #     （HEAD 側）の root `AGENTS.md` を base 版へ上書き・`AGENTS.override.md`
+      #     （walk 順で `AGENTS.md` より優先される）を削除する多重防御を行う
+      #     （`project_doc_max_bytes=0` の意味論——値 0 が「注入なし」ではなく
+      #     「既定 32 KiB のまま」等へ将来解釈が変わっても安全側に倒すため。working
+      #     tree の書き換えは `git diff HEAD^1 HEAD`・`git show HEAD^1:AGENTS.md`
+      #     等 git オブジェクト参照ベースの prompt の手順には影響しない）
       # base.sha は checkout 済みの `refs/pull/<n>/merge`（fetch-depth: 0）の親であり
       # 追加の fetch なしでローカルに存在するはずだが、念のため存在確認する
       - name: Extract review control files from base branch
@@ -155,6 +178,25 @@ jobs:
           echo "抽出したファイルの sha256:"
           sha256sum "$RUNNER_TEMP/review.md" "$RUNNER_TEMP/review-schema.json"
 
+          # Codex CLI の project-doc 自動読込対象（cwd = checkout ルート配下の
+          # AGENTS.md / AGENTS.override.md）を working tree 上で無害化する。
+          # `--config project_doc_max_bytes=0`（Run Codex review ステップ）と
+          # あわせた多重防御（上記コメント (4) 参照）。symlink 経由の任意ファイル
+          # 読込を避けるため、prompt/schema と同様に base コミット時点のオブジェクト
+          # モードを確認してから内容を取得する
+          agents_mode="$(git ls-tree "${BASE_SHA}" -- AGENTS.md | awk '{print $1}')"
+          if [ -n "${agents_mode}" ] && [ "${agents_mode}" != "100644" ] && [ "${agents_mode}" != "100755" ]; then
+            echo "::error::base コミット ${BASE_SHA} 時点の AGENTS.md が通常ファイルではありません（mode=${agents_mode}。symlink を拒否）"
+            exit 1
+          fi
+          if [ -n "${agents_mode}" ]; then
+            git show "${BASE_SHA}:AGENTS.md" > AGENTS.md
+          else
+            rm -f AGENTS.md
+          fi
+          rm -f AGENTS.override.md
+          echo "checkout 側 AGENTS.md を base 版へ上書き・AGENTS.override.md を削除しました"
+
       # runner 上のログイン済み CODEX_HOME（ChatGPT 認証、CLI が refresh_token で
       # 自動更新する）を CODEX_HOME 環境変数で参照する。レビューは読み取りのみで
       # よいため sandbox は read-only を明示する。
@@ -162,6 +204,14 @@ jobs:
       # 流さず一旦ファイルへバッファし、資格情報パターンをマスクしてから公開する
       # （後段のスキャンより先にログへ生出力が露出する経路を塞ぐ。マスクは表示用で、
       # 後段の fail-closed スキャンは生の JSON に対して行う）
+      # `--config project_doc_max_bytes=0`: cwd（checkout ルート、`.git` を含むため
+      # Codex CLI からは project root と判定される）配下の AGENTS.md を CLI が起動時に
+      # 自動でコンテキストへ注入する既定動作を無効化する。無効化しない場合、checkout
+      # （HEAD 側、= 本 PR 差分が改変しうる）の AGENTS.md がプロンプトの指示を経由せず
+      # 混入し、「レビュー基準は base 側の AGENTS.md のみを権威とする」という上記
+      # ヘッダコメント・prompt（review.md）の自己参照防止契約を CLI レベルで素通り
+      # しうる（`Extract review control files from base branch` ステップのコメント
+      # (4) 参照。イシュー #524 の PR #526 に対する Codex 自身のレビューで P0 指摘）
       - name: Run Codex review
         env:
           CODEX_HOME: ${{ vars.CODEX_HOME_DIR }}
@@ -169,6 +219,7 @@ jobs:
           status=0
           codex exec \
             --sandbox read-only \
+            --config project_doc_max_bytes=0 \
             --output-schema "$RUNNER_TEMP/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/codex-review.json" \
             - < "$RUNNER_TEMP/review.md" \

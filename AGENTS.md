@@ -512,7 +512,16 @@ Codex による PR 自動レビュー（`.github/workflows/codex-review.yml`。C
   codex-review.yml` の `Extract review control files from base branch` ステップ）が
   `git show` で $RUNNER_TEMP へ抽出し、`AGENTS.md`「レビュー基準」節は prompt 自体が
   `git show HEAD^1:AGENTS.md` で明示的にベースブランチ側を読む（Codex CLI の cwd 自動
-  読込に頼ると checkout 側＝PR 自身の改変後の内容を読んでしまうため使わない）。PR 差分が
+  読込に頼ると checkout 側＝PR 自身の改変後の内容を読んでしまうため使わない）。この
+  prompt 側の指示だけでは、CLI 自体が cwd（checkout ルート、`.git` を含むため project
+  root と判定される）配下の AGENTS.md / AGENTS.override.md を起動時に自動でコンテキストへ
+  注入する既定動作は塞げない（イシュー #524 の PR #526 に対する Codex 自身のレビューで
+  P0 指摘）ため、`codex-review.yml` は 2 重に対処する: (a) `Run Codex review` ステップで
+  `--config project_doc_max_bytes=0` を渡しこの自動読込機構自体を無効化する、(b)
+  `Extract review control files from base branch` ステップで checkout 側の root
+  `AGENTS.md` を base 版へ上書き・`AGENTS.override.md` を削除する（working tree の
+  書き換えは `git diff HEAD^1 HEAD` 等 git オブジェクト参照ベースの prompt の手順には
+  影響しない）。PR 差分が
   これらのファイルを改変しても、その改変は当の PR 自身のレビュー実行には反映されない
   （base ブランチへのマージ後に限り以降の PR へ反映される）。レビュー対象の diff から
   直接 prompt/schema/基準を読み込む構成だと、diff がレビュー指示自体を弱める方向へ
