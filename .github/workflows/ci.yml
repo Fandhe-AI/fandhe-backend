@@ -74,19 +74,11 @@ jobs:
         # submodule（docs/spec）は fmt/clippy/test に不要なため取得しない。
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # self-hosted runner に rustup が未導入/欠落している場合に備え、
-      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
-      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
-      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
-      - name: Ensure rustup is installed
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
-          fi
-
-      - name: Sync toolchain (rust-toolchain.toml)
-        run: rustup show
+      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
+      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
+      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      - name: Setup Rust toolchain
+        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
 
       - name: cargo fmt --check
         run: cargo fmt --all --check
@@ -104,19 +96,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # self-hosted runner に rustup が未導入/欠落している場合に備え、
-      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
-      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
-      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
-      - name: Ensure rustup is installed
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
-          fi
-
-      - name: Sync toolchain (rust-toolchain.toml)
-        run: rustup show
+      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
+      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
+      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      - name: Setup Rust toolchain
+        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
 
       # --all-features を指定しておくことで、TASK-2.1 以降で feature（plugin-*）が
       # 増えた際にも既定で全 feature を lint 対象にできる。feature 構成別の
@@ -152,19 +136,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # self-hosted runner に rustup が未導入/欠落している場合に備え、
-      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
-      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
-      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
-      - name: Ensure rustup is installed
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
-          fi
-
-      - name: Sync toolchain (rust-toolchain.toml)
-        run: rustup show
+      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
+      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
+      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      - name: Setup Rust toolchain
+        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
 
       # self-hosted ランナー前提でバージョン固定インストールする（dep-audit ジョブと同じ方針）。
       # 共通部品 cargo-tool-install が「導入済み同一バージョンならスキップ」の冪等判定と
@@ -207,19 +183,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # self-hosted runner に rustup が未導入/欠落している場合に備え、
-      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
-      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
-      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
-      - name: Ensure rustup is installed
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
-          fi
-
-      - name: Sync toolchain (rust-toolchain.toml)
-        run: rustup show
+      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
+      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
+      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      - name: Setup Rust toolchain
+        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
 
       - name: cargo doc --workspace --all-features --no-deps
         env:
@@ -248,19 +216,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # self-hosted runner に rustup が未導入/欠落している場合に備え、
-      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
-      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
-      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
-      - name: Ensure rustup is installed
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
-          fi
-
-      - name: Sync toolchain (rust-toolchain.toml)
-        run: rustup show
+      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
+      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
+      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      - name: Setup Rust toolchain
+        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
 
       # self-hosted ランナー前提でツールをバージョン固定インストールする。
       # 共通部品 cargo-tool-install が「導入済み同一バージョンならスキップ」の冪等判定と
@@ -365,19 +325,11 @@ jobs:
 
       # dep-direction-check.sh（下記）が `cargo metadata` を要するため toolchain を
       # 同期する。既存ステップ（grep ベース）は cargo 非依存のため影響しない。
-      # self-hosted runner に rustup が未導入/欠落している場合に備え、
-      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
-      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
-      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
-      - name: Ensure rustup is installed
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
-          fi
-
-      - name: Sync toolchain (rust-toolchain.toml)
-        run: rustup show
+      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
+      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
+      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      - name: Setup Rust toolchain
+        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
 
       - name: unsafe-triage.sh（baseline 比較・SAFETY コメント検査）
         run: bash scripts/unsafe-triage.sh
@@ -485,19 +437,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # self-hosted runner に rustup が未導入/欠落している場合に備え、
-      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
-      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
-      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
-      - name: Ensure rustup is installed
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
-          fi
-
-      - name: Sync toolchain (rust-toolchain.toml)
-        run: rustup show
+      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
+      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
+      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      - name: Setup Rust toolchain
+        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
 
       # self-hosted ランナー前提でバージョン固定インストールする（dep-audit / test ジョブと
       # 同じ方針。共通部品 cargo-tool-install が冪等判定・導入後の厳密一致検証を担う
@@ -530,19 +474,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # self-hosted runner に rustup が未導入/欠落している場合に備え、
-      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
-      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
-      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
-      - name: Ensure rustup is installed
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
-          fi
-
-      - name: Sync toolchain (rust-toolchain.toml)
-        run: rustup show
+      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
+      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
+      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      - name: Setup Rust toolchain
+        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
 
       - name: "openapi-two-stage.sh（stage 1: gen-openapi --check、stage 2: cargo build --all-features）"
         run: bash scripts/openapi-two-stage.sh
@@ -598,19 +534,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # self-hosted runner に rustup が未導入/欠落している場合に備え、
-      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
-      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
-      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
-      - name: Ensure rustup is installed
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
-          fi
-
-      - name: Sync toolchain (rust-toolchain.toml)
-        run: rustup show
+      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
+      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
+      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      - name: Setup Rust toolchain
+        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
 
       - name: "openapi-ts.sh（stage 1: gen-openapi --check、stage 2: schema.d.ts 鮮度検証、stage 3: tsc --noEmit）"
         run: bash scripts/openapi-ts.sh
@@ -684,19 +612,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # self-hosted runner に rustup が未導入/欠落している場合に備え、
-      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
-      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
-      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
-      - name: Ensure rustup is installed
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
-          fi
-
-      - name: Sync toolchain (rust-toolchain.toml)
-        run: rustup show
+      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
+      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
+      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      - name: Setup Rust toolchain
+        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
 
       # nightly バージョンは scripts/fuzz.sh の PINNED_NIGHTLY 定数を単一真実源とする。
       # リポジトリ既定（rust-toolchain.toml）は stable のまま変更しない
@@ -739,19 +659,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # self-hosted runner に rustup が未導入/欠落している場合に備え、
-      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
-      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
-      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
-      - name: Ensure rustup is installed
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
-          fi
-
-      - name: Sync toolchain (rust-toolchain.toml)
-        run: rustup show
+      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
+      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
+      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      - name: Setup Rust toolchain
+        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
 
       - name: scripts/webrtc-e2e.sh
         run: bash scripts/webrtc-e2e.sh
@@ -776,25 +688,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # self-hosted runner に rustup が未導入/欠落している場合に備え、
-      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
-      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
-      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
-      - name: Ensure rustup is installed
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
-          fi
-
-      - name: Sync toolchain (rust-toolchain.toml)
-        run: rustup show
-
-      - name: Ensure llvm-tools-preview component
-        run: |
-          if ! rustup component list --installed | grep -q '^llvm-tools'; then
-            rustup component add llvm-tools-preview
-          fi
+      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
+      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
+      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      - name: Setup Rust toolchain
+        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        with:
+          components: llvm-tools-preview
 
       # self-hosted ランナー前提でバージョン固定インストールする（dep-audit / test ジョブと
       # 同じ方針。共通部品 cargo-tool-install が冪等判定・導入後の厳密一致検証を担う

@@ -60,20 +60,11 @@ jobs:
         # .claude/rules/security.md）。
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # self-hosted runner に rustup が未導入/欠落している場合に備え、
-      # 「Sync toolchain」の前提（rustup show の実行可否）を自己修復する。
-      # 導入済みなら何もしない（冪等）。導入時は非対話・HTTPS 検証込みで
-      # 取得し、既定ツールチェーンは rust-toolchain.toml に委ねる（none 指定）。
-      # ci.yml 各ジョブと同一パターン。
-      - name: Ensure rustup is installed
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-            echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
-          fi
-
-      - name: Sync toolchain (rust-toolchain.toml)
-        run: rustup show
+      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
+      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
+      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      - name: Setup Rust toolchain
+        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
 
       - name: standalone-crates-io-check.sh（path 除去 → crates.io 依存のみで build/test）
         run: bash scripts/standalone-crates-io-check.sh
