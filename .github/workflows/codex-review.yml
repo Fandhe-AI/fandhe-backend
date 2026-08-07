@@ -229,10 +229,27 @@ jobs:
           # 多層防御を review.md / review-schema.json にも適用し、working tree 上の
           # 内容も base 版へ揃える（モード検証は本ステップ冒頭で実施済み。`rm -rf`
           # で symlink 自体を先に unlink してからのみ新規作成する）。
+          #
+          # root 直下の AGENTS.md と異なり、これらのパスは中間ディレクトリ
+          # （.github / .github/codex / .github/codex/prompts）を経由する。leaf の
+          # 事前 unlink だけでは、HEAD 側の差分が中間ディレクトリ自体を symlink に
+          # 置き換えていた場合に `rm -rf` とリダイレクトの双方がそれを辿って解決し、
+          # checkout 外への削除・上書きに転用されうる（Cursor Bugbot・Codex レビュー
+          # 双方の指摘）。中間コンポーネントが symlink なら fail-closed で拒否し、
+          # 実ディレクトリまたは欠落（HEAD 側の差分がディレクトリごと削除・移動して
+          # いる場合。リダイレクト失敗によるジョブ異常終了を防ぐため `mkdir -p` で
+          # 再作成する。直前の symlink 検査済みのため辿る先はない）のみ許容する
+          for d in .github .github/codex .github/codex/prompts; do
+            if [ -L "$d" ]; then
+              echo "::error::checkout 側の $d が symlink です（中間ディレクトリの symlink 化を拒否）"
+              exit 1
+            fi
+          done
           rm -rf .github/codex/prompts/review.md .github/codex/review-schema.json
+          mkdir -p .github/codex/prompts
           git show "${BASE_SHA}:.github/codex/prompts/review.md" > .github/codex/prompts/review.md
           git show "${BASE_SHA}:.github/codex/review-schema.json" > .github/codex/review-schema.json
-          echo "checkout 側 review.md / review-schema.json も base 版へ上書きしました（symlink は事前 unlink 済み）"
+          echo "checkout 側 review.md / review-schema.json も base 版へ上書きしました（中間ディレクトリの symlink 検査・leaf の事前 unlink 済み）"
 
       # runner 上のログイン済み CODEX_HOME（ChatGPT 認証、CLI が refresh_token で
       # 自動更新する）を CODEX_HOME 環境変数で参照する。レビューは読み取りのみで
