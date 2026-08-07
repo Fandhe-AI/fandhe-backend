@@ -215,6 +215,25 @@ jobs:
           fi
           echo "checkout 側 AGENTS.md を base 版へ上書き（symlink は事前 unlink 済み）・AGENTS.override.md を削除しました"
 
+          # 上記の base 抽出（$RUNNER_TEMP への書き出し）は codex exec への
+          # --output-schema / stdin 経由の受け渡しは保護するが、working tree 上の
+          # .github/codex/prompts/review.md・.github/codex/review-schema.json 自体は
+          # HEAD（checkout、= 本 PR 差分が改変しうる）の内容のまま残る。sandbox 内で
+          # Codex 自身が任意の読み取り専用コマンド（`nl` 等）でこれらのパスを
+          # 自発的に読みにいく経路は stdin/--output-schema を経由しないため、
+          # 「制御用ファイルは base コミットからのみ取得し、PR 差分は自分自身の
+          # レビュー実行に反映されない」という契約の対象外になってしまう（イシュー
+          # #524 の PR #526 自身の CI 実行で実際に発生: Codex が working tree の
+          # HEAD 版 review.md を自発的に読み、base 版には存在しない新規段落を
+          # 検出してプロンプトインジェクションと誤検知した）。AGENTS.md と同じ
+          # 多層防御を review.md / review-schema.json にも適用し、working tree 上の
+          # 内容も base 版へ揃える（モード検証は本ステップ冒頭で実施済み。`rm -rf`
+          # で symlink 自体を先に unlink してからのみ新規作成する）。
+          rm -rf .github/codex/prompts/review.md .github/codex/review-schema.json
+          git show "${BASE_SHA}:.github/codex/prompts/review.md" > .github/codex/prompts/review.md
+          git show "${BASE_SHA}:.github/codex/review-schema.json" > .github/codex/review-schema.json
+          echo "checkout 側 review.md / review-schema.json も base 版へ上書きしました（symlink は事前 unlink 済み）"
+
       # runner 上のログイン済み CODEX_HOME（ChatGPT 認証、CLI が refresh_token で
       # 自動更新する）を CODEX_HOME 環境変数で参照する。レビューは読み取りのみで
       # よいため sandbox は read-only を明示する。
