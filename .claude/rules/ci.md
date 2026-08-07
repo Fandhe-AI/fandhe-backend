@@ -2,10 +2,18 @@
 
 ## self-hosted runner の使用（必須）
 
-GitHub Actions のジョブは**すべて `runs-on: self-hosted` で実行する**。
-GitHub ホステッドランナー（`ubuntu-latest` / `macos-latest` / `windows-latest` 等）は使用しない。
+GitHub Actions のジョブは**すべてセルフホストランナーで実行する**。`runs-on` には
+`self-hosted`、または `.github/actionlint.yaml` の `self-hosted-runner.labels`
+ホワイトリストに登録されたセルフホストカスタムラベル（専用プール選択用。例:
+`codex-review.yml` の `no-sudo`）のみを指定する。
+GitHub ホステッドランナー（`ubuntu-latest` / `macos-latest` / `windows-latest` 等）は
+**引き続き使用しない**（この原則はカスタムラベル許容後も不変）。
 
-- 新規ワークフロー・新規ジョブを追加するときも必ず `runs-on: self-hosted` を指定する
+- 新規ワークフロー・新規ジョブを追加するときは原則 `self-hosted` を指定し、専用プールが
+  必要な場合のみ `.github/actionlint.yaml` へラベルを登録した上でカスタムラベルを使う
+  （未登録ラベルは `scripts/actionlint.sh` が runner-label エラーで検知する fail-closed 構成）
+- カスタムラベルの実体（どのプールに何台登録されているか）は Fandhe-AI/local-server の
+  gha-runner 手順書で管理する（`.github/actionlint.yaml` のコメントに記載）
 - runner はリポジトリレベルではなく **org（Fandhe-AI）レベルで登録**されている。
   リポジトリの runner 一覧（`gh api repos/{owner}/{repo}/actions/runners`）が 0 件でも正常
 
@@ -33,7 +41,8 @@ GitHub ホステッドランナー（`ubuntu-latest` / `macos-latest` / `windows
 
 | 検証 | コマンド |
 |------|---------|
-| runs-on の確認 | `grep -rn "runs-on" .github/workflows/`（全行が `self-hosted` であること） |
+| runs-on の確認 | `grep -rhE "^[[:space:]]*runs-on:" .github/workflows/ \| awk '{print $2}' \| sort -u \| grep -vxFf <(printf '%s\n' self-hosted; sed -n 's/^[[:space:]]*- //p' .github/actionlint.yaml)`（出力が空であること。`self-hosted` またはホワイトリスト登録済みラベルのみで構成されていることを意味する。この `sed` は `actionlint.yaml` 内の `- ` 始まりの行を一律抽出するため、同ファイルに `self-hosted-runner.labels` 以外のリスト値キーを追加する場合は本コマンドの前提が崩れる点に注意。また `runs-on:` のスカラー表記のみ対応し、配列 `[a, b]` 表記は誤検知しうる） |
+| ラベル未登録・typo の機械検知 | `bash scripts/actionlint.sh`（`.github/actionlint.yaml` 未登録の `runs-on` ラベルを runner-label エラーとして検知。actionlint 未導入環境では前提ツールエラーで exit 2 になる） |
 | timeout の確認 | 各ジョブに `timeout-minutes` があることを目視確認 |
 
 CI ジョブ構成の変更時は本ルールへの準拠を `reviewer` が確認する。

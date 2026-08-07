@@ -562,6 +562,27 @@ fandhe-backend/
 │       ├── README.md                  # 検証基準・前提ツール・実行方法
 │       ├── lib/common.sh              # PASS/FAIL/SKIP/WARN 集計の共通関数
 │       └── core-deps-unsafe-audit.sh  # 依存数比・unsafe・audit/deny・LoC・拡張点・プラグイン非依存の検証本体
+├── .github/
+│   ├── workflows/
+│   │   └── codex-review.yml           # Codex CLI（`codex exec` 直接実行）による PR 自動レビュー
+│   │                                    # （#520〜#526 で確立）。`runs-on: no-sudo`（codex 専用
+│   │                                    # プール、`.github/actionlint.yaml` 登録・`self-hosted`
+│   │                                    # ラベル非付与。`.claude/rules/ci.md` のカスタムラベル
+│   │                                    # 許容規約の適用第 1 号）で実行し、CODEX_HOME 認証・
+│   │                                    # fork PR 不実行・2 段 gate（`review_completed` 確認 →
+│   │                                    # P0/P1 判定）を備える。#528/#529 で Fandhe-AI/actions の
+│   │                                    # reusable workflow を SHA 固定で呼び出す薄い wrapper へ
+│   │                                    # 移行予定（未了、ラベルは `codex` へ変更見込み）
+│   ├── codex/                          # レビュー制御ファイル（`prompts/review.md`・
+│   │                                    # `review-schema.json`）。AGENTS.md「レビュー基準」節
+│   │                                    # とともにリポジトリに残置し、PR の base コミット参照
+│   │                                    # （`git show <base-sha>:<path>`）で消費される
+│   │                                    # fail-closed 構成（自己参照防止、イシュー #524）
+│   └── actionlint.yaml                 # セルフホストカスタムラベルのホワイトリスト
+│                                        # （`fandhe-server` / `no-sudo` / `codex`）。
+│                                        # `.claude/rules/ci.md` の runs-on 規約・
+│                                        # `scripts/actionlint.sh` と対で未登録ラベルを
+│                                        # fail-closed に検知する
 └── .claude/
     ├── agents/            # 目的別 sub-agent（research/implement/testing/quality/docs）
     ├── rules/             # 運用ルール（委譲・Rust 規約・セキュリティ 等）
@@ -636,7 +657,7 @@ main は判断・統合・ユーザー対話に集中する**。詳細は [rules
 | [improvement-proposal.md](.claude/rules/improvement-proposal.md) | 改善提案フロー・起票・承認の運用規約 |
 | [feature-modification.md](.claude/rules/feature-modification.md) | 機能要求→実装→テスト→ドキュメント追随→完遂判定の一貫改修フロー運用規約 |
 | [feasibility-guardrail.md](.claude/rules/feasibility-guardrail.md) | 対応可否自律判断ガードレール（曖昧要求・危険要求の不可判定規約） |
-| [ci.md](.claude/rules/ci.md) | CI 実行環境規約（self-hosted runner 必須・timeout・schedule 負荷抑制） |
+| [ci.md](.claude/rules/ci.md) | CI 実行環境規約（self-hosted 必須（actionlint.yaml 登録のカスタムラベル許容）・timeout・schedule 負荷抑制） |
 
 ## Current Skills
 

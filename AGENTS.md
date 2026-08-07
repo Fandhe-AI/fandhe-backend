@@ -483,7 +483,8 @@ Codex による PR 自動レビュー（`.github/workflows/codex-review.yml`。C
   除く。panic をライブラリ境界の外へ漏らす経路全般を含む）: **P1**
 - **`Middleware` フック内の同期ブロッキング I/O**（本ファイル「規約: ミドルウェア非同期
   I/O 必須化」違反）、および **ロック保持中の `.await`**: **P1**
-- **CI ワークフローの規約違反**（`runs-on: self-hosted` 以外の指定・`timeout-minutes`
+- **CI ワークフローの規約違反**（`runs-on` への GitHub ホステッドランナー指定・
+  `.github/actionlint.yaml` ホワイトリスト外ラベル指定・`timeout-minutes`
   欠落・`pull_request_target` 等の secrets 露出トリガー追加、`.claude/rules/ci.md`）: **P1**
 - **公開 API の doc comment / doc test 欠落**（AI ファースト保守性、
   `.claude/rules/code-comment-style.md`）: **P2**（セキュリティ上の契約・fail-closed
