@@ -1,0 +1,109 @@
+name: Codex PR review
+
+# Codex（openai/codex-action@v1）による PR 自動レビュー。
+# - レビュー基準はリポジトリルート AGENTS.md「レビュー基準（Codex PR 自動レビュー）」節
+#   （Codex が AGENTS.md を自動読込するため、人間レビューと基準を共有できる）
+# - 指摘は `--output-schema`（.github/codex/review-schema.json）で構造化 JSON に固定し、
+#   P0/P1 指摘が 1 件でもあれば gate ステップで jq 判定してジョブを失敗させる
+# - 認証は codex-home 方式: API キー（OPENAI_API_KEY secret）は使わず、self-hosted runner
+#   上に用意した ChatGPT ログイン済み CODEX_HOME ディレクトリ（auth.json を含む）を
+#   `codex-home` 入力で参照する。パスは Actions variable `CODEX_HOME_DIR` で指定し、
+#   **未設定の間は全ジョブを skip する**（runner 側の準備が済むまでレビューを実行しない
+#   fail-closed ガード。有効化 = org/repo の variable `CODEX_HOME_DIR` にマウント先パスを
+#   設定する、が唯一のスイッチ）。runner 側のセットアップは Fandhe-AI/local-server の
+#   gha-runner 手順（runner コンテナへのホストディレクトリマウント + codex login --device-auth）
+#   で行う。auth.json はパスワード同等のため、runner 上ではパーミッションを絞り
+#   （700/600）、この runner を Fandhe-AI 外のリポジトリへ共有しない
+#   （.agents/skills/openai-codex/scripts/auth.md の警告に従う）
+# - self-hosted runner（.claude/rules/ci.md）のため、fork からの PR では実行しない
+#   （untrusted コードの実行防止。fork の変更で codex-home の資格情報を触らせない）
+# - コメント投稿は公式例と同じ 2 ジョブ分離パターン（codex ジョブは contents: read のみで
+#   資格情報を扱い、書き込み権限（pull-requests: write）を持つジョブには渡さない）
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codex:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    # (1) CODEX_HOME_DIR 未設定（runner 未準備）の間は実行しない
+    # (2) fork PR では untrusted コードを self-hosted runner で実行しない（fail-closed）
+    if: >-
+      vars.CODEX_HOME_DIR != '' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    outputs:
+      final_message: ${{ steps.run_codex.outputs.final-message }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run Codex review
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          # openai-api-key は渡さず、runner 上のログイン済み CODEX_HOME（ChatGPT 認証、
+          # CLI が refresh_token で自動更新する）を利用する
+          codex-home: ${{ vars.CODEX_HOME_DIR }}
+          prompt-file: .github/codex/prompts/review.md
+          output-file: codex-review.json
+          codex-args: '["--output-schema", ".github/codex/review-schema.json"]'
+
+      - name: Gate on P0/P1 findings
+        run: |
+          count="$(jq '[.findings[] | select(.priority == "P0" or .priority == "P1")] | length' codex-review.json)"
+          if [ "${count}" -gt 0 ]; then
+            echo "::error::Codex レビューで P0/P1 指摘が ${count} 件検出されました（詳細は PR コメント参照）"
+            exit 1
+          fi
+          echo "P0/P1 指摘なし（gate 通過）"
+
+  # gate 失敗時（needs.codex.result == 'failure'）でもレビュー結果コメントは投稿する
+  post_feedback:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    needs: codex
+    if: ${{ always() && needs.codex.outputs.final_message != '' }}
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Post Codex feedback
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const raw = process.env.CODEX_FINAL_MESSAGE;
+            let body;
+            try {
+              const result = JSON.parse(raw);
+              const icon = { P0: '🟥', P1: '🟧', P2: '🟨', P3: '⬜' };
+              const findings = (result.findings ?? [])
+                .map(f => `- ${icon[f.priority] ?? '⬜'} **${f.priority}** ${f.title}（\`${f.location}\`）\n  ${String(f.detail).replace(/\n/g, '\n  ')}`)
+                .join('\n');
+              body = `## Codex PR レビュー\n\n${result.summary}\n\n`
+                + (findings ? `### 指摘\n\n${findings}` : '指摘はありません。');
+            } catch {
+              // スキーマ外の出力でもレビュー内容は握りつぶさずそのまま提示する
+              body = `## Codex PR レビュー\n\n${raw}`;
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body,
+            });
+        env:
+          CODEX_FINAL_MESSAGE: ${{ needs.codex.outputs.final_message }}

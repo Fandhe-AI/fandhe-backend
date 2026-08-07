@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Codex PR レビュー結果（.github/workflows/codex-review.yml の gate 判定・PR コメント描画が消費する）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "findings"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "PR 全体の総評（日本語、2〜4 文）"
+    },
+    "findings": {
+      "type": "array",
+      "description": "個別指摘。P0/P1 が 1 件でもあると CI ジョブが失敗する",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["priority", "title", "location", "detail"],
+        "properties": {
+          "priority": {
+            "type": "string",
+            "enum": ["P0", "P1", "P2", "P3"],
+            "description": "AGENTS.md「レビュー基準」節の優先度定義に従う"
+          },
+          "title": {
+            "type": "string",
+            "description": "指摘の 1 行要約（日本語）"
+          },
+          "location": {
+            "type": "string",
+            "description": "該当箇所（file_path:line 形式、複数箇所は代表 1 箇所）"
+          },
+          "detail": {
+            "type": "string",
+            "description": "問題の内容・根拠（違反した規約名）・推奨する修正方針（日本語）"
+          }
+        }
+      }
+    }
+  }
+}
