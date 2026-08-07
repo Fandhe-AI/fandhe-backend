@@ -39,7 +39,12 @@ concurrency:
 
 jobs:
   codex:
-    runs-on: self-hosted
+    # 汎用プール（root + apt-get 前提、self-hosted ラベル）ではなく、codex 専用の
+    # no-sudo ランナー（非 root ジョブ実行・sudo 剥奪・docker.sock 非マウント・
+    # デフォルトラベル無効で登録）で実行する。汎用プールは全ランナーが root 実行
+    # のため「Verify sudo is not available」を通過できない。専用ランナーの構築は
+    # Fandhe-AI/local-server の docs/gha-runner/（compose.codex.yml）を参照
+    runs-on: no-sudo
     timeout-minutes: 30
     # (1) CODEX_HOME_DIR 未設定（runner 未準備）の間は実行しない
     # (2) fork PR では untrusted コードを self-hosted runner で実行しない（fail-closed）
