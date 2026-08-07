@@ -45,7 +45,7 @@ jobs:
     outputs:
       final_message: ${{ steps.run_codex.outputs.final-message }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v5（ci.yml と同一 SHA 固定）
         with:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
           fetch-depth: 0
@@ -53,7 +53,9 @@ jobs:
 
       - name: Run Codex review
         id: run_codex
-        uses: openai/codex-action@v1
+        # サードパーティ action は SHA 固定（runner 上の auth.json へ触れるジョブのため
+        # タグ差し替えによるサプライチェーン攻撃を遮断する）
+        uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1
         with:
           # openai-api-key は渡さず、runner 上のログイン済み CODEX_HOME（ChatGPT 認証、
           # CLI が refresh_token で自動更新する）を利用する
@@ -81,7 +83,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Post Codex feedback
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           github-token: ${{ github.token }}
           script: |
