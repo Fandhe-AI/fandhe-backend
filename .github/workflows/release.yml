@@ -69,20 +69,21 @@ jobs:
         run: cargo test --workspace --all-features
 
       # dep-audit.sh はツール不在時に導入せず異常終了する（fail-closed）ため、
-      # ci.yml の dep-audit ジョブと同一のバージョン固定インストールを先行させる
-      # （サプライチェーン考慮: crates.io からバージョン固定で取得。
-      # .claude/rules/security.md。Bugbot 指摘対応）
+      # ci.yml の dep-audit ジョブと同一のバージョン固定インストールを先行させる。
+      # 共通部品 cargo-tool-install が冪等判定・導入後の厳密一致検証を担う
+      # （サプライチェーン考慮: crates.io からバージョン固定（--locked）で取得し、
+      # 参照はコミット SHA 固定。.claude/rules/security.md。Bugbot 指摘対応）
       - name: Ensure cargo-deny 0.19.8
-        run: |
-          if ! cargo deny --version 2>/dev/null | grep -q ' 0\.19\.8$'; then
-            cargo install --locked cargo-deny@0.19.8
-          fi
+        uses: Fandhe-AI/actions/cargo-tool-install@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        with:
+          tool: cargo-deny
+          version: 0.19.8
 
       - name: Ensure cargo-audit 0.22.2
-        run: |
-          if ! cargo audit --version 2>/dev/null | grep -q ' 0\.22\.2$'; then
-            cargo install --locked cargo-audit@0.22.2
-          fi
+        uses: Fandhe-AI/actions/cargo-tool-install@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        with:
+          tool: cargo-audit
+          version: 0.22.2
 
       - name: dep-audit（cargo audit / cargo deny、全 feature 構成）
         run: bash scripts/dep-audit.sh

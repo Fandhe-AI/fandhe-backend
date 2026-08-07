@@ -167,13 +167,14 @@ jobs:
         run: rustup show
 
       # self-hosted ランナー前提でバージョン固定インストールする（dep-audit ジョブと同じ方針）。
-      # 既に同一バージョンが入っていれば `cargo install` はスキップされ高速に完了する
-      # （サプライチェーン考慮: crates.io からバージョン固定で取得。.claude/rules/security.md）。
+      # 共通部品 cargo-tool-install が「導入済み同一バージョンならスキップ」の冪等判定と
+      # 導入後の厳密一致検証を担う（サプライチェーン考慮: crates.io からバージョン固定
+      # （--locked）で取得し、参照はコミット SHA 固定。.claude/rules/security.md）。
       - name: Ensure cargo-nextest 0.9.137
-        run: |
-          if ! cargo nextest --version 2>/dev/null | grep -q ' 0\.9\.137 '; then
-            cargo install --locked cargo-nextest@0.9.137
-          fi
+        uses: Fandhe-AI/actions/cargo-tool-install@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        with:
+          tool: cargo-nextest
+          version: 0.9.137
 
       - name: cargo nextest run --workspace --all-features --profile ci
         # テスト単位のタイムアウトは .config/nextest.toml（profile: ci）で規定。
@@ -262,19 +263,20 @@ jobs:
         run: rustup show
 
       # self-hosted ランナー前提でツールをバージョン固定インストールする。
-      # 既に同一バージョンが入っていれば `cargo install` はスキップされ高速に完了する
-      # （サプライチェーン考慮: crates.io からバージョン固定で取得。.claude/rules/security.md）。
+      # 共通部品 cargo-tool-install が「導入済み同一バージョンならスキップ」の冪等判定と
+      # 導入後の厳密一致検証を担う（サプライチェーン考慮: crates.io からバージョン固定
+      # （--locked）で取得し、参照はコミット SHA 固定。.claude/rules/security.md）。
       - name: Ensure cargo-deny 0.19.8
-        run: |
-          if ! cargo deny --version 2>/dev/null | grep -q ' 0\.19\.8$'; then
-            cargo install --locked cargo-deny@0.19.8
-          fi
+        uses: Fandhe-AI/actions/cargo-tool-install@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        with:
+          tool: cargo-deny
+          version: 0.19.8
 
       - name: Ensure cargo-audit 0.22.2
-        run: |
-          if ! cargo audit --version 2>/dev/null | grep -q ' 0\.22\.2$'; then
-            cargo install --locked cargo-audit@0.22.2
-          fi
+        uses: Fandhe-AI/actions/cargo-tool-install@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        with:
+          tool: cargo-audit
+          version: 0.22.2
 
       - name: dep-audit.sh（全 feature 構成の cargo audit / cargo deny check）
         id: dep_audit
@@ -498,14 +500,16 @@ jobs:
         run: rustup show
 
       # self-hosted ランナー前提でバージョン固定インストールする（dep-audit / test ジョブと
-      # 同じ方針。サプライチェーン考慮: crates.io からバージョン固定で取得）。
+      # 同じ方針。共通部品 cargo-tool-install が冪等判定・導入後の厳密一致検証を担う
+      # （サプライチェーン考慮: crates.io からバージョン固定（--locked）で取得し、
+      # 参照はコミット SHA 固定）。
       # cargo-geiger はビルドを伴い壊れやすい実績のあるツールのため、本ジョブでは
       # dep-impact.sh と異なり必須ツールとして扱う（未導入・実行失敗は FAIL）。
       - name: Ensure cargo-geiger 0.13.0
-        run: |
-          if ! cargo geiger --version 2>/dev/null | grep -q ' 0\.13\.0$'; then
-            cargo install --locked cargo-geiger@0.13.0
-          fi
+        uses: Fandhe-AI/actions/cargo-tool-install@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        with:
+          tool: cargo-geiger
+          version: 0.13.0
 
       - name: pay-for-what-you-use-check.sh（cargo tree/geiger・バイナリサイズ・全構成ビルド）
         run: bash scripts/pay-for-what-you-use-check.sh
@@ -706,12 +710,14 @@ jobs:
           fi
 
       # self-hosted ランナー前提でバージョン固定インストールする（dep-audit / test ジョブと
-      # 同じ方針。サプライチェーン考慮: crates.io からバージョン固定で取得）。
+      # 同じ方針。共通部品 cargo-tool-install が冪等判定・導入後の厳密一致検証を担う
+      # （サプライチェーン考慮: crates.io からバージョン固定（--locked）で取得し、
+      # 参照はコミット SHA 固定）。
       - name: Ensure cargo-fuzz 0.13.2
-        run: |
-          if ! cargo fuzz --version 2>/dev/null | grep -qE ' 0\.13\.2($| )'; then
-            cargo install --locked cargo-fuzz@0.13.2
-          fi
+        uses: Fandhe-AI/actions/cargo-tool-install@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        with:
+          tool: cargo-fuzz
+          version: 0.13.2
 
       - name: scripts/fuzz.sh（smoke、60 秒/target）
         run: bash scripts/fuzz.sh --max-total-time 60
@@ -791,18 +797,20 @@ jobs:
           fi
 
       # self-hosted ランナー前提でバージョン固定インストールする（dep-audit / test ジョブと
-      # 同じ方針。サプライチェーン考慮: crates.io からバージョン固定で取得）。
+      # 同じ方針。共通部品 cargo-tool-install が冪等判定・導入後の厳密一致検証を担う
+      # （サプライチェーン考慮: crates.io からバージョン固定（--locked）で取得し、
+      # 参照はコミット SHA 固定）。
       - name: Ensure cargo-llvm-cov 0.8.7
-        run: |
-          if ! cargo llvm-cov --version 2>/dev/null | grep -q ' 0\.8\.7$'; then
-            cargo install --locked cargo-llvm-cov@0.8.7
-          fi
+        uses: Fandhe-AI/actions/cargo-tool-install@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        with:
+          tool: cargo-llvm-cov
+          version: 0.8.7
 
       - name: Ensure cargo-nextest 0.9.137
-        run: |
-          if ! cargo nextest --version 2>/dev/null | grep -q ' 0\.9\.137 '; then
-            cargo install --locked cargo-nextest@0.9.137
-          fi
+        uses: Fandhe-AI/actions/cargo-tool-install@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        with:
+          tool: cargo-nextest
+          version: 0.9.137
 
       - name: coverage.sh（コア対象、80% 未満で失敗）
         run: bash scripts/coverage.sh
