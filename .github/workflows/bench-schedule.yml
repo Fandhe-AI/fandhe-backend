@@ -223,7 +223,7 @@ jobs:
         with:
           label: bench-regression
           label-color: B60205
-          label-description: 週次ベンチ（bench-schedule.yml）の REQ-1/NFR-1 退行・計測不能検知（イシュー #285）
+          label-description: "週次ベンチ（bench-schedule.yml）の REQ-1/NFR-1 退行・計測不能検知（イシュー #285）"
           search-query: bench-regression
           title: ${{ steps.bench_issue_body.outputs.title }}
           body-file: ${{ runner.temp }}/bench-issue-body.md
