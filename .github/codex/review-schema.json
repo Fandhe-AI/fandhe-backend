@@ -3,11 +3,15 @@
   "title": "Codex PR レビュー結果（.github/workflows/codex-review.yml の gate 判定・PR コメント描画が消費する）",
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "findings"],
+  "required": ["summary", "findings", "review_completed"],
   "properties": {
     "summary": {
       "type": "string",
-      "description": "PR 全体の総評（日本語、2〜4 文）"
+      "description": "PR 全体の総評（日本語、2〜4 文）。review_completed が false の場合はレビューを完遂できなかった理由（実行できなかったコマンドとエラー内容）を書く"
+    },
+    "review_completed": {
+      "type": "boolean",
+      "description": "レビュー手順（`git diff HEAD^1 HEAD` 等での差分取得・AGENTS.md「レビュー基準」節の読み取り）を完遂できた場合のみ true。false の場合は gate（.github/workflows/codex-review.yml）がジョブを fail-closed で失敗させ、P0/P1 findings の有無に関わらず PASS 扱いにしない"
     },
     "findings": {
       "type": "array",
