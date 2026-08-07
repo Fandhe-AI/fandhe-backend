@@ -9,6 +9,14 @@ GitHub Actions のジョブは**すべてセルフホストランナーで実行
 GitHub ホステッドランナー（`ubuntu-latest` / `macos-latest` / `windows-latest` 等）は
 **引き続き使用しない**（この原則はカスタムラベル許容後も不変）。
 
+本規約は組織 runner 方針（ユーザー決定 2026-08-07）「リポジトリの**可視性**で runner を
+決める: public は GitHub ホステッド（`ubuntu-latest` 等）、private は self-hosted」の
+private 側の適用である。方針の正は Fandhe-AI/actions の
+[`docs/runner-policy.md`](https://github.com/Fandhe-AI/actions/blob/main/docs/runner-policy.md)
+（Fandhe-AI/actions#33 の成果物。対象リポジトリ一覧・codex-review の self-hosted
+専用 runner 例外を含む）を参照する。本リポジトリは private のため self-hosted 既定の
+現行構成（本規約・全ワークフロー）と整合しており、実態変更はない。
+
 - 新規ワークフロー・新規ジョブを追加するときは原則 `self-hosted` を指定し、専用プールが
   必要な場合のみ `.github/actionlint.yaml` へラベルを登録した上でカスタムラベルを使う
   （未登録ラベルは `scripts/actionlint.sh` が runner-label エラーで検知する fail-closed 構成）
