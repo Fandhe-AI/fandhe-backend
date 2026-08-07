@@ -1,0 +1,12 @@
+# actionlint 設定（scripts/actionlint.sh から参照される）
+# self-hosted runner のカスタムラベル一覧。ここに無いラベルを runs-on に書くと
+# actionlint が runner-label エラーにする（typo 防止のためのホワイトリスト）。
+# ラベルの実体は Fandhe-AI/local-server の gha-runner 手順書で管理:
+#   - fandhe-server / no-sudo / codex: codex 専用プール（gha-runner-4、
+#     NO_DEFAULT_LABELS 登録のため self-hosted ラベルを持たない）
+#   - それ以外の汎用プール（gha-runner-1〜3）は既定の self-hosted ラベルで選択する
+self-hosted-runner:
+  labels:
+    - fandhe-server
+    - no-sudo
+    - codex
