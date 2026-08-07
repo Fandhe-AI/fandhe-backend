@@ -101,16 +101,29 @@ jobs:
 
       # runner 上のログイン済み CODEX_HOME（ChatGPT 認証、CLI が refresh_token で
       # 自動更新する）を CODEX_HOME 環境変数で参照する。レビューは読み取りのみで
-      # よいため sandbox は read-only を明示する
+      # よいため sandbox は read-only を明示する。
+      # codex の stdout（最終メッセージ）/ stderr（進行ログ）は Actions ログへ直接
+      # 流さず一旦ファイルへバッファし、資格情報パターンをマスクしてから公開する
+      # （後段のスキャンより先にログへ生出力が露出する経路を塞ぐ。マスクは表示用で、
+      # 後段の fail-closed スキャンは生の JSON に対して行う）
       - name: Run Codex review
         env:
           CODEX_HOME: ${{ vars.CODEX_HOME_DIR }}
         run: |
+          status=0
           codex exec \
             --sandbox read-only \
             --output-schema .github/codex/review-schema.json \
             --output-last-message "$RUNNER_TEMP/codex-review.json" \
-            - < .github/codex/prompts/review.md
+            - < .github/codex/prompts/review.md \
+            > "$RUNNER_TEMP/codex-exec.log" 2>&1 || status=$?
+          sed -E \
+            -e 's/eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}(\.[A-Za-z0-9_-]+)?/[REDACTED_JWT]/g' \
+            -e 's/sk-[A-Za-z0-9_-]{20,}/[REDACTED_KEY]/g' \
+            -e 's/ghp_[A-Za-z0-9]{20,}/[REDACTED_TOKEN]/g' \
+            -e 's/github_pat_[A-Za-z0-9_]{20,}/[REDACTED_TOKEN]/g' \
+            "$RUNNER_TEMP/codex-exec.log"
+          exit "$status"
 
       # 出力を公開（PR コメント投稿・ジョブ出力化）する前の資格情報混入検査。
       # read-only sandbox は読み取りを妨げないため、プロンプトインジェクション等で
