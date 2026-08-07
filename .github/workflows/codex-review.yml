@@ -151,7 +151,13 @@ jobs:
       #     （`project_doc_max_bytes=0` の意味論——値 0 が「注入なし」ではなく
       #     「既定 32 KiB のまま」等へ将来解釈が変わっても安全側に倒すため。working
       #     tree の書き換えは `git diff HEAD^1 HEAD`・`git show HEAD^1:AGENTS.md`
-      #     等 git オブジェクト参照ベースの prompt の手順には影響しない）
+      #     等 git オブジェクト参照ベースの prompt の手順には影響しない）。この
+      #     「base 版へ上書き」処理自体も、HEAD 側の AGENTS.md が絶対パス symlink に
+      #     置き換えられていると単純なリダイレクト（`git show ... > AGENTS.md`）が
+      #     symlink を辿って runner 上の任意ファイルを上書きする経路になりうるため、
+      #     `rm -rf AGENTS.md AGENTS.override.md` で symlink 自体を先に unlink して
+      #     から新規作成する（イシュー #524 の PR #526 に対する Codex 自身のレビュー
+      #     で P0 指摘。詳細は下記ステップ内コメント）
       # base.sha は checkout 済みの `refs/pull/<n>/merge`（fetch-depth: 0）の親であり
       # 追加の fetch なしでローカルに存在するはずだが、念のため存在確認する
       - name: Extract review control files from base branch
@@ -183,19 +189,31 @@ jobs:
           # `--config project_doc_max_bytes=0`（Run Codex review ステップ）と
           # あわせた多重防御（上記コメント (4) 参照）。symlink 経由の任意ファイル
           # 読込を避けるため、prompt/schema と同様に base コミット時点のオブジェクト
-          # モードを確認してから内容を取得する
+          # モードを確認してから内容を取得する。
+          #
+          # base 側のモード検証だけでは不十分: 検証しているのは base コミット時点の
+          # blob モードであり、実際に `> AGENTS.md` がリダイレクトする先は checkout
+          # （HEAD 側）の working tree 上の AGENTS.md である。同一リポジトリの PR が
+          # HEAD 側の AGENTS.md を絶対パス symlink に変更していた場合、シェルの `>`
+          # リダイレクトはシンボリックリンクを辿って書き込むため、runner 上でジョブ
+          # ユーザーが書き込める任意ファイルが base 版の内容で上書きされうる
+          # （symlink 脱出。イシュー #524 の PR #526 に対する Codex 自身のレビューで
+          # P0 指摘）。`rm -rf` は symlink 自体を対象にしシンボリックリンクの参照先を
+          # 辿らないため、リダイレクトで新規作成する前に HEAD 側の AGENTS.md /
+          # AGENTS.override.md を無条件で unlink し、その後にのみ base 版の内容で
+          # 新規ファイルを作成する（`-f` で HEAD 側にファイル自体が存在しない場合も
+          # 許容し、`-r` で AGENTS.md が symlink ではなくディレクトリに置き換えられて
+          # いた場合にも対応する）
           agents_mode="$(git ls-tree "${BASE_SHA}" -- AGENTS.md | awk '{print $1}')"
           if [ -n "${agents_mode}" ] && [ "${agents_mode}" != "100644" ] && [ "${agents_mode}" != "100755" ]; then
             echo "::error::base コミット ${BASE_SHA} 時点の AGENTS.md が通常ファイルではありません（mode=${agents_mode}。symlink を拒否）"
             exit 1
           fi
+          rm -rf AGENTS.md AGENTS.override.md
           if [ -n "${agents_mode}" ]; then
             git show "${BASE_SHA}:AGENTS.md" > AGENTS.md
-          else
-            rm -f AGENTS.md
           fi
-          rm -f AGENTS.override.md
-          echo "checkout 側 AGENTS.md を base 版へ上書き・AGENTS.override.md を削除しました"
+          echo "checkout 側 AGENTS.md を base 版へ上書き（symlink は事前 unlink 済み）・AGENTS.override.md を削除しました"
 
       # runner 上のログイン済み CODEX_HOME（ChatGPT 認証、CLI が refresh_token で
       # 自動更新する）を CODEX_HOME 環境変数で参照する。レビューは読み取りのみで
