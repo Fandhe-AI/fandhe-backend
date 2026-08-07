@@ -82,6 +82,23 @@ jobs:
           fi
           echo "sudo なしを確認（実行継続）"
 
+      # CLI が読み書きするファイルを PR の checkout 内容から切り離す多層防御:
+      # (1) 出力先は PR が symlink を仕込めない $RUNNER_TEMP に置く（checkout 内の
+      #     予測可能パスへ書くと、同名の絶対パス symlink コミットで runner 上の
+      #     任意ファイル上書きに転用されうる）
+      # (2) prompt / schema は「symlink でない通常ファイル」であることを検証してから
+      #     渡す（symlink 化で runner 上の任意ファイルをプロンプトへ読み込ませる
+      #     経路を遮断、fail-closed）
+      - name: Verify review input files
+        run: |
+          for f in .github/codex/prompts/review.md .github/codex/review-schema.json; do
+            if [ -L "$f" ] || [ ! -f "$f" ]; then
+              echo "::error::$f が通常ファイルではありません（symlink・欠落を拒否）"
+              exit 1
+            fi
+          done
+          echo "入力ファイル検証 OK"
+
       # runner 上のログイン済み CODEX_HOME（ChatGPT 認証、CLI が refresh_token で
       # 自動更新する）を CODEX_HOME 環境変数で参照する。レビューは読み取りのみで
       # よいため sandbox は read-only を明示する
@@ -92,18 +109,30 @@ jobs:
           codex exec \
             --sandbox read-only \
             --output-schema .github/codex/review-schema.json \
-            --output-last-message codex-review.json \
+            --output-last-message "$RUNNER_TEMP/codex-review.json" \
             - < .github/codex/prompts/review.md
+
+      # 出力を公開（PR コメント投稿・ジョブ出力化）する前の資格情報混入検査。
+      # read-only sandbox は読み取りを妨げないため、プロンプトインジェクション等で
+      # auth.json のトークン（JWT）や API キーがレビュー結果へ混ざった場合に備え、
+      # パターン検出時は出力へ載せず fail-closed でジョブを失敗させる
+      - name: Scan output for credentials
+        run: |
+          if command grep -qE 'eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}' "$RUNNER_TEMP/codex-review.json"; then
+            echo "::error::レビュー出力に資格情報らしきパターンを検出したため公開を中止します"
+            exit 1
+          fi
+          echo "資格情報パターン: 検出なし"
 
       # jq -c で単一行 JSON へ正規化してジョブ出力にする（不正 JSON はここで fail し、
       # post_feedback は投稿対象なしとして skip される）
       - name: Collect final message
         id: collect
-        run: echo "final_message=$(jq -c . codex-review.json)" >> "$GITHUB_OUTPUT"
+        run: echo "final_message=$(jq -c . "$RUNNER_TEMP/codex-review.json")" >> "$GITHUB_OUTPUT"
 
       - name: Gate on P0/P1 findings
         run: |
-          count="$(jq '[.findings[] | select(.priority == "P0" or .priority == "P1")] | length' codex-review.json)"
+          count="$(jq '[.findings[] | select(.priority == "P0" or .priority == "P1")] | length' "$RUNNER_TEMP/codex-review.json")"
           if [ "${count}" -gt 0 ]; then
             echo "::error::Codex レビューで P0/P1 指摘が ${count} 件検出されました（詳細は PR コメント参照）"
             exit 1
