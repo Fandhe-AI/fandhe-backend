@@ -1,13 +1,19 @@
 name: Codex PR review
 
-# Codex（openai/codex-action@v1）による PR 自動レビュー。
+# Codex CLI（codex exec 直接実行）による PR 自動レビュー。
+# openai/codex-action は使わない: 同 action は openai-api-key 未指定だと Responses API proxy
+# が起動せず server info ファイルが書かれない一方、Read server info ステップは prompt 指定
+# だけでも実行されるため、codex exec 前に必ず失敗する（v1 の pin SHA
+# 52fe01ec の action.yml / src/readServerInfo.ts で確認済み）。ChatGPT ログイン済み
+# CODEX_HOME を使う本方式では CLI を直接叩く必要がある。呼び出し形（stdin プロンプト +
+# --output-last-message + --output-schema）は同 action の src/runCodexExec.ts と同一。
 # - レビュー基準はリポジトリルート AGENTS.md「レビュー基準（Codex PR 自動レビュー）」節
 #   （Codex が AGENTS.md を自動読込するため、人間レビューと基準を共有できる）
 # - 指摘は `--output-schema`（.github/codex/review-schema.json）で構造化 JSON に固定し、
 #   P0/P1 指摘が 1 件でもあれば gate ステップで jq 判定してジョブを失敗させる
 # - 認証は codex-home 方式: API キー（OPENAI_API_KEY secret）は使わず、self-hosted runner
 #   上に用意した ChatGPT ログイン済み CODEX_HOME ディレクトリ（auth.json を含む）を
-#   `codex-home` 入力で参照する。パスは Actions variable `CODEX_HOME_DIR` で指定し、
+#   CODEX_HOME 環境変数で参照する。パスは Actions variable `CODEX_HOME_DIR` で指定し、
 #   **未設定の間は全ジョブを skip する**（runner 側の準備が済むまでレビューを実行しない
 #   fail-closed ガード。有効化 = org/repo の variable `CODEX_HOME_DIR` にマウント先パスを
 #   設定する、が唯一のスイッチ）。runner 側のセットアップは Fandhe-AI/local-server の
@@ -43,7 +49,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      final_message: ${{ steps.run_codex.outputs.final-message }}
+      final_message: ${{ steps.collect.outputs.final_message }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v5（ci.yml と同一 SHA 固定）
         with:
@@ -51,18 +57,34 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Run Codex review
-        id: run_codex
-        # サードパーティ action は SHA 固定（runner 上の auth.json へ触れるジョブのため
-        # タグ差し替えによるサプライチェーン攻撃を遮断する）
-        uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          # openai-api-key は渡さず、runner 上のログイン済み CODEX_HOME（ChatGPT 認証、
-          # CLI が refresh_token で自動更新する）を利用する
-          codex-home: ${{ vars.CODEX_HOME_DIR }}
-          prompt-file: .github/codex/prompts/review.md
-          output-file: codex-review.json
-          codex-args: '["--output-schema", ".github/codex/review-schema.json"]'
+          node-version: "24"
+
+      # runner 上の auth.json へ触れるジョブのため、CLI もバージョン固定で導入する
+      # （タグ差し替え・latest 汚染型のサプライチェーン攻撃を遮断）
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex@0.146.1
+
+      # runner 上のログイン済み CODEX_HOME（ChatGPT 認証、CLI が refresh_token で
+      # 自動更新する）を CODEX_HOME 環境変数で参照する。レビューは読み取りのみで
+      # よいため sandbox は read-only を明示する
+      - name: Run Codex review
+        env:
+          CODEX_HOME: ${{ vars.CODEX_HOME_DIR }}
+        run: |
+          codex exec \
+            --sandbox read-only \
+            --output-schema .github/codex/review-schema.json \
+            --output-last-message codex-review.json \
+            - < .github/codex/prompts/review.md
+
+      # jq -c で単一行 JSON へ正規化してジョブ出力にする（不正 JSON はここで fail し、
+      # post_feedback は投稿対象なしとして skip される）
+      - name: Collect final message
+        id: collect
+        run: echo "final_message=$(jq -c . codex-review.json)" >> "$GITHUB_OUTPUT"
 
       - name: Gate on P0/P1 findings
         run: |
