@@ -67,12 +67,17 @@ CI に常設されておらず**、2026-07-18 の再計測 PASS（`benches/repor
 
 1. `bench-accept` ジョブ自体を失敗（赤）として終了する（フェイルクローズ、CI の
    通知機構でユーザーに可視化される）。
-2. `bench-regression` ラベルで Issue を自動起票する（`ci.yml` dep-audit ジョブの
-   `audit-triage` 起票ステップと同一パターン。`.claude/rules/improvement-proposal.md`
-   の「自動レイヤ（承認不要）」に該当する、フレームワーク自身の自動監査機構）。
+2. `bench-regression` ラベルで Issue を自動起票する（`.claude/rules/
+   improvement-proposal.md` の「自動レイヤ（承認不要）」に該当する、フレームワーク
+   自身の自動監査機構）。ラベル冪等作成・重複判定・起票は共通部品
+   `Fandhe-AI/actions/idempotent-issue`（SHA 固定）呼び出しへ委譲する
+   （イシュー #539。本 workflow 側はタイトル・本文の組み立てのみ担う 2 ステップ
+   構成）。`ci.yml` dep-audit ジョブの `audit-triage` 起票は advisory ID ごとの
+   可変回数ループを伴うため同置換の対象外（`ci.yml` 側に現行シェル実装を残置）。
    - FAIL（退行確定）と BLOCKED（計測不能）はタイトルで区別する。計測不能の黙殺も
      「継続検証体制の喪失」であるため、握りつぶさず起票する。
-   - 重複起票は `bench-regression` ラベルの既存 open Issue 有無で防止する。
+   - 重複起票は `bench-regression` ラベルの既存 open Issue 有無で防止する
+     （`idempotent-issue` の `search-query` 検索）。
 3. Issue 本文には判定結果・実行 URL・計測レポート（`REPORT_MD` の内容）を記載する。
 
 ### 起票後の一次対応
@@ -173,9 +178,13 @@ exit コードを 1 → 2 へ統一して実害を解消済み、#479 で契約�
 - **秘密情報・ログ（A09）**: 使用トークンは `${{ github.token }}` のみ。ベンチ
   出力・環境スナップショット（loadavg・プロセス名）に機密は含まれず、Issue
   本文にも計測結果と run URL のみ記載する。
-- **フェイルクローズ**: BLOCKED・起票失敗（gh 障害）でも計測判定（ジョブ失敗）
-  自体は変えない（dep-audit と同一原則）。stale PASS 防止（REPORT_MD への結論
-  追記契約）は `bench-accept.sh` / `bench-accept-exclusive.sh` 側で既に維持されている。
+- **フェイルクローズ**: BLOCKED・起票失敗（`idempotent-issue` action の失敗）でも
+  計測判定（ジョブ失敗）自体は変えない（判定は「判定結果でジョブを終了」ステップが
+  `if: always()` で独立に決めるため）。イシュー #539 で共通部品へ置換したことにより、
+  重複検索（`search-query`）失敗時の挙動は旧実装の `|| echo "0"`（フェイルオープン。
+  gh 障害を「既存なし」と誤判断し重複起票しうる）からフェイルクローズ（異常終了し
+  重複起票を防ぐ）へ改善された。stale PASS 防止（REPORT_MD への結論追記契約）は
+  `bench-accept.sh` / `bench-accept-exclusive.sh` 側で既に維持されている。
 
 ## スコープ外（out-of-scope-tracking 対象）
 

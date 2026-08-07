@@ -45,8 +45,12 @@ name: bench-schedule
 #
 # 退行検知時の扱い（フェイルクローズ）: ジョブを失敗（赤）させ、かつ schedule /
 # workflow_dispatch 実行時は `bench-regression` ラベルで Issue を自動起票する
-# （ci.yml dep-audit ジョブの audit-triage 起票ステップと同一パターン。
-# improvement-proposal 規約の「自動レイヤ（承認不要）」に該当）。
+# （improvement-proposal 規約の「自動レイヤ（承認不要）」に該当）。イシュー #539 で
+# ラベル冪等作成・重複判定・起票のボイラープレートを共通部品
+# `Fandhe-AI/actions/idempotent-issue`（SHA 固定）呼び出しへ置換した（本文・タイトル
+# 組み立てのみ本 workflow 側に残す 2 ステップ構成）。ci.yml dep-audit ジョブの
+# audit-triage 起票は advisory ID ごとの可変回数ループを伴うため置換対象外
+# （`ci.yml` 側コメント・`docs/design/bench-scheduled-run.md` 参照）。
 
 on:
   schedule:
@@ -143,12 +147,12 @@ jobs:
           FAIL_RETRIES=1 REPORT_MD="${RUNNER_TEMP}/bench-report.md" bash benches/bench-accept-exclusive.sh
           echo "status=$?" >> "${GITHUB_OUTPUT}"
 
-      - name: 退行・計測不能検知時の Issue 起票
+      - name: 退行・計測不能検知時の Issue 本文組み立て
+        id: bench_issue_body
         # improvement-proposal 規約（.claude/rules/improvement-proposal.md）の
         # 「自動レイヤ（承認不要）」: フレームワーク自身の自動監査機構による能動的な
-        # 提示であり、ci.yml dep-audit ジョブの audit-triage 起票と同一レイヤ。
-        # schedule / workflow_dispatch 実行時のみ（本 workflow はこの 2 トリガーしか
-        # 持たないため実質常に真だが、他ジョブとの記述一貫性のため明示する）。
+        # 提示。schedule / workflow_dispatch 実行時のみ（本 workflow はこの 2
+        # トリガーしか持たないため実質常に真だが、他ジョブとの記述一貫性のため明示する）。
         #
         # `steps.bench.outcome == 'success'` を必須条件に加える（PR #291 Bugbot 指摘
         # 対応）: checkout / rustup 導入 / oha 導入のいずれかが失敗すると「bench」
@@ -157,9 +161,11 @@ jobs:
         # bench-accept-exclusive.sh が一度も実行されていないのに
         # `bench-regression` Issue が誤って自動起票されてしまう
         # （前段の環境構築失敗を性能退行として誤報告する）。
+        #
+        # 本ステップはタイトル・本文の組み立てのみを担い、ラベル冪等作成・重複判定・
+        # 実際の起票は次ステップの共通部品 idempotent-issue へ委譲する（イシュー #539）。
         if: always() && steps.bench.outcome == 'success' && steps.bench.outputs.status != '0' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         env:
-          GH_TOKEN: ${{ github.token }}
           BENCH_STATUS: ${{ steps.bench.outputs.status }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -173,19 +179,9 @@ jobs:
             verdict="BLOCKED（専有ロック取得不能・ビルド失敗・静穏未達・baseline / CORE_BIN バイナリ未整備のいずれか。計測不能自体も継続検証体制の喪失として扱う）"
           fi
 
-          # ラベルは冪等に作成する（既存でも失敗させない。ci.yml dep-audit ジョブと同型）。
-          gh label create bench-regression --color B60205 \
-            --description "週次ベンチ（bench-schedule.yml）の REQ-1/NFR-1 退行・計測不能検知（イシュー #285）" \
-            --force || echo "警告: bench-regression ラベルの作成に失敗しました（gh 障害でも判定結果は変えない）" >&2
+          echo "title=${title_prefix}" >> "${GITHUB_OUTPUT}"
 
-          # 重複起票防止（同一ラベルの open Issue が既にあればスキップ）。
-          existing="$(gh issue list --search "bench-regression" --state open --label bench-regression --json number --jq 'length' || echo "0")"
-          if [ "${existing}" != "0" ]; then
-            echo "既存 open Issue（bench-regression ラベル）があるためスキップします"
-            exit 0
-          fi
-
-          report_body="$(mktemp)"
+          body_file="${RUNNER_TEMP}/bench-issue-body.md"
           {
             echo "## 検知内容"
             echo
@@ -206,13 +202,31 @@ jobs:
             else
               echo "（レポートファイルが生成されませんでした）"
             fi
-          } >"${report_body}"
+          } >"${body_file}"
 
-          gh issue create \
-            --title "${title_prefix}" \
-            --label bench-regression \
-            --body-file "${report_body}" \
-            || echo "警告: Issue 起票に失敗しました（gh 障害でも判定結果は変えない）" >&2
+      - name: 退行・計測不能検知時の Issue 起票
+        # ラベル冪等作成・重複判定（同一ラベルの open Issue 検索）・起票を共通部品
+        # `Fandhe-AI/actions/idempotent-issue` へ委譲する（イシュー #539、参照は
+        # コミット SHA 固定。.claude/rules/security.md サプライチェーン考慮）。
+        # `steps.bench_issue_body.outcome == 'success'` を追加し、本文組み立てが
+        # 走っていない（前段条件不成立で skip された）場合に body-file 不在のまま
+        # action を実行しないようにする（フェイルクローズの明確化）。
+        #
+        # 重複検索の失敗時、共通部品は旧実装の `|| echo "0"`（フェイルオープン。
+        # gh 障害を「既存なし」と誤判断し重複起票しうる）と異なりフェイルクローズで
+        # 異常終了する（重複起票防止を優先する安全側の挙動変更）。起票失敗
+        # （`gh issue create` 相当）時も本ステップは fail するが、判定結果（ジョブの
+        # 成功/失敗）は次の「判定結果でジョブを終了」ステップが `if: always()` で
+        # 独立に決めるため、本ステップの成否は判定結果を変えない。
+        if: always() && steps.bench.outcome == 'success' && steps.bench_issue_body.outcome == 'success' && steps.bench.outputs.status != '0' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: Fandhe-AI/actions/idempotent-issue@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        with:
+          label: bench-regression
+          label-color: B60205
+          label-description: "週次ベンチ（bench-schedule.yml）の REQ-1/NFR-1 退行・計測不能検知（イシュー #285）"
+          search-query: bench-regression
+          title: ${{ steps.bench_issue_body.outputs.title }}
+          body-file: ${{ runner.temp }}/bench-issue-body.md
 
       - name: 判定結果でジョブを終了（フェイルクローズ）
         if: always()
