@@ -7,13 +7,35 @@ name: Codex PR review
 # 52fe01ec の action.yml / src/readServerInfo.ts で確認済み）。ChatGPT ログイン済み
 # CODEX_HOME を使う本方式では CLI を直接叩く必要がある。呼び出し形（stdin プロンプト +
 # --output-last-message + --output-schema）は同 action の src/runCodexExec.ts と同一。
-# - レビュー基準はリポジトリルート AGENTS.md「レビュー基準（Codex PR 自動レビュー）」節
-#   （Codex が AGENTS.md を自動読込するため、人間レビューと基準を共有できる）
+# - レビュー基準はリポジトリルート AGENTS.md「レビュー基準（Codex PR 自動レビュー）」節。
+#   prompt（.github/codex/prompts/review.md）が `git show HEAD^1:AGENTS.md` で
+#   ベースブランチ側の内容を明示的に読ませる（Codex の cwd 自動読込機能に頼ると
+#   checkout（PR 側）の AGENTS.md を読んでしまい、下記の自己参照問題が AGENTS.md にも
+#   及ぶため使わない）
 # - 指摘は `--output-schema`（.github/codex/review-schema.json）で構造化 JSON に固定し、
 #   gate は 2 段で判定する: (1) `review_completed == true` の確認（fail-closed。runner の
 #   sandbox 制約等でレビュー手順自体を完遂できなかった場合に findings 空の正常系 JSON が
 #   返り P0/P1 gate だけが素通りする fail-open を防ぐ、イシュー #524／親 #523） →
 #   (2) P0/P1 指摘が 1 件でもあれば jq 判定してジョブを失敗させる
+# - レビュー制御用ファイル（prompt: .github/codex/prompts/review.md・schema:
+#   .github/codex/review-schema.json、および上記の AGENTS.md「レビュー基準」節）は
+#   PR の checkout 内容から直接消費せず、`git show <base-sha>:<path>` で PR の base
+#   コミット（信頼済み参照。fork PR はそもそも実行しないため main への push 権限を
+#   持つ者のみが更新できる）から取得したものを使う（prompt/schema はワークフロー側の
+#   `Extract review control files from base branch` ステップが $RUNNER_TEMP へ抽出、
+#   AGENTS.md は prompt 内の `git show HEAD^1:AGENTS.md` 指示）。PR 自身がこれらの
+#   ファイルを改変しても、その改変は当の PR 自身のレビュー実行には一切反映されない
+#   （次のコミット・別 PR の実行にも影響しない。反映は base ブランチへのマージ後に
+#   限られる）。理由: レビュー対象の diff から直接 prompt/schema/基準を読み込む構成
+#   だと、PR 差分が「レビュー指示（P0/P1 判定基準・完了判定）を弱める」よう改変しても、
+#   その改変済み内容がそのまま自分自身のレビューに使われてしまう自己参照な構成になる
+#   （イシュー #524 の PR #526 に対する Codex 自身のレビューで P0 指摘）。
+#   イシュー #524 の PR #526 は review.md/review-schema.json/AGENTS.md 自体を変更する
+#   最初の PR のため、この PR 自身の実行だけは base（変更前の main）の prompt/schema
+#   が使われ `review_completed` フィールドを含まない旧 JSON が返る。結果としてこの
+#   PR 自身の「Gate on review completion」は一度だけ赤くなるが、gate は advisory
+#   （後述）でありマージを阻止しない。main へのマージ後は以降のすべての PR で新 gate
+#   が有効になる
 # - 認証は codex-home 方式: API キー（OPENAI_API_KEY secret）は使わず、self-hosted runner
 #   上に用意した ChatGPT ログイン済み CODEX_HOME ディレクトリ（auth.json を含む）を
 #   CODEX_HOME 環境変数で参照する。パスは Actions variable `CODEX_HOME_DIR` で指定し、
@@ -91,21 +113,42 @@ jobs:
           echo "sudo なしを確認（実行継続）"
 
       # CLI が読み書きするファイルを PR の checkout 内容から切り離す多層防御:
-      # (1) 出力先は PR が symlink を仕込めない $RUNNER_TEMP に置く（checkout 内の
-      #     予測可能パスへ書くと、同名の絶対パス symlink コミットで runner 上の
-      #     任意ファイル上書きに転用されうる）
-      # (2) prompt / schema は「symlink でない通常ファイル」であることを検証してから
-      #     渡す（symlink 化で runner 上の任意ファイルをプロンプトへ読み込ませる
-      #     経路を遮断、fail-closed）
-      - name: Verify review input files
+      # (1) prompt / schema は PR の checkout（merge ref）からではなく、PR の base
+      #     コミット（信頼済み参照）から `git show <sha>:<path>` で内容を直接抽出する。
+      #     `git show` はファイルの中身（blob）をそのまま標準出力へ書き出すため、PR が
+      #     当該パスを symlink 化していても抽出結果は常に通常ファイルの内容になり、
+      #     symlink 経由で runner 上の任意ファイルを読ませる経路そのものが存在しない
+      # (2) 抽出前に `git ls-tree <base-sha> -- <path>` で base コミット時点の git
+      #     オブジェクトモードを確認し、通常ファイル（100644/100755）以外
+      #     （symlink=120000・gitlink・パス欠落）は fail-closed で拒否する
+      # (3) 出力先は PR が書き込めない $RUNNER_TEMP に置く（checkout 内の予測可能
+      #     パスへ書くと、同名の絶対パス symlink コミットで runner 上の任意ファイル
+      #     上書きに転用されうる）
+      # base.sha は checkout 済みの `refs/pull/<n>/merge`（fetch-depth: 0）の親であり
+      # 追加の fetch なしでローカルに存在するはずだが、念のため存在確認する
+      - name: Extract review control files from base branch
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::base コミット ${BASE_SHA} がローカルに存在しません（checkout の fetch-depth 設定を確認してください）"
+            exit 1
+          fi
+          echo "base sha: ${BASE_SHA}"
+
           for f in .github/codex/prompts/review.md .github/codex/review-schema.json; do
-            if [ -L "$f" ] || [ ! -f "$f" ]; then
-              echo "::error::$f が通常ファイルではありません（symlink・欠落を拒否）"
+            mode="$(git ls-tree "${BASE_SHA}" -- "$f" | awk '{print $1}')"
+            if [ "${mode}" != "100644" ] && [ "${mode}" != "100755" ]; then
+              echo "::error::base コミット ${BASE_SHA} 時点の $f が通常ファイルではありません（mode=${mode:-欠落}。symlink・欠落を拒否）"
               exit 1
             fi
           done
-          echo "入力ファイル検証 OK"
+
+          git show "${BASE_SHA}:.github/codex/prompts/review.md" > "$RUNNER_TEMP/review.md"
+          git show "${BASE_SHA}:.github/codex/review-schema.json" > "$RUNNER_TEMP/review-schema.json"
+
+          echo "抽出したファイルの sha256:"
+          sha256sum "$RUNNER_TEMP/review.md" "$RUNNER_TEMP/review-schema.json"
 
       # runner 上のログイン済み CODEX_HOME（ChatGPT 認証、CLI が refresh_token で
       # 自動更新する）を CODEX_HOME 環境変数で参照する。レビューは読み取りのみで
@@ -121,9 +164,9 @@ jobs:
           status=0
           codex exec \
             --sandbox read-only \
-            --output-schema .github/codex/review-schema.json \
+            --output-schema "$RUNNER_TEMP/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/codex-review.json" \
-            - < .github/codex/prompts/review.md \
+            - < "$RUNNER_TEMP/review.md" \
             > "$RUNNER_TEMP/codex-exec.log" 2>&1 || status=$?
           sed -E \
             -e 's/eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}(\.[A-Za-z0-9_-]+)?/[REDACTED_JWT]/g' \
@@ -158,7 +201,13 @@ jobs:
       # PR コメントへ投稿できる。フィールド欠落・null・"true" 以外の値はすべて
       # 未完了側へ倒す厳密一致判定とする（イシュー #524／親 #523: runner の
       # sandbox 制約で diff・AGENTS.md を読めないまま findings 空の正常系 JSON が
-      # 返り gate が素通りした事象への対処）
+      # 返り gate が素通りした事象への対処）。意図的にフォールバックは設けない:
+      # prompt/schema を base ブランチから取得する構成（上記ヘッダコメント参照）へ
+      # 移行するイシュー #524 の PR #526 自身の実行だけは base（review_completed
+      # 未導入時点の main）の旧 schema が使われるため必ず一度この gate で失敗する
+      # （移行的な既知の赤。gate は advisory でマージを阻止しない）。旧 schema か
+      # どうかで判定を分岐させるフォールバックは、fail-open を閉じるための本 gate
+      # 自身に fail-open の抜け道を作ることになるため設けない
       - name: Gate on review completion
         run: |
           completed="$(jq -r '.review_completed == true' "$RUNNER_TEMP/codex-review.json")"

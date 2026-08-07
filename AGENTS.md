@@ -505,11 +505,24 @@ Codex による PR 自動レビュー（`.github/workflows/codex-review.yml`。C
   `AGENTS.md` 読み取り）自体を完遂できなかった場合は findings の有無に関わらずジョブを
   失敗させる。イシュー #524／親 #523）→ (2) P0/P1 でジョブ失敗。基準の追加・格上げは
   本節の編集のみで反映される
+- レビュー制御用ファイル（prompt: `.github/codex/prompts/review.md`・schema:
+  `.github/codex/review-schema.json`・本節を含む `AGENTS.md`「レビュー基準」節）は
+  PR の checkout（merge ref）から直接消費せず、PR の base コミット（信頼済み参照）
+  から取得した内容を使う。prompt/schema はワークフロー側（`.github/workflows/
+  codex-review.yml` の `Extract review control files from base branch` ステップ）が
+  `git show` で $RUNNER_TEMP へ抽出し、`AGENTS.md`「レビュー基準」節は prompt 自体が
+  `git show HEAD^1:AGENTS.md` で明示的にベースブランチ側を読む（Codex CLI の cwd 自動
+  読込に頼ると checkout 側＝PR 自身の改変後の内容を読んでしまうため使わない）。PR 差分が
+  これらのファイルを改変しても、その改変は当の PR 自身のレビュー実行には反映されない
+  （base ブランチへのマージ後に限り以降の PR へ反映される）。レビュー対象の diff から
+  直接 prompt/schema/基準を読み込む構成だと、diff がレビュー指示自体を弱める方向へ
+  改変してもその改変済み指示がそのまま自分自身のレビューに使われる自己参照構成に
+  なるため（イシュー #524、PR #526 の Codex レビュー P0/P1 指摘を受けて導入）
 - gate の失敗が実際にマージを止めるかは branch protection の required status check 設定に
   依存する。現状の required check は `ci.yml` の `ci-complete` のみで本ワークフローは
   含まれないため、gate は advisory（人間レビューの補助）であり機械的なマージ阻止では
-  ない。また PR の差分自体が本節・レビュー指示文を書き換えられる以上、本レビューは
-  セキュリティ境界ではなく、最終判断は人間レビューが担う。required check 化する場合は
-  `CODEX_HOME_DIR` 未設定時のジョブ skip との両立を別途設計する
+  ない。上記の base 参照化により PR 差分による本節・レビュー指示文の即時無効化は防げるが、
+  最終判断は引き続き人間レビューが担う。required check 化する場合は `CODEX_HOME_DIR`
+  未設定時のジョブ skip との両立を別途設計する
 - rustfmt / clippy / テスト成否は既存 CI（`ci.yml`）が機械判定するため、本レビューの
   対象外とする
