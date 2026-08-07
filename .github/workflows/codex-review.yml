@@ -10,7 +10,10 @@ name: Codex PR review
 # - レビュー基準はリポジトリルート AGENTS.md「レビュー基準（Codex PR 自動レビュー）」節
 #   （Codex が AGENTS.md を自動読込するため、人間レビューと基準を共有できる）
 # - 指摘は `--output-schema`（.github/codex/review-schema.json）で構造化 JSON に固定し、
-#   P0/P1 指摘が 1 件でもあれば gate ステップで jq 判定してジョブを失敗させる
+#   gate は 2 段で判定する: (1) `review_completed == true` の確認（fail-closed。runner の
+#   sandbox 制約等でレビュー手順自体を完遂できなかった場合に findings 空の正常系 JSON が
+#   返り P0/P1 gate だけが素通りする fail-open を防ぐ、イシュー #524／親 #523） →
+#   (2) P0/P1 指摘が 1 件でもあれば jq 判定してジョブを失敗させる
 # - 認証は codex-home 方式: API キー（OPENAI_API_KEY secret）は使わず、self-hosted runner
 #   上に用意した ChatGPT ログイン済み CODEX_HOME ディレクトリ（auth.json を含む）を
 #   CODEX_HOME 環境変数で参照する。パスは Actions variable `CODEX_HOME_DIR` で指定し、
@@ -149,6 +152,22 @@ jobs:
         id: collect
         run: echo "final_message=$(jq -c . "$RUNNER_TEMP/codex-review.json")" >> "$GITHUB_OUTPUT"
 
+      # レビュー手順自体が完遂したかを P0/P1 判定より先に確認する（fail-closed）。
+      # `Collect final message` の後に置くことで、gate 失敗時も final_message は
+      # 空にならず、post_feedback（always() 実行）が失敗理由入りの summary を
+      # PR コメントへ投稿できる。フィールド欠落・null・"true" 以外の値はすべて
+      # 未完了側へ倒す厳密一致判定とする（イシュー #524／親 #523: runner の
+      # sandbox 制約で diff・AGENTS.md を読めないまま findings 空の正常系 JSON が
+      # 返り gate が素通りした事象への対処）
+      - name: Gate on review completion
+        run: |
+          completed="$(jq -r '.review_completed == true' "$RUNNER_TEMP/codex-review.json")"
+          if [ "${completed}" != "true" ]; then
+            echo "::error::Codex レビューが完了していません（review_completed != true。理由は PR コメントの summary 参照）"
+            exit 1
+          fi
+          echo "review_completed: true（gate 通過）"
+
       - name: Gate on P0/P1 findings
         run: |
           count="$(jq '[.findings[] | select(.priority == "P0" or .priority == "P1")] | length' "$RUNNER_TEMP/codex-review.json")"
@@ -180,8 +199,15 @@ jobs:
               const findings = (result.findings ?? [])
                 .map(f => `- ${icon[f.priority] ?? '⬜'} **${f.priority}** ${f.title}（\`${f.location}\`）\n  ${String(f.detail).replace(/\n/g, '\n  ')}`)
                 .join('\n');
-              body = `## Codex PR レビュー\n\n${result.summary}\n\n`
-                + (findings ? `### 指摘\n\n${findings}` : '指摘はありません。');
+              // review_completed !== true は gate（Gate on review completion）が
+              // fail-closed で失敗させる異常系。findings が空でも「指摘はありません。」
+              // という正常系相当の表示にはせず、未完了である旨を明示する
+              // （イシュー #524／親 #523: gate 失敗が PR コメント上は正常に見える
+              // fail-open な見た目を避ける）
+              const findingsSection = result.review_completed === true
+                ? (findings ? `### 指摘\n\n${findings}` : '指摘はありません。')
+                : '⚠️ レビューが完了していません（gate 失敗。上記 summary の失敗理由を参照）。';
+              body = `## Codex PR レビュー\n\n${result.summary}\n\n${findingsSection}`;
             } catch {
               // スキーマ外の出力でもレビュー内容は握りつぶさずそのまま提示する
               body = `## Codex PR レビュー\n\n${raw}`;

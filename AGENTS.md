@@ -500,8 +500,11 @@ Codex による PR 自動レビュー（`.github/workflows/codex-review.yml`。C
 
 ### 運用
 
-- gate（P0/P1 でジョブ失敗）の判定は `.github/codex/review-schema.json` に従う構造化
-  出力を `jq` で判定する。基準の追加・格上げは本節の編集のみで反映される
+- gate の判定は `.github/codex/review-schema.json` に従う構造化出力を `jq` で 2 段判定
+  する: (1) `review_completed == true` の確認（fail-closed。レビュー手順（diff 取得・
+  `AGENTS.md` 読み取り）自体を完遂できなかった場合は findings の有無に関わらずジョブを
+  失敗させる。イシュー #524／親 #523）→ (2) P0/P1 でジョブ失敗。基準の追加・格上げは
+  本節の編集のみで反映される
 - gate の失敗が実際にマージを止めるかは branch protection の required status check 設定に
   依存する。現状の required check は `ci.yml` の `ci-complete` のみで本ワークフローは
   含まれないため、gate は advisory（人間レビューの補助）であり機械的なマージ阻止では
