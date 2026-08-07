@@ -123,7 +123,9 @@ jobs:
         run: rustup show
 
       # oha（HTTP 負荷生成、benches/README.md 前提ツール）を冪等・バージョン固定で
-      # インストールする（サプライチェーン考慮: crates.io からバージョン固定で取得。
+      # インストールする。共通部品 cargo-tool-install が「導入済み同一バージョンなら
+      # スキップ」の冪等判定と導入後の厳密一致検証を担う（サプライチェーン考慮:
+      # crates.io からバージョン固定（--locked）で取得し、参照はコミット SHA 固定。
       # 既存 cargo-nextest/cargo-deny 等の導入ステップと同じ方針）。
       #
       # バージョンは 1.15.0 に固定する。既存の計測レポート（`benches/reports/
@@ -132,10 +134,10 @@ jobs:
       # RPS を比較しないため（当初指定の 1.9.1 は crates.io に存在しないバージョンで、
       # `cargo install` が `could not find oha in registry` で必ず失敗していた）。
       - name: Ensure oha 1.15.0
-        run: |
-          if ! oha --version 2>/dev/null | grep -qE ' 1\.15\.0($| )'; then
-            cargo install --locked oha@1.15.0
-          fi
+        uses: Fandhe-AI/actions/cargo-tool-install@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        with:
+          tool: oha
+          version: 1.15.0
 
       # `benches/bench-accept-exclusive.sh` は専有ロック取得後にビルド → 静穏確認 →
       # 計測の順で実行する（doc comment 参照）。本ステップ自体は事前ビルドを
