@@ -67,6 +67,21 @@ jobs:
       - name: Install Codex CLI
         run: npm install -g @openai/codex@0.146.1
 
+      # codex-action の drop-sudo / Verify sudo privilege removed 相当の防御。
+      # 直接実行では action の sudo 剥奪が効かないため、ジョブユーザーが passwordless
+      # sudo を保持する runner では実行を拒否する（プロンプトインジェクションで
+      # --sandbox read-only を脱出した場合の権限昇格への多層防御）。永続 runner で
+      # 不可逆に sudo を剥奪すると他ジョブへ影響するため、剥奪ではなく fail-closed の
+      # 事前検証とし、「ジョブユーザーに sudo を与えない」ことを runner 構築側
+      # （Fandhe-AI/local-server の gha-runner 手順）の要件とする
+      - name: Verify sudo is not available
+        run: |
+          if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            echo "::error::runner のジョブユーザーが passwordless sudo を保持しています。codex exec を中止します（runner をジョブユーザー sudo なし構成にしてください）"
+            exit 1
+          fi
+          echo "sudo なしを確認（実行継続）"
+
       # runner 上のログイン済み CODEX_HOME（ChatGPT 認証、CLI が refresh_token で
       # 自動更新する）を CODEX_HOME 環境変数で参照する。レビューは読み取りのみで
       # よいため sandbox は read-only を明示する
