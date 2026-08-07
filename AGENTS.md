@@ -449,8 +449,10 @@ Issue #175 対応。`crates/plugin-websocket` のセッション処理
 
 ## レビュー基準（Codex PR 自動レビュー）
 
-Codex による PR 自動レビュー（`.github/workflows/codex-review.yml`。Codex は本ファイルを
-自動読込する）と人間レビューが共通で用いる基準。Codex code review は既定で P0/P1 のみを
+Codex による PR 自動レビュー（`.github/workflows/codex-review.yml`。Fandhe-AI/actions の
+reusable workflow（実装本体は `Fandhe-AI/actions/.github/workflows/codex-review.yml`）を
+SHA 固定で呼び出す薄い wrapper、イシュー #529）と人間レビューが共通で用いる基準。
+Codex は本ファイルを自動読込する。Codex code review は既定で P0/P1 のみを
 表示・報告対象とするため、本プロジェクトとして必ず検出したい項目は下記で優先度を明示的に
 格上げして定義する。ここに列挙のない一般的な品質問題は Codex 側の既定の重要度判断に従う。
 
@@ -509,15 +511,16 @@ Codex による PR 自動レビュー（`.github/workflows/codex-review.yml`。C
 - レビュー制御用ファイル（prompt: `.github/codex/prompts/review.md`・schema:
   `.github/codex/review-schema.json`・本節を含む `AGENTS.md`「レビュー基準」節）は
   PR の checkout（merge ref）から直接消費せず、PR の base コミット（信頼済み参照）
-  から取得した内容を使う。prompt/schema はワークフロー側（`.github/workflows/
-  codex-review.yml` の `Extract review control files from base branch` ステップ）が
-  `git show` で $RUNNER_TEMP へ抽出し、`AGENTS.md`「レビュー基準」節は prompt 自体が
-  `git show HEAD^1:AGENTS.md` で明示的にベースブランチ側を読む（Codex CLI の cwd 自動
-  読込に頼ると checkout 側＝PR 自身の改変後の内容を読んでしまうため使わない）。この
-  prompt 側の指示だけでは、CLI 自体が cwd（checkout ルート、`.git` を含むため project
-  root と判定される）配下の AGENTS.md / AGENTS.override.md を起動時に自動でコンテキストへ
-  注入する既定動作は塞げない（イシュー #524 の PR #526 に対する Codex 自身のレビューで
-  P0 指摘）ため、`codex-review.yml` は 2 重に対処する: (a) `Run Codex review` ステップで
+  から取得した内容を使う。prompt/schema は呼び出し先の reusable workflow
+  （`Fandhe-AI/actions/.github/workflows/codex-review.yml` の `Extract review control
+  files from base branch` ステップ）が `git show` で $RUNNER_TEMP へ抽出し、
+  `AGENTS.md`「レビュー基準」節は prompt 自体が `git show HEAD^1:AGENTS.md` で明示的に
+  ベースブランチ側を読む（Codex CLI の cwd 自動読込に頼ると checkout 側＝PR 自身の
+  改変後の内容を読んでしまうため使わない）。この prompt 側の指示だけでは、CLI 自体が
+  cwd（checkout ルート、`.git` を含むため project root と判定される）配下の
+  AGENTS.md / AGENTS.override.md を起動時に自動でコンテキストへ注入する既定動作は
+  塞げない（イシュー #524 の PR #526 に対する Codex 自身のレビューで P0 指摘）ため、
+  reusable workflow 側は 2 重に対処する: (a) `Run Codex review` ステップで
   `--config project_doc_max_bytes=0` を渡しこの自動読込機構自体を無効化する、(b)
   `Extract review control files from base branch` ステップで checkout 側の root
   `AGENTS.md` を base 版へ上書き・`AGENTS.override.md` を削除する（working tree の
