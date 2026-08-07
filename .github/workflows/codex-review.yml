@@ -119,6 +119,7 @@ jobs:
             > "$RUNNER_TEMP/codex-exec.log" 2>&1 || status=$?
           sed -E \
             -e 's/eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}(\.[A-Za-z0-9_-]+)?/[REDACTED_JWT]/g' \
+            -e 's/rt[._][A-Za-z0-9._~-]{20,}/[REDACTED_REFRESH_TOKEN]/g' \
             -e 's/sk-[A-Za-z0-9_-]{20,}/[REDACTED_KEY]/g' \
             -e 's/ghp_[A-Za-z0-9]{20,}/[REDACTED_TOKEN]/g' \
             -e 's/github_pat_[A-Za-z0-9_]{20,}/[REDACTED_TOKEN]/g' \
@@ -131,7 +132,7 @@ jobs:
       # パターン検出時は出力へ載せず fail-closed でジョブを失敗させる
       - name: Scan output for credentials
         run: |
-          if command grep -qE 'eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}' "$RUNNER_TEMP/codex-review.json"; then
+          if grep -qE 'eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}|rt[._][A-Za-z0-9._~-]{20,}|sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}' "$RUNNER_TEMP/codex-review.json"; then
             echo "::error::レビュー出力に資格情報らしきパターンを検出したため公開を中止します"
             exit 1
           fi
