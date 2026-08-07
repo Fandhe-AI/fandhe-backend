@@ -59,7 +59,7 @@
       "source": "Fandhe-AI/agent-reference-skills",
       "sourceType": "github",
       "skillPath": "skills/github-docs/SKILL.md",
-      "computedHash": "0d12d4df2af0ab1d06041992cd54cd6a8e439ced266623cea8b0eef485675fa1"
+      "computedHash": "213c103ca048ebec4705fab4284f7d5be73202ea5f72222a512f87af7df5e6c7"
     },
     "implement-issue": {
       "source": "Fandhe-AI/agent-cli-skills",
@@ -95,19 +95,19 @@
       "source": "Fandhe-AI/agent-reference-skills",
       "sourceType": "github",
       "skillPath": "skills/lefthook/SKILL.md",
-      "computedHash": "18be69f824cd3c83f81ad24879ee848c8b3d983c6ecab5e6f952ad3205328644"
+      "computedHash": "3708106b62999fbdc776fed06d82924f61781f073db390597a176735985c4f31"
     },
     "openai-codex": {
       "source": "Fandhe-AI/agent-reference-skills",
       "sourceType": "github",
       "skillPath": "skills/openai-codex/SKILL.md",
-      "computedHash": "34303eca4744e12daf4ca7764539afb9d11c17fdaa0ed74219707faf355641ed"
+      "computedHash": "93c4bb8b3b14f725aabc15004345b27307cb87db724c4ddcc8c3d0ade7d237aa"
     },
     "openai-platform-ops": {
       "source": "Fandhe-AI/agent-reference-skills",
       "sourceType": "github",
       "skillPath": "skills/openai-platform-ops/SKILL.md",
-      "computedHash": "cac948f32217d320cc56699a7856979b2903debf34c104ed98baeacb5f9f925e"
+      "computedHash": "2542831e9ecfd32af9571700de56c7fb535e0ec1c5923452bf865e337264830f"
     },
     "project-add-items": {
       "source": "Fandhe-AI/agent-cli-skills",
@@ -155,7 +155,7 @@
       "source": "Fandhe-AI/agent-reference-skills",
       "sourceType": "github",
       "skillPath": "skills/rust/SKILL.md",
-      "computedHash": "0e9b4500b7a9a852e9c2edbbf1e0607c30e4a0d6265091a4567325420d215d7f"
+      "computedHash": "6457a11f83e2699e2767c5ec0a7d8c8defe74bdaf7d81a0a00b4f719212deba4"
     },
     "sync-skills-lock": {
       "source": "Fandhe-AI/agent-cli-skills",
