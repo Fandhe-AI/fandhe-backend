@@ -37,9 +37,11 @@ name: bench-schedule
 # `${WORKSPACE_ROOT}/target/release/...` には最初から存在しない。
 #
 # 本 workflow は `env: CARGO_TARGET_DIR: ${{ github.workspace }}/target` を
-# ジョブ全体へ設定し、ホスト共有 `/cargo-target` から意図的に隔離する
-# （fandhe-frontend #1192 で実証済みの「共有 target 上の成果物汚染」リスクの
-# 回避も兼ねる）。`benches/lib/common.sh` の `BENCH_TARGET_DIR` 導出は
+# ジョブ全体へ設定する（導入当時はホスト共有 `/cargo-target` からの隔離が目的。
+# fandhe-frontend #1192 で実証済みの「共有 target 上の成果物汚染」リスクの
+# 回避も兼ねた。ホステッド移行〔#554〕後の使い捨て VM では既定と等価だが、
+# 維持判断の根拠はジョブ定義側のコメント参照）。`benches/lib/common.sh` の
+# `BENCH_TARGET_DIR` 導出は
 # `CARGO_TARGET_DIR` env を最優先で採用するため、本設定によりベンチ側の
 # バイナリパス既定値もこのジョブローカル target と自動的に一致する。
 #
