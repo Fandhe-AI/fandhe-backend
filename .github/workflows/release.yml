@@ -35,9 +35,24 @@ concurrency:
 jobs:
   verify:
     name: verify（fmt / clippy / test / dep-audit）
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #554）。release 系は
+    # fandhe-frontend の先例（同リポジトリ docs/ci/hosted-runner-migration.md、
+    # イシュー #1192/#1226）に倣い actions/cache（特に target のキャッシュ）を
+    # 導入しない: `cargo publish` 系の検証ビルドは packaged コピー（registry 依存解決）
+    # をビルドするため、キャッシュ経由で通常ワークスペースビルドと成果物が混ざると
+    # rlib 汚染型の flaky の温床になる。CARGO_TARGET_DIR も RUNNER_TEMP 配下の専用
+    # ディレクトリへ隔離する（使い捨て VM では既定と実質等価だが、方針の明示として
+    # 先例を踏襲する）。
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      # 専用 CARGO_TARGET_DIR の設定（release 系共通方針、verify ジョブ冒頭コメント参照）。
+      # job レベル env では runner コンテキストが使えない（actionlint 検知）ため、
+      # ランタイムの RUNNER_TEMP から GITHUB_ENV 経由で後続ステップへ伝播する。
+      - name: "setup: RUNNER_TEMP 配下の専用 CARGO_TARGET_DIR"
+        run: echo "CARGO_TARGET_DIR=${RUNNER_TEMP}/release-target" >> "${GITHUB_ENV}"
+
       - name: Checkout
         # docs/spec サブモジュールは取得しない（submodules 既定 false）。
         # fandhe-backend-spec は private リポジトリで GITHUB_TOKEN からアクセス
@@ -46,11 +61,12 @@ jobs:
         # 失敗する（ci.yml の各ジョブと同じ方針）。
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#554）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （ci.yml の各ジョブと同一方針・同一 SHA、イシュー #551 で確立）。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
 
       - name: cargo fmt --check
         run: cargo fmt --all --check
@@ -84,17 +100,26 @@ jobs:
   dry-run:
     name: cargo publish --workspace --dry-run
     needs: verify
-    runs-on: self-hosted
+    # ホステッド移行（#554）。キャッシュ不使用・専用 CARGO_TARGET_DIR は verify ジョブの
+    # コメント参照（release 系共通方針）。
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # 専用 CARGO_TARGET_DIR の設定（release 系共通方針、verify ジョブ冒頭コメント参照）。
+      # job レベル env では runner コンテキストが使えない（actionlint 検知）ため、
+      # ランタイムの RUNNER_TEMP から GITHUB_ENV 経由で後続ステップへ伝播する。
+      - name: "setup: RUNNER_TEMP 配下の専用 CARGO_TARGET_DIR"
+        run: echo "CARGO_TARGET_DIR=${RUNNER_TEMP}/release-target" >> "${GITHUB_ENV}"
+
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#554）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （ci.yml の各ジョブと同一方針・同一 SHA、イシュー #551 で確立）。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
 
       # 公開対象 13 クレートを依存順自動解決でパッケージング検証する（トークン不要）
       - name: cargo publish --workspace --dry-run
@@ -103,7 +128,11 @@ jobs:
   publish:
     name: cargo publish --workspace（要 環境承認）
     needs: dry-run
-    runs-on: self-hosted
+    # ホステッド移行（#554）。ランナーのみ変更し、environment: crates-io-release の
+    # 人間承認ゲート・CARGO_REGISTRY_TOKEN の env 経由注入（ステップ限定）という
+    # セキュリティ境界は変更しない。キャッシュ不使用・専用 CARGO_TARGET_DIR は
+    # verify ジョブのコメント参照（release 系共通方針）。
+    runs-on: ubuntu-latest
     # publish は 13 クレートのアップロード + crates.io インデックス反映待ちを含み、
     # ジョブタイムアウトによる途中打ち切りは「一部だけ公開済み」の部分公開状態を
     # 生む（concurrency の cancel-in-progress: false と同じ理由で避けたい失敗様態）。
@@ -112,14 +141,21 @@ jobs:
     # required reviewers による人間承認ゲート。承認されるまで publish は実行されない
     environment: crates-io-release
     steps:
+      # 専用 CARGO_TARGET_DIR の設定（release 系共通方針、verify ジョブ冒頭コメント参照）。
+      # job レベル env では runner コンテキストが使えない（actionlint 検知）ため、
+      # ランタイムの RUNNER_TEMP から GITHUB_ENV 経由で後続ステップへ伝播する。
+      - name: "setup: RUNNER_TEMP 配下の専用 CARGO_TARGET_DIR"
+        run: echo "CARGO_TARGET_DIR=${RUNNER_TEMP}/release-target" >> "${GITHUB_ENV}"
+
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#554）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （ci.yml の各ジョブと同一方針・同一 SHA、イシュー #551 で確立）。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
 
       # トークンは env 経由でのみ渡し、コマンドライン引数・ログへ展開しない
       # （.claude/rules/security.md）。CARGO_REGISTRY_TOKEN は cargo が標準で

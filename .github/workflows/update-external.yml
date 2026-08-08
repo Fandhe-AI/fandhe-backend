@@ -29,9 +29,11 @@ jobs:
   submodule:
     name: Update submodule references
     if: ${{ github.event_name != 'workflow_dispatch' || contains(fromJSON('["all", "submodule"]'), inputs.target) }}
-    runs-on: self-hosted
-    # self-hosted runner はハングしたジョブに無期限占有されうるため、多層防御として
-    # timeout を必ず設定する（NFR-10・.claude/rules/ci.md・#182）。
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #554）。
+    runs-on: ubuntu-latest
+    # ハングしたジョブの無期限実行を防ぐため、多層防御として timeout を必ず設定する
+    # （NFR-10・.claude/rules/ci.md・#182。runner 種別に依らず維持する運用ルール）。
     timeout-minutes: 15
     permissions:
       contents: write
@@ -71,9 +73,11 @@ jobs:
   skills:
     name: Update agent skills
     if: ${{ github.event_name != 'workflow_dispatch' || contains(fromJSON('["all", "skill"]'), inputs.target) }}
-    runs-on: self-hosted
-    # self-hosted runner はハングしたジョブに無期限占有されうるため、多層防御として
-    # timeout を必ず設定する（NFR-10・.claude/rules/ci.md・#182）。
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #554）。
+    runs-on: ubuntu-latest
+    # ハングしたジョブの無期限実行を防ぐため、多層防御として timeout を必ず設定する
+    # （NFR-10・.claude/rules/ci.md・#182。runner 種別に依らず維持する運用ルール）。
     timeout-minutes: 15
     permissions:
       contents: write

@@ -27,7 +27,7 @@ name: bench-schedule
 # CARGO_TARGET_DIR のジョブローカル固定（イシュー #480）: 2026-08-02 実行
 # （run 30729910081）で `cargo build --release` 成功直後に
 # `target/release/axum-ref` が見つからず BLOCKED になる事象が発生した。
-# 調査の結果、self-hosted runner フリートは同一 org（Fandhe-AI）の他リポジトリ
+# 調査の結果、（当時の）self-hosted runner フリートは同一 org（Fandhe-AI）の他リポジトリ
 # （fandhe-frontend）の CI が明示的に前提とするとおり、ホスト共有の
 # `CARGO_TARGET_DIR=/cargo-target` をジョブに注入する構成であることが濃厚
 # （一次証拠・タイムライン・確度は
@@ -67,7 +67,14 @@ concurrency:
 jobs:
   bench-accept:
     name: REQ-1/NFR-1 性能ベンチ（専有計測・週次）
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #554）。判定は axum-ref 比の
+    # 相対値で同一 VM 内比較のためハード差の一次影響は相殺される。専有ロック・静穏待機
+    # 機構は使い捨て VM では実質 no-op だが無害のため維持する（方針決定の全文は
+    # イシュー #554 コメント参照）。共有テナンシー起因で閾値判定が再現しない場合は
+    # 既設のフェイルクローズ運用（FAIL_RETRIES=1 + bench-regression 自動起票）が
+    # 実測データとして可視化するため、その時点で再ベースライン化を判断する。
+    runs-on: ubuntu-latest
     # Issue 起票のみジョブ単位で issues: write を付与する（workflow 全体は
     # contents: read を維持、最小権限。ci.yml dep-audit ジョブと同一パターン）。
     permissions:
@@ -89,8 +96,9 @@ jobs:
     # （.claude/rules/ci.md「全ジョブに timeout-minutes を設定する」多層防御）。
     timeout-minutes: 240
     # ジョブローカル target ディレクトリ（イシュー #480、上部コメント参照）。
-    # ホスト共有 `/cargo-target` から隔離し、`cargo build` の成果物が
-    # `benches/lib/common.sh` の既定バイナリパスと確実に一致するようにする。
+    # ホステッドの使い捨て VM では既定と等価だが、`benches/lib/common.sh` の
+    # `BENCH_TARGET_DIR` 導出（CARGO_TARGET_DIR 最優先）の明示性と下記診断ステップの
+    # 意味を保つため維持する（削除しない判断の記録はイシュー #554 コメント参照）。
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
@@ -111,11 +119,12 @@ jobs:
           rustc -vV || true
           cargo --version || true
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#554）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （ci.yml の各ジョブと同一方針・同一 SHA、イシュー #551 で確立）。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
 
       # oha（HTTP 負荷生成、benches/README.md 前提ツール）を冪等・バージョン固定で
       # インストールする。共通部品 cargo-tool-install が「導入済み同一バージョンなら

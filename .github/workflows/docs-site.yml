@@ -46,7 +46,10 @@ concurrency:
 jobs:
   build:
     name: "build: docs site (SSG + linkcheck)"
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #554）。toolchain 導入は既に
+    # dtolnay/rust-toolchain（ホステッド想定の実装）のため変更不要。
+    runs-on: ubuntu-latest
     timeout-minutes: 30 # 共有キャッシュ未命中時のコールドビルドを考慮（ci.md: timeout 必須）
     steps:
       - name: Checkout
@@ -57,7 +60,8 @@ jobs:
 
       - name: Setup Rust toolchain
         # dtolnay/rust-toolchain（移植元 workflow と同一 SHA 固定）。
-        # cargo 未導入の self-hosted インスタンスへの安全網。
+        # バージョン決定性のための明示セットアップ（旧 self-hosted 時代は cargo
+        # 未導入インスタンスへの安全網。ホステッドでも維持する）。
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: stable
@@ -70,9 +74,9 @@ jobs:
         # lock なしで解決する。
         run: cargo run -p fandhe-backend-docs-site -- --out "${RUNNER_TEMP}/docs-site-dist"
 
-      # 出力先を RUNNER_TEMP 配下にする理由: self-hosted の作業ディレクトリは
-      # ジョブ間で永続するため、リポジトリ直下への出力による stale 生成物の
-      # 混入を避ける。
+      # 出力先を RUNNER_TEMP 配下にする理由（旧 self-hosted 時代は作業ディレクトリの
+      # ジョブ間永続による stale 生成物混入の回避。ホステッドの使い捨て VM でも
+      # リポジトリ直下を汚さない配置原則として維持する）。
       - name: "verify: dist sanity check"
         # 空サイト・アセット欠落を黙って公開しないための決定的チェック（fail-closed）。
         # -s で非空も検証し、書き出しに失敗した 0 バイトファイルの見逃しを防ぐ。
@@ -116,3 +120,8 @@ jobs:
       # upload-artifact は path 直下の内容を artifact ルートへ置くため、
       # dist ディレクトリ自体を path に指定した本 workflow では "." を指定する
       dist-dir: "."
+      # pages-deploy の runner-label 既定値は self-hosted（docs/runner-policy.md §4）。
+      # public リポジトリでは既定値への暗黙依存を避け、組織 runner 方針どおり
+      # ubuntu-latest を明示する（イシュー #554。grep で self-hosted が見えない
+      # 隠れた依存の解消）。
+      runner-label: ubuntu-latest
