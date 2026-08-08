@@ -594,18 +594,38 @@ jobs:
   # --------------------------------------------------
   openapi-two-stage:
     name: openapi 2 段階ビルド（gen-openapi --check → cargo build）
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #553。置換方針は #551 で確立）。
+    # openapi-spec-validator の pip 導入（--user --break-system-packages・
+    # `python3 -m` 実行形式）はランナー非依存のため不変（ubuntu-latest の PEP 668
+    # 環境でも --break-system-packages で動作する）。
+    runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#553）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （#551 の fmt/clippy ジョブと同一方針・同一 SHA）。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        id: toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      # ビルドキャッシュ（#551 と同一設計、job family prefix は openapi-two-stage-）。
+      - name: Cache cargo registry and target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: openapi-two-stage-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            openapi-two-stage-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: "openapi-two-stage.sh（stage 1: gen-openapi --check、stage 2: cargo build --all-features）"
         run: bash scripts/openapi-two-stage.sh
@@ -654,18 +674,44 @@ jobs:
   # --------------------------------------------------
   openapi-ts:
     name: openapi-typescript 連携パイプライン（schema.d.ts 鮮度検証 → tsc --noEmit）
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #553。置換方針は #551 で確立）。
+    runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#553）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （#551 の fmt/clippy ジョブと同一方針・同一 SHA）。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        id: toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      # openapi-ts.sh は node >= 24（ts/package.json の engines / volta フィールド）を
+      # 前提とする。self-hosted では volta 常設だったが、ホステッドのプリインストール
+      # node はメジャーバージョンが保証されないため、actions/setup-node（SHA 固定、
+      # update-external.yml と同一 SHA）で明示的に 24 系へ固定する。
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: "24"
+
+      # ビルドキャッシュ（#551 と同一設計、job family prefix は openapi-ts-）。
+      - name: Cache cargo registry and target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: openapi-ts-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            openapi-ts-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: "openapi-ts.sh（stage 1: gen-openapi --check、stage 2: schema.d.ts 鮮度検証、stage 3: tsc --noEmit）"
         run: bash scripts/openapi-ts.sh
@@ -737,18 +783,46 @@ jobs:
   # --------------------------------------------------
   fuzz-smoke:
     name: fuzz smoke（cargo-fuzz、nightly pinned）
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #553。置換方針は #551 で確立）。
+    # pinned nightly + ASan 計装ビルドはコールドキャッシュだと重いため、キャッシュ
+    # miss 時の実測は本移行 PR の CI 実行が兼ねる（30 分に収まらない場合は
+    # timeout-minutes 延長を優先検討し、それでも成立しなければ分割 issue 化する。
+    # イシュー #553 実施内容 3）。
+    runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#553）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （#551 の fmt/clippy ジョブと同一方針・同一 SHA）。pinned nightly の導入は
+      # 次ステップ（scripts/fuzz.sh の PINNED_NIGHTLY を単一真実源とする既存手順）が
+      # 担うため、ここでは stable のみ同期する。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        id: toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      # ビルドキャッシュ（#551 と同一設計、job family prefix は fuzz-smoke-）。
+      # cargo-fuzz は crates/http/fuzz（standalone workspace）内でビルドするため、
+      # ルート target ではなく crates/http/fuzz/target をキャッシュ対象にする。
+      - name: Cache cargo registry and fuzz target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            crates/http/fuzz/target
+          # scripts/fuzz.sh を key に含めるのは PINNED_NIGHTLY バンプ時に旧 nightly の
+          # ビルドキャッシュを引きずらないため（stable の cachekey は nightly の
+          # バージョンを反映しない）。
+          key: fuzz-smoke-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', 'scripts/fuzz.sh') }}
+          restore-keys: |
+            fuzz-smoke-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
 
       # nightly バージョンは scripts/fuzz.sh の PINNED_NIGHTLY 定数を単一真実源とする。
       # リポジトリ既定（rust-toolchain.toml）は stable のまま変更しない
@@ -761,7 +835,7 @@ jobs:
             rustup toolchain install "${pinned}" --profile minimal
           fi
 
-      # self-hosted ランナー前提でバージョン固定インストールする（dep-audit / test ジョブと
+      # バージョン固定インストール（dep-audit / test ジョブと
       # 同じ方針。共通部品 cargo-tool-install が冪等判定・導入後の厳密一致検証を担う
       # （サプライチェーン考慮: crates.io からバージョン固定（--locked）で取得し、
       # 参照はコミット SHA 固定）。
@@ -783,19 +857,41 @@ jobs:
   # --------------------------------------------------
   webrtc-e2e:
     name: WebRTC rebind e2e（standalone crate、#507）
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #553。置換方針は #551 で確立）。
+    # scripts/webrtc-e2e.sh は loopback の実 ICE/DTLS シグナリングのみで外部 STUN 等の
+    # ネットワーク前提を持たないため、ホステッドの NAT 環境でも動作に影響しない。
+    runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     # webrtc 依存ツリー（約 +189 クレート、PoC-5）の cold build を考慮した上限。
+    # キャッシュ miss 時の実測は本移行 PR の CI 実行が兼ねる（イシュー #553 実施内容 3）。
     timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#553）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （#551 の fmt/clippy ジョブと同一方針・同一 SHA）。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        id: toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      # ビルドキャッシュ（#551 と同一設計、job family prefix は webrtc-e2e-）。
+      # tests-e2e は standalone workspace（--manifest-path 実行）のため、ビルド成果物は
+      # crates/plugin-webrtc/tests-e2e/target に出る。ルート target はビルドしない。
+      - name: Cache cargo registry and e2e target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            crates/plugin-webrtc/tests-e2e/target
+          key: webrtc-e2e-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            webrtc-e2e-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: scripts/webrtc-e2e.sh
         run: bash scripts/webrtc-e2e.sh
@@ -811,7 +907,11 @@ jobs:
   # --------------------------------------------------
   coverage:
     name: cargo llvm-cov（コア行カバレッジ 80% ゲート）
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #553。置換方針は #551 で確立）。
+    # instrumented ビルドは通常より低速のため、キャッシュ miss 時の実測は本移行 PR の
+    # CI 実行が兼ねる（イシュー #553 実施内容 3）。
+    runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     # TASK-11.4（#36）の多層防御方針を踏襲。instrumented coverage ビルドは通常ビルドより
     # 遅いため test ジョブと同程度の上限を確保する。
@@ -820,15 +920,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#553）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （#551 の fmt/clippy ジョブと同一方針・同一 SHA）。coverage.sh が要求する
+      # llvm-tools-preview は components input で明示導入する（旧 rust-toolchain-setup
+      # と同じ input 名）。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        id: toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
+          toolchain: stable
           components: llvm-tools-preview
 
-      # self-hosted ランナー前提でバージョン固定インストールする（dep-audit / test ジョブと
+      # ビルドキャッシュ（#551 と同一設計、job family prefix は coverage-）。
+      # 計測前に `cargo llvm-cov clean --workspace` が coverage 成果物を除去するため、
+      # 復元された stale なプロファイルデータが判定へ混入することはない。
+      - name: Cache cargo registry and target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: coverage-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            coverage-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+
+      # バージョン固定インストール（dep-audit / test ジョブと
       # 同じ方針。共通部品 cargo-tool-install が冪等判定・導入後の厳密一致検証を担う
       # （サプライチェーン考慮: crates.io からバージョン固定（--locked）で取得し、
       # 参照はコミット SHA 固定）。
