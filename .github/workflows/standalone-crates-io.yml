@@ -8,8 +8,9 @@ name: standalone-crates-io
 # 設計判断）:
 #   ci.yml の pull_request トリガーには paths フィルタがなく、ジョブを追加すると
 #   templates/examples に無関係な全 PR で crates.io からのダウンロード + 全
-#   standalone クレートのフルビルドが毎回走り、self-hosted runner の負荷抑制方針
-#   （.claude/rules/ci.md）と衝突する。paths フィルタ付き pull_request + 週次
+#   standalone クレートのフルビルドが毎回走り、無関係 PR の CI 時間を恒常的に
+#   延ばす（旧 self-hosted 時代は runner 負荷抑制方針との衝突。ホステッドでも
+#   無駄なジョブ実行を避ける原則として維持、.claude/rules/ci.md）。paths フィルタ付き pull_request + 週次
 #   schedule の独立 workflow に分離することで、関係する変更時と定期検証のみに
 #   実行を絞る。ci.yml の日次 schedule（dep-audit のみ走らせる方針）にも負荷を
 #   追加しない。
@@ -48,11 +49,13 @@ concurrency:
 jobs:
   standalone-crates-io:
     name: standalone クレートの crates.io 依存のみビルド検証
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #554）。
+    runs-on: ubuntu-latest
     # standalone クレートごとの crates.io 依存ダウンロード + フルビルド + テストを
-    # 直列実行する（共有 target/ を使わないコールドビルド）。ハングしたジョブが
-    # self-hosted runner を無期限に占有しないための上限
-    # （.claude/rules/ci.md「全ジョブに timeout-minutes を設定する」多層防御）。
+    # 直列実行する（共有 target/ を使わないコールドビルド）。ハングしたジョブの
+    # 無期限実行を防ぐ上限（.claude/rules/ci.md「全ジョブに timeout-minutes を
+    # 設定する」多層防御。runner 種別に依らず維持する運用ルール）。
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -60,11 +63,12 @@ jobs:
         # .claude/rules/security.md）。
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#554）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （ci.yml の各ジョブと同一方針・同一 SHA、イシュー #551 で確立）。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
 
       - name: standalone-crates-io-check.sh（path 除去 → crates.io 依存のみで build/test）
         run: bash scripts/standalone-crates-io-check.sh
