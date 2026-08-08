@@ -73,7 +73,7 @@ public 化されており、public リポジトリでは標準ホステッドラ
 
 | 検証 | コマンド |
 |------|---------|
-| runs-on の確認 | `grep -rhE "^[[:space:]]*runs-on:" .github/workflows/ \| awk '{print $2}' \| sort -u \| grep -vxF ubuntu-latest`（移行完了後は出力が空であること。`runs-on` 直書きは `ubuntu-latest` のみで構成されていることを意味する。codex 例外は reusable workflow の `runner-label` input 経由のため本コマンドには現れない。`runs-on:` のスカラー表記のみ対応し、配列 `[a, b]` 表記は誤検知しうる。移行期間中（#551〜#554 消化中）は残置ジョブの `self-hosted` が出力されるが、新規追加でなければ違反ではない） |
+| runs-on の確認 | `grep -rhE "^[[:space:]]*runs-on:" .github/workflows/ \| awk '{print $2}' \| sort -u \| grep -vxF ubuntu-latest`（移行完了後は出力が空であること。`runs-on` 直書きは `ubuntu-latest` のみで構成されていることを意味する。codex 例外は reusable workflow の `runner-label` input 経由のため本コマンドには現れない。`runs-on:` のスカラー表記のみ対応し、配列 `[a, b]` 表記は誤検知しうる。#551〜#555 で全ワークフローの移行が完了済みのため、`self-hosted` の出力は常に違反である） |
 | ラベル未登録・typo の機械検知 | `bash scripts/actionlint.sh`（`.github/actionlint.yaml` 未登録の `runs-on` ラベルを runner-label エラーとして検知。actionlint 未導入環境では前提ツールエラーで exit 2 になる） |
 | timeout の確認 | 各ジョブに `timeout-minutes` があることを目視確認 |
 
