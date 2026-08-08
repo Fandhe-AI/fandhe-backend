@@ -503,9 +503,73 @@ Codex は本ファイルを自動読込する。Codex code review は既定で P
 - 入力検証の欠落・後退（HTTP パーサ・ルーティング・プラグイン入口での境界・サイズ上限・
   エンコーディング検証。既存の DoS 上限やタイムアウトを撤廃・緩和する差分を含む）
 - シークレット（API キー・トークン・パスワード）・PII のコード・ログ・CI 設定への混入
+  （`.env` 系ファイル・テストフィクスチャの実クレデンシャル・hooks / `settings.json` への
+  展開を含む）
 - インジェクション経路（ヘッダ・ログ・GraphQL・シェル実行）
 - パストラバーサル・シンボリックリンク脱出等、OWASP Top 10 に直結する欠陥
 - fail-closed で設計された既存分岐の fail-open 化
+- 認証・認可・テナント境界の迂回（`plugin-hub-wiring` の JWT（RS256 / JWKS）検証・
+  `org_id` テナント境界強制・越境アクセス監査ログを弱める、または迂回経路を追加する差分）
+- 依存監査（サプライチェーン）の後退: `cargo audit` / `cargo deny check` 違反の
+  抑止設定（`deny.toml` の ignore 追加等）を根拠の記録なしに入れる差分、および
+  新規依存クレートの追加で依存インパクト記録（`docs/dep-impact/records.md`・
+  `scripts/dep-impact.sh`）の追随を欠く差分（後者は **P1**）
+- `unsafe` の新規追加・拡大は「禁止事項」節の定義（`// SAFETY:` 欠落は P0）に加え、
+  workspace lints の 2 層防御（`docs/design/unsafe-deny-lints.md`）を緩める差分
+  （`forbid` → `deny` への引き下げ・lint 除外の追加）も **P0**
+
+### アーキテクチャ整合観点（明示的に P1 へ格上げ）
+
+設計文書（`docs/design/*.md`）・本書「AI エージェント向け変更ガイド」節が定める
+アーキテクチャとの整合をレビューで確認する。実装が「動くか」だけでなく
+「このリポジトリの設計原則の上に正しく載っているか」を判定する:
+
+- **依存方向一方向性の違反**（`server → routes → http::*`。コアからプラグイン固有
+  シンボルへの依存追加、既知の例外 #136 の拡大を含む。機械検証は
+  `scripts/dep-direction-check.sh`）: **P1**
+- **拡張点契約の逸脱**: 3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）・
+  `Interceptor` の同期契約を `docs/design/async-handler.md` の再評価条件（8 節）を
+  経ずに async 化する差分、`Middleware::on_response` の観測専用契約への違反: **P1**
+- **安易な新シーム・新拡張点の追加**: 既存の 3 拡張点・`Interceptor`・
+  `finalize_response` 系シームで表現できないことの確認（「変更手順」節・
+  `docs/design/plugin-boundary.md`）なしに新パターンを導入する差分: **P1**
+- **設計文書の判断との矛盾**: 不採用と記録された設計（例:
+  `docs/design/finalize-seam-public-api.md`）の再導入・設計文書が定める再検討条件を
+  経ない方針変更を、当該文書の更新なしに実装する差分: **P1**
+- **プラグイン境界パターンの誤適用**: `docs/design/plugin-boundary.md` の既存パターン
+  （Upgrade 型・Middleware 型・パスインターセプト型・レスポンス後処理型・依存逆転型）の
+  いずれに載るかの判定を誤り、責務境界をまたぐ実装: **P1**
+- **ドキュメント追随漏れ**: 変更種別 → 追随ドキュメントのマッピング
+  （`docs/design/feature-modification-flow.md` 8 節）に該当する追随の欠落: **P2**
+  （公開 API の破壊的変更で `CHANGELOG.md` 移行手順・doc の追随を欠く場合は **P1**）
+- **アサーション網羅性規約への違反**（本書「アサーション網羅性」節。HTTP レスポンス
+  検証テストでステータス行・ヘッダ・ボディのいずれかを欠く）: **P2**
+
+### 再利用・アセット化観点（原則 P2、格上げ条件付き）
+
+本リポジトリの実装は crates.io 公開クレート・テンプレート・examples として他プロジェクト
+から再利用される資産である。将来の再利用・転用に耐える形になっているかを確認する:
+
+- **汎用ロジックとリポジトリ固有事情の分離**: プラグイン・シームへ切り出せる汎用実装を
+  コアや特定プラグインへ直書きしていないか（pay-for-what-you-use の「コアにとりあえず
+  機能を足す」アンチパターンと同根）。逆に、このリポジトリ固有の運用事情（CI 環境・
+  組織名等）を公開クレートのコードへ埋め込んでいないか: **P2**
+  （公開 13 クレートの公開 API・既定動作に固有事情が漏れる場合は **P1**）
+- **ハードコード回避**: パス・URL・ポート・サイズ上限・タイムアウト等の運用値は
+  builder / 設定型（`*Config`）・名前付き定数へ寄せ、マジックナンバーの散在を避ける。
+  既定値には根拠（doc comment または設計文書参照）を付ける: **P2**
+- **他リポジトリへの転用容易性**: `templates/` / `examples/` は standalone workspace
+  構成（root workspace 非メンバー・`publish = false`）を維持し、リポジトリ内部の相対
+  パス前提・非公開 API 前提を持ち込まない（crates.io 公開版のみで成立することの機械
+  検証は `scripts/standalone-crates-io-check.sh`）: **P2**（standalone 検証を恒久に
+  壊す差分は **P1**）
+- **公開 API 面の汚染防止**: 内部専用型・実験的シームを公開 API へ漏らさない
+  （`finalize_response` 系シームの非公開維持は
+  `docs/design/finalize-seam-public-api.md` の採否判断を正とする）: **P1**
+- **再利用の前提となるドキュメント整備**: 公開 API の doc comment / doc test
+  （「禁止事項」節の既存基準に従う）に加え、切り出し・転用時に必要となる設計判断
+  （なぜこの境界か・fail-closed 条件・性能上の根拠）が `docs/design/` または
+  doc comment に記録されているか: **P2**
 
 ### 運用
 
