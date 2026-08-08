@@ -21,6 +21,25 @@
 #   （同時に 1 計測のみ）と静穏確認を専有性の担保手段とする
 #   （見送りの理由・別イシュー化の要否は README・設計ドキュメントに記録）。
 #
+# ホステッドランナー移行後の位置づけ（イシュー #565 の棚卸し結果）:
+#   CI（bench-schedule.yml）は #554 で ubuntu ホステッド（ジョブごとにクリーンな
+#   使い捨て VM・単一ジョブ占有）へ移行したため、「共有 self-hosted ホスト上の
+#   他ジョブとの干渉防止」という当初の主目的は CI 経路では実質消滅した。
+#   それでも各機構は以下の理由で削除・no-op 化せず全て維持する:
+#   - 専有ロック（flock）: ローカル開発機での手動計測・並列 worktree の同時計測を
+#     直列化する現役の手段（本ライブラリは CI 専用ではない）。CI では常に即時取得
+#     でき無害
+#   - 静穏確認（loadavg + cargo/rustc/oha 検知）: ローカルでは干渉防止の主手段。
+#     ホステッドでも VM 初期化直後のバックグラウンド負荷・共有テナンシー由来の
+#     高負荷を BLOCKED としてフェイルクローズに検出する安全網（PASS へ丸めない
+#     設計思想は runner 種別に依存しない）
+#   - 環境スナップショット・BLOCKED 終了コード契約・symlink 拒否: 再現性記録・
+#     fail-closed・セキュリティの各性質は runner 非依存
+#   - 単発 FAIL 限定再試行（nfr6_run_with_fail_retry）: ホステッドは共有テナンシー
+#     （noisy neighbor）でノイズがむしろ増えうるため重要度が上がる
+#   実測根拠: 移行後の bench-schedule dispatch（run 31236262022）で PASS を確認済み
+#   （イシュー #554 コメント）。
+#
 # 呼び出し元: `benches/nfr6-exclusive.sh` が
 # `source "$(dirname "${BASH_SOURCE[0]}")/lib/exclusive.sh"` で読み込む。
 # セルフテスト: `scripts/tests/run-nfr6-exclusive-tests.sh` が本ファイルのみを
@@ -78,7 +97,8 @@ _nfr6_validate_numeric() {
 #
 # `FANDHE_BACKEND_PROC_LOADAVG` は `/proc/loadavg` の参照先を差し替えるための
 # テスト専用フック（既定は `/proc/loadavg` のままで本番挙動は変わらない）。
-# 本番環境（Linux self-hosted runner）では常に `/proc/loadavg` が読めるため
+# 本番環境（Linux runner。旧 self-hosted・現 ubuntu ホステッドとも）では常に
+# `/proc/loadavg` が読めるため
 # `uptime` 分岐へ実際には到達せず、`scripts/tests/run-nfr6-exclusive-tests.sh`
 # は本フックで存在しないパスを指定して意図的に `uptime` 分岐を通し、上記の
 # 表記差分解析ロジック本体を直接検証する（#274 レビュー指摘: 既存テストは
