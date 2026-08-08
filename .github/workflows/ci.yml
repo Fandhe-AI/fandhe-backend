@@ -62,11 +62,14 @@ jobs:
   # --------------------------------------------------
   fmt:
     name: cargo fmt --check
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #551）。
+    runs-on: ubuntu-latest
     # schedule（日次）実行時は依存監査（dep-audit）のみを走らせる
     if: github.event_name != 'schedule'
-    # TASK-11.4（#36）: ハングしたジョブが self-hosted runner を無期限に占有しないための
-    # 上限（多層防御の一段目）。fmt --check は通常数秒〜数十秒で完了する。
+    # TASK-11.4（#36）: ハングしたジョブの無期限実行を防ぐ上限（多層防御の一段目。
+    # ホステッドランナーでも分数浪費・キュー占有を防ぐ意味で維持する）。
+    # fmt --check は通常数秒〜数十秒で完了する。
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -74,11 +77,17 @@ jobs:
         # submodule（docs/spec）は fmt/clippy/test に不要なため取得しない。
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#551）: self-hosted 永続環境前提の
+      # Fandhe-AI/actions/rust-toolchain-setup（rustup 自己修復）に代えて
+      # dtolnay/rust-toolchain（SHA 固定、docs-site.yml build ジョブの先行事例と同一 SHA）を
+      # 使う。バージョン解決は rust-toolchain.toml（channel = "stable"）と一致させ、
+      # 必要 component は action 側 input で明示する（minimal profile 導入時にも
+      # rustfmt が確実に揃うようにする保険）。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          components: rustfmt
 
       - name: cargo fmt --check
         run: cargo fmt --all --check
@@ -88,7 +97,9 @@ jobs:
   # --------------------------------------------------
   clippy:
     name: cargo clippy
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #551）。
+    runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     # TASK-11.4（#36）: 多層防御の一段目。clippy はビルドを伴うため fmt より長めに確保する。
     timeout-minutes: 30
@@ -96,11 +107,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#551）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （fmt ジョブと同一方針・同一 SHA）。`id: toolchain` は後続 actions/cache の
+      # キー（outputs.cachekey = toolchain のリリースを表す文字列）に使う。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        id: toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          components: clippy
+
+      # ホステッドランナーは使い捨て VM のためビルドキャッシュが残らない。
+      # actions/cache（GitHub 公式、SHA 固定 v6.1.0）で cargo registry と target を
+      # ジョブ系統（job family）別キーで保存・復元する（キー設計は fandhe-frontend
+      # docs/ci/hosted-runner-migration.md §3.3 の先例を踏襲。本リポジトリは
+      # Cargo.lock をコミットしない方針のため hashFiles は Cargo.toml を入力にする）。
+      # キャッシュはビルド時間短縮の最適化であり、miss はフルビルドへ自然に
+      # フォールバックする（registry 系は fail-open。target/ の復元は理論上
+      # fingerprint fresh 判定へ影響しうるが、fork PR のキャッシュスコープ分離
+      # （default branch scope へ書き込めない GitHub の仕様）により汚染リスクは
+      # 低いと判断して採用する）。job family prefix（clippy-/doc- 等）でキーを
+      # 分離し、将来 release 系ワークフローがキャッシュを導入する場合も
+      # 検証ビルド生成物と prefix を混在させない設計とする。
+      - name: Cache cargo registry and target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: clippy-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            clippy-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
 
       # --all-features を指定しておくことで、TASK-2.1 以降で feature（plugin-*）が
       # 増えた際にも既定で全 feature を lint 対象にできる。feature 構成別の
@@ -173,7 +212,9 @@ jobs:
   # --------------------------------------------------
   doc:
     name: cargo doc
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #551）。
+    runs-on: ubuntu-latest
     # TASK-11.5-2（#78）: TASK-11.4（#36）で他ジョブに設定した多層防御の
     # `timeout-minutes` が本ジョブに漏れていたため追補する（受け入れチェック
     # `scripts/accept-task-11-5.sh` のチェック 4「CI テストタイムアウト設定」で検知）。
@@ -183,11 +224,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#551）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （fmt ジョブと同一方針・同一 SHA）。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        id: toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      # ビルドキャッシュ（clippy ジョブと同一設計、job family prefix のみ doc- に変更）。
+      - name: Cache cargo registry and target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: doc-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            doc-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: cargo doc --workspace --all-features --no-deps
         env:
@@ -308,7 +364,10 @@ jobs:
   # --------------------------------------------------
   unsafe-triage:
     name: unsafe 追加の検知トリアージ
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #551）。grep/bash 中心 +
+    # cargo metadata のみでビルドを伴わないため actions/cache は付けない。
+    runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     timeout-minutes: 10
     steps:
@@ -325,11 +384,12 @@ jobs:
 
       # dep-direction-check.sh（下記）が `cargo metadata` を要するため toolchain を
       # 同期する。既存ステップ（grep ベース）は cargo 非依存のため影響しない。
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#551）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （fmt ジョブと同一方針・同一 SHA）。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
 
       - name: unsafe-triage.sh（baseline 比較・SAFETY コメント検査）
         run: bash scripts/unsafe-triage.sh
@@ -561,7 +621,12 @@ jobs:
   # --------------------------------------------------
   actionlint:
     name: actionlint（ワークフロー静的検証）
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #551）。
+    # バイナリ導入は ${HOME}/.local/bin +
+    # GITHUB_PATH 追記で完結しランナー永続性に依存しない（使い捨て VM では
+    # 冪等スキップ判定が常に不成立になり毎回インストールされるだけ）。
+    runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     timeout-minutes: 10
     steps:
@@ -733,7 +798,11 @@ jobs:
   # --------------------------------------------------
   ci-complete:
     name: ci-complete
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #551）。
+    # branch protection の required status check は
+    # ジョブ名（ci-complete）のみに紐づくため、runner 変更で空白期間は生じない。
+    runs-on: ubuntu-latest
     # 失敗・スキップ時にも必ず実行して fail-closed で判定する。
     # schedule（日次 dep-audit のみ）実行時は
     # fmt/clippy/test/unsafe-triage/fuzz-smoke/webrtc-e2e/openapi-two-stage/openapi-ts が
