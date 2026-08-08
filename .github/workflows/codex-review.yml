@@ -29,5 +29,15 @@ jobs:
       pull-requests: write
     with:
       # 既定値と同値だが、no-sudo（汎用防御ラベル）→ codex（用途ラベル）への変更点
-      # （親 #528 で確定）を明示するため省略しない
+      # （親 #528 で確定）を明示するため省略しない。codex 実行ジョブは codex-home
+      # 方式の認証情報を self-hosted runner 上に配置する構成のため、public 化後も
+      # 組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md §3）が認める唯一の self-hosted 例外
+      # として維持する（イシュー #555。fork PR は reusable workflow 側が fail-closed
+      # で実行を拒否する多層防御が前提）。
       runner-label: codex
+      # PR コメント投稿ジョブは資格情報に触れないため self-hosted 例外の対象外。
+      # 既定値が self-hosted のため、public リポジトリでは組織 runner 方針
+      # （Fandhe-AI/actions リポジトリの docs/runner-policy.md §3/§4・
+      # codex-review/templates/codex-review.public.yml）
+      # に従い ubuntu-latest を明示的に渡す（イシュー #555。既定値への暗黙依存の解消）。
+      post-feedback-runner-label: ubuntu-latest
