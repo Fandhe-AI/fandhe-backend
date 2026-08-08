@@ -166,7 +166,9 @@ jobs:
   # --------------------------------------------------
   test:
     name: cargo test
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #552。置換方針は #551 で確立）。
+    runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     # TASK-11.4（#36）: テスト単位のタイムアウト（nextest 側、最大 120 秒/テスト）に
     # 加えたジョブ全体の上限。多層防御。
@@ -175,16 +177,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#552）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （#551 の fmt/clippy ジョブと同一方針・同一 SHA）。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        id: toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
 
-      # self-hosted ランナー前提でバージョン固定インストールする（dep-audit ジョブと同じ方針）。
-      # 共通部品 cargo-tool-install が「導入済み同一バージョンならスキップ」の冪等判定と
+      # ビルドキャッシュ（#551 の clippy ジョブと同一設計、job family prefix は test-）。
+      - name: Cache cargo registry and target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: test-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            test-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+
+      # バージョン固定インストール（dep-audit ジョブと同じ方針）。共通部品
+      # cargo-tool-install が「導入済み同一バージョンならスキップ」の冪等判定と
       # 導入後の厳密一致検証を担う（サプライチェーン考慮: crates.io からバージョン固定
       # （--locked）で取得し、参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッドの使い捨て VM では冪等スキップは常に不成立で毎ジョブ新規インストール
+      # になる（.claude/rules/ci.md「ホステッド前提への読み替え」。導入検証は弱体化しない）。
       - name: Ensure cargo-nextest 0.9.137
         uses: Fandhe-AI/actions/cargo-tool-install@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
         with:
@@ -261,7 +280,11 @@ jobs:
   # --------------------------------------------------
   dep-audit:
     name: cargo audit / cargo deny (all feature configs)
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #552。置換方針は #551 で確立）。
+    # `issues: write` の自動起票ロジック（schedule / workflow_dispatch 限定）は
+    # ランナー非依存のため不変。
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: write
@@ -272,16 +295,36 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#552）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （#551 の fmt/clippy ジョブと同一方針・同一 SHA）。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        id: toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
 
-      # self-hosted ランナー前提でツールをバージョン固定インストールする。
-      # 共通部品 cargo-tool-install が「導入済み同一バージョンならスキップ」の冪等判定と
-      # 導入後の厳密一致検証を担う（サプライチェーン考慮: crates.io からバージョン固定
-      # （--locked）で取得し、参照はコミット SHA 固定。.claude/rules/security.md）。
+      # キャッシュ（#551 と同一設計、job family prefix は dep-audit-）。本ジョブは
+      # ワークスペースの通常ビルドを持たない（dep-audit.sh は cargo metadata /
+      # deny check / audit のみで ./target へ成果物を出さない）ため、`target` は
+      # キャッシュ対象に含めず registry 系のみとする（リポジトリ 10GB 上限の圧迫回避）。
+      # cargo-deny / cargo-audit の `cargo install`（ソースビルド）が registry
+      # キャッシュの恩恵を受ける。
+      - name: Cache cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: dep-audit-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            dep-audit-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+
+      # ツールのバージョン固定インストール。共通部品 cargo-tool-install が
+      # 「導入済み同一バージョンならスキップ」の冪等判定と導入後の厳密一致検証を担う
+      # （サプライチェーン考慮: crates.io からバージョン固定（--locked）で取得し、
+      # 参照はコミット SHA 固定。.claude/rules/security.md）。ホステッドの使い捨て VM
+      # では毎ジョブ新規インストールになる（導入検証は弱体化しない）。
       - name: Ensure cargo-deny 0.19.8
         uses: Fandhe-AI/actions/cargo-tool-install@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
         with:
@@ -490,23 +533,47 @@ jobs:
   # --------------------------------------------------
   pay-for-what-you-use:
     name: pay-for-what-you-use 検証（cargo tree/geiger・バイナリサイズ）
-    runs-on: self-hosted
+    # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
+    # により GitHub ホステッドランナーへ移行（イシュー #552。置換方針は #551 で確立）。
+    # release ビルド ×2 + cargo-geiger のソースインストールを伴うため、キャッシュ
+    # miss（コールド）時の実測で timeout-minutes の妥当性を確認する（実測は本移行
+    # PR 自身の CI 実行が兼ねる。30 分に収まらない場合は移行 PR 内で延長して再実測
+    # する。イシュー #552 受け入れ条件 4）。
+    runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
-      # 共通部品 rust-toolchain-setup が rustup の自己修復（未導入・破損時のみ
-      # 非対話・HTTPS 検証込みインストール）と rust-toolchain.toml への同期を担う
-      # （参照はコミット SHA 固定。.claude/rules/security.md）。
+      # ホステッド移行（#552）: rust-toolchain-setup → dtolnay/rust-toolchain 置換
+      # （#551 の fmt/clippy ジョブと同一方針・同一 SHA）。
       - name: Setup Rust toolchain
-        uses: Fandhe-AI/actions/rust-toolchain-setup@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        id: toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
 
-      # self-hosted ランナー前提でバージョン固定インストールする（dep-audit / test ジョブと
-      # 同じ方針。共通部品 cargo-tool-install が冪等判定・導入後の厳密一致検証を担う
-      # （サプライチェーン考慮: crates.io からバージョン固定（--locked）で取得し、
-      # 参照はコミット SHA 固定）。
+      # キャッシュ（#551 と同一設計、job family prefix は pay-for-what-you-use-）。
+      # pay-for-what-you-use-check.sh の各構成ビルドは `target/` 配下のサブディレクトリ
+      # （target/pay-for-what-you-use-check{,-all,-geiger} 等）を使うため、`target` の
+      # キャッシュがそのまま全構成に効く。
+      - name: Cache cargo registry and target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: pay-for-what-you-use-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            pay-for-what-you-use-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+
+      # バージョン固定インストール（dep-audit / test ジョブと同じ方針。共通部品
+      # cargo-tool-install が冪等判定・導入後の厳密一致検証を担う（サプライチェーン考慮:
+      # crates.io からバージョン固定（--locked）で取得し、参照はコミット SHA 固定）。
+      # ホステッドの使い捨て VM では毎ジョブ新規インストールになる。
       # cargo-geiger はビルドを伴い壊れやすい実績のあるツールのため、本ジョブでは
       # dep-impact.sh と異なり必須ツールとして扱う（未導入・実行失敗は FAIL）。
       - name: Ensure cargo-geiger 0.13.0
