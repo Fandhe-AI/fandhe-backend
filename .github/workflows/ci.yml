@@ -5,10 +5,12 @@ name: CI
 # TASK-15.2（#17）: 依存監査（dep-audit ジョブ）を追加し、schedule（日次）で
 # コード変更のない期間に新規公開される RustSec advisory も検知できるようにした
 # （OWASP A06、.claude/rules/security.md）。schedule 実行時は fmt/clippy/test を
-# 省略し dep-audit のみ走らせ、self-hosted ランナーの負荷を抑える。
+# 省略し dep-audit のみ走らせる（旧 self-hosted 時代は runner 負荷抑制が動機。
+# ホステッド移行後も無駄なジョブ実行を避ける原則として維持、.claude/rules/ci.md）。
 # TASK-11.4（#36）: PoC-9 で確認された「オフバイワンのバグがテスト失敗ではなく
 # `cargo test` のハングとして現れる」事例（docs/spec/04-requirements.md NFR-10）を受け、
-# 全ジョブに `timeout-minutes` を設定（多層防御・self-hosted runner の無期限占有防止）し、
+# 全ジョブに `timeout-minutes` を設定（多層防御。旧 self-hosted 時代は runner の
+# 無期限占有防止が動機で、ホステッドでも分数浪費・キュー占有防止として維持）し、
 # test ジョブは cargo-nextest（.config/nextest.toml でテスト単位のタイムアウトを規定）に
 # 切り替えた。
 # TASK-12.1-1（#79）: `unsafe` の増加検知（scripts/unsafe-triage.sh）を独立ジョブとして
@@ -460,7 +462,7 @@ jobs:
 
       # イシュー #238: NFR-8 注入リグレッション検知ハーネスのセルフテスト。本体
       # （regression-injection-verify.sh）は 12 ケース分の cargo フルビルドを伴い重い
-      # ため CI には組み込まず（.claude/rules/ci.md の self-hosted 負荷抑制規約）、
+      # ため CI には組み込まず（無駄な重量ジョブを常設しない方針、.claude/rules/ci.md）、
       # スタブゲート注入でロジックのみを検証するセルフテストを常設する。
       - name: run-regression-injection-tests.sh（regression-injection-verify.sh のセルフテスト、#238）
         run: bash scripts/tests/run-regression-injection-tests.sh
@@ -641,9 +643,10 @@ jobs:
       # #141: 常に pip install が走ってしまう）。モジュールの `__version__` 属性で
       # 導入済みバージョンを直接判定する。インストールも `pip` コマンドではなく
       # `python3 -m pip` で実行する（Bugbot 指摘、PR #141 review 3603198341: 素の
-      # `pip` は self-hosted runner 上で `python3` と異なるインタプリタを指す
-      # ことがあり、インストールしたパッケージが後続の `python3 -m
-      # openapi_spec_validator` から見えず CI が不安定または恒常的に失敗しうる）。
+      # `pip` は環境によって `python3` と異なるインタプリタを指すことがあり
+      # （旧 self-hosted runner で実際に発生）、インストールしたパッケージが後続の
+      # `python3 -m openapi_spec_validator` から見えず CI が不安定または恒常的に
+      # 失敗しうる。インタプリタ一致の頑健化として runner 種別に依らず維持する）。
       # このステップは openapi-two-stage ジョブ内で実行する（Bugbot 指摘、PR #150 review
       # 4724126384: openapi-ts ジョブを新設した際にバリデータステップを誤って openapi-ts
       # 側にのみ残していたため、TS パイプラインが先に失敗すると openapi-two-stage が成功
@@ -657,7 +660,8 @@ jobs:
           fi
 
       # pip --user 配置スクリプトは実行環境の PATH に含まれるとは限らない
-      # （self-hosted runner で /root/.local/bin が未設定のケースがある）ため、
+      # （旧 self-hosted runner で /root/.local/bin が未設定のケースが実在した。
+      # PATH 非依存の頑健化として runner 種別に依らず維持する）ため、
       # PATH 依存のコマンド解決を避けて `python3 -m` によるモジュール実行形式で
       # 呼び出す（PR #141 CI failure 対応）。
       - name: openapi.json 構文妥当性検証（openapi-spec-validator）
@@ -730,7 +734,7 @@ jobs:
   # いた検証を CI 常設化する。Go 製単一バイナリで cargo 非依存のため rustup 同期は不要。
   # バージョン + SHA256 pin は scripts/actionlint.sh の定数を単一真実源とする
   # （scripts/fuzz.sh の PINNED_NIGHTLY と同じパターン）。schedule（日次 dep-audit のみを
-  # 走らせる方針）からは除外し self-hosted runner の負荷を抑える。
+  # 走らせる方針）からは除外する（無駄なジョブ実行を避ける原則、.claude/rules/ci.md）。
   # --------------------------------------------------
   actionlint:
     name: actionlint（ワークフロー静的検証）
@@ -779,7 +783,8 @@ jobs:
   # パーサのパニック・メモリ不正への回帰を CI 常設で検知する。ビルドは pinned nightly +
   # ASan 計装で通常ビルドより重いため timeout を厚めに確保する。
   # 長時間スクリーニング・検出欠陥の修正は #88（TASK-15.3-2）のスコープ。schedule（日次
-  # dep-audit のみを走らせる方針）からは除外し self-hosted runner の負荷を抑える。
+  # dep-audit のみを走らせる方針）からは除外する（無駄なジョブ実行を避ける原則、
+  # .claude/rules/ci.md）。
   # --------------------------------------------------
   fuzz-smoke:
     name: fuzz smoke（cargo-fuzz、nightly pinned）
