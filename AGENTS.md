@@ -489,9 +489,9 @@ Codex は本ファイルを自動読込する。Codex code review は既定で P
   組織 runner 方針〔Fandhe-AI/actions `docs/runner-policy.md`: 可視性で runner を決め、
   public は GitHub ホステッド〕の public 側が適用され、旧「GitHub ホステッドランナー
   指定の禁止」は反転した〔トラッキング #550〕。現行の違反は次のとおり:
-  `runs-on: self-hosted` の**新規追加**〔codex-review の codex 実行ジョブ
-  〔`runner-label: codex`〕のみ例外。#551〜#555 の移行完了までに既存ジョブへ残置
-  されている `self-hosted` は違反としない〕・`.github/actionlint.yaml` ホワイトリスト外
+  `runs-on` への `self-hosted` 指定〔codex-review の codex 実行ジョブ
+  〔`runner-label: codex`〕のみ例外。#551〜#555 で全ワークフローの移行が完了済みの
+  ため、残置を許容する interim 規定は終了した〕・`.github/actionlint.yaml` ホワイトリスト外
   ラベル指定・`timeout-minutes` 欠落・`pull_request_target` 等の secrets 露出トリガー
   追加）: **P1**
 - **公開 API の doc comment / doc test 欠落**（AI ファースト保守性、
