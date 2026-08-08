@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   codex-review:
-    uses: Fandhe-AI/actions/.github/workflows/codex-review.yml@4c3a6326413634d0459bd03648a7aa4d29dc2b36 # main
+    uses: Fandhe-AI/actions/.github/workflows/codex-review.yml@cb482ae59a8a7b94496aa72a71404dc115b783d8 # main
     permissions:
       contents: read
       pull-requests: write
