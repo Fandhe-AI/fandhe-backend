@@ -993,6 +993,9 @@ jobs:
     # branch protection の required status check は
     # ジョブ名（ci-complete）のみに紐づくため、runner 変更で空白期間は生じない。
     runs-on: ubuntu-latest
+    # 組織標準（setup-repo-guards §集約ジョブ）: 本ジョブは checkout も GitHub API も
+    # 使わないため、workflow レベルの contents: read すら不要。権限ゼロを明示する。
+    permissions: {}
     # 失敗・スキップ時にも必ず実行して fail-closed で判定する。
     # schedule（日次 dep-audit のみ）実行時は
     # fmt/clippy/test/unsafe-triage/fuzz-smoke/webrtc-e2e/openapi-two-stage/openapi-ts が
