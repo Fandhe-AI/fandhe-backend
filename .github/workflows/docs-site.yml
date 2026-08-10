@@ -115,7 +115,7 @@ jobs:
     permissions:
       pages: write # Pages デプロイ作成に必要
       id-token: write # OIDC によるデプロイ元検証に必要
-    uses: Fandhe-AI/actions/.github/workflows/pages-deploy.yml@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+    uses: Fandhe-AI/actions/.github/workflows/pages-deploy.yml@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
     with:
       # upload-artifact は path 直下の内容を artifact ルートへ置くため、
       # dist ディレクトリ自体を path に指定した本 workflow では "." を指定する
