@@ -83,13 +83,13 @@ jobs:
       # （サプライチェーン考慮: crates.io からバージョン固定（--locked）で取得し、
       # 参照はコミット SHA 固定。.claude/rules/security.md。Bugbot 指摘対応）
       - name: Ensure cargo-deny 0.19.8
-        uses: Fandhe-AI/actions/cargo-tool-install@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
         with:
           tool: cargo-deny
           version: 0.19.8
 
       - name: Ensure cargo-audit 0.22.2
-        uses: Fandhe-AI/actions/cargo-tool-install@cafbcd7c1d339dcfb27017a4e941220810c33b0a # main
+        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
         with:
           tool: cargo-audit
           version: 0.22.2
