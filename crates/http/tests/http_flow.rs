@@ -42,8 +42,8 @@ Connection: keep-alive\r\n\
     .expect("EOF ではなく 1 リクエストが読み取れること");
 
     // リクエストライン全要素。
-    assert_eq!(req.head.method, "POST");
-    assert_eq!(req.head.target, "/items?x=1");
+    assert_eq!(req.head.method(), "POST");
+    assert_eq!(req.head.target(), "/items?x=1");
     assert_eq!(req.head.version, HttpVersion::Http11);
 
     // 全ヘッダを出現順で検証する（`RequestHead::header` の先頭一致だけに頼らない）。
@@ -91,8 +91,8 @@ async fn request_without_body_and_explicit_close() {
     .expect("I/O エラーなく読み取れること")
     .expect("1 リクエストが読み取れること");
 
-    assert_eq!(req.head.method, "GET");
-    assert_eq!(req.head.target, "/health");
+    assert_eq!(req.head.method(), "GET");
+    assert_eq!(req.head.target(), "/health");
     assert_eq!(req.head.version, HttpVersion::Http11);
     assert_eq!(
         req.head.headers().collect::<Vec<_>>(),
@@ -133,8 +133,8 @@ async fn pipelined_requests_over_split_writes_preserve_field_integrity() {
     .expect("test-internal timeout (1st)")
     .expect("I/O エラーなし")
     .expect("1 件目が読めること");
-    assert_eq!(req1.head.method, "POST");
-    assert_eq!(req1.head.target, "/a");
+    assert_eq!(req1.head.method(), "POST");
+    assert_eq!(req1.head.target(), "/a");
     assert_eq!(req1.head.version, HttpVersion::Http11);
     assert_eq!(req1.body, b"foo");
     assert!(should_keep_alive(&req1.head));
@@ -147,8 +147,8 @@ async fn pipelined_requests_over_split_writes_preserve_field_integrity() {
     .expect("test-internal timeout (2nd)")
     .expect("I/O エラーなし")
     .expect("2 件目が読めること");
-    assert_eq!(req2.head.method, "GET");
-    assert_eq!(req2.head.target, "/b");
+    assert_eq!(req2.head.method(), "GET");
+    assert_eq!(req2.head.target(), "/b");
     assert_eq!(req2.head.version, HttpVersion::Http11);
     assert!(req2.body.is_empty());
     assert!(!should_keep_alive(&req2.head));
@@ -255,7 +255,7 @@ async fn keep_alive_requests_reuse_buffer_capacity() {
         .expect("test-internal timeout")
         .expect("I/O エラーなし")
         .expect("リクエストが読めること");
-        assert_eq!(req.head.method, "GET");
+        assert_eq!(req.head.method(), "GET");
         assert!(req.body.is_empty());
 
         if i == 0 {
@@ -309,7 +309,7 @@ async fn large_body_shrinks_buffer_capacity_after_completion() {
     .expect("test-internal timeout (1st)")
     .expect("I/O エラーなし")
     .expect("大 body リクエストが読めること");
-    assert_eq!(req1.head.method, "POST");
+    assert_eq!(req1.head.method(), "POST");
     assert_eq!(req1.body.len(), body_len);
     assert!(req1.body.iter().all(|&b| b == b'x'));
 
@@ -330,8 +330,8 @@ async fn large_body_shrinks_buffer_capacity_after_completion() {
     .expect("test-internal timeout (2nd)")
     .expect("I/O エラーなし")
     .expect("2 件目が読めること");
-    assert_eq!(req2.head.method, "GET");
-    assert_eq!(req2.head.target, "/after");
+    assert_eq!(req2.head.method(), "GET");
+    assert_eq!(req2.head.target(), "/after");
     assert!(req2.body.is_empty());
     assert!(!should_keep_alive(&req2.head));
 

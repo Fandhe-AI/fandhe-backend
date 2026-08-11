@@ -160,8 +160,8 @@ impl Handler for BenchHandler {
     // クロージャ（IIFE）で `Response` を組み立ててから包む。
     fn handle(&self, head: &RequestHead, body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
         let response = (|| {
-            let method = head.method.as_str();
-            let target = head.target.as_str();
+            let method = head.method();
+            let target = head.target();
 
             if target == "/health" {
                 return if method == "GET" {

@@ -81,7 +81,7 @@ pub async fn try_handle_rtc_offer(
     body: &[u8],
     config: &ProxyConfig,
 ) -> Option<Response> {
-    if head.method != "POST" || head.target != OFFER_PATH {
+    if head.method() != "POST" || head.target() != OFFER_PATH {
         return None;
     }
 

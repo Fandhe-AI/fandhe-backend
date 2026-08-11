@@ -275,7 +275,7 @@ pub async fn try_handle_graphql(
     body: &[u8],
     config: &GraphQlConfig,
 ) -> Option<self::Response> {
-    if head.method != "POST" || head.target != GRAPHQL_PATH {
+    if head.method() != "POST" || head.target() != GRAPHQL_PATH {
         return None;
     }
 

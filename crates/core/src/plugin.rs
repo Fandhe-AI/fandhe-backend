@@ -366,7 +366,7 @@ pub(crate) async fn try_intercept(
     {
         use crate::server::OpenApiRegistration;
 
-        if head.method == "GET" && head.target == "/openapi.json" {
+        if head.method() == "GET" && head.target() == "/openapi.json" {
             let body = match server.openapi_registration() {
                 OpenApiRegistration::Disabled => None,
                 OpenApiRegistration::Embedded => Some(
@@ -380,7 +380,7 @@ pub(crate) async fn try_intercept(
                 return Some(Response::new(200, body).with_content_type("application/json"));
             }
         }
-        if head.method == "GET" && head.target == "/openapi.yaml" {
+        if head.method() == "GET" && head.target() == "/openapi.yaml" {
             let body = match server.openapi_registration() {
                 OpenApiRegistration::Disabled => None,
                 OpenApiRegistration::Embedded => Some(
