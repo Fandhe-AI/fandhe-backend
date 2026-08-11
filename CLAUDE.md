@@ -389,8 +389,12 @@ fandhe-backend/
 │   │                                    # あたりの追加ヒープアロケーションがヘッダ本数 N に
 │   │                                    # 依存しない定数個（`buf` 1 + `headers` 1）になったことを
 │   │                                    # `crates/http/tests/alloc_count.rs`（`GlobalAlloc`
-│   │                                    # ラッパーで N=1/N=30 の alloc 差分を直接計測する常設
-│   │                                    # テスト）で固定した。`method` / `target` は非公開
+│   │                                    # を実装する計測専用 dev-dependency `stats_alloc`
+│   │                                    # 経由で N=1/N=30 の alloc 差分を直接計測する常設
+│   │                                    # テスト。`unsafe` は crate 内部に閉じ本クレートには
+│   │                                    # 導入しない、PR #602 レビュー指摘 P0 対応。理由記載は
+│   │                                    # `docs/design/zero-copy-request-head.md` 11 節）で
+│   │                                    # 固定した。`method` / `target` は非公開
 │   │                                    # フィールド化し、`RequestHead::method()` /
 │   │                                    # `RequestHead::target()`（`&str` 返却）のアクセサ
 │   │                                    # 経由でのみ取得させる（**BREAKING CHANGE**、旧

@@ -8,6 +8,34 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-08-11 — `crates/http` に `stats_alloc`（dev-dependency）を追加（`tests/alloc_count.rs` の unsafe 除去、PR #602 レビュー指摘 P0 対応、イシュー #591）
+
+`crates/http/tests/alloc_count.rs`（`parse_request_head` の 1 リクエストあたり
+alloc 回数が N 非依存の定数であることを固定する常設テスト）が自前で実装していた
+`unsafe impl GlobalAlloc`（workspace lint `unsafe_code = "warn"` を `#![allow(unsafe_code)]`
+で緩めていた、`scripts/unsafe-baseline.json` の `http` を 0→8/0→1 へ増やす原因だった）を、
+`GlobalAlloc` を実装済みの計測専用 crate `stats_alloc`（外部依存ゼロ・`unsafe` 実装は
+crate 内部に閉じる）へ置き換えた。本クレート自体には `unsafe` を一切導入せず、
+`scripts/unsafe-triage.sh --update-baseline` で `http` のベースラインを 0/0 へ戻した。
+
+### 依存情報（pay-for-what-you-use）
+
+`[dev-dependencies]`（テスト専用、release バイナリ・`cargo tree -e normal` には
+現れない）に `stats_alloc = "0.1.10"` を追加した。
+
+```
+$ cargo tree -p fandhe-backend-http -e dev
+fandhe-backend-http v0.3.0
+[dev-dependencies]
+├── stats_alloc v0.1.10
+└── tokio v1.53.1
+    ...
+```
+
+`stats_alloc` 自体の推移依存は 0 件。`-e normal` フィルタでの依存グラフ
+（`memchr` + `tokio` の 2 件、下記エントリ参照）に変化はなく、通常依存
+（release ビルド対象）への影響はない。
+
 ## 2026-08-11 — `crates/http` に `memchr` を追加（`find_subslice` のヘッド終端探索を memmem ベースへ変更、イシュー #586）
 
 リクエストヘッド終端（`\r\n\r\n`）・ヘッダ行区切り（`\r\n`）探索を担う `find_subslice`

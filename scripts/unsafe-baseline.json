@@ -12,8 +12,8 @@
     "unsafe_count": 0
   },
   "http": {
-    "allow_unsafe_code_count": 1,
-    "unsafe_count": 8
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
   },
   "plugin-compression": {
     "allow_unsafe_code_count": 0,

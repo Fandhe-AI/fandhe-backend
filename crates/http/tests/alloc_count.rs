@@ -7,7 +7,7 @@
 //! 保持する設計（`docs/design/zero-copy-request-head.md` 案 B）を採る。この
 //! 設計の意義（N 非依存の定数 alloc）は本文書のプロファイル実測（設計文書
 //! 5.1 節）に依拠しており、退行を防ぐには実測で常時検証する必要がある。
-//! そのため本ファイルはカウンティング `GlobalAlloc` ラッパーを常設し、
+//! そのため本ファイルはカウンティング `#[global_allocator]` を常設し、
 //! N=1 と N=30 の 2 リクエストで alloc 回数の差分が一致すること（N 非依存）・
 //! その回数が小さな定数であることを直接検証する。
 //!
@@ -17,58 +17,20 @@
 //! が計測値に混入しうる。integration test は 1 ファイル = 1 バイナリのため、
 //! このファイルにテストを 1 個だけ置くことで測定対象を隔離する。
 //!
-//! workspace lints（`unsafe_code = "warn"`、CI の `-D warnings` で実質
-//! deny）は本テストファイルに限り `#[allow(unsafe_code)]` で明示的に緩める。
-//! `std::alloc::GlobalAlloc` トレイトの実装は言語仕様上 `unsafe fn` を要する
-//! ため回避できず、`crates/http` ライブラリ本体（`unsafe` 不使用方針、
-//! `docs/design/zero-copy-request-head.md` 6.3 節）とは無関係な計測専用の
-//! test バイナリに閉じたテストダブルである。各 `unsafe` ブロックは
-//! `System`（標準システムアロケータ）の同名メソッドへ引数をそのまま転送する
-//! だけで新たな不変条件を導入しない（安全性の根拠は各ブロック直前の説明を参照）。
-#![allow(unsafe_code)]
-
+//! カウンティングアロケータの実装は自前で書かず、`GlobalAlloc` を実装する
+//! 既存の計測専用 crate `stats_alloc`（dev-dependency、外部依存ゼロ、PR #602
+//! レビュー指摘の P0 対応）へ委ねる。`GlobalAlloc` トレイト実装本体は
+//! `stats_alloc` 内部に閉じ、本テストファイル・`crates/http` ライブラリ本体
+//! （unsafe 不使用方針、`docs/design/zero-copy-request-head.md` 6.3 節）
+//! いずれにも unsafe キーワードを導入しない。workspace lint
+//! （`unsafe_code = "warn"`、CI の `-D warnings` で実質 deny）をこのファイルの
+//! ために緩める必要がない。
 use fandhe_backend_http::request::parse_request_head;
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// `System` へすべて委譲しつつ `alloc` / `realloc` の呼び出し回数のみを数える
-/// カウンティングアロケータ。
-///
-/// `dealloc` は数えない（本テストの関心は「1 リクエストの解析で何回確保が
-/// 発生するか」であり解放回数ではない）。
-struct CountingAllocator;
-
-/// プロセス全体で共有する alloc 回数カウンタ。
-static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-// SAFETY: `alloc` / `dealloc` / `realloc` はすべて対応する `System`（標準の
-// システムアロケータ）の同名メソッドへそのまま委譲するだけで、ポインタ・
-// レイアウトの生成や解釈を独自に行わない。`GlobalAlloc` の不変条件
-// （`dealloc` に渡すポインタ・レイアウトは対応する `alloc`/`realloc` 呼び出し
-// と一致すること）は呼び出し元（Rust のアロケーション機構自体）が保証し、
-// 本ラッパーはその引数をそのまま転送するのみで新たな不変条件を導入しない。
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: `layout` は呼び出し元から渡された値をそのまま転送する。
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: `ptr` / `layout` は呼び出し元から渡された値をそのまま転送する。
-        unsafe { System.dealloc(ptr, layout) }
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: `ptr` / `layout` / `new_size` は呼び出し元から渡された値を
-        // そのまま転送する。
-        unsafe { System.realloc(ptr, layout, new_size) }
-    }
-}
+use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
+use std::alloc::System;
 
 #[global_allocator]
-static ALLOCATOR: CountingAllocator = CountingAllocator;
+static ALLOCATOR: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 /// `n` 本のヘッダを持つリクエストヘッドのバイト列を組み立てる。
 fn build_request(n: usize) -> Vec<u8> {
@@ -80,11 +42,14 @@ fn build_request(n: usize) -> Vec<u8> {
     buf
 }
 
-/// `f` の実行前後で `ALLOC_COUNT` がいくつ増えたかを返す。
+/// `f` の実行前後の `allocations`（alloc/alloc_zeroed の呼び出し回数）差分を返す。
+/// `realloc` はゼロ確保回避のため事前確保が効いていれば発生しない想定だが、
+/// 発生した場合も別途 `reallocations` として計測できるよう `Region` の全量
+/// スナップショットを経由する（本テストでは `allocations` のみを比較対象とする）。
 fn alloc_delta<F: FnOnce()>(f: F) -> usize {
-    let before = ALLOC_COUNT.load(Ordering::Relaxed);
+    let region = Region::new(ALLOCATOR);
     f();
-    ALLOC_COUNT.load(Ordering::Relaxed) - before
+    region.change().allocations
 }
 
 #[test]

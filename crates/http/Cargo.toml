@@ -51,5 +51,12 @@ net = ["tokio/net"]
 # `nodelay()` 検証）が動く。default 構成（`cargo tree -p fandhe-backend-http`）では `net`
 # が有効化されないため `mio`/`socket2` は出ない
 # （.claude/rules/pay-for-what-you-use.md）。
+# `stats_alloc`（外部依存ゼロ・itself unsafe だが本クレート自体には `unsafe` を
+# 一切導入しない）は `tests/alloc_count.rs`（イシュー #591 P0 対応、PR #602 レビュー
+# 指摘）の `parse_request_head` alloc 回数計測専用。`GlobalAlloc` 実装は本クレート外の
+# 依存内に閉じるため、workspace lint `unsafe_code = "warn"` を本クレートで緩める必要が
+# ない（`.claude/rules/coding-rust.md`・`.claude/rules/security.md`）。dev-dependency の
+# ためバイナリ・依存インパクトには影響しない（`.claude/rules/pay-for-what-you-use.md`）。
 [dev-dependencies]
+stats_alloc = "0.1.10"
 tokio = { version = "1", default-features = false, features = ["io-util", "macros", "rt", "time"] }

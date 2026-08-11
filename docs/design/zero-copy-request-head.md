@@ -479,3 +479,30 @@ Phase 3 実装（#590〜#593）が拘束される不変条件として、`.claud
   はフレームワーク本体の semver とは別軸（`versioning-policy.md` 0 節と同一の注意書き）
 - **HTTP/2 対応**: 本フレームワークは v1 スコープで HTTP/1.1・HTTP/1.0 のみを扱う
   （`docs/design/v1-scope-tls-multipart.md` と同様、HTTP/2 は範囲外）
+
+## 11. extension-closure-gate 理由記載（`crates/http/tests/alloc_count.rs`）
+
+`docs/design/dependency-graph-contract.md` 4 節の運用に基づく、Phase 3 実装 PR（#602）
+での E（閉包違反候補）ファイルの理由記載。
+
+1. **対象コミット/PR**: PR #602（イシュー #591、性能改善ツリー #579 Phase 3）
+2. **E ファイルパス**: `crates/http/tests/alloc_count.rs`
+3. **閉じない理由**: `extension-closure-check.sh` の分類規則は C（テスト）を
+   `crates/core/tests/**`・`crates/plugin-*/tests/**` のみに限定しており、中間層
+   クレート `crates/http` 配下のテスト（`crates/http/tests/**`）は走査対象に
+   含めていない（4.9 節「本節の運用上のギャップ」と同種）。本ファイルは
+   `RequestHead` の内部表現変更（本文書 3〜5 節）に伴う alloc プロファイル退行
+   検知用の常設テストであり、`crates/http` 配下に新設したため機械的に E 判定と
+   なった
+4. **正当性根拠**: 本ファイルは `parse_request_head` の 1 リクエストあたり
+   ヒープアロケーション回数を計測するテストダブル（`GlobalAlloc` を実装する
+   dev-dependency `stats_alloc` を使用、本クレート自体には `unsafe` を導入しない。
+   PR #602 レビュー指摘 P0 対応で自前の `unsafe impl GlobalAlloc` から置き換え済み）
+   であり、3 拡張点 trait（`Middleware`/`UpgradeHandler`/`RequestGate`）・
+   `try_intercept` 固定シームの契約・シグネチャ・実装ロジックはいずれも変更しない。
+   依存方向（`server → routes → http::*`、1 節）にも影響しない。プラグイン実装
+   ロジックの拡張点外への漏出ではなく、`extension-closure-check.sh` の C 分類が
+   中間層クレートのテストディレクトリを想定していないことに起因する運用上の
+   ギャップである。分類規則自体の見直し（`crates/http/tests/**`・
+   `crates/routes/tests/**` の C への追加）は 4.9 節と同一の別 Issue 対象として
+   据え置く（`.claude/rules/out-of-scope-tracking.md`）
