@@ -360,7 +360,7 @@ pub(crate) async fn try_intercept(
     // 2 系統を同一分岐で扱う。`Disabled`（既定）時は feature が有効でも常に
     // フォールスルーする（`webrtc-proxy`・`graphql` と同じ設定登録型パターン、
     // `Server::openapi` / `Server::openapi_with` の doc を参照）。json/yaml は
-    // `head.target` の完全一致（クエリ付きはフォールスルー）で排他的に分岐し、
+    // `head.target()` の完全一致（クエリ付きはフォールスルー）で排他的に分岐し、
     // 両方とも同一の登録状態（`openapi_registration`）を共有する。
     #[cfg(feature = "openapi")]
     {
