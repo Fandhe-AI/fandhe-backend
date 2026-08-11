@@ -392,15 +392,18 @@ pub fn parse_request_head(buf: &[u8]) -> Result<ParseOutcome, ParseError> {
 
 /// `haystack` 中で `needle` が最初に現れる位置を返す（見つからなければ `None`）。
 ///
-/// 正規表現やバックトラックを伴わない単純な線形走査であり、病的入力による
-/// 計算量爆発（ReDoS 相当）を起こさない。
+/// [`parse_request_head`]（ヘッド終端 `\r\n\r\n` 探索）・[`CrlfSplit`]（ヘッダ行区切り
+/// `\r\n` 探索）から呼ばれるホットパス。`memchr::memmem::find`（SIMD 最適化された
+/// Two-Way 法）に委譲する（イシュー #586）。正規表現やバックトラックを伴わない
+/// 最悪計算量 O(haystack + needle) の探索であり、病的入力による計算量爆発
+/// （ReDoS 相当）を起こさない性質は旧実装（`windows().position()`）から維持する。
+/// 空 needle は `memmem::find` 自体が `Some(0)` を返し得るため、旧実装と契約を
+/// 揃えるため明示的に `None` を返すガードを残す。
 pub(crate) fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
     }
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
+    memchr::memmem::find(haystack, needle)
 }
 
 /// ヘッダ部（末尾の空行を含まない）を `\r\n` 区切りで分割するイテレータを返す。
@@ -996,5 +999,93 @@ mod tests {
             head.cookies().unwrap_err(),
             crate::cookie::CookieError::CookieStringTooLarge
         );
+    }
+
+    /// [`find_subslice`] を memmem ベースへ変更する前の参照実装
+    /// （イシュー #586）。差分テストでのみ使用し、新実装との返値完全一致を
+    /// 検証する（リクエストスマグリング防止: ヘッド終端位置が 1 バイトでも
+    /// ずれるとヘッダ/ボディ境界の解釈差につながるため）。
+    fn find_subslice_reference(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        if needle.is_empty() || haystack.len() < needle.len() {
+            return None;
+        }
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
+    }
+
+    #[test]
+    fn find_subslice_matches_reference_implementation() {
+        let needle_variants: &[&[u8]] = &[b"\r\n\r\n", b"\r\n", b"X"];
+        let cases: &[&[u8]] = &[
+            b"",
+            b"\r",
+            b"\r\n",
+            b"\r\n\r",
+            b"\r\n\r\n",
+            b"a\r\n\r\nb",
+            b"\r\r\r\r",
+            b"\r\n\r\r\n\r\n",
+            b"\r\n\r\nX",
+            b"X\r\n\r\n",
+            b"\r\n\r",
+            b"\n\r\n\r\n",
+            b"aaaa",
+            b"\r\n\r\n\r\n\r\n",
+        ];
+        for needle in needle_variants {
+            for case in cases {
+                assert_eq!(
+                    find_subslice(case, needle),
+                    find_subslice_reference(case, needle),
+                    "haystack={case:?} needle={needle:?}"
+                );
+            }
+        }
+
+        // needle が haystack と同長・haystack より長いケース
+        let haystack = b"\r\n\r\n";
+        assert_eq!(
+            find_subslice(haystack, b"\r\n\r\n"),
+            find_subslice_reference(haystack, b"\r\n\r\n")
+        );
+        assert_eq!(
+            find_subslice(haystack, b"\r\n\r\n\r\n"),
+            find_subslice_reference(haystack, b"\r\n\r\n\r\n")
+        );
+
+        // 空 needle・空 haystack
+        assert_eq!(find_subslice(b"", b""), find_subslice_reference(b"", b""));
+        assert_eq!(
+            find_subslice(b"abc", b""),
+            find_subslice_reference(b"abc", b"")
+        );
+    }
+
+    #[test]
+    fn find_subslice_empty_needle_is_none() {
+        assert_eq!(find_subslice(b"abc", b""), None);
+        assert_eq!(find_subslice(b"", b""), None);
+    }
+
+    #[test]
+    fn parse_request_head_terminator_split_across_reads() {
+        // ヘッド終端 `\r\n\r\n` が読み取り単位の境界をまたぐケース（バッファ
+        // 分割着弾）を固定する。1 回目は終端直前の `\r` までしか届かず
+        // Incomplete、`\n` 到着後の 2 回目で Complete になることを検証する
+        // （memmem 化後も探索対象バッファ全体を都度再走査する前提は不変）。
+        let full = b"GET /x HTTP/1.1\r\nHost: h\r\n\r\n";
+        let split_at = full.len() - 1; // 末尾の `\n` の直前で分割
+        let (head_part, _) = full.split_at(split_at);
+
+        assert!(matches!(
+            parse_request_head(head_part),
+            Ok(ParseOutcome::Incomplete)
+        ));
+
+        let (head, consumed) = complete(full);
+        assert_eq!(head.method, "GET");
+        assert_eq!(head.target, "/x");
+        assert_eq!(consumed, full.len());
     }
 }

@@ -342,7 +342,13 @@ fandhe-backend/
 │   │                                    # 外部依存は `rustc-hash`（推移依存ゼロ・unsafe
 │   │                                    # ゼロ）のみ追加。FxHash は衝突攻撃耐性を持たないが
 │   │                                    # 本 map のキーは起動時登録の固定集合でリクエストは
-│   │                                    # 照合側にしか現れないため HashDoS は成立しない、
+│   │                                    # 照合側にしか現れないため HashDoS は成立しない）。
+│   │                                    # `find_subslice`（リクエストヘッド終端 `\r\n\r\n`・
+│   │                                    # ヘッダ行区切り `\r\n` 探索）を `memchr::memmem::find`
+│   │                                    # ベースへ変更した（イシュー #586。SIMD 最適化された
+│   │                                    # 探索へ委譲、シグネチャ・空 needle 時 `None` の契約は
+│   │                                    # 不変。`memchr` は既に workspace 依存ツリーに存在した
+│   │                                    # v2.8.3 へ統一解決され新規バージョンの流入なし、
 │   │                                    # `docs/dep-impact/records.md` 参照）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
