@@ -76,18 +76,24 @@ fandhe-backend/
 │   │                            # #499（10 節）でキャンセルの適用範囲を受信待ちから
 │   │                            # ユーザーハンドラ実行中・返信/Close 送出中へ拡大し、
 │   │                            # `race_cancel` による即時打ち切り意味論を採用）
-│   │   └── per-core-runtime-decision.md  # P5 per-core accept モデル（`SO_REUSEPORT` +
-│   │                            # `current_thread` ランタイム ×N）の採否検討
+│   │   └── per-core-runtime-decision.md  # P5 per-core accept モデルの採否検討
 │   │                            # （イシュー #589、親 #581 Phase 2、ルート #579。
-│   │                            # actix-web/ntex 帯（約 54 万 RPS）到達に必要な構造だが、
-│   │                            # 4 拡張点 trait（`Send + Sync` 境界）・`crates/routes`
-│   │                            # ハンドラ型・accept ループ・graceful shutdown（#313）・
-│   │                            # rebind 世代 drain（#485/#488）・WS 世代キャンセル
-│   │                            # （#489〜#499）・`SessionDrain`（#498）の全並行機構へ
-│   │                            # 波及し影響範囲を限定できないため不採用と結論。安全性・
-│   │                            # AI ファースト保守性優先の設計原則・fail-closed 原則を
-│   │                            # 根拠に記録し、opt-in feature 化案を含む再検討条件を
-│   │                            # 明文化）
+│   │                            # actix-web/ntex 帯（約 54 万 RPS）到達に必要な構造を、
+│   │                            # accept 並列化（`SO_REUSEPORT` + コアごとの accept
+│   │                            # 経路、`Send` 契約維持、軸 A）とハンドラの `!Send`
+│   │                            # 許容（`Rc`/`RefCell`、軸 B）の独立した 2 軸に分解
+│   │                            # して評価。軸 A 単独は 4 拡張点 trait・
+│   │                            # `crates/routes` ハンドラ型・13 公開クレートの
+│   │                            # バージョニングに影響せず、accept/bind 層と
+│   │                            # graceful shutdown（#313）・rebind 世代 drain
+│   │                            # （#485/#488）・WS 世代キャンセル（#489〜#499）・
+│   │                            # `SessionDrain`（#498）の 4 並行機構に影響範囲を
+│   │                            # 限定できる。軸 B を伴う一般形のみ全公開契約・
+│   │                            # 13 公開クレートの breaking change に波及し影響範囲を
+│   │                            # 限定できないため、軸 A + 軸 B の一般形を不採用と
+│   │                            # 結論（軸 A 単独案は否定せず、opt-in feature 化案の
+│   │                            # 第一候補として再検討条件に明記）。fail-closed 原則を
+│   │                            # 根拠に記録
 │   ├── guide/              # 利用者向けガイド（Getting Started・feature 構成別サンプル・
 │   │                        # チュートリアル、TASK-11.5 / #95）。「どう作るか」の docs/design/ とは
 │   │                        # 責務分離、「どう使うか」を扱う

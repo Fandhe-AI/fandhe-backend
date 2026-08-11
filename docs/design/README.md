@@ -166,10 +166,13 @@
   の breaking change 方針、新規依存・tokio feature 追加なしの確認を記述。コード実装は
   後続の #491（コア配線）・#492（Close frame 送信）・#493（統合テスト・doc 更新）が担う）
 - [`per-core-runtime-decision.md`](./per-core-runtime-decision.md): P5 per-core accept
-  モデル（`SO_REUSEPORT` + `current_thread` ランタイム ×N）の採否検討（イシュー #589、
-  親 #581 Phase 2、ルート #579。actix-web/ntex 帯（約 54 万 RPS）到達に必要な構造だが、
-  4 拡張点 trait・`crates/routes` ハンドラ型・accept ループ・graceful shutdown（#313）・
-  rebind（#485/#488）・WS キャンセル（#489〜#499）・`SessionDrain`（#498）の全並行機構
-  へ波及し影響範囲を限定できないため不採用。安全性・AI ファースト保守性優先の設計
-  原則との衝突・fail-closed 原則を根拠に記録し、opt-in feature 化案を含む再検討条件を
-  明文化）
+  モデルの採否検討（イシュー #589、親 #581 Phase 2、ルート #579。actix-web/ntex 帯
+  （約 54 万 RPS）到達に必要な構造を、accept 並列化（`SO_REUSEPORT` + コアごとの
+  accept 経路、`Send` 契約維持、軸 A）とハンドラの `!Send` 許容（`Rc`/`RefCell`、
+  軸 B）の独立した 2 軸に分解して評価。軸 A 単独は 4 拡張点 trait・`crates/routes`
+  ハンドラ型・13 公開クレートのバージョニングに影響せず、accept/bind 層と graceful
+  shutdown（#313）・rebind（#485/#488）・WS キャンセル（#489〜#499）・
+  `SessionDrain`（#498）の 4 並行機構に影響範囲を限定できる。軸 B を伴う一般形のみ
+  全公開契約・13 公開クレートの breaking change に波及し影響範囲を限定できないため、
+  軸 A + 軸 B の一般形を不採用と結論（軸 A 単独案は否定せず、opt-in feature 化案の
+  第一候補として再検討条件に明記）。fail-closed 原則を根拠に記録）
