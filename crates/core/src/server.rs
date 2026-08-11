@@ -3692,10 +3692,18 @@ GET /c HTTP/1.1\r\n\r\n",
         // 超」となる複数リクエストを送り、全リクエストが正常応答されることを
         // 確認する。接続単位で使い回す `sleep` の `reset()` が反復ごとに
         // 正しく行われていない（reset 漏れ）と、2 リクエスト目以降が
-        // 「前回反復からの経過時間」ベースで誤タイムアウトしてしまう
-        // （read_timeout=1s、リクエスト間隔 400ms × 3 回、合計送信時間
-        // 800ms は read_timeout を超える。並列 CI 実行下のスケジューリング
-        // 遅延でもフレークしないよう余裕を持たせた値、600ms のスラック）。
+        // 「前回反復からの経過時間」ベースで誤タイムアウトしてしまう。
+        //
+        // read_timeout=1s、リクエスト間隔 700ms × 2 回（3 リクエスト目は
+        // Connection: close）。個々の間隔（700ms）は read_timeout 未満で
+        // reset が正しく行われれば余裕を持って通る一方、reset が 1 回でも
+        // 漏れると「前回反復からの経過時間」ではなく最初のリクエスト起点の
+        // 元デッドライン（1s）が基準のままになり、2 回目の間隔終了時点
+        // （累計 1400ms）はそのデッドラインを 400ms 超過するため確実に
+        // タイムアウトする（Bugbot 指摘 fa4a3c51-cf40-43a6-8d2a-057d8a460873:
+        // 旧 400ms × 2 回（累計 800ms）は read_timeout(1s) 未満で reset 漏れ
+        // を検出できなかった）。並列 CI 実行下のスケジューリング遅延を
+        // 考慮しても両側に十分な余裕がある値。
         let handler = FixedHandler {
             status: 200,
             body: b"ok",
@@ -3709,13 +3717,14 @@ GET /c HTTP/1.1\r\n\r\n",
 
         let client_task = tokio::spawn(async move {
             // keep-alive の 2 リクエストを read_timeout(1s) より短い
-            // 400ms 間隔で送信する。
+            // 700ms 間隔で送信する（累計 1400ms は read_timeout を超え、
+            // reset 漏れを確実に検出する）。
             for _ in 0..2 {
                 client
                     .write_all(b"GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n")
                     .await
                     .unwrap();
-                tokio::time::sleep(Duration::from_millis(400)).await;
+                tokio::time::sleep(Duration::from_millis(700)).await;
             }
             // 3 リクエスト目は Connection: close で送り、サーバ側ループを
             // 正常終了させる。
