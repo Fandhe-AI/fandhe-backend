@@ -76,6 +76,24 @@ fandhe-backend/
 │   │                            # #499（10 節）でキャンセルの適用範囲を受信待ちから
 │   │                            # ユーザーハンドラ実行中・返信/Close 送出中へ拡大し、
 │   │                            # `race_cancel` による即時打ち切り意味論を採用）
+│   │   ├── per-core-runtime-decision.md  # P5 per-core accept モデルの採否検討
+│   │   │                        # （イシュー #589、親 #581 Phase 2、ルート #579。
+│   │   │                        # actix-web/ntex 帯（約 54 万 RPS）到達に必要な構造を、
+│   │   │                        # accept 並列化（`SO_REUSEPORT` + コアごとの accept
+│   │   │                        # 経路、`Send` 契約維持、軸 A）とハンドラの `!Send`
+│   │   │                        # 許容（`Rc`/`RefCell`、軸 B）の独立した 2 軸に分解
+│   │   │                        # して評価。軸 A 単独は 4 拡張点 trait・
+│   │   │                        # `crates/routes` ハンドラ型・13 公開クレートの
+│   │   │                        # バージョニングに影響せず、accept/bind 層と
+│   │   │                        # graceful shutdown（#313）・rebind 世代 drain
+│   │   │                        # （#485/#488）・WS 世代キャンセル（#489〜#499）・
+│   │   │                        # `SessionDrain`（#498）の 4 並行機構に影響範囲を
+│   │   │                        # 限定できる。軸 B を伴う一般形のみ全公開契約・
+│   │   │                        # 13 公開クレートの breaking change に波及し影響範囲を
+│   │   │                        # 限定できないため、軸 A + 軸 B の一般形を不採用と
+│   │   │                        # 結論（軸 A 単独案は否定せず、opt-in feature 化案の
+│   │   │                        # 第一候補として再検討条件に明記）。fail-closed 原則を
+│   │   │                        # 根拠に記録
 │   │   └── zero-copy-request-head.md  # P1 ヘッダゼロコピー化（`RequestHead` の Range
 │   │                            # 保持）の設計検討（イシュー #588、性能改善ツリー #579
 │   │                            # Phase 2。公開 API 影響の全量調査（72 参照ファイル）・

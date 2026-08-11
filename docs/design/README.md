@@ -165,6 +165,17 @@
   シグネチャ変更不要の 3 層構造根拠、`fandhe_backend_plugin_websocket::handle_upgrade`
   の breaking change 方針、新規依存・tokio feature 追加なしの確認を記述。コード実装は
   後続の #491（コア配線）・#492（Close frame 送信）・#493（統合テスト・doc 更新）が担う）
+- [`per-core-runtime-decision.md`](./per-core-runtime-decision.md): P5 per-core accept
+  モデルの採否検討（イシュー #589、親 #581 Phase 2、ルート #579。actix-web/ntex 帯
+  （約 54 万 RPS）到達に必要な構造を、accept 並列化（`SO_REUSEPORT` + コアごとの
+  accept 経路、`Send` 契約維持、軸 A）とハンドラの `!Send` 許容（`Rc`/`RefCell`、
+  軸 B）の独立した 2 軸に分解して評価。軸 A 単独は 4 拡張点 trait・`crates/routes`
+  ハンドラ型・13 公開クレートのバージョニングに影響せず、accept/bind 層と graceful
+  shutdown（#313）・rebind（#485/#488）・WS キャンセル（#489〜#499）・
+  `SessionDrain`（#498）の 4 並行機構に影響範囲を限定できる。軸 B を伴う一般形のみ
+  全公開契約・13 公開クレートの breaking change に波及し影響範囲を限定できないため、
+  軸 A + 軸 B の一般形を不採用と結論（軸 A 単独案は否定せず、opt-in feature 化案の
+  第一候補として再検討条件に明記）。fail-closed 原則を根拠に記録）
 - [`zero-copy-request-head.md`](./zero-copy-request-head.md): P1 ヘッダゼロコピー化
   （`RequestHead` の Range 保持）の設計検討（イシュー #588、性能改善ツリー #579 Phase 2。
   `RequestHead` の公開 API 全量調査（72 参照ファイル）・ライフタイム設計 3 案比較
