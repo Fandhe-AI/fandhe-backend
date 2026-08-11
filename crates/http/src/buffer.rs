@@ -19,8 +19,6 @@
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::response::Response;
-
 /// 一括読み取りするチャンクサイズ。
 ///
 /// 大きすぎると小さいリクエストでも無駄なメモリ確保が増え、小さすぎると
@@ -185,101 +183,6 @@ impl RecvBuffer {
     }
 }
 
-/// 接続単位で再利用するレスポンス送信バッファ（イシュー #584）。
-///
-/// コアの接続ループ（`crates/core/src/server.rs`）が 1 コネクションにつき
-/// [`SendBuffer`] を 1 つ保持し、応答ごとに [`Self::serialize_response`] →
-/// `AsyncWriteExt::write_all`（戻り値のスライスを書き出す）→
-/// [`Self::shrink_if_oversized`] の順で使う契約。[`RecvBuffer`]（受信側の
-/// 接続単位再利用バッファ）と対になる送信側の実装で、keep-alive 接続における
-/// 応答ごとの `Vec` 新規確保（従来の [`Response::serialize`] 呼び出し）を
-/// 接続の生存期間で 1 回に減らす。
-///
-/// コアの接続ループ（別クレート）から縮小ポリシーを発火する必要があるため、
-/// [`RecvBuffer`] と異なり公開型・公開 API とする。
-#[derive(Debug, Default)]
-pub struct SendBuffer {
-    buf: Vec<u8>,
-}
-
-impl SendBuffer {
-    /// 空のバッファを作る（初回 [`Self::serialize_response`] 呼び出しまで
-    /// heap alloc を行わない）。
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use fandhe_backend_http::buffer::SendBuffer;
-    ///
-    /// let buf = SendBuffer::new();
-    /// assert_eq!(buf.capacity(), 0);
-    /// ```
-    #[must_use]
-    pub fn new() -> Self {
-        Self { buf: Vec::new() }
-    }
-
-    /// `response` を [`Response::serialize_into`] で内部バッファへ直列化し、
-    /// 送出可能なワイヤバイト列のスライスを返す。
-    ///
-    /// [`Response::serialize_into`] の契約どおり、呼び出し直後に内部バッファは
-    /// `clear` されるため、前応答の残留バイトが混入することはない
-    /// （レスポンス分割対策、`.claude/rules/security.md`）。
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use fandhe_backend_http::buffer::SendBuffer;
-    /// use fandhe_backend_http::response::Response;
-    ///
-    /// let mut send_buf = SendBuffer::new();
-    /// let res = Response::new(200, b"hi".to_vec());
-    /// let wire = send_buf.serialize_response(&res, true).to_vec();
-    /// assert_eq!(wire, res.serialize(true));
-    /// ```
-    pub fn serialize_response(&mut self, response: &Response, keep_alive: bool) -> &[u8] {
-        response.serialize_into(keep_alive, &mut self.buf);
-        &self.buf
-    }
-
-    /// 応答送信完了後に呼び、容量が `MAX_RETAINED_CAPACITY`（[`RecvBuffer`]
-    /// と共用する 64 KiB 上限）を超えていれば縮小する。
-    ///
-    /// 大 body 応答を送出した直後の keep-alive 接続が、次リクエストの読み取り
-    /// 待ちの間もその容量を無条件に保持し続けるとメモリ滞留要因になるため、
-    /// 送信完了直後に呼ぶ契約とする（`RecvBuffer::shrink_if_oversized` と
-    /// 同一のポリシー、`.claude/rules/security.md` リソース枯渇対策）。
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use fandhe_backend_http::buffer::SendBuffer;
-    /// use fandhe_backend_http::response::Response;
-    ///
-    /// let mut send_buf = SendBuffer::new();
-    /// let big_body = vec![0u8; 128 * 1024];
-    /// let res = Response::new(200, big_body);
-    /// send_buf.serialize_response(&res, true);
-    /// send_buf.shrink_if_oversized();
-    /// assert!(send_buf.capacity() <= 64 * 1024);
-    /// ```
-    pub fn shrink_if_oversized(&mut self) {
-        if self.buf.capacity() <= MAX_RETAINED_CAPACITY {
-            return;
-        }
-        self.buf.clear();
-        self.buf.shrink_to(MAX_RETAINED_CAPACITY);
-    }
-
-    /// 内部バッファの現在の容量（バイト数）を返す。
-    ///
-    /// [`RecvBuffer::capacity`] と同型の観測・テスト補助 API。
-    #[must_use]
-    pub fn capacity(&self) -> usize {
-        self.buf.capacity()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,66 +301,5 @@ mod tests {
         let mut buf = RecvBuffer::new();
         let n = buf.read_chunk(&mut socket).await.unwrap();
         assert_eq!(n, 0);
-    }
-
-    // --- SendBuffer（イシュー #584） ---
-
-    #[test]
-    fn send_buffer_new_has_zero_capacity() {
-        let buf = SendBuffer::new();
-        assert_eq!(buf.capacity(), 0);
-    }
-
-    #[test]
-    fn send_buffer_serialize_response_matches_response_serialize() {
-        let mut send_buf = SendBuffer::new();
-        let res = crate::response::Response::new(200, b"payload".to_vec());
-        let wire = send_buf.serialize_response(&res, true).to_vec();
-        assert_eq!(wire, res.serialize(true));
-    }
-
-    #[test]
-    fn send_buffer_reuses_capacity_across_two_responses_without_stale_bytes() {
-        let mut send_buf = SendBuffer::new();
-        let first = crate::response::Response::new(200, b"first response".to_vec());
-        let second = crate::response::Response::empty(404);
-
-        let first_wire = send_buf.serialize_response(&first, true).to_vec();
-        assert_eq!(first_wire, first.serialize(true));
-        let cap_after_first = send_buf.capacity();
-        assert!(cap_after_first > 0);
-
-        let second_wire = send_buf.serialize_response(&second, true).to_vec();
-        // 2 回目の直列化が 1 回目のバイト列を混入させない（clear 契約が
-        // SendBuffer 経由でも効いていることを end-to-end で確認）。
-        assert_eq!(second_wire, second.serialize(true));
-        // 2 回目は 1 回目より小さい応答のため、`Vec::clear` + `reserve` は
-        // 再確保を起こさず容量を維持する（バッファが実際に再利用されている
-        // ことの確認）。
-        assert_eq!(send_buf.capacity(), cap_after_first);
-    }
-
-    #[test]
-    fn send_buffer_shrink_if_oversized_shrinks_large_capacity() {
-        let mut send_buf = SendBuffer::new();
-        let big_body = vec![0xabu8; MAX_RETAINED_CAPACITY * 2];
-        let res = crate::response::Response::new(200, big_body);
-        send_buf.serialize_response(&res, true);
-        assert!(send_buf.capacity() > MAX_RETAINED_CAPACITY);
-
-        send_buf.shrink_if_oversized();
-        assert!(send_buf.capacity() <= MAX_RETAINED_CAPACITY);
-    }
-
-    #[test]
-    fn send_buffer_shrink_if_oversized_keeps_capacity_at_or_below_threshold_untouched() {
-        let mut send_buf = SendBuffer::new();
-        let res = crate::response::Response::new(200, b"small".to_vec());
-        send_buf.serialize_response(&res, true);
-        let cap_before = send_buf.capacity();
-        assert!(cap_before <= MAX_RETAINED_CAPACITY);
-
-        send_buf.shrink_if_oversized();
-        assert_eq!(send_buf.capacity(), cap_before);
     }
 }

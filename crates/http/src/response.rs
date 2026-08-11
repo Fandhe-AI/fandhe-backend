@@ -623,7 +623,9 @@ impl Response {
     ///
     /// コアの接続ループ（`crates/core/src/server.rs`）が keep-alive 接続で
     /// 応答ごとに新規 `Vec` を確保するコストを避けるため、接続単位で保持する
-    /// [`crate::buffer::SendBuffer`] 経由で本メソッドを繰り返し呼ぶ契約。
+    /// `crates/core` 側の非公開バッファ型（`SendBuffer`。接続ループ専用の
+    /// 内部実装であり `crates/http` の公開 API 面には出さない、イシュー
+    /// #595）経由で本メソッドを繰り返し呼ぶ契約。
     ///
     /// # `out` の扱い（レスポンス分割対策）
     ///

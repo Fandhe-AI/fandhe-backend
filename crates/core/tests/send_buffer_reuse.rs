@@ -1,8 +1,9 @@
 //! レスポンス直列化バッファの接続単位再利用（イシュー #584）の実 TCP 接続
 //! 経由の統合テスト。
 //!
-//! `crates/http` 側（`fandhe_backend_http::buffer::SendBuffer` /
-//! `Response::serialize_into`）は単体テストで検証済みだが、本ファイルは
+//! `crates/core` 側の非公開実装（`crate::send_buffer::SendBuffer`）/
+//! `crates/http` の `Response::serialize_into` は単体テストで検証済みだが、
+//! 本ファイルは
 //! `handle_connection_with_permit`（`crates/core/src/server.rs`）が実際に
 //! keep-alive 接続で `SendBuffer` を接続単位で再利用しても、応答ごとの
 //! ワイヤバイト列が従来の `Response::serialize` 相当のまま正しいこと

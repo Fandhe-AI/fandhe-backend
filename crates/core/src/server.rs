@@ -95,7 +95,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::JoinSet;
 
 use fandhe_backend_http::body::BodyError;
-use fandhe_backend_http::buffer::{RecvBuffer, SendBuffer};
+use fandhe_backend_http::buffer::RecvBuffer;
 use fandhe_backend_http::chunked::{ChunkedError, encode_chunk, encode_terminator};
 use fandhe_backend_http::connection::{RequestError, read_request_with_limit, should_keep_alive};
 use fandhe_backend_http::request::{HttpVersion, ParseError, RequestHead};
@@ -103,6 +103,7 @@ use fandhe_backend_http::response::Response;
 
 use crate::extension::{GateContext, GateOutcome, Middleware, RequestGate, UpgradeHandler};
 use crate::interceptor::Interceptor;
+use crate::send_buffer::SendBuffer;
 use crate::streaming::{RecvOutcome, StreamingResponse};
 
 /// `read_request` 1 回あたりの読み取りタイムアウトの既定値（スロークライアント対策）。
@@ -2209,7 +2210,8 @@ pub(crate) async fn handle_connection_with_permit<S>(
     // 接続単位で再利用する送信バッファ（イシュー #584）。keep-alive 接続の
     // 通常応答経路・gate 拒否経路（下記 2 箇所）が応答ごとに新規 `Vec` を
     // 確保していたコストを、接続の生存期間で 1 回の確保に減らす
-    // （`fandhe_backend_http::buffer::SendBuffer` の doc を参照）。エラー
+    // （`crate::send_buffer::SendBuffer` の doc を参照。接続ループ専用の
+    // 内部型で `crates/http` の公開 API 面には出さない、イシュー #595）。エラー
     // 応答・503・501 等の直後に `return` する一発経路は対象外のまま
     // （差分最小化。効果が薄い経路のため、`crates/http` の
     // `Response::serialize` を直接使い続ける）。
