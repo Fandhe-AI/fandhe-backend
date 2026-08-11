@@ -40,8 +40,17 @@ workspace = true
 # fandhe-backend-routes（crates/routes、TASK-1.5 / #14）は依存方向グラフ上のエッジ
 # `server → routes` を実体化する唯一の workspace 内依存追加。外部 crates.io
 # 依存はここでも増えない（fandhe-backend-routes 自体が fandhe-backend-http のみに依存する中間層）。
+#
+# `fandhe-backend-http` の `net` feature（既定 off）: コアは実ソケットの
+# accept を担う唯一のクレートであり、accept 直後に `fandhe_backend_http::
+# socket::configure_stream`（TCP_NODELAY 設定、TASK-1.3-3 / #68）を常時呼ぶ
+# 契約（イシュー #587）。コア自身が上記 tokio 依存で `net` feature を無条件
+# 必須化しているため、ここで `net` を有効化しても依存グラフに新規外部依存
+# （`mio` 等）は一切増えない。`fandhe-backend-http` を単体利用する場合の
+# 既定 off（`net` 未指定）は不変（pay-for-what-you-use、
+# .claude/rules/pay-for-what-you-use.md）。
 [dependencies]
-fandhe-backend-http = { workspace = true }
+fandhe-backend-http = { workspace = true, features = ["net"] }
 fandhe-backend-routes = { workspace = true }
 tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time", "sync"] }
 

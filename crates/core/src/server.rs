@@ -1624,13 +1624,39 @@ async fn drain_listener_backlog(
             break;
         };
         match std::future::poll_fn(|cx| Poll::Ready(listener.poll_accept(cx))).await {
-            Poll::Ready(Ok((stream, peer_addr))) => drained.push((stream, peer_addr, permit)),
+            Poll::Ready(Ok((stream, peer_addr))) => {
+                // 旧世代（rebind 前）バックログ経由の接続も、通常 accept 経路
+                // （`run_until` の主ループ）と同一の TCP_NODELAY 契約を適用する
+                // （イシュー #587、`configure_accepted_stream` の doc を参照）。
+                configure_accepted_stream(&stream);
+                drained.push((stream, peer_addr, permit));
+            }
             // Pending = backlog 空。Err（ECONNABORTED 等）も fail-closed で
             // 打ち切る。いずれの分岐でも `permit` はスコープアウトで自動解放。
             Poll::Ready(Err(_)) | Poll::Pending => break,
         }
     }
     drained
+}
+
+/// accept 直後のソケットへ `fandhe_backend_http::socket::configure_stream`
+/// （TCP_NODELAY 有効化）を適用する（イシュー #587）。
+///
+/// コアの接続受理経路 2 箇所（[`BoundServer::run_until`] の主 accept ループ・
+/// rebind 時の旧 listener backlog 回収 [`drain_listener_backlog`]）双方から
+/// 呼ばれ、「accept したソケット全件」へ漏れなく適用する契約とする。
+///
+/// TCP_NODELAY はレイテンシ最適化であり、正当性・認可・入力検証のいずれにも
+/// 関与しない。設定失敗時は該当接続を拒否せずログのみ残して処理を継続する
+/// フェイルオープン方針を採る（`.claude/rules/security.md` の「安全性に関わる
+/// 判定はフェイルクローズ、最適化はフェイルオープン」に整合。既存の同時接続数
+/// 上限・accept エラーバックオフは本関数の影響を受けない）。
+fn configure_accepted_stream(stream: &TcpStream) {
+    if let Err(err) = fandhe_backend_http::socket::configure_stream(stream) {
+        eprintln!(
+            "fandhe_backend_core::server: TCP_NODELAY の設定に失敗しました（接続は継続します）: {err}"
+        );
+    }
 }
 
 impl BoundServer {
@@ -1828,6 +1854,19 @@ impl BoundServer {
     /// 変更する破壊的変更として扱う必要がある（詳細・判断根拠は
     /// `docs/design/graceful-shutdown.md` 7.2 節を参照）。
     ///
+    /// # TCP_NODELAY（イシュー #587）
+    ///
+    /// accept した全ソケット（本関数の主 accept ループ・「稼働中の再バインド」
+    /// 節の rebind backlog 回収 [`drain_listener_backlog`] の双方）に対し、
+    /// 非公開ヘルパ `configure_accepted_stream` 経由で
+    /// `fandhe_backend_http::socket::configure_stream`（TCP_NODELAY 有効化）
+    /// を適用する。Nagle アルゴリズムによる ACK 待ち遅延蓄積を避け、特に
+    /// [`Handler::handle_streaming`] の多段 write でのレイテンシ悪化を防ぐ。
+    /// 設定失敗はフェイルオープン（ログのみ・接続は継続）とし、レイテンシ
+    /// 最適化の失敗を理由に可用性を落とさない
+    /// （`.claude/rules/security.md` の安全性判定はフェイルクローズ・
+    /// 最適化はフェイルオープンという整理に従う）。
+    ///
     /// # 既知の限界
     ///
     /// 上記の 503 拒否は shutdown_flag 受信「後」に到着した Upgrade
@@ -1915,7 +1954,12 @@ impl BoundServer {
                     // `peer_addr` はイシュー #486 で `GateContext` 経由
                     // `RequestGate::check` へ伝搬する（下記 spawn 先を参照）。
                     // 以前は破棄していた値。
-                    Ok((stream, peer_addr)) => Some((stream, peer_addr, permit)),
+                    Ok((stream, peer_addr)) => {
+                        // 主 accept 経路（イシュー #587。`configure_accepted_stream`
+                        // の doc・rebind backlog 経路の同種呼び出しを参照）。
+                        configure_accepted_stream(&stream);
+                        Some((stream, peer_addr, permit))
+                    }
                     Err(err) => {
                         // permit はここで（スコープを抜けると同時に）解放され、
                         // 次のループ先頭で再取得される。`run_until` の doc を参照。
@@ -4736,6 +4780,15 @@ GET /c HTTP/1.1\r\n\r\n",
         // （呼び出し元が回収した接続をサーブする前提、permit ゲートを
         // 迂回しないフェイルクローズ設計）。
         assert_eq!(connection_limit.available_permits(), 7);
+        // イシュー #587: rebind backlog 経由で回収した接続にも TCP_NODELAY
+        // が適用済みであること（`drain_listener_backlog` 内の
+        // `configure_accepted_stream` 呼び出しの回帰確認）。
+        for (stream, _, _) in &drained {
+            assert!(
+                stream.nodelay().expect("nodelay() は成功する"),
+                "drain_listener_backlog が回収した接続は TCP_NODELAY が有効であるべき"
+            );
+        }
     }
 
     #[tokio::test]
@@ -4784,5 +4837,30 @@ GET /c HTTP/1.1\r\n\r\n",
 
         assert!(drained.is_empty());
         assert_eq!(connection_limit.available_permits(), 10);
+    }
+
+    // `configure_accepted_stream`（イシュー #587）の単体テスト。実
+    // `TcpListener` で accept した実ソケットに対して TCP_NODELAY が
+    // 有効化されることを確認する（`run_until` の主 accept ループが呼ぶ
+    // ものと同一関数）。
+
+    #[tokio::test]
+    async fn configure_accepted_stream_enables_nodelay() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind は成功する");
+        let addr = listener.local_addr().expect("local_addr は成功する");
+
+        let accept_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept は成功する");
+            configure_accepted_stream(&stream);
+            assert!(
+                stream.nodelay().expect("nodelay() は成功する"),
+                "configure_accepted_stream 適用後は TCP_NODELAY が有効であるべき"
+            );
+        });
+
+        let _client = TcpStream::connect(addr).await.expect("connect は成功する");
+        accept_task.await.expect("accept task は panic しない");
     }
 }
