@@ -481,8 +481,17 @@ pub fn parse_request_head(buf: &[u8]) -> Result<ParseOutcome, ParseError> {
     // 区切りは無い（`header_section` は終端の空行を含まない）ため）。事前に
     // 数えて `Vec::with_capacity` することで、ヘッダ本数 N に応じた再確保を
     // 排除し alloc 回数を定数化する（設計文書 5.1 節の実測根拠）。
+    //
+    // `header_count` は最大 16 KiB の未信頼なヘッダ部に含まれる `\r\n` を
+    // 単純カウントした値であり、`MAX_HEADER_COUNT` 検査（下のループ内）より
+    // 前に確保処理へ渡すと、多数の空行等を送るだけで上限 100 件を大きく超える
+    // 容量を検査前に確保できてしまう（並行接続によるメモリ枯渇 DoS の増幅、
+    // Codex レビュー PR #602 P0 指摘対応）。`MAX_HEADER_COUNT` で上限クランプ
+    // してから確保することで、最終的に `TooManyHeaders` として拒否される
+    // リクエストでも確保量を定数上限内に抑える（fail-closed、[[security]]）。
     let header_count = count_subslice(header_section, b"\r\n");
-    let mut headers: Vec<(Range<usize>, Range<usize>)> = Vec::with_capacity(header_count);
+    let capacity = header_count.min(MAX_HEADER_COUNT);
+    let mut headers: Vec<(Range<usize>, Range<usize>)> = Vec::with_capacity(capacity);
     for line_range in lines {
         if headers.len() >= MAX_HEADER_COUNT {
             return Err(ParseError::TooManyHeaders);
