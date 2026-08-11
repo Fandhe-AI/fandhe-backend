@@ -312,7 +312,22 @@ fandhe-backend/
 │   │                                    # エンコーダ）でレスポンス側 chunked ストリーミング送信を
 │   │                                    # 提供（`crates/core` の `Handler::handle_streaming` opt-in
 │   │                                    # 拡張点から使用、既存の Content-Length 応答は無変更で
-│   │                                    # 後方互換維持、イシュー #319）
+│   │                                    # 後方互換維持、イシュー #319）。
+│   │                                    # `Response::serialize_into` +
+│   │                                    # `buffer::SendBuffer` で通常応答経路の
+│   │                                    # レスポンス直列化バッファを接続単位で再利用
+│   │                                    # できるようにした（イシュー #584。`RecvBuffer`
+│   │                                    # と対になる送信側、64 KiB 縮小上限を共用）。
+│   │                                    # 整数（status / Content-Length）は
+│   │                                    # `to_string()` の alloc を避ける非公開ヘルパ
+│   │                                    # `write_decimal` で手書き直列化する（itoa 等の
+│   │                                    # 依存追加なし）。既存 `Response::serialize` は
+│   │                                    # `serialize_into` への薄い委譲として後方互換を
+│   │                                    # 維持。`crates/core` の接続ループ
+│   │                                    # （`handle_connection_with_permit`）が
+│   │                                    # 通常応答・gate 拒否応答の 2 経路で `SendBuffer`
+│   │                                    # を使う（エラー/503/501 等の直後に接続を
+│   │                                    # 閉じる一発応答経路は対象外のまま）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
