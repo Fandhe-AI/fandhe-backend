@@ -103,6 +103,7 @@ use fandhe_backend_http::response::Response;
 
 use crate::extension::{GateContext, GateOutcome, Middleware, RequestGate, UpgradeHandler};
 use crate::interceptor::Interceptor;
+use crate::send_buffer::SendBuffer;
 use crate::streaming::{RecvOutcome, StreamingResponse};
 
 /// `read_request` 1 回あたりの読み取りタイムアウトの既定値（スロークライアント対策）。
@@ -124,6 +125,14 @@ use crate::streaming::{RecvOutcome, StreamingResponse};
 /// `read_timeout` だけ read がブロックし、その間 permit を握ったまま
 /// 総生存期間を超過する」経路を塞ぐ。
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// read タイムアウトの deadline 計算（`Instant::checked_add`）が桁あふれした
+/// 場合の fail-safe フォールバック（イシュー #585）。実質的に発火しない
+/// 遠未来の deadline へ倒すことで `Instant` 加算の panic を防ぐ
+/// （`.claude/rules/coding-rust.md` の panic 非許容方針）。既定構成では
+/// `read_timeout` が `max_connection_lifetime` の残りに丸められるため
+/// （本モジュールの `remaining_lifetime` 計算）通常経路では到達しない。
+const FAR_FUTURE_FALLBACK: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// レスポンス側 chunked ストリーミング送信（[`Handler::handle_streaming`]、
 /// イシュー #319）の各書き込み待ちの既定タイムアウト。
@@ -610,11 +619,14 @@ impl Server {
     /// - `Duration::ZERO` を指定すると、まだ届いていないリクエストの読み取り
     ///   待ちには即座にタイムアウトし、応答を送らず接続を閉じる（フェイルクローズ。
     ///   [`Server::max_connection_lifetime`] の `ZERO` 時の挙動と同じ「閉じる側に
-    ///   倒れる」設計であり、実運用では避けること）。`tokio::time::timeout` は
-    ///   内部の読み取りを先にポーリングするため、読み取り時点で既にデータが
-    ///   到着済み（パイプライン済みリクエスト等）の場合はタイムアウトより先に
-    ///   読み取りが完了しうる点に注意（`0` はあくまで「待たない」設定であり、
-    ///   到着済みデータの処理自体を禁止するものではない）。
+    ///   倒れる」設計であり、実運用では避けること）。内部実装は接続単位で
+    ///   確保した `tokio::time::Sleep` を毎リクエスト `reset()` する deadline
+    ///   方式（イシュー #585。per-request の `tokio::time::timeout` 生成を
+    ///   避けタイマーホイールの登録/解除の churn を削減）で、`poll_fn` により
+    ///   読み取りを先にポーリングする契約を保っている。そのため読み取り
+    ///   時点で既にデータが到着済み（パイプライン済みリクエスト等）の場合は
+    ///   タイムアウトより先に読み取りが完了しうる点に注意（`0` はあくまで
+    ///   「待たない」設定であり、到着済みデータの処理自体を禁止するものではない）。
     /// - 実効タイムアウトは常に [`Server::max_connection_lifetime`] の残り生存
     ///   期間との短い方に丸められる（`DEFAULT_READ_TIMEOUT` の doc・#70 Bugbot
     ///   指摘を参照）。極端に大きい値を指定しても、接続の総占有時間は
@@ -2206,6 +2218,15 @@ pub(crate) async fn handle_connection_with_permit<S>(
 {
     let gate_ctx = GateContext::new(peer_addr);
     let mut buf = RecvBuffer::new();
+    // 接続単位で再利用する送信バッファ（イシュー #584）。keep-alive 接続の
+    // 通常応答経路・gate 拒否経路（下記 2 箇所）が応答ごとに新規 `Vec` を
+    // 確保していたコストを、接続の生存期間で 1 回の確保に減らす
+    // （`crate::send_buffer::SendBuffer` の doc を参照。接続ループ専用の
+    // 内部型で `crates/http` の公開 API 面には出さない、イシュー #595）。エラー
+    // 応答・503・501 等の直後に `return` する一発経路は対象外のまま
+    // （差分最小化。効果が薄い経路のため、`crates/http` の
+    // `Response::serialize` を直接使い続ける）。
+    let mut send_buf = SendBuffer::new();
     // 接続の総生存期間・keep-alive 中の総リクエスト数を計測する（#70 レビュー
     // 指摘、`.claude/rules/security.md` のリソース枯渇観点。DEFAULT_READ_TIMEOUT の
     // doc・Server::max_connection_lifetime / max_requests_per_connection の
@@ -2215,6 +2236,17 @@ pub(crate) async fn handle_connection_with_permit<S>(
     // 0 を指定しても最低 1 リクエストは処理してから閉じる
     // （Server::max_requests_per_connection の doc を参照）。
     let max_requests = server.max_requests_per_connection.max(1);
+
+    // read タイムアウト用の `Sleep` を接続単位で 1 本だけ確保し、各反復で
+    // `reset()` して deadline を更新することで per-request の `Sleep`
+    // 構築・drop（tokio 共有タイマーホイールへの登録/解除）を避ける
+    // （イシュー #585。旧実装は `tokio::time::timeout` をループ内で毎回
+    // 生成しており、高 RPS・多接続下でタイマーホイールのロック競合源に
+    // なっていた）。初期 deadline はループ先頭で必ず reset するため
+    // 仮値でよい。`Sleep` は `!Unpin` のため `tokio::pin!` でスタック上に
+    // 固定し、`Box::pin` の追加アロケーションを避ける。
+    let sleep = tokio::time::sleep_until(tokio::time::Instant::now());
+    tokio::pin!(sleep);
 
     loop {
         // 次のリクエストを読みに行く前に総生存期間の上限を確認する。これにより
@@ -2238,16 +2270,54 @@ pub(crate) async fn handle_connection_with_permit<S>(
             .saturating_sub(elapsed_since_start);
         let read_timeout = server.read_timeout.min(remaining_lifetime);
 
-        let read_result = tokio::time::timeout(
-            read_timeout,
-            read_request_with_limit(&mut stream, &mut buf, server.max_body_bytes),
-        )
-        .await;
+        // 接続単位で確保済みの `sleep` を今回の read_timeout へ reset する
+        // （`Sleep` の新規構築ではなく既存タイマーエントリの deadline
+        // 更新。`checked_add` で `Instant` の桁あふれを防ぎ、万一の
+        // 極端値は「実質発火しない遠未来」へ倒す fail-safe。通常経路では
+        // remaining_lifetime が max_connection_lifetime 以下に丸められる
+        // ため到達しない）。reset は毎反復ここで必ず行う
+        // （`continue` 相当の分岐がなく全反復がこの行を通過するため
+        // reset 漏れ = タイムアウト無効化のリスクはない）。
+        let now = tokio::time::Instant::now();
+        let deadline = now
+            .checked_add(read_timeout)
+            .unwrap_or_else(|| now.checked_add(FAR_FUTURE_FALLBACK).unwrap_or(now));
+        sleep.as_mut().reset(deadline);
+
+        // `tokio::time::timeout` は内部 future（read）を先にポーリングする
+        // 契約を持つ。`std::future::poll_fn` で read を必ず先にポーリング
+        // させることでこれを明示的に再現し、`read_timeout_zero_fails_closed`
+        // （ZERO 指定時のフェイルクローズ）の前提を保存する（read が
+        // Pending のときのみ deadline 側をポーリングし、Pending ならまだ
+        // 発火していないので全体も Pending。#585）。`tokio::select!`
+        // （`macros` feature 要）は使わず、std のみでコアの tokio feature
+        // 構成（`Cargo.toml` の 5 feature 限定コメント）を増やさない。
+        let read_result = {
+            // `read_fut` は `stream`/`buf` を借用するため、この内側ブロックで
+            // 完了後すぐ drop させる（借用がループ本体の後続処理
+            // （応答の書き込み等、`stream` の再借用）まで残ると借用エラーに
+            // なるため）。
+            let mut read_fut = std::pin::pin!(read_request_with_limit(
+                &mut stream,
+                &mut buf,
+                server.max_body_bytes
+            ));
+            std::future::poll_fn(|cx| {
+                if let Poll::Ready(result) = read_fut.as_mut().poll(cx) {
+                    return Poll::Ready(Ok(result));
+                }
+                if sleep.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(Err(()));
+                }
+                Poll::Pending
+            })
+            .await
+        };
 
         let request = match read_result {
             // タイムアウト（スロークライアント・keep-alive アイドル超過）:
             // 応答を送らず接続を閉じる。
-            Err(_elapsed) => return,
+            Err(()) => return,
             Ok(Err(err)) => {
                 if let Some(response) = error_response(&err) {
                     // エラー応答は常に接続クローズ（フェイルセーフ）。
@@ -2290,16 +2360,21 @@ pub(crate) async fn handle_connection_with_permit<S>(
             };
             // ゲート実装が組み立てた検証済み `Response` をそのまま送出する
             // （イシュー #424）。`Content-Length` / `Connection` は
-            // `serialize(keep_alive)` がフレーミング管理の一元責務として
-            // 上書き決定するため、ゲート側の値を尊重する必要はない
+            // `serialize_into(keep_alive, ..)` がフレーミング管理の一元責務
+            // として上書き決定するため、ゲート側の値を尊重する必要はない
             // （`Response::with_header` が両ヘッダ名を予約名として拒否済み）。
+            // この経路はループ内で `continue` するため `send_buf`
+            // （接続単位再利用、イシュー #584）の再利用対象。
             if stream
-                .write_all(&response.serialize(keep_alive))
+                .write_all(send_buf.serialize_response(&response, keep_alive))
                 .await
                 .is_err()
             {
                 return;
             }
+            // 応答送信完了後に縮小（次リクエストの read 待ちの間、大容量を
+            // 抱えない。`RecvBuffer::shrink_if_oversized` と同一ポリシー）。
+            send_buf.shrink_if_oversized();
             for middleware in &server.middlewares {
                 middleware.on_response(&request.head, started_at.elapsed());
             }
@@ -2343,6 +2418,10 @@ pub(crate) async fn handle_connection_with_permit<S>(
             // （TASK-4.1 / #22、先行到着フレームを取りこぼさないため）。
             let leftover = buf.unread().to_vec();
             drop(buf);
+            // 以降このループ反復では `send_buf` も読まない（両分岐とも
+            // `return` する）ため、`buf` と同様に明示的な `drop` で意図を
+            // 示す（イシュー #584）。
+            drop(send_buf);
             match crate::plugin::try_handle_upgrade(
                 stream,
                 &request.head,
@@ -2500,13 +2579,20 @@ pub(crate) async fn handle_connection_with_permit<S>(
             && connection_started_at.elapsed() < server.max_connection_lifetime
             && !shutdown_flag.load(Ordering::Relaxed);
 
+        // 通常応答経路（イシュー #584）: 接続単位で保持する `send_buf` を
+        // 再利用し、keep-alive 応答ごとの `Vec` 新規確保・`to_string()`
+        // alloc（`Response::serialize_into` が手書き整数直列化で回避）を
+        // なくす。
         if stream
-            .write_all(&response.serialize(keep_alive))
+            .write_all(send_buf.serialize_response(&response, keep_alive))
             .await
             .is_err()
         {
             return;
         }
+        // 応答送信完了後に縮小（次リクエストの read 待ちの間、大容量を
+        // 抱えない。`RecvBuffer::shrink_if_oversized` と同一ポリシー）。
+        send_buf.shrink_if_oversized();
         for middleware in &server.middlewares {
             middleware.on_response(&request.head, started_at.elapsed());
         }
@@ -3530,11 +3616,13 @@ GET /c HTTP/1.1\r\n\r\n",
         // 待ちにも即座にタイムアウトし、応答を送らず接続を閉じることを確認する
         // （受け入れ条件 2 のゼロ検証。フェイルクローズ、`Server::read_timeout`
         // の doc を参照）。クライアントが何も送らない状態（`tokio::io::duplex`
-        // に未読データなし）で検証する。`tokio::time::timeout` は内部の読み取り
-        // future を先にポーリングするため、送信済みデータがバッファにあると
-        // タイムアウトより先に読み取りが完了して即座には閉じない可能性がある
-        // （実測で確認済み）。データなしなら読み取り future は必ず Pending と
-        // なり、ZERO タイムアウトが確実に先勝ちする。
+        // に未読データなし）で検証する。deadline 方式（イシュー #585）は
+        // `poll_fn` で read を先にポーリングし、内部の読み取り future
+        // を先にポーリングする旧 `tokio::time::timeout` と同じ順序を保存
+        // しているため、送信済みデータがバッファにあるとタイムアウトより
+        // 先に読み取りが完了して即座には閉じない可能性がある（実測で確認
+        // 済み）。データなしなら読み取り future は必ず Pending となり、
+        // ZERO タイムアウトが確実に先勝ちする。
         let handler = FixedHandler {
             status: 200,
             body: b"ok",
@@ -3585,6 +3673,149 @@ GET /c HTTP/1.1\r\n\r\n",
             "read_timeout を極端に大きくしても max_connection_lifetime の上限で \
              閉じられるはずが {elapsed:?} かかった（read_timeout が生存期間で \
              丸められていないか確認）"
+        );
+    }
+
+    #[tokio::test]
+    async fn slow_client_partial_send_times_out_mid_read() {
+        // deadline 方式（イシュー #585）の回帰テスト: リクエストの先頭バイトだけ
+        // 送って停止するクライアントに対しても、`read_request_with_limit` が
+        // Pending のまま `read_timeout` 経過時点で確実にタイムアウトし応答なし
+        // クローズされることを確認する（`poll_fn` が read を必ず先に
+        // ポーリングし、Pending の間だけ `sleep` 側をポーリングする構造の
+        // 検証、部分読み取り状態からの reset・タイムアウト発火の両立）。
+        let handler = FixedHandler {
+            status: 200,
+            body: b"ok",
+            calls: AtomicUsize::new(0),
+        };
+        let server = Server::new()
+            .read_timeout(Duration::from_millis(100))
+            .handler(handler);
+        let (mut client, server_stream) = tokio::io::duplex(8192);
+        use tokio::io::AsyncWriteExt as _;
+
+        // リクエストラインの先頭だけ送信し、以降は送らずに接続を張り続ける。
+        client.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
+
+        let started = Instant::now();
+        handle_connection(&server, server_stream).await;
+        let elapsed = started.elapsed();
+        drop(client);
+
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "部分送信後に停止したクライアントが read_timeout(100ms) 近辺で \
+             閉じられるはずが {elapsed:?} かかった（reset 後のタイムアウトが \
+             発火していない可能性）"
+        );
+    }
+
+    #[tokio::test]
+    async fn keep_alive_reset_survives_multiple_requests_below_timeout() {
+        // deadline 方式（イシュー #585）の中核回帰テスト: keep-alive 接続で
+        // 「リクエスト間隔は read_timeout 未満だが、間隔の合計は read_timeout
+        // 超」となる複数リクエストを送り、全リクエストが正常応答されることを
+        // 確認する。接続単位で使い回す `sleep` の `reset()` が反復ごとに
+        // 正しく行われていない（reset 漏れ）と、2 リクエスト目以降が
+        // 「前回反復からの経過時間」ベースで誤タイムアウトしてしまう。
+        //
+        // read_timeout=1s、リクエスト間隔 700ms × 2 回（3 リクエスト目は
+        // Connection: close）。個々の間隔（700ms）は read_timeout 未満で
+        // reset が正しく行われれば余裕を持って通る一方、reset が 1 回でも
+        // 漏れると「前回反復からの経過時間」ではなく最初のリクエスト起点の
+        // 元デッドライン（1s）が基準のままになり、2 回目の間隔終了時点
+        // （累計 1400ms）はそのデッドラインを 400ms 超過するため確実に
+        // タイムアウトする（Bugbot 指摘 fa4a3c51-cf40-43a6-8d2a-057d8a460873:
+        // 旧 400ms × 2 回（累計 800ms）は read_timeout(1s) 未満で reset 漏れ
+        // を検出できなかった）。並列 CI 実行下のスケジューリング遅延を
+        // 考慮しても両側に十分な余裕がある値。
+        let handler = FixedHandler {
+            status: 200,
+            body: b"ok",
+            calls: AtomicUsize::new(0),
+        };
+        let server = Server::new()
+            .read_timeout(Duration::from_secs(1))
+            .handler(handler);
+        let (mut client, server_stream) = tokio::io::duplex(8192);
+        use tokio::io::AsyncWriteExt as _;
+
+        let client_task = tokio::spawn(async move {
+            // keep-alive の 2 リクエストを read_timeout(1s) より短い
+            // 700ms 間隔で送信する（累計 1400ms は read_timeout を超え、
+            // reset 漏れを確実に検出する）。
+            for _ in 0..2 {
+                client
+                    .write_all(b"GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n")
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(700)).await;
+            }
+            // 3 リクエスト目は Connection: close で送り、サーバ側ループを
+            // 正常終了させる。
+            client
+                .write_all(b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            client.shutdown().await.unwrap();
+
+            let mut out = Vec::new();
+            client.read_to_end(&mut out).await.unwrap();
+            String::from_utf8(out).unwrap()
+        });
+
+        handle_connection(&server, server_stream).await;
+        let out = client_task.await.unwrap();
+
+        assert_eq!(
+            out.matches("HTTP/1.1 200").count(),
+            3,
+            "reset 漏れにより誤タイムアウトが起きた可能性（3 リクエストとも \
+             200 応答されるはずが実際の応答: {out:?}）"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_arriving_near_timeout_deadline_is_processed() {
+        // deadline 方式（イシュー #585）の境界値テスト: read_timeout の
+        // 6〜8 割経過後に送信されたリクエストが正常処理されることを確認する
+        // （deadline 計算のずれ検出。`checked_add` によるオーバーフロー
+        // フォールバックや丸め誤差でタイムアウトが早まっていないかの検証。
+        // read_timeout=1s・遅延 700ms で 300ms のスラックを確保し、並列 CI
+        // 実行下でもフレークしにくい値にした）。
+        let handler = FixedHandler {
+            status: 200,
+            body: b"ok",
+            calls: AtomicUsize::new(0),
+        };
+        let server = Server::new()
+            .read_timeout(Duration::from_secs(1))
+            .handler(handler);
+        let (mut client, server_stream) = tokio::io::duplex(8192);
+        use tokio::io::AsyncWriteExt as _;
+
+        let client_task = tokio::spawn(async move {
+            // read_timeout(1s) の 70% 経過後（700ms）に送信する。
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            client
+                .write_all(b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            client.shutdown().await.unwrap();
+
+            let mut out = Vec::new();
+            client.read_to_end(&mut out).await.unwrap();
+            String::from_utf8(out).unwrap()
+        });
+
+        handle_connection(&server, server_stream).await;
+        let out = client_task.await.unwrap();
+
+        assert!(
+            out.starts_with("HTTP/1.1 200"),
+            "read_timeout の 70% 経過後に届いたリクエストは正常応答される \
+             はずが、タイムアウト扱いで応答なしクローズされた（実際の応答: {out:?}）"
         );
     }
 

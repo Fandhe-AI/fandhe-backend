@@ -143,6 +143,7 @@
 pub mod extension;
 pub mod interceptor;
 pub(crate) mod plugin;
+pub(crate) mod send_buffer;
 pub mod server;
 pub mod streaming;
 

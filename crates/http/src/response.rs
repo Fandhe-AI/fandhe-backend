@@ -613,10 +613,50 @@ impl Response {
     /// ```
     #[must_use]
     pub fn serialize(&self, keep_alive: bool) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.serialize_into(keep_alive, &mut out);
+        out
+    }
+
+    /// [`Response::serialize`] と完全同一のワイヤバイト列を `out` へ書く、
+    /// 接続単位バッファ再利用向けの直列化 API（イシュー #584）。
+    ///
+    /// コアの接続ループ（`crates/core/src/server.rs`）が keep-alive 接続で
+    /// 応答ごとに新規 `Vec` を確保するコストを避けるため、接続単位で保持する
+    /// `crates/core` 側の非公開バッファ型（`SendBuffer`。接続ループ専用の
+    /// 内部実装であり `crates/http` の公開 API 面には出さない、イシュー
+    /// #595）経由で本メソッドを繰り返し呼ぶ契約。
+    ///
+    /// # `out` の扱い（レスポンス分割対策）
+    ///
+    /// 呼び出し直後に**必ず `out.clear()` する**。バッファが前応答の残留
+    /// バイトを保持したまま呼ばれても、次応答の先頭バイト列に前応答の断片が
+    /// 混入する経路（キープアライブ接続上のレスポンス分割）が生じないことを
+    /// 型として保証する（`.claude/rules/security.md`）。呼び出し元が clear
+    /// を怠っても安全になるフェイルクローズ契約であり、汚れたバッファでの
+    /// 呼び出しが `serialize` 単体呼び出しと同一の出力になることをテストで
+    /// 検証している。
+    ///
+    /// ステータス（[`u16`]）・`Content-Length`（[`usize`]）の 10 進直列化は
+    /// `to_string()`（heap alloc）ではなく本モジュール非公開の
+    /// `write_decimal` を使う。
+    ///
+    /// ```
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// let res = Response::new(200, b"hi".to_vec());
+    /// let mut buf = Vec::new();
+    /// // 前応答の残留バイトが混入しないことを確認する（clear 契約）。
+    /// buf.extend_from_slice(b"STALE-PREVIOUS-RESPONSE-BYTES");
+    /// res.serialize_into(true, &mut buf);
+    /// assert_eq!(buf, res.serialize(true));
+    /// ```
+    pub fn serialize_into(&self, keep_alive: bool, out: &mut Vec<u8>) {
+        out.clear();
+        out.reserve(64 + self.body.len());
         let reason = reason_phrase(self.status);
-        let mut out = Vec::with_capacity(64 + self.body.len());
         out.extend_from_slice(b"HTTP/1.1 ");
-        out.extend_from_slice(self.status.to_string().as_bytes());
+        write_decimal(out, usize::from(self.status));
         out.push(b' ');
         out.extend_from_slice(reason.as_bytes());
         out.extend_from_slice(b"\r\n");
@@ -646,14 +686,13 @@ impl Response {
             out.extend_from_slice(b"\r\n");
         }
         out.extend_from_slice(b"Content-Length: ");
-        out.extend_from_slice(self.body.len().to_string().as_bytes());
+        write_decimal(out, self.body.len());
         out.extend_from_slice(b"\r\n");
         if !keep_alive {
             out.extend_from_slice(b"Connection: close\r\n");
         }
         out.extend_from_slice(b"\r\n");
         out.extend_from_slice(&self.body);
-        out
     }
 
     /// RFC 9112 §6.3 が定める「ステータスに関わらず body を持ち得ない」応答
@@ -863,6 +902,32 @@ impl Response {
 /// 上限到達時に 503 を払い出す）・[`Response::redirect`]（イシュー #302 の
 /// 301/302/303/307/308。PRG パターン等の 3xx リダイレクト用）が実際に払い出す
 /// ステータスコードに合わせて選定している。
+/// 非負整数 `n` を 10 進 ASCII として `out` へ追記する（イシュー #584）。
+///
+/// [`Response::serialize_into`] がステータス・`Content-Length` の直列化に使う
+/// 非公開ヘルパ。`to_string()` は毎回 heap alloc を伴うため、スタック上の
+/// 固定長バッファ（`usize::MAX` は 20 桁で足りる）へ下位桁から書き、
+/// 完成した桁列だけを `out` へ `extend_from_slice` する。`unsafe` は使わない。
+///
+/// `Content-Length` の直列化はここが唯一の経路であり、誤りはフレーミング
+/// desync（レスポンス分割・スマグリング）に直結するため、`response.rs` の
+/// テストで `to_string()` との一致を境界値込みで検証している
+/// （`.claude/rules/security.md`）。
+fn write_decimal(out: &mut Vec<u8>, mut n: usize) {
+    // u64/usize の 10 進表現は最大 20 桁（u64::MAX = 18446744073709551615）。
+    let mut digits = [0u8; 20];
+    let mut i = digits.len();
+    loop {
+        i -= 1;
+        digits[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&digits[i..]);
+}
+
 fn reason_phrase(status: u16) -> &'static str {
     match status {
         200 => "OK",
@@ -1421,5 +1486,83 @@ mod tests {
         let res = Response::empty(200).with_content_type("application/octet-stream");
         let text = String::from_utf8(res.serialize_streaming_head_http10()).unwrap();
         assert!(text.contains("Content-Type: application/octet-stream\r\n"));
+    }
+
+    // --- write_decimal（イシュー #584。Content-Length / ステータスの
+    //     手書き 10 進直列化。誤りはフレーミング desync に直結するため
+    //     境界値を to_string() との一致で網羅する） ---
+
+    #[test]
+    fn write_decimal_matches_to_string_for_boundary_values() {
+        for n in [0usize, 1, 9, 10, 99, 100, 999, 1000, 65535, usize::MAX] {
+            let mut out = Vec::new();
+            write_decimal(&mut out, n);
+            assert_eq!(
+                out,
+                n.to_string().as_bytes(),
+                "write_decimal({n}) が to_string() と不一致"
+            );
+        }
+    }
+
+    #[test]
+    fn write_decimal_appends_without_clearing_existing_content() {
+        let mut out = b"Content-Length: ".to_vec();
+        write_decimal(&mut out, 42);
+        assert_eq!(out, b"Content-Length: 42");
+    }
+
+    // --- serialize_into（イシュー #584。serialize とのバイト完全同一性・
+    //     clear 契約の検証） ---
+
+    #[test]
+    fn serialize_into_matches_serialize_for_representative_cases() {
+        let cases: Vec<Response> = vec![
+            Response::new(200, b"hi".to_vec()),
+            Response::empty(404),
+            Response::new(999, b"unknown status".to_vec()),
+            Response::empty(200).with_content_type("application/json"),
+            Response::empty(405)
+                .with_allow(AllowedMethods::from_methods(vec!["GET".to_string()]).unwrap()),
+            Response::empty(200)
+                .with_header("X-Custom", "value")
+                .expect("valid header"),
+            // extra_headers に専用フィールドと同名ヘッダを積んでスキップ経路も
+            // 経由させる（with_header の優先順位テストと同種の組み合わせ）。
+            Response::empty(200)
+                .with_content_type("text/plain")
+                .with_header("Content-Type", "should-be-skipped")
+                .expect("valid header"),
+            Response::empty(200).with_set_cookie(
+                crate::cookie::SetCookie::new("session", "abc123").expect("valid cookie"),
+            ),
+            Response::new(200, vec![0xff, 0x00, 0x10, 0x80]),
+        ];
+
+        for keep_alive in [true, false] {
+            for res in &cases {
+                let expected = res.serialize(keep_alive);
+                let mut actual = Vec::new();
+                res.serialize_into(keep_alive, &mut actual);
+                assert_eq!(
+                    actual, expected,
+                    "serialize_into と serialize の出力が不一致（keep_alive={keep_alive}）"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn serialize_into_clears_stale_bytes_from_a_reused_buffer() {
+        // 接続単位で再利用されるバッファを模し、前応答の残留バイトが
+        // 混入しないこと（レスポンス分割対策の clear 契約）を検証する。
+        let first = Response::new(200, b"first response body".to_vec());
+        let second = Response::empty(404);
+
+        let mut reused = Vec::new();
+        first.serialize_into(true, &mut reused);
+        second.serialize_into(true, &mut reused);
+
+        assert_eq!(reused, second.serialize(true));
     }
 }

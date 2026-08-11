@@ -312,24 +312,42 @@ fandhe-backend/
 │   │                                    # エンコーダ）でレスポンス側 chunked ストリーミング送信を
 │   │                                    # 提供（`crates/core` の `Handler::handle_streaming` opt-in
 │   │                                    # 拡張点から使用、既存の Content-Length 応答は無変更で
-│   │                                    # 後方互換維持、イシュー #319）。`Router` の静的ルート
-│   │                                    # lookup を借用キー化 + FxHash 化した（イシュー #583。
-│   │                                    # `routes` フィールドを `HashMap<(String, String), _>` から
-│   │                                    # `FxHashMap<Box<str>, FxHashMap<Box<str>, _>>`（外側 path・
-│   │                                    # 内側 method のネスト map、ハッシャは `rustc-hash`）へ
-│   │                                    # 変更し、`dispatch` の静的ルート照合をリクエストごとの
-│   │                                    # `String` 確保ゼロの `&str` 借用 2 段照合にした。405 応答の
-│   │                                    # `Allow` 集約も全キー線形走査から対象パスの inner map
-│   │                                    # 参照へ縮小。外部依存は `rustc-hash`（推移依存ゼロ・
-│   │                                    # unsafe ゼロ）のみ追加。FxHash は衝突攻撃耐性を持たないが
-│   │                                    # 本 map のキーは起動時登録の固定集合でリクエストは照合側
-│   │                                    # にしか現れないため HashDoS は成立しない、
-│   │                                    # `docs/dep-impact/records.md` 参照）。`find_subslice`
-│   │                                    # （リクエストヘッド終端 `\r\n\r\n`・ヘッダ行区切り
-│   │                                    # `\r\n` 探索）を `memchr::memmem::find` ベースへ
-│   │                                    # 変更した（イシュー #586。SIMD 最適化された探索へ
-│   │                                    # 委譲、シグネチャ・空 needle 時 `None` の契約は不変。
-│   │                                    # `memchr` は既に workspace 依存ツリーに存在した
+│   │                                    # 後方互換維持、イシュー #319）。
+│   │                                    # `Response::serialize_into` +
+│   │                                    # `buffer::SendBuffer`（`crates/core` の非公開実装。
+│   │                                    # `Vec<u8>` を包む内部専用型で公開 API 面には出さない、
+│   │                                    # イシュー #595 P1 対応）で通常応答経路の
+│   │                                    # レスポンス直列化バッファを接続単位で再利用
+│   │                                    # できるようにした（イシュー #584。`RecvBuffer`
+│   │                                    # と対になる送信側、64 KiB 縮小上限を共用）。
+│   │                                    # 整数（status / Content-Length）は
+│   │                                    # `to_string()` の alloc を避ける非公開ヘルパ
+│   │                                    # `write_decimal` で手書き直列化する（itoa 等の
+│   │                                    # 依存追加なし）。既存 `Response::serialize` は
+│   │                                    # `serialize_into` への薄い委譲として後方互換を
+│   │                                    # 維持。`crates/core` の接続ループ
+│   │                                    # （`handle_connection_with_permit`）が
+│   │                                    # 通常応答・gate 拒否応答の 2 経路で `SendBuffer`
+│   │                                    # を使う（エラー/503/501 等の直後に接続を
+│   │                                    # 閉じる一発応答経路は対象外のまま）。`Router` の
+│   │                                    # 静的ルート lookup を借用キー化 + FxHash 化した
+│   │                                    # （イシュー #583。`routes` フィールドを
+│   │                                    # `HashMap<(String, String), _>` から
+│   │                                    # `FxHashMap<Box<str>, FxHashMap<Box<str>, _>>`
+│   │                                    # （外側 path・内側 method のネスト map、ハッシャは
+│   │                                    # `rustc-hash`）へ変更し、`dispatch` の静的ルート
+│   │                                    # 照合をリクエストごとの `String` 確保ゼロの `&str`
+│   │                                    # 借用 2 段照合にした。405 応答の `Allow` 集約も
+│   │                                    # 全キー線形走査から対象パスの inner map 参照へ縮小。
+│   │                                    # 外部依存は `rustc-hash`（推移依存ゼロ・unsafe
+│   │                                    # ゼロ）のみ追加。FxHash は衝突攻撃耐性を持たないが
+│   │                                    # 本 map のキーは起動時登録の固定集合でリクエストは
+│   │                                    # 照合側にしか現れないため HashDoS は成立しない）。
+│   │                                    # `find_subslice`（リクエストヘッド終端 `\r\n\r\n`・
+│   │                                    # ヘッダ行区切り `\r\n` 探索）を `memchr::memmem::find`
+│   │                                    # ベースへ変更した（イシュー #586。SIMD 最適化された
+│   │                                    # 探索へ委譲、シグネチャ・空 needle 時 `None` の契約は
+│   │                                    # 不変。`memchr` は既に workspace 依存ツリーに存在した
 │   │                                    # v2.8.3 へ統一解決され新規バージョンの流入なし、
 │   │                                    # `docs/dep-impact/records.md` 参照）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
