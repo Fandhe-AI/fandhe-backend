@@ -17,14 +17,23 @@ categories = ["web-programming", "web-programming::http-server", "network-progra
 [lints]
 workspace = true
 
-# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）: I/O 層は本クレートの
-# 唯一の必須実行時依存として tokio を追加するが、既定では `io-util`
+# pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）: 本クレートの必須実行時
+# 依存は tokio + memchr の 2 件。tokio は I/O 層として既定で `io-util`
 # （AsyncRead/AsyncReadExt・`read_buf` 用の内包 `bytes` BufMut 実装のみ）に限定する。
 # `net`/`rt`/`macros` は既定で有効化しない — 実ソケットへの接続・ランタイム起動は
 # TASK-1.4（#13）の接続受理ループが担い、本クレートは `AsyncRead + Unpin` の汎用実装に
-# とどめるため。`cargo tree -p fandhe-backend-http` で tokio 以外の依存が増えていないことを確認する。
+# とどめるため。`cargo tree -p fandhe-backend-http` で tokio・memchr 以外の依存が
+# 増えていないことを確認する。
 [dependencies]
 tokio = { version = "1", default-features = false, features = ["io-util"] }
+
+# リクエストヘッド終端（`\r\n\r\n`）・ヘッダ行区切り（`\r\n`）探索を SIMD 最適化された
+# memmem に委譲する（イシュー #586）。`default-features = false` により推移的依存
+# ゼロ（no_std・alloc 不要な `memmem::find` のみ使用）。workspace 内に既存の
+# axum-ref・plugin-graphql・plugin-webrtc・plugin-websocket 経由で同一バージョン
+# （2.8.3）が既に解決されており、本クレートでの新規追加によるバージョン解決の
+# 増加はない。採否根拠・依存インパクト実測値は docs/dep-impact/records.md 参照。
+memchr = { version = "2.8", default-features = false }
 
 # オプション feature `net`（既定 off）: `TCP_NODELAY` 設定（[`socket`] モジュール）に
 # 限定して tokio `net` を有効化する。feature 無効時は `socket` モジュール自体が

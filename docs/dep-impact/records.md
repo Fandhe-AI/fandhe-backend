@@ -8,6 +8,77 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-08-11 — `crates/http` に `memchr` を追加（`find_subslice` のヘッド終端探索を memmem ベースへ変更、イシュー #586）
+
+リクエストヘッド終端（`\r\n\r\n`）・ヘッダ行区切り（`\r\n`）探索を担う `find_subslice`
+（素朴な `windows().position()` の線形走査）を `memchr::memmem::find`（SIMD 最適化された
+Two-Way 法）へ置き換えた。大ヘッダ・バッファ分割着弾時（`read_request` が Incomplete
+のたびに先頭から再走査する）の探索コストを削減する狙い。シグネチャ
+（`pub(crate) fn find_subslice(&[u8], &[u8]) -> Option<usize>`）・空 needle 時 `None`
+を返す契約は不変。
+
+### 依存情報（pay-for-what-you-use）
+
+`crates/http` の外部 crates.io 依存に `memchr = { version = "2.8", default-features =
+false }` を追加した（既存の `tokio` のみの構成に 1 件追加。「tokio が唯一の必須実行時
+依存」というクレート不変条件は崩れ、Cargo.toml のコメントを「tokio + memchr の 2 件」へ
+更新済み）。`memchr` は既に workspace 依存ツリーに存在する v2.8.3
+（axum-ref / plugin-graphql / plugin-webrtc / plugin-websocket 経由）へ統一解決され、
+バージョン解決上の新規エントリは増えない。
+
+```
+$ cargo tree -p fandhe-backend-http -e normal
+fandhe-backend-http v0.3.0
+├── memchr v2.8.3
+└── tokio v1.53.1
+    ├── bytes v1.12.1
+    └── pin-project-lite v0.2.17
+```
+
+`memchr` 自体の推移依存は 0 件（`default-features = false` により no_std・alloc 不要な
+`memmem::find` のみを使用。`tokio` は既存の `fandhe-backend-http` の必須依存であり本
+変更による増分ではない）。
+
+### unsafe 件数
+
+`cargo geiger`（`crates/core` 起点、2026-08-11 実測）:
+
+```
+Functions  Expressions  Impls  Traits  Methods  Dependency
+
+0/0        0/0          0/0    0/0     0/0      ?  fandhe-backend-core 0.3.0
+0/0        0/0          0/0    0/0     0/0      ?  ├── fandhe-backend-http 0.3.0
+34/48      1992/2440    2/2    0/0     110/148  !  │   ├── memchr 2.8.3
+25/30      2154/3011    103/119 3/3     103/139  !  │   └── tokio 1.53.1
+...(tokio 系、変更前から存在する既存依存)...
+```
+
+`fandhe-backend-http` 本体の unsafe は 0 件のまま（`scripts/unsafe-triage.sh` の
+workspace ベースラインは不変、"baseline から変化なし" で確認済み）。`memchr` は内部に
+SIMD intrinsics 由来の unsafe（34/48 関数・1992/2440 式）を持つが、これは既存
+workspace 依存ツリーに既に存在していた依存側 unsafe であり、本変更が新規に持ち込む
+ものではない。`cargo audit` / `cargo deny check`（`scripts/dep-audit.sh`）は全 feature
+構成で PASS（advisories ok, bans ok, licenses ok, sources ok）。ライセンスは
+`Unlicense OR MIT`（`memchr` の SPDX OR 式）で `deny.toml` の既存 allowlist（MIT 含む）
+が充足するため `deny.toml` 変更は不要だった。
+
+### トレードオフ
+
+- `crates/http` の「tokio が唯一の必須実行時依存」という不変条件が崩れる
+  （Cargo.toml のコメントで明記済み）
+- 最小コア構成（`fandhe-backend-core` default）の依存クレート数が +0（既に workspace
+  ツリーに存在していたバージョンへ統一解決されるため、`cargo tree` の union 件数
+  （`scripts/dep-impact.sh` の「依存クレート数」表）には現れない）
+
+### 検証コマンド
+
+```
+cargo tree -p fandhe-backend-http -e normal
+cargo geiger -p fandhe-backend-core
+bash scripts/dep-audit.sh
+bash scripts/unsafe-triage.sh
+```
+
 ## 2026-08-11 — `crates/routes` に `rustc-hash` を追加（静的ルート lookup 借用キー化 + FxHash 化、イシュー #583）
 
 静的ルート照合の既定ハッシャ（SipHash 1-3）を FxHash（`rustc-hash` 2 系）へ差し替え、
