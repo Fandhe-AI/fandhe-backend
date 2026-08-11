@@ -312,7 +312,19 @@ fandhe-backend/
 │   │                                    # エンコーダ）でレスポンス側 chunked ストリーミング送信を
 │   │                                    # 提供（`crates/core` の `Handler::handle_streaming` opt-in
 │   │                                    # 拡張点から使用、既存の Content-Length 応答は無変更で
-│   │                                    # 後方互換維持、イシュー #319）
+│   │                                    # 後方互換維持、イシュー #319）。`Router` の静的ルート
+│   │                                    # lookup を借用キー化 + FxHash 化した（イシュー #583。
+│   │                                    # `routes` フィールドを `HashMap<(String, String), _>` から
+│   │                                    # `FxHashMap<Box<str>, FxHashMap<Box<str>, _>>`（外側 path・
+│   │                                    # 内側 method のネスト map、ハッシャは `rustc-hash`）へ
+│   │                                    # 変更し、`dispatch` の静的ルート照合をリクエストごとの
+│   │                                    # `String` 確保ゼロの `&str` 借用 2 段照合にした。405 応答の
+│   │                                    # `Allow` 集約も全キー線形走査から対象パスの inner map
+│   │                                    # 参照へ縮小。外部依存は `rustc-hash`（推移依存ゼロ・
+│   │                                    # unsafe ゼロ）のみ追加。FxHash は衝突攻撃耐性を持たないが
+│   │                                    # 本 map のキーは起動時登録の固定集合でリクエストは照合側
+│   │                                    # にしか現れないため HashDoS は成立しない、
+│   │                                    # `docs/dep-impact/records.md` 参照）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
