@@ -75,7 +75,16 @@ pub struct RequestHead {
 - **`pub` フィールド直接アクセス**（`head.method` / `head.target`）: 上記 2 節の表の
   ほぼ全域。案 B（3.2 節）を採用する場合、フィールドを非公開化しアクセサ
   `method()` / `target()`（`&str` 返却）へ統一する必要がある。既存の `header()` /
-  `headers()` と同型のアクセサパターンであり、置換自体は機械的（`sed` 相当）に行える
+  `headers()` と同型のアクセサパターンであり、置換自体は機械的（`sed` 相当）に行える。
+  **`head.version`（`pub version: HttpVersion`）はこの非公開化の対象に含めない**
+  （3.2 節）。`HttpVersion` は `Copy` な enum で alloc 削減の動機がなく、`workspace`
+  内の `crates/plugin-websocket/src/handshake.rs:60`・`crates/http/src/body.rs:206`・
+  `crates/http/src/request.rs:51,339,519,608,637`・`crates/http/src/connection.rs:133`・
+  `crates/http/tests/http_flow.rs:47,96,138,152`・`crates/core/src/server.rs:2727` の
+  `head.version` 直接参照は本設計変更後も無変更で動作する（Codex レビュー #600 指摘 1
+  対応。当初の設計文書では `version` フィールドの扱いが構造体スニペット上で非公開に
+  見える書き方になっており、本文と Phase 3 受け入れ基準（8 節）が `method`/`target`
+  のみを breaking として扱う前提と整合していなかったため、明記して解消した）
 - **`Clone` / `PartialEq` / `Eq` derive**: `#[derive(Debug, Clone, PartialEq, Eq)]`
   （request.rs:372）。`Request { head, body }`（`connection.rs:32-37`）も `Clone` を
   要求する箇所がないか要確認（現状 `Request` 自体は `Clone` を derive していない。
@@ -129,19 +138,25 @@ name・value を `Range<usize>` で保持する。公開 API はアクセサ経�
 
 ```rust
 pub struct RequestHead {
-    buf: Box<[u8]>,               // ヘッド部バイト列（所有、1 回コピー）
+    buf: Box<str>,                 // ヘッド部バイト列（所有、1 回コピー。UTF-8 検証済み、6.3 節）
     method: Range<usize>,
     target: Range<usize>,
-    version: HttpVersion,
+    pub version: HttpVersion,      // 現行どおり pub のまま維持（Copy 型・alloc 対象外、2.1 節）
     headers: Vec<(Range<usize>, Range<usize>)>,
 }
 
 impl RequestHead {
-    pub fn method(&self) -> &str { /* buf[self.method.clone()] を str::from_utf8 済みとして返す */ }
-    pub fn target(&self) -> &str { /* 同上 */ }
+    pub fn method(&self) -> &str { &self.buf[self.method.clone()] }
+    pub fn target(&self) -> &str { &self.buf[self.target.clone()] }
     // header() / headers() は既存アクセサをそのまま維持（内部実装のみ Range 経由に変更）
 }
 ```
+
+`version: HttpVersion` は `method` / `target` と異なり alloc 削減の対象ではない
+（`HttpVersion` は `Copy` な enum で所有コストがなく、`buf` へ切り出す動機がない）。
+現行実装で `pub` であるフィールドを本設計変更で非公開化する対象は `method` /
+`target` の 2 フィールドのみとし、`version` は breaking change に含めない
+（Codex レビュー #600 指摘 1 対応。2.1 節・8 節の #591/#592 受け入れ基準に反映）。
 
 **構造上の利点**:
 
@@ -153,23 +168,33 @@ impl RequestHead {
   ヘッド部を 1 回コピーし、その後は `RecvBuffer` 側のカーソル前進・コンパクション・
   次回読み取りと `RequestHead` の生存期間が完全に独立する（借用の衝突が原理的に
   発生しない）
-- alloc 数: `buf: Box<[u8]>` で 1 alloc（ヘッド部全体を 1 回のメモリコピーで確保）+
-  `headers: Vec<(Range, Range)>` で 1 alloc（+ 必要なら再確保。事前に `MAX_HEADER_COUNT`
-  を上限に `Vec::with_capacity` することで再確保も回避可能）。method/target は
-  `Range` のみで alloc なし。**ヘッダ本数 N に依存しない定数個の alloc**（2 個前後）
-  に削減できる
+- alloc 数: `buf: Box<str>` で 1 alloc（ヘッド部全体を 1 回のメモリコピー + 構築時
+  UTF-8 検証 1 回で確保。`Box<[u8]>` ではなく `Box<str>` を採用する理由は 3.2 節
+  トレードオフ・6.3 節参照）+ `headers: Vec<(Range, Range)>` で 1 alloc（+ 必要なら
+  再確保。事前に `MAX_HEADER_COUNT` を上限に `Vec::with_capacity` することで再確保も
+  回避可能）。method/target は `Range` のみで alloc なし。**ヘッダ本数 N に依存しない
+  定数個の alloc**（2 個前後）に削減できる
 
 **トレードオフ**:
 
 - ヘッド部の生バイト列を 1 回コピーするコスト自体は残る（案 A ほどの完全ゼロコピー
   ではない）。ただし現状実装も `find_subslice` によるヘッダ部切り出し
   （`&buf[..header_end]`）を経ており、コピー回数の絶対値としては「N+1 回の
-  `to_vec()`」（現状）→「1 回の `Box<[u8]>` 化」（案 B）への削減であり、alloc 回数
+  `to_vec()`」（現状）→「1 回の `Box<str>` 化」（案 B）への削減であり、alloc 回数
   ・コピー総バイト数のいずれも改善する
-- `str::from_utf8` の検証は Range 切り出し時に毎回実行する必要がある（UTF-8 境界が
-  Range 境界と一致することをパース時に保証しておけば、アクセサ側は
-  `str::from_utf8_unchecked` を使いたくなるが、6 章の方針により `unsafe` は使わず
-  `str::from_utf8(...).expect(...)` に留める。理由は 6 節参照）
+- UTF-8 検証はアクセサ呼び出しのたびに行わない。`buf` を `Box<[u8]>` ではなく
+  `Box<str>` として保持し、**構築時（ヘッド部コピー直後）に 1 回だけ**
+  `str::from_utf8(&raw_bytes)` を実行して検証する。検証に失敗した場合は
+  `parse_request_head` の既存エラー型（`ParseOutcome`/`ParseError`、6.1 節）で
+  `Result` として呼び出し元へ伝播し、`.unwrap()` / `.expect()` は使わない
+  （`.claude/rules/coding-rust.md` のライブラリコード方針。Codex レビュー #600
+  指摘 2 対応）。構築後は `self.buf` が妥当な `&str` であることが型で保証されるため、
+  `method()` / `target()` アクセサは `&self.buf[self.method.clone()]` という
+  非 fallible な `str` のバイト範囲インデックスで実装できる（`unsafe` 不使用、
+  `from_utf8_unchecked` も不要）。この範囲インデックスが UTF-8 文字境界からずれて
+  panic する余地がないことは、Range の生成元（tchar・CRLF 等の区切りバイトは常に
+  ASCII、すなわち 1 バイト目が `0x00`〜`0x7F`）と UTF-8 の性質（マルチバイト文字の
+  継続バイトは常に `0x80` 以上）から導かれる不変条件として 6.2 節・6.3 節に明記する
 
 ### 3.3 案 C: `Cow` ハイブリッド
 
@@ -256,7 +281,7 @@ crates.io へ再公開されるまでの間、`templates/app` / `examples/*` に
 
 ### 5.3 採用案（案 B）での見込み
 
-案 B は `buf: Box<[u8]>`（1 alloc）+ `headers: Vec<(Range, Range)>`
+案 B は `buf: Box<str>`（1 alloc）+ `headers: Vec<(Range, Range)>`
 （`Vec::with_capacity(実ヘッダ数)` で確保すれば再確保なしの 1 alloc）の
 **構造上定数 2 alloc/req（N に非依存）** になる見込み。N=10 の実測 27 alloc/req から
 2 alloc/req への削減は、#579 起点の効果見込み「+5〜10%」の根拠として妥当なオーダーで
@@ -270,7 +295,12 @@ crates.io へ再公開されるまでの間、`templates/app` / `examples/*` に
 - 戻り値 `ParseOutcome::Complete { head: RequestHead, consumed: usize }` の型自体は
   不変。`RequestHead` の内部構造のみ変更する（3.2 節）
 - `method()` / `target()` アクセサ追加、`pub method: String` / `pub target: String`
-  フィールドの削除（breaking）
+  フィールドの削除（breaking）。**`pub version: HttpVersion` は非公開化しない**
+  （3.2 節。breaking change の対象は `method` / `target` の 2 フィールドのみ）
+- `buf: Box<str>` への UTF-8 検証（3.2 節・6.3 節）が失敗しうる新しい失敗点として
+  追加されるため、既存の `ParseError`（型は不変）に検証失敗を委譲する。呼び出し元
+  ・エラー型のバリアント追加要否は #591 実装時に確定するが、`.unwrap()` /
+  `.expect()` によるパニックは選択肢に含めない（6.3 節）
 
 ### 6.2 不変条件として維持するもの（後退させない）
 
@@ -278,30 +308,54 @@ Phase 3 実装（#591 が主に担当）は以下を維持することを受け�
 （8 節・OWASP 観点は 9 節）。
 
 - **UTF-8 検証**: 現状の `String::from_utf8(...)` による厳密検証と同等の保証を、
-  Range 切り出し後の `str::from_utf8(&self.buf[range])` で維持する。パース時点で
-  UTF-8 境界を確認済みであっても、アクセサ側で再度 `str::from_utf8` の Result 検証を
-  行い、`unsafe { str::from_utf8_unchecked(...) }` は使用しない（6.3 節）
+  `buf: Box<str>` 構築時（ヘッド部コピー直後）の `str::from_utf8(&raw_bytes)` **1 回**
+  で維持する（6.3 節）。検証失敗は `Result` で呼び出し元へ伝播し、`.unwrap()` /
+  `.expect()` は使用しない。構築後は `buf` が妥当な `&str` であることが型で保証される
+  ため、`method()` / `target()` アクセサ側での再検証は不要（かつ `unsafe { str::
+  from_utf8_unchecked(...) }` も使用しない）
 - **tchar / 制御文字拒否**: `is_tchar` / `is_forbidden_ctl`（request.rs）による
   method・ヘッダ名の token 検証、値の制御文字拒否ロジックはバイトスライス上でそのまま
   動作し、Range 化による影響を受けない
 - **obs-fold 拒否**: `split_by_crlf` による行分割方式（bare LF/CR の非分割）は
   Range 化と無関係に維持される
 - **DoS 上限**: `MAX_HEADER_BYTES`（16 KiB）・`MAX_HEADER_COUNT`（100）は不変。
-  `buf: Box<[u8]>` は `MAX_HEADER_BYTES` 以下に有界化されており、`headers` の
+  `buf: Box<str>` は `MAX_HEADER_BYTES` 以下に有界化されており、`headers` の
   `Vec<(Range, Range)>` も `MAX_HEADER_COUNT` で有界（Range 自体は `usize` 2 個分の
   スタックサイズであり、String のヒープ確保がなくなる分メモリ効率はむしろ向上する）
 - **`consumed` 境界**: `header_end + TERMINATOR.len()` の算出ロジックは不変。
   リクエストスマグリング対策（`\r\n\r\n` 終端のみでの完了判定、パイプライン残余は
   次回呼び出しへ持ち越し）に変更を加えない
 
-### 6.3 `unsafe` 不使用の方針
+### 6.3 `unsafe` 不使用・`.expect()` 不使用の方針
 
-案 B は `Box<[u8]>` へのヘッド部コピー・Range 切り出しのみで実装可能であり、
-`from_utf8_unchecked` 等の `unsafe` を要求しない。`.claude/rules/coding-rust.md`
-（`unsafe` 最小限方針）・`docs/design/unsafe-deny-lints.md`（`cargo geiger` ラチェット）
-と整合させるため、**Phase 3 実装は `unsafe` を使わずに実現することを採用条件とする**。
-アクセサでの `str::from_utf8` 再検証コスト（N 本のヘッダに対する追加走査）は
-alloc 削減効果に比べ小さいと見込まれるが、確定値は #593 の専有ベンチで確認する。
+案 B は `Box<str>` へのヘッド部コピー・構築時 1 回の UTF-8 検証・Range 切り出しのみで
+実装可能であり、`from_utf8_unchecked` 等の `unsafe` を要求しない。`.claude/rules/
+coding-rust.md`（`unsafe` 最小限方針）・`docs/design/unsafe-deny-lints.md`
+（`cargo geiger` ラチェット）と整合させるため、**Phase 3 実装は `unsafe` を使わずに
+実現することを採用条件とする**。
+
+さらに `.claude/rules/coding-rust.md`「`.unwrap()` / `.expect()` はライブラリコードで
+避け、`Result` / `?` でエラーを伝播する」方針に従い、UTF-8 検証は次の 2 段構成とする
+（Codex レビュー #600 指摘 2 対応。当初案の「アクセサ側で `str::from_utf8(...)
+.expect(...)`」は不採用とし、構築時 1 回検証 + 非 fallible アクセサへ改める）。
+
+1. **構築時（fallible）**: ヘッド部バイト列を `buf: Box<str>` へコピーする際、
+   `str::from_utf8(&raw_bytes)` の検証結果を `Result` として扱い、失敗時は
+   `parse_request_head` の既存エラー型（型は不変、6.1 節）で呼び出し元へ伝播する。
+   外部入力（リクエストバイト列）に対する検証はこの 1 箇所に閉じる
+2. **アクセサ（非 fallible）**: `method()` / `target()` / `header()` は検証済みの
+   `buf: Box<str>` から `Range<usize>` でバイト範囲インデックスするのみで、
+   `str::from_utf8` の再検証・`.expect()` を行わない。この範囲インデックスが UTF-8
+   文字境界からずれて panic することがないのは、Range の生成元（method・target・
+   ヘッダ name/value の境界はいずれも tchar 検証・`:`・空白・CRLF 等 ASCII バイト
+   （`0x00`〜`0x7F`）で区切られる、request.rs のパース仕様）と UTF-8 の性質
+   （マルチバイト文字の継続バイトは常に `0x80` 以上で ASCII バイトと重複しない）
+   から導かれる不変条件であり、外部入力の形状に依存しない。この不変条件は #591 の
+   受け入れ基準（8 節）でテストにより担保する
+
+アクセサでの UTF-8 再検証を構築時 1 回へ集約したことで、N 本のヘッダに対する
+追加走査コストも構築時の 1 回のみに削減される（5 節の alloc 削減効果に加え、
+CPU コストの面でも従来の「アクセサ呼び出しのたびに再検証」案より有利）。
 
 ### 6.4 fuzz target への影響
 
@@ -334,13 +388,19 @@ alloc 削減効果に比べ小さいと見込まれるが、確定値は #593 �
 
 ### #591（`crates/http` 内部構造変更）
 
-- `RequestHead` を 3.2 節の構造（`buf: Box<[u8]>` + `method`/`target`: `Range<usize>` +
-  `headers: Vec<(Range<usize>, Range<usize>)>`）へ変更し、`method()` / `target()`
-  アクセサ（`&str` 返却）を追加、`pub method: String` / `pub target: String`
-  フィールドを削除する
+- `RequestHead` を 3.2 節の構造（`buf: Box<str>` + `method`/`target`: `Range<usize>` +
+  `headers: Vec<(Range<usize>, Range<usize>)>` + `pub version: HttpVersion` は
+  引き続き公開フィールドのまま）へ変更し、`method()` / `target()` アクセサ
+  （`&str` 返却）を追加、`pub method: String` / `pub target: String` フィールドを
+  削除する。**`pub version: HttpVersion` は削除・非公開化しない**（3.2 節。
+  Codex レビュー #600 指摘 1 対応）
 - 6.2 節の不変条件（UTF-8 検証・tchar/制御文字拒否・obs-fold 拒否・DoS 上限・
   `consumed` 境界）を後退させないことをテストで担保する（既存テストの意味的等価な
   移植 + 新規: 不正 UTF-8 境界ケースの追加）
+- UTF-8 検証は `buf: Box<str>` 構築時の 1 回に閉じ、`method()` / `target()` /
+  `header()` アクセサは `.unwrap()` / `.expect()` を使わない非 fallible な実装と
+  する（6.3 節。Codex レビュー #600 指摘 2 対応）。構築時検証の失敗が既存
+  `ParseError`（型不変）へ正しく伝播することをテストで担保する
 - alloc カウンタ（5 節の手法）または同等のテストで、ヘッダ本数 N に対して
   alloc 回数が定数（N に非依存）であることを確認する
 - `unsafe` を使用しない（6.3 節）
@@ -348,14 +408,21 @@ alloc 削減効果に比べ小さいと見込まれるが、確定値は #593 �
 
 ### #592（core/routes/plugin 追随）
 
-- 2 節の表で列挙した全参照箇所（`head.method` / `head.target` の直接フィールド
-  アクセス）を `head.method()` / `head.target()` アクセサ呼び出しへ機械的に置換する
+- 2 節の表で列挙した全参照箇所のうち、`head.method` / `head.target` の直接フィールド
+  アクセスを `head.method()` / `head.target()` アクセサ呼び出しへ機械的に置換する。
+  `head.version` は `pub` フィールドのまま維持されるため置換対象に含まれない
+  （Codex レビュー #600 指摘 1 で列挙された `crates/plugin-websocket/src/
+  handshake.rs:60`・`crates/http/src/body.rs:206`・`crates/http/src/request.rs:51,
+  339,519,608,637`・`crates/http/src/connection.rs:133`・`crates/http/tests/
+  http_flow.rs:47,96,138,152`・`crates/core/src/server.rs:2727` の `head.version`
+  参照は無変更のまま動作することを実装時に確認する）
 - 4 拡張点 trait（`Middleware` / `UpgradeHandler` / `RequestGate` / `Interceptor`）・
   `Handler::handle` / `handle_streaming` のシグネチャは 2.1 節の分析どおり**無変更**
   であることを維持する（万一シグネチャ変更が必要になった場合は設計文書の前提が崩れる
   ため、実装前に本文書の再検討へエスカレーションする）
 - CHANGELOG に BREAKING CHANGE セクションを追加し、`pub method`/`pub target` →
-  `method()`/`target()` への移行手順を明記する（#486 の記載パターンに倣う）
+  `method()`/`target()` への移行手順を明記する（`pub version` は不変である旨も
+  誤解防止のため明記する。#486 の記載パターンに倣う）
 - `.standalone-crates-io-skip`（理由: 「#590 系 breaking change、crates.io 未再公開の
   新 API 依存」）を `templates/app` / 対象 `examples/*` に配置する
 
