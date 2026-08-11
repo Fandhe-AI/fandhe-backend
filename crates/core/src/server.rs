@@ -103,6 +103,7 @@ use fandhe_backend_http::response::Response;
 
 use crate::extension::{GateContext, GateOutcome, Middleware, RequestGate, UpgradeHandler};
 use crate::interceptor::Interceptor;
+use crate::send_buffer::SendBuffer;
 use crate::streaming::{RecvOutcome, StreamingResponse};
 
 /// `read_request` 1 回あたりの読み取りタイムアウトの既定値（スロークライアント対策）。
@@ -2217,6 +2218,15 @@ pub(crate) async fn handle_connection_with_permit<S>(
 {
     let gate_ctx = GateContext::new(peer_addr);
     let mut buf = RecvBuffer::new();
+    // 接続単位で再利用する送信バッファ（イシュー #584）。keep-alive 接続の
+    // 通常応答経路・gate 拒否経路（下記 2 箇所）が応答ごとに新規 `Vec` を
+    // 確保していたコストを、接続の生存期間で 1 回の確保に減らす
+    // （`crate::send_buffer::SendBuffer` の doc を参照。接続ループ専用の
+    // 内部型で `crates/http` の公開 API 面には出さない、イシュー #595）。エラー
+    // 応答・503・501 等の直後に `return` する一発経路は対象外のまま
+    // （差分最小化。効果が薄い経路のため、`crates/http` の
+    // `Response::serialize` を直接使い続ける）。
+    let mut send_buf = SendBuffer::new();
     // 接続の総生存期間・keep-alive 中の総リクエスト数を計測する（#70 レビュー
     // 指摘、`.claude/rules/security.md` のリソース枯渇観点。DEFAULT_READ_TIMEOUT の
     // doc・Server::max_connection_lifetime / max_requests_per_connection の
@@ -2350,16 +2360,21 @@ pub(crate) async fn handle_connection_with_permit<S>(
             };
             // ゲート実装が組み立てた検証済み `Response` をそのまま送出する
             // （イシュー #424）。`Content-Length` / `Connection` は
-            // `serialize(keep_alive)` がフレーミング管理の一元責務として
-            // 上書き決定するため、ゲート側の値を尊重する必要はない
+            // `serialize_into(keep_alive, ..)` がフレーミング管理の一元責務
+            // として上書き決定するため、ゲート側の値を尊重する必要はない
             // （`Response::with_header` が両ヘッダ名を予約名として拒否済み）。
+            // この経路はループ内で `continue` するため `send_buf`
+            // （接続単位再利用、イシュー #584）の再利用対象。
             if stream
-                .write_all(&response.serialize(keep_alive))
+                .write_all(send_buf.serialize_response(&response, keep_alive))
                 .await
                 .is_err()
             {
                 return;
             }
+            // 応答送信完了後に縮小（次リクエストの read 待ちの間、大容量を
+            // 抱えない。`RecvBuffer::shrink_if_oversized` と同一ポリシー）。
+            send_buf.shrink_if_oversized();
             for middleware in &server.middlewares {
                 middleware.on_response(&request.head, started_at.elapsed());
             }
@@ -2403,6 +2418,10 @@ pub(crate) async fn handle_connection_with_permit<S>(
             // （TASK-4.1 / #22、先行到着フレームを取りこぼさないため）。
             let leftover = buf.unread().to_vec();
             drop(buf);
+            // 以降このループ反復では `send_buf` も読まない（両分岐とも
+            // `return` する）ため、`buf` と同様に明示的な `drop` で意図を
+            // 示す（イシュー #584）。
+            drop(send_buf);
             match crate::plugin::try_handle_upgrade(
                 stream,
                 &request.head,
@@ -2560,13 +2579,20 @@ pub(crate) async fn handle_connection_with_permit<S>(
             && connection_started_at.elapsed() < server.max_connection_lifetime
             && !shutdown_flag.load(Ordering::Relaxed);
 
+        // 通常応答経路（イシュー #584）: 接続単位で保持する `send_buf` を
+        // 再利用し、keep-alive 応答ごとの `Vec` 新規確保・`to_string()`
+        // alloc（`Response::serialize_into` が手書き整数直列化で回避）を
+        // なくす。
         if stream
-            .write_all(&response.serialize(keep_alive))
+            .write_all(send_buf.serialize_response(&response, keep_alive))
             .await
             .is_err()
         {
             return;
         }
+        // 応答送信完了後に縮小（次リクエストの read 待ちの間、大容量を
+        // 抱えない。`RecvBuffer::shrink_if_oversized` と同一ポリシー）。
+        send_buf.shrink_if_oversized();
         for middleware in &server.middlewares {
             middleware.on_response(&request.head, started_at.elapsed());
         }
