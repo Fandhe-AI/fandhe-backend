@@ -194,7 +194,7 @@ pub enum FallbackPolicy {
 pub struct Router {
     // 静的ルートテーブル（イシュー #583）。外側キー = path（target）、内側キー =
     // method のネスト map とし、`dispatch` は `self.routes.get(head.path())
-    // .and_then(|m| m.get(head.method.as_str()))` の 2 段 `&str` 借用照合で
+    // .and_then(|m| m.get(head.method()))` の 2 段 `&str` 借用照合で
     // ハンドラへ到達する（`Box<str>: Borrow<str>` により `String` の新規確保が
     // 発生しない）。method は登録時の大文字小文字をそのまま保持する（RFC 9110 上
     // メソッド token は大文字小文字を区別するため、独自の正規化を持ち込まない）。
@@ -709,13 +709,13 @@ impl Router {
     pub fn dispatch(&self, head: &RequestHead, body: &[u8]) -> HandlerFuture {
         // 1. 静的ルート（完全一致）を最優先で照合する（イシュー #583）。
         //    `path` → `method` のネスト map を `&str` の借用キーで 2 段照合する
-        //    ため、`head.method`/`head.path()` の `String` 化・clone は発生しない。
+        //    ため、`head.method()`/`head.path()` の `String` 化・clone は発生しない。
         //    照合意味論（method + target 完全一致）はネスト化前と変わらない
         //    （後方互換、モジュール doc「マッチング方針」節）。
         if let Some(handler) = self
             .routes
             .get(head.path())
-            .and_then(|methods| methods.get(head.method.as_str()))
+            .and_then(|methods| methods.get(head.method()))
         {
             return handler(head, body);
         }
@@ -735,7 +735,7 @@ impl Router {
                 else {
                     continue;
                 };
-                if param_route.method == head.method {
+                if param_route.method == head.method() {
                     return (param_route.handler)(head, &params, body);
                 }
                 param_methods.push(param_route.method.clone());
@@ -792,7 +792,7 @@ impl Router {
         // より `options_fallback` を優先する（OPTIONS 専用の既存挙動を横取りしない）。
         // `options_fallback` ハンドラ自体は同期契約のまま（CORS ヘッダ組み立てのみで
         // 非同期 I/O を要しないため、既存 API を async 化しない、pay-for-what-you-use）。
-        if head.method == "OPTIONS"
+        if head.method() == "OPTIONS"
             && let Some(fallback) = &self.options_fallback
         {
             return Box::pin(std::future::ready(fallback(head, &allow, body)));
@@ -1190,7 +1190,7 @@ mod tests {
         let router = Router::new().fallback(|head, body| {
             Response::new(
                 200,
-                format!("{}:{}", head.method, String::from_utf8_lossy(body)).into_bytes(),
+                format!("{}:{}", head.method(), String::from_utf8_lossy(body)).into_bytes(),
             )
         });
         let res = router.dispatch(&head("PUT", "/anything"), b"payload").await;

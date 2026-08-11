@@ -24,12 +24,9 @@ pub fn matches(head: &RequestHead, config: &WebSocketConfig) -> bool {
     // `RequestHead::target` はクエリ文字列を含む完全な request-target
     // （例: `/ws?token=...`）。`config.path` はクエリを含まないパス成分の
     // みを表すため、比較前に `?` 以降を切り落として path 成分だけを見る。
-    let path = head
-        .target
-        .split('?')
-        .next()
-        .unwrap_or(head.target.as_str());
-    head.method == "GET"
+    let target = head.target();
+    let path = target.split('?').next().unwrap_or(target);
+    head.method() == "GET"
         && path == config.path
         && head
             .header("upgrade")
@@ -54,7 +51,7 @@ pub(crate) struct ValidatedHandshake {
 /// 上記いずれかに違反した場合は [`WsError::InvalidHandshake`] /
 /// [`WsError::UnsupportedVersion`] を返し、呼び出し元が接続を閉じる。
 pub(crate) fn validate(head: &RequestHead) -> Result<ValidatedHandshake, WsError> {
-    if head.method != "GET" {
+    if head.method() != "GET" {
         return Err(WsError::InvalidHandshake("method must be GET"));
     }
     if head.version != fandhe_backend_http::request::HttpVersion::Http11 {

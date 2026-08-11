@@ -166,7 +166,7 @@ pub fn should_keep_alive(head: &RequestHead) -> bool {
 /// let mut socket: &[u8] = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
 /// let mut buf = RecvBuffer::new();
 /// let req = read_request(&mut socket, &mut buf).await.unwrap().unwrap();
-/// assert_eq!(req.head.method, "GET");
+/// assert_eq!(req.head.method(), "GET");
 /// assert!(req.body.is_empty());
 /// # }
 /// ```
@@ -394,7 +394,7 @@ mod tests {
             .await
             .unwrap()
             .expect("request should be present");
-        assert_eq!(req.head.method, "GET");
+        assert_eq!(req.head.method(), "GET");
         assert!(req.body.is_empty());
         assert!(buf.unread().is_empty());
     }
@@ -407,7 +407,7 @@ mod tests {
             .await
             .unwrap()
             .expect("request should be present");
-        assert_eq!(req.head.method, "POST");
+        assert_eq!(req.head.method(), "POST");
         assert_eq!(req.body, b"abcd");
         assert!(buf.unread().is_empty());
     }
@@ -430,7 +430,7 @@ mod tests {
             .await
             .unwrap()
             .expect("request should be present");
-        assert_eq!(req.head.method, "POST");
+        assert_eq!(req.head.method(), "POST");
         assert_eq!(req.body, b"abcd");
 
         write_task.await.unwrap();
@@ -445,13 +445,13 @@ mod tests {
             .await
             .unwrap()
             .expect("first request should be present");
-        assert_eq!(first.head.target, "/a");
+        assert_eq!(first.head.target(), "/a");
 
         let second = read_request(&mut socket, &mut buf)
             .await
             .unwrap()
             .expect("second request should be present");
-        assert_eq!(second.head.target, "/b");
+        assert_eq!(second.head.target(), "/b");
         assert!(buf.unread().is_empty());
     }
 
@@ -524,14 +524,14 @@ mod tests {
             .await
             .unwrap()
             .expect("first request should be present");
-        assert_eq!(first.head.target, "/a");
+        assert_eq!(first.head.target(), "/a");
         assert_eq!(first.body, b"abcd");
 
         let second = read_request(&mut socket, &mut buf)
             .await
             .unwrap()
             .expect("second request should be present");
-        assert_eq!(second.head.target, "/b");
+        assert_eq!(second.head.target(), "/b");
         assert!(buf.unread().is_empty());
     }
 
@@ -638,7 +638,7 @@ mod tests {
             .await
             .unwrap()
             .expect("first request should be present");
-        assert_eq!(first.head.target, "/a");
+        assert_eq!(first.head.target(), "/a");
 
         let err = read_request(&mut socket, &mut buf).await.unwrap_err();
         assert!(matches!(err, RequestError::Parse(_)));

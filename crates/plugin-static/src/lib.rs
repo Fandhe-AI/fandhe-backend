@@ -564,7 +564,7 @@ fn try_add_header(response: Response, name: &str, value: &str) -> Response {
 /// # }
 /// ```
 pub async fn try_handle_static(head: &RequestHead, config: &StaticFilesConfig) -> Option<Response> {
-    if !head.method.eq_ignore_ascii_case("GET") {
+    if !head.method().eq_ignore_ascii_case("GET") {
         return None;
     }
 

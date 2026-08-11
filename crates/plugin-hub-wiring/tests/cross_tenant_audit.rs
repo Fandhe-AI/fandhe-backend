@@ -114,14 +114,12 @@ impl Handler for TenantAwareHandler {
 
         let ctx = AuditContext::new(
             claims.org_id.clone(),
-            head.method.clone(),
-            head.target.as_str(),
+            head.method(),
+            head.target(),
             "tenant-aware-handler",
         );
-        let path = head
-            .target
-            .split_once('?')
-            .map_or(head.target.as_str(), |(path, _query)| path);
+        let target = head.target();
+        let path = target.split_once('?').map_or(target, |(path, _query)| path);
 
         let response = match self.store.lookup(path, &claims.org_id).resolve(
             self.sink.as_ref() as &dyn AuditSink,

@@ -86,10 +86,8 @@ impl TracingLayer {
     /// の契約）。
     pub fn record_response(&self, head: &RequestHead, elapsed: Duration) {
         // クエリ文字列（機密情報を含みうる）を除いた path 部分のみを以降で使う。
-        let path = head
-            .target
-            .split_once('?')
-            .map_or(head.target.as_str(), |(path, _query)| path);
+        let target = head.target();
+        let path = target.split_once('?').map_or(target, |(path, _query)| path);
 
         // 除外対象パスはサンプラーのカウンタを消費する前に即座に return する
         // （本メソッドの doc「判定順序」を参照）。
@@ -102,7 +100,7 @@ impl TracingLayer {
         }
 
         tracing::info!(
-            method = %head.method,
+            method = %head.method(),
             path = %path,
             elapsed_ms = elapsed.as_secs_f64() * 1000.0,
             "request completed"
@@ -239,7 +237,7 @@ mod tests {
             ParseOutcome::Complete { head, .. } => head,
             other => panic!("unexpected outcome: {other:?}"),
         };
-        assert_eq!(head.target, "/login?token=SECRET123&user=alice");
+        assert_eq!(head.target(), "/login?token=SECRET123&user=alice");
 
         subscriber::with_default(subscriber, || {
             layer.record_response(&head, Duration::from_millis(1));

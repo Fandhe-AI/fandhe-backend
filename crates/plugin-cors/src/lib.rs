@@ -282,7 +282,7 @@ fn try_add_header(response: Response, name: &str, value: impl Into<String>) -> R
 /// ```
 #[must_use]
 pub fn is_preflight(head: &RequestHead) -> bool {
-    head.method.eq_ignore_ascii_case("OPTIONS")
+    head.method().eq_ignore_ascii_case("OPTIONS")
         && head.header("origin").is_some()
         && head.header("access-control-request-method").is_some()
 }
