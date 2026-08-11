@@ -60,7 +60,7 @@ fandhe-backend/
 │   │   │                            # （フレームワーク本体では扱わず、TLS はリバース
 │   │   │                            # プロキシ前提・multipart は raw body 受理のみ、
 │   │   │                            # イシュー #322。docs/spec 除外事項表 #8・#9 と対応）
-│   │   └── ws-cancellation-propagation.md  # WS 委譲タスクへのキャンセル伝播機構の設計
+│   │   ├── ws-cancellation-propagation.md  # WS 委譲タスクへのキャンセル伝播機構の設計
 │   │                            # （イシュー #490、REQ-4。最終 graceful shutdown（#313）・
 │   │                            # rebind 世代 drain（#485/#488）双方の grace 超過
 │   │                            # 強制クローズ対象外にある WebSocket 委譲セッション
@@ -76,6 +76,19 @@ fandhe-backend/
 │   │                            # #499（10 節）でキャンセルの適用範囲を受信待ちから
 │   │                            # ユーザーハンドラ実行中・返信/Close 送出中へ拡大し、
 │   │                            # `race_cancel` による即時打ち切り意味論を採用）
+│   │   └── zero-copy-request-head.md  # P1 ヘッダゼロコピー化（`RequestHead` の Range
+│   │                            # 保持）の設計検討（イシュー #588、性能改善ツリー #579
+│   │                            # Phase 2。公開 API 影響の全量調査（72 参照ファイル）・
+│   │                            # ライフタイム設計 3 案比較（借用+Range／所有バッファ
+│   │                            # +Range／Cow）・段階移行 3 案比較・alloc プロファイル
+│   │                            # 実測（現状 N=10 ヘッダで 27 alloc/req → 採用案で
+│   │                            # 定数 2 alloc/req 見込み）・fuzz/DoS 上限/UTF-8 検証の
+│   │                            # 不変条件・`unsafe` 不使用方針を記録。採用案は所有
+│   │                            # ヘッドバッファ + `Range<usize>` 保持（ライフタイム
+│   │                            # パラメータ非導入、4 拡張点 trait シグネチャ無変更）。
+│   │                            # Phase 3 実装 issue（#590〜#593）の受け入れ基準確定
+│   │                            # まで含む、ドラフト・PR レビューで最終承認、コード
+│   │                            # 変更は Phase 3（ユーザー承認後）が担う）
 │   ├── guide/              # 利用者向けガイド（Getting Started・feature 構成別サンプル・
 │   │                        # チュートリアル、TASK-11.5 / #95）。「どう作るか」の docs/design/ とは
 │   │                        # 責務分離、「どう使うか」を扱う

@@ -165,3 +165,12 @@
   シグネチャ変更不要の 3 層構造根拠、`fandhe_backend_plugin_websocket::handle_upgrade`
   の breaking change 方針、新規依存・tokio feature 追加なしの確認を記述。コード実装は
   後続の #491（コア配線）・#492（Close frame 送信）・#493（統合テスト・doc 更新）が担う）
+- [`zero-copy-request-head.md`](./zero-copy-request-head.md): P1 ヘッダゼロコピー化
+  （`RequestHead` の Range 保持）の設計検討（イシュー #588、性能改善ツリー #579 Phase 2。
+  `RequestHead` の公開 API 全量調査（72 参照ファイル）・ライフタイム設計 3 案比較
+  （借用+Range／所有バッファ+Range／Cow ハイブリッド）・段階移行 3 案比較・alloc
+  プロファイル実測（現状 N=10 で 27 alloc/req → 採用案で定数 2 alloc/req 見込み）・
+  fuzz/DoS 上限/UTF-8 検証の不変条件・`unsafe` 不使用方針を記述。採用案（所有ヘッド
+  バッファ + `Range<usize>` 保持、ライフタイムパラメータ非導入）と Phase 3 実装
+  issue（#590〜#593）の受け入れ基準確定まで含む。コード変更は Phase 3 実装
+  issue（ユーザー承認後着手）が担う）
