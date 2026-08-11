@@ -7,11 +7,59 @@
     "allow_unsafe_code_count": 0,
     "unsafe_count": 0
   },
+  "docs-site": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
   "http": {
+    "allow_unsafe_code_count": 1,
+    "unsafe_count": 8
+  },
+  "plugin-compression": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
+  "plugin-cors": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
+  "plugin-graphql": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
+  "plugin-hub-wiring": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
+  "plugin-openapi": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
+  "plugin-static": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
+  "plugin-tracing": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
+  "plugin-webrtc": {
     "allow_unsafe_code_count": 0,
     "unsafe_count": 0
   },
   "plugin-webrtc-proxy": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
+  "plugin-websocket": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
+  "routes": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
+  "ws-load-client": {
     "allow_unsafe_code_count": 0,
     "unsafe_count": 0
   }

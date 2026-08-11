@@ -380,7 +380,22 @@ fandhe-backend/
 │   │                                    # 探索へ委譲、シグネチャ・空 needle 時 `None` の契約は
 │   │                                    # 不変。`memchr` は既に workspace 依存ツリーに存在した
 │   │                                    # v2.8.3 へ統一解決され新規バージョンの流入なし、
-│   │                                    # `docs/dep-impact/records.md` 参照）
+│   │                                    # `docs/dep-impact/records.md` 参照）。`RequestHead`
+│   │                                    # の内部表現をヘッド部 1 個の所有バッファ
+│   │                                    # （`Box<str>`）+ method / target / 各ヘッダ名・値を
+│   │                                    # `Range<usize>` として保持する方式へ変更した（イシュー
+│   │                                    # #591、性能改善ツリー #579 Phase 3。設計は
+│   │                                    # `docs/design/zero-copy-request-head.md`）。1 リクエスト
+│   │                                    # あたりの追加ヒープアロケーションがヘッダ本数 N に
+│   │                                    # 依存しない定数個（`buf` 1 + `headers` 1）になったことを
+│   │                                    # `crates/http/tests/alloc_count.rs`（`GlobalAlloc`
+│   │                                    # ラッパーで N=1/N=30 の alloc 差分を直接計測する常設
+│   │                                    # テスト）で固定した。`method` / `target` は非公開
+│   │                                    # フィールド化し、`RequestHead::method()` /
+│   │                                    # `RequestHead::target()`（`&str` 返却）のアクセサ
+│   │                                    # 経由でのみ取得させる（**BREAKING CHANGE**、旧
+│   │                                    # `pub method: String` / `pub target: String` は廃止、
+│   │                                    # 移行手順は `CHANGELOG.md` 参照）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）

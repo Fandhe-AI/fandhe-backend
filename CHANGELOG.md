@@ -7,6 +7,33 @@
 
 ## [Unreleased]
 
+### BREAKING CHANGES
+
+1. **`fandhe-backend-http`**: `RequestHead` の `method` / `target` フィールドを
+   `pub String` から非公開へ変更し、`RequestHead::method()` /
+   `RequestHead::target()` の `&str` を返すアクセサ経由でのみ取得する契約に
+   しました（イシュー
+   [#591](https://github.com/Fandhe-AI/fandhe-backend/issues/591)、性能改善
+   ツリー [#579](https://github.com/Fandhe-AI/fandhe-backend/issues/579)
+   Phase 3。設計は
+   [`docs/design/zero-copy-request-head.md`](docs/design/zero-copy-request-head.md)）。
+   内部表現をヘッド部 1 個の所有バッファ（`Box<str>`）+ 各フィールドを
+   `Range<usize>` として保持する方式へ変更し、1 リクエストあたりの追加
+   ヒープアロケーションをヘッダ本数 N に依存しない定数個（`buf` 1 +
+   `headers` 1）へ削減しています。`version` は `Copy` 型で alloc 削減の
+   動機がないため引き続き `pub` のまま維持します。
+   - **移行手順**: `head.method` / `head.target` によるフィールド直接
+     アクセスは全てコンパイルエラーになります。`head.method()` /
+     `head.target()`（いずれも `&str` を返す）へ書き換えてください。
+     `String` を要する箇所（所有権が必要な場合等）は `head.method()
+     .to_owned()` のように明示的に変換してください。値の意味・検証内容
+     （RFC 9110 tchar トークン検証・制御文字非許可等）に変更はありません。
+   - **互換性方針**: 本変更は `fandhe-backend-http` の 0.x 系における
+     破壊的変更として次回 lockstep バンプ（マイナーバージョン、
+     `docs/design/crates-io-release.md` 7 節）で 13 クレート一斉に反映
+     します。crates.io 公開済みバージョンからの更新時は上記移行手順に
+     従ってビルドエラーを解消してください。
+
 ### Docs
 
 - **`fandhe-backend-core`**: `BoundServer::run_until`（最終 graceful shutdown）
