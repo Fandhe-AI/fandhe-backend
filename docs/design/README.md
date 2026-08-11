@@ -176,3 +176,12 @@
   全公開契約・13 公開クレートの breaking change に波及し影響範囲を限定できないため、
   軸 A + 軸 B の一般形を不採用と結論（軸 A 単独案は否定せず、opt-in feature 化案の
   第一候補として再検討条件に明記）。fail-closed 原則を根拠に記録）
+- [`zero-copy-request-head.md`](./zero-copy-request-head.md): P1 ヘッダゼロコピー化
+  （`RequestHead` の Range 保持）の設計検討（イシュー #588、性能改善ツリー #579 Phase 2。
+  `RequestHead` の公開 API 全量調査（72 参照ファイル）・ライフタイム設計 3 案比較
+  （借用+Range／所有バッファ+Range／Cow ハイブリッド）・段階移行 3 案比較・alloc
+  プロファイル実測（現状 N=10 で 27 alloc/req → 採用案で定数 2 alloc/req 見込み）・
+  fuzz/DoS 上限/UTF-8 検証の不変条件・`unsafe` 不使用方針を記述。採用案（所有ヘッド
+  バッファ + `Range<usize>` 保持、ライフタイムパラメータ非導入）と Phase 3 実装
+  issue（#590〜#593）の受け入れ基準確定まで含む。コード変更は Phase 3 実装
+  issue（ユーザー承認後着手）が担う）
