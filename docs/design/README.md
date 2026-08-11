@@ -165,3 +165,11 @@
   シグネチャ変更不要の 3 層構造根拠、`fandhe_backend_plugin_websocket::handle_upgrade`
   の breaking change 方針、新規依存・tokio feature 追加なしの確認を記述。コード実装は
   後続の #491（コア配線）・#492（Close frame 送信）・#493（統合テスト・doc 更新）が担う）
+- [`per-core-runtime-decision.md`](./per-core-runtime-decision.md): P5 per-core accept
+  モデル（`SO_REUSEPORT` + `current_thread` ランタイム ×N）の採否検討（イシュー #589、
+  親 #581 Phase 2、ルート #579。actix-web/ntex 帯（約 54 万 RPS）到達に必要な構造だが、
+  4 拡張点 trait・`crates/routes` ハンドラ型・accept ループ・graceful shutdown（#313）・
+  rebind（#485/#488）・WS キャンセル（#489〜#499）・`SessionDrain`（#498）の全並行機構
+  へ波及し影響範囲を限定できないため不採用。安全性・AI ファースト保守性優先の設計
+  原則との衝突・fail-closed 原則を根拠に記録し、opt-in feature 化案を含む再検討条件を
+  明文化）
