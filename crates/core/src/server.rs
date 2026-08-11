@@ -1857,7 +1857,7 @@ impl BoundServer {
     /// # TCP_NODELAY（イシュー #587）
     ///
     /// accept した全ソケット（本関数の主 accept ループ・「稼働中の再バインド」
-    /// 節の rebind backlog 回収 [`drain_listener_backlog`] の双方）に対し、
+    /// 節の rebind backlog 回収 `drain_listener_backlog`（非公開関数）の双方）に対し、
     /// 非公開ヘルパ `configure_accepted_stream` 経由で
     /// `fandhe_backend_http::socket::configure_stream`（TCP_NODELAY 有効化）
     /// を適用する。Nagle アルゴリズムによる ACK 待ち遅延蓄積を避け、特に
