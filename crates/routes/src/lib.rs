@@ -32,9 +32,10 @@
 //! 従来どおりの意味論を維持する。[`Router::route_param`] で `{name}` セグメントを
 //! 含むパターンを追加登録でき、[`Router::dispatch`] は次の優先順位で解決する:
 //!
-//! 1. 静的ルート（完全一致）を最優先で走査する。既存の `HashMap` ルックアップを
-//!    変更しないため、パラメータルートを追加しても静的ルートのヒット経路・性能は
-//!    従来と変わらない（後方互換）。
+//! 1. 静的ルート（完全一致）を最優先で走査する。`path` → `method` のネスト
+//!    `FxHashMap`（イシュー #583）に対して `&str` の借用キーで 2 段照合し、
+//!    リクエストごとの `String` 確保を発生させない。パラメータルートを追加しても
+//!    静的ルートのヒット経路・照合意味論（完全一致）は従来と変わらない（後方互換）。
 //! 2. 静的ルートが miss した場合のみ、パラメータルートを**登録順**に線形走査し、
 //!    最初に一致したものへ委譲する。
 //! 3. 静的・パラメータいずれのルートにも一致しなかった場合、[`Router::fallback`] /
@@ -78,12 +79,12 @@
 //! 登録済みでも既定ポリシー（[`FallbackPolicy::NotFoundOnly`]）は 405 を fallback へ
 //! 流さない安全側（情報量の少ない `Allow` 開示を維持する側）に倒す。
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::{AllowedMethods, Response};
+use rustc_hash::FxHashMap;
 
 mod pattern;
 
@@ -191,10 +192,26 @@ pub enum FallbackPolicy {
 /// ```
 #[derive(Default)]
 pub struct Router {
-    // key は (method, target) の完全一致タプル。method は登録時の大文字小文字を
-    // そのまま保持する（RFC 9110 上メソッド token は大文字小文字を区別するため、
-    // 独自の正規化を持ち込まない）。
-    routes: HashMap<(String, String), RouteHandler>,
+    // 静的ルートテーブル（イシュー #583）。外側キー = path（target）、内側キー =
+    // method のネスト map とし、`dispatch` は `self.routes.get(head.path())
+    // .and_then(|m| m.get(head.method.as_str()))` の 2 段 `&str` 借用照合で
+    // ハンドラへ到達する（`Box<str>: Borrow<str>` により `String` の新規確保が
+    // 発生しない）。method は登録時の大文字小文字をそのまま保持する（RFC 9110 上
+    // メソッド token は大文字小文字を区別するため、独自の正規化を持ち込まない）。
+    // 外側を path、内側を method にしたのは、405 判定時の `Allow` 集約が
+    // `self.routes.get(head.path())` の 1 回参照だけで「そのパスの登録済み全
+    // method」を得られ、旧実装の全キー線形走査を避けられるため（`dispatch`
+    // 手順 3 参照）。
+    //
+    // ハッシャは既定の SipHash 1-3 ではなく `rustc-hash`（FxHash）を使う。
+    // FxHash は衝突攻撃耐性を持たないが、本 map のキー（method・path）は
+    // **起動時に開発者が登録する固定・小規模な集合**であり、リクエスト
+    // （攻撃者が制御しうる method/path）は照合側（`&str` の参照）にしか現れない。
+    // 攻撃者はキー挿入を制御できないため、ハッシュ衝突を意図的に発生させて
+    // lookup を線形化する HashDoS は成立しない（`.claude/rules/security.md`
+    // A05 観点。実行時にユーザー入力由来のキーを挿入する map へ本パターンを
+    // 転用しないこと）。
+    routes: FxHashMap<Box<str>, FxHashMap<Box<str>, RouteHandler>>,
     // `{name}` セグメントを含むパターンルート（TASK-176、#176）。登録順を保持する
     // 必要があるため（miss 時に登録順で線形走査し最初の一致を採用する意味論）
     // `HashMap` ではなく `Vec` で保持する。静的 `routes` の完全一致が常に優先され、
@@ -231,7 +248,7 @@ impl Router {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            routes: HashMap::new(),
+            routes: FxHashMap::default(),
             param_routes: Vec::new(),
             options_fallback: None,
             fallback: None,
@@ -279,8 +296,13 @@ impl Router {
         let adapted = move |head: &RequestHead, body: &[u8]| -> HandlerFuture {
             Box::pin(std::future::ready(handler(head, body)))
         };
+        // ネスト map（イシュー #583）: 外側 path の entry を用意してから内側 method
+        // へ insert する。同一 (method, path) の再登録は内側 `insert` の上書きで
+        // 従来どおり「後勝ち」を維持する（doc comment の既存契約）。
         self.routes
-            .insert((method.into(), path.into()), Box::new(adapted));
+            .entry(path.into().into_boxed_str())
+            .or_default()
+            .insert(method.into().into_boxed_str(), Box::new(adapted));
         self
     }
 
@@ -330,8 +352,11 @@ impl Router {
         let adapted = move |head: &RequestHead, body: &[u8]| -> HandlerFuture {
             Box::pin(handler(head, body))
         };
+        // ネスト map（イシュー #583）。`route` と同じ後勝ち契約を維持する。
         self.routes
-            .insert((method.into(), path.into()), Box::new(adapted));
+            .entry(path.into().into_boxed_str())
+            .or_default()
+            .insert(method.into().into_boxed_str(), Box::new(adapted));
         self
     }
 
@@ -682,12 +707,15 @@ impl Router {
     /// ```
     #[must_use]
     pub fn dispatch(&self, head: &RequestHead, body: &[u8]) -> HandlerFuture {
-        // 1. 静的ルート（完全一致）を最優先で照合する。既存の HashMap ルックアップに
-        //    手を加えていないため、パラメータルート追加前後でこの経路の挙動・性能は
-        //    変わらない（後方互換、モジュール doc「マッチング方針」節）。
+        // 1. 静的ルート（完全一致）を最優先で照合する（イシュー #583）。
+        //    `path` → `method` のネスト map を `&str` の借用キーで 2 段照合する
+        //    ため、`head.method`/`head.path()` の `String` 化・clone は発生しない。
+        //    照合意味論（method + target 完全一致）はネスト化前と変わらない
+        //    （後方互換、モジュール doc「マッチング方針」節）。
         if let Some(handler) = self
             .routes
-            .get(&(head.method.clone(), head.path().to_string()))
+            .get(head.path())
+            .and_then(|methods| methods.get(head.method.as_str()))
         {
             return handler(head, body);
         }
@@ -716,12 +744,15 @@ impl Router {
 
         // 静的ルート（target 一致）とパラメータルート（形状一致）の両方から
         // 405 応答の `Allow` 候補 method を集約する（TASK-176、#176。TASK-177、#177
-        // の Allow ヘッダ方針をパラメータルートにも適用する）。
+        // の Allow ヘッダ方針をパラメータルートにも適用する）。ネスト map
+        // 化（イシュー #583）により `self.routes.get(head.path())` の 1 回参照で
+        // 対象パスの登録済み全 method が得られ、旧実装の全キー線形走査
+        // （`O(登録静的ルート総数)`）を `O(対象パスの登録 method 数)` へ縮小する。
         let registered_methods: Vec<String> = self
             .routes
-            .keys()
-            .filter(|(_, target)| target == head.path())
-            .map(|(method, _)| method.clone())
+            .get(head.path())
+            .into_iter()
+            .flat_map(|methods| methods.keys().map(|m| m.to_string()))
             .chain(param_methods)
             .collect();
 

@@ -15,12 +15,17 @@ categories = ["web-programming", "web-programming::http-server", "asynchronous"]
 workspace = true
 
 # pay-for-what-you-use（.claude/rules/pay-for-what-you-use.md）:
-# 本クレートは依存方向グラフの中間層であり、下位層 fandhe-backend-http（crates/http）にのみ
-# 依存する。workspace 内クレート以外の外部依存は持たない（Router の内部状態は
-# 標準ライブラリの Vec のみで足りるため）。`cargo tree -p fandhe-backend-routes` で
-# fandhe-backend-http 以外の依存が増えていないことを確認する。
+# 本クレートは依存方向グラフの中間層であり、下位層 fandhe-backend-http（crates/http）に
+# 加え、workspace 内クレート以外の外部依存として rustc-hash のみを持つ（イシュー #583）。
+# rustc-hash は既定構成で推移依存ゼロ・unsafe ゼロの純 Rust 実装（rustc 本体でも
+# 使われる実績）。静的ルート照合の既定ハッシャ（SipHash 1-3）を FxHash へ差し替え、
+# 借用キー化（`String` 確保ゼロ）と合わせてリクエストごとの静的ルート lookup コストを
+# 下げる（`Router` の `routes` フィールドコメント参照）。
+# `cargo tree -p fandhe-backend-routes -e normal` で fandhe-backend-http / rustc-hash
+# 以外の依存が増えていないことを確認する。
 [dependencies]
 fandhe-backend-http = { workspace = true }
+rustc-hash = "2"
 
 # dev-only（イシュー #315）: async ハンドラ契約（`Router::route_async` /
 # `route_param_async`）の doc test・統合テストで `Future` を駆動するためだけに

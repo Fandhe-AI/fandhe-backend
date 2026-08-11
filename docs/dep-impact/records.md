@@ -8,6 +8,59 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-08-11 — `crates/routes` に `rustc-hash` を追加（静的ルート lookup 借用キー化 + FxHash 化、イシュー #583）
+
+静的ルート照合の既定ハッシャ（SipHash 1-3）を FxHash（`rustc-hash` 2 系）へ差し替え、
+`routes` フィールドを `HashMap<(String, String), _>` から `FxHashMap<Box<str>, FxHashMap<Box<str>, _>>`
+（path → method のネスト map）へ変更した。これにより静的ルート照合が `&str` の借用キー
+2 段照合となり、リクエストごとの `String` 確保（旧実装は `(method.clone(), path.to_string())`
+で 2 個）が発生しなくなる。副次効果として 405 応答の `Allow` 集約が「全登録静的ルート
+キーの線形走査」から「対象パスの inner map 参照」（`O(登録 method 数)`）へ縮小した。
+
+### 依存情報（pay-for-what-you-use）
+
+`crates/routes` の外部 crates.io 依存に `rustc-hash = "2"` を追加した（既存の
+`fandhe-backend-http` のみの構成に 1 件追加）。`rustc-hash` は既定構成（`std` feature
+のみ）で推移依存ゼロの純 Rust 実装。
+
+```
+$ cargo tree -p fandhe-backend-routes -e normal
+fandhe-backend-routes v0.3.0
+├── fandhe-backend-http v0.3.0
+│   └── tokio v1.53.1
+│       ├── bytes v1.12.1
+│       └── pin-project-lite v0.2.17
+└── rustc-hash v2.1.3
+```
+
+`rustc-hash` 自体の推移依存は 0 件（`tokio` は既存の `fandhe-backend-http` 経由の依存
+であり本変更による増分ではない）。
+
+### unsafe 件数
+
+`cargo geiger -p fandhe-backend-routes`（2026-08-11 実測）:
+
+```
+Functions  Expressions  Impls  Traits  Methods  Dependency
+
+0/0        0/0          0/0    0/0     0/0      ?  fandhe-backend-routes 0.3.0
+0/0        0/0          0/0    0/0     0/0      ?  ├── fandhe-backend-http 0.3.0
+...(tokio 系、変更前から存在する既存依存)...
+0/0        0/0          0/0    0/0     0/0      ?  └── rustc-hash 2.1.3
+```
+
+`fandhe-backend-routes` 本体・`rustc-hash` ともに unsafe 0 件（本変更による unsafe 増分
+ゼロ）。`cargo audit` / `cargo deny check`（`scripts/dep-audit.sh`）は全 feature 構成で
+PASS（advisories ok, bans ok, licenses ok, sources ok）。
+
+### 検証コマンド
+
+```
+cargo tree -p fandhe-backend-routes -e normal
+cargo geiger -p fandhe-backend-routes
+bash scripts/dep-audit.sh
+```
+
 ## 2026-07-21 — docs-site 基盤追加（GitHub Pages ドキュメントサイト生成ツール）
 
 `crates/docs-site`（`fandhe-backend-docs-site`、publish=false）を新設し、GitHub Pages
