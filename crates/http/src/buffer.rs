@@ -242,12 +242,12 @@ impl SendBuffer {
         &self.buf
     }
 
-    /// 応答送信完了後に呼び、容量が [`MAX_RETAINED_CAPACITY`]（[`RecvBuffer`]
+    /// 応答送信完了後に呼び、容量が `MAX_RETAINED_CAPACITY`（[`RecvBuffer`]
     /// と共用する 64 KiB 上限）を超えていれば縮小する。
     ///
     /// 大 body 応答を送出した直後の keep-alive 接続が、次リクエストの読み取り
     /// 待ちの間もその容量を無条件に保持し続けるとメモリ滞留要因になるため、
-    /// 送信完了直後に呼ぶ契約とする（[`RecvBuffer::shrink_if_oversized`] と
+    /// 送信完了直後に呼ぶ契約とする（`RecvBuffer::shrink_if_oversized` と
     /// 同一のポリシー、`.claude/rules/security.md` リソース枯渇対策）。
     ///
     /// # Examples

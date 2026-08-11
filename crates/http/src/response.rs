@@ -637,7 +637,7 @@ impl Response {
     ///
     /// ステータス（[`u16`]）・`Content-Length`（[`usize`]）の 10 進直列化は
     /// `to_string()`（heap alloc）ではなく本モジュール非公開の
-    /// [`write_decimal`] を使う。
+    /// `write_decimal` を使う。
     ///
     /// ```
     /// use fandhe_backend_http::response::Response;
