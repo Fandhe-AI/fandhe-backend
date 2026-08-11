@@ -514,7 +514,7 @@ PoC-10 の知見（非同期 I/O 化だけでは RPS 劣化 31.6% を解消で�
   「拡張点対応: 非該当」宣言はこのため変更していない。実行時拡張点の契約
   ではなくコンパイル時 feature 着脱に閉じる、
   `docs/design/dependency-graph-contract.md` 5 節）。`plugin::try_intercept`
-  側は `head.method == "GET" && head.target == "/openapi.json"`（YAML は
+  側は `head.method() == "GET" && head.target() == "/openapi.json"`（YAML は
   `/openapi.yaml`）とメソッド・パスの完全一致を判定したうえで
   `server.openapi_registration()`（後述の enum）を参照するだけの同期分岐で
   完結し、`.await` を挟まない

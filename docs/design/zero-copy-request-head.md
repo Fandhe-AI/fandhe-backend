@@ -536,3 +536,85 @@ E（閉包違反候補）ファイルの理由記載（11 節と同一 PR・同�
    ディレクトリを想定していないことに起因する運用上のギャップである
    （分類規則自体の見直しは 11 節と同一で 4.9 節と同一の別 Issue 対象として
    据え置く、`.claude/rules/out-of-scope-tracking.md`）
+
+## 13. #592 実施記録（core/routes/plugin 追随・移行手順記載）
+
+イシュー [#592](https://github.com/Fandhe-AI/fandhe-backend/issues/592)
+「RequestHead 変更への core/routes/plugin 追随と移行手順記載」の実施記録。前提として
+#591 実装（PR [#602](https://github.com/Fandhe-AI/fandhe-backend/pull/602)）が
+workspace 内全クレートの追随・`CHANGELOG.md` の移行手順記載・`CLAUDE.md` の反映を
+先行実施済みであり、#592 は残存事項の棚卸しと受け入れ基準の検証確定に絞って実施した。
+
+### 13.1 workspace 全クレートの参照置換
+
+2 節の表で列挙した全参照箇所のうち `head.method` / `head.target` の直接フィールド
+アクセスは PR #602 で置換済み（本イシューでの追加コード変更は 0 件）。本イシューでの
+追加調査で、置換漏れとしてコメント・doc 内の表記のみ 2 件検出し修正した:
+
+- `crates/core/src/plugin.rs`（363 行付近）: コメント内 `` `head.target` `` 表記を
+  `` `head.target()` `` へ更新（コメントのみ、挙動変更なし）
+- `docs/design/plugin-boundary.md`（517 行付近）: `head.method == "GET" &&
+  head.target == "/openapi.json"` の記述を `head.method() == "GET" &&
+  head.target() == "/openapi.json"` へ更新（実コードは #602 で既にアクセサ化済みで、
+  doc の記述だけが旧表記のまま残っていた）
+
+### 13.2 4 拡張点 trait のシグネチャ不変確認
+
+`Middleware` / `UpgradeHandler` / `RequestGate` / `Interceptor` の 4 拡張点 trait、
+および `Handler::handle` / `Handler::handle_streaming` は、いずれも引数が
+`&RequestHead`（共有参照）のままでシグネチャ変更がないことを実装ソース
+（`crates/core/src/extension.rs`・`crates/core/src/interceptor.rs`）で確認した。
+これらの trait を実装するプラグイン・利用者コード側の移行は、実装本体内で
+`head.method` / `head.target` を直接参照している箇所のみをアクセサ呼び出しへ
+書き換えれば完了する。本確認結果は `CHANGELOG.md` の `[Unreleased]` エントリへ
+正式に追記した。
+
+### 13.3 全 feature 構成ビルド検証
+
+`bash scripts/pay-for-what-you-use-check.sh` を実行し、(a) プラグイン feature 列挙・
+(b) 個別 feature 構成での `cargo tree` 検証（他プラグイン混入なし）・(c) `cargo
+geiger`（無効構成で対象 unsafe 計上ゼロ）・(d) バイナリサイズ差分・(e) 無効構成/個別
+構成/`--all-features` の全構成ビルド、すべて PASS を確認した。加えて
+`cargo clippy -p fandhe-backend-core --all-targets --no-default-features -- -D
+warnings` もクリーンであることを確認した（CI clippy ジョブと同一コマンド）。
+
+### 13.4 standalone workspace 5 件の検証と `.standalone-crates-io-skip` 配置要否判定
+
+`templates/app`・`examples/with-cors`・`examples/with-graphql`・
+`examples/with-websocket`・`examples/with-interceptor` の 5 standalone workspace
+（root workspace 非メンバー）について、次の 2 段階で検証した。
+
+1. **ローカル HEAD（path 依存、新 API）でのビルド・テスト**: 5 クレートすべてで
+   `cargo build` / `cargo test` が成功（各クレートのテストスイート全件 PASS）。
+   事前の `git grep` 全量調査で、5 クレートの `RequestHead` 参照は
+   `parse_request_head` / `ParseOutcome` 分配束縛 / `head.path()` / `head.query()`
+   のみで、廃止された `pub method` / `pub target` フィールドへの直接参照は 0 件
+   だったことと整合する結果
+2. **crates.io 公開版（0.3.0）のみでのビルド・テスト（受け入れ基準 4）**:
+   `bash scripts/standalone-crates-io-check.sh`（ネットワーク要）を実行し、
+   `== 集計: PASS 5 / SKIP 0 / FAIL 0 / 全 5 クレート ==` を確認した。5 クレート
+   すべてが crates.io 公開版 0.3.0 のみで build/test 通過したため、
+   `.standalone-crates-io-skip` マーカーは**配置不要**と判定した（`RequestHead` の
+   フィールド直接アクセスへの依存が元々なく、0.3.0・HEAD いずれの API でも
+   コンパイル可能なコードだったため）
+
+### 13.5 バージョン bump 見送り判断
+
+本イシューでは 13 クレートの lockstep バージョンバンプ（0.3.0 → 0.4.0 候補、0 節
+参照）を実施しない。確立済み運用（v0.2.0 = #437、v0.3.0 = #509/#506）では、lockstep
+バンプは breaking change マージ時点ではなく**リリース準備イシュー**（`docs/design/
+crates-io-release.md` 7.1〜7.3 節）で実施する。#592 の受け入れ基準にバンプは含まれず、
+今バンプすると standalone workspace 5 件の依存 `version` を未公開の "0.4.0" へ揃える
+必要が生じ、`standalone-crates-io-check.sh` の「全クレート SKIP かつ PASS 0 件は
+exit 1」という fail-closed 判定（週次常設検証 `standalone-crates-io.yml`）を恒常
+FAIL させてしまう。次回 crates.io 再公開時に別途起票するリリース準備イシューで、
+7.2 節の手順に従って実施する。
+
+### 13.6 受け入れ基準との対応まとめ
+
+| 受け入れ基準 | 結果 |
+|------|------|
+| workspace 全クレート + templates/app + examples/* がビルド・テスト通過 | PASS（13.1〜13.4） |
+| 全 feature 構成（なし・個別・全）でビルド確認 | PASS（13.3） |
+| CHANGELOG に BREAKING CHANGE と移行手順を記載 | PASS（#602 で先行記載済み、13.2 の追補で拡張点シグネチャ不変を明記） |
+| `.standalone-crates-io-skip` を必要に応じて配置 | 配置不要と判定・根拠記録済み（13.4） |

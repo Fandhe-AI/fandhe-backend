@@ -33,6 +33,19 @@
      `docs/design/crates-io-release.md` 7 節）で 13 クレート一斉に反映
      します。crates.io 公開済みバージョンからの更新時は上記移行手順に
      従ってビルドエラーを解消してください。
+   - **拡張点 trait への影響なし**（イシュー
+     [#592](https://github.com/Fandhe-AI/fandhe-backend/issues/592)）: 4 拡張点
+     trait（`Middleware` / `UpgradeHandler` / `RequestGate` / `Interceptor`）
+     および `Handler::handle` / `Handler::handle_streaming` は、いずれも
+     引数が `&RequestHead`（共有参照）のままでシグネチャ変更はありません。
+     これら trait を実装するプラグイン・利用者コードは、実装本体内で
+     `head.method` / `head.target` を直接参照している箇所のみ
+     `head.method()` / `head.target()` へ書き換えれば移行が完了します
+     （workspace 内 core/routes/plugin-\* クレートの追随は
+     [#602](https://github.com/Fandhe-AI/fandhe-backend/pull/602) で先行実施
+     済み。詳細な棚卸し結果は
+     [`docs/design/zero-copy-request-head.md`](docs/design/zero-copy-request-head.md)
+     の「#592 実施記録」節を参照）。
 
 ### Docs
 
