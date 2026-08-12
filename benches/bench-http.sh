@@ -7,11 +7,29 @@
 #
 # 使い方・パラメータは benches/README.md を参照。
 
+# `CPU_PROBE=1`（既定 0、opt-in）で各計測窓の直前直後に外部 CPU 占有率
+# プローブ（`benches/lib/cpu-probe.sh`）を実行し、窓単位で汚染検知・有界な
+# 再計測を行う（イシュー #613。背景・実証は
+# `benches/reports/issue593-p1-zero-copy-bench.md` 9 節・9.7 節）。
+# 未指定時（既定）は本ファイルの以下の挙動は一切変わらない
+# （プローブ呼び出し自体を行わないため、CPU_PROBE 未対応の既存呼び出し元・
+# `bench-accept.sh`（本イシューでは INTERLEAVE 統合のみ）に影響しない）。
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
+
+CPU_PROBE="${CPU_PROBE:-0}"
+if [ "${CPU_PROBE}" != "0" ] && [ "${CPU_PROBE}" != "1" ]; then
+    echo "エラー: CPU_PROBE は 0 または 1 である必要があります（現在: ${CPU_PROBE}）" >&2
+    exit 1
+fi
+if [ "${CPU_PROBE}" = "1" ]; then
+    # shellcheck source=lib/cpu-probe.sh
+    source "${SCRIPT_DIR}/lib/cpu-probe.sh"
+fi
 
 check_dependencies
 check_runs_minimum
@@ -54,22 +72,95 @@ for idx in "${!LABELS[@]}"; do
     p50_values=()
     p95_values=()
     p99_values=()
+    # CPU_PROBE=1 時のみ意味を持つ並列配列（未指定時は空のまま、RESULT_JSON
+    # 生成時に参照しない）。
+    ext_cpu_pct_values=()
+    contaminated_values=()
+    remeasure_count_values=()
 
     for ((i = 1; i <= RUNS; i++)); do
-        if [ "${label}" = "POST /echo" ]; then
-            json="$(oha -z "${DURATION}" -c "${CONNECTIONS}" --no-tui --output-format json \
-                "${EXTRA_ARGS_ECHO[@]}" "${url}")"
-        else
-            json="$(oha -z "${DURATION}" -c "${CONNECTIONS}" --no-tui --output-format json "${url}")"
-        fi
-        rps="$(echo "${json}" | jq -r '.summary.requestsPerSec')"
-        p50="$(echo "${json}" | jq -r '.latencyPercentiles.p50')"
-        p95="$(echo "${json}" | jq -r '.latencyPercentiles.p95')"
-        p99="$(echo "${json}" | jq -r '.latencyPercentiles.p99')"
+        # CPU_PROBE=0（既定）のときは以下の分岐に一切入らず、プローブ呼び出しの
+        # オーバーヘッド・挙動変化がゼロであることを保証する。
+        remeasure_count=0
+        while :; do
+            if [ "${CPU_PROBE}" = "1" ]; then
+                # NOTE: `probe_read_*` は `/proc` 読み取り不能時に非 0 終了しうる
+                # （`benches/lib/cpu-probe.sh` の契約、空文字を返してフェイル
+                # クローズを呼び出し元に委ねる）。本ファイルは `set -e` 下のため、
+                # 素の代入 `var="$(cmd)"` のまま非 0 終了を伝播させるとスクリプト
+                # 全体が中断し、後続の `probe_external_share`（空文字→"nan"）・
+                # `probe_is_contaminated`（"nan"→汚染扱い）による fail-closed
+                # 継続処理に到達できない。`|| true` で個々の読み取り失敗を吸収し、
+                # 空文字のまま下流の nan 判定へ渡す（PR #620 レビュー指摘対応）。
+                total_before_pair="$(probe_read_total_jiffies)" || true
+                server_before="$(probe_read_pid_jiffies "${SERVER_PID}")" || true
+                children_before="$(probe_read_self_children_jiffies)" || true
+            fi
+
+            if [ "${label}" = "POST /echo" ]; then
+                json="$(oha -z "${DURATION}" -c "${CONNECTIONS}" --no-tui --output-format json \
+                    "${EXTRA_ARGS_ECHO[@]}" "${url}")"
+            else
+                json="$(oha -z "${DURATION}" -c "${CONNECTIONS}" --no-tui --output-format json "${url}")"
+            fi
+            rps="$(echo "${json}" | jq -r '.summary.requestsPerSec')"
+            p50="$(echo "${json}" | jq -r '.latencyPercentiles.p50')"
+            p95="$(echo "${json}" | jq -r '.latencyPercentiles.p95')"
+            p99="$(echo "${json}" | jq -r '.latencyPercentiles.p99')"
+
+            if [ "${CPU_PROBE}" != "1" ]; then
+                break
+            fi
+
+            # NOTE: before 側と同じ理由（上記コメント参照）で `|| true` を付ける。
+            total_after_pair="$(probe_read_total_jiffies)" || true
+            server_after="$(probe_read_pid_jiffies "${SERVER_PID}")" || true
+            children_after="$(probe_read_self_children_jiffies)" || true
+            total_before="$(echo "${total_before_pair}" | cut -d' ' -f1)"
+            busy_before="$(echo "${total_before_pair}" | cut -d' ' -f2)"
+            total_after="$(echo "${total_after_pair}" | cut -d' ' -f1)"
+            busy_after="$(echo "${total_after_pair}" | cut -d' ' -f2)"
+            # NOTE: `server_before`/`children_before`（after 側も同様）が空文字の
+            # 場合、`$(( ))` 算術展開は空文字を暗黙に 0 として扱ってしまい、
+            # 本来 `probe_external_share` の非数値チェックで "nan"（フェイル
+            # クローズ）に落ちるべき片側 read 失敗が `0` へ丸められて汚染検知を
+            # すり抜ける（PR #620 レビュー指摘対応）。算術評価前に両オペランドが
+            # 数値であることを検証し、非数値ならば空文字のまま
+            # `probe_external_share` へ渡して非数値チェックに委ねる。
+            attributed_before=""
+            if [[ "${server_before}" =~ ^[0-9]+$ ]] && [[ "${children_before}" =~ ^[0-9]+$ ]]; then
+                attributed_before=$((server_before + children_before))
+            fi
+            attributed_after=""
+            if [[ "${server_after}" =~ ^[0-9]+$ ]] && [[ "${children_after}" =~ ^[0-9]+$ ]]; then
+                attributed_after=$((server_after + children_after))
+            fi
+            ext_cpu_pct="$(probe_external_share "${total_before}" "${total_after}" \
+                "${busy_before}" "${busy_after}" "${attributed_before}" "${attributed_after}")"
+
+            if probe_is_contaminated "${ext_cpu_pct}" && [ "${remeasure_count}" -lt "${WINDOW_REMEASURE_MAX}" ]; then
+                remeasure_count=$((remeasure_count + 1))
+                echo "  [CPU_PROBE] ${label} run ${i}: 外部占有率 ${ext_cpu_pct}% > ${EXT_CPU_MAX_PCT}%、窓を再計測します（${remeasure_count}/${WINDOW_REMEASURE_MAX}）" >&2
+                continue
+            fi
+            break
+        done
+
         rps_values+=("${rps}")
         p50_values+=("${p50}")
         p95_values+=("${p95}")
         p99_values+=("${p99}")
+
+        if [ "${CPU_PROBE}" = "1" ]; then
+            contaminated_flag=0
+            if probe_is_contaminated "${ext_cpu_pct}"; then
+                contaminated_flag=1
+                echo "  [CPU_PROBE] ${label} run ${i}: 再計測上限（${WINDOW_REMEASURE_MAX}）到達。汚染フラグ付きで採用します（外部占有率 ${ext_cpu_pct}%）" >&2
+            fi
+            ext_cpu_pct_values+=("${ext_cpu_pct}")
+            contaminated_values+=("${contaminated_flag}")
+            remeasure_count_values+=("${remeasure_count}")
+        fi
     done
 
     rps_median="$(printf '%s\n' "${rps_values[@]}" | median)"
@@ -83,6 +174,13 @@ for idx in "${!LABELS[@]}"; do
     echo "raw p95: ${p95_values[*]}"
     echo "raw p99: ${p99_values[*]}"
     echo "median  RPS=${rps_median} p50=${p50_median}s p95=${p95_median}s p99=${p99_median}s"
+    if [ "${CPU_PROBE}" = "1" ]; then
+        contaminated_count=0
+        for flag in "${contaminated_values[@]}"; do
+            [ "${flag}" = "1" ] && contaminated_count=$((contaminated_count + 1))
+        done
+        echo "CPU_PROBE 外部占有率(%): ${ext_cpu_pct_values[*]}（汚染窓 ${contaminated_count}/${RUNS}、再計測発生 ${remeasure_count_values[*]}）"
+    fi
     echo
 
     if [ -n "${RESULT_JSON:-}" ]; then
@@ -101,6 +199,20 @@ for idx in "${!LABELS[@]}"; do
               p50: {raw: $p50_raw, median: $p50_median},
               p95: {raw: $p95_raw, median: $p95_median},
               p99: {raw: $p99_raw, median: $p99_median}}')"
+        # CPU_PROBE=1 のときのみ endpoint_obj へ cpu_probe フィールドを追加する
+        # （既存フィールドの形・意味は一切変えない後方互換な追加。
+        # `ext_cpu_pct` は "nan"（計測不能）が `jq -R tonumber` で null になる
+        # ことを利用し、契約どおり値を捏造せず null として記録する）。
+        if [ "${CPU_PROBE}" = "1" ]; then
+            ext_cpu_pct_json="$(printf '%s\n' "${ext_cpu_pct_values[@]}" | to_json_array)"
+            contaminated_json="$(printf '%s\n' "${contaminated_values[@]}" | to_json_array)"
+            remeasure_count_json="$(printf '%s\n' "${remeasure_count_values[@]}" | to_json_array)"
+            endpoint_obj="$(echo "${endpoint_obj}" | jq \
+                --argjson ext_cpu_pct "${ext_cpu_pct_json}" \
+                --argjson contaminated "${contaminated_json}" \
+                --argjson remeasure_count "${remeasure_count_json}" \
+                '. + {cpu_probe: {ext_cpu_pct: $ext_cpu_pct, contaminated: $contaminated, remeasure_count: $remeasure_count}}')"
+        fi
         ENDPOINT_JSON+=("${endpoint_obj}")
     fi
 done

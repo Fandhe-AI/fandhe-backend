@@ -42,7 +42,8 @@ cargo build --release --bin axum-ref
 | `bench-http.sh` | RPS・p50・p95・p99（`GET /health`, `GET /hello/{name}`, `GET /users/{id}`, `POST /echo`） |
 | `bench-rss.sh` | 負荷時 RSS（試行内複数サンプル × 複数試行の中央値。PoC-2 の単発計測の是正） |
 | `bench-footprint.sh` | 起動時間・アイドル RSS・リリースバイナリサイズ |
-| `bench-accept.sh` | 上記 3 スクリプトを axum-ref（baseline）・コア側（対象）の順に実行し、比率・絶対差を算出して REQ-1・NFR-1・NFR-2 の基準で判定する受け入れテスト（TASK-1.6-1、#71） |
+| `bench-accept.sh` | 上記 3 スクリプトを axum-ref（baseline）・コア側（対象）の順に実行し、比率・絶対差を算出して REQ-1・NFR-1・NFR-2 の基準で判定する受け入れテスト（TASK-1.6-1、#71）。`INTERLEAVE=1`・`SECTION_QUIESCENCE=1`（いずれも opt-in、イシュー #613）で交互ペア測定・区間ごと静穏再確認に切り替え可能（後述） |
+| `bench-pair.sh` | `BIN_A`（pre）・`BIN_B`（cur）2 バイナリを交互ペア測定し、`PAIR_M2` 判定（二次判定、イシュー #613）を行う新設エントリポイント（後述） |
 | `bench-ws-load.sh` | 10,000 同時 WebSocket 接続の確立成功率・接続あたり RSS 増分（fullscratch/axum 比）・線形性を計測する負荷試験ハーネス（TASK-4.3、#24） |
 | `compression-blocking-bench.sh` | `plugin-compression` の gzip 圧縮本体（`compress_body`）所要時間（body サイズ別）と `spawn_blocking` ディスパッチ往復コストを比較するマイクロベンチ。`blocking_threshold` しきい値決定・ストリーミング圧縮への適用要否判定の根拠（イシュー #468、`benches/reports/issue468-compression-blocking.md`） |
 | `compression-e2e-bench.sh` | compression 有効構成の並行負荷下 E2E 比較（`crates/core/examples/compression_e2e_bench.rs` を使用）。`GET /large`（既定しきい値 64 KiB 以上）への背景負荷と同時に `GET /small`（常にインライン圧縮）を計測し、`spawn_blocking` オフロード（既定）と常時インライン（`BLOCKING_THRESHOLD=max`）の 2 構成で p99 テールレイテンシを比較する（イシュー #473、`benches/reports/issue473-compression-e2e.md`） |
@@ -245,6 +246,109 @@ axum-ref との実測比較の判定結果・環境情報は
 `TARGET_BIN` / `TARGET_HOST` / `TARGET_PORT`（`bench-http.sh` 等の単体実行時）や
 `BASELINE_*` / `CORE_*`（`bench-accept.sh`）を差し替えることで、`crates/core` 側の
 実行可能バイナリが揃った時点で本スクリプトの変更なしにそのまま判定に使える設計にしている。
+
+## 交互測定モード・外部 CPU 占有率プローブ（イシュー #613）
+
+共有ホスト・共有テナンシー環境（ホステッド runner の noisy neighbor を含む）では、
+`bench-accept.sh` の一次判定（axum 比）が p95 判定境界付近で不安定になることがある
+（`reports/issue593-p1-zero-copy-bench.md` 9 節・9.7 節で実証、
+`docs/design/bench-hosted-runner.md`）。以下の 3 機構は**すべて既定 OFF の opt-in**
+であり、指定しない限り既存の挙動（一次判定の判定ロジック・出力・終了コード契約）は
+一切変わらない。**しきい値の既定値（`EXT_CPU_MAX_PCT`・`WINDOW_REMEASURE_MAX`・
+`PAIR_M2`・`PAIR_MIN_PAIRS`）はすべて暫定値**であり、実測較正は既存イシュー #616
+のスコープ。
+
+### CPU_PROBE=1 — 外部 CPU 占有率プローブ（`bench-http.sh`）
+
+各計測窓（oha 1 回分）の直前直後に `/proc/stat`（総 busy jiffies。`steal` 込み
+— ホステッド VM のハイパーバイザ奪取分も「外部占有」として算入する）とサーバ・
+oha それぞれの帰属 jiffies を採取し、外部占有率 `= (busy 増分 − 帰属増分) / 総増分`
+を算出する。`EXT_CPU_MAX_PCT`（既定 5%）を超える窓は `WINDOW_REMEASURE_MAX`
+（既定 2）回を上限に再計測し、上限まで解消しない場合は**値を捏造・破棄せず**
+汚染フラグ付きで最後の値を採用する。
+
+```bash
+CPU_PROBE=1 ./benches/bench-http.sh
+# RESULT_JSON 指定時は endpoints[].cpu_probe.{ext_cpu_pct,contaminated,remeasure_count}
+# （既存フィールドは無変更の後方互換な追加）に記録される。
+CPU_PROBE=1 RESULT_JSON=/tmp/result.json ./benches/bench-http.sh
+```
+
+### INTERLEAVE=1 — 交互ペア測定モード（`bench-accept.sh`）
+
+HTTP 系計測を「baseline 一括 → core 一括」の 2 ブロックから、baseline/core を
+`PAIRS`（既定 8）回交互にセッション計測する方式へ切り替える。順序効果・時間帯
+ドリフトを排除する。判定ロジック（axum 比のしきい値・判定表・終了コード 0/1/2
+契約）は無変更 — 各セッションは既存 `RUNS` で内部中央値を出し、セッション間の
+中央値を最終値として採用する。RSS・footprint 計測は従来どおり逐次のまま（対象外）。
+
+```bash
+INTERLEAVE=1 PAIRS=8 ./benches/bench-accept.sh
+# CPU_PROBE=1 と併用すると、集約した外部占有率分布を判定表の後に追記する。
+INTERLEAVE=1 CPU_PROBE=1 REPORT_MD=benches/reports/foo.md ./benches/bench-accept.sh
+```
+
+### SECTION_QUIESCENCE=1 — 区間分割・区間ごと静穏再確認（`bench-accept.sh`）
+
+baseline 区間・core 区間それぞれの計測開始前に `lib/exclusive.sh` の静穏確認
+（`wait_for_quiescence`）+ 環境スナップショットを実行する（issue593 レポート
+7 節申し送りの「2 区間分割と区間ごとの静穏再確認」への対応）。区間用しきい値は
+`SECTION_LOAD1_MAX`（未指定時は `LOAD1_MAX` を継承）、待機上限は
+`SECTION_QUIESCE_WAIT_SECS`（既定 300 秒、有界）。区間の静穏未達は
+**BLOCKED（終了コード 2）でフェイルクローズし、PASS へ丸めない**。
+
+`INTERLEAVE=1` と併用する場合は、区間開始前の 1 回だけでは PAIRS 回（既定 8）に
+わたるドリフト・汚染を検出できないため、`benches/lib/interleave.sh` の
+`interleave_run_pairs` へ静穏ゲートフックを渡し、**各ペア開始直前**（i = 1..PAIRS
+各回に 1 回）に静穏確認を実行する（イシュー #613 レビュー指摘対応）。A/B 各
+セッションではなくペア単位にしているのは、`wait_for_quiescence` が見る 1 分間
+loadavg が直前に完走した自分自身のセッション負荷の残差を「外部汚染」と誤検知
+しうるため（`interleave_run_pairs` doc comment 参照）。未達判定・BLOCKED 化の
+ロジックは区間分割時と同一の `run_section_quiescence_gate` をそのまま再利用する。
+
+```bash
+SECTION_QUIESCENCE=1 SECTION_QUIESCE_WAIT_SECS=300 ./benches/bench-accept.sh
+# INTERLEAVE=1 併用時は各ペア開始直前に静穏確認を実行する
+INTERLEAVE=1 SECTION_QUIESCENCE=1 SECTION_QUIESCE_WAIT_SECS=300 ./benches/bench-accept.sh
+```
+
+### bench-pair.sh — 交互ペア測定による二次判定（新設エントリポイント）
+
+`bench-accept.sh`（一次判定）とは別経路の新設スクリプト。`BIN_A`（pre）・
+`BIN_B`（cur）2 バイナリを交互ペア測定し、エンドポイントごとの p95 cur/pre 比の
+**採用ペア中央値**が `PAIR_M2`（既定 0.05）以内かを判定する
+（`docs/design/bench-p95-criteria.md` 5.2 節）。一次判定が FAIL・境界接近時の
+**退行帰属手段**として使う想定。汚染窓（`CPU_PROBE` の汚染フラグ）を含むペアは
+採用から除外し、除外理由・生値を必ず記録する（silent drop 禁止）。
+
+```bash
+BIN_A=target/release/axum-ref BIN_B=target/release/examples/core-bench \
+    PAIRS=8 PAIR_M2=0.05 PAIR_MIN_PAIRS=6 \
+    REPORT_MD=benches/reports/foo-pair.md ./benches/bench-pair.sh
+
+# 差ゼロ既知の自己比較（同一バイナリ、全エンドポイント PASS になるはず）
+BIN_A=target/release/examples/core-bench BIN_B=target/release/examples/core-bench \
+    ./benches/bench-pair.sh
+```
+
+終了コード: `0`=PASS、`1`=FAIL（1 エンドポイント以上で中央値超過）、`2`=BLOCKED
+（`BIN_A`/`BIN_B` 未整備等の決定論的失敗）、`3`=**INCONCLUSIVE**（1 エンドポイント
+以上で採用ペア数が `PAIR_MIN_PAIRS` 未満。`bench-accept.sh` の既存 0/1/2 契約とは
+独立した本スクリプト新設の区分。`nfr6_run_with_fail_retry` 等の再試行ラッパーは
+`bench-pair.sh` を対象にしない。`bench-schedule.yml`・退行帰属フローへの接続は
+既存イシュー #614 のスコープ）。
+
+### セルフテスト
+
+```bash
+bash scripts/tests/run-bench-cpu-probe-tests.sh
+```
+
+`benches/lib/cpu-probe.sh`（プローブ算出式・汚染判定）・`benches/lib/interleave.sh`
+（窓単位再計測の有界性・二次判定ロジック）をオフラインで検証する。実 `/proc/stat`
+を使った busy ループ注入による汚染検出（受け入れ基準）も含む
+（`scripts/tests/run-nfr6-exclusive-tests.sh` と同じ手動実行方針、CI 常設組み込みは
+行わない）。
 
 ## webrtc-nfr6-bench.sh / graphql-nfr6-bench.sh — プラグイン feature の NFR 計測
 

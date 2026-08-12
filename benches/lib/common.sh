@@ -230,4 +230,19 @@ validate_numeric() {
     fi
 }
 
+# 非負整数（小数不可）であることを検証する。`validate_numeric` は小数を許容する
+# ため、bash の整数算術コンテキスト（`$((...))`・`-ge`/`-lt` 等）へそのまま渡す
+# 値の検証には使えない（小数を渡すと `integer expression expected` で異常終了し、
+# 呼び出し元が意図した BLOCKED/エラー終了コードの契約を通らずに落ちてしまう）。
+# `SECTION_QUIESCE_WAIT_SECS`（`benches/lib/exclusive.sh` の `wait_for_quiescence`
+# が `SECONDS`/`sleep` と共に整数算術で使用）等、整数専用パラメータの検証に使う。
+validate_integer() {
+    local value="$1"
+    local name="$2"
+    if ! [[ "${value}" =~ ^[0-9]+$ ]]; then
+        echo "エラー: ${name} は非負整数である必要があります（現在: ${value}）" >&2
+        exit 1
+    fi
+}
+
 export RUNS DURATION CONNECTIONS TARGET_BIN TARGET_HOST TARGET_PORT TARGET_URL WORKSPACE_ROOT BENCH_TARGET_DIR
