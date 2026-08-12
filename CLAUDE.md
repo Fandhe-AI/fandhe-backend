@@ -702,8 +702,12 @@ fandhe-backend/
 │                                        # 静穏ゲートフックを渡し各ペア開始直前にも実行する）
 │                                        # の 2 opt-in を追加した
 │                                        # （issue593 レポート 7 節申し送り対応）。3 機構とも
-│                                        # 既定 OFF で現行挙動を変えない。しきい値暫定値の
-│                                        # 実測較正は既存イシュー #616。`interleave_run_pairs`
+│                                        # 既定 OFF で現行挙動を変えない。しきい値は #616 で
+│                                        # fail-closed 方針により現状値を確定値として採用
+│                                        # （新方式・同一コミット系列の実測較正は push 不可の
+│                                        # 実装フェーズでは未収集。`benches/reports/
+│                                        # issue616-hosted-runner-calibration.md` 参照）。
+│                                        # `interleave_run_pairs`
 │                                        # の A/B いずれかのセッション実行失敗は、性能退行
 │                                        # FAIL（exit 1）と誤分類させず BLOCKED（exit 2）へ
 │                                        # 変換する（`bench-pair.sh` と同一パターン。途中
