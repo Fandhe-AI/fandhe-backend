@@ -103,11 +103,24 @@ if [ "${SECTION_QUIESCENCE}" = "1" ]; then
     # shellcheck source=lib/exclusive.sh
     source "${SCRIPT_DIR}/lib/exclusive.sh"
     if [ -n "${SECTION_LOAD1_MAX:-}" ]; then
+        # 未検証のまま LOAD1_MAX へ代入すると、check_quiescence_once の
+        # awk 比較（v <= max）で max が非数値文字列扱いとなり文字列比較に
+        # 落ちる（awk の strnum 規則上、数値の v は文字列化されると多くの
+        # 場合 "abc" 等の英字始まり文字列より辞書順で小さくなり、実際の
+        # loadavg が上限超過でも QUIESCENT と誤判定されうる fail-open。
+        # レビュー指摘対応）。common.sh の validate_numeric で事前に有限の
+        # 非負数であることを検証し、不正値は exit 1 でフェイルクローズする。
+        validate_numeric "${SECTION_LOAD1_MAX}" "SECTION_LOAD1_MAX"
         # shellcheck disable=SC2034 # exclusive.sh（source 先）の
         # check_quiescence_once が参照するグローバル変数（動的 source 先の
         # 参照は shellcheck が追えない）。
         LOAD1_MAX="${SECTION_LOAD1_MAX}"
     fi
+    # wait_for_quiescence（exclusive.sh）は QUIESCE_WAIT_SECS を SECONDS との
+    # 整数算術（$((...))・-ge）に使うため、小数を許容する validate_numeric では
+    # 不十分（例 "1.5" は算術コンテキストで異常終了し、定義済みの BLOCKED
+    # （exit 2）経路を通らずに落ちる）。非負整数専用の validate_integer で検証する。
+    validate_integer "${SECTION_QUIESCE_WAIT_SECS}" "SECTION_QUIESCE_WAIT_SECS"
     QUIESCE_WAIT_SECS="${SECTION_QUIESCE_WAIT_SECS}"
 fi
 
@@ -149,7 +162,9 @@ validate_numeric "${P99_RATIO_MAX}" "P99_RATIO_MAX"
 validate_numeric "${IDLE_RSS_RATIO_MAX}" "IDLE_RSS_RATIO_MAX"
 validate_numeric "${BIN_SIZE_RATIO_MAX}" "BIN_SIZE_RATIO_MAX"
 validate_numeric "${STARTUP_DIFF_MAX_MS}" "STARTUP_DIFF_MAX_MS"
-validate_numeric "${SECTION_QUIESCE_WAIT_SECS}" "SECTION_QUIESCE_WAIT_SECS"
+# SECTION_QUIESCE_WAIT_SECS は SECTION_QUIESCENCE=1 時の分岐（上記）で
+# validate_integer により非負整数として検証済み（wait_for_quiescence の
+# 整数算術契約）。ここでの重複検証は行わない。
 
 echo "# bench-accept.sh: TASK-1.6-1 性能受け入れ判定"
 echo "実行日時: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
