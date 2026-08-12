@@ -8,6 +8,93 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-08-12 — `benches/microbench`（standalone crate）に `serde_json` / `stats_alloc` を新規追加（決定的マイクロベンチ、イシュー #615、PR #619 codex-review 指摘 P1 対応）
+
+`benches/microbench`（`crates/http/fuzz`・`plugin-webrtc/tests-e2e` と同パターンの
+standalone crate、空 `[workspace]` テーブル + root `Cargo.toml` の `[workspace]
+exclude` 登録）に、決定的マイクロベンチ本体（per-request alloc カウンタ）の実装に
+必要な `serde_json`（ベースライン JSON の読み書き）・`stats_alloc`（カウンティング
+`#[global_allocator]`）を新規外部依存として追加した。方式選定の経緯・不採用案
+（iai-callgrind 見送り理由）は `docs/design/deterministic-microbench.md` 参照。
+
+### 採否根拠
+
+- **`stats_alloc`**: `crates/http/tests/alloc_count.rs`（PR #602 レビュー指摘 P0
+  対応、上記エントリ参照）で採用済みの計測専用依存と同一。`GlobalAlloc` トレイト
+  実装が `stats_alloc` 内に閉じるため、本クレートは `#![forbid(unsafe_code)]` を
+  維持したまま alloc カウンタを持てる（自前の `unsafe impl GlobalAlloc` を書かない）。
+- **`serde_json`**: ベースライン（`baseline.json`）の読み書き・stdout への JSON
+  レポート出力に使用。フォーマットは決定的（`BTreeMap` によるキー順固定 + 手動
+  シリアライズ）にし、`serde_json::Value` の走査のみに用途を限定する
+  （`serde_json::from_str`/`to_string_pretty` 相当の薄い利用に留め、derive マクロ
+  経由の構造体シリアライズは使わない）。
+
+### pay-for-what-you-use への影響
+
+`benches/microbench` は root workspace の `[workspace] exclude` 対象の standalone
+crate であるため、`cargo metadata` / `cargo tree` / `cargo geiger`（root 起点）の
+いずれにも一切現れない。公開 13 クレートの依存グラフ・バイナリサイズには**影響
+しない**（CLAUDE.md の `benches/microbench/` 節・`.claude/rules/pay-for-what-you-use.md`
+の対象外）。
+
+```
+$ cd benches/microbench && cargo tree -e normal
+fandhe-backend-microbench v0.0.0 (.../benches/microbench)
+├── fandhe-backend-http v0.3.0 (.../crates/http)
+│   ├── memchr v2.8.3
+│   └── tokio v1.53.1
+│       ├── bytes v1.12.1
+│       └── pin-project-lite v0.2.17
+├── fandhe-backend-routes v0.3.0 (.../crates/routes)
+│   ├── fandhe-backend-http v0.3.0 (.../crates/http) (*)
+│   └── rustc-hash v2.1.3
+├── serde_json v1.0.151
+│   ├── itoa v1.0.18
+│   ├── memchr v2.8.3
+│   ├── serde_core v1.0.229
+│   └── zmij v1.0.23
+└── stats_alloc v0.1.10
+```
+
+`serde_json` / `stats_alloc` それぞれの推移依存は上記のとおり（`serde_json` は
+`itoa` / `memchr`（既存の `fandhe-backend-http` 依存へ統一解決）/ `serde_core` /
+`zmij` の 4 件、`stats_alloc` は推移依存 0 件）。いずれも standalone workspace の
+`Cargo.lock`（本クレート限定）にのみ現れ、root workspace の依存解決には影響しない。
+
+### unsafe 件数
+
+`cargo geiger`（`benches/microbench` 起点、standalone workspace、2026-08-12 実測）:
+
+```
+Functions  Expressions  Impls  Traits  Methods  Dependency
+
+0/0        0/0          0/0    0/0     0/0      :) fandhe-backend-microbench 0.0.0
+0/0        0/0          0/0    0/0     0/0      ?  ├── fandhe-backend-http 0.3.0
+34/48      1992/2440    2/2    0/0     110/148  !  │   ├── memchr 2.8.3
+8/30       144/3011     14/119 1/3     8/139    !  │   └── tokio 1.53.1
+40/40      780/826      12/14  1/1     16/20    !  │       ├── bytes 1.12.1
+0/0        11/191       0/0    0/0     2/2      !  │       └── pin-project-lite 0.2.17
+0/0        0/0          0/0    0/0     0/0      ?  ├── fandhe-backend-routes 0.3.0
+0/0        0/0          0/0    0/0     0/0      ?  │   ├── fandhe-backend-http 0.3.0
+0/0        0/0          0/0    0/0     0/0      ?  │   └── rustc-hash 2.1.3
+0/0        75/80        0/0    0/0     0/1      !  ├── serde_json 1.0.151
+1/1        145/145      0/0    0/0     0/0      !  │   ├── itoa 1.0.18
+34/48      1992/2440    2/2    0/0     110/148  !  │   ├── memchr 2.8.3
+0/0        5/5          0/0    0/0     0/0      !  │   ├── serde_core 1.0.229
+3/3        620/620      0/0    0/0     6/6      !  │   └── zmij 1.0.23
+0/0        56/56        2/2    0/0     8/8      !  └── stats_alloc 0.1.10
+
+86/122     3828/7374    30/137 2/4     150/324
+```
+
+`fandhe-backend-microbench` 自体は `:) `（`#![forbid(unsafe_code)]` 宣言・unsafe
+使用 0 件）。新規追加の `stats_alloc`（56/56 expressions、`crates/http` の既存
+dev-dependency と同一根拠で許容）・`serde_json`（75/80 expressions、`itoa` /
+`memchr` / `serde_core` / `zmij` の推移依存込み）の unsafe は、いずれも root
+workspace の公開 13 クレート向け `unsafe` 集計（`cargo geiger`、`crates/core`
+起点）には計上されない（standalone crate のため）。CI の `pay-for-what-you-use`
+検証・`unsafe` 追加トリアージも root workspace 起点のため対象外のまま。
+
 ## 2026-08-11 — `crates/http` に `stats_alloc`（dev-dependency）を追加（`tests/alloc_count.rs` の unsafe 除去、PR #602 レビュー指摘 P0 対応、イシュー #591）
 
 `crates/http/tests/alloc_count.rs`（`parse_request_head` の 1 リクエストあたり

@@ -207,6 +207,7 @@ fn measure_scenario(router: &Router, scenario: &Scenario) -> Result<AllocStats, 
 }
 
 /// 計測レポート（JSON 出力・ベースライン比較双方の内部表現）。
+#[derive(Debug)]
 struct Report {
     /// `rustc --version` の出力（toolchain 差異によるベースライン不一致の
     /// 切り分け用メタデータ、比較そのものには使わない）。
@@ -260,6 +261,16 @@ impl Report {
         })
     }
 
+    /// ベースライン JSON をパースする。**JSON の `scenarios` オブジェクトに含まれる
+    /// キーを [`scenarios`] の既知シナリオ名一覧と突き合わせ、未知キー（＝現在の
+    /// コードに存在しないシナリオ）は即座に `Err` にする**（イシュー #619
+    /// codex-review 指摘 P1 対応）。旧実装は現在の `scenarios()` に存在するキーだけを
+    /// 選んで読み込んでいたため、コードからシナリオを削除するとベースライン側の
+    /// 余分なキーが読み込み時点で無音に消え、[`compare_with_baseline`] のキー集合
+    /// 比較が常に一致してしまい「シナリオ名の集合が一致しない場合は Err」という
+    /// 契約が骨抜きになっていた（fail-closed 違反、計測対象の無音縮小）。本実装は
+    /// 読み込みの時点で未知キーを検知するため、シナリオ削除は
+    /// `compare_with_baseline` まで待たず `from_json` の時点で確実に検知できる。
     fn from_json(value: &serde_json::Value) -> Result<Report, String> {
         let rustc_version = value
             .get("rustc_version")
@@ -270,25 +281,31 @@ impl Report {
             .get("scenarios")
             .and_then(|v| v.as_object())
             .ok_or("baseline: missing object field \"scenarios\"")?;
+        // 現在の scenarios() のキーのみを許容名として静的解決し、JSON 側の
+        // 任意文字列キーを &'static str へ安全に対応付ける（未知キーは既知の
+        // シナリオ名と一致しないため後段で明示エラーにする）。
+        let known_names: BTreeMap<&str, &'static str> =
+            scenarios().into_iter().map(|s| (s.name, s.name)).collect();
         let mut parsed_scenarios = BTreeMap::new();
-        for scenario in scenarios() {
-            let entry = scenarios_obj
-                .get(scenario.name)
-                .ok_or_else(|| format!("baseline: missing scenario \"{}\"", scenario.name))?;
+        for (key, entry) in scenarios_obj {
+            let name = *known_names.get(key.as_str()).ok_or_else(|| {
+                format!(
+                    "baseline: unknown scenario \"{key}\" (not present in current scenarios(); \
+                     if this scenario was intentionally removed, regenerate the baseline with \
+                     --update-baseline)"
+                )
+            })?;
             let allocations = entry
                 .get("allocations")
                 .and_then(|v| v.as_u64())
-                .ok_or_else(|| {
-                    format!(
-                        "baseline: scenario \"{}\" missing allocations",
-                        scenario.name
-                    )
-                })? as usize;
-            let bytes =
-                entry.get("bytes").and_then(|v| v.as_u64()).ok_or_else(|| {
-                    format!("baseline: scenario \"{}\" missing bytes", scenario.name)
-                })? as usize;
-            parsed_scenarios.insert(scenario.name, AllocStats { allocations, bytes });
+                .ok_or_else(|| format!("baseline: scenario \"{name}\" missing allocations"))?
+                as usize;
+            let bytes = entry
+                .get("bytes")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| format!("baseline: scenario \"{name}\" missing bytes"))?
+                as usize;
+            parsed_scenarios.insert(name, AllocStats { allocations, bytes });
         }
         Ok(Report {
             rustc_version,
@@ -577,5 +594,25 @@ mod tests {
             rustc_version: "rustc 1.99.0 (test)".to_string(),
             scenarios,
         }
+    }
+
+    /// [`Report::from_json`] が、現在の [`scenarios`] に存在しないシナリオ名
+    /// （＝コードから削除されたシナリオ）を含むベースライン JSON を無音に
+    /// 読み飛ばさず `Err` にすることを検証する（イシュー #619 codex-review 指摘
+    /// P1 対応の回帰テスト。旧実装は現在シナリオへ絞り込んで読み込むため、この
+    /// ケースが `Ok` になった上で `compare_with_baseline` のキー集合比較も
+    /// 誤って一致してしまい、シナリオ削除による計測対象の無音縮小を検知
+    /// できなかった）。
+    #[test]
+    fn from_json_rejects_baseline_scenario_removed_from_code() {
+        let json = serde_json::json!({
+            "rustc_version": "rustc 1.99.0 (test)",
+            "scenarios": {
+                "get_health": { "allocations": 2, "bytes": 64 },
+                "this_scenario_was_deleted": { "allocations": 1, "bytes": 8 },
+            },
+        });
+        let err = Report::from_json(&json).expect_err("unknown baseline scenario must be Err");
+        assert!(err.contains("this_scenario_was_deleted"));
     }
 }
