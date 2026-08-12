@@ -597,6 +597,57 @@ mod tests {
         );
     }
 
+    /// `stats_alloc`（0.1.10）の `realloc` 会計契約 — growth 差分が
+    /// `Stats::bytes_allocated` へ加算されること — の回帰テスト（codex-review
+    /// PR #619 P1 指摘の検証で実装を実読して確認した契約。`bytes` ラチェットが
+    /// 「alloc 回数不変・既存バッファの拡張量だけが増える退行」を検知できる
+    /// 根拠であり、将来の `stats_alloc` 更新でこの会計が変わった場合に本テストが
+    /// fail して前提崩れを検知する）。他テストの並列実行によるグローバル
+    /// カウンタ汚染は加算方向にしか働かないため、`>=` 比較でフレーキーに
+    /// ならない（本ファイル冒頭のシナリオテストと同じ理由で厳密一致は
+    /// アサートしない）。
+    #[test]
+    fn realloc_growth_is_counted_in_bytes_allocated() {
+        let mut v: Vec<u8> = Vec::with_capacity(64);
+        v.resize(64, 0);
+        let region = Region::new(ALLOCATOR);
+        // 既存 64 バイト確保済みの Vec を 4096 バイトへ拡張する。`RawVec` の
+        // grow は `Allocator::grow`（`realloc` 経由）で実現されるため、
+        // growth 差分（>= 4032 バイト）が `bytes_allocated` へ計上されるはず
+        // （realloc が alloc+copy へフォールバックした場合は新サイズ全量が
+        // 計上されるため、いずれの経路でも下限は growth 差分）。
+        v.reserve_exact(4096 - v.len());
+        let change = region.change();
+        assert!(
+            change.bytes_allocated >= 4096 - 64,
+            "realloc の growth 差分が bytes_allocated へ計上されること \
+             (bytes_allocated = {})",
+            change.bytes_allocated
+        );
+        drop(v);
+    }
+
+    /// `stats_alloc` の `realloc` shrink 会計（縮小差分は `bytes_deallocated`
+    /// 側であり `bytes_allocated` を減らさない）の回帰テスト。ラチェット指標
+    /// （gross allocated bytes）が shrink で相殺されない — 確保ピークの過小
+    /// 計上が起きない — ことの根拠。汚染は加算方向のみのため `>=` 比較。
+    #[test]
+    fn realloc_shrink_is_counted_in_bytes_deallocated() {
+        let mut v: Vec<u8> = Vec::with_capacity(4096);
+        v.resize(4096, 0);
+        let region = Region::new(ALLOCATOR);
+        v.truncate(64);
+        v.shrink_to_fit();
+        let change = region.change();
+        assert!(
+            change.bytes_deallocated >= 4096 - 64,
+            "realloc の shrink 差分が bytes_deallocated へ計上されること \
+             (bytes_deallocated = {})",
+            change.bytes_deallocated
+        );
+        drop(v);
+    }
+
     /// [`Report::to_json`] / [`Report::from_json`] の往復整合性を検証する
     /// （ベースライン読み書きのフォーマット退行検知）。
     #[test]
