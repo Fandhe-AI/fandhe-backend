@@ -63,6 +63,23 @@ STARTUP_DIFF_MAX_MS="${STARTUP_DIFF_MAX_MS:-20}"
 # 指定時、判定表を markdown 形式でも追記出力する（benches/reports/*.md 生成用）。
 REPORT_MD="${REPORT_MD:-}"
 
+# `P95_BAND=1`（既定 0、opt-in、イシュー #614）: p95 のみ 2 値判定（PASS/FAIL）から
+# 3 帯域判定（PASS/INCONCLUSIVE/FAIL、`lib/common.sh` の `p95_band_verdict`）へ
+# 切り替える。既定 0 では従来どおり `judge_le` による 2 値判定のまま
+# （`bench-accept.sh` の exit 0/1/2 契約を後方互換に維持する。
+# `docs/design/bench-p95-criteria.md` 3〜4 節）。RPS・p99・RSS・バイナリサイズ・
+# 起動時間の判定は対象外のまま単一しきい値を維持する（同文書 4 節、9 節の実測で
+# これらの指標は不安定性が確認されていないため）。
+P95_BAND="${P95_BAND:-0}"
+if [ "${P95_BAND}" != "0" ] && [ "${P95_BAND}" != "1" ]; then
+    echo "エラー: P95_BAND は 0 または 1 である必要があります（現在: ${P95_BAND}）" >&2
+    exit 1
+fi
+# 判定不能帯の相対マージン M（暫定値。#616 のホステッドランナー較正ランで確定、
+# `docs/design/bench-p95-criteria.md` 4 節）。P95_BAND=0 のときは未使用だが、
+# 常に検証だけは行う（下記 validate_numeric）。
+P95_MARGIN="${P95_MARGIN:-0.10}"
+
 # `INTERLEAVE=1`（既定 0、opt-in、イシュー #613）: HTTP 系計測（RPS/p95/p99）を
 # 「baseline 一括 → core 一括」の 2 ブロックから、baseline/core を `PAIRS`
 # 回（`benches/lib/interleave.sh` の既定 8）交互にセッション計測する方式へ
@@ -162,6 +179,7 @@ validate_numeric "${P99_RATIO_MAX}" "P99_RATIO_MAX"
 validate_numeric "${IDLE_RSS_RATIO_MAX}" "IDLE_RSS_RATIO_MAX"
 validate_numeric "${BIN_SIZE_RATIO_MAX}" "BIN_SIZE_RATIO_MAX"
 validate_numeric "${STARTUP_DIFF_MAX_MS}" "STARTUP_DIFF_MAX_MS"
+validate_numeric "${P95_MARGIN}" "P95_MARGIN"
 # SECTION_QUIESCE_WAIT_SECS は SECTION_QUIESCENCE=1 時の分岐（上記）で
 # validate_integer により非負整数として検証済み（wait_for_quiescence の
 # 整数算術契約）。ここでの重複検証は行わない。
@@ -451,16 +469,31 @@ judge_le() {
     LC_NUMERIC=C awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 <= b + 0) }'
 }
 
-OVERALL_PASS=1
+# 総合判定は `OVERALL_FAIL`/`OVERALL_INCONCLUSIVE` の 2 フラグで決める
+# （優先順位 FAIL > INCONCLUSIVE > PASS、下記「総合判定」節）。P95_BAND=1 導入
+# （イシュー #614）以前は PASS/FAIL の 2 値しか存在しなかったため
+# `OVERALL_INCONCLUSIVE` は常に 0 のままで、既存の exit 0/1 契約が完全に維持
+# される（P95_BAND=0 が既定であるため後方互換）。
+OVERALL_FAIL=0
+OVERALL_INCONCLUSIVE=0
 declare -a JUDGE_ROWS=()
 
 # 判定 1 行を記録する。$1=指標名 $2=baseline値 $3=core値 $4=比較値(比率or絶対差)
-# $5=基準 $6=PASS/FAIL
+# $5=基準 $6=PASS/FAIL/INCONCLUSIVE
 record_row() {
     local metric="$1" baseline_val="$2" core_val="$3" compare_val="$4" criteria="$5" verdict="$6"
-    if [ "${verdict}" != "PASS" ]; then
-        OVERALL_PASS=0
-    fi
+    case "${verdict}" in
+        PASS) ;;
+        FAIL) OVERALL_FAIL=1 ;;
+        INCONCLUSIVE)
+            # P95_BAND=1 の p95 行専用（他指標は PASS/FAIL の 2 値のみを渡す契約）。
+            OVERALL_INCONCLUSIVE=1
+            ;;
+        *)
+            echo "エラー: 想定外の判定値 '${verdict}'（指標: ${metric}）" >&2
+            exit 1
+            ;;
+    esac
     JUDGE_ROWS+=("${metric}|${baseline_val}|${core_val}|${compare_val}|${criteria}|${verdict}")
 }
 
@@ -481,13 +514,21 @@ for ((i = 0; i < endpoint_count; i++)); do
 
     rps_verdict="FAIL"
     judge_ge "${rps_ratio}" "${RPS_RATIO_MIN}" && rps_verdict="PASS"
-    p95_verdict="FAIL"
-    judge_le "${p95_ratio}" "${P95_RATIO_MAX}" && p95_verdict="PASS"
+    # p95 のみ P95_BAND=1 で 3 帯域判定（PASS/INCONCLUSIVE/FAIL）へ切り替える
+    # （イシュー #614）。既定 0 は従来どおり judge_le の 2 値判定のまま。
+    p95_criteria="<= ${P95_RATIO_MAX}"
+    if [ "${P95_BAND}" = "1" ]; then
+        p95_verdict="$(p95_band_verdict "${p95_ratio}" "${P95_RATIO_MAX}" "${P95_MARGIN}")"
+        p95_criteria="<= ${P95_RATIO_MAX}（帯域 M=${P95_MARGIN}、判定不能上限 <= $(LC_NUMERIC=C awk -v l="${P95_RATIO_MAX}" -v m="${P95_MARGIN}" 'BEGIN { printf "%.4f", (l + 0) * (1 + (m + 0)) }')）"
+    else
+        p95_verdict="FAIL"
+        judge_le "${p95_ratio}" "${P95_RATIO_MAX}" && p95_verdict="PASS"
+    fi
     p99_verdict="FAIL"
     judge_le "${p99_ratio}" "${P99_RATIO_MAX}" && p99_verdict="PASS"
 
     record_row "RPS ${label}" "${baseline_rps}" "${core_rps}" "${rps_ratio}" ">= ${RPS_RATIO_MIN}" "${rps_verdict}"
-    record_row "p95 ${label}" "${baseline_p95}" "${core_p95}" "${p95_ratio}" "<= ${P95_RATIO_MAX}" "${p95_verdict}"
+    record_row "p95 ${label}" "${baseline_p95}" "${core_p95}" "${p95_ratio}" "${p95_criteria}" "${p95_verdict}"
     record_row "p99 ${label}" "${baseline_p99}" "${core_p99}" "${p99_ratio}" "<= ${P99_RATIO_MAX}" "${p99_verdict}"
 done
 
@@ -590,16 +631,24 @@ fi
 # 末尾のセクションを採用する設計、イシュー #260 Bugbot 指摘対応）。再計測のたびに
 # 新しい「## 結論」セクションを追記することで、レポートを手編集しなくても
 # 受け入れゲートへ再計測結果を機械的に反映できるようにする。
-if [ "${OVERALL_PASS}" -eq 1 ]; then
-    write_report_conclusion "PASS"
-else
+# `plugin-mechanism-conclusion-verdict.awk` は "PASS"/"FAIL" の完全一致行のみを
+# 判定材料にするため、「INCONCLUSIVE」は自動的にどちらにもマッチしない
+# （fail-closed。判定不能を PASS へ丸めない、イシュー #614）。
+#
+# 総合判定の優先順位: FAIL > INCONCLUSIVE > PASS
+# （`OVERALL_FAIL`/`OVERALL_INCONCLUSIVE` は P95_BAND=1 の p95 帯域判定でのみ
+# 非 0 になりうる。P95_BAND=0（既定）では両方常に 0 のままで、以下は
+# `OVERALL_PASS` のみに依存する従来の 2 分岐と完全に等価になる）。
+if [ "${OVERALL_FAIL}" -eq 1 ]; then
     write_report_conclusion "FAIL"
-fi
-
-if [ "${OVERALL_PASS}" -eq 1 ]; then
-    echo "## 判定結果: PASS"
-    exit 0
-else
     echo "## 判定結果: FAIL（1 件以上の基準未達）"
     exit 1
+elif [ "${OVERALL_INCONCLUSIVE}" -eq 1 ]; then
+    write_report_conclusion "INCONCLUSIVE"
+    echo "## 判定結果: INCONCLUSIVE（p95 が判定不能帯に収まり退行の有無を確定できない。二次判定（bench-pair.sh）で確定させること）"
+    exit 3
+else
+    write_report_conclusion "PASS"
+    echo "## 判定結果: PASS"
+    exit 0
 fi

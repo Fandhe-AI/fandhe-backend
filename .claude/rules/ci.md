@@ -57,7 +57,8 @@ public 化されており、public リポジトリでは標準ホステッドラ
   ジョブ実行・Actions キュー消費を避ける原則として維持する）
 - schedule 系ワークフロー同士は cron をずらして負荷を分散する
   （例: ci.yml 00:30 UTC / update-external.yml 00:00 UTC / bench-schedule.yml
-  週次 02:00 UTC 日曜）
+  週次一次判定 02:00 UTC 日曜・月次二次判定 04:00 UTC 毎月 1 日、イシュー #614。
+  日曜と重なる月初でも `concurrency` の直列化により同時実行しない）
 - **週次ベンチ workflow（`bench-schedule.yml`、イシュー #285）は「日次 schedule は
   dep-audit のみ」方針の例外ではない**。REQ-1/NFR-1 性能ベンチ（`benches/
   bench-accept-exclusive.sh`）はビルド + 専有計測を伴い重いため、ci.yml の日次

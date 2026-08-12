@@ -1,4 +1,63 @@
-# REQ-1/NFR-1 性能ベンチの定期実行化（イシュー #285）
+# REQ-1/NFR-1 性能ベンチの定期実行化（イシュー #285、#614 で新判定方式へ更新）
+
+## 追補（イシュー #614）
+
+Phase 1（#611・#612）・Phase 2 ハーネス実装（#613）を受け、本 workflow を新判定方式へ
+接続した。本節は追補であり、以下の本文（当初 #285 設計）は歴史的経緯として残す。
+
+- **判定 4 値化**: 一次判定（axum 比）を PASS/FAIL/BLOCKED の 3 値から
+  PASS/FAIL/BLOCKED/INCONCLUSIVE（判定不能）の 4 値へ拡張した
+  （`docs/design/bench-p95-criteria.md`）。p95 のみ `P95_BAND=1` で 3 帯域判定
+  （PASS/INCONCLUSIVE/FAIL、判定不能帯の上限は spec 基準値 1.10 ×
+  `(1 + P95_MARGIN)`。`P95_MARGIN` 暫定値 0.10 は #616 の較正ランで確定）を
+  有効化する。RPS・p99・RSS・バイナリサイズ・起動時間は従来どおり単一しきい値の
+  2 値判定のまま
+- **多数決化**: 旧 `FAIL_RETRIES=1`（FAIL のみ 1 回再試行、2 連続 FAIL で退行確定）を
+  `MAJORITY_TRIALS=3`（`benches/lib/exclusive.sh` の `nfr6_run_with_majority`、
+  最大 3 試行の多数決。初回 PASS/BLOCKED は即確定、割れる場合は INCONCLUSIVE へ丸める）
+  へ置き換えた
+- **退行帰属のための追撃**: `bench-accept` ジョブは FAIL または INCONCLUSIVE 確定時、
+  直近の成功 run のコミットを pre として `benches/bench-pair.sh`（交互ペア測定、#613）
+  による二次判定を実行し、結果を Issue 本文へ添付する。二次判定の結果は一次判定・
+  ジョブの成否を変更しない（証跡のみ）。参照コミットが解決できない場合（初回実行・
+  現 SHA と同一）は追撃を実行せずその旨を明記する（silent skip 禁止）
+- **月次無条件二次判定（新設ジョブ `bench-pair-monthly`）**: 一次判定の構造的弱点
+  （baseline・core が同方向に悪化する run を検知できない、`docs/design/
+  bench-hosted-runner.md` 7 節 (iii)）への暫定対応。恒久策（run 系列の統計的
+  監視）は #616 の較正ラン標本蓄積が前提のため本イシューでは実装せず、
+  「#616 が標本を追加するまで自動検知は機能せず、その間は暫定月次実行が主手段」
+  という `bench-hosted-runner.md` の規定どおり、標本蓄積までの繋ぎとして毎月 1 回
+  （`0 4 1 * *`）無条件に交互ペア測定を実行する
+- **cron 追加**: `0 4 1 * *`（毎月 1 日 04:00 UTC）を追加。日曜と重なる月初でも
+  `concurrency: group: bench-schedule, cancel-in-progress: false` の直列化により
+  同時実行しない（両ジョブとも同一 concurrency group を使う既存設定を維持）
+- **timeout-minutes 再設定**: 週次 `bench-accept` ジョブは 240→300 分（多数決最大
+  3 試行 + 追撃分のビルド・計測を worst-case へ加算）。月次 `bench-pair-monthly`
+  ジョブは新設で 90 分（専有実行枠を経由しないぶん週次より短い worst-case）。
+  実測に基づく最終確定は本 PR の push 前フェーズでは実施していない（後述の
+  「引き渡し事項」参照）
+- **`actions/cache` 不使用の維持**: 計測系ジョブは差分要因を持ち込まないクリーン
+  ビルドを維持する既存方針（下記本文「`CARGO_TARGET_DIR` 隔離」節参照）を変更しない。
+  月次ジョブも同方針に従う
+
+### 引き渡し事項（本 PR に含まれない、push 前フェーズの制約）
+
+本実装は「push・PR 作成を行わない」タスクとして実施したため、以下は本 PR に
+含まれない（実施は後続の Review フェーズ・別 Issue に委ねる）。
+
+- `workflow_dispatch`（mode=primary / mode=pair）の実行検証・擬似退行注入による
+  fail-closed 経路（Issue 自動起票 → クローズ）の実地確認
+- 上記の実測所要時間に基づく `timeout-minutes` の最終確定（現在値は worst-case の
+  机上積算のみ）
+- トリガ (iii)（baseline・core 同方向悪化）の監視ロジック実装（#616 の較正ラン
+  標本蓄積が前提のため保留。#616 側で追跡）
+- #612 6 節の外れ値機械除外条件（分布逸脱 25% + プローブ証拠）の一次判定 RUNS 内への
+  組み込み（#613/#614 いずれの実装にも含まれない残課題。ツリー #607 のレビュー
+  ゲートで扱いを判断）
+- しきい値暫定値（`P95_MARGIN=0.10`・`PAIR_M2=0.05`・`PAIR_MIN_PAIRS=6`・
+  `EXT_CPU_MAX_PCT=5`）の実測較正（#616 のスコープ）
+
+---
 
 ## 背景・目的
 
