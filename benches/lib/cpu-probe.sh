@@ -26,9 +26,10 @@
 set -uo pipefail
 
 # 外部占有率のしきい値（%）。超過した窓を「汚染」とみなす。#612 5.2 節の値を
-# #616 で fail-closed 方針により現状の暫定値のまま維持（新方式・同一コミット
-# 系列の実測較正は未収集・較正未完了。再較正条件は
-# `benches/reports/issue616-hosted-runner-calibration.md` 参照）。
+# #616 較正ラン（mode=primary × 5・mode=pair × 2、全ラン success）で実測確定、
+# 値の変更なし。較正ラン中は汚染検知・再計測とも発生 0 件のまま確定しており
+# （防御層として維持）、実測根拠は
+# `benches/reports/issue616-hosted-runner-calibration.md` 9〜11 節参照。
 EXT_CPU_MAX_PCT="${EXT_CPU_MAX_PCT:-5}"
 # 汚染窓 1 個あたりの再計測回数上限（有界、無限リトライを防ぐフェイルクローズ設計）。
 # `benches/reports/issue593-p1-zero-copy-bench.md` 9.7 節の実証値を既定とする。
