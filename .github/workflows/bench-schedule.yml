@@ -444,15 +444,25 @@ jobs:
           cargo build --release --example core-bench -p fandhe-backend-core
 
       - name: 参照コミット解決（直近の成功 run の head SHA を pre とする）
+        # イシュー #614 codex-review P1 指摘対応: per_page=1（直近 1 件）のみを
+        # 参照すると、main に変更がない週や同一 SHA 再実行後の月次実行のように
+        # 直近の成功 run の head_sha が現在の head_sha と偶然一致するだけで
+        # resolved=false（BLOCKED 相当）になり、「#616 の標本蓄積までの繋ぎとして
+        # 毎月無条件に交互ペア測定を実行する」運用契約（`docs/design/
+        # bench-hosted-runner.md` 5 節 2 項）が正常運用でも恒常的に破られる。
+        # per_page=10 で直近複数件を取得し、現在の SHA と異なる最初の成功 run を
+        # 参照コミットとして選択する（同一 SHA の連続成功 run が 10 件に満たない
+        # 限り解決できる。それでも見つからない場合のみ BLOCKED 扱いとする）。
         id: ref
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          ref_sha="$(gh api "repos/${{ github.repository }}/actions/workflows/bench-schedule.yml/runs?status=success&branch=main&per_page=1" --jq '.workflow_runs[0].head_sha // empty' 2>/dev/null || true)"
-          if [ -z "${ref_sha}" ] || [ "${ref_sha}" = "${{ github.sha }}" ]; then
+          # shellcheck disable=SC2016  # '$cur' は jq 側の変数参照（--arg cur で束縛）で、シェル展開ではない（意図的な単一引用）
+          ref_sha="$(gh api "repos/${{ github.repository }}/actions/workflows/bench-schedule.yml/runs?status=success&branch=main&per_page=10" --jq --arg cur "${{ github.sha }}" '[.workflow_runs[].head_sha] | map(select(. != $cur)) | .[0] // empty' 2>/dev/null || true)"
+          if [ -z "${ref_sha}" ]; then
             echo "resolved=false" >> "${GITHUB_OUTPUT}"
-            echo "参照コミットを解決できません（直近の成功 run なし、または現 SHA と同一）。二次判定を実行できないため BLOCKED として扱います" >&2
+            echo "参照コミットを解決できません（現 SHA と異なる直近の成功 run が見つかりません）。二次判定を実行できないため BLOCKED として扱います" >&2
           else
             echo "resolved=true" >> "${GITHUB_OUTPUT}"
             echo "ref_sha=${ref_sha}" >> "${GITHUB_OUTPUT}"
