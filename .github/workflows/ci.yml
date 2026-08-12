@@ -952,10 +952,46 @@ jobs:
       # このジョブ内で個別に通す。
       - name: cargo fmt --check（benches/microbench）
         run: cargo fmt --manifest-path benches/microbench/Cargo.toml --check
+      # `--locked`: コミット済み benches/microbench/Cargo.lock からの依存解決を強制する
+      # （codex-review PR #619 P1 指摘対応。決定的計測の「同一コード・同一環境での
+      # 厳密比較」という運用契約を、依存の未固定な再解決から守る）。
       - name: cargo clippy -D warnings（benches/microbench）
-        run: cargo clippy --release --manifest-path benches/microbench/Cargo.toml -- -D warnings
+        run: cargo clippy --release --locked --manifest-path benches/microbench/Cargo.toml -- -D warnings
       - name: cargo test（benches/microbench）
-        run: cargo test --release --manifest-path benches/microbench/Cargo.toml
+        run: cargo test --release --locked --manifest-path benches/microbench/Cargo.toml
+
+      # 新規依存（stats_alloc・serde_json、推移依存含む）のサプライチェーン監査
+      # （codex-review PR #619 P1 指摘対応）。standalone workspace のため
+      # scripts/dep-audit.sh（root workspace の cargo metadata --no-deps を起点に
+      # feature 構成を列挙）の走査対象に含まれない。本ジョブ内で個別に
+      # cargo audit / cargo deny check を通すことで dep-audit.sh と同水準の
+      # サプライチェーン監査を維持する（root の deny.toml をそのまま再利用、
+      # ライセンス許可リスト・出所制限は共通）。
+      - name: Ensure cargo-deny 0.19.8（benches/microbench）
+        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        with:
+          tool: cargo-deny
+          version: 0.19.8
+
+      - name: Ensure cargo-audit 0.22.2（benches/microbench）
+        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        with:
+          tool: cargo-audit
+          version: 0.22.2
+
+      # `cargo audit` は cargo のビルド系サブコマンドではなく `--locked` を持たない
+      # （`--file` でコミット済み Cargo.lock を直接指定する。scripts/audit-triage.sh
+      # と同じく既定は vulnerability 検知時のみ非 0 終了、warnings のみでは
+      # CI を失敗させない安全側の動作を踏襲）。
+      - name: cargo audit（benches/microbench、コミット済み Cargo.lock を使用）
+        run: cargo audit --file benches/microbench/Cargo.lock
+
+      - name: cargo deny check（benches/microbench）
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --manifest-path benches/microbench/Cargo.toml --format-version 1 \
+            > /tmp/microbench-metadata.json
+          cargo deny check -c deny.toml --metadata-path /tmp/microbench-metadata.json
 
       - name: benches/microbench.sh --check
         run: bash benches/microbench.sh --check

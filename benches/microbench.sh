@@ -67,14 +67,21 @@ esac
 # `bash benches/microbench.sh > out.json` の呼び出し側契約は変わらない）。
 echo "microbench: ビルド・実行中（release）..." >&2
 
+# `--locked` でコミット済み `benches/microbench/Cargo.lock` からの依存解決を強制する
+# （codex-review PR #619 P1 指摘対応）。決定的マイクロベンチは「同一コード・同一環境
+# での厳密比較」が運用契約であり、lockfile 非固定だとクリーンな CI 実行のたびに
+# `serde_json` 等が再解決されて alloc 特性が変わりうる（PR 差分なしでラチェットが
+# 揺れる／逆方向の変化を隠す）。Cargo.lock 更新（依存追加・バージョン更新）時は
+# `cargo generate-lockfile --manifest-path benches/microbench/Cargo.toml` で明示的に
+# 再生成しコミットする。
 case "${MODE}" in
     run)
-        cargo run --release --manifest-path "${MANIFEST}"
+        cargo run --release --locked --manifest-path "${MANIFEST}"
         ;;
     check)
-        cargo run --release --manifest-path "${MANIFEST}" -- --check "${BASELINE}"
+        cargo run --release --locked --manifest-path "${MANIFEST}" -- --check "${BASELINE}"
         ;;
     update-baseline)
-        cargo run --release --manifest-path "${MANIFEST}" -- --update-baseline "${BASELINE}"
+        cargo run --release --locked --manifest-path "${MANIFEST}" -- --update-baseline "${BASELINE}"
         ;;
 esac

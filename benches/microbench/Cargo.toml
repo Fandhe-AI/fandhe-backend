@@ -19,6 +19,12 @@ name = "fandhe-backend-microbench"
 version = "0.0.0"
 edition = "2024"
 publish = false
+# root workspace（Cargo.toml [workspace.package]）と同一のデュアルライセンス。
+# `cargo deny check`（codex-review PR #619 P1 指摘対応で本クレートも監査対象に
+# 追加、.github/workflows/ci.yml microbench ジョブ）の
+# `[licenses.private] ignore = false`（deny.toml）が本フィールド欠落を
+# unlicensed エラーとして検知するため明記する。
+license = "MIT OR Apache-2.0"
 
 # 本クレート自身を独立 workspace のルートとして明示する（空 [workspace] テーブル）。
 # 未指定だと cargo はディレクトリツリーを上方に辿って最初に見つかる [workspace] を

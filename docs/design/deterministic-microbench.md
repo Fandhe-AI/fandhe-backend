@@ -144,9 +144,20 @@ fuzz 専用の pinned nightly（`scripts/fuzz.sh`）とは異なり、本ベン�
 
 - **サプライチェーン／脆弱な依存**: 新規外部依存は `stats_alloc`（計測専用）・
   `serde_json`（ベースライン JSON の読み書き）の 2 件のみで、いずれも独立 workspace
-  内に閉じ公開 13 クレートの依存グラフに影響しない。cargo audit/deny の対象は増えるが
-  `scripts/dep-audit.sh` は `--workspace` 相当の走査であり `[workspace] exclude`
-  クレートは対象外（既存の `crates/http/fuzz`・`tests-e2e` と同じ扱い）
+  内に閉じ公開 13 クレートの依存グラフに影響しない。`scripts/dep-audit.sh` は root
+  workspace（`cargo metadata --no-deps` 起点）を走査対象とし `[workspace] exclude`
+  クレートは対象外（既存の `crates/http/fuzz`・`tests-e2e` と同じ扱い）だが、本クレートは
+  依存決定性の主張自体がサプライチェーン監査と表裏一体のため（codex-review PR #619
+  P1 指摘対応）、`ci.yml` `microbench` ジョブ内で個別に `cargo audit`（コミット済み
+  `benches/microbench/Cargo.lock` を対象）・`cargo deny check`（root の `deny.toml` を
+  そのまま再利用）を実行し監査対象へ含める。依存解決自体は `benches/microbench/Cargo.lock`
+  を **例外的にコミット対象**とし（`.gitignore` の `!benches/microbench/Cargo.lock`）、
+  `cargo run/test/clippy --locked` で固定する。lockfile 非固定だとクリーンな CI 実行の
+  たびに `serde_json` 等が再解決され、PR のコード変更なしに alloc 特性が変わって
+  ラチェットが揺れる（逆方向の変化ではベースライン退行検知を隠す）ため、
+  「同一コード・同一環境での厳密比較」という運用契約上 lockfile 固定は必須とする。
+  依存追加・更新時は `cargo generate-lockfile --manifest-path benches/microbench/Cargo.toml`
+  で明示的に再生成しコミットする
 - **メモリ安全性**: `#![forbid(unsafe_code)]`（`benches/microbench/src/main.rs`
   冒頭）で unsafe を構造上排除する。`GlobalAlloc` 実装は `stats_alloc` 内部に閉じる
   （2.2 節）。`unsafe-triage.sh` の走査対象（`crates/*/src`）外である事実を明記する
