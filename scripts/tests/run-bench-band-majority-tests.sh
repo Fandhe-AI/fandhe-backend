@@ -146,6 +146,55 @@ status=$?
 assert_eq "1/0/1 の 3 試行は 2/3 一致（FAIL）で確定" "1" "${status}"
 assert_eq "3 回とも呼ばれる" "3" "${_call_count}"
 
+echo "===== nfr6_run_with_majority: FAIL 単発票（1/0/0）は多数決で PASS へ上書きされず INCONCLUSIVE（3）====="
+# PR #621 codex-review P0 対応の回帰テスト: 最初の試行が FAIL・後続 2 試行が PASS でも
+# 多数決で PASS 確定させない（docs/design/bench-p95-criteria.md 5.1 節参照）。
+_call_count=0
+mock_cmd() {
+    _call_count=$((_call_count + 1))
+    case "${_call_count}" in
+        1) return 1 ;;
+        2) return 0 ;;
+        3) return 0 ;;
+    esac
+}
+nfr6_run_with_majority mock_cmd >/dev/null 2>&1
+status=$?
+assert_eq "1/0/0 の 3 試行は FAIL 単発票のため多数決で確定せず INCONCLUSIVE（3）" "3" "${status}"
+assert_eq "3 回とも呼ばれる" "3" "${_call_count}"
+
+echo "===== nfr6_run_with_majority: FAIL 単発票（1/3/3）も多数決で INCONCLUSIVE へ上書きされず INCONCLUSIVE（3）のまま ====="
+_call_count=0
+mock_cmd() {
+    _call_count=$((_call_count + 1))
+    case "${_call_count}" in
+        1) return 1 ;;
+        2) return 3 ;;
+        3) return 3 ;;
+    esac
+}
+nfr6_run_with_majority mock_cmd >/dev/null 2>&1
+status=$?
+assert_eq "1/3/3 の 3 試行も FAIL 単発票のため INCONCLUSIVE（3）" "3" "${status}"
+assert_eq "3 回とも呼ばれる" "3" "${_call_count}"
+
+echo "===== nfr6_run_with_majority: FAIL 票が 0 回の 2/3 一致（3/0/0）は従来どおり多数決で確定する ====="
+# FAIL 単発票の非上書きは FAIL が絡む場合のみの近似であり、FAIL 不在の
+# INCONCLUSIVE/PASS 混在まで一律 INCONCLUSIVE へ倒す変更ではないことを確認する。
+_call_count=0
+mock_cmd() {
+    _call_count=$((_call_count + 1))
+    case "${_call_count}" in
+        1) return 3 ;;
+        2) return 0 ;;
+        3) return 0 ;;
+    esac
+}
+nfr6_run_with_majority mock_cmd >/dev/null 2>&1
+status=$?
+assert_eq "3/0/0 の 3 試行は FAIL 不在のため通常どおり多数決で PASS（0）確定" "0" "${status}"
+assert_eq "3 回とも呼ばれる" "3" "${_call_count}"
+
 echo "===== nfr6_run_with_majority: 試行中に BLOCKED が出たら即座に打ち切って BLOCKED を返す ====="
 _call_count=0
 mock_cmd() {

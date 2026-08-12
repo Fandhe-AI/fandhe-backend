@@ -709,7 +709,13 @@ exclusive.sh` の `nfr6_run_with_majority`）。旧「FAIL のみ 1 回再試行
 - **多数決**: 初回 PASS は即確定（再試行しない）。初回 BLOCKED は即座に返す
   （再試行しない）。初回が FAIL 候補または INCONCLUSIVE なら、静穏確認をやり直して
   最大 3 試行まで多数決する。3 試行中 2 試行以上が同一判定なら確定、割れる場合は
-  INCONCLUSIVE（3）へ丸める（PASS/FAIL へ丸めない、fail-closed）
+  INCONCLUSIVE（3）へ丸める（PASS/FAIL へ丸めない、fail-closed）。**ただし FAIL（1）
+  がちょうど 1 回だけ現れた場合（例: 1/0/0）は残り 2 試行が一致していても多数決で
+  上書き確定せず INCONCLUSIVE（3）を返す**（`docs/design/bench-p95-criteria.md`
+  5.1 節「6.1 節の (a) のみ該当試行との関係」の保守的近似。指標比・CPU 占有率の
+  試行間比較を本関数へ伝播する機構が未整備なため、分布逸脱の可能性がある FAIL
+  単発票を一律非上書きとすることで、断続的な真の退行が多数決で PASS へ救済される
+  fail-open を防ぐ。詳細は `nfr6_run_with_majority` の doc comment 参照）
 - **p95 の帯域**: `P95_RATIO_MAX`（spec 基準値 1.10、不変）に対し `P95_MARGIN`
   （既定 0.10、暫定値）を掛けた `1.10 × (1 + 0.10) = 1.21` を判定不能上限とする。
   比 `<= 1.10` は PASS、`1.10 < 比 <= 1.21` は INCONCLUSIVE、`比 > 1.21` は FAIL。
