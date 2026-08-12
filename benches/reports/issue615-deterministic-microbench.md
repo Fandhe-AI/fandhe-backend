@@ -76,3 +76,40 @@ post_echo: allocations 5 -> 6 (baseline -> current), bytes 378 -> 397
 - `grep -rhE "^[[:space:]]*runs-on:" .github/workflows/ | awk '{print $2}' | sort -u |
   grep -vxF ubuntu-latest` の出力が空であることを確認した（`.claude/rules/ci.md` の
   ホステッドランナー既定に準拠）
+
+## 6. CI 修正イテレーション後の再検証（中断作業の再開時、本文書 1〜5 節作成後の追加コミット反映）
+
+1〜5 節作成後に積まれた 4 件の fix コミット（ベースライン読込のシナリオ削除検知漏れ・
+依存固定+サプライチェーン監査追加・CI timeout 拡大・`realloc` 呼び出し回数の計上漏れ
+修正）の反映後、受け入れ基準を再度ローカルで確認した。
+
+- **決定性**: `bash benches/microbench.sh` を 2 回連続実行し出力 JSON が完全一致する
+  ことを再確認した（`diff` 差分なし、`IDENTICAL`）
+- **ベースライン整合性**: `bash benches/microbench.sh --check` が `OK: 計測値は
+  ベースライン以下です` で exit 0 を返すことを確認した。`realloc` 計上修正
+  （`alloc_stats_from_change` が `Stats::reallocations` を `allocations` へ合算する
+  よう変更）後も `baseline.json` の 4 シナリオの値（`get_health` 5/229・
+  `get_hello_name` 8/484・`get_users_id` 8/476・`post_echo` 5/378）は無変更のまま
+  一致した（4 シナリオいずれも `Vec`/`String` の再割り当てを伴わない経路のため、
+  修正は計上ロジックの回帰防止であり実測値には影響しなかった）
+- **テスト**: `cargo test --release --manifest-path benches/microbench/Cargo.toml` が
+  10 テスト全件通過することを確認した（3 節作成時点の 8 テストに、`realloc` 計上の
+  回帰テスト（`alloc_stats_from_change_includes_reallocations_in_count`）と、
+  ベースラインに存在し現在シナリオから削除された名前を検知する回帰テスト
+  （`from_json_rejects_baseline_scenario_removed_from_code`、イシュー #619
+  codex-review 指摘 P1 対応）が追加され計 10 件）
+- **pay-for-what-you-use**: `cargo tree -p fandhe-backend-core --all-features` の
+  出力に `stats_alloc` が含まれないことを再確認した（root workspace の
+  `[workspace] exclude` による構造的保証）
+- **サプライチェーン監査**: `cargo audit --file benches/microbench/Cargo.lock`
+  （19 依存クレート、advisory 0 件）・`cargo deny check`（`benches/microbench` の
+  `cargo metadata --locked` を入力、advisories/bans/licenses/sources すべて ok。
+  ライセンス許可リストの未使用エントリ警告のみで CI を失敗させる種別ではない）を
+  それぞれ通過することを確認した
+- **lint**: `cargo fmt --manifest-path benches/microbench/Cargo.toml --check`・
+  `cargo clippy --release --locked --manifest-path benches/microbench/Cargo.toml
+  -- -D warnings` をそれぞれ通過することを確認した
+- **CI 設定**: `.github/workflows/ci.yml` の `microbench` ジョブが
+  `runs-on: ubuntu-latest`・`timeout-minutes: 30`・`cargo test`/`cargo audit`/
+  `cargo deny check`/`benches/microbench.sh --check` の全ステップを備えることを
+  確認した（`scripts/actionlint.sh`・runs-on grep 検証は 5 節と同一結果で再現）
