@@ -205,6 +205,6 @@
   （INCONCLUSIVE 新設）・p95 axum 比のしきい値マージンによる判定不能帯・最大 3 試行
   多数決 + 交互測定二次判定・外れ値の客観的除外条件（分布逸脱 + 外因の証拠）を設計。
   spec 基準値（p95 <= 1.10）は不変、数値パラメータは #616 で fail-closed 方針により
-  現状値を確定値として採用（実測較正は未収集、再較正条件は
-  `benches/reports/issue616-hosted-runner-calibration.md` 参照）。
+  現状の暫定値のまま維持（確定値ではない。実測較正は未収集・較正未完了、
+  再較正条件は `benches/reports/issue616-hosted-runner-calibration.md` 参照）。
   設計のみでコード変更なし、実装は Phase 2（#613・#614）へ引き渡す）

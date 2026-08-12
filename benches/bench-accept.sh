@@ -75,9 +75,9 @@ if [ "${P95_BAND}" != "0" ] && [ "${P95_BAND}" != "1" ]; then
     echo "エラー: P95_BAND は 0 または 1 である必要があります（現在: ${P95_BAND}）" >&2
     exit 1
 fi
-# 判定不能帯の相対マージン M（#616 で fail-closed 方針により現状値を確定値として
-# 採用。新方式・同一コミット系列の実測較正は未収集のため、値そのものは変更して
-# いない。再較正条件は `benches/reports/issue616-hosted-runner-calibration.md`、
+# 判定不能帯の相対マージン M（#616 で fail-closed 方針により現状の暫定値のまま
+# 維持。新方式・同一コミット系列の実測較正は未収集のため、較正未完了・値その
+# ものは変更していない。再較正条件は `benches/reports/issue616-hosted-runner-calibration.md`、
 # 設計は `docs/design/bench-p95-criteria.md` 4 節参照）。P95_BAND=0 のときは
 # 未使用だが、常に検証だけは行う（下記 validate_numeric）。
 P95_MARGIN="${P95_MARGIN:-0.10}"

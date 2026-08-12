@@ -256,8 +256,9 @@ axum-ref との実測比較の判定結果・環境情報は
 `docs/design/bench-hosted-runner.md`）。以下の 3 機構は**すべて既定 OFF の opt-in**
 であり、指定しない限り既存の挙動（一次判定の判定ロジック・出力・終了コード契約）は
 一切変わらない。**しきい値の既定値（`EXT_CPU_MAX_PCT`・`WINDOW_REMEASURE_MAX`・
-`PAIR_M2`・`PAIR_MIN_PAIRS`）は #616 で fail-closed 方針により現状値を確定値として
-採用した**（新方式・同一コミット系列の実測較正は未収集。母集団・再較正条件は
+`PAIR_M2`・`PAIR_MIN_PAIRS`）は #616 で fail-closed 方針により現状の暫定値のまま
+維持した**（確定値ではない。新方式・同一コミット系列の実測較正は未収集・
+較正未完了。母集団・再較正条件は
 `reports/issue616-hosted-runner-calibration.md` 参照）。
 
 ### CPU_PROBE=1 — 外部 CPU 占有率プローブ（`bench-http.sh`）
@@ -719,7 +720,7 @@ exclusive.sh` の `nfr6_run_with_majority`）。旧「FAIL のみ 1 回再試行
   単発票を一律非上書きとすることで、断続的な真の退行が多数決で PASS へ救済される
   fail-open を防ぐ。詳細は `nfr6_run_with_majority` の doc comment 参照）
 - **p95 の帯域**: `P95_RATIO_MAX`（spec 基準値 1.10、不変）に対し `P95_MARGIN`
-  （既定 0.10、#616 で fail-closed 方針により確定値として維持）を掛けた
+  （既定 0.10、#616 で fail-closed 方針により暫定値のまま維持・較正未完了）を掛けた
   `1.10 × (1 + 0.10) = 1.21` を判定不能上限とする。
   比 `<= 1.10` は PASS、`1.10 < 比 <= 1.21` は INCONCLUSIVE、`比 > 1.21` は FAIL。
   適用対象は p95 のみ（RPS・p99・RSS・バイナリサイズ・起動時間は従来どおり単一
@@ -727,9 +728,10 @@ exclusive.sh` の `nfr6_run_with_majority`）。旧「FAIL のみ 1 回再試行
 - **後方互換**: `P95_BAND=0`・`MAJORITY_TRIALS=0`（いずれも既定）では従来どおり
   PASS/FAIL の 2 値・`FAIL_RETRIES` 経路のまま動作する。手動実行
   （`bash benches/bench-accept-exclusive.sh`）では既定のまま使ってよい
-- しきい値（`P95_MARGIN=0.10` 等）は #616 で fail-closed 方針により現状値を確定値
-  として採用した（新方式・同一コミット系列の実測較正は未収集。次フェーズでの
-  再較正条件は `reports/issue616-hosted-runner-calibration.md` 参照）
+- しきい値（`P95_MARGIN=0.10` 等）は #616 で fail-closed 方針により現状の暫定値
+  のまま維持した（確定値ではない。新方式・同一コミット系列の実測較正は未収集・
+  較正未完了。次フェーズでの再較正条件は
+  `reports/issue616-hosted-runner-calibration.md` 参照）
 
 **呼び出し対象コマンド側の契約は `nfr6_run_with_majority` にも引き継がれる**
 （イシュー #479 で `nfr6_run_with_fail_retry` 向けに定めた契約と同一）: 決定論的な
