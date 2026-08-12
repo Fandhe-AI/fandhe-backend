@@ -281,12 +281,60 @@ run_section_quiescence_gate() {
 
 if [ "${INTERLEAVE}" = "1" ]; then
     echo "== HTTP 計測（INTERLEAVE=1、PAIRS=${PAIRS} 交互セッション） =="
-    if [ "${SECTION_QUIESCENCE}" = "1" ]; then
-        run_section_quiescence_gate "interleave"
-    fi
     INTERLEAVE_DIR="$(mktemp -d)"
     trap 'rm -rf "${INTERLEAVE_DIR}"; cleanup_tmp' EXIT
-    interleave_run_pairs "${BASELINE_BIN}" "${BASELINE_PORT}" "${CORE_BIN}" "${CORE_PORT}" "${INTERLEAVE_DIR}"
+    # `SECTION_QUIESCENCE=1` 併用時は baseline/core 各区間開始前に 1 回だけでは
+    # PAIRS 回（既定 8）にわたるドリフト・汚染を検出できないため、各ペア開始
+    # 直前に静穏ゲートを実行するフックを `interleave_run_pairs` へ渡す
+    # （`run_section_quiescence_gate` 自体は未達時に `exit 2` で終了する既存の
+    # fail-closed 契約のまま。A/B 各セッションではなくペア単位にする理由
+    # （自己負荷の loadavg 残差誤検知の回避）は `benches/lib/interleave.sh` の
+    # `interleave_run_pairs` doc comment 参照。イシュー #613 P1 レビュー指摘対応）。
+    interleave_quiesce_hook=""
+    if [ "${SECTION_QUIESCENCE}" = "1" ]; then
+        interleave_quiesce_hook="run_section_quiescence_gate"
+    fi
+    # `interleave_run_pairs`（`bench-http.sh` 委譲）のセッション実行失敗
+    # （ポート衝突・サーバ起動失敗・依存ツール欠如等）は決定論的な環境エラーで
+    # あり、性能退行 FAIL（exit 1）とは区別して BLOCKED（exit 2）として扱う。
+    # `set -e` 下で素通しすると `bench-http.sh` の exit 1 がそのまま本スクリプトの
+    # exit 1（性能 FAIL）として誤分類される（`bench-pair.sh` が同種の問題に採った
+    # 対処と同一パターン、イシュー #613 P1 レビュー指摘対応）。
+    if ! interleave_run_pairs "${BASELINE_BIN}" "${BASELINE_PORT}" "${CORE_BIN}" "${CORE_PORT}" "${INTERLEAVE_DIR}" "${interleave_quiesce_hook}"; then
+        echo "## 判定結果: BLOCKED" >&2
+        echo "交互ペア測定のセッション実行に失敗しました（ポート衝突・サーバ起動失敗等の決定論的失敗として BLOCKED 扱い。exit 1 の性能 FAIL とは区別する）" >&2
+        if [ -n "${REPORT_MD}" ]; then
+            {
+                echo
+                echo "## 判定結果: BLOCKED"
+                echo
+                echo "交互ペア測定のセッション実行に失敗しました（ポート衝突・サーバ起動失敗等の決定論的失敗）。"
+            } >>"${REPORT_MD}"
+        fi
+        write_report_conclusion "BLOCKED（交互ペア測定のセッション実行失敗のため判定不能。既存の古い判定は無効）"
+        exit 2
+    fi
+    # `interleave_run_pairs` が成功終了コードを返していても、`bench-http.sh` が
+    # RESULT_JSON を書き出す前に予期せず終了する等で JSON が欠落する可能性は
+    # 理論上残る（`bench-pair.sh` の同種チェックと同一パターン）。欠落したまま
+    # 後続の `jq -s` へ渡すと `set -e` 下で jq の異常終了コードがそのまま本
+    # スクリプトの終了コードになり、BLOCKED（exit 2）ではなく不定のコードで
+    # 落ちて判定不能の理由が伝わらない。ここで明示的に検査し BLOCKED として
+    # フェイルクローズする。
+    if [ ! -f "${INTERLEAVE_DIR}/a-1.json" ] || [ ! -f "${INTERLEAVE_DIR}/b-1.json" ]; then
+        echo "## 判定結果: BLOCKED" >&2
+        echo "交互ペア測定の結果 JSON（${INTERLEAVE_DIR}/a-1.json または b-1.json）が見つかりません" >&2
+        if [ -n "${REPORT_MD}" ]; then
+            {
+                echo
+                echo "## 判定結果: BLOCKED"
+                echo
+                echo "交互ペア測定の結果 JSON が見つかりませんでした。"
+            } >>"${REPORT_MD}"
+        fi
+        write_report_conclusion "BLOCKED（交互ペア測定の結果 JSON 欠落のため判定不能。既存の古い判定は無効）"
+        exit 2
+    fi
     # PAIRS 個のセッション JSON（各 `bench-http.sh` の既存スキーマそのまま）を
     # エンドポイントごとに集約する。各セッションの `.median` を「1 サンプル」と
     # みなし、セッション間の中央値を最終値として採用する（判定コード

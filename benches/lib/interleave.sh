@@ -148,19 +148,54 @@ interleave_run_session() {
 # A/B 2 バイナリを `PAIRS` 回、A→B の順で交互にセッション計測する。
 #
 # 引数: $1 BIN_A $2 PORT_A $3 BIN_B $4 PORT_B $5 出力先ディレクトリ
+#       $6 quiesce_gate_fn（省略可、既定空文字＝無効）。空でなければ**各ペア
+#       開始直前**（A セッション開始前、i = 1..PAIRS 各回に 1 回）に「関数名」
+#       として呼び出す（呼び出しシグネチャ: `"${quiesce_gate_fn}" "<label>"`。
+#       呼び出し元スクリプトが `source` 済みの同一シェル内関数を渡す想定 —
+#       本ファイルはサブシェルを起こさないため、呼び出し元定義の関数がそのまま
+#       可視）。B セッション直前には呼ばない: `wait_for_quiescence`
+#       （`lib/exclusive.sh`）は 1 分間 loadavg を見るため、直前に完走した
+#       自分自身の A セッション負荷の残差を「外部汚染」と誤検知しうる
+#       （A/B 間隔を空けずに毎セッション判定すると、この自己負荷の減衰待ちで
+#       頻繁に `SECTION_QUIESCE_WAIT_SECS` 消費・誤 BLOCKED を招くおそれが
+#       ある）。ペア単位（PAIRS 回、既定 8）ならこのリスクを抑えつつ、区間
+#       開始前 1 回だけでは検出できない複数ペアにまたがるドリフト・汚染を
+#       検出できる。静穏未達時に当該関数が `exit 2` 等でプロセスを終了させる
+#       契約は呼び出し元（`bench-accept.sh` の `run_section_quiescence_gate`）
+#       が持ち、本関数はその呼び出しタイミングの提供にのみ責務を限定する
+#       （イシュー #613 P1 レビュー指摘対応。`SECTION_QUIESCENCE=1` +
+#       `INTERLEAVE=1` 併用時、baseline/core 各区間開始前 1 回だけでは
+#       最大 PAIRS 回（既定 8）にわたるドリフト・汚染を検出できないため、
+#       ペア単位の静穏再確認フックを追加した）。
 # 出力: `<out_dir>/a-<i>.json` / `<out_dir>/b-<i>.json`（i = 1..PAIRS、
 #       `bench-http.sh` の RESULT_JSON スキーマそのまま）
 # 呼び出し元（`bench-pair.sh` / `bench-accept.sh` の INTERLEAVE モード）が
 # 生成された JSON ペアを読み、エンドポイントごとの cur/pre 比を算出する。
 interleave_run_pairs() {
     local bin_a="$1" port_a="$2" bin_b="$3" port_b="$4" out_dir="$5"
+    local quiesce_gate_fn="${6:-}"
     mkdir -p "${out_dir}"
     local i
     for ((i = 1; i <= PAIRS; i++)); do
+        if [ -n "${quiesce_gate_fn}" ]; then
+            "${quiesce_gate_fn}" "interleave-pair${i}"
+        fi
         echo "# 交互ペア ${i}/${PAIRS}: A セッション" >&2
-        interleave_run_session "${bin_a}" "${port_a}" "${out_dir}/a-${i}.json"
+        # 各セッションの終了コードを個別に検査する（`set -e` を持たない本
+        # ファイルでは、ループ末尾以外の失敗を検査なしに放置すると
+        # `interleave_run_pairs` 自体の戻り値がループ最終コマンドの終了
+        # コードだけに引きずられ、途中セッションの失敗が握りつぶされる
+        # ため。呼び出し元（`bench-accept.sh`・`bench-pair.sh`）の
+        # BLOCKED 判定はこの戻り値を見て行う契約）。
+        if ! interleave_run_session "${bin_a}" "${port_a}" "${out_dir}/a-${i}.json"; then
+            echo "交互ペア ${i}/${PAIRS} の A セッションが失敗しました" >&2
+            return 1
+        fi
         echo "# 交互ペア ${i}/${PAIRS}: B セッション" >&2
-        interleave_run_session "${bin_b}" "${port_b}" "${out_dir}/b-${i}.json"
+        if ! interleave_run_session "${bin_b}" "${port_b}" "${out_dir}/b-${i}.json"; then
+            echo "交互ペア ${i}/${PAIRS} の B セッションが失敗しました" >&2
+            return 1
+        fi
     done
 }
 

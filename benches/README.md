@@ -297,8 +297,19 @@ baseline 区間・core 区間それぞれの計測開始前に `lib/exclusive.sh
 `SECTION_QUIESCE_WAIT_SECS`（既定 300 秒、有界）。区間の静穏未達は
 **BLOCKED（終了コード 2）でフェイルクローズし、PASS へ丸めない**。
 
+`INTERLEAVE=1` と併用する場合は、区間開始前の 1 回だけでは PAIRS 回（既定 8）に
+わたるドリフト・汚染を検出できないため、`benches/lib/interleave.sh` の
+`interleave_run_pairs` へ静穏ゲートフックを渡し、**各ペア開始直前**（i = 1..PAIRS
+各回に 1 回）に静穏確認を実行する（イシュー #613 レビュー指摘対応）。A/B 各
+セッションではなくペア単位にしているのは、`wait_for_quiescence` が見る 1 分間
+loadavg が直前に完走した自分自身のセッション負荷の残差を「外部汚染」と誤検知
+しうるため（`interleave_run_pairs` doc comment 参照）。未達判定・BLOCKED 化の
+ロジックは区間分割時と同一の `run_section_quiescence_gate` をそのまま再利用する。
+
 ```bash
 SECTION_QUIESCENCE=1 SECTION_QUIESCE_WAIT_SECS=300 ./benches/bench-accept.sh
+# INTERLEAVE=1 併用時は各ペア開始直前に静穏確認を実行する
+INTERLEAVE=1 SECTION_QUIESCENCE=1 SECTION_QUIESCE_WAIT_SECS=300 ./benches/bench-accept.sh
 ```
 
 ### bench-pair.sh — 交互ペア測定による二次判定（新設エントリポイント）

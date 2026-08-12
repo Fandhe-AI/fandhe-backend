@@ -673,10 +673,20 @@ fandhe-backend/
 │                                        # セッションへ切替、判定ロジック無変更）・
 │                                        # `SECTION_QUIESCENCE=1`（baseline/core 各区間開始前に
 │                                        # `lib/exclusive.sh` の静穏確認を実行、未達は
-│                                        # BLOCKED でフェイルクローズ）の 2 opt-in を追加した
+│                                        # BLOCKED でフェイルクローズ。`INTERLEAVE=1` 併用時は
+│                                        # 区間開始前 1 回だけでは PAIRS 回にわたるドリフト・
+│                                        # 汚染を検出できないため、`interleave_run_pairs` へ
+│                                        # 静穏ゲートフックを渡し各ペア開始直前にも実行する）
+│                                        # の 2 opt-in を追加した
 │                                        # （issue593 レポート 7 節申し送り対応）。3 機構とも
 │                                        # 既定 OFF で現行挙動を変えない。しきい値暫定値の
-│                                        # 実測較正は既存イシュー #616
+│                                        # 実測較正は既存イシュー #616。`interleave_run_pairs`
+│                                        # の A/B いずれかのセッション実行失敗は、性能退行
+│                                        # FAIL（exit 1）と誤分類させず BLOCKED（exit 2）へ
+│                                        # 変換する（`bench-pair.sh` と同一パターン。途中
+│                                        # セッションの失敗をループ最終コマンドの終了コードに
+│                                        # 引きずられて握りつぶさないよう、各セッション個別に
+│                                        # 終了コードを検査する、PR #620 レビュー指摘対応）
 ├── scripts/               # CI・運用スクリプト（TASK-15.2 で追加）
 │   ├── README.md                      # 使い方・前提ツール・CI との対応
 │   ├── dep-audit.sh                   # 全 feature 構成の cargo audit / cargo deny check（ci.yml dep-audit ジョブ）
