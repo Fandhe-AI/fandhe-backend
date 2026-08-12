@@ -94,7 +94,15 @@ fail-closed な前提条件チェック）。追加依存を増やさない。
   `Router::dispatch`（+ future 完走）→ `Response::serialize`」の per-request パスを
   計測する
 - **指標**: per-request の alloc 回数・alloc 総バイト数（`alloc`/`alloc_zeroed`/
-  `realloc` を計上。`dealloc` は非計上）
+  `realloc` を計上。`dealloc` は非計上）。`stats_alloc` は `realloc` 呼び出しを
+  `Stats::allocations` に含めず `Stats::reallocations` として別カウントするため、
+  回数側は `benches/microbench/src/main.rs` の `measure` で両者を合算して計上する
+  （イシュー #619 Bugbot 指摘 Medium 対応。旧実装は `Stats::allocations` のみを
+  読んでいたため `Vec`/`String` の容量拡張〔`realloc` 経由〕による呼び出し回数の
+  増加を検知できなかった）。バイト側は `stats_alloc` 0.1.10 の `realloc` 実装が
+  growth 分の差分を `Stats::bytes_allocated` へ既に加算しているため
+  `change.bytes_allocated` のみで正しく計上できる（`Stats::bytes_reallocated` は
+  正負混在の net 差分のため使用しない）
 - **決定性の自己検証**: 1 回のウォームアップ後に各シナリオを 10 回実行し、全反復で
   計数が一致しなければベンチ自体が非 0 終了する（fail-closed の前提条件チェック。
   measure_scenario 関数）

@@ -57,8 +57,21 @@ const MAX_POLLS: usize = 16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AllocStats {
     /// `alloc` / `alloc_zeroed` / `realloc` の呼び出し回数（`dealloc` は非計上）。
+    /// `stats_alloc` は `realloc` 呼び出しを `Stats::allocations` に含めず
+    /// `Stats::reallocations` として別カウントするため、[`measure`] で両者を
+    /// 合算する（イシュー #619 Bugbot 指摘 Medium 対応。旧実装は
+    /// `Stats::allocations` のみを読んでいたため `Vec`/`String` の容量拡張
+    /// （`realloc` 経由）による呼び出し回数の増加がラチェットを一切動かさな
+    /// かった）。
     allocations: usize,
-    /// 上記呼び出しで確保された合計バイト数。
+    /// 上記呼び出しで確保された合計バイト数。`stats_alloc` の `realloc`
+    /// 実装（`stats_alloc` 0.1.10 `src/lib.rs`）は growth 分の差分バイトを
+    /// `Stats::bytes_allocated` へ加算済みのため（shrink 分は
+    /// `Stats::bytes_deallocated` 側）、本フィールドは `change.bytes_allocated`
+    /// のみで `realloc` による増加分を含めて正しく計上できる
+    /// （`Stats::bytes_reallocated` は正負が混在する net 差分のため、
+    /// gross allocated bytes を計上する本フィールドの用途には使わず二重計上
+    /// を避ける）。
     bytes: usize,
 }
 
@@ -168,15 +181,23 @@ fn run_once(router: &Router, request: &[u8]) {
     std::hint::black_box(&serialized);
 }
 
+/// `stats_alloc::Stats` から [`AllocStats`] へ変換する純関数（テストで
+/// `#[global_allocator]` の実アロケーション抜きに検証できるよう [`measure`]
+/// から切り出す）。`allocations` は `change.allocations`（`alloc`/
+/// `alloc_zeroed`）と `change.reallocations`（`realloc`）の合算値
+/// （[`AllocStats::allocations`] の doc 参照）。
+fn alloc_stats_from_change(change: stats_alloc::Stats) -> AllocStats {
+    AllocStats {
+        allocations: change.allocations + change.reallocations,
+        bytes: change.bytes_allocated,
+    }
+}
+
 /// `f` の実行前後の alloc 回数・バイト数の差分を返す。
 fn measure<F: FnOnce()>(f: F) -> AllocStats {
     let region = Region::new(ALLOCATOR);
     f();
-    let change = region.change();
-    AllocStats {
-        allocations: change.allocations,
-        bytes: change.bytes_allocated,
-    }
+    alloc_stats_from_change(region.change())
 }
 
 /// 各シナリオを [`REPEAT`] 回計測し、全反復で一致することを検証したうえで
@@ -462,6 +483,29 @@ fn read_baseline(path: &Path) -> Result<Report, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`alloc_stats_from_change`] が `realloc` 呼び出し（`Stats::reallocations`）
+    /// を `AllocStats::allocations` へ合算することを検証する（イシュー #619
+    /// Bugbot 指摘 Medium の回帰テスト。実アロケータを動かさず合成
+    /// `stats_alloc::Stats` から純粋に検証するため、`cargo test` の並列実行に
+    /// よるカウンタ混入（上記コメント参照）の影響を受けない。旧実装は
+    /// `change.allocations` のみを読んでいたため、`Vec`/`String` の容量拡張
+    /// （`realloc` 経由）による回数増加がラチェットを動かさなかった）。
+    #[test]
+    fn alloc_stats_from_change_includes_reallocations_in_count() {
+        let change = stats_alloc::Stats {
+            allocations: 2,
+            reallocations: 3,
+            bytes_allocated: 128,
+            ..Default::default()
+        };
+        let stats = alloc_stats_from_change(change);
+        assert_eq!(
+            stats.allocations, 5,
+            "alloc + realloc の呼び出し回数を合算すること"
+        );
+        assert_eq!(stats.bytes, 128);
+    }
 
     /// 4 シナリオそれぞれのレスポンス（status・body）が期待どおりであることを
     /// 検証する。alloc 回数の検証はここに含めない — `cargo test` はテストを
