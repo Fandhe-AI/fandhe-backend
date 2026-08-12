@@ -618,3 +618,74 @@ FAIL させてしまう。次回 crates.io 再公開時に別途起票するリ�
 | 全 feature 構成（なし・個別・全）でビルド確認 | PASS（13.3） |
 | CHANGELOG に BREAKING CHANGE と移行手順を記載 | PASS（#602 で先行記載済み、13.2 の追補で拡張点シグネチャ不変を明記） |
 | `.standalone-crates-io-skip` を必要に応じて配置 | 配置不要と判定・根拠記録済み（13.4） |
+
+## 14. #593 実施記録（検証・効果測定）
+
+イシュー [#593](https://github.com/Fandhe-AI/fandhe-backend/issues/593)
+「P1 適用後の全構成テストと専有ベンチ効果検証」の実施記録。詳細は
+`benches/reports/issue593-p1-zero-copy-bench.md` を参照し、本節は受け入れ基準
+（8 節「#593」）への対応まとめに絞る。
+
+### 14.1 全構成テスト・fuzz smoke
+
+- feature なし（`cargo test --workspace`）: 85 個の `test result: ok` ブロック
+  すべて成功
+- 全 feature（`cargo test --workspace --all-features`）: 88 個の
+  `test result: ok` ブロックすべて成功
+- 個別 feature 9 種（webrtc-proxy / webrtc / websocket / graphql / tracing /
+  openapi / cors / compression / static）: 全 feature で exit 0（PASS）
+- pay-for-what-you-use（`scripts/pay-for-what-you-use-check.sh`）: PASS
+  （プラグイン feature 列挙・`cargo tree`・`cargo geiger`・バイナリサイズ・
+  全構成ビルドの 5 段すべて成功）
+- lint（`cargo fmt --check` / `cargo clippy --all-features` /
+  `cargo clippy --no-default-features -p fandhe-backend-core`）: クリーン
+- fuzz smoke（`scripts/fuzz.sh`、7 target × 60 秒、`head_semantics` /
+  `parse_request_head` が P1 変更の直接対象）: 全 target 正常終了・クラッシュなし
+
+### 14.2 専有ベンチ前後比較
+
+`benches/bench-accept-exclusive.sh` で before（`655b150`、P1 適用直前）/
+after（`1aeda06`、origin/main 先端）を比較した。
+
+- **before**: 全 15 指標 PASS
+- **after**: 3 回のスクリプト呼び出しから得た 3 つのデータセットを実施した
+  （`FAIL_RETRIES=1` の契約上、単一呼び出しは初回 + 自動再試行 1 回の最大
+  2 回までしか再試行しない。3 回目は別呼び出し。詳細・訂正経緯は
+  `issue593-p1-zero-copy-bench.md` 5 節冒頭参照）。いずれも p95 レイテンシが
+  1〜2 件基準をわずかに超過し機械判定は FAIL（3 回とも異なるエンドポイントで
+  超過、p99・RPS・RSS・バイナリサイズ・起動時間の 12 指標は 3 回とも一貫して
+  PASS）
+- host contention ノイズ説を支持する状況証拠（詳細は
+  `issue593-p1-zero-copy-bench.md` 5.6 節）はあるが、計測自体が高負荷
+  プロセスを伴うため終了時 loadavg 上昇だけでは自プロセス負荷と外部
+  contention を区別できず、隔離環境なしに P1 固有の性能退行ではないと
+  断定する根拠はない。**判定不能**として記録し、隔離環境での再計測を
+  必須の残作業とする
+
+### 14.3 効果見込みとの差異・原因分析
+
+設計文書 5.3 節の見込み（+5〜10%）に対し、host contention ノイズの重畳により
+RPS ベースの単純比較で明確な改善率を確認できなかった。原因分析（詳細は
+`issue593-p1-zero-copy-bench.md` 5.7 節）:
+
+1. host contention ノイズが RPS・p95 の両方に重畳し、本イシューの計測環境
+   （並列 issue 実装ワークフロー稼働下の共有ホスト）では S/N 比が不十分だった
+2. P1 の効果は alloc 回数の削減であり、`core-bench` の 4 エンドポイントは
+   応答本文が小さく、ヘッダ解析の alloc 削減が accept〜応答送出パイプライン
+   全体の RPS に占める寄与が相対的に小さい可能性がある
+3. バイナリサイズ比（0.7391、before/after 共通）は #591/#592（P1）と
+   #595〜#599（Phase 1 改善、before 基準コミットに既に含まれる）の累積効果
+
+alloc 回数ベースでの効果自体は #591/#592 実装時点で
+`crates/http/tests/alloc_count.rs`（N=1/N=30 の alloc 差分を直接計測する
+常設テスト）により機械検証済みであり、本節はその実測値の RPS への反映度を
+別途確認する試みとして位置づける。
+
+### 14.4 受け入れ基準対応表
+
+| 受け入れ基準 | 結果 |
+|------|------|
+| 全 feature 構成（なし・個別・全）でビルド・テスト通過 | PASS（14.1） |
+| fuzz smoke 実行で問題なし | PASS（14.1、7 target 全正常終了） |
+| 専有ベンチで前後比較を実施し `benches/reports/` に記録。見込みとの差異があれば原因分析を添付 | 実施・記録済み（14.2・14.3、`issue593-p1-zero-copy-bench.md`）。機械判定は FAIL のまま、原因分析（host contention ノイズの可能性とその限界）を添付して記録（未達自体は完遂判定を妨げないが、原因記録は必須であり満たしている） |
+| REQ-1/NFR-1 の既存受け入れ基準に非退行 | **判定不能**。機械判定 FAIL を覆すだけの根拠が現状の計測環境にはなく、隔離環境での再計測が必須の残作業（`issue593-p1-zero-copy-bench.md` 6・7 節） |
