@@ -15,11 +15,11 @@
     },
     "findings": {
       "type": "array",
-      "description": "個別指摘。P0/P1 が 1 件でもあると CI ジョブが失敗する",
+      "description": "個別指摘。差分から見つけた指摘を全件列挙する（最重要の 1 件に絞らない）。P0/P1 が 1 件でもあると CI ジョブが失敗する",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["priority", "title", "location", "detail"],
+        "required": ["priority", "title", "location", "path", "line", "detail"],
         "properties": {
           "priority": {
             "type": "string",
@@ -32,7 +32,16 @@
           },
           "location": {
             "type": "string",
-            "description": "該当箇所（file_path:line 形式、複数箇所は代表 1 箇所）"
+            "description": "該当箇所の表示用文字列（file_path:line 形式、複数箇所は代表 1 箇所）"
+          },
+          "path": {
+            "type": "string",
+            "description": "該当ファイルのリポジトリルート相対パス（インラインコメントのアンカーに使う。特定のファイルに紐付かない指摘は空文字列）"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "該当行番号（PR ブランチ側 = HEAD^2 = PR head の行番号、1 始まり。差分に現れた行を指すこと。行を特定できない・ファイル全体への指摘は 0）"
           },
           "detail": {
             "type": "string",

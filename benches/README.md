@@ -42,7 +42,8 @@ cargo build --release --bin axum-ref
 | `bench-http.sh` | RPS・p50・p95・p99（`GET /health`, `GET /hello/{name}`, `GET /users/{id}`, `POST /echo`） |
 | `bench-rss.sh` | 負荷時 RSS（試行内複数サンプル × 複数試行の中央値。PoC-2 の単発計測の是正） |
 | `bench-footprint.sh` | 起動時間・アイドル RSS・リリースバイナリサイズ |
-| `bench-accept.sh` | 上記 3 スクリプトを axum-ref（baseline）・コア側（対象）の順に実行し、比率・絶対差を算出して REQ-1・NFR-1・NFR-2 の基準で判定する受け入れテスト（TASK-1.6-1、#71） |
+| `bench-accept.sh` | 上記 3 スクリプトを axum-ref（baseline）・コア側（対象）の順に実行し、比率・絶対差を算出して REQ-1・NFR-1・NFR-2 の基準で判定する受け入れテスト（TASK-1.6-1、#71）。`INTERLEAVE=1`・`SECTION_QUIESCENCE=1`（いずれも opt-in、イシュー #613）で交互ペア測定・区間ごと静穏再確認に切り替え可能（後述） |
+| `bench-pair.sh` | `BIN_A`（pre）・`BIN_B`（cur）2 バイナリを交互ペア測定し、`PAIR_M2` 判定（二次判定、イシュー #613）を行う新設エントリポイント（後述） |
 | `bench-ws-load.sh` | 10,000 同時 WebSocket 接続の確立成功率・接続あたり RSS 増分（fullscratch/axum 比）・線形性を計測する負荷試験ハーネス（TASK-4.3、#24） |
 | `compression-blocking-bench.sh` | `plugin-compression` の gzip 圧縮本体（`compress_body`）所要時間（body サイズ別）と `spawn_blocking` ディスパッチ往復コストを比較するマイクロベンチ。`blocking_threshold` しきい値決定・ストリーミング圧縮への適用要否判定の根拠（イシュー #468、`benches/reports/issue468-compression-blocking.md`） |
 | `compression-e2e-bench.sh` | compression 有効構成の並行負荷下 E2E 比較（`crates/core/examples/compression_e2e_bench.rs` を使用）。`GET /large`（既定しきい値 64 KiB 以上）への背景負荷と同時に `GET /small`（常にインライン圧縮）を計測し、`spawn_blocking` オフロード（既定）と常時インライン（`BLOCKING_THRESHOLD=max`）の 2 構成で p99 テールレイテンシを比較する（イシュー #473、`benches/reports/issue473-compression-e2e.md`） |
@@ -246,6 +247,109 @@ axum-ref との実測比較の判定結果・環境情報は
 `TARGET_BIN` / `TARGET_HOST` / `TARGET_PORT`（`bench-http.sh` 等の単体実行時）や
 `BASELINE_*` / `CORE_*`（`bench-accept.sh`）を差し替えることで、`crates/core` 側の
 実行可能バイナリが揃った時点で本スクリプトの変更なしにそのまま判定に使える設計にしている。
+
+## 交互測定モード・外部 CPU 占有率プローブ（イシュー #613）
+
+共有ホスト・共有テナンシー環境（ホステッド runner の noisy neighbor を含む）では、
+`bench-accept.sh` の一次判定（axum 比）が p95 判定境界付近で不安定になることがある
+（`reports/issue593-p1-zero-copy-bench.md` 9 節・9.7 節で実証、
+`docs/design/bench-hosted-runner.md`）。以下の 3 機構は**すべて既定 OFF の opt-in**
+であり、指定しない限り既存の挙動（一次判定の判定ロジック・出力・終了コード契約）は
+一切変わらない。**しきい値の既定値（`EXT_CPU_MAX_PCT`・`WINDOW_REMEASURE_MAX`・
+`PAIR_M2`・`PAIR_MIN_PAIRS`）はすべて暫定値**であり、実測較正は既存イシュー #616
+のスコープ。
+
+### CPU_PROBE=1 — 外部 CPU 占有率プローブ（`bench-http.sh`）
+
+各計測窓（oha 1 回分）の直前直後に `/proc/stat`（総 busy jiffies。`steal` 込み
+— ホステッド VM のハイパーバイザ奪取分も「外部占有」として算入する）とサーバ・
+oha それぞれの帰属 jiffies を採取し、外部占有率 `= (busy 増分 − 帰属増分) / 総増分`
+を算出する。`EXT_CPU_MAX_PCT`（既定 5%）を超える窓は `WINDOW_REMEASURE_MAX`
+（既定 2）回を上限に再計測し、上限まで解消しない場合は**値を捏造・破棄せず**
+汚染フラグ付きで最後の値を採用する。
+
+```bash
+CPU_PROBE=1 ./benches/bench-http.sh
+# RESULT_JSON 指定時は endpoints[].cpu_probe.{ext_cpu_pct,contaminated,remeasure_count}
+# （既存フィールドは無変更の後方互換な追加）に記録される。
+CPU_PROBE=1 RESULT_JSON=/tmp/result.json ./benches/bench-http.sh
+```
+
+### INTERLEAVE=1 — 交互ペア測定モード（`bench-accept.sh`）
+
+HTTP 系計測を「baseline 一括 → core 一括」の 2 ブロックから、baseline/core を
+`PAIRS`（既定 8）回交互にセッション計測する方式へ切り替える。順序効果・時間帯
+ドリフトを排除する。判定ロジック（axum 比のしきい値・判定表・終了コード 0/1/2
+契約）は無変更 — 各セッションは既存 `RUNS` で内部中央値を出し、セッション間の
+中央値を最終値として採用する。RSS・footprint 計測は従来どおり逐次のまま（対象外）。
+
+```bash
+INTERLEAVE=1 PAIRS=8 ./benches/bench-accept.sh
+# CPU_PROBE=1 と併用すると、集約した外部占有率分布を判定表の後に追記する。
+INTERLEAVE=1 CPU_PROBE=1 REPORT_MD=benches/reports/foo.md ./benches/bench-accept.sh
+```
+
+### SECTION_QUIESCENCE=1 — 区間分割・区間ごと静穏再確認（`bench-accept.sh`）
+
+baseline 区間・core 区間それぞれの計測開始前に `lib/exclusive.sh` の静穏確認
+（`wait_for_quiescence`）+ 環境スナップショットを実行する（issue593 レポート
+7 節申し送りの「2 区間分割と区間ごとの静穏再確認」への対応）。区間用しきい値は
+`SECTION_LOAD1_MAX`（未指定時は `LOAD1_MAX` を継承）、待機上限は
+`SECTION_QUIESCE_WAIT_SECS`（既定 300 秒、有界）。区間の静穏未達は
+**BLOCKED（終了コード 2）でフェイルクローズし、PASS へ丸めない**。
+
+`INTERLEAVE=1` と併用する場合は、区間開始前の 1 回だけでは PAIRS 回（既定 8）に
+わたるドリフト・汚染を検出できないため、`benches/lib/interleave.sh` の
+`interleave_run_pairs` へ静穏ゲートフックを渡し、**各ペア開始直前**（i = 1..PAIRS
+各回に 1 回）に静穏確認を実行する（イシュー #613 レビュー指摘対応）。A/B 各
+セッションではなくペア単位にしているのは、`wait_for_quiescence` が見る 1 分間
+loadavg が直前に完走した自分自身のセッション負荷の残差を「外部汚染」と誤検知
+しうるため（`interleave_run_pairs` doc comment 参照）。未達判定・BLOCKED 化の
+ロジックは区間分割時と同一の `run_section_quiescence_gate` をそのまま再利用する。
+
+```bash
+SECTION_QUIESCENCE=1 SECTION_QUIESCE_WAIT_SECS=300 ./benches/bench-accept.sh
+# INTERLEAVE=1 併用時は各ペア開始直前に静穏確認を実行する
+INTERLEAVE=1 SECTION_QUIESCENCE=1 SECTION_QUIESCE_WAIT_SECS=300 ./benches/bench-accept.sh
+```
+
+### bench-pair.sh — 交互ペア測定による二次判定（新設エントリポイント）
+
+`bench-accept.sh`（一次判定）とは別経路の新設スクリプト。`BIN_A`（pre）・
+`BIN_B`（cur）2 バイナリを交互ペア測定し、エンドポイントごとの p95 cur/pre 比の
+**採用ペア中央値**が `PAIR_M2`（既定 0.05）以内かを判定する
+（`docs/design/bench-p95-criteria.md` 5.2 節）。一次判定が FAIL・境界接近時の
+**退行帰属手段**として使う想定。汚染窓（`CPU_PROBE` の汚染フラグ）を含むペアは
+採用から除外し、除外理由・生値を必ず記録する（silent drop 禁止）。
+
+```bash
+BIN_A=target/release/axum-ref BIN_B=target/release/examples/core-bench \
+    PAIRS=8 PAIR_M2=0.05 PAIR_MIN_PAIRS=6 \
+    REPORT_MD=benches/reports/foo-pair.md ./benches/bench-pair.sh
+
+# 差ゼロ既知の自己比較（同一バイナリ、全エンドポイント PASS になるはず）
+BIN_A=target/release/examples/core-bench BIN_B=target/release/examples/core-bench \
+    ./benches/bench-pair.sh
+```
+
+終了コード: `0`=PASS、`1`=FAIL（1 エンドポイント以上で中央値超過）、`2`=BLOCKED
+（`BIN_A`/`BIN_B` 未整備等の決定論的失敗）、`3`=**INCONCLUSIVE**（1 エンドポイント
+以上で採用ペア数が `PAIR_MIN_PAIRS` 未満。`bench-accept.sh` の既存 0/1/2 契約とは
+独立した本スクリプト新設の区分。`nfr6_run_with_fail_retry` 等の再試行ラッパーは
+`bench-pair.sh` を対象にしない。`bench-schedule.yml`・退行帰属フローへの接続は
+既存イシュー #614 のスコープ）。
+
+### セルフテスト
+
+```bash
+bash scripts/tests/run-bench-cpu-probe-tests.sh
+```
+
+`benches/lib/cpu-probe.sh`（プローブ算出式・汚染判定）・`benches/lib/interleave.sh`
+（窓単位再計測の有界性・二次判定ロジック）をオフラインで検証する。実 `/proc/stat`
+を使った busy ループ注入による汚染検出（受け入れ基準）も含む
+（`scripts/tests/run-nfr6-exclusive-tests.sh` と同じ手動実行方針、CI 常設組み込みは
+行わない）。
 
 ## webrtc-nfr6-bench.sh / graphql-nfr6-bench.sh — プラグイン feature の NFR 計測
 
@@ -571,14 +675,15 @@ plugin-mechanism-conclusion-verdict.awk`）は「## 結論」セクションが�
 判定を無条件で上書きするため、この追記により古い PASS/FAIL がそのまま権威として
 残る事態（stale PASS）を防ぎ、正しく SKIP 扱いになる（イシュー #260 Bugbot 指摘対応）。**
 
-## 定期実行（bench-schedule.yml、イシュー #285）
+## 定期実行（bench-schedule.yml、イシュー #285・#614）
 
 REQ-1/NFR-1（`docs/spec/04-requirements.md`）の判定は `bench-accept.sh` /
 `bench-accept-exclusive.sh` として整備済みだったが、手動実行前提で CI に常設されて
 おらず、2026-07-18 の再計測 PASS 以降の性能退行を継続検知する体制がなかった
 （本節冒頭の申し送り、上記「現状」節参照）。`.github/workflows/bench-schedule.yml` は
-これを **週次 schedule（`0 2 * * 0`、日曜 02:00 UTC = 11:00 JST）+ workflow_dispatch**
-で定期実行する。
+これを **週次一次判定（`0 2 * * 0`、日曜 02:00 UTC = 11:00 JST）+ 月次二次判定
+（`0 4 1 * *`、毎月 1 日 04:00 UTC）+ workflow_dispatch** で定期実行する
+（イシュー #614 で月次ジョブを新設）。
 
 ### なぜ週次・別 workflow なのか
 
@@ -587,68 +692,88 @@ REQ-1/NFR-1（`docs/spec/04-requirements.md`）の判定は `bench-accept.sh` /
   伴い重いため、この方針とは衝突させず**別 workflow・週次実行**に切り出す
   （設計比較の詳細は `docs/design/bench-scheduled-run.md` を参照）。
 - cron は `update-external.yml`（00:00 UTC 日次）・`ci.yml`（00:30 UTC 日次）と
-  重ならない `0 2 * * 0` を使い、self-hosted runner の負荷を分散する
+  重ならない `0 2 * * 0`（一次判定）・`0 4 1 * *`（月次二次判定）を使い、
+  ホステッドランナーでも無駄なジョブ実行・Actions キュー消費を抑える
   （`.claude/rules/ci.md`「schedule 系ワークフロー同士は cron をずらす」）。
 
-### 単発 FAIL の限定再試行規約（フェイルクローズ）
+### 一次判定の 4 値判定・多数決規約（イシュー #614、フェイルクローズ）
 
-計測は `benches/bench-accept-exclusive.sh` を `FAIL_RETRIES=1` 付きで呼ぶ
-（`benches/lib/exclusive.sh` の `nfr6_run_with_fail_retry`）。単発の keep-alive
-再接続ノイズ等（本節冒頭の申し送り、初回計測が FAIL → 再実行 PASS と振れた実績）を
-退行と誤認しないための頑健化であり、次の規約に従う。
+`docs/design/bench-p95-criteria.md` の設計に基づき、p95 の判定を PASS/FAIL の
+2 値から **PASS/INCONCLUSIVE（判定不能）/FAIL の 3 帯域判定**へ拡張し
+（`P95_BAND=1`、`bench-accept.sh`）、一次判定全体を**最大 3 試行の多数決**へ
+拡張した（`MAJORITY_TRIALS=3`、`bench-accept-exclusive.sh` → `benches/lib/
+exclusive.sh` の `nfr6_run_with_majority`）。旧「FAIL のみ 1 回再試行・2 連続 FAIL
+で退行確定」規約（`FAIL_RETRIES=1`）を置き換える。
 
-- **FAIL（終了コード 1）のときのみ再試行する**: 同一専有ロックを保持したまま
-  `wait_for_quiescence` で静穏確認をやり直し、再計測する。`FAIL_RETRIES` に
-  指定した回数まで、FAIL が続く限りこれを繰り返す（PR #291 Bugbot 指摘対応で
-  ループ化。旧実装は `FAIL_RETRIES` に 2 以上を渡しても常に 1 回しか再試行され
-  なかった）。
-- **週次 schedule では `FAIL_RETRIES=1` を使うため、単発 FAIL は 1 回のみ再試行可、
-  2 連続 FAIL で退行確定**。再試行後も FAIL なら最終結果として FAIL を確定し、
-  それ以上は再試行しない。
-- **PASS（0）は再試行しない**（偶然の 1 回 PASS を過大評価しないため、初回 PASS を
-  そのまま採用する）。
-- **BLOCKED（終了コード 2）は再試行しない**。計測環境自体が壊れている（専有ロック
-  取得不能・ビルド失敗・静穏未達・baseline / `CORE_BIN` バイナリ未整備）ため
-  再試行しても意味がなく、フェイルクローズで即座に BLOCKED を返す（イシュー #478
-  で baseline 欠如も本契約に統一）。
-  **呼び出し対象コマンド側の契約（イシュー #479）**: 決定論的な環境失敗
-  （バイナリ欠如・依存ツール欠如等）は終了コード 1（FAIL）で返してはならない。
-  終了コード 1 は非決定的な計測 FAIL 専用であり、決定論的失敗を exit 1 で返すと
-  `nfr6_run_with_fail_retry` がノイズと誤認して無意味な静穏待機を挟んだ再試行を
-  行い、`bench-accept.sh` の追記型レポート生成が複数回呼ばれて同一文言の
-  「## 結論」セクションが重複追記される（#476 で実証）。決定論的失敗は
-  `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`（既定 2）で返すこと。
-- **再試行前の静穏確認（`wait_for_quiescence`）が `QUIESCE_WAIT_SECS` 待っても
-  得られなかった場合も BLOCKED として扱う**（PR #291 Bugbot 指摘対応）。ホストが
-  混雑しているだけの状態を、直前の FAIL 結果をそのまま採用して性能退行と誤検知
-  しないための挙動で、初回計測前の静穏未達が BLOCKED になるのと同じ扱いに揃える。
-- `FAIL_RETRIES` 既定値は `0`（再試行なし、導入前と同一挙動）。手動実行
-  （`bash benches/bench-accept-exclusive.sh`）では既定のまま使ってよい。
+- **判定 4 値**: PASS（0）/ FAIL（1、退行確定）/ BLOCKED（2、計測不能）/
+  INCONCLUSIVE（3、判定不能帯・多数決不成立）
+- **多数決**: 初回 PASS は即確定（再試行しない）。初回 BLOCKED は即座に返す
+  （再試行しない）。初回が FAIL 候補または INCONCLUSIVE なら、静穏確認をやり直して
+  最大 3 試行まで多数決する。3 試行中 2 試行以上が同一判定なら確定、割れる場合は
+  INCONCLUSIVE（3）へ丸める（PASS/FAIL へ丸めない、fail-closed）。**ただし FAIL（1）
+  がちょうど 1 回だけ現れた場合（例: 1/0/0）は残り 2 試行が一致していても多数決で
+  上書き確定せず INCONCLUSIVE（3）を返す**（`docs/design/bench-p95-criteria.md`
+  5.1 節「6.1 節の (a) のみ該当試行との関係」の保守的近似。指標比・CPU 占有率の
+  試行間比較を本関数へ伝播する機構が未整備なため、分布逸脱の可能性がある FAIL
+  単発票を一律非上書きとすることで、断続的な真の退行が多数決で PASS へ救済される
+  fail-open を防ぐ。詳細は `nfr6_run_with_majority` の doc comment 参照）
+- **p95 の帯域**: `P95_RATIO_MAX`（spec 基準値 1.10、不変）に対し `P95_MARGIN`
+  （既定 0.10、暫定値）を掛けた `1.10 × (1 + 0.10) = 1.21` を判定不能上限とする。
+  比 `<= 1.10` は PASS、`1.10 < 比 <= 1.21` は INCONCLUSIVE、`比 > 1.21` は FAIL。
+  適用対象は p95 のみ（RPS・p99・RSS・バイナリサイズ・起動時間は従来どおり単一
+  しきい値の PASS/FAIL 2 値のまま）
+- **後方互換**: `P95_BAND=0`・`MAJORITY_TRIALS=0`（いずれも既定）では従来どおり
+  PASS/FAIL の 2 値・`FAIL_RETRIES` 経路のまま動作する。手動実行
+  （`bash benches/bench-accept-exclusive.sh`）では既定のまま使ってよい
+- しきい値暫定値（`P95_MARGIN=0.10` 等）の実測較正は既存イシュー #616 のスコープ
 
-**p95 基準運用の見直し設計**（イシュー #612、
-[`docs/design/bench-p95-criteria.md`](../docs/design/bench-p95-criteria.md)）:
-共有ホストでは p95 の axum 比 1.10 基準が退行と無関係な PASS/FAIL 境界不安定性を
-示すことが実測で確認されている
-（[`benches/reports/issue593-p1-zero-copy-bench.md`](reports/issue593-p1-zero-copy-bench.md)
-9 節）。判定 4 値化（INCONCLUSIVE 新設）・しきい値マージンによる判定不能帯・多数決 +
-交互測定二次判定・外れ値の客観的除外条件を設計済みだが、**本節の現行契約（FAIL のみ
-再試行・PASS/BLOCKED 非再試行）は Phase 2（#613・#614）で実装されるまで有効**である。
+**呼び出し対象コマンド側の契約は `nfr6_run_with_majority` にも引き継がれる**
+（イシュー #479 で `nfr6_run_with_fail_retry` 向けに定めた契約と同一）: 決定論的な
+環境失敗（バイナリ欠如・依存ツール欠如等）は終了コード 1（FAIL）で返してはならず、
+`FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`（既定 2、BLOCKED）で返すこと。終了コード 1
+は非決定的な計測 FAIL・終了コード 3 は判定不能帯/多数決不成立専用であり、決定論的
+失敗を exit 1 で返すと多数決の投票対象になってしまい、環境障害を性能退行の投票
+結果として誤集計する（`bench-accept.sh` はこの契約を遵守済み。BLOCKED 判定
+自体は `P95_BAND`/`MAJORITY_TRIALS` の値に関わらず変更していない）。
+
+### 退行帰属のための二次判定（追撃・月次無条件実行、イシュー #613・#614）
+
+一次判定が FAIL（1）または INCONCLUSIVE（3）で確定した場合、`bench-accept` ジョブは
+続けて **追撃**（直近の成功 run のコミットを pre として `benches/bench-pair.sh`
+による交互ペア測定）を実行し、結果を Issue 本文へ添付する。二次判定の結果は
+**一次判定・ジョブの成否を変更しない**（証跡のみ。PASS が一次判定の FAIL を
+上書きすることはない）。
+
+直近の成功 run が存在しない、または現在の SHA と同一で比較対象がない場合は追撃を
+実行せず、その旨を Issue 本文へ明記する（silent skip 禁止）。
+
+**月次無条件二次判定**（`bench-pair-monthly` ジョブ）は、一次判定（axum 比）の
+構造的弱点（baseline・core が同方向に悪化する run を検知できない、
+`docs/design/bench-hosted-runner.md` 7 節 (iii)）への暫定対応として、一次判定の
+FAIL/INCONCLUSIVE を待たず**無条件**に毎月 1 回、直近の成功 run との交互ペア測定を
+実行する。恒久策（run 系列の統計的監視）は #616 の較正ラン標本蓄積が前提のため
+本イシューでは実装しない。
 
 ### 退行検知時の扱い（フェイルクローズ・Issue 自動起票）
 
-`bench-accept-exclusive.sh` が非 0（FAIL または BLOCKED）で終了した場合、
-`bench-accept` ジョブ自体を失敗（赤）させたうえで、`bench-regression` ラベルの
-Issue を自動起票する（`ci.yml` dep-audit ジョブの `audit-triage` 起票と同一
-パターン。`.claude/rules/improvement-proposal.md` の「自動レイヤ（承認不要）」に
-該当する自動監査機構）。FAIL（退行確定）と BLOCKED（計測不能）はタイトルで区別
-する。計測不能の黙殺も「継続検証体制の喪失」であるため、握りつぶさず起票する。
-重複起票は `bench-regression` ラベルの既存 open Issue 有無で防止する。
+`bench-accept-exclusive.sh`（一次判定）または `bench-pair.sh`（月次二次判定）が
+非 0（FAIL・BLOCKED・INCONCLUSIVE のいずれか）で終了した場合、対応するジョブ自体を
+失敗（赤）させたうえで、`bench-regression` ラベルの Issue を自動起票する
+（`ci.yml` dep-audit ジョブの `audit-triage` 起票と同一パターン。
+`.claude/rules/improvement-proposal.md` の「自動レイヤ（承認不要）」に該当する
+自動監査機構）。FAIL（退行確定）・INCONCLUSIVE（判定不能）・BLOCKED（計測不能）は
+タイトルで区別する。計測不能・判定不能の黙殺も「継続検証体制の喪失」であるため、
+握りつぶさず起票する。重複起票は `bench-regression` ラベルの既存 open Issue 有無で
+防止する。
 
 ### 手動での再実行手順
 
 ```bash
-# GitHub CLI で workflow_dispatch を起動する
+# GitHub CLI で workflow_dispatch を起動する（既定 mode=primary、週次一次判定経路）
 gh workflow run bench-schedule.yml
+
+# mode=pair で月次二次判定経路を手動検証する
+gh workflow run bench-schedule.yml -f mode=pair
 
 # 実行状況の確認
 gh run list --workflow bench-schedule.yml --limit 5

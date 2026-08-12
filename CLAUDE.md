@@ -649,8 +649,67 @@ fandhe-backend/
 │   │                                    # 検査する fail-fast を追加（イシュー #480。self-hosted
 │   │                                    # runner のホスト共有 `CARGO_TARGET_DIR` 注入により決め打ち
 │   │                                    # パスに成果物が見つからない事象への対処、
-│   │                                    # `benches/lib/common.sh` の `BENCH_TARGET_DIR` 導出と対）
-│   ├── bench-http.sh / bench-rss.sh / bench-footprint.sh  # RPS・負荷時 RSS・起動時間/バイナリサイズ計測
+│   │                                    # `benches/lib/common.sh` の `BENCH_TARGET_DIR` 導出と対）。
+│   │                                    # `MAJORITY_TRIALS=3`（イシュー #614）で
+│   │                                    # `lib/exclusive.sh` の `nfr6_run_with_majority`
+│   │                                    # （最大 3 試行の多数決、PASS/FAIL/BLOCKED/
+│   │                                    # INCONCLUSIVE の 4 値対応）経由に切り替え、
+│   │                                    # `bench-accept.sh` を `P95_BAND=1` 付きで実行する
+│   │                                    # （既定 0 では従来の `FAIL_RETRIES` 経路のまま
+│   │                                    # 後方互換。`bench-schedule.yml` の週次一次判定
+│   │                                    # ジョブから使用）
+│   ├── lib/cpu-probe.sh                # 外部 CPU 占有率プローブ（イシュー #613）。
+│   │                                    # `/proc/stat`（`steal` 込み）+ サーバ/oha 帰属
+│   │                                    # jiffies から計測窓の外部占有率を算出し、
+│   │                                    # `EXT_CPU_MAX_PCT` 超過窓を `WINDOW_REMEASURE_MAX`
+│   │                                    # 回上限に有界再計測する（`bench-http.sh` の
+│   │                                    # `CPU_PROBE=1` opt-in から使用。実証は
+│   │                                    # `benches/reports/issue593-p1-zero-copy-bench.md`
+│   │                                    # 9.7 節、`docs/design/bench-hosted-runner.md`）
+│   ├── lib/interleave.sh               # 交互（interleave）ペア測定エンジン（イシュー #613）。
+│   │                                    # baseline/core（または A/B）を `PAIRS` 回交互
+│   │                                    # セッション計測し、`bench-http.sh` をサブプロセス
+│   │                                    # 委譲することで測定ロジック・RESULT_JSON スキーマの
+│   │                                    # 二重実装を避ける。`bench-accept.sh` の
+│   │                                    # `INTERLEAVE=1` opt-in・`bench-pair.sh`（新設二次
+│   │                                    # 判定エントリポイント）の双方から使用
+│   ├── bench-pair.sh                   # 交互ペア測定による二次判定（イシュー #613、新設）。
+│   │                                    # `BIN_A`（pre）/`BIN_B`（cur）の p95 cur/pre 比の
+│   │                                    # 採用ペア中央値を `PAIR_M2` で判定（`docs/design/
+│   │                                    # bench-p95-criteria.md` 5.2 節）。汚染窓を含む
+│   │                                    # ペアは理由・生値付きで除外（silent drop 禁止）。
+│   │                                    # `bench-accept.sh`（一次判定、exit 0/1/2/3）とは
+│   │                                    # 独立した経路として exit 3（INCONCLUSIVE）を導入。
+│   │                                    # `bench-schedule.yml` へイシュー #614 で接続した
+│   │                                    # （週次 `bench-accept` ジョブの FAIL/INCONCLUSIVE
+│   │                                    # 確定時の追撃・月次 `bench-pair-monthly` ジョブの
+│   │                                    # 無条件二次判定の 2 経路。二次判定の結果は
+│   │                                    # 一次判定・ジョブの成否を変更しない証跡専用）
+│   ├── bench-http.sh / bench-rss.sh / bench-footprint.sh  # RPS・負荷時 RSS・起動時間/バイナリサイズ計測。
+│                                        # `bench-http.sh` は `CPU_PROBE=1`（イシュー #613、
+│                                        # opt-in・既定 OFF）で `lib/cpu-probe.sh` 経由の
+│                                        # 窓単位プローブ・有界再計測を行い、RESULT_JSON へ
+│                                        # `endpoints[].cpu_probe.{ext_cpu_pct,contaminated,
+│                                        # remeasure_count}` を追加する（既存フィールドは
+│                                        # 無変更、後方互換な追加のみ）。`bench-accept.sh` は
+│                                        # `INTERLEAVE=1`（HTTP 計測を baseline/core 交互
+│                                        # セッションへ切替、判定ロジック無変更）・
+│                                        # `SECTION_QUIESCENCE=1`（baseline/core 各区間開始前に
+│                                        # `lib/exclusive.sh` の静穏確認を実行、未達は
+│                                        # BLOCKED でフェイルクローズ。`INTERLEAVE=1` 併用時は
+│                                        # 区間開始前 1 回だけでは PAIRS 回にわたるドリフト・
+│                                        # 汚染を検出できないため、`interleave_run_pairs` へ
+│                                        # 静穏ゲートフックを渡し各ペア開始直前にも実行する）
+│                                        # の 2 opt-in を追加した
+│                                        # （issue593 レポート 7 節申し送り対応）。3 機構とも
+│                                        # 既定 OFF で現行挙動を変えない。しきい値暫定値の
+│                                        # 実測較正は既存イシュー #616。`interleave_run_pairs`
+│                                        # の A/B いずれかのセッション実行失敗は、性能退行
+│                                        # FAIL（exit 1）と誤分類させず BLOCKED（exit 2）へ
+│                                        # 変換する（`bench-pair.sh` と同一パターン。途中
+│                                        # セッションの失敗をループ最終コマンドの終了コードに
+│                                        # 引きずられて握りつぶさないよう、各セッション個別に
+│                                        # 終了コードを検査する、PR #620 レビュー指摘対応）
 │   ├── microbench.sh                   # 決定的マイクロベンチ（`microbench/`、per-request
 │   │                                    # alloc カウンタ）のビルド・実行・ベースライン比較
 │   │                                    # ラッパー（イシュー #615）。実時間ベンチ（VM ノイズ

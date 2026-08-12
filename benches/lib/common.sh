@@ -230,4 +230,54 @@ validate_numeric() {
     fi
 }
 
+# 非負整数（小数不可）であることを検証する。`validate_numeric` は小数を許容する
+# ため、bash の整数算術コンテキスト（`$((...))`・`-ge`/`-lt` 等）へそのまま渡す
+# 値の検証には使えない（小数を渡すと `integer expression expected` で異常終了し、
+# 呼び出し元が意図した BLOCKED/エラー終了コードの契約を通らずに落ちてしまう）。
+# `SECTION_QUIESCE_WAIT_SECS`（`benches/lib/exclusive.sh` の `wait_for_quiescence`
+# が `SECONDS`/`sleep` と共に整数算術で使用）等、整数専用パラメータの検証に使う。
+validate_integer() {
+    local value="$1"
+    local name="$2"
+    if ! [[ "${value}" =~ ^[0-9]+$ ]]; then
+        echo "エラー: ${name} は非負整数である必要があります（現在: ${value}）" >&2
+        exit 1
+    fi
+}
+
+# p95 の 3 帯域判定（イシュー #614、`docs/design/bench-p95-criteria.md` 4 節）。
+#
+# `bench-accept.sh` の一次判定（axum 比）で `P95_BAND=1`（opt-in・既定 OFF）の
+# ときのみ使用する純関数。既存の 2 値判定（`judge_le`、PASS/FAIL のみ）とは別に
+# 切り出し、オフラインテスト（`scripts/tests/`）から副作用なしに検証できるように
+# する（`benches/lib/exclusive.sh` の静穏判定関数と同じ「判定ロジックを独立関数に
+# 切り出す」方針）。
+#
+# 引数: $1 ratio（cur/baseline 比。分母 0 等で "nan" のときは無条件 FAIL）
+#       $2 limit（spec 基準値。例 1.10。基準値そのものは変更しない）
+#       $3 margin（判定不能帯の相対マージン M。暫定値は呼び出し元の既定 env が持つ）
+# 標準出力: "PASS" | "INCONCLUSIVE" | "FAIL"
+#   - PASS: ratio <= limit
+#   - INCONCLUSIVE: limit < ratio <= limit * (1 + margin)
+#   - FAIL: ratio > limit * (1 + margin)
+# 境界はいずれも `<=`（doc の表記と一致、`docs/design/bench-p95-criteria.md` 4 節）。
+p95_band_verdict() {
+    local ratio="$1" limit="$2" margin="$3"
+    if [ "${ratio}" = "nan" ]; then
+        echo "FAIL"
+        return 0
+    fi
+    if LC_NUMERIC=C awk -v r="${ratio}" -v l="${limit}" 'BEGIN { exit !(r + 0 <= l + 0) }'; then
+        echo "PASS"
+        return 0
+    fi
+    local upper
+    upper="$(LC_NUMERIC=C awk -v l="${limit}" -v m="${margin}" 'BEGIN { printf "%.10f", (l + 0) * (1 + (m + 0)) }')"
+    if LC_NUMERIC=C awk -v r="${ratio}" -v u="${upper}" 'BEGIN { exit !(r + 0 <= u + 0) }'; then
+        echo "INCONCLUSIVE"
+    else
+        echo "FAIL"
+    fi
+}
+
 export RUNS DURATION CONNECTIONS TARGET_BIN TARGET_HOST TARGET_PORT TARGET_URL WORKSPACE_ROOT BENCH_TARGET_DIR

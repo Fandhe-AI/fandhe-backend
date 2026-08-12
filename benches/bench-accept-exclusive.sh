@@ -28,20 +28,23 @@
 # cargo/rustc 由来の負荷が収まるのを待ってから計測に入る。
 #
 # 呼び出し元: 週次 schedule（`.github/workflows/bench-schedule.yml`、イシュー #285）
-# から `FAIL_RETRIES=1` 付きで呼ばれるほか、人間が `bash
+# から `MAJORITY_TRIALS=3` 付きで呼ばれるほか（イシュー #614 で
+# `FAIL_RETRIES=1` から置き換え、下記「MAJORITY_TRIALS」節参照）、人間が `bash
 # benches/bench-accept-exclusive.sh` として直接実行することもできる（手動実行時は
-# `FAIL_RETRIES` 既定 0 のまま。REQ-1/NFR-1 の PR/push 常設ゲート化は行わない。
-# self-hosted runner 負荷抑制方針、.claude/rules/ci.md）。
+# `FAIL_RETRIES`/`MAJORITY_TRIALS` とも既定 0 のまま。REQ-1/NFR-1 の PR/push 常設
+# ゲート化は行わない。self-hosted runner 負荷抑制方針、.claude/rules/ci.md）。
 #
-# FAIL_RETRIES（既定 0）: `bench-accept.sh` が終了コード 1（FAIL）を返した場合に
-# 限り、同一専有ロック保持中に静穏確認をやり直して指定回数だけ再計測する
+# FAIL_RETRIES（既定 0、旧方式）: `bench-accept.sh` が終了コード 1（FAIL）を返した
+# 場合に限り、同一専有ロック保持中に静穏確認をやり直して指定回数だけ再計測する
 # （`benches/lib/exclusive.sh` の `nfr6_run_with_fail_retry`。FAIL が続く限り
 # 指定回数まで繰り返すループ、PR #291 Bugbot 指摘対応）。
 # `benches/reports/task-1.6-1-performance.md` の申し送りどおり、初回計測が
 # keep-alive 再接続ノイズ等で単発 FAIL になった実績があるための頑健化。
-# 週次 schedule では `FAIL_RETRIES=1` を使うため「単発 FAIL は 1 回のみ再試行可、
-# 2 連続 FAIL で退行確定」という規約は `benches/README.md`「定期実行
-# （bench-schedule.yml）」節を参照。0（既定）は再試行なしの従来挙動のまま。
+# 「単発 FAIL は 1 回のみ再試行可、2 連続 FAIL で退行確定」という規約は
+# `benches/README.md`「定期実行（bench-schedule.yml）」節を参照。0（既定）は
+# 再試行なしの従来挙動のまま。**イシュー #614 で週次 schedule は下記
+# `MAJORITY_TRIALS=3` 経路へ切り替わった**。`FAIL_RETRIES` は既定 0 の手動実行
+# 経路として引き続き維持する（本 env の意味・契約自体は変更していない）。
 # BLOCKED（終了コード 2）は再試行しない（計測環境自体が壊れているため意味がなく、
 # フェイルクローズで即座に BLOCKED を返す。再試行前の静穏確認自体が得られなかった
 # 場合も同様に BLOCKED を返す）。呼び出し対象コマンド（`bench-accept.sh`）が決定論的な
@@ -49,11 +52,14 @@
 # `nfr6_run_with_fail_retry`（`benches/lib/exclusive.sh`）の doc comment・
 # `benches/README.md` の再試行規約節を参照（イシュー #479）。
 #
-# 終了コード: `bench-accept.sh` の終了コードをそのまま透過する
+# 終了コード: `bench-accept.sh`（または `MAJORITY_TRIALS=3` 経由の多数決結果）の
+# 終了コードをそのまま透過する
 # （0 = 全項目 PASS、1 = 1 件以上 FAIL、2 = baseline（axum-ref）/ CORE_BIN いずれかの
 # バイナリ未整備で BLOCKED。イシュー #478 で baseline 欠如も CORE_BIN 欠如と同じ
 # BLOCKED 専用終了コードへ統一し、両者を非対称に扱っていた旧実装（baseline 欠如は
-# exit 1 で性能 FAIL と混同）を解消した）。
+# exit 1 で性能 FAIL と混同）を解消した。3 = INCONCLUSIVE、イシュー #614 で追加。
+# `MAJORITY_TRIALS=3` 指定時のみ到達しうる。PASS/FAIL へ丸めず、`bench-schedule.yml`
+# 側で二次判定（`bench-pair.sh`）へ接続する）。
 # `FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE`（既定 2） = 専有ロック取得不能・ビルド失敗・
 # 静穏未達で計測そのものに着手できず BLOCKED（PASS へ丸めない。フェイルクローズ）。
 # 変数名は `lib/exclusive.sh` の既存 export をそのまま再利用する（NFR-6 専用の意味は
@@ -79,22 +85,38 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 REPORT_MD="${REPORT_MD:-}"
 # 単発 FAIL の限定再試行回数（既定 0 = 再試行なし、従来挙動と同一）。
+# `MAJORITY_TRIALS` 指定時（下記）は本 env は未使用のまま（多数決経路へ切り替わる）。
 FAIL_RETRIES="${FAIL_RETRIES:-0}"
 if ! [[ "${FAIL_RETRIES}" =~ ^[0-9]+$ ]]; then
     echo "エラー: FAIL_RETRIES は 0 以上の整数である必要があります（現在: ${FAIL_RETRIES}）" >&2
     exit 1
 fi
 
+# `MAJORITY_TRIALS=3`（既定 0、opt-in、イシュー #614）: `FAIL_RETRIES` 経路
+# （`nfr6_run_with_fail_retry`、PASS/FAIL/BLOCKED の 3 値のみ）に代えて、
+# `lib/exclusive.sh` の `nfr6_run_with_majority`（最大 3 試行の多数決、
+# PASS/FAIL/BLOCKED/INCONCLUSIVE の 4 値対応）経由で `bench-accept.sh` を
+# `P95_BAND=1` 付きで実行する。既定 0 のままなら本節は一切関与せず、下の
+# `FAIL_RETRIES` 経路（既存挙動）がそのまま動く（後方互換）。現在 `3` 固定
+# 以外の値は未サポート（`docs/design/bench-p95-criteria.md` 5.1 節の
+# 「最大 3 試行」設計に対応する値のみを受け付ける、フェイルクローズ）。
+MAJORITY_TRIALS="${MAJORITY_TRIALS:-0}"
+if [ "${MAJORITY_TRIALS}" != "0" ] && [ "${MAJORITY_TRIALS}" != "3" ]; then
+    echo "エラー: MAJORITY_TRIALS は 0 または 3 である必要があります（現在: ${MAJORITY_TRIALS}）" >&2
+    exit 1
+fi
+
 # `bench-accept.sh` の `write_report_conclusion` と同形式の「## 結論」セクションを
-# REPORT_MD に追記する（総合判定行を含まない BLOCKED 用。stale PASS 防止）。
+# REPORT_MD に追記する（stale PASS/FAIL 防止。既定ラベルは BLOCKED、
+# イシュー #614 で INCONCLUSIVE にも流用できるよう第 2 引数を追加）。
 write_blocked_conclusion() {
-    local reason="$1"
+    local reason="$1" label="${2:-BLOCKED}"
     if [ -n "${REPORT_MD}" ]; then
         {
             echo
             echo "## 結論（自動記録: bench-accept-exclusive.sh 再計測、$(date -u '+%Y-%m-%dT%H:%M:%SZ')）"
             echo
-            echo "**総合判定: BLOCKED（${reason}。既存の古い判定は無効）**"
+            echo "**総合判定: ${label}（${reason}。既存の古い判定は無効）**"
         } >>"${REPORT_MD}"
     fi
 }
@@ -159,9 +181,14 @@ echo "静穏確認 OK" >&2
 snapshot_environment before >&2
 
 echo "" >&2
-echo "### bench-accept.sh 実行開始（SKIP_BUILD=1、事前ビルド済みのため。FAIL_RETRIES=${FAIL_RETRIES}） ###" >&2
 set +e
-nfr6_run_with_fail_retry "${FAIL_RETRIES}" env SKIP_BUILD=1 REPORT_MD="${REPORT_MD}" bash "${SCRIPT_DIR}/bench-accept.sh"
+if [ "${MAJORITY_TRIALS}" = "3" ]; then
+    echo "### bench-accept.sh 実行開始（SKIP_BUILD=1、事前ビルド済みのため。MAJORITY_TRIALS=3、P95_BAND=1） ###" >&2
+    nfr6_run_with_majority env SKIP_BUILD=1 P95_BAND=1 REPORT_MD="${REPORT_MD}" bash "${SCRIPT_DIR}/bench-accept.sh"
+else
+    echo "### bench-accept.sh 実行開始（SKIP_BUILD=1、事前ビルド済みのため。FAIL_RETRIES=${FAIL_RETRIES}） ###" >&2
+    nfr6_run_with_fail_retry "${FAIL_RETRIES}" env SKIP_BUILD=1 REPORT_MD="${REPORT_MD}" bash "${SCRIPT_DIR}/bench-accept.sh"
+fi
 accept_status=$?
 set -e
 
@@ -188,10 +215,19 @@ elif [ "${accept_status}" -eq 2 ]; then
     # が書いた正しい理由を誤った理由で上書きしてしまうため、両方の可能性を含む
     # 文言にする（イシュー #478）。
     write_blocked_conclusion "再計測不能（bench-accept.sh 側の BLOCKED、または再試行前の静穏未達のいずれか）のため判定不能"
+elif [ "${accept_status}" -eq 3 ]; then
+    # INCONCLUSIVE（イシュー #614、MAJORITY_TRIALS=3 経路専用。`nfr6_run_with_majority`
+    # の多数決不成立、または `bench-accept.sh` の p95 帯域判定がそのまま INCONCLUSIVE
+    # で確定した場合に到達する）。PASS/FAIL いずれへも丸めず、そのまま透過する
+    # （fail-closed。`.github/workflows/bench-schedule.yml` 側で確定手段
+    # （bench-pair.sh 二次判定）へ接続する）。
+    echo "=== 総合: INCONCLUSIVE（終了コード 3。MAJORITY_TRIALS=${MAJORITY_TRIALS} の多数決不成立、または p95 判定不能帯で確定できず。二次判定（bench-pair.sh）で確定させること） ===" >&2
+    write_blocked_conclusion "判定不能帯・多数決不成立のため確定できず。二次判定（bench-pair.sh）が必要" "INCONCLUSIVE"
 else
-    echo "=== 総合: FAIL（bench-accept.sh 終了コード ${accept_status}。FAIL_RETRIES=${FAIL_RETRIES} を使い切っても FAIL。判定は丸めない） ===" >&2
+    echo "=== 総合: FAIL（bench-accept.sh 終了コード ${accept_status}。判定は丸めない） ===" >&2
 fi
 
-# bench-accept.sh の終了コードをそのまま透過する（0/1/2 の意味は同スクリプトの
-# doc comment を参照。本 wrapper 独自の丸め込みは行わない）。
+# bench-accept.sh（または多数決経由）の終了コードをそのまま透過する
+# （0=PASS/1=FAIL/2=BLOCKED/3=INCONCLUSIVE。イシュー #614 で 3 を追加、
+# 意味は各スクリプトの doc comment を参照。本 wrapper 独自の丸め込みは行わない）。
 exit "${accept_status}"

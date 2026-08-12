@@ -310,8 +310,10 @@ snapshot_environment() {
 # 「ホストが混雑しているだけ」のケースを性能退行として誤検知しうる非対称があった）。
 #
 # 呼び出し元: `benches/bench-accept-exclusive.sh`（`FAIL_RETRIES` 既定 0 で導入前と
-# 同一挙動を維持し、週次 schedule ワークフロー（`.github/workflows/bench-schedule.yml`）
-# からは `FAIL_RETRIES=1` を指定する）。
+# 同一挙動を維持する手動実行経路として引き続き利用可能。**イシュー #614 で
+# 週次 schedule ワークフロー（`.github/workflows/bench-schedule.yml`）は
+# `MAJORITY_TRIALS=3` 経由の `nfr6_run_with_majority`（下記）へ切り替わった**。
+# 本関数自体の契約・挙動は変更していない）。
 # セルフテスト: `scripts/tests/run-nfr6-exclusive-tests.sh` が `wait_for_quiescence` /
 # `snapshot_environment` をモック化した上で本関数のみを検証する
 # （既存の「副作用のある呼び出し元本体は対象にしない」方針を踏襲）。
@@ -363,6 +365,132 @@ nfr6_run_with_fail_retry() {
     fi
 
     return "${status}"
+}
+
+# 一次判定（axum 比）の最大 3 試行・多数決ラッパー（イシュー #614、
+# `docs/design/bench-p95-criteria.md` 5.1 節）。
+#
+# `nfr6_run_with_fail_retry`（上記）は PASS/FAIL/BLOCKED の 3 値・「FAIL のみ
+# 単純再試行」契約のみを扱う。呼び出し対象コマンドが `P95_BAND=1` の
+# `bench-accept.sh`（exit 0/1/2/3、3 の INCONCLUSIVE を含む）を返しうる場合、
+# 本関数に置き換えて使う（`nfr6_run_with_fail_retry` 自体は本イシューで契約変更
+# しない。exit 3 は「FAIL でも PASS でもない」ため同関数の再試行対象外分岐を
+# 素通りし、そのまま呼び出し元へ返る後方互換な既定挙動を維持する。doc comment
+# のみ本節を追記）。
+#
+# 契約:
+#   - 初回 PASS（0）は即確定（再試行しない）
+#   - 初回 BLOCKED（2）は即座に返す（決定論的な環境失敗のため再試行は無意味、
+#     `nfr6_run_with_fail_retry` と同じフェイルクローズ）
+#   - 初回が FAIL 候補（1）または INCONCLUSIVE（3）なら、静穏確認をやり直して
+#     最大 3 試行まで多数決する
+#   - 3 試行中 2 試行以上が同一判定（0/1/3 のいずれか）に達したらその判定で確定する。
+#     **ただし FAIL（1）が 3 試行中ちょうど 1 回だけ現れた場合（例: 1/0/0）は
+#     この多数決で確定しない**（下記「FAIL 単発票の非上書き」参照）
+#   - 判定が割れる（0/1/3 が 1 票ずつ等）、または 2 が試行途中で出現した場合は
+#     INCONCLUSIVE（exit 3）を返す（多数決不成立を PASS/FAIL へ丸めない、
+#     fail-closed）
+#
+# FAIL 単発票の非上書き（PR #621 codex-review P0 対応、
+# `docs/design/bench-p95-criteria.md` 5.1 節「6.1 節の (a) のみ該当試行との関係」）:
+#   本関数は各試行の終了コードのみを見て多数決するため、5.1/6.1 節が要求する
+#   「分布逸脱条件 (a) のみ該当・外因の証拠 (b) を欠く試行を多数決対象から除外する」
+#   判定（試行間の指標比比較・CPU 占有率プローブ照合が必要）を厳密には行えない
+#   （指標比・CPU_PROBE 結果は `bench-accept.sh` の REPORT_MD 側にのみ残り、本関数へは
+#   終了コードとしてしか伝播しない）。そのため保守的な近似として、3 試行中ちょうど
+#   1 回だけ FAIL（1）が現れ、残り 2 試行が同一の非 FAIL 判定（PASS または
+#   INCONCLUSIVE）で一致した場合（例: 1/0/0・1/3/3）でも、その非 FAIL 判定で
+#   多数決確定せず INCONCLUSIVE（3）を返す。「最初の試行が大幅な性能低下で FAIL、
+#   後続 2 試行が PASS」という断続的な真の退行が、単純な 2 対 1 多数決で PASS へ
+#   救済されてしまう fail-open を防ぐ（5.1 節の文言どおりの厳密な (a)/(b) 判定
+#   ではなく、より広く「FAIL 単発票は常に非上書き」とする安全側の近似である点に
+#   注意。指標比を本関数へ伝播する機構が整備され次第、厳密な (a)/(b) 判定へ
+#   置き換えることを検討する）。FAIL が 0 回・2 回以上（多数）・3 回（全会一致）の
+#   場合は本節の影響を受けず、通常の 2/3 多数決がそのまま適用される。
+#
+# 引数: $1 以降 実行するコマンドとその引数（例: env P95_BAND=1 bash bench-accept.sh ...）
+# 標準エラー出力: 各試行の判定・多数決結果を人間可読ログとして出す。
+# 戻り値: 0（PASS 確定）/ 1（FAIL 確定）/ 2（BLOCKED）/ 3（INCONCLUSIVE、多数決
+# 不成立を含む）のいずれか。
+#
+# 呼び出し元: `benches/bench-accept-exclusive.sh`（`MAJORITY_TRIALS` 既定 0 では
+# 使用せず、既存の `nfr6_run_with_fail_retry` 経路を維持。`MAJORITY_TRIALS=3`
+# 指定時のみ本関数経由になる）。
+# セルフテスト: `scripts/tests/run-bench-band-majority-tests.sh` が本関数のみを
+# モックコマンドで検証する（既存の「副作用のある呼び出し元本体は対象にしない」
+# 方針を踏襲）。
+nfr6_run_with_majority() {
+    "$@"
+    local first_status=$?
+
+    if [ "${first_status}" -eq 0 ]; then
+        echo "初回試行が PASS（終了コード 0）。多数決なしで確定します" >&2
+        return 0
+    fi
+    if [ "${first_status}" -eq "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}" ]; then
+        echo "初回試行が BLOCKED（終了コード ${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}）。決定論的失敗のため再試行しません" >&2
+        return "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}"
+    fi
+
+    local -a votes=("${first_status}")
+    echo "初回試行が判定不能帯/FAIL 候補（終了コード ${first_status}）。多数決のため最大 2 回追加試行します" >&2
+
+    local trial
+    for trial in 2 3; do
+        if ! wait_for_quiescence; then
+            echo "エラー: 試行 ${trial} 回目前の静穏確認が ${QUIESCE_WAIT_SECS}s 待っても得られませんでした。BLOCKED として扱います" >&2
+            return "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}"
+        fi
+        snapshot_environment "majority-trial-${trial}" >&2
+
+        "$@"
+        local status=$?
+        if [ "${status}" -eq "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}" ]; then
+            echo "試行 ${trial} 回目が BLOCKED（終了コード ${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}）。多数決を打ち切り BLOCKED を返します" >&2
+            return "${FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE}"
+        fi
+        votes+=("${status}")
+        echo "試行 ${trial} 回目: 終了コード ${status}" >&2
+
+        # 2 票そろった時点で同一判定なら早期確定する（3 回目を待たない）。
+        if [ "${#votes[@]}" -ge 2 ] && [ "${votes[0]}" -eq "${votes[1]}" ] && [ "${#votes[@]}" -eq 2 ]; then
+            echo "2 試行連続で同一判定（終了コード ${votes[0]}）。多数決で確定します" >&2
+            return "${votes[0]}"
+        fi
+    done
+
+    # 3 票そろった。多数決（2/3 以上の一致）で確定する。割れた場合は
+    # INCONCLUSIVE（3）を返す（fail-closed。多数決不成立を PASS/FAIL に丸めない）。
+    local v0="${votes[0]}" v1="${votes[1]}" v2="${votes[2]}"
+
+    if [ "${v0}" -eq "${v1}" ] && [ "${v1}" -eq "${v2}" ]; then
+        echo "3 試行すべて同一判定（終了コード ${v0}）。確定します" >&2
+        return "${v0}"
+    fi
+
+    # FAIL（1）の出現回数を数える（上記 doc comment「FAIL 単発票の非上書き」参照）。
+    local fail_count=0 v
+    for v in "${v0}" "${v1}" "${v2}"; do
+        [ "${v}" -eq 1 ] && fail_count=$((fail_count + 1))
+    done
+    if [ "${fail_count}" -eq 1 ]; then
+        echo "3 試行（${v0}/${v1}/${v2}）中 FAIL（終了コード 1）がちょうど 1 回のみ出現しました。" \
+            "他 2 試行が一致していても多数決で上書き確定せず INCONCLUSIVE（終了コード 3）とします" \
+            "（分布逸脱の可能性がある FAIL 単発票を非上書きとする fail-closed 近似、" \
+            "docs/design/bench-p95-criteria.md 5.1 節・6.1 節）" >&2
+        return 3
+    fi
+
+    if [ "${v0}" -eq "${v1}" ] || [ "${v0}" -eq "${v2}" ]; then
+        echo "3 試行中 2 試行が同一判定（終了コード ${v0}）。多数決で確定します" >&2
+        return "${v0}"
+    fi
+    if [ "${v1}" -eq "${v2}" ]; then
+        echo "3 試行中 2 試行が同一判定（終了コード ${v1}）。多数決で確定します" >&2
+        return "${v1}"
+    fi
+    echo "3 試行（${v0}/${v1}/${v2}）がすべて異なる判定に割れました。INCONCLUSIVE（終了コード 3）として扱います" >&2
+    return 3
 }
 
 export FANDHE_BACKEND_NFR6_LOCK LOAD1_MAX QUIESCE_WAIT_SECS QUIESCE_POLL_INTERVAL_SECS FANDHE_BACKEND_NFR6_BLOCKED_EXIT_CODE
