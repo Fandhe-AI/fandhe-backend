@@ -48,7 +48,9 @@ if ! [[ "${PAIRS}" =~ ^[0-9]+$ ]] || [ "${PAIRS}" -lt 1 ]; then
     exit 1
 fi
 
-# 二次判定（#612 5.2 節）のしきい値。しきい値は #616 で実測較正するまでの暫定値。
+# 二次判定（#612 5.2 節）のしきい値。#616 で fail-closed 方針により現状の
+# 暫定値のまま維持（新方式・同一コミット系列の実測較正は未収集・較正未完了。
+# 再較正条件は `benches/reports/issue616-hosted-runner-calibration.md` 参照）。
 PAIR_M2="${PAIR_M2:-0.05}"
 _cpu_probe_validate_numeric "${PAIR_M2}" "PAIR_M2"
 PAIR_MIN_PAIRS="${PAIR_MIN_PAIRS:-6}"

@@ -33,7 +33,10 @@ name: bench-schedule
 #   月次無条件二次判定（`bench-pair-monthly` ジョブ）は、#616（較正ラン）の
 #   run 系列蓄積が前提の「baseline・core が同方向に悪化する run を検知できない」
 #   弱点（`docs/design/bench-hosted-runner.md` 7 節 (iii)）への暫定対応として、
-#   標本が揃うまでの間、実時間退行クラスを定期的に守る役割を持つ。
+#   標本が揃うまでの間、実時間退行クラスを定期的に守る役割を持つ。#616 は
+#   push 不可の実装フェーズでは新規較正ラン投入ができず run 系列は未蓄積のまま
+#   （`benches/reports/issue616-hosted-runner-calibration.md` 参照。しきい値は
+#   fail-closed 方針で現状値を維持）のため、本月次実行は当面主手段のまま継続する。
 #
 # INCONCLUSIVE を PASS へ丸めない・二次判定の PASS が一次判定の FAIL を上書き
 # しない、という不変条件は `docs/design/bench-p95-criteria.md` 3.1 節を参照。
@@ -413,7 +416,9 @@ jobs:
     # core が同方向に悪化する run を一次判定〔axum 比〕だけでは検知できない構造的
     # 弱点）への暫定対応。恒久策（run 系列の統計的監視）は #616 の較正ラン標本蓄積が
     # 前提のため本イシューでは実装しない（設計文書が「#616 が標本を追加するまで
-    # 自動検知は機能せず、その間は暫定月次実行が主手段」と規定済み）。
+    # 自動検知は機能せず、その間は暫定月次実行が主手段」と規定済み）。#616 の
+    # 実装フェーズは push 不可の制約下で終了し、標本蓄積・恒久策実装は次フェーズへ
+    # 申し送り（`benches/reports/issue616-hosted-runner-calibration.md` 8 節）。
     #
     # 月次 cron（`0 4 1 * *`）または workflow_dispatch で mode=pair のときのみ
     # 実行する（`bench-accept` ジョブの `if:` と同じ「schedule 文字列は完全一致で
