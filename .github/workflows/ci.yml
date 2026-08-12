@@ -902,6 +902,104 @@ jobs:
         run: bash scripts/webrtc-e2e.sh
 
   # --------------------------------------------------
+  # 決定的マイクロベンチ（per-request alloc カウンタ、イシュー #615）。
+  # 実時間ベンチ（bench-accept-exclusive.sh 等）はホステッドランナー上でも VM 個体差・
+  # 共有テナンシーのノイズで微小な性能退行を検出できない場合がある
+  # （docs/design/bench-hosted-runner.md）。`benches/microbench`（standalone crate、
+  # `crates/http/fuzz` と同パターンで root workspace から exclude 済み）を対象に
+  # `parse_request_head` → `Router::dispatch` → `Response::serialize` の同期・決定的
+  # パスの alloc 回数・バイト数を計測し、コミット済みベースライン（baseline.json）との
+  # しきい値ゼロのラチェット比較で退行を検知する（`unsafe-triage` ジョブと同型の判定
+  # 方式）。秒オーダーの実行時間・軽量ビルドのため、方式 1（実時間ベンチ、週次）とは
+  # 独立に PR/push ごと毎回実行する（docs/design/bench-hosted-runner.md 5 節 2 項の
+  # 受容条件 (a) が要求するカデンツ、docs/design/deterministic-microbench.md 参照）。
+  # --------------------------------------------------
+  microbench:
+    name: 決定的マイクロベンチ（alloc カウンタ、#615）
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    # standalone crate 3 個（http/routes 依存の再ビルド + stats_alloc 系の新規依存）の
+    # cold build に加え、cargo-deny/cargo-audit のソースビルドインストール（dep-audit
+    # ジョブと同一ツール）が乗るため、同ジョブと同水準の 30 分を確保する（codex-review
+    # PR #619 Bugbot 指摘対応。旧 15 分はコールドビルドのみを見込んでおり、
+    # cargo-tool-install 2 件分の所要時間が未加算だった）。
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Setup Rust toolchain
+        id: toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      # ビルドキャッシュ（#551 と同一設計、job family prefix は microbench-）。
+      # standalone workspace のため成果物は benches/microbench/target に出る。
+      - name: Cache cargo registry and microbench target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            benches/microbench/target
+          key: microbench-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            microbench-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+
+      # standalone workspace のため root fmt/clippy ジョブの対象範囲に含まれない
+      # （両ジョブは root `cargo fmt --check` / `cargo clippy --workspace` を実行し、
+      # `[workspace] exclude` されたクレートを走査しない）。同一水準の lint を
+      # このジョブ内で個別に通す。
+      - name: cargo fmt --check（benches/microbench）
+        run: cargo fmt --manifest-path benches/microbench/Cargo.toml --check
+      # `--locked`: コミット済み benches/microbench/Cargo.lock からの依存解決を強制する
+      # （codex-review PR #619 P1 指摘対応。決定的計測の「同一コード・同一環境での
+      # 厳密比較」という運用契約を、依存の未固定な再解決から守る）。
+      - name: cargo clippy -D warnings（benches/microbench）
+        run: cargo clippy --release --locked --manifest-path benches/microbench/Cargo.toml -- -D warnings
+      - name: cargo test（benches/microbench）
+        run: cargo test --release --locked --manifest-path benches/microbench/Cargo.toml
+
+      # 新規依存（stats_alloc・serde_json、推移依存含む）のサプライチェーン監査
+      # （codex-review PR #619 P1 指摘対応）。standalone workspace のため
+      # scripts/dep-audit.sh（root workspace の cargo metadata --no-deps を起点に
+      # feature 構成を列挙）の走査対象に含まれない。本ジョブ内で個別に
+      # cargo audit / cargo deny check を通すことで dep-audit.sh と同水準の
+      # サプライチェーン監査を維持する（root の deny.toml をそのまま再利用、
+      # ライセンス許可リスト・出所制限は共通）。
+      - name: Ensure cargo-deny 0.19.8（benches/microbench）
+        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        with:
+          tool: cargo-deny
+          version: 0.19.8
+
+      - name: Ensure cargo-audit 0.22.2（benches/microbench）
+        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        with:
+          tool: cargo-audit
+          version: 0.22.2
+
+      # `cargo audit` は cargo のビルド系サブコマンドではなく `--locked` を持たない
+      # （`--file` でコミット済み Cargo.lock を直接指定する。scripts/audit-triage.sh
+      # と同じく既定は vulnerability 検知時のみ非 0 終了、warnings のみでは
+      # CI を失敗させない安全側の動作を踏襲）。
+      - name: cargo audit（benches/microbench、コミット済み Cargo.lock を使用）
+        run: cargo audit --file benches/microbench/Cargo.lock
+
+      - name: cargo deny check（benches/microbench）
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --manifest-path benches/microbench/Cargo.toml --format-version 1 \
+            > /tmp/microbench-metadata.json
+          cargo deny check -c deny.toml --metadata-path /tmp/microbench-metadata.json
+
+      - name: benches/microbench.sh --check
+        run: bash benches/microbench.sh --check
+
+  # --------------------------------------------------
   # コア全体の行カバレッジ計測（TASK-11.5-2、#78）。
   # 親タスク TASK-11.5（#37、docs/spec/05-tasks.md）が要求する「コア全体の自動テスト行
   # カバレッジ 80% 以上」の受け入れ確認を CI に組み込む退行ゲート。80% 未満でジョブが
@@ -998,13 +1096,13 @@ jobs:
     permissions: {}
     # 失敗・スキップ時にも必ず実行して fail-closed で判定する。
     # schedule（日次 dep-audit のみ）実行時は
-    # fmt/clippy/test/unsafe-triage/fuzz-smoke/webrtc-e2e/openapi-two-stage/openapi-ts が
+    # fmt/clippy/test/unsafe-triage/fuzz-smoke/webrtc-e2e/microbench/openapi-two-stage/openapi-ts が
     # 意図的に skipped になる（doc ジョブには schedule 除外の if がなく実行される既存
     # 挙動だが、ci-complete 自体が schedule 時は丸ごとスキップされるため判定ロジックには
     # 影響しない）。
     # 完遂判定の対象外（required check としては pull_request/push イベントのみを想定する）。
     if: ${{ always() && github.event_name != 'schedule' }}
-    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, pay-for-what-you-use, fuzz-smoke, webrtc-e2e, openapi-two-stage, openapi-ts, actionlint]
+    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, pay-for-what-you-use, fuzz-smoke, webrtc-e2e, microbench, openapi-two-stage, openapi-ts, actionlint]
     timeout-minutes: 5
     steps:
       - name: 完遂判定（全 needs ジョブが success であること）
@@ -1022,6 +1120,7 @@ jobs:
           RESULT_PAY_FOR_WHAT_YOU_USE: ${{ needs.pay-for-what-you-use.result }}
           RESULT_FUZZ_SMOKE: ${{ needs.fuzz-smoke.result }}
           RESULT_WEBRTC_E2E: ${{ needs.webrtc-e2e.result }}
+          RESULT_MICROBENCH: ${{ needs.microbench.result }}
           RESULT_OPENAPI_TWO_STAGE: ${{ needs.openapi-two-stage.result }}
           RESULT_OPENAPI_TS: ${{ needs.openapi-ts.result }}
           RESULT_ACTIONLINT: ${{ needs.actionlint.result }}
@@ -1035,6 +1134,7 @@ jobs:
                       "pay-for-what-you-use:${RESULT_PAY_FOR_WHAT_YOU_USE}" \
                       "fuzz-smoke:${RESULT_FUZZ_SMOKE}" \
                       "webrtc-e2e:${RESULT_WEBRTC_E2E}" \
+                      "microbench:${RESULT_MICROBENCH}" \
                       "openapi-two-stage:${RESULT_OPENAPI_TWO_STAGE}" \
                       "openapi-ts:${RESULT_OPENAPI_TS}" \
                       "actionlint:${RESULT_ACTIONLINT}"; do

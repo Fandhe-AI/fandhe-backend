@@ -107,19 +107,30 @@ fandhe-backend/
 │   │   │                        # 結論（軸 A 単独案は否定せず、opt-in feature 化案の
 │   │   │                        # 第一候補として再検討条件に明記）。fail-closed 原則を
 │   │   │                        # 根拠に記録
-│   │   └── zero-copy-request-head.md  # P1 ヘッダゼロコピー化（`RequestHead` の Range
-│   │                            # 保持）の設計検討（イシュー #588、性能改善ツリー #579
-│   │                            # Phase 2。公開 API 影響の全量調査（72 参照ファイル）・
-│   │                            # ライフタイム設計 3 案比較（借用+Range／所有バッファ
-│   │                            # +Range／Cow）・段階移行 3 案比較・alloc プロファイル
-│   │                            # 実測（現状 N=10 ヘッダで 27 alloc/req → 採用案で
-│   │                            # 定数 2 alloc/req 見込み）・fuzz/DoS 上限/UTF-8 検証の
-│   │                            # 不変条件・`unsafe` 不使用方針を記録。採用案は所有
-│   │                            # ヘッドバッファ + `Range<usize>` 保持（ライフタイム
-│   │                            # パラメータ非導入、4 拡張点 trait シグネチャ無変更）。
-│   │                            # Phase 3 実装 issue（#590〜#593）の受け入れ基準確定
-│   │                            # まで含む、ドラフト・PR レビューで最終承認、コード
-│   │                            # 変更は Phase 3（ユーザー承認後）が担う）
+│   │   ├── zero-copy-request-head.md  # P1 ヘッダゼロコピー化（`RequestHead` の Range
+│   │   │                        # 保持）の設計検討（イシュー #588、性能改善ツリー #579
+│   │   │                        # Phase 2。公開 API 影響の全量調査（72 参照ファイル）・
+│   │   │                        # ライフタイム設計 3 案比較（借用+Range／所有バッファ
+│   │   │                        # +Range／Cow）・段階移行 3 案比較・alloc プロファイル
+│   │   │                        # 実測（現状 N=10 ヘッダで 27 alloc/req → 採用案で
+│   │   │                        # 定数 2 alloc/req 見込み）・fuzz/DoS 上限/UTF-8 検証の
+│   │   │                        # 不変条件・`unsafe` 不使用方針を記録。採用案は所有
+│   │   │                        # ヘッドバッファ + `Range<usize>` 保持（ライフタイム
+│   │   │                        # パラメータ非導入、4 拡張点 trait シグネチャ無変更）。
+│   │   │                        # Phase 3 実装 issue（#590〜#593）の受け入れ基準確定
+│   │   │                        # まで含む、ドラフト・PR レビューで最終承認、コード
+│   │   │                        # 変更は Phase 3（ユーザー承認後）が担う）
+│   │   └── deterministic-microbench.md  # 決定的マイクロベンチ（per-request alloc カウンタ）
+│   │                            # の方式選定・カデンツ確定（イシュー #615、
+│   │                            # `docs/design/bench-hosted-runner.md` Phase 1 が
+│   │                            # 「方式 3」として導入を指定した引き渡し事項への対応）。
+│   │                            # `stats_alloc`（`crates/http/tests/alloc_count.rs` の
+│   │                            # 先例、PR #602 レビュー指摘 P0 対応）を採用し
+│   │                            # `benches/microbench/` を `#![forbid(unsafe_code)]` に
+│   │                            # できた経緯・iai-callgrind 見送り根拠・`crates/core`
+│   │                            # 非同期経路を対象外とする既知の限界・toolchain 差異時の
+│   │                            # ベースライン更新運用・カデンツ「ci.yml で PR/push
+│   │                            # 毎回実行」の確定を記録
 │   ├── guide/              # 利用者向けガイド（Getting Started・feature 構成別サンプル・
 │   │                        # チュートリアル、TASK-11.5 / #95）。「どう作るか」の docs/design/ とは
 │   │                        # 責務分離、「どう使うか」を扱う
@@ -674,7 +685,7 @@ fandhe-backend/
 │   │                                    # 確定時の追撃・月次 `bench-pair-monthly` ジョブの
 │   │                                    # 無条件二次判定の 2 経路。二次判定の結果は
 │   │                                    # 一次判定・ジョブの成否を変更しない証跡専用）
-│   └── bench-http.sh / bench-rss.sh / bench-footprint.sh  # RPS・負荷時 RSS・起動時間/バイナリサイズ計測。
+│   ├── bench-http.sh / bench-rss.sh / bench-footprint.sh  # RPS・負荷時 RSS・起動時間/バイナリサイズ計測。
 │                                        # `bench-http.sh` は `CPU_PROBE=1`（イシュー #613、
 │                                        # opt-in・既定 OFF）で `lib/cpu-probe.sh` 経由の
 │                                        # 窓単位プローブ・有界再計測を行い、RESULT_JSON へ
@@ -699,6 +710,32 @@ fandhe-backend/
 │                                        # セッションの失敗をループ最終コマンドの終了コードに
 │                                        # 引きずられて握りつぶさないよう、各セッション個別に
 │                                        # 終了コードを検査する、PR #620 レビュー指摘対応）
+│   ├── microbench.sh                   # 決定的マイクロベンチ（`microbench/`、per-request
+│   │                                    # alloc カウンタ）のビルド・実行・ベースライン比較
+│   │                                    # ラッパー（イシュー #615）。実時間ベンチ（VM ノイズ
+│   │                                    # 依存）とは異なり 1 回実行・しきい値ゼロのラチェット
+│   │                                    # 比較で退行を検知する。`--check`（ベースライン比較、
+│   │                                    # ci.yml `microbench` ジョブが使用）・
+│   │                                    # `--update-baseline`（レビュー承認前提）に対応
+│   └── microbench/                     # 決定的マイクロベンチ本体（standalone crate、
+│                                        # `crates/http/fuzz` と同パターンで root workspace
+│                                        # から exclude 済み、イシュー #615）。
+│                                        # `parse_request_head` → `Router::dispatch` →
+│                                        # `Response::serialize` の同期・決定的パス限定で
+│                                        # per-request の alloc 回数・バイト数を計測する
+│                                        # （`crates/core` の非同期経路は対象外、
+│                                        # `docs/design/deterministic-microbench.md` 参照）。
+│                                        # カウンティング `#[global_allocator]` は
+│                                        # `crates/http/tests/alloc_count.rs`（PR #602
+│                                        # レビュー指摘 P0 対応）と同一の計測専用 dev 相当
+│                                        # 依存 `stats_alloc` に委ね、本クレート自体は
+│                                        # `#![forbid(unsafe_code)]`。`baseline.json`
+│                                        # （コミット対象、rustc バージョン付き）としきい値
+│                                        # ゼロで比較するラチェット方式
+│                                        # （`scripts/unsafe-triage.sh` と同型）。カデンツは
+│                                        # ci.yml の `microbench` ジョブとして PR/push ごと
+│                                        # 毎回実行で確定（`docs/design/bench-hosted-runner.md`
+│                                        # 5 節 2 項の受容条件 (a) を充足）
 ├── scripts/               # CI・運用スクリプト（TASK-15.2 で追加）
 │   ├── README.md                      # 使い方・前提ツール・CI との対応
 │   ├── dep-audit.sh                   # 全 feature 構成の cargo audit / cargo deny check（ci.yml dep-audit ジョブ）

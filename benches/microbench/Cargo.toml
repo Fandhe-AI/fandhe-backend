@@ -1,0 +1,66 @@
+[package]
+# 決定的マイクロベンチ（per-request alloc カウンタ、イシュー #615）。
+#
+# 実時間ベンチ（`benches/bench-accept.sh` 系）はホステッドランナー上の VM 個体差・
+# 共有テナンシーのノイズで微小な性能退行を検出できない場合がある
+# （`docs/design/bench-hosted-runner.md` Phase 1 が「方式 3（決定的計測）を補助指標
+# として #615 で導入する」と確定済み）。本クレートは `parse_request_head` →
+# `Router::dispatch` → `Response::serialize` の同期・決定的パス限定で
+# per-request のヒープアロケーション回数・バイト数を計測し、ベースライン
+# （`baseline.json`）とのしきい値ゼロの比較で退行を fail-closed に検知する。
+#
+# `crates/http/fuzz`・`crates/plugin-webrtc/tests-e2e` と同じ standalone crate
+# パターン（空 `[workspace]` テーブルで独立 workspace 化、`publish = false`）を
+# 踏襲する。root `Cargo.toml` の `[workspace] exclude` に本パスを追加しており、
+# root workspace の `cargo metadata` / `cargo tree` / `cargo geiger` に一切現れない
+# （公開 13 クレートの依存グラフ・pay-for-what-you-use 検証に影響しない、
+# `.claude/rules/pay-for-what-you-use.md`）。
+name = "fandhe-backend-microbench"
+version = "0.0.0"
+edition = "2024"
+publish = false
+# root workspace（Cargo.toml [workspace.package]）と同一のデュアルライセンス。
+# `cargo deny check`（codex-review PR #619 P1 指摘対応で本クレートも監査対象に
+# 追加、.github/workflows/ci.yml microbench ジョブ）の
+# `[licenses.private] ignore = false`（deny.toml）が本フィールド欠落を
+# unlicensed エラーとして検知するため明記する。
+license = "MIT OR Apache-2.0"
+
+# 本クレート自身を独立 workspace のルートとして明示する（空 [workspace] テーブル）。
+# 未指定だと cargo はディレクトリツリーを上方に辿って最初に見つかる [workspace] を
+# 持つ Cargo.toml（root）を「所属先」とみなそうとし、`members`/`exclude` のどちらにも
+# 明示されていないネスト package として扱われて `cargo metadata`/build 系コマンドが
+# エラーになる（`crates/http/fuzz/Cargo.toml` の同名コメント参照）。
+[workspace]
+
+# workspace 継承（`[workspace.lints]`）は独立 workspace のため届かない
+# （root の `unsafe_code = "warn"` 等はここには効かない）。本クレートは
+# `#![forbid(unsafe_code)]`（src/main.rs 冒頭）で unsafe を構造上排除するため
+# 自前の lint テーブルは持たず、既存の `crates/http/fuzz`・`tests-e2e` と同様に
+# 追加の lint 定義を持たない（両クレートとも独自 `[lints]` テーブルを持たない
+# 既存慣習に合わせる）。
+
+# 計測用リリースプロファイル。独立 workspace のため root `Cargo.toml` の
+# `[profile.release] lto = true` は継承されない。alloc カウンタの計測値は
+# 最適化設定（インライン化・定数畳み込み）に依存しうるため、ここで明示的に
+# 固定し「どの最適化設定で計測したか」を本ファイル自体に記録する
+# （`docs/design/zero-copy-request-head.md` 5.2 節の実測が opt-level 依存を
+# 明記しているのと同じ理由）。
+[profile.release]
+opt-level = 3
+lto = true
+
+[dependencies]
+fandhe-backend-http = { path = "../../crates/http" }
+fandhe-backend-routes = { path = "../../crates/routes" }
+# ベースライン（baseline.json）の読み書き用。フォーマットは決定的（キー順を
+# 固定した手動シリアライズ）にし、`serde_json::Value` の走査のみに用途を限定する
+# （比較・判定ロジックは本クレート内の 1 箇所に集約、`benches/microbench.sh` は
+# ビルド・実行の薄いラッパーに留める）。
+serde_json = "1"
+
+# カウンティング `#[global_allocator]`。`GlobalAlloc` トレイト実装は本クレート外の
+# 依存内に閉じるため、`#![forbid(unsafe_code)]`（src/main.rs）を緩める必要がない
+# （`crates/http/tests/alloc_count.rs` と同一パターン、PR #602 レビュー指摘 P0 対応
+# を踏襲。自前の `unsafe impl GlobalAlloc` は書かない）。
+stats_alloc = "0.1.10"

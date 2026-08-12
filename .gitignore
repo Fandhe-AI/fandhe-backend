@@ -15,6 +15,19 @@ crates/http/fuzz/target/
 # workspace から exclude 済み、crates/http/fuzz と同パターン）のビルド成果物。
 crates/plugin-webrtc/tests-e2e/target/
 
+# イシュー #615: 決定的マイクロベンチ（per-request alloc カウンタ）専用
+# standalone crate（root workspace から exclude 済み、crates/http/fuzz と
+# 同パターン）のビルド成果物。baseline.json はコミット対象（ラチェット比較の
+# 基準値、docs/design/deterministic-microbench.md 参照）。
+benches/microbench/target/
+
+# イシュー #619（PR #619 codex-review P1 対応）: benches/microbench/Cargo.lock は
+# 例外的にコミット対象とする。決定的マイクロベンチは「同一コード・同一環境での
+# 厳密比較」が運用契約（4 行目の全体除外ルール `Cargo.lock` の対象からこの 1 個の
+# パスのみを除外し、`cargo ... --locked` で依存解決を固定する）。root workspace は
+# Cargo.lock 非コミット運用（4 行目）を維持し、変更しない。
+!benches/microbench/Cargo.lock
+
 # TASK-6.1（#54）: ts/ の openapi-typescript 連携パイプライン。node_modules は
 # package-lock.json から npm ci で再現可能なため対象外（生成物の schema.d.ts は
 # コミット対象、docs/design/openapi-typescript-pipeline.md 参照）。
