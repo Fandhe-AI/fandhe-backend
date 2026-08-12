@@ -624,6 +624,15 @@ REQ-1/NFR-1（`docs/spec/04-requirements.md`）の判定は `bench-accept.sh` /
 - `FAIL_RETRIES` 既定値は `0`（再試行なし、導入前と同一挙動）。手動実行
   （`bash benches/bench-accept-exclusive.sh`）では既定のまま使ってよい。
 
+**p95 基準運用の見直し設計**（イシュー #612、
+[`docs/design/bench-p95-criteria.md`](../docs/design/bench-p95-criteria.md)）:
+共有ホストでは p95 の axum 比 1.10 基準が退行と無関係な PASS/FAIL 境界不安定性を
+示すことが実測で確認されている
+（[`benches/reports/issue593-p1-zero-copy-bench.md`](reports/issue593-p1-zero-copy-bench.md)
+9 節）。判定 4 値化（INCONCLUSIVE 新設）・しきい値マージンによる判定不能帯・多数決 +
+交互測定二次判定・外れ値の客観的除外条件を設計済みだが、**本節の現行契約（FAIL のみ
+再試行・PASS/BLOCKED 非再試行）は Phase 2（#613・#614）で実装されるまで有効**である。
+
 ### 退行検知時の扱い（フェイルクローズ・Issue 自動起票）
 
 `bench-accept-exclusive.sh` が非 0（FAIL または BLOCKED）で終了した場合、
