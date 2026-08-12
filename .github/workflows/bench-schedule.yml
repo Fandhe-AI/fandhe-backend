@@ -319,8 +319,10 @@ jobs:
               else
                 echo "- 二次判定: 実行されませんでした（bench-pair.sh 自体が起動しなかった可能性）"
               fi
-            else
+            elif [ "${BENCH_STATUS}" = "1" ] || [ "${BENCH_STATUS}" = "3" ]; then
               echo "- 追撃不能: 直近の成功 run が見つからない、または現 SHA と同一のため参照コミットを解決できませんでした"
+            else
+              echo "- 追撃未実施: 一次判定が BLOCKED（計測不能）のため対象外です（追撃は一次判定 FAIL/INCONCLUSIVE 確定時のみ実行、\`chase_ref\` ステップ自体が skip されました）"
             fi
             echo
             echo "## 一次対応"
