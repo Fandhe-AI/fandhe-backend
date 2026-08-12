@@ -47,6 +47,7 @@ cargo build --release --bin axum-ref
 | `compression-blocking-bench.sh` | `plugin-compression` の gzip 圧縮本体（`compress_body`）所要時間（body サイズ別）と `spawn_blocking` ディスパッチ往復コストを比較するマイクロベンチ。`blocking_threshold` しきい値決定・ストリーミング圧縮への適用要否判定の根拠（イシュー #468、`benches/reports/issue468-compression-blocking.md`） |
 | `compression-e2e-bench.sh` | compression 有効構成の並行負荷下 E2E 比較（`crates/core/examples/compression_e2e_bench.rs` を使用）。`GET /large`（既定しきい値 64 KiB 以上）への背景負荷と同時に `GET /small`（常にインライン圧縮）を計測し、`spawn_blocking` オフロード（既定）と常時インライン（`BLOCKING_THRESHOLD=max`）の 2 構成で p99 テールレイテンシを比較する（イシュー #473、`benches/reports/issue473-compression-e2e.md`） |
 | `compression-e2e-exclusive.sh` | `compression-e2e-bench.sh` の専有計測 wrapper（flock 相互排他・静穏確認・環境スナップショット。`bench-accept-exclusive.sh` と同型。PASS/FAIL 判定は持たない） |
+| `microbench.sh` | 決定的マイクロベンチ（`benches/microbench/`、per-request alloc カウンタ）のビルド・実行・ベースライン比較（イシュー #615）。実時間計測（本 README の他スクリプト）とは異なり VM ノイズに依存しない 1 回実行の退行検知。詳細は「microbench.sh — 決定的マイクロベンチ」節参照 |
 
 共通関数は `lib/common.sh` に集約している（サーバ起動/停止・前提ツール検査・中央値算出・
 `RESULT_JSON` 機械可読出力ヘルパー・数値バリデーション）。
@@ -733,3 +734,48 @@ Bugbot 指摘 "Pre-lock build breaks exclusivity" の再発防止、`bench-accep
 
 詳細な実測結果・しきい値判定は `benches/reports/issue473-compression-e2e.md`・
 `docs/design/plugin-boundary.md` 5.10.7 節「E2E 検証（イシュー #473）」小節を参照。
+
+## microbench.sh — 決定的マイクロベンチ（イシュー #615）
+
+実時間ベンチ（本 README の他スクリプト）はホステッドランナー上でも VM 個体差・
+共有テナンシーのノイズを受け、微小な性能退行（per-request alloc 削減級）は測定
+分解能未満になりうる（`docs/design/bench-hosted-runner.md` 参照）。本スクリプトは
+`benches/microbench/`（standalone crate、`crates/http/fuzz` と同パターンで root
+workspace から exclude 済み）をビルド・実行し、`parse_request_head` →
+`Router::dispatch` → `Response::serialize` の同期・決定的パスに対する
+per-request のヒープアロケーション回数・バイト数を計測する。ノイズに依存しない
+1 回実行・しきい値ゼロのラチェット比較（`scripts/unsafe-triage.sh` と同型）で
+退行を fail-closed に検知する。
+
+対象は実時間ベンチと同一の 4 シナリオ（`GET /health`・`GET /hello/{name}`・
+`GET /users/{id}`・`POST /echo`）。`crates/core` の接続受理・tokio ランタイム
+経由の非同期処理はスケジューリング起因で alloc 数が非決定になりうるため対象外
+（既知の限界、`docs/design/deterministic-microbench.md` 参照）。
+
+### 実行方法
+
+```bash
+# 計測結果をベースライン（benches/microbench/baseline.json）と比較する（CI と同一挙動）
+bash benches/microbench.sh --check
+
+# 計測結果のみを JSON で確認する（比較なし）
+bash benches/microbench.sh
+
+# ベースラインを現在の計測値で更新する（レビュー承認前提。増加を許容する場合のみ使う）
+bash benches/microbench.sh --update-baseline
+```
+
+### ベースライン更新が必要になるケース
+
+- 意図した性能改善で alloc 回数・バイト数が**減少**した場合（ラチェットの
+  縮小、`--update-baseline` で明示更新を推奨）
+- rustc の stable 更新で std 内部の alloc 特性が変わり、コード変更なしに
+  計測値がずれた場合（`baseline.json` の `rustc_version` で toolchain 起因か
+  判別する。退行ではなく toolchain 起因と確認できた場合のみ理由を明記して更新する）
+- 意図せず alloc 回数・バイト数が**増加**した場合は退行であり、ベースライン
+  更新ではなく実装側の原因調査・修正で対処する（fail-closed、ラチェットの
+  趣旨に反するため安易な更新は避ける）
+
+CI（`.github/workflows/ci.yml` の `microbench` ジョブ）は PR/push ごとに
+`bash benches/microbench.sh --check` を実行し、`ci-complete` の判定対象に
+含まれる。

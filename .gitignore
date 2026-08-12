@@ -15,6 +15,12 @@ crates/http/fuzz/target/
 # workspace から exclude 済み、crates/http/fuzz と同パターン）のビルド成果物。
 crates/plugin-webrtc/tests-e2e/target/
 
+# イシュー #615: 決定的マイクロベンチ（per-request alloc カウンタ）専用
+# standalone crate（root workspace から exclude 済み、crates/http/fuzz と
+# 同パターン）のビルド成果物。baseline.json はコミット対象（ラチェット比較の
+# 基準値、docs/design/deterministic-microbench.md 参照）。
+benches/microbench/target/
+
 # TASK-6.1（#54）: ts/ の openapi-typescript 連携パイプライン。node_modules は
 # package-lock.json から npm ci で再現可能なため対象外（生成物の schema.d.ts は
 # コミット対象、docs/design/openapi-typescript-pipeline.md 参照）。

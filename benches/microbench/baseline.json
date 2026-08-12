@@ -1,0 +1,21 @@
+{
+  "rustc_version": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "scenarios": {
+    "get_health": {
+      "allocations": 5,
+      "bytes": 229
+    },
+    "get_hello_name": {
+      "allocations": 8,
+      "bytes": 484
+    },
+    "get_users_id": {
+      "allocations": 8,
+      "bytes": 476
+    },
+    "post_echo": {
+      "allocations": 5,
+      "bytes": 378
+    }
+  }
+}
