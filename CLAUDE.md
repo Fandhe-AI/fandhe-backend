@@ -639,7 +639,44 @@ fandhe-backend/
 │   │                                    # runner のホスト共有 `CARGO_TARGET_DIR` 注入により決め打ち
 │   │                                    # パスに成果物が見つからない事象への対処、
 │   │                                    # `benches/lib/common.sh` の `BENCH_TARGET_DIR` 導出と対）
-│   └── bench-http.sh / bench-rss.sh / bench-footprint.sh  # RPS・負荷時 RSS・起動時間/バイナリサイズ計測
+│   ├── lib/cpu-probe.sh                # 外部 CPU 占有率プローブ（イシュー #613）。
+│   │                                    # `/proc/stat`（`steal` 込み）+ サーバ/oha 帰属
+│   │                                    # jiffies から計測窓の外部占有率を算出し、
+│   │                                    # `EXT_CPU_MAX_PCT` 超過窓を `WINDOW_REMEASURE_MAX`
+│   │                                    # 回上限に有界再計測する（`bench-http.sh` の
+│   │                                    # `CPU_PROBE=1` opt-in から使用。実証は
+│   │                                    # `benches/reports/issue593-p1-zero-copy-bench.md`
+│   │                                    # 9.7 節、`docs/design/bench-hosted-runner.md`）
+│   ├── lib/interleave.sh               # 交互（interleave）ペア測定エンジン（イシュー #613）。
+│   │                                    # baseline/core（または A/B）を `PAIRS` 回交互
+│   │                                    # セッション計測し、`bench-http.sh` をサブプロセス
+│   │                                    # 委譲することで測定ロジック・RESULT_JSON スキーマの
+│   │                                    # 二重実装を避ける。`bench-accept.sh` の
+│   │                                    # `INTERLEAVE=1` opt-in・`bench-pair.sh`（新設二次
+│   │                                    # 判定エントリポイント）の双方から使用
+│   ├── bench-pair.sh                   # 交互ペア測定による二次判定（イシュー #613、新設）。
+│   │                                    # `BIN_A`（pre）/`BIN_B`（cur）の p95 cur/pre 比の
+│   │                                    # 採用ペア中央値を `PAIR_M2` で判定（`docs/design/
+│   │                                    # bench-p95-criteria.md` 5.2 節）。汚染窓を含む
+│   │                                    # ペアは理由・生値付きで除外（silent drop 禁止）。
+│   │                                    # `bench-accept.sh`（一次判定、exit 0/1/2）とは
+│   │                                    # 独立した新設経路として exit 3（INCONCLUSIVE）を
+│   │                                    # 導入。`bench-schedule.yml` への接続は既存 #614
+│   └── bench-http.sh / bench-rss.sh / bench-footprint.sh  # RPS・負荷時 RSS・起動時間/バイナリサイズ計測。
+│                                        # `bench-http.sh` は `CPU_PROBE=1`（イシュー #613、
+│                                        # opt-in・既定 OFF）で `lib/cpu-probe.sh` 経由の
+│                                        # 窓単位プローブ・有界再計測を行い、RESULT_JSON へ
+│                                        # `endpoints[].cpu_probe.{ext_cpu_pct,contaminated,
+│                                        # remeasure_count}` を追加する（既存フィールドは
+│                                        # 無変更、後方互換な追加のみ）。`bench-accept.sh` は
+│                                        # `INTERLEAVE=1`（HTTP 計測を baseline/core 交互
+│                                        # セッションへ切替、判定ロジック無変更）・
+│                                        # `SECTION_QUIESCENCE=1`（baseline/core 各区間開始前に
+│                                        # `lib/exclusive.sh` の静穏確認を実行、未達は
+│                                        # BLOCKED でフェイルクローズ）の 2 opt-in を追加した
+│                                        # （issue593 レポート 7 節申し送り対応）。3 機構とも
+│                                        # 既定 OFF で現行挙動を変えない。しきい値暫定値の
+│                                        # 実測較正は既存イシュー #616
 ├── scripts/               # CI・運用スクリプト（TASK-15.2 で追加）
 │   ├── README.md                      # 使い方・前提ツール・CI との対応
 │   ├── dep-audit.sh                   # 全 feature 構成の cargo audit / cargo deny check（ci.yml dep-audit ジョブ）

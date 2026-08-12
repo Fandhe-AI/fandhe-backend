@@ -63,6 +63,54 @@ STARTUP_DIFF_MAX_MS="${STARTUP_DIFF_MAX_MS:-20}"
 # 指定時、判定表を markdown 形式でも追記出力する（benches/reports/*.md 生成用）。
 REPORT_MD="${REPORT_MD:-}"
 
+# `INTERLEAVE=1`（既定 0、opt-in、イシュー #613）: HTTP 系計測（RPS/p95/p99）を
+# 「baseline 一括 → core 一括」の 2 ブロックから、baseline/core を `PAIRS`
+# 回（`benches/lib/interleave.sh` の既定 8）交互にセッション計測する方式へ
+# 切り替える。順序効果・時間帯ドリフトを排除する（背景・実証は
+# `benches/reports/issue593-p1-zero-copy-bench.md` 9.7 節、
+# `docs/design/bench-hosted-runner.md`）。判定ロジック（axum 比のしきい値・
+# 判定表・exit 0/1/2 契約）は無変更 — 各セッションは既存 `RUNS`（最低 3）で
+# 内部中央値を出し、セッション間の中央値をエンドポイント値として採用する
+# （`endpoints[].{rps,p95,p99}.median` は「PAIRS 個のセッション中央値の中央値」
+# へ意味が変わるが、判定コードが読む JSON の形は不変）。RSS・footprint 計測は
+# 従来どおり逐次のまま（対象外）。
+INTERLEAVE="${INTERLEAVE:-0}"
+if [ "${INTERLEAVE}" != "0" ] && [ "${INTERLEAVE}" != "1" ]; then
+    echo "エラー: INTERLEAVE は 0 または 1 である必要があります（現在: ${INTERLEAVE}）" >&2
+    exit 1
+fi
+
+# `SECTION_QUIESCENCE=1`（既定 0、opt-in、イシュー #613）: baseline 区間・core
+# 区間それぞれの計測開始前に `benches/lib/exclusive.sh` の静穏確認
+# （`wait_for_quiescence`）+ 環境スナップショット（`snapshot_environment`）を
+# 実行する。区間ごとの静穏未達は BLOCKED（exit 2）として扱いフェイルクローズし、
+# PASS へ丸めない（issue593 レポート 7 節申し送りの「baseline 計測 / core 計測の
+# 2 区間分割と区間ごとの静穏再確認」への対応）。区間用しきい値は
+# `SECTION_LOAD1_MAX`（未指定時は `LOAD1_MAX` を継承）、待機上限は
+# `SECTION_QUIESCE_WAIT_SECS`（既定 300、有界）。
+SECTION_QUIESCENCE="${SECTION_QUIESCENCE:-0}"
+if [ "${SECTION_QUIESCENCE}" != "0" ] && [ "${SECTION_QUIESCENCE}" != "1" ]; then
+    echo "エラー: SECTION_QUIESCENCE は 0 または 1 である必要があります（現在: ${SECTION_QUIESCENCE}）" >&2
+    exit 1
+fi
+SECTION_QUIESCE_WAIT_SECS="${SECTION_QUIESCE_WAIT_SECS:-300}"
+
+if [ "${INTERLEAVE}" = "1" ]; then
+    # shellcheck source=lib/interleave.sh
+    source "${SCRIPT_DIR}/lib/interleave.sh"
+fi
+if [ "${SECTION_QUIESCENCE}" = "1" ]; then
+    # shellcheck source=lib/exclusive.sh
+    source "${SCRIPT_DIR}/lib/exclusive.sh"
+    if [ -n "${SECTION_LOAD1_MAX:-}" ]; then
+        # shellcheck disable=SC2034 # exclusive.sh（source 先）の
+        # check_quiescence_once が参照するグローバル変数（動的 source 先の
+        # 参照は shellcheck が追えない）。
+        LOAD1_MAX="${SECTION_LOAD1_MAX}"
+    fi
+    QUIESCE_WAIT_SECS="${SECTION_QUIESCE_WAIT_SECS}"
+fi
+
 # 専有ロック取得後にビルドが走ると静穏確認の意味が失われる問題（イシュー #260 Bugbot
 # 指摘）への対処。既定 0（毎回ビルドする、従来挙動）。呼び出し元が事前ビルド済みの
 # 場合のみ 1 を指定する。
@@ -101,6 +149,7 @@ validate_numeric "${P99_RATIO_MAX}" "P99_RATIO_MAX"
 validate_numeric "${IDLE_RSS_RATIO_MAX}" "IDLE_RSS_RATIO_MAX"
 validate_numeric "${BIN_SIZE_RATIO_MAX}" "BIN_SIZE_RATIO_MAX"
 validate_numeric "${STARTUP_DIFF_MAX_MS}" "STARTUP_DIFF_MAX_MS"
+validate_numeric "${SECTION_QUIESCE_WAIT_SECS}" "SECTION_QUIESCE_WAIT_SECS"
 
 echo "# bench-accept.sh: TASK-1.6-1 性能受け入れ判定"
 echo "実行日時: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -205,10 +254,92 @@ trap cleanup_tmp EXIT
 BASELINE_URL="http://${BASELINE_HOST}:${BASELINE_PORT}"
 CORE_URL="http://${CORE_HOST}:${CORE_PORT}"
 
-echo "== baseline（axum-ref）計測 =="
-TARGET_BIN="${BASELINE_BIN}" TARGET_HOST="${BASELINE_HOST}" TARGET_PORT="${BASELINE_PORT}" TARGET_URL="${BASELINE_URL}" \
-    RUNS="${RUNS}" DURATION="${DURATION}" CONNECTIONS="${CONNECTIONS}" \
-    RESULT_JSON="${BASELINE_HTTP_JSON}" "${SCRIPT_DIR}/bench-http.sh"
+# 区間静穏確認（SECTION_QUIESCENCE=1 のみ）。未達は BLOCKED（exit 2）で
+# フェイルクローズし、PASS へ丸めない（issue593 レポート 7 節申し送り）。
+run_section_quiescence_gate() {
+    local section_label="$1"
+    echo "== 区間静穏確認（${section_label}） =="
+    if ! wait_for_quiescence; then
+        echo "## 判定結果: BLOCKED" >&2
+        echo "${section_label}区間の静穏確認が ${QUIESCE_WAIT_SECS}s 待っても得られませんでした。" >&2
+        if [ -n "${REPORT_MD}" ]; then
+            {
+                echo
+                echo "## 判定結果: BLOCKED"
+                echo
+                echo "${section_label}区間の静穏確認が \`QUIESCE_WAIT_SECS=${QUIESCE_WAIT_SECS}\`s 待っても得られず、計測を実施できませんでした。"
+            } >>"${REPORT_MD}"
+        fi
+        write_report_conclusion "BLOCKED（${section_label}区間の静穏確認未達のため判定不能。既存の古い判定は無効）"
+        exit 2
+    fi
+    # 他の呼び出し元（bench-accept-exclusive.sh・nfr6_run_with_fail_retry 等）と
+    # 同様に stderr へ出す（human 可読な stdout は判定表・結論に専念させる。
+    # RESULT_JSON/REPORT_MD を機械可読出力として消費する既存契約と整合させる）。
+    snapshot_environment "${section_label}" >&2
+}
+
+if [ "${INTERLEAVE}" = "1" ]; then
+    echo "== HTTP 計測（INTERLEAVE=1、PAIRS=${PAIRS} 交互セッション） =="
+    if [ "${SECTION_QUIESCENCE}" = "1" ]; then
+        run_section_quiescence_gate "interleave"
+    fi
+    INTERLEAVE_DIR="$(mktemp -d)"
+    trap 'rm -rf "${INTERLEAVE_DIR}"; cleanup_tmp' EXIT
+    interleave_run_pairs "${BASELINE_BIN}" "${BASELINE_PORT}" "${CORE_BIN}" "${CORE_PORT}" "${INTERLEAVE_DIR}"
+    # PAIRS 個のセッション JSON（各 `bench-http.sh` の既存スキーマそのまま）を
+    # エンドポイントごとに集約する。各セッションの `.median` を「1 サンプル」と
+    # みなし、セッション間の中央値を最終値として採用する（判定コード
+    # （後続の calc_ratio 等）が読む JSON の形・意味（endpoints[].*.median）は
+    # 不変のまま、baseline 一括/core 一括の代わりに交互セッションの結果を渡す）。
+    merge_interleaved_sessions() {
+        local side="$1" out_json="$2"
+        local files=()
+        local i
+        for ((i = 1; i <= PAIRS; i++)); do
+            files+=("${INTERLEAVE_DIR}/${side}-${i}.json")
+        done
+        # `median_of`: `benches/lib/common.sh` の `median()`（奇数個=中央値、
+        # 偶数個=中央 2 値の平均）と同一の算出規則を jq 側で再実装する
+        # （bash 版と算出方式を揃え、判定結果が経路依存でぶれないようにする）。
+        # NOTE: `map` をネストすると内側の `map` は「現在の `.`」（外側 map の
+        # 各要素）を入力に取るため、最上位でスラープした全セッション文書の配列を
+        # `$docs` として変数に退避しておかないと内側の `map(.endpoints[...])` が
+        # 誤った入力（ラベルの entries 要素）を map してしまう（実装時に実データで
+        # 検出・修正）。
+        jq -s --argjson runs "${RUNS}" --arg duration "${DURATION}" --argjson connections "${CONNECTIONS}" '
+            def median_of: sort as $s | ($s | length) as $n
+                | if $n == 0 then null
+                  elif ($n % 2) == 1 then $s[($n - 1) / 2 | floor]
+                  else ($s[$n / 2 - 1] + $s[$n / 2]) / 2
+                  end;
+            . as $docs
+            | ($docs[0].endpoints | map(.label)) as $labels
+            | {
+                runs: $runs, duration: $duration, connections: $connections,
+                endpoints: ($labels | to_entries | map(
+                    . as $e | {
+                        label: $e.value,
+                        rps: {raw: ($docs | map(.endpoints[$e.key].rps.median)), median: ($docs | map(.endpoints[$e.key].rps.median) | median_of)},
+                        p50: {raw: ($docs | map(.endpoints[$e.key].p50.median)), median: ($docs | map(.endpoints[$e.key].p50.median) | median_of)},
+                        p95: {raw: ($docs | map(.endpoints[$e.key].p95.median)), median: ($docs | map(.endpoints[$e.key].p95.median) | median_of)},
+                        p99: {raw: ($docs | map(.endpoints[$e.key].p99.median)), median: ($docs | map(.endpoints[$e.key].p99.median) | median_of)}
+                    }
+                ))
+              }
+        ' "${files[@]}" >"${out_json}"
+    }
+    merge_interleaved_sessions "a" "${BASELINE_HTTP_JSON}"
+    merge_interleaved_sessions "b" "${CORE_HTTP_JSON}"
+else
+    if [ "${SECTION_QUIESCENCE}" = "1" ]; then
+        run_section_quiescence_gate "baseline"
+    fi
+    echo "== baseline（axum-ref）計測 =="
+    TARGET_BIN="${BASELINE_BIN}" TARGET_HOST="${BASELINE_HOST}" TARGET_PORT="${BASELINE_PORT}" TARGET_URL="${BASELINE_URL}" \
+        RUNS="${RUNS}" DURATION="${DURATION}" CONNECTIONS="${CONNECTIONS}" \
+        RESULT_JSON="${BASELINE_HTTP_JSON}" "${SCRIPT_DIR}/bench-http.sh"
+fi
 TARGET_BIN="${BASELINE_BIN}" TARGET_HOST="${BASELINE_HOST}" TARGET_PORT="${BASELINE_PORT}" TARGET_URL="${BASELINE_URL}" \
     RUNS="${RUNS}" DURATION="${DURATION}" CONNECTIONS="${CONNECTIONS}" \
     RESULT_JSON="${BASELINE_RSS_JSON}" "${SCRIPT_DIR}/bench-rss.sh"
@@ -217,10 +348,15 @@ TARGET_BIN="${BASELINE_BIN}" TARGET_HOST="${BASELINE_HOST}" TARGET_PORT="${BASEL
     RESULT_JSON="${BASELINE_FOOT_JSON}" "${SCRIPT_DIR}/bench-footprint.sh"
 
 echo
-echo "== core 計測 =="
-TARGET_BIN="${CORE_BIN}" TARGET_HOST="${CORE_HOST}" TARGET_PORT="${CORE_PORT}" TARGET_URL="${CORE_URL}" \
-    RUNS="${RUNS}" DURATION="${DURATION}" CONNECTIONS="${CONNECTIONS}" \
-    RESULT_JSON="${CORE_HTTP_JSON}" "${SCRIPT_DIR}/bench-http.sh"
+if [ "${INTERLEAVE}" != "1" ]; then
+    if [ "${SECTION_QUIESCENCE}" = "1" ]; then
+        run_section_quiescence_gate "core"
+    fi
+    echo "== core 計測 =="
+    TARGET_BIN="${CORE_BIN}" TARGET_HOST="${CORE_HOST}" TARGET_PORT="${CORE_PORT}" TARGET_URL="${CORE_URL}" \
+        RUNS="${RUNS}" DURATION="${DURATION}" CONNECTIONS="${CONNECTIONS}" \
+        RESULT_JSON="${CORE_HTTP_JSON}" "${SCRIPT_DIR}/bench-http.sh"
+fi
 TARGET_BIN="${CORE_BIN}" TARGET_HOST="${CORE_HOST}" TARGET_PORT="${CORE_PORT}" TARGET_URL="${CORE_URL}" \
     RUNS="${RUNS}" DURATION="${DURATION}" CONNECTIONS="${CONNECTIONS}" \
     RESULT_JSON="${CORE_RSS_JSON}" "${SCRIPT_DIR}/bench-rss.sh"
@@ -332,6 +468,39 @@ echo
 echo "参考値（判定には使わない）: 負荷時 RSS baseline=${baseline_load_rss}KB core=${core_load_rss}KB"
 echo
 
+# CPU_PROBE=1（直接指定、または INTERLEAVE 経路の各セッション経由で継承）のときのみ、
+# 収集済みの外部占有率分布を判定表の後に追記する（判定そのものには使わない、
+# 退行帰属・診断用の参考情報）。`CPU_PROBE` env は本スクリプトが明示的に
+# エクスポートしなくても、呼び出し元の環境から子プロセス（bench-http.sh・
+# interleave.sh 経由の各セッション）へ自然に継承される。
+CPU_PROBE_SUMMARY=""
+if [ "${CPU_PROBE:-0}" = "1" ]; then
+    if [ "${INTERLEAVE}" = "1" ]; then
+        cpu_probe_files=("${INTERLEAVE_DIR}"/*.json)
+    else
+        cpu_probe_files=("${BASELINE_HTTP_JSON}" "${CORE_HTTP_JSON}")
+    fi
+    CPU_PROBE_SUMMARY="$(jq -s '
+        [.[].endpoints[]?.cpu_probe? | select(. != null)] as $probes
+        | ($probes | map(.ext_cpu_pct[]) | map(select(. != null))) as $shares
+        | ($probes | map(.contaminated[]) | add // 0) as $contaminated_total
+        | ($probes | map(.remeasure_count[]) | add // 0) as $remeasure_total
+        | if ($shares | length) == 0 then
+            "CPU_PROBE: 収集済みデータなし"
+          else
+            "CPU_PROBE 外部占有率分布: 最小=" + (($shares | min) | tostring)
+            + "% 中央値=" + (($shares | sort | .[length/2|floor]) | tostring)
+            + "% 最大=" + (($shares | max) | tostring)
+            + "%（汚染窓 " + ($contaminated_total | tostring) + " 件、窓単位再計測発動 "
+            + ($remeasure_total | tostring) + " 回、集計対象窓数 " + ($shares | length | tostring) + "）"
+          end
+    ' "${cpu_probe_files[@]}" 2>/dev/null | tr -d '"')"
+    if [ -n "${CPU_PROBE_SUMMARY}" ]; then
+        echo "${CPU_PROBE_SUMMARY}"
+        echo
+    fi
+fi
+
 if [ -n "${REPORT_MD}" ]; then
     {
         echo
@@ -345,6 +514,10 @@ if [ -n "${REPORT_MD}" ]; then
         done
         echo
         echo "参考値（判定には使わない）: 負荷時 RSS baseline=${baseline_load_rss}KB core=${core_load_rss}KB"
+        if [ -n "${CPU_PROBE_SUMMARY}" ]; then
+            echo
+            echo "${CPU_PROBE_SUMMARY}"
+        fi
     } >>"${REPORT_MD}"
 fi
 
