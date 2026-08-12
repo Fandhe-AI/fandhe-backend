@@ -60,6 +60,14 @@ fandhe-backend/
 │   │   │                            # （フレームワーク本体では扱わず、TLS はリバース
 │   │   │                            # プロキシ前提・multipart は raw body 受理のみ、
 │   │   │                            # イシュー #322。docs/spec 除外事項表 #8・#9 と対応）
+│   │   ├── bench-hosted-runner.md  # GitHub Actions 無料枠ホステッドランナーでの
+│   │   │                            # ベンチ運用方式（イシュー #611、ベンチ判定安定化
+│   │   │                            # ツリー #607 Phase 1。issue593 9 節が観測した共有
+│   │   │                            # self-hosted ホスト固有の p95 判定不安定性が週次
+│   │   │                            # ベンチ（`bench-schedule.yml`）の既存成功ラン実測
+│   │   │                            # では再現しないことを確認し、axum 比判定を主判定
+│   │   │                            # として維持しつつ交互ペア測定（#613）・決定的計測
+│   │   │                            # （#615）・しきい値再設計（#612）の役割分担を確定）
 │   │   ├── ws-cancellation-propagation.md  # WS 委譲タスクへのキャンセル伝播機構の設計
 │   │                            # （イシュー #490、REQ-4。最終 graceful shutdown（#313）・
 │   │                            # rebind 世代 drain（#485/#488）双方の grace 超過
