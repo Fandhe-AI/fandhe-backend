@@ -647,6 +647,12 @@ gh run list --workflow bench-schedule.yml --limit 5
 詳細な方式比較（相乗り案・別 workflow 案・外部起動案）・退行検知時の通知・一次対応
 フローは `docs/design/bench-scheduled-run.md` を参照。
 
+性能改善ツリー #579（Phase 1〜3、P1 ヘッダゼロコピー化含む）全適用後の総括
+（前後比較・目標達成度・CPU/RSS 非悪化確認・#579 プロトコル再現手順・週次
+ベンチ反映要否判断）は
+[`reports/issue594-perf-tree-summary.md`](reports/issue594-perf-tree-summary.md)
+を参照（イシュー #594）。
+
 ## compression-e2e-bench.sh / compression-e2e-exclusive.sh — compression E2E p99 比較（イシュー #473）
 
 PR #471（イシュー #468）で `plugin-compression` の gzip 圧縮に `spawn_blocking`
