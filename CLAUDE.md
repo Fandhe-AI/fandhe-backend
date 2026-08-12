@@ -638,7 +638,15 @@ fandhe-backend/
 │   │                                    # 検査する fail-fast を追加（イシュー #480。self-hosted
 │   │                                    # runner のホスト共有 `CARGO_TARGET_DIR` 注入により決め打ち
 │   │                                    # パスに成果物が見つからない事象への対処、
-│   │                                    # `benches/lib/common.sh` の `BENCH_TARGET_DIR` 導出と対）
+│   │                                    # `benches/lib/common.sh` の `BENCH_TARGET_DIR` 導出と対）。
+│   │                                    # `MAJORITY_TRIALS=3`（イシュー #614）で
+│   │                                    # `lib/exclusive.sh` の `nfr6_run_with_majority`
+│   │                                    # （最大 3 試行の多数決、PASS/FAIL/BLOCKED/
+│   │                                    # INCONCLUSIVE の 4 値対応）経由に切り替え、
+│   │                                    # `bench-accept.sh` を `P95_BAND=1` 付きで実行する
+│   │                                    # （既定 0 では従来の `FAIL_RETRIES` 経路のまま
+│   │                                    # 後方互換。`bench-schedule.yml` の週次一次判定
+│   │                                    # ジョブから使用）
 │   ├── lib/cpu-probe.sh                # 外部 CPU 占有率プローブ（イシュー #613）。
 │   │                                    # `/proc/stat`（`steal` 込み）+ サーバ/oha 帰属
 │   │                                    # jiffies から計測窓の外部占有率を算出し、
@@ -659,9 +667,13 @@ fandhe-backend/
 │   │                                    # 採用ペア中央値を `PAIR_M2` で判定（`docs/design/
 │   │                                    # bench-p95-criteria.md` 5.2 節）。汚染窓を含む
 │   │                                    # ペアは理由・生値付きで除外（silent drop 禁止）。
-│   │                                    # `bench-accept.sh`（一次判定、exit 0/1/2）とは
-│   │                                    # 独立した新設経路として exit 3（INCONCLUSIVE）を
-│   │                                    # 導入。`bench-schedule.yml` への接続は既存 #614
+│   │                                    # `bench-accept.sh`（一次判定、exit 0/1/2/3）とは
+│   │                                    # 独立した経路として exit 3（INCONCLUSIVE）を導入。
+│   │                                    # `bench-schedule.yml` へイシュー #614 で接続した
+│   │                                    # （週次 `bench-accept` ジョブの FAIL/INCONCLUSIVE
+│   │                                    # 確定時の追撃・月次 `bench-pair-monthly` ジョブの
+│   │                                    # 無条件二次判定の 2 経路。二次判定の結果は
+│   │                                    # 一次判定・ジョブの成否を変更しない証跡専用）
 │   └── bench-http.sh / bench-rss.sh / bench-footprint.sh  # RPS・負荷時 RSS・起動時間/バイナリサイズ計測。
 │                                        # `bench-http.sh` は `CPU_PROBE=1`（イシュー #613、
 │                                        # opt-in・既定 OFF）で `lib/cpu-probe.sh` 経由の

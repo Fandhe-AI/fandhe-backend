@@ -15,14 +15,28 @@ name: bench-schedule
 #
 # cron 配置（.claude/rules/ci.md「schedule 系ワークフロー同士は cron をずらして
 # 負荷を分散する」）: update-external.yml（00:00 UTC 日次）・ci.yml（00:30 UTC
-# 日次）と重ならない `0 2 * * 0`（日曜 02:00 UTC = 11:00 JST、週次）を使う。
+# 日次）と重ならない `0 2 * * 0`（日曜 02:00 UTC = 11:00 JST、週次・一次判定）を
+# 使う。イシュー #614 で月次二次判定を新設し、`0 4 1 * *`（毎月 1 日 04:00 UTC）を
+# 追加した（日曜と重なる月初でも `concurrency: bench-schedule` の直列化により
+# 同時実行しない）。
 #
-# 判定の頑健化（単発 FAIL の限定再試行）: `benches/lib/exclusive.sh` の
-# `nfr6_run_with_fail_retry` を `benches/bench-accept-exclusive.sh` 経由で使い、
-# FAIL_RETRIES=1 を指定する。「単発 FAIL は 1 回のみ再試行可、2 連続 FAIL で
-# 退行確定」という規約は `benches/README.md`「定期実行（bench-schedule.yml）」節・
-# 本ファイル冒頭コメントを正とする。BLOCKED（終了コード 2）は再試行しない
-# （フェイルクローズ、計測不能自体を退行検知の対象として起票する）。
+# 判定方式（イシュー #614、`docs/design/bench-p95-criteria.md`）:
+#   一次判定（axum 比）は PASS（0）/ FAIL（1、退行確定）/ BLOCKED（2、計測不能）/
+#   INCONCLUSIVE（3、判定不能帯・多数決不成立）の 4 値。p95 のみ `P95_BAND=1` で
+#   3 帯域判定（PASS/INCONCLUSIVE/FAIL）を有効化し、`MAJORITY_TRIALS=3`
+#   （`benches/lib/exclusive.sh` の `nfr6_run_with_majority`）で最大 3 試行の
+#   多数決へ拡張した（旧 `FAIL_RETRIES=1` の「2 連続 FAIL で退行確定」規約から
+#   置き換え）。FAIL（1）または INCONCLUSIVE（3）確定時は、直近の成功 run の
+#   コミットを pre として `bench-pair.sh`（交互ペア測定による二次判定、#613）で
+#   退行帰属を試みる「追撃」ステップを実行し、Issue 本文へ結果を添付する
+#   （二次判定の結果は一次判定・ジョブの成否を変更しない。証跡のみ）。
+#   月次無条件二次判定（`bench-pair-monthly` ジョブ）は、#616（較正ラン）の
+#   run 系列蓄積が前提の「baseline・core が同方向に悪化する run を検知できない」
+#   弱点（`docs/design/bench-hosted-runner.md` 7 節 (iii)）への暫定対応として、
+#   標本が揃うまでの間、実時間退行クラスを定期的に守る役割を持つ。
+#
+# INCONCLUSIVE を PASS へ丸めない・二次判定の PASS が一次判定の FAIL を上書き
+# しない、という不変条件は `docs/design/bench-p95-criteria.md` 3.1 節を参照。
 #
 # CARGO_TARGET_DIR のジョブローカル固定（イシュー #480）: 2026-08-02 実行
 # （run 30729910081）で `cargo build --release` 成功直後に
@@ -36,8 +50,8 @@ name: bench-schedule
 # `/cargo-target` 配下に生成され、`benches/lib/common.sh` 等が既定で参照する
 # `${WORKSPACE_ROOT}/target/release/...` には最初から存在しない。
 #
-# 本 workflow は `env: CARGO_TARGET_DIR: ${{ github.workspace }}/target` を
-# ジョブ全体へ設定する（導入当時はホスト共有 `/cargo-target` からの隔離が目的。
+# 各ジョブは `env: CARGO_TARGET_DIR: ${{ github.workspace }}/target` をジョブ全体へ
+# 設定する（導入当時はホスト共有 `/cargo-target` からの隔離が目的。
 # fandhe-frontend #1192 で実証済みの「共有 target 上の成果物汚染」リスクの
 # 回避も兼ねた。ホステッド移行〔#554〕後の使い捨て VM では既定と等価だが、
 # 維持判断の根拠はジョブ定義側のコメント参照）。`benches/lib/common.sh` の
@@ -48,7 +62,7 @@ name: bench-schedule
 # 退行検知時の扱い（フェイルクローズ）: ジョブを失敗（赤）させ、かつ schedule /
 # workflow_dispatch 実行時は `bench-regression` ラベルで Issue を自動起票する
 # （improvement-proposal 規約の「自動レイヤ（承認不要）」に該当）。イシュー #539 で
-# ラベル冪等作成・重複判定・起票のボイラープレートを共通部品
+# ラベル冪等作成・重複判定・起票の共通部品
 # `Fandhe-AI/actions/idempotent-issue`（SHA 固定）呼び出しへ置換した（本文・タイトル
 # 組み立てのみ本 workflow 側に残す 2 ステップ構成）。ci.yml dep-audit ジョブの
 # audit-triage 起票は advisory ID ごとの可変回数ループを伴うため置換対象外
@@ -57,7 +71,20 @@ name: bench-schedule
 on:
   schedule:
     - cron: "0 2 * * 0"
-  workflow_dispatch: {}
+    - cron: "0 4 1 * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: >-
+          primary（週次一次判定、axum 比・多数決）/ pair（月次二次判定、
+          直近成功 run との交互ペア測定）。schedule 実行時は cron 文字列
+          （github.event.schedule）で自動判別するため本 input は無視される。
+        required: false
+        default: primary
+        type: choice
+        options:
+          - primary
+          - pair
 
 permissions:
   contents: read
@@ -68,35 +95,49 @@ concurrency:
 
 jobs:
   bench-accept:
-    name: REQ-1/NFR-1 性能ベンチ（専有計測・週次）
+    name: REQ-1/NFR-1 性能ベンチ（専有計測・週次・一次判定）
+    # 週次 cron（`0 2 * * 0`）または workflow_dispatch で mode=primary（既定）の
+    # ときのみ実行する。`github.event.schedule` は文字列完全一致で判定する
+    # （空白・書式の違いも別文字列として扱われるため、`on.schedule` の cron 文字列と
+    # 1 文字違わず揃える。値が一致しないと本ジョブが常に skip される「静かな見逃し」に
+    # なるため、`on:` の 2 つの cron と本ファイル内の比較文字列は必ず同時に変更する）。
+    if: |
+      github.event.schedule == '0 2 * * 0' ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.mode == 'primary' || github.event.inputs.mode == ''))
     # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
     # により GitHub ホステッドランナーへ移行（イシュー #554）。判定は axum-ref 比の
     # 相対値で同一 VM 内比較のためハード差の一次影響は相殺される。専有ロック・静穏待機
     # 機構は使い捨て VM では実質 no-op だが無害のため維持する（方針決定の全文は
     # イシュー #554 コメント参照）。共有テナンシー起因で閾値判定が再現しない場合は
-    # 既設のフェイルクローズ運用（FAIL_RETRIES=1 + bench-regression 自動起票）が
+    # 既設のフェイルクローズ運用（MAJORITY_TRIALS=3 + bench-regression 自動起票）が
     # 実測データとして可視化するため、その時点で再ベースライン化を判断する。
     runs-on: ubuntu-latest
-    # Issue 起票のみジョブ単位で issues: write を付与する（workflow 全体は
-    # contents: read を維持、最小権限。ci.yml dep-audit ジョブと同一パターン）。
+    # Issue 起票に加え、追撃（退行帰属のための参照コミット解決）用に
+    # `actions: read` を付与する（イシュー #614。直近の成功 run の head SHA を
+    # `gh api` で取得するために必要。workflow 全体は `contents: read` を維持、
+    # 最小権限・ジョブ単位付与、ci.yml dep-audit ジョブと同一パターン）。
     permissions:
       contents: read
       issues: write
-    # worst-case 予算（PR #291 Bugbot 指摘対応。旧 180 分は待機フェーズを過小に
-    # 見積もっていた）: `bench-accept-exclusive.sh` の実経路には次の待機がすべて
-    # 独立に最大 `QUIESCE_WAIT_SECS`（既定 1800s = 30 分）かかりうる。
+      actions: read
+    # worst-case 予算（PR #291 Bugbot 指摘対応を踏襲。イシュー #614 で
+    # MAJORITY_TRIALS=3（最大 3 試行）+ 追撃（pre ビルド + bench-pair.sh 8 ペア測定）を
+    # 追加したため再積算する）:
     #   (1) 専有ロック取得待ち（`acquire_exclusive_lock` の `flock -w`）      最大 30 分
     #   (2) 計測前の静穏待機（`wait_for_quiescence`）                        最大 30 分
-    #   (3) 単発 FAIL 時の再試行前静穏待機（`nfr6_run_with_fail_retry` 内、
-    #       FAIL_RETRIES=1 で最大 1 回）                                     最大 30 分
-    # に加え、release ビルド ×2（workspace 一括・core-bench example）と計測
-    # 2 試行（FAIL_RETRIES=1）の実処理時間を要する。(1)〜(3) の合計だけで
-    # 90 分に達しうるため、旧 180 分ではビルド・計測の実処理時間を含めると
-    # ホスト競合時に worst-case がジョブタイムアウトを超え、PASS/FAIL/BLOCKED の
-    # 判定が確定する前にジョブがキャンセルされうる。240 分へ延長し、待機予算
-    # 90 分 + ビルド・計測の実処理分のマージンを確保する
-    # （.claude/rules/ci.md「全ジョブに timeout-minutes を設定する」多層防御）。
-    timeout-minutes: 240
+    #   (3) 多数決 2・3 回目前の静穏待機（`nfr6_run_with_majority` 内、
+    #       最大 2 回）                                                     最大 60 分
+    # に加え、release ビルド ×2（workspace 一括・core-bench example）と最大 3 回の
+    # 計測試行の実処理時間、および FAIL/INCONCLUSIVE 確定時のみ追加で発生する
+    # 追撃（pre コミットの release ビルド 1 回 + `bench-pair.sh` の 8 ペア×2 バイナリ
+    # ×RUNS=5 セッション計測）を要する。(1)〜(3) の待機予算だけで 120 分に達し
+    # うるため、旧 240 分では追撃分の実処理時間を含めると worst-case がジョブ
+    # タイムアウトを超えうる。300 分へ延長し、待機予算 120 分 + ビルド・計測・追撃の
+    # 実処理分のマージンを確保する（.claude/rules/ci.md「全ジョブに
+    # timeout-minutes を設定する」多層防御。実測に基づく最終確定は
+    # workflow_dispatch 検証（push 前フェーズのため本 PR には含まれない）を待つ、
+    # PR 本文の対象外事項を参照）。
+    timeout-minutes: 300
     # ジョブローカル target ディレクトリ（イシュー #480、上部コメント参照）。
     # ホステッドの使い捨て VM では既定と等価だが、`benches/lib/common.sh` の
     # `BENCH_TARGET_DIR` 導出（CARGO_TARGET_DIR 最優先）の明示性と下記診断ステップの
@@ -148,14 +189,65 @@ jobs:
       # `benches/bench-accept-exclusive.sh` は専有ロック取得後にビルド → 静穏確認 →
       # 計測の順で実行する（doc comment 参照）。本ステップ自体は事前ビルドを
       # 行わない（wrapper が内部で cargo build する）。
-      - name: bench-accept-exclusive.sh（FAIL_RETRIES=1 で単発ノイズを吸収）
+      - name: bench-accept-exclusive.sh（MAJORITY_TRIALS=3 で最大 3 試行の多数決）
         id: bench
-        # 終了コード: 0=PASS、1=FAIL（退行確定）、2=BLOCKED（計測不能）。
+        # 終了コード: 0=PASS、1=FAIL（退行確定）、2=BLOCKED（計測不能）、
+        # 3=INCONCLUSIVE（判定不能帯・多数決不成立、イシュー #614）。
         # フェイルクローズのため `set -e` は使わず、終了コードを捕捉してから
         # ジョブを明示的に失敗させる（次の起票ステップを確実に実行するため）。
         run: |
           set +e
-          FAIL_RETRIES=1 REPORT_MD="${RUNNER_TEMP}/bench-report.md" bash benches/bench-accept-exclusive.sh
+          MAJORITY_TRIALS=3 REPORT_MD="${RUNNER_TEMP}/bench-report.md" bash benches/bench-accept-exclusive.sh
+          echo "status=$?" >> "${GITHUB_OUTPUT}"
+
+      # --- 追撃（退行帰属のための二次判定、イシュー #614） ---
+      # FAIL（1）または INCONCLUSIVE（3）確定時のみ実行する。二次判定の結果は
+      # 一次判定・ジョブの成否を変更しない（Issue 本文への添付のみ、証跡目的）。
+
+      - name: 追撃用の参照コミット解決（直近の成功 run の head SHA）
+        id: chase_ref
+        if: always() && steps.bench.outcome == 'success' && (steps.bench.outputs.status == '1' || steps.bench.outputs.status == '3') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ref_sha="$(gh api "repos/${{ github.repository }}/actions/workflows/bench-schedule.yml/runs?status=success&branch=main&per_page=1" --jq '.workflow_runs[0].head_sha // empty' 2>/dev/null || true)"
+          if [ -z "${ref_sha}" ]; then
+            echo "resolved=false" >> "${GITHUB_OUTPUT}"
+            echo "追撃不能: 直近の成功 run が見つかりません（初回実行、または gh api 呼び出し失敗）。silent skip せずログに記録します" >&2
+          elif [ "${ref_sha}" = "${{ github.sha }}" ]; then
+            echo "resolved=false" >> "${GITHUB_OUTPUT}"
+            echo "追撃不能: 直近の成功 run の head SHA（${ref_sha}）が現在の SHA と同一です（比較対象がない）" >&2
+          else
+            echo "resolved=true" >> "${GITHUB_OUTPUT}"
+            echo "ref_sha=${ref_sha}" >> "${GITHUB_OUTPUT}"
+            echo "追撃対象の参照コミット: ${ref_sha}"
+          fi
+
+      - name: 参照コミットの checkout（追撃）
+        if: steps.chase_ref.outputs.resolved == 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ steps.chase_ref.outputs.ref_sha }}
+          path: pre-src
+
+      - name: pre バイナリのビルド（追撃、core-bench example）
+        if: steps.chase_ref.outputs.resolved == 'true'
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/pre-target
+        run: |
+          cargo build --release --example core-bench -p fandhe-backend-core --manifest-path "${{ github.workspace }}/pre-src/Cargo.toml"
+
+      - name: bench-pair.sh（追撃、交互ペア測定による二次判定）
+        id: chase_pair
+        if: steps.chase_ref.outputs.resolved == 'true'
+        run: |
+          set +e
+          BIN_A="${{ runner.temp }}/pre-target/release/examples/core-bench" \
+          BIN_B="${{ github.workspace }}/target/release/examples/core-bench" \
+          CPU_PROBE=1 \
+          REPORT_MD="${RUNNER_TEMP}/bench-pair-chase-report.md" \
+          bash benches/bench-pair.sh
           echo "status=$?" >> "${GITHUB_OUTPUT}"
 
       - name: 退行・計測不能検知時の Issue 本文組み立て
@@ -179,16 +271,29 @@ jobs:
         env:
           BENCH_STATUS: ${{ steps.bench.outputs.status }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CHASE_RESOLVED: ${{ steps.chase_ref.outputs.resolved }}
+          CHASE_REF_SHA: ${{ steps.chase_ref.outputs.ref_sha }}
+          CHASE_PAIR_STATUS: ${{ steps.chase_pair.outputs.status }}
         run: |
           set -euo pipefail
 
-          if [ "${BENCH_STATUS}" = "1" ]; then
-            title_prefix="bench-regression: REQ-1/NFR-1 性能退行を検知"
-            verdict="FAIL（退行確定。FAIL_RETRIES=1 を使い切っても 2 連続 FAIL）"
-          else
-            title_prefix="bench-regression: REQ-1/NFR-1 計測が BLOCKED（計測不能）"
-            verdict="BLOCKED（専有ロック取得不能・ビルド失敗・静穏未達・baseline / CORE_BIN バイナリ未整備のいずれか。計測不能自体も継続検証体制の喪失として扱う）"
-          fi
+          case "${BENCH_STATUS}" in
+            1)
+              title_prefix="bench-regression: REQ-1/NFR-1 性能退行を検知"
+              verdict="FAIL（退行確定。MAJORITY_TRIALS=3 の多数決で FAIL が過半数）"
+              ;;
+            3)
+              # イシュー #614: 判定不能帯・多数決不成立を PASS/FAIL いずれへも
+              # 丸めず、専用タイトルで区別する（`docs/design/bench-p95-criteria.md`
+              # 3.1 節「INCONCLUSIVE を PASS へ丸めない」不変条件）。
+              title_prefix="bench-regression: REQ-1/NFR-1 判定不能（要再計測・INCONCLUSIVE）"
+              verdict="INCONCLUSIVE（p95 が判定不能帯に収まる、または多数決が割れて確定できない。二次判定（追撃）の結果を参照して再計測要否を判断すること）"
+              ;;
+            *)
+              title_prefix="bench-regression: REQ-1/NFR-1 計測が BLOCKED（計測不能）"
+              verdict="BLOCKED（専有ロック取得不能・ビルド失敗・静穏未達・baseline / CORE_BIN バイナリ未整備のいずれか。計測不能自体も継続検証体制の喪失として扱う）"
+              ;;
+          esac
 
           echo "title=${title_prefix}" >> "${GITHUB_OUTPUT}"
 
@@ -198,20 +303,50 @@ jobs:
             echo
             echo "- 判定: ${verdict}"
             echo "- 実行: ${RUN_URL}"
-            echo "- ワークフロー: bench-schedule.yml（週次 schedule または workflow_dispatch）"
+            echo "- ワークフロー: bench-schedule.yml（週次 schedule または workflow_dispatch、一次判定）"
+            echo
+            echo "## 追撃（退行帰属のための二次判定、bench-pair.sh）"
+            echo
+            if [ "${CHASE_RESOLVED:-false}" = "true" ]; then
+              echo "- 参照コミット（pre）: ${CHASE_REF_SHA}"
+              if [ -n "${CHASE_PAIR_STATUS:-}" ]; then
+                case "${CHASE_PAIR_STATUS}" in
+                  0) echo "- 二次判定: PASS（非退行。ただし一次判定の結果は上書きしない）" ;;
+                  1) echo "- 二次判定: FAIL（退行を再現。詳細は下記計測レポート参照）" ;;
+                  3) echo "- 二次判定: INCONCLUSIVE（採用ペア数不足等で確定できず）" ;;
+                  *) echo "- 二次判定: BLOCKED（追撃自体が計測不能。終了コード ${CHASE_PAIR_STATUS}）" ;;
+                esac
+              else
+                echo "- 二次判定: 実行されませんでした（bench-pair.sh 自体が起動しなかった可能性）"
+              fi
+            else
+              echo "- 追撃不能: 直近の成功 run が見つからない、または現 SHA と同一のため参照コミットを解決できませんでした"
+            fi
             echo
             echo "## 一次対応"
             echo
-            echo "1. \`REPORT_MD=... FAIL_RETRIES=1 bash benches/bench-accept-exclusive.sh\` を手動再実行し、退行の再現を確認する"
-            echo "2. 再現しない場合は環境ノイズと判断し、本 Issue をクローズする"
-            echo "3. 再現する場合は .claude/rules/improvement-proposal.md に従い対応方針を検討する"
+            echo "1. \`REPORT_MD=... MAJORITY_TRIALS=3 bash benches/bench-accept-exclusive.sh\` を手動再実行し、退行の再現を確認する"
+            echo "2. 上記「追撃」の二次判定結果（PASS/FAIL/INCONCLUSIVE/BLOCKED）を退行帰属の参考にする"
+            echo "3. 再現しない場合は環境ノイズと判断し、本 Issue をクローズする"
+            echo "4. 再現する場合は .claude/rules/improvement-proposal.md に従い対応方針を検討する"
             echo
-            echo "## 計測レポート"
+            echo "## 計測レポート（一次判定。上記「判定」欄が権威）"
+            echo
+            echo "MAJORITY_TRIALS=3 の多数決により、下記レポートには最大 3 個の"
+            echo "「## 結論」セクション（試行ごと）が記録されうる。最終確定した判定は"
+            echo "本 Issue 冒頭の「判定」欄（多数決の最終結果）であり、レポート中の"
+            echo "個々の「## 結論」（各試行単体の結果）ではない。"
             echo
             if [ -s "${RUNNER_TEMP}/bench-report.md" ]; then
               cat "${RUNNER_TEMP}/bench-report.md"
             else
               echo "（レポートファイルが生成されませんでした）"
+            fi
+            if [ -s "${RUNNER_TEMP}/bench-pair-chase-report.md" ]; then
+              echo
+              echo "## 計測レポート（追撃・二次判定。証跡のみ、一次判定を上書きしない）"
+              echo
+              cat "${RUNNER_TEMP}/bench-pair-chase-report.md"
             fi
           } >"${body_file}"
 
@@ -234,7 +369,7 @@ jobs:
         with:
           label: bench-regression
           label-color: B60205
-          label-description: "週次ベンチ（bench-schedule.yml）の REQ-1/NFR-1 退行・計測不能検知（イシュー #285）"
+          label-description: "週次ベンチ（bench-schedule.yml）の REQ-1/NFR-1 退行・計測不能・判定不能検知（イシュー #285、#614）"
           search-query: bench-regression
           title: ${{ steps.bench_issue_body.outputs.title }}
           body-file: ${{ runner.temp }}/bench-issue-body.md
@@ -255,5 +390,195 @@ jobs:
             echo "bench-accept-exclusive.sh は実行されていません（前段ステップの失敗等）。判定結果を反映できないため終了します" >&2
             exit 1
           fi
+          # 0（PASS）以外はすべてジョブを非 0 終了させる（1=FAIL・2=BLOCKED・
+          # 3=INCONCLUSIVE のいずれも fail-closed。イシュー #614 で 3 を追加したが
+          # 「PASS 以外は赤」という既存契約は変えない）。
           echo "bench-accept-exclusive.sh 終了コード: ${BENCH_STATUS}"
           exit "${BENCH_STATUS}"
+
+  bench-pair-monthly:
+    name: REQ-1/NFR-1 性能ベンチ（月次・二次判定・無条件交互ペア測定）
+    # イシュー #614: `docs/design/bench-hosted-runner.md` 7 節 (iii)（baseline・
+    # core が同方向に悪化する run を一次判定〔axum 比〕だけでは検知できない構造的
+    # 弱点）への暫定対応。恒久策（run 系列の統計的監視）は #616 の較正ラン標本蓄積が
+    # 前提のため本イシューでは実装しない（設計文書が「#616 が標本を追加するまで
+    # 自動検知は機能せず、その間は暫定月次実行が主手段」と規定済み）。
+    #
+    # 月次 cron（`0 4 1 * *`）または workflow_dispatch で mode=pair のときのみ
+    # 実行する（`bench-accept` ジョブの `if:` と同じ「schedule 文字列は完全一致で
+    # 判定・変更時は on: の cron と同時に揃える」注意点が適用される）。
+    if: |
+      github.event.schedule == '0 4 1 * *' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pair')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    # worst-case 予算: 専有実行枠は使わない（無条件・単発測定のため flock/静穏確認を
+    # 経由しない）。pre/cur 2 バイナリの release ビルド + `bench-pair.sh`
+    # （PAIRS=8 既定・4 エンドポイント・RUNS=5 既定のセッション計測 ×16 セッション）の
+    # 実処理時間が主要因。週次ジョブの (3) 多数決分の待機がない分、週次より短い
+    # worst-case を見込み 90 分とする（実測に基づく最終確定は workflow_dispatch
+    # 検証を待つ、PR 本文の対象外事項を参照）。
+    timeout-minutes: 90
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - name: Checkout（cur = 現在の HEAD）
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      - name: Ensure oha 1.15.0
+        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        with:
+          tool: oha
+          version: 1.15.0
+
+      - name: cur バイナリのビルド（core-bench example）
+        run: |
+          cargo build --release --example core-bench -p fandhe-backend-core
+
+      - name: 参照コミット解決（直近の成功 run の head SHA を pre とする）
+        id: ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ref_sha="$(gh api "repos/${{ github.repository }}/actions/workflows/bench-schedule.yml/runs?status=success&branch=main&per_page=1" --jq '.workflow_runs[0].head_sha // empty' 2>/dev/null || true)"
+          if [ -z "${ref_sha}" ] || [ "${ref_sha}" = "${{ github.sha }}" ]; then
+            echo "resolved=false" >> "${GITHUB_OUTPUT}"
+            echo "参照コミットを解決できません（直近の成功 run なし、または現 SHA と同一）。二次判定を実行できないため BLOCKED として扱います" >&2
+          else
+            echo "resolved=true" >> "${GITHUB_OUTPUT}"
+            echo "ref_sha=${ref_sha}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: 参照コミットの checkout（pre）
+        if: steps.ref.outputs.resolved == 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ steps.ref.outputs.ref_sha }}
+          path: pre-src
+
+      - name: pre バイナリのビルド（core-bench example）
+        if: steps.ref.outputs.resolved == 'true'
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/pre-target
+        run: |
+          cargo build --release --example core-bench -p fandhe-backend-core --manifest-path "${{ github.workspace }}/pre-src/Cargo.toml"
+
+      - name: bench-pair.sh（月次・無条件二次判定）
+        id: pair
+        if: steps.ref.outputs.resolved == 'true'
+        run: |
+          set +e
+          BIN_A="${{ runner.temp }}/pre-target/release/examples/core-bench" \
+          BIN_B="${{ github.workspace }}/target/release/examples/core-bench" \
+          CPU_PROBE=1 \
+          REPORT_MD="${RUNNER_TEMP}/bench-pair-report.md" \
+          bash benches/bench-pair.sh
+          echo "status=$?" >> "${GITHUB_OUTPUT}"
+
+      - name: 退行検知時の Issue 本文組み立て
+        id: issue_body
+        # 参照コミットが解決できなかった場合も「継続検証体制の喪失」として起票する
+        # （silent skip 禁止。BLOCKED 相当の終了コード 2 を採用）。
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (steps.ref.outputs.resolved != 'true' || (steps.pair.outcome == 'success' && steps.pair.outputs.status != '0'))
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REF_RESOLVED: ${{ steps.ref.outputs.resolved }}
+          REF_SHA: ${{ steps.ref.outputs.ref_sha }}
+          PAIR_STATUS: ${{ steps.pair.outputs.status }}
+        run: |
+          set -euo pipefail
+
+          if [ "${REF_RESOLVED:-false}" != "true" ]; then
+            title_prefix="bench-regression: REQ-1/NFR-1 月次二次判定（方式 2）が BLOCKED（参照コミット未解決）"
+            verdict="BLOCKED（直近の成功 run が見つからない、または現 SHA と同一のため参照コミットを解決できませんでした）"
+            pair_status_num=2
+          else
+            case "${PAIR_STATUS}" in
+              1)
+                title_prefix="bench-regression: REQ-1/NFR-1 月次二次判定（方式 2）で退行を検知"
+                verdict="FAIL（交互ペア測定〔前月以降の直近成功 run 比〕で退行を検出）"
+                ;;
+              3)
+                title_prefix="bench-regression: REQ-1/NFR-1 月次二次判定（方式 2）が判定不能（要再計測・INCONCLUSIVE）"
+                verdict="INCONCLUSIVE（採用ペア数が最低ペア数を下回る等で確定できません）"
+                ;;
+              *)
+                title_prefix="bench-regression: REQ-1/NFR-1 月次二次判定（方式 2）が BLOCKED（計測不能）"
+                verdict="BLOCKED（bench-pair.sh 自体の計測不能。終了コード ${PAIR_STATUS}）"
+                ;;
+            esac
+            pair_status_num="${PAIR_STATUS}"
+          fi
+
+          echo "title=${title_prefix}" >> "${GITHUB_OUTPUT}"
+          echo "status=${pair_status_num}" >> "${GITHUB_OUTPUT}"
+
+          body_file="${RUNNER_TEMP}/bench-pair-issue-body.md"
+          {
+            echo "## 検知内容（方式 2: 月次無条件交互ペア測定）"
+            echo
+            echo "- 判定: ${verdict}"
+            echo "- 実行: ${RUN_URL}"
+            echo "- ワークフロー: bench-schedule.yml（bench-pair-monthly ジョブ、月次 schedule または workflow_dispatch mode=pair）"
+            if [ "${REF_RESOLVED:-false}" = "true" ]; then
+              echo "- 参照コミット（pre）: ${REF_SHA}"
+            fi
+            echo
+            echo "## 位置づけ"
+            echo
+            echo "本判定は一次判定（axum 比、週次 bench-accept ジョブ）とは独立した"
+            echo "退行検知手段（\`docs/design/bench-hosted-runner.md\` 7 節 (iii) の暫定対応）。"
+            echo "一次判定の結果を上書き・確定しない。"
+            echo
+            echo "## 一次対応"
+            echo
+            echo "1. \`BIN_A=<pre> BIN_B=<cur> REPORT_MD=... bash benches/bench-pair.sh\` を手動再実行し、退行の再現を確認する"
+            echo "2. 再現しない場合は環境ノイズと判断し、本 Issue をクローズする"
+            echo "3. 再現する場合は .claude/rules/improvement-proposal.md に従い対応方針を検討する"
+            echo
+            echo "## 計測レポート"
+            echo
+            if [ -s "${RUNNER_TEMP}/bench-pair-report.md" ]; then
+              cat "${RUNNER_TEMP}/bench-pair-report.md"
+            else
+              echo "（レポートファイルが生成されませんでした）"
+            fi
+          } >"${body_file}"
+
+      - name: 退行検知時の Issue 起票
+        if: always() && steps.issue_body.outcome == 'success' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (steps.ref.outputs.resolved != 'true' || (steps.pair.outcome == 'success' && steps.pair.outputs.status != '0'))
+        uses: Fandhe-AI/actions/idempotent-issue@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        with:
+          label: bench-regression
+          label-color: B60205
+          label-description: "週次ベンチ（bench-schedule.yml）の REQ-1/NFR-1 退行・計測不能・判定不能検知（イシュー #285、#614）"
+          search-query: bench-regression
+          title: ${{ steps.issue_body.outputs.title }}
+          body-file: ${{ runner.temp }}/bench-pair-issue-body.md
+
+      - name: 判定結果でジョブを終了（フェイルクローズ）
+        if: always()
+        env:
+          REF_RESOLVED: ${{ steps.ref.outputs.resolved }}
+          PAIR_STATUS: ${{ steps.pair.outputs.status }}
+          PAIR_OUTCOME: ${{ steps.pair.outcome }}
+        run: |
+          if [ "${REF_RESOLVED:-false}" != "true" ]; then
+            echo "参照コミット未解決のため BLOCKED（終了コード 2）として扱います" >&2
+            exit 2
+          fi
+          if [ "${PAIR_OUTCOME}" != "success" ] || [ -z "${PAIR_STATUS}" ]; then
+            echo "bench-pair.sh は実行されていません（前段ステップの失敗等）。判定結果を反映できないため終了します" >&2
+            exit 1
+          fi
+          echo "bench-pair.sh 終了コード: ${PAIR_STATUS}"
+          exit "${PAIR_STATUS}"
