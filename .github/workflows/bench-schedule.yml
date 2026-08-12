@@ -510,7 +510,16 @@ jobs:
         id: issue_body
         # 参照コミットが解決できなかった場合も「継続検証体制の喪失」として起票する
         # （silent skip 禁止。BLOCKED 相当の終了コード 2 を採用）。
-        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (steps.ref.outputs.resolved != 'true' || (steps.pair.outcome == 'success' && steps.pair.outputs.status != '0'))
+        #
+        # `steps.ref.outcome == 'success'` を必須条件に加える（cursor[bot] レビュー
+        # 指摘対応、週次 bench-accept ジョブの `steps.bench.outcome == 'success'`
+        # ガードと同一パターン）: checkout / rustup 導入 / oha 導入 / cur バイナリの
+        # ビルドのいずれかが失敗すると「ref」ステップ自体が skip され、
+        # `steps.ref.outputs.resolved` は空文字になる。空文字は `!= 'true'` を
+        # 満たしてしまうため、この条件だけでは前段の環境構築・ビルド失敗を
+        # 「参照コミット未解決（BLOCKED）」と誤認し、resolved=false の場合と
+        # 同じ理由で bench-regression Issue が誤って自動起票されてしまう。
+        if: always() && steps.ref.outcome == 'success' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (steps.ref.outputs.resolved != 'true' || (steps.pair.outcome == 'success' && steps.pair.outputs.status != '0'))
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REF_RESOLVED: ${{ steps.ref.outputs.resolved }}
@@ -577,7 +586,12 @@ jobs:
           } >"${body_file}"
 
       - name: 退行検知時の Issue 起票
-        if: always() && steps.issue_body.outcome == 'success' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (steps.ref.outputs.resolved != 'true' || (steps.pair.outcome == 'success' && steps.pair.outputs.status != '0'))
+        # `steps.ref.outcome == 'success'` を追加し、上記「Issue 本文組み立て」
+        # ステップと同じ理由で誤起票の入口を二重に塞ぐ（本ステップ自体は
+        # `steps.issue_body.outcome == 'success'` 経由で既に間接的にガードされる
+        # 想定だが、週次 bench-accept ジョブの Issue 起票ステップと同一の
+        # 明示ガードを揃えることで意図を明確化する）。
+        if: always() && steps.ref.outcome == 'success' && steps.issue_body.outcome == 'success' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (steps.ref.outputs.resolved != 'true' || (steps.pair.outcome == 'success' && steps.pair.outputs.status != '0'))
         uses: Fandhe-AI/actions/idempotent-issue@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
         with:
           label: bench-regression
@@ -590,10 +604,22 @@ jobs:
       - name: 判定結果でジョブを終了（フェイルクローズ）
         if: always()
         env:
+          REF_OUTCOME: ${{ steps.ref.outcome }}
           REF_RESOLVED: ${{ steps.ref.outputs.resolved }}
           PAIR_STATUS: ${{ steps.pair.outputs.status }}
           PAIR_OUTCOME: ${{ steps.pair.outcome }}
         run: |
+          # `ref` ステップが skip された場合（前段の checkout / rustup 導入 /
+          # oha 導入 / cur バイナリビルドの失敗）は `REF_RESOLVED` が空文字になり、
+          # 「参照コミット未解決」（下の分岐）と誤認しうる。ジョブは前段の失敗により
+          # 既に failure 状態のため、ここでは判定結果が存在しない旨を明示して
+          # 1 で終了するに留め、誤った BLOCKED（終了コード 2）理由を出さない
+          # （cursor[bot] レビュー指摘対応、週次 bench-accept ジョブの
+          # `BENCH_OUTCOME != 'success'` ガードと同一パターン）。
+          if [ "${REF_OUTCOME}" != "success" ]; then
+            echo "参照コミット解決ステップが実行されていません（前段の checkout / toolchain / oha 導入 / cur バイナリビルドいずれかの失敗等）。判定結果を反映できないため終了します" >&2
+            exit 1
+          fi
           if [ "${REF_RESOLVED:-false}" != "true" ]; then
             echo "参照コミット未解決のため BLOCKED（終了コード 2）として扱います" >&2
             exit 2
