@@ -84,9 +84,17 @@ for idx in "${!LABELS[@]}"; do
         remeasure_count=0
         while :; do
             if [ "${CPU_PROBE}" = "1" ]; then
-                total_before_pair="$(probe_read_total_jiffies)"
-                server_before="$(probe_read_pid_jiffies "${SERVER_PID}")"
-                children_before="$(probe_read_self_children_jiffies)"
+                # NOTE: `probe_read_*` は `/proc` 読み取り不能時に非 0 終了しうる
+                # （`benches/lib/cpu-probe.sh` の契約、空文字を返してフェイル
+                # クローズを呼び出し元に委ねる）。本ファイルは `set -e` 下のため、
+                # 素の代入 `var="$(cmd)"` のまま非 0 終了を伝播させるとスクリプト
+                # 全体が中断し、後続の `probe_external_share`（空文字→"nan"）・
+                # `probe_is_contaminated`（"nan"→汚染扱い）による fail-closed
+                # 継続処理に到達できない。`|| true` で個々の読み取り失敗を吸収し、
+                # 空文字のまま下流の nan 判定へ渡す（PR #620 レビュー指摘対応）。
+                total_before_pair="$(probe_read_total_jiffies)" || true
+                server_before="$(probe_read_pid_jiffies "${SERVER_PID}")" || true
+                children_before="$(probe_read_self_children_jiffies)" || true
             fi
 
             if [ "${label}" = "POST /echo" ]; then
@@ -104,9 +112,10 @@ for idx in "${!LABELS[@]}"; do
                 break
             fi
 
-            total_after_pair="$(probe_read_total_jiffies)"
-            server_after="$(probe_read_pid_jiffies "${SERVER_PID}")"
-            children_after="$(probe_read_self_children_jiffies)"
+            # NOTE: before 側と同じ理由（上記コメント参照）で `|| true` を付ける。
+            total_after_pair="$(probe_read_total_jiffies)" || true
+            server_after="$(probe_read_pid_jiffies "${SERVER_PID}")" || true
+            children_after="$(probe_read_self_children_jiffies)" || true
             total_before="$(echo "${total_before_pair}" | cut -d' ' -f1)"
             busy_before="$(echo "${total_before_pair}" | cut -d' ' -f2)"
             total_after="$(echo "${total_after_pair}" | cut -d' ' -f1)"
