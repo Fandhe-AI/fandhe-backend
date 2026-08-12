@@ -120,8 +120,21 @@ for idx in "${!LABELS[@]}"; do
             busy_before="$(echo "${total_before_pair}" | cut -d' ' -f2)"
             total_after="$(echo "${total_after_pair}" | cut -d' ' -f1)"
             busy_after="$(echo "${total_after_pair}" | cut -d' ' -f2)"
-            attributed_before=$((server_before + children_before))
-            attributed_after=$((server_after + children_after))
+            # NOTE: `server_before`/`children_before`（after 側も同様）が空文字の
+            # 場合、`$(( ))` 算術展開は空文字を暗黙に 0 として扱ってしまい、
+            # 本来 `probe_external_share` の非数値チェックで "nan"（フェイル
+            # クローズ）に落ちるべき片側 read 失敗が `0` へ丸められて汚染検知を
+            # すり抜ける（PR #620 レビュー指摘対応）。算術評価前に両オペランドが
+            # 数値であることを検証し、非数値ならば空文字のまま
+            # `probe_external_share` へ渡して非数値チェックに委ねる。
+            attributed_before=""
+            if [[ "${server_before}" =~ ^[0-9]+$ ]] && [[ "${children_before}" =~ ^[0-9]+$ ]]; then
+                attributed_before=$((server_before + children_before))
+            fi
+            attributed_after=""
+            if [[ "${server_after}" =~ ^[0-9]+$ ]] && [[ "${children_after}" =~ ^[0-9]+$ ]]; then
+                attributed_after=$((server_after + children_after))
+            fi
             ext_cpu_pct="$(probe_external_share "${total_before}" "${total_after}" \
                 "${busy_before}" "${busy_after}" "${attributed_before}" "${attributed_after}")"
 

@@ -319,7 +319,12 @@ echo "  --- interleave_run_pairs: ペアごとの実行順序交互化（イシ�
 # （どの順序で A/B を呼ぶか）のみを検証する。実サーバ・oha には依存しない
 # （本ファイル冒頭のセルフテスト方針どおり）。
 ORDER_LOG_FILE="$(mktemp)"
-trap 'rm -f "${ORDER_LOG_FILE}"' EXIT
+# NOTE: 単純に `trap ... EXIT` を再設置すると、上で設置済みの
+# `cleanup_busy; rm -rf "${TMP_TEST_DIR}"`（受け入れ基準 3 の busy ループ回収・
+# 一時ディレクトリ削除）を上書きして失わせてしまう（PR #620 レビュー指摘対応）。
+# 既存のクリーンアップ処理を含めてチェーンし、本セクション終了時に
+# 元の trap へ戻す（下記 `trap - EXIT` は使わない）。
+trap 'rm -f "${ORDER_LOG_FILE}"; cleanup_busy; rm -rf "${TMP_TEST_DIR}"' EXIT
 interleave_run_session() {
     local bin="$1" _port="$2" out="$3"
     echo "${bin}" >>"${ORDER_LOG_FILE}"
@@ -336,7 +341,10 @@ assert_eq "奇数ペアは A→B・偶数ペアは B→A の順で実行され�
     "${expected_order}" "${observed_order}"
 rm -rf "${PAIRS_OUT_DIR}"
 rm -f "${ORDER_LOG_FILE}"
-trap - EXIT
+# 本セクション専用のクリーンアップ（`${ORDER_LOG_FILE}` 削除）を含んだ trap から、
+# 受け入れ基準 3 が設置した本来の trap（busy ループ回収・`TMP_TEST_DIR` 削除）へ
+# 戻す。`trap - EXIT`（EXIT trap の全解除）は使わない（PR #620 レビュー指摘対応）。
+trap 'cleanup_busy; rm -rf "${TMP_TEST_DIR}"' EXIT
 
 echo ""
 echo "===== 結果: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} ====="
