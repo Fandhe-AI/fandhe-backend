@@ -22,10 +22,12 @@
 #
 # セルフテスト: `scripts/tests/run-bench-cpu-probe-tests.sh` が
 # `interleave_remeasure_window` / `interleave_pair_verdict`（副作用のない純粋な
-# 判定ロジック）のみを対象に検証する。`interleave_run_session` /
-# `interleave_run_pairs`（実サーバ起動・oha 実行を伴う）はセルフテスト対象外
-# （`benches/lib/exclusive.sh` と同じ「副作用のある呼び出し元本体は対象に
-# しない」方針）。
+# 判定ロジック）を対象に検証する。`interleave_run_session`（実サーバ起動・oha
+# 実行を伴う）自体はセルフテスト対象外（`benches/lib/exclusive.sh` と同じ
+# 「副作用のある呼び出し元本体は対象にしない」方針）だが、`interleave_run_pairs`
+# の実行順序オーケストレーション（ペアごとの A→B / B→A 交互化）は
+# `interleave_run_session` を呼び出し順序記録スタブへ差し替えて検証する
+# （実サーバ・oha 非依存、イシュー #613 P1 レビュー指摘対応）。
 #
 # 単体では実行しない（関数定義のみ、副作用なし）。
 
@@ -145,18 +147,30 @@ interleave_run_session() {
         bash "${INTERLEAVE_LIB_DIR}/../bench-http.sh" >/dev/null
 }
 
-# A/B 2 バイナリを `PAIRS` 回、A→B の順で交互にセッション計測する。
+# A/B 2 バイナリを `PAIRS` 回、ペアごとに実行順序を交互化（奇数ペア A→B・偶数
+# ペア B→A）してセッション計測する。
+#
+# 順序効果排除の根拠（イシュー #613 P1 レビュー指摘対応）: 全ペアを固定
+# A→B 順で実行すると、ウォームアップ・キャッシュ・温度/周波数・直前セッションの
+# 負荷残差といった位置効果が毎回同じ側（常に 2 番目に走る B）へ偏り、本ファイル
+# 冒頭で掲げる「順序効果・時間帯ドリフトを排除する」契約を満たさない。奇数/偶数
+# ペアで実行順序を入れ替えることで、位置効果が A/B 双方へ均等に分散し、8 回
+# （既定 PAIRS）の測定全体では相殺される。出力ファイルは常に**バイナリの
+# 識別（A=pre/B=cur）**で `a-<i>.json` / `b-<i>.json` に書き分け、実行順序を
+# 反映しない（呼び出し元の `bench-pair.sh` / `bench-accept.sh` が算出する
+# cur/pre 比の意味論はファイル名にのみ依存し、実行順序に依存しないため、この
+# 交互化は既存の比率計算契約を破らない）。
 #
 # 引数: $1 BIN_A $2 PORT_A $3 BIN_B $4 PORT_B $5 出力先ディレクトリ
 #       $6 quiesce_gate_fn（省略可、既定空文字＝無効）。空でなければ**各ペア
-#       開始直前**（A セッション開始前、i = 1..PAIRS 各回に 1 回）に「関数名」
+#       開始直前**（当該ペアの最初のセッション開始前、i = 1..PAIRS 各回に 1 回）に「関数名」
 #       として呼び出す（呼び出しシグネチャ: `"${quiesce_gate_fn}" "<label>"`。
 #       呼び出し元スクリプトが `source` 済みの同一シェル内関数を渡す想定 —
 #       本ファイルはサブシェルを起こさないため、呼び出し元定義の関数がそのまま
-#       可視）。B セッション直前には呼ばない: `wait_for_quiescence`
+#       可視）。当該ペアの 2 番目のセッション直前には呼ばない: `wait_for_quiescence`
 #       （`lib/exclusive.sh`）は 1 分間 loadavg を見るため、直前に完走した
-#       自分自身の A セッション負荷の残差を「外部汚染」と誤検知しうる
-#       （A/B 間隔を空けずに毎セッション判定すると、この自己負荷の減衰待ちで
+#       自分自身の 1 番目のセッション負荷の残差を「外部汚染」と誤検知しうる
+#       （2 セッション間隔を空けずに毎セッション判定すると、この自己負荷の減衰待ちで
 #       頻繁に `SECTION_QUIESCE_WAIT_SECS` 消費・誤 BLOCKED を招くおそれが
 #       ある）。ペア単位（PAIRS 回、既定 8）ならこのリスクを抑えつつ、区間
 #       開始前 1 回だけでは検出できない複数ペアにまたがるドリフト・汚染を
@@ -180,21 +194,37 @@ interleave_run_pairs() {
         if [ -n "${quiesce_gate_fn}" ]; then
             "${quiesce_gate_fn}" "interleave-pair${i}"
         fi
-        echo "# 交互ペア ${i}/${PAIRS}: A セッション" >&2
+        # 奇数ペアは A→B、偶数ペアは B→A の順で実行する（順序効果排除、
+        # 本関数 doc comment 参照）。出力ファイル名（a-<i>.json / b-<i>.json）は
+        # 常にバイナリの識別で書き分け、実行順序を反映しない。
         # 各セッションの終了コードを個別に検査する（`set -e` を持たない本
         # ファイルでは、ループ末尾以外の失敗を検査なしに放置すると
         # `interleave_run_pairs` 自体の戻り値がループ最終コマンドの終了
         # コードだけに引きずられ、途中セッションの失敗が握りつぶされる
         # ため。呼び出し元（`bench-accept.sh`・`bench-pair.sh`）の
         # BLOCKED 判定はこの戻り値を見て行う契約）。
-        if ! interleave_run_session "${bin_a}" "${port_a}" "${out_dir}/a-${i}.json"; then
-            echo "交互ペア ${i}/${PAIRS} の A セッションが失敗しました" >&2
-            return 1
-        fi
-        echo "# 交互ペア ${i}/${PAIRS}: B セッション" >&2
-        if ! interleave_run_session "${bin_b}" "${port_b}" "${out_dir}/b-${i}.json"; then
-            echo "交互ペア ${i}/${PAIRS} の B セッションが失敗しました" >&2
-            return 1
+        if ((i % 2 == 1)); then
+            echo "# 交互ペア ${i}/${PAIRS}: A セッション（先行）" >&2
+            if ! interleave_run_session "${bin_a}" "${port_a}" "${out_dir}/a-${i}.json"; then
+                echo "交互ペア ${i}/${PAIRS} の A セッションが失敗しました" >&2
+                return 1
+            fi
+            echo "# 交互ペア ${i}/${PAIRS}: B セッション（後行）" >&2
+            if ! interleave_run_session "${bin_b}" "${port_b}" "${out_dir}/b-${i}.json"; then
+                echo "交互ペア ${i}/${PAIRS} の B セッションが失敗しました" >&2
+                return 1
+            fi
+        else
+            echo "# 交互ペア ${i}/${PAIRS}: B セッション（先行）" >&2
+            if ! interleave_run_session "${bin_b}" "${port_b}" "${out_dir}/b-${i}.json"; then
+                echo "交互ペア ${i}/${PAIRS} の B セッションが失敗しました" >&2
+                return 1
+            fi
+            echo "# 交互ペア ${i}/${PAIRS}: A セッション（後行）" >&2
+            if ! interleave_run_session "${bin_a}" "${port_a}" "${out_dir}/a-${i}.json"; then
+                echo "交互ペア ${i}/${PAIRS} の A セッションが失敗しました" >&2
+                return 1
+            fi
         fi
     done
 }

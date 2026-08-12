@@ -7,6 +7,9 @@
 # 算出ロジック・汚染判定・窓単位再計測の有界性・交互測定の二次判定ロジックを
 # 検証する。受け入れ基準 3（意図的な外部負荷注入での汚染窓検出）は、実
 # `/proc/stat` を使う短時間の busy ループ注入ケース（本ファイル末尾）で満たす。
+# `interleave_run_pairs` の実行順序オーケストレーション（ペアごとの A→B / B→A
+# 交互化、イシュー #613 P1 レビュー指摘対応）は `interleave_run_session` を
+# 呼び出し順序記録スタブへ差し替えて検証する（実サーバ・oha 非依存）。
 #
 # 呼び出し元: 人間 / CI が `bash scripts/tests/run-bench-cpu-probe-tests.sh` として
 # 直接実行する（CI 常設組み込みは行わない、.claude/rules/ci.md の schedule
@@ -309,6 +312,31 @@ assert_eq "改善方向（cur/pre < 1）は PASS" "PASS" "${verdict}"
 # 採用ペア数不足 → INCONCLUSIVE
 verdict="$(interleave_pair_verdict "0.05" "6" "1.02 1.03")"
 assert_eq "採用ペア数が最低数未満なら INCONCLUSIVE" "INCONCLUSIVE" "${verdict}"
+
+echo "  --- interleave_run_pairs: ペアごとの実行順序交互化（イシュー #613 P1 レビュー指摘対応） ---"
+# `interleave_run_session`（実サーバ起動・oha 実行を伴う）を、呼ばれた順序を
+# 記録するだけのスタブへ差し替えて `interleave_run_pairs` のオーケストレーション
+# （どの順序で A/B を呼ぶか）のみを検証する。実サーバ・oha には依存しない
+# （本ファイル冒頭のセルフテスト方針どおり）。
+ORDER_LOG_FILE="$(mktemp)"
+trap 'rm -f "${ORDER_LOG_FILE}"' EXIT
+interleave_run_session() {
+    local bin="$1" _port="$2" out="$3"
+    echo "${bin}" >>"${ORDER_LOG_FILE}"
+    # ペアの JSON 出力（a-<i>.json / b-<i>.json）が生成されないと呼び出し元
+    # 判定に影響しうるため、空ファイルとして書き出す（本テストは中身を読まない）。
+    : >"${out}"
+    return 0
+}
+PAIRS_OUT_DIR="$(mktemp -d)"
+PAIRS=4 interleave_run_pairs "bin-a" "18080" "bin-b" "18081" "${PAIRS_OUT_DIR}" >/dev/null
+observed_order="$(tr '\n' ',' <"${ORDER_LOG_FILE}")"
+expected_order="bin-a,bin-b,bin-b,bin-a,bin-a,bin-b,bin-b,bin-a,"
+assert_eq "奇数ペアは A→B・偶数ペアは B→A の順で実行される（固定順序による位置効果の偏りを排除）" \
+    "${expected_order}" "${observed_order}"
+rm -rf "${PAIRS_OUT_DIR}"
+rm -f "${ORDER_LOG_FILE}"
+trap - EXIT
 
 echo ""
 echo "===== 結果: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} ====="
