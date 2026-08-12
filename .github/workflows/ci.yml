@@ -919,8 +919,11 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     # standalone crate 3 個（http/routes 依存の再ビルド + stats_alloc 系の新規依存）の
-    # cold build を見込んだ上限。実測は本 PR の CI 実行が兼ねる。
-    timeout-minutes: 15
+    # cold build に加え、cargo-deny/cargo-audit のソースビルドインストール（dep-audit
+    # ジョブと同一ツール）が乗るため、同ジョブと同水準の 30 分を確保する（codex-review
+    # PR #619 Bugbot 指摘対応。旧 15 分はコールドビルドのみを見込んでおり、
+    # cargo-tool-install 2 件分の所要時間が未加算だった）。
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
