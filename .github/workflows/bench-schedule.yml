@@ -519,11 +519,23 @@ jobs:
         # 満たしてしまうため、この条件だけでは前段の環境構築・ビルド失敗を
         # 「参照コミット未解決（BLOCKED）」と誤認し、resolved=false の場合と
         # 同じ理由で bench-regression Issue が誤って自動起票されてしまう。
-        if: always() && steps.ref.outcome == 'success' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (steps.ref.outputs.resolved != 'true' || (steps.pair.outcome == 'success' && steps.pair.outputs.status != '0'))
+        #
+        # `steps.pair.outcome != 'success'` も起票条件に加える（PR #621 Bugbot
+        # 指摘対応）: `ref` が resolved=true でも、後続の「参照コミットの
+        # checkout（pre）」「pre バイナリのビルド」ステップが失敗すると、暗黙の
+        # `success()` ゲートにより `pair` ステップ自体が skip され
+        # `steps.pair.outcome` は `skipped` になる（`steps.pair.outputs.status`
+        # は空文字）。従来の条件 `steps.pair.outcome == 'success' && ...` は
+        # この場合に false のままとなり、ジョブ自体は赤くなるのに
+        # bench-regression Issue が起票されない「計測不能の silent skip」を
+        # 招いていた（下の「判定結果でジョブを終了」ステップの
+        # `PAIR_OUTCOME != 'success'` 分岐と同一パターンで揃える）。
+        if: always() && steps.ref.outcome == 'success' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (steps.ref.outputs.resolved != 'true' || steps.pair.outcome != 'success' || steps.pair.outputs.status != '0')
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REF_RESOLVED: ${{ steps.ref.outputs.resolved }}
           REF_SHA: ${{ steps.ref.outputs.ref_sha }}
+          PAIR_OUTCOME: ${{ steps.pair.outcome }}
           PAIR_STATUS: ${{ steps.pair.outputs.status }}
         run: |
           set -euo pipefail
@@ -531,6 +543,10 @@ jobs:
           if [ "${REF_RESOLVED:-false}" != "true" ]; then
             title_prefix="bench-regression: REQ-1/NFR-1 月次二次判定（方式 2）が BLOCKED（参照コミット未解決）"
             verdict="BLOCKED（直近の成功 run が見つからない、または現 SHA と同一のため参照コミットを解決できませんでした）"
+            pair_status_num=2
+          elif [ "${PAIR_OUTCOME}" != "success" ]; then
+            title_prefix="bench-regression: REQ-1/NFR-1 月次二次判定（方式 2）が BLOCKED（pre 環境構築失敗）"
+            verdict="BLOCKED（参照コミットの checkout または pre バイナリのビルドが失敗し、bench-pair.sh 自体を実行できませんでした）"
             pair_status_num=2
           else
             case "${PAIR_STATUS}" in
@@ -590,8 +606,11 @@ jobs:
         # ステップと同じ理由で誤起票の入口を二重に塞ぐ（本ステップ自体は
         # `steps.issue_body.outcome == 'success'` 経由で既に間接的にガードされる
         # 想定だが、週次 bench-accept ジョブの Issue 起票ステップと同一の
-        # 明示ガードを揃えることで意図を明確化する）。
-        if: always() && steps.ref.outcome == 'success' && steps.issue_body.outcome == 'success' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (steps.ref.outputs.resolved != 'true' || (steps.pair.outcome == 'success' && steps.pair.outputs.status != '0'))
+        # 明示ガードを揃えることで意図を明確化する）。`steps.pair.outcome !=
+        # 'success'` も上記「Issue 本文組み立て」ステップと同一条件で加える
+        # （PR #621 Bugbot 指摘対応。pre checkout/build 失敗による pair skip を
+        # 計測不能として確実に起票する）。
+        if: always() && steps.ref.outcome == 'success' && steps.issue_body.outcome == 'success' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (steps.ref.outputs.resolved != 'true' || steps.pair.outcome != 'success' || steps.pair.outputs.status != '0')
         uses: Fandhe-AI/actions/idempotent-issue@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
         with:
           label: bench-regression
