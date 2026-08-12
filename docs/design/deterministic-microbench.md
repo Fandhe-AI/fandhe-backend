@@ -172,7 +172,10 @@ fuzz 専用の pinned nightly（`scripts/fuzz.sh`）とは異なり、本ベン�
 - **fail-closed**: ベースライン欠落・パース失敗・決定性自己検証の不一致・指標増加は
   すべて非 0 終了する。暗黙スキップは作らない
 - **リソース枯渇（DoS）**: ベンチは有界反復（`REPEAT = 10`）・有界入力サイズで実行し、
-  CI ジョブに `timeout-minutes: 15` を設定（NFR-10 多層防御の既存方針に整合）
+  CI ジョブに `timeout-minutes: 30` を設定（NFR-10 多層防御の既存方針に整合。
+  standalone crate のコールドビルドに加え cargo-deny / cargo-audit のソースビルド
+  インストールが乗るため、dep-audit ジョブと同水準を確保する。`ci.yml` の
+  `microbench` ジョブコメントと同期）
 - **CI 権限最小化**: `microbench` ジョブはシークレット不要・`pull_request_target` 不使用。
   ワークフロー全体の `permissions` 最小権限方針を変更しない
 

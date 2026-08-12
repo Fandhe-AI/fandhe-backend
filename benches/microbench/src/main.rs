@@ -507,8 +507,12 @@ mod tests {
         assert_eq!(stats.bytes, 128);
     }
 
-    /// 4 シナリオそれぞれのレスポンス（status・body）が期待どおりであることを
-    /// 検証する。alloc 回数の検証はここに含めない — `cargo test` はテストを
+    /// 4 シナリオそれぞれのレスポンス（status・ヘッダ・body）が期待どおりで
+    /// あることを検証する。ヘッダは `Response::serialize` のワイヤ全体を期待
+    /// バイト列と完全一致で比較することで検証する（本ベンチのハンドラは
+    /// ヘッダを一切設定しないため、フレーミング由来の `Content-Length` のみが
+    /// 出力されること — 「ヘッダが空であること」— の明示アサートを兼ねる。
+    /// AGENTS.md「アサーション網羅性規約」対応）。alloc 回数の検証はここに含めない — `cargo test` はテストを
     /// 並列スレッド実行するため、プロセス全体で共有される
     /// `#[global_allocator]` カウンタへ他テストの alloc が混入し計数が
     /// フレーキーになる（`crates/http/tests/alloc_count.rs` が「本ファイル
@@ -526,6 +530,11 @@ mod tests {
         let response = poll_to_completion(router.dispatch(&head, &request[consumed..]));
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"ok".to_vec());
+        assert_eq!(
+            response.serialize(true),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec(),
+            "ヘッダは Content-Length のみ（追加ヘッダなし）であること"
+        );
     }
 
     #[test]
@@ -539,6 +548,11 @@ mod tests {
         let response = poll_to_completion(router.dispatch(&head, &request[consumed..]));
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"hello, alice".to_vec());
+        assert_eq!(
+            response.serialize(true),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nhello, alice".to_vec(),
+            "ヘッダは Content-Length のみ（追加ヘッダなし）であること"
+        );
     }
 
     #[test]
@@ -552,6 +566,11 @@ mod tests {
         let response = poll_to_completion(router.dispatch(&head, &request[consumed..]));
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"{\"id\":7}".to_vec());
+        assert_eq!(
+            response.serialize(true),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n{\"id\":7}".to_vec(),
+            "ヘッダは Content-Length のみ（追加ヘッダなし）であること"
+        );
     }
 
     #[test]
@@ -571,6 +590,11 @@ mod tests {
         let response = poll_to_completion(router.dispatch(&head, &request[consumed..]));
         assert_eq!(response.status, 200);
         assert_eq!(response.body, body.to_vec());
+        assert_eq!(
+            response.serialize(true),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\n{\"message\":\"hi\"}".to_vec(),
+            "ヘッダは Content-Length のみ（追加ヘッダなし）であること"
+        );
     }
 
     /// [`Report::to_json`] / [`Report::from_json`] の往復整合性を検証する
