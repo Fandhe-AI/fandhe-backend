@@ -200,7 +200,13 @@ root `Cargo.toml` の `[workspace.package] version` + `[workspace.dependencies]`
   書き換える。加えて standalone workspace の `templates/app`・`examples/with-*`
   （workspace inheritance の対象外）の依存 `version` 併記、
   `crates/plugin-openapi/openapi.json` の再生成、`CHANGELOG.md` は従来どおり
-  個別に更新する（7.1 節の手順から変わらない）
+  個別に更新する（7.1 節の手順から変わらない）。加えて
+  `benches/microbench/Cargo.lock`（コミット対象、イシュー #615）は内部クレート
+  （`fandhe-backend-http` / `fandhe-backend-routes`）の版を固定しているため、
+  `cargo update --manifest-path benches/microbench/Cargo.toml
+  -p fandhe-backend-http -p fandhe-backend-routes` で追随させる（怠ると
+  ci.yml `microbench` ジョブの `--locked` 実行が stale lock で FAIL する。
+  v0.4.0 バンプ時に実測）
 - `[workspace.dependencies]` の `version` は `workspace.package.version` を
   参照できない Cargo の仕様上、`[workspace.package] version` と別に保守する
   必要があるが、変更が root `Cargo.toml` 1 ファイルに閉じる点は達成している
@@ -256,7 +262,9 @@ breaking change を 0.x 系で一度安定させる位置づけ）。
   （`templates/app`・`examples/with-*` 4 件）の依存 `version` 併記、
   `crates/plugin-openapi/openapi.json` / `openapi.yaml` の `info.version` 再生成
   （`scripts/openapi-two-stage.sh --update`）、`CHANGELOG.md` の `[Unreleased]` →
-  `[0.4.0] - 2026-08-13` 改題を実施した
+  `[0.4.0] - 2026-08-13` 改題を実施した。`benches/microbench/Cargo.lock` の
+  内部クレート版追随（7.2 節に追記）は初回 CI の `microbench` ジョブ FAIL
+  （stale lock × `--locked`）で発覚し追加対応した
 - `standalone-crates-io.yml` は v0.4.0 publish 完了までは構造的に FAIL する
   （v0.2.0（7.1 節）・v0.3.0（7.3 節）と同一のニワトリ卵問題、required check
   対象外のためマージは阻害しない）。publish 完了後に `workflow_dispatch` で
