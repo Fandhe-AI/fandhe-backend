@@ -238,6 +238,30 @@ lockstep 方針に従い公開対象 13 クレートを 0.3.0 へ一括バンプ
   マーカーは全件 SKIP を fail-closed で拒否する設計のため追加しない）。
   publish 完了後に `workflow_dispatch` で再実行し PASS を確認（実施済み、success）
 
+### 7.4 v0.4.0 リリース（2026-08-13 準備、publish は準備中）
+
+v0.3.0 公開（2026-08-05）後に breaking change が 1 件 main に入ったため、7 節の
+lockstep 方針に従い公開対象 13 クレートを 0.4.0 へ一括バンプした
+（ユーザー指示 2026-08-13。将来の v1.0.0 昇格に先立ち、未リリースの
+breaking change を 0.x 系で一度安定させる位置づけ）。
+
+- **BREAKING CHANGES**（詳細・移行手順は `CHANGELOG.md` 参照）:
+  1. `fandhe-backend-http`: `RequestHead` の `method` / `target` フィールドを
+     非公開化し、`method()` / `target()` アクセサ（`&str` 返却）経由の取得へ
+     変更（イシュー #591、性能改善ツリー #579 Phase 3。設計は
+     `docs/design/zero-copy-request-head.md`）
+- **実施した機械作業**: 7.2 節の一元管理手順に従い、root `Cargo.toml` の
+  `[workspace.package] version` + `[workspace.dependencies]` の内部 13 クレート
+  `version` 値（計 14 箇所）を 0.4.0 へ書き換え。加えて standalone workspace
+  （`templates/app`・`examples/with-*` 4 件）の依存 `version` 併記、
+  `crates/plugin-openapi/openapi.json` / `openapi.yaml` の `info.version` 再生成
+  （`scripts/openapi-two-stage.sh --update`）、`CHANGELOG.md` の `[Unreleased]` →
+  `[0.4.0] - 2026-08-13` 改題を実施した
+- `standalone-crates-io.yml` は v0.4.0 publish 完了までは構造的に FAIL する
+  （v0.2.0（7.1 節）・v0.3.0（7.3 節）と同一のニワトリ卵問題、required check
+  対象外のためマージは阻害しない）。publish 完了後に `workflow_dispatch` で
+  再実行し PASS を確認する
+
 ## 8. 公開前チェックリスト
 
 実際に publish を実行する際に確認すべき項目。
@@ -295,6 +319,19 @@ lockstep 方針に従い公開対象 13 クレートを 0.3.0 へ一括バンプ
       `examples/with-websocket`・`examples/with-interceptor` の 5 クレートが
       `fandhe-backend-core = "^0.3.0"` 等を crates.io 公開版のみで解決できて PASS することを
       確認する（2026-08-05 実施済み、success）
+
+### v0.4.0（2026-08-13 準備、publish は準備中）
+
+- [x] 公開対象 13 クレートの `version` および workspace 内 path 依存の `version` 併記が
+      すべて 0.4.0 に揃っている（恒久非公開 3 クレートは対象外。2026-08-13 実施済み）
+- [x] `cargo publish --workspace --dry-run` が公開対象 13 クレート全件で成功する
+      （2026-08-13 実施済み）
+- [ ] Phase B: `v0.4.0` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
+      の実行
+- [ ] Phase B publish 完了後、`standalone-crates-io.yml` を `workflow_dispatch` で
+      再実行し、`templates/app`・`examples/with-*` 4 件の 5 クレートが
+      `fandhe-backend-core = "^0.4.0"` 等を crates.io 公開版のみで解決できて PASS することを
+      確認する
 
 ## 参照
 

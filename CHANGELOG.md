@@ -5,7 +5,13 @@
 （詳細は [`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7 節）。
 恒久非公開クレート（`axum-ref` / `ws-load-client` / `docs-site`）はこの一覧に含めない。
 
-## [Unreleased]
+## [0.4.0] - 2026-08-13
+
+公開対象 13 クレートを lockstep バンプ（`docs/design/crates-io-release.md` 7.4 節）。
+実 publish（`v0.4.0` タグ push → verify → dry-run → GitHub Environments
+`crates-io-release` の required reviewers 承認 → `cargo publish --workspace`）は
+準備中（詳細は
+[`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7.4 節・8 節チェックリスト参照）。
 
 ### BREAKING CHANGES
 
