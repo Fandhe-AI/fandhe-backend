@@ -244,12 +244,20 @@ lockstep 方針に従い公開対象 13 クレートを 0.3.0 へ一括バンプ
   マーカーは全件 SKIP を fail-closed で拒否する設計のため追加しない）。
   publish 完了後に `workflow_dispatch` で再実行し PASS を確認（実施済み、success）
 
-### 7.4 v0.4.0 リリース（2026-08-13 準備、publish は準備中）
+### 7.4 v0.4.0 リリース（2026-08-13 publish 完了）
 
 v0.3.0 公開（2026-08-05）後に breaking change が 1 件 main に入ったため、7 節の
 lockstep 方針に従い公開対象 13 クレートを 0.4.0 へ一括バンプした
 （ユーザー指示 2026-08-13。将来の v1.0.0 昇格に先立ち、未リリースの
 breaking change を 0.x 系で一度安定させる位置づけ）。
+
+- **実 publish（Phase B）は 2026-08-13 に完了**。`v0.4.0` タグ push により
+  `release.yml` の verify → dry-run → GitHub Environments `crates-io-release` の
+  承認を経て `cargo publish --workspace` が実行され、公開対象 13 クレートすべての
+  0.4.0 が crates.io インデックスへ反映されたことを確認済み（release run
+  31681376502。あわせて本ドキュメント・`CHANGELOG.md`・README・
+  `docs/guide/getting-started.md`・`site/index.md`・CLAUDE.md の「準備中」・
+  v0.3.0 表現を「公開済み（2026-08-13）」・v0.4.0 へ切り替えた）。
 
 - **BREAKING CHANGES**（詳細・移行手順は `CHANGELOG.md` 参照）:
   1. `fandhe-backend-http`: `RequestHead` の `method` / `target` フィールドを
@@ -328,18 +336,19 @@ breaking change を 0.x 系で一度安定させる位置づけ）。
       `fandhe-backend-core = "^0.3.0"` 等を crates.io 公開版のみで解決できて PASS することを
       確認する（2026-08-05 実施済み、success）
 
-### v0.4.0（2026-08-13 準備、publish は準備中）
+### v0.4.0（2026-08-13 publish 完了）
 
 - [x] 公開対象 13 クレートの `version` および workspace 内 path 依存の `version` 併記が
       すべて 0.4.0 に揃っている（恒久非公開 3 クレートは対象外。2026-08-13 実施済み）
 - [x] `cargo publish --workspace --dry-run` が公開対象 13 クレート全件で成功する
       （2026-08-13 実施済み）
-- [ ] Phase B: `v0.4.0` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
-      の実行
-- [ ] Phase B publish 完了後、`standalone-crates-io.yml` を `workflow_dispatch` で
+- [x] Phase B: `v0.4.0` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
+      の実行（2026-08-13 実施済み。13 クレートすべての 0.4.0 が crates.io
+      インデックスへ反映されたことを確認済み。release run 31681376502）
+- [x] Phase B publish 完了後、`standalone-crates-io.yml` を `workflow_dispatch` で
       再実行し、`templates/app`・`examples/with-*` 4 件の 5 クレートが
       `fandhe-backend-core = "^0.4.0"` 等を crates.io 公開版のみで解決できて PASS することを
-      確認する
+      確認する（2026-08-13 実施済み、success。run 31683835828）
 
 ## 参照
 
