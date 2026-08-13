@@ -255,10 +255,11 @@ axum-ref との実測比較の判定結果・環境情報は
 （`reports/issue593-p1-zero-copy-bench.md` 9 節・9.7 節で実証、
 `docs/design/bench-hosted-runner.md`）。以下の 3 機構は**すべて既定 OFF の opt-in**
 であり、指定しない限り既存の挙動（一次判定の判定ロジック・出力・終了コード契約）は
-一切変わらない。**しきい値の既定値（`EXT_CPU_MAX_PCT`・`WINDOW_REMEASURE_MAX`・
-`PAIR_M2`・`PAIR_MIN_PAIRS`）は #616 較正ラン（固定 ref・同一コミット 797245a5 で
-mode=primary × 5・mode=pair × 2、全ラン success・総合 PASS）で確定した**（値の
-変更なし。実測確認済みの範囲と未発火 fail-closed 維持の範囲の区分・実測根拠・
+一切変わらない。しきい値の既定値のうち `PAIR_M2` は #616 較正ラン（固定 ref・
+同一コミット 797245a5 で mode=primary × 5・mode=pair × 2、全ラン success・
+総合 PASS）で実測確認のうえ確定した（値の変更なし）。`EXT_CPU_MAX_PCT`・
+`WINDOW_REMEASURE_MAX`・`PAIR_MIN_PAIRS` は同較正ランで発火実績がなく実測検証
+できていないため、暫定値のまま維持し確定扱いしない（区分・実測根拠・
 母集団は `reports/issue616-hosted-runner-calibration.md` 9〜11 節参照）。
 
 ### CPU_PROBE=1 — 外部 CPU 占有率プローブ（`bench-http.sh`）
@@ -730,10 +731,12 @@ exclusive.sh` の `nfr6_run_with_majority`）。旧「FAIL のみ 1 回再試行
 - **後方互換**: `P95_BAND=0`・`MAJORITY_TRIALS=0`（いずれも既定）では従来どおり
   PASS/FAIL の 2 値・`FAIL_RETRIES` 経路のまま動作する。手動実行
   （`bash benches/bench-accept-exclusive.sh`）では既定のまま使ってよい
-- しきい値（`P95_MARGIN=0.10` 等）は #616 較正ラン（固定 ref・同一コミット
-  797245a5 で mode=primary × 5・mode=pair × 2、全ラン success・総合 PASS）で
-  確定した（値の変更なし。実測確認済みの範囲と未発火 fail-closed 維持の範囲の
-  区分は `reports/issue616-hosted-runner-calibration.md` 11 節参照）
+- しきい値のうち実測発火のあった範囲（`P95_MARGIN=0.10` の帯域内判定等）は
+  #616 較正ラン（固定 ref・同一コミット 797245a5 で mode=primary × 5・
+  mode=pair × 2、全ラン success・総合 PASS）で確定した（値の変更なし）。
+  未発火の防御パラメータ（`MAJORITY_TRIALS` の多数決経路等）は暫定値のまま
+  維持し確定扱いしない（区分は
+  `reports/issue616-hosted-runner-calibration.md` 11 節参照）
 
 **呼び出し対象コマンド側の契約は `nfr6_run_with_majority` にも引き継がれる**
 （イシュー #479 で `nfr6_run_with_fail_retry` 向けに定めた契約と同一）: 決定論的な

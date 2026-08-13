@@ -35,9 +35,10 @@ name: bench-schedule
 #   弱点（`docs/design/bench-hosted-runner.md` 7 節 (iii)）への暫定対応として、
 #   実時間退行クラスを定期的に守る役割を持つ。#616 較正ランは完了済み（標本は
 #   `benches/reports/issue616-hosted-runner-calibration.md` 9〜10 節、固定 ref・
-#   同一コミット 797245a5 で mode=primary × 5・mode=pair × 2。しきい値は同較正
-#   ランで確定・値の変更なし。実測確認済みの範囲と未発火 fail-closed 維持
-#   （MAJORITY_TRIALS の多数決経路等）の範囲の区分は同レポート 11 節参照）だが、
+#   同一コミット 797245a5 で mode=primary × 5・mode=pair × 2。実測発火のあった
+#   判定経路のしきい値は同較正ランで確定・値の変更なし。未発火の防御パラメータ
+#   （MAJORITY_TRIALS の多数決経路等）は暫定値のまま維持で確定扱いしない —
+#   区分は同レポート 11 節参照）だが、
 #   恒久策（トリガ (iii) 監視ロジック）は引き続き未実装の保留のため、本月次実行は
 #   当面主手段のまま継続する。
 #
