@@ -30,13 +30,17 @@ name: bench-schedule
 #   コミットを pre として `bench-pair.sh`（交互ペア測定による二次判定、#613）で
 #   退行帰属を試みる「追撃」ステップを実行し、Issue 本文へ結果を添付する
 #   （二次判定の結果は一次判定・ジョブの成否を変更しない。証跡のみ）。
-#   月次無条件二次判定（`bench-pair-monthly` ジョブ）は、#616（較正ラン）の
-#   run 系列蓄積が前提の「baseline・core が同方向に悪化する run を検知できない」
+#   月次無条件二次判定（`bench-pair-monthly` ジョブ）は、恒久策（トリガ (iii)
+#   監視ロジック）が未実装の「baseline・core が同方向に悪化する run を検知できない」
 #   弱点（`docs/design/bench-hosted-runner.md` 7 節 (iii)）への暫定対応として、
-#   標本が揃うまでの間、実時間退行クラスを定期的に守る役割を持つ。#616 は
-#   push 不可の実装フェーズでは新規較正ラン投入ができず run 系列は未蓄積のまま
-#   （`benches/reports/issue616-hosted-runner-calibration.md` 参照。しきい値は
-#   fail-closed 方針で現状値を維持）のため、本月次実行は当面主手段のまま継続する。
+#   実時間退行クラスを定期的に守る役割を持つ。#616 較正ランは完了済み（標本は
+#   `benches/reports/issue616-hosted-runner-calibration.md` 9〜10 節、固定 ref・
+#   同一コミット 797245a5 で mode=primary × 5・mode=pair × 2。実測発火のあった
+#   判定経路のしきい値は同較正ランで確定・値の変更なし。未発火の防御パラメータ
+#   （MAJORITY_TRIALS の多数決経路等）は暫定値のまま維持で確定扱いしない —
+#   区分は同レポート 11 節参照）だが、
+#   恒久策（トリガ (iii) 監視ロジック）は引き続き未実装の保留のため、本月次実行は
+#   当面主手段のまま継続する。
 #
 # INCONCLUSIVE を PASS へ丸めない・二次判定の PASS が一次判定の FAIL を上書き
 # しない、という不変条件は `docs/design/bench-p95-criteria.md` 3.1 節を参照。
@@ -414,11 +418,11 @@ jobs:
     name: REQ-1/NFR-1 性能ベンチ（月次・二次判定・無条件交互ペア測定）
     # イシュー #614: `docs/design/bench-hosted-runner.md` 7 節 (iii)（baseline・
     # core が同方向に悪化する run を一次判定〔axum 比〕だけでは検知できない構造的
-    # 弱点）への暫定対応。恒久策（run 系列の統計的監視）は #616 の較正ラン標本蓄積が
-    # 前提のため本イシューでは実装しない（設計文書が「#616 が標本を追加するまで
-    # 自動検知は機能せず、その間は暫定月次実行が主手段」と規定済み）。#616 の
-    # 実装フェーズは push 不可の制約下で終了し、標本蓄積・恒久策実装は次フェーズへ
-    # 申し送り（`benches/reports/issue616-hosted-runner-calibration.md` 8 節）。
+    # 弱点）への暫定対応。恒久策（run 系列の統計的監視、トリガ (iii)）は引き続き
+    # 未実装の保留であり、その間は本月次実行が主手段。#616 較正ランは完了済み
+    # （mode=primary × 5・mode=pair × 2、標本は
+    # `benches/reports/issue616-hosted-runner-calibration.md` 9〜10 節）だが、
+    # 恒久策の実装自体は別途申し送り事項のまま（同文書 8 節）。
     #
     # 月次 cron（`0 4 1 * *`）または workflow_dispatch で mode=pair のときのみ
     # 実行する（`bench-accept` ジョブの `if:` と同じ「schedule 文字列は完全一致で
@@ -463,9 +467,10 @@ jobs:
         # イシュー #614 codex-review P1 指摘対応: per_page=1（直近 1 件）のみを
         # 参照すると、main に変更がない週や同一 SHA 再実行後の月次実行のように
         # 直近の成功 run の head_sha が現在の head_sha と偶然一致するだけで
-        # resolved=false（BLOCKED 相当）になり、「#616 の標本蓄積までの繋ぎとして
-        # 毎月無条件に交互ペア測定を実行する」運用契約（`docs/design/
-        # bench-hosted-runner.md` 5 節 2 項）が正常運用でも恒常的に破られる。
+        # resolved=false（BLOCKED 相当）になり、「恒久策（トリガ (iii) 監視ロジック）
+        # 未実装の間の繋ぎとして毎月無条件に交互ペア測定を実行する」運用契約
+        # （`docs/design/bench-hosted-runner.md` 5 節 2 項）が正常運用でも
+        # 恒常的に破られる。
         # per_page=10 で直近複数件を取得し、現在の SHA と異なる最初の成功 run を
         # 参照コミットとして選択する（同一 SHA の連続成功 run が 10 件に満たない
         # 限り解決できる。それでも見つからない場合のみ BLOCKED 扱いとする）。

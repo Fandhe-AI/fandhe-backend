@@ -255,11 +255,12 @@ axum-ref との実測比較の判定結果・環境情報は
 （`reports/issue593-p1-zero-copy-bench.md` 9 節・9.7 節で実証、
 `docs/design/bench-hosted-runner.md`）。以下の 3 機構は**すべて既定 OFF の opt-in**
 であり、指定しない限り既存の挙動（一次判定の判定ロジック・出力・終了コード契約）は
-一切変わらない。**しきい値の既定値（`EXT_CPU_MAX_PCT`・`WINDOW_REMEASURE_MAX`・
-`PAIR_M2`・`PAIR_MIN_PAIRS`）は #616 で fail-closed 方針により現状の暫定値のまま
-維持した**（確定値ではない。新方式・同一コミット系列の実測較正は未収集・
-較正未完了。母集団・再較正条件は
-`reports/issue616-hosted-runner-calibration.md` 参照）。
+一切変わらない。しきい値の既定値のうち `PAIR_M2` は #616 較正ラン（固定 ref・
+同一コミット 797245a5 で mode=primary × 5・mode=pair × 2、全ラン success・
+総合 PASS）で実測確認のうえ確定した（値の変更なし）。`EXT_CPU_MAX_PCT`・
+`WINDOW_REMEASURE_MAX`・`PAIR_MIN_PAIRS` は同較正ランで発火実績がなく実測検証
+できていないため、暫定値のまま維持し確定扱いしない（区分・実測根拠・
+母集団は `reports/issue616-hosted-runner-calibration.md` 9〜11 節参照）。
 
 ### CPU_PROBE=1 — 外部 CPU 占有率プローブ（`bench-http.sh`）
 
@@ -720,7 +721,9 @@ exclusive.sh` の `nfr6_run_with_majority`）。旧「FAIL のみ 1 回再試行
   単発票を一律非上書きとすることで、断続的な真の退行が多数決で PASS へ救済される
   fail-open を防ぐ。詳細は `nfr6_run_with_majority` の doc comment 参照）
 - **p95 の帯域**: `P95_RATIO_MAX`（spec 基準値 1.10、不変）に対し `P95_MARGIN`
-  （既定 0.10、#616 で fail-closed 方針により暫定値のまま維持・較正未完了）を掛けた
+  （既定 0.10。#616 較正ラン（固定 ref・同一コミット 797245a5 で mode=primary
+  × 5、全ラン PASS）では判定不能帯 1.10〜1.21 への突入が未観測でマージン幅の
+  妥当性は実測検証できておらず、暫定値のまま維持・確定扱いしない）を掛けた
   `1.10 × (1 + 0.10) = 1.21` を判定不能上限とする。
   比 `<= 1.10` は PASS、`1.10 < 比 <= 1.21` は INCONCLUSIVE、`比 > 1.21` は FAIL。
   適用対象は p95 のみ（RPS・p99・RSS・バイナリサイズ・起動時間は従来どおり単一
@@ -728,10 +731,12 @@ exclusive.sh` の `nfr6_run_with_majority`）。旧「FAIL のみ 1 回再試行
 - **後方互換**: `P95_BAND=0`・`MAJORITY_TRIALS=0`（いずれも既定）では従来どおり
   PASS/FAIL の 2 値・`FAIL_RETRIES` 経路のまま動作する。手動実行
   （`bash benches/bench-accept-exclusive.sh`）では既定のまま使ってよい
-- しきい値（`P95_MARGIN=0.10` 等）は #616 で fail-closed 方針により現状の暫定値
-  のまま維持した（確定値ではない。新方式・同一コミット系列の実測較正は未収集・
-  較正未完了。次フェーズでの再較正条件は
-  `reports/issue616-hosted-runner-calibration.md` 参照）
+- しきい値のうち実測発火のあった範囲（`PAIRS`・`PAIR_M2`）は
+  #616 較正ラン（固定 ref・同一コミット 797245a5 で mode=primary × 5・
+  mode=pair × 2、全ラン success・総合 PASS）で確定した（値の変更なし）。
+  未発火の `P95_MARGIN`（判定不能帯）・防御パラメータ（`MAJORITY_TRIALS` の
+  多数決経路等）は暫定値のまま維持し確定扱いしない（区分は
+  `reports/issue616-hosted-runner-calibration.md` 11 節参照）
 
 **呼び出し対象コマンド側の契約は `nfr6_run_with_majority` にも引き継がれる**
 （イシュー #479 で `nfr6_run_with_fail_retry` 向けに定めた契約と同一）: 決定論的な
@@ -757,9 +762,9 @@ exclusive.sh` の `nfr6_run_with_majority`）。旧「FAIL のみ 1 回再試行
 構造的弱点（baseline・core が同方向に悪化する run を検知できない、
 `docs/design/bench-hosted-runner.md` 7 節 (iii)）への暫定対応として、一次判定の
 FAIL/INCONCLUSIVE を待たず**無条件**に毎月 1 回、直近の成功 run との交互ペア測定を
-実行する。恒久策（run 系列の統計的監視）は #616 の較正ラン標本蓄積が前提のため
-本イシューでは実装しない。#616 の実装フェーズは push 不可の制約下で終了したため
-run 系列は未蓄積のまま（`reports/issue616-hosted-runner-calibration.md` 参照）。
+実行する。恒久策（run 系列の統計的監視、トリガ (iii)）は引き続き未実装の保留である。
+#616 較正ランは mode=primary × 5・mode=pair × 2 の実施をもって完了済み
+（`reports/issue616-hosted-runner-calibration.md` 9〜10 節参照）。
 
 ### 退行検知時の扱い（フェイルクローズ・Issue 自動起票）
 
