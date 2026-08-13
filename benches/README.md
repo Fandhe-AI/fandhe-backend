@@ -721,9 +721,9 @@ exclusive.sh` の `nfr6_run_with_majority`）。旧「FAIL のみ 1 回再試行
   単発票を一律非上書きとすることで、断続的な真の退行が多数決で PASS へ救済される
   fail-open を防ぐ。詳細は `nfr6_run_with_majority` の doc comment 参照）
 - **p95 の帯域**: `P95_RATIO_MAX`（spec 基準値 1.10、不変）に対し `P95_MARGIN`
-  （既定 0.10、#616 較正ラン（固定 ref・同一コミット 797245a5 で mode=primary
-  × 5、全ラン PASS）で帯域内判定を実測確認のうえ確定・値の変更なし。判定不能帯
-  1.10〜1.21 への突入は較正ラン中に未観測）を掛けた
+  （既定 0.10。#616 較正ラン（固定 ref・同一コミット 797245a5 で mode=primary
+  × 5、全ラン PASS）では判定不能帯 1.10〜1.21 への突入が未観測でマージン幅の
+  妥当性は実測検証できておらず、暫定値のまま維持・確定扱いしない）を掛けた
   `1.10 × (1 + 0.10) = 1.21` を判定不能上限とする。
   比 `<= 1.10` は PASS、`1.10 < 比 <= 1.21` は INCONCLUSIVE、`比 > 1.21` は FAIL。
   適用対象は p95 のみ（RPS・p99・RSS・バイナリサイズ・起動時間は従来どおり単一
@@ -731,11 +731,11 @@ exclusive.sh` の `nfr6_run_with_majority`）。旧「FAIL のみ 1 回再試行
 - **後方互換**: `P95_BAND=0`・`MAJORITY_TRIALS=0`（いずれも既定）では従来どおり
   PASS/FAIL の 2 値・`FAIL_RETRIES` 経路のまま動作する。手動実行
   （`bash benches/bench-accept-exclusive.sh`）では既定のまま使ってよい
-- しきい値のうち実測発火のあった範囲（`P95_MARGIN=0.10` の帯域内判定等）は
+- しきい値のうち実測発火のあった範囲（`PAIRS`・`PAIR_M2`）は
   #616 較正ラン（固定 ref・同一コミット 797245a5 で mode=primary × 5・
   mode=pair × 2、全ラン success・総合 PASS）で確定した（値の変更なし）。
-  未発火の防御パラメータ（`MAJORITY_TRIALS` の多数決経路等）は暫定値のまま
-  維持し確定扱いしない（区分は
+  未発火の `P95_MARGIN`（判定不能帯）・防御パラメータ（`MAJORITY_TRIALS` の
+  多数決経路等）は暫定値のまま維持し確定扱いしない（区分は
   `reports/issue616-hosted-runner-calibration.md` 11 節参照）
 
 **呼び出し対象コマンド側の契約は `nfr6_run_with_majority` にも引き継がれる**
