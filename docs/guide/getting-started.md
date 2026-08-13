@@ -10,7 +10,7 @@ crates.io に公開済みの fandhe-backend を自分のプロジェクトへ組
 
 ## 1. プロジェクトを作成して依存を追加する
 
-crates.io v0.3.0 として公開済み（2026-08-05）です（変更履歴は `CHANGELOG.md` 参照）。
+crates.io v0.4.0 として公開済み（2026-08-13）です（変更履歴は `CHANGELOG.md` 参照）。
 [crates.io](https://crates.io/crates/fandhe-backend-core) から直接依存に追加します。
 
 ```bash
@@ -25,7 +25,7 @@ cargo add fandhe-backend-core --features websocket
 
 公開対象クレートは `fandhe-backend-core` / `fandhe-backend-http` / `fandhe-backend-routes` と
 `fandhe-backend-plugin-*` の計 13 クレート（すべて lockstep で同一バージョン。
-現行公開版は v0.3.0）ですが、
+現行公開版は v0.4.0）ですが、
 通常は `fandhe-backend-core` の feature 経由で利用すれば十分です（feature 一覧は
 本ページ 5 節参照）。feature を何も指定しない場合、`fandhe-backend-plugin-*` の
 依存・コードは一切バイナリに含まれません（pay-for-what-you-use、
@@ -36,7 +36,7 @@ cargo add fandhe-backend-core --features websocket
 `CorsConfig` / `TracingConfig` / `OpenApiDoc` / `WebRtcConfig` / `ProxyConfig` /
 `StaticFilesConfig` / `CompressionConfig`）は `fandhe_backend_core::plugin_<name>`
 として再エクスポートされており、対応するプラグインクレートへの直接依存を
-追加する必要はありません（crates.io 公開版 v0.3.0 に収録済みです）。
+追加する必要はありません（crates.io 公開版 v0.4.0 に収録済みです）。
 
 `cargo new` の代わりに雛形から始めることもできます。複数 feature を組み合わせた
 実運用形の雛形は
@@ -45,7 +45,7 @@ cargo add fandhe-backend-core --features websocket
 [`examples/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/examples/)
 にあり、いずれも standalone プロジェクトとしてコピーしてそのまま `cargo run`
 できます（コピー後は `Cargo.toml` の依存から `path = ...` を外し、
-`version = "0.3.0"` のみの crates.io 版参照に切り替えてください）。
+`version = "0.4.0"` のみの crates.io 版参照に切り替えてください）。
 
 ## 2. 最小サーバを書く
 
