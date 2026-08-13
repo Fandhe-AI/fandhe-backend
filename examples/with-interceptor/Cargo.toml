@@ -9,11 +9,10 @@ publish = false
 # 依存は path 指定（リポジトリ内 workspace の crates/* を直接参照し、CI で
 # 常に最新実装に対して検証する）。本サンプルをリポジトリ外へコピーして
 # 使う場合は `path = "../../crates/..."` を外すこと（`examples/with-cors/
-# Cargo.toml` と同一の注意）。ただし `Interceptor` は crates.io 公開版
-# 0.1.0（2026-07-21 公開）より後に追加された拡張点のため、公開版 0.1.0 の
-# みでは本サンプルは解決できない（`fandhe_backend_core::Interceptor` が
-# unresolved import になる）。`Interceptor` を含む新版が crates.io へ
-# 再公開されるまでは、path 指定を維持したリポジトリ内検証にとどめること。
+# Cargo.toml` と同一の注意。当該バージョンの crates.io publish 完了後に
+# 限る。公開状況は CLAUDE.md Overview 節参照）。`Interceptor` は crates.io
+# 公開版 0.2.0（2026-08-01 公開）以降に収録済みのため、0.2.0 以降の公開版
+# であれば crates.io 版のみで本サンプルを解決できる。
 [dependencies]
 # Interceptor は feature ゲート不要の純コア拡張点（`crates/core/src/interceptor.rs`
 # のモジュール doc を参照）。よって features は一切指定しない。他プラグイン

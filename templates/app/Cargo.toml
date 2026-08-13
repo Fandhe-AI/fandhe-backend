@@ -9,7 +9,7 @@ publish = false
 # 依存は path 指定（リポジトリ内 workspace の crates/* を直接参照し、CI で
 # 常に最新実装に対して検証する）。テンプレートをリポジトリ外へコピーして
 # 使う場合は `path = "../../crates/..."` を外し、`version = "0.4.0"` のみの
-# crates.io 版参照に切り替えること（crates.io 公開済み、CLAUDE.md Overview
+# crates.io 版参照に切り替えること（当該バージョンの crates.io publish 完了後に限る。公開状況は CLAUDE.md Overview
 # 節参照）。
 #
 # プラグインクレートへの直接依存は持たない。`fandhe-backend-core` の

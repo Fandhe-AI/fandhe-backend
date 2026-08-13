@@ -9,7 +9,7 @@ publish = false
 # 依存は path 指定（リポジトリ内 workspace の crates/* を直接参照し、CI で
 # 常に最新実装に対して検証する）。本サンプルをリポジトリ外へコピーして
 # 使う場合は `path = "../../crates/..."` を外し、`version = "0.4.0"` のみの
-# crates.io 版参照に切り替えること（crates.io 公開済み、CLAUDE.md Overview
+# crates.io 版参照に切り替えること（当該バージョンの crates.io publish 完了後に限る。公開状況は CLAUDE.md Overview
 # 節参照。`templates/app/Cargo.toml` と同一の注意）。
 [dependencies]
 # 見せたい機能（CORS）に必要な feature のみ有効化する。他 feature
