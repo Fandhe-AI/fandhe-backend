@@ -703,9 +703,10 @@ fandhe-backend/
 │                                        # の 2 opt-in を追加した
 │                                        # （issue593 レポート 7 節申し送り対応）。3 機構とも
 │                                        # 既定 OFF で現行挙動を変えない。しきい値は #616 の
-│                                        # 較正ランで実測確定済み（値の変更なし・緩和なし。
-│                                        # 根拠は `benches/reports/
-│                                        # issue616-hosted-runner-calibration.md` 9〜11 節参照）。
+│                                        # 較正ランで確定済み（値の変更なし・緩和なし。実測
+│                                        # 確認済みの範囲と未発火 fail-closed 維持の範囲の
+│                                        # 区分は `benches/reports/
+│                                        # issue616-hosted-runner-calibration.md` 11 節参照）。
 │                                        # `interleave_run_pairs`
 │                                        # の A/B いずれかのセッション実行失敗は、性能退行
 │                                        # FAIL（exit 1）と誤分類させず BLOCKED（exit 2）へ
