@@ -3,7 +3,7 @@
   "title": "Codex PR レビュー結果（.github/workflows/codex-review.yml の gate 判定・PR コメント描画が消費する）",
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "findings", "review_completed"],
+  "required": ["summary", "findings", "review_completed", "resolved_threads"],
   "properties": {
     "summary": {
       "type": "string",
@@ -12,6 +12,13 @@
     "review_completed": {
       "type": "boolean",
       "description": "レビュー手順（`git diff HEAD^1 HEAD` 等での差分取得・AGENTS.md「レビュー基準」節の読み取り）を完遂できた場合のみ true。false の場合は gate（.github/workflows/codex-review.yml）がジョブを fail-closed で失敗させ、P0/P1 findings の有無に関わらず PASS 扱いにしない"
+    },
+    "resolved_threads": {
+      "type": "array",
+      "description": "workflow が prompt へ付加した未解決レビュースレッド一覧のうち、指摘内容が現在の HEAD で対応済みであることを実際のコード・差分で確認できたスレッドの id のみを列挙する（確認できないものは含めない fail-closed。一覧の付加が無い場合は空配列）。resolve の実行は workflow 側が実在の未解決スレッド集合と突き合わせてから行う",
+      "items": {
+        "type": "string"
+      }
     },
     "findings": {
       "type": "array",
