@@ -207,7 +207,7 @@ jobs:
       # ホステッドの使い捨て VM では冪等スキップは常に不成立で毎ジョブ新規インストール
       # になる（.claude/rules/ci.md「ホステッド前提への読み替え」。導入検証は弱体化しない）。
       - name: Ensure cargo-nextest 0.9.137
-        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        uses: Fandhe-AI/actions/cargo-tool-install@latest
         with:
           tool: cargo-nextest
           version: 0.9.137
@@ -328,13 +328,13 @@ jobs:
       # 参照はコミット SHA 固定。.claude/rules/security.md）。ホステッドの使い捨て VM
       # では毎ジョブ新規インストールになる（導入検証は弱体化しない）。
       - name: Ensure cargo-deny 0.19.8
-        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        uses: Fandhe-AI/actions/cargo-tool-install@latest
         with:
           tool: cargo-deny
           version: 0.19.8
 
       - name: Ensure cargo-audit 0.22.2
-        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        uses: Fandhe-AI/actions/cargo-tool-install@latest
         with:
           tool: cargo-audit
           version: 0.22.2
@@ -579,7 +579,7 @@ jobs:
       # cargo-geiger はビルドを伴い壊れやすい実績のあるツールのため、本ジョブでは
       # dep-impact.sh と異なり必須ツールとして扱う（未導入・実行失敗は FAIL）。
       - name: Ensure cargo-geiger 0.13.0
-        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        uses: Fandhe-AI/actions/cargo-tool-install@latest
         with:
           tool: cargo-geiger
           version: 0.13.0
@@ -845,7 +845,7 @@ jobs:
       # （サプライチェーン考慮: crates.io からバージョン固定（--locked）で取得し、
       # 参照はコミット SHA 固定）。
       - name: Ensure cargo-fuzz 0.13.2
-        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        uses: Fandhe-AI/actions/cargo-tool-install@latest
         with:
           tool: cargo-fuzz
           version: 0.13.2
@@ -971,13 +971,13 @@ jobs:
       # サプライチェーン監査を維持する（root の deny.toml をそのまま再利用、
       # ライセンス許可リスト・出所制限は共通）。
       - name: Ensure cargo-deny 0.19.8（benches/microbench）
-        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        uses: Fandhe-AI/actions/cargo-tool-install@latest
         with:
           tool: cargo-deny
           version: 0.19.8
 
       - name: Ensure cargo-audit 0.22.2（benches/microbench）
-        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        uses: Fandhe-AI/actions/cargo-tool-install@latest
         with:
           tool: cargo-audit
           version: 0.22.2
@@ -1054,13 +1054,13 @@ jobs:
       # （サプライチェーン考慮: crates.io からバージョン固定（--locked）で取得し、
       # 参照はコミット SHA 固定）。
       - name: Ensure cargo-llvm-cov 0.8.7
-        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        uses: Fandhe-AI/actions/cargo-tool-install@latest
         with:
           tool: cargo-llvm-cov
           version: 0.8.7
 
       - name: Ensure cargo-nextest 0.9.137
-        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        uses: Fandhe-AI/actions/cargo-tool-install@latest
         with:
           tool: cargo-nextest
           version: 0.9.137

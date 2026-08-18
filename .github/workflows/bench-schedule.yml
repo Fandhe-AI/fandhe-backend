@@ -188,7 +188,7 @@ jobs:
       # RPS を比較しないため（当初指定の 1.9.1 は crates.io に存在しないバージョンで、
       # `cargo install` が `could not find oha in registry` で必ず失敗していた）。
       - name: Ensure oha 1.15.0
-        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        uses: Fandhe-AI/actions/cargo-tool-install@latest
         with:
           tool: oha
           version: 1.15.0
@@ -383,7 +383,7 @@ jobs:
         # 成功/失敗）は次の「判定結果でジョブを終了」ステップが `if: always()` で
         # 独立に決めるため、本ステップの成否は判定結果を変えない。
         if: always() && steps.bench.outcome == 'success' && steps.bench_issue_body.outcome == 'success' && steps.bench.outputs.status != '0' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        uses: Fandhe-AI/actions/idempotent-issue@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        uses: Fandhe-AI/actions/idempotent-issue@latest
         with:
           label: bench-regression
           label-color: B60205
@@ -454,7 +454,7 @@ jobs:
           toolchain: stable
 
       - name: Ensure oha 1.15.0
-        uses: Fandhe-AI/actions/cargo-tool-install@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        uses: Fandhe-AI/actions/cargo-tool-install@latest
         with:
           tool: oha
           version: 1.15.0
@@ -632,7 +632,7 @@ jobs:
         # （PR #621 Bugbot 指摘対応。pre checkout/build 失敗による pair skip を
         # 計測不能として確実に起票する）。
         if: always() && steps.ref.outcome == 'success' && steps.issue_body.outcome == 'success' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (steps.ref.outputs.resolved != 'true' || steps.pair.outcome != 'success' || steps.pair.outputs.status != '0')
-        uses: Fandhe-AI/actions/idempotent-issue@fed9c07d98367f77e5e2b63bca38843f46feee96 # main
+        uses: Fandhe-AI/actions/idempotent-issue@latest
         with:
           label: bench-regression
           label-color: B60205

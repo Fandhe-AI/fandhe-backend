@@ -616,3 +616,10 @@ Codex は本ファイルを自動読込する。Codex code review は既定で P
   未設定時のジョブ skip との両立を別途設計する
 - rustfmt / clippy / テスト成否は既存 CI（`ci.yml`）が機械判定するため、本レビューの
   対象外とする
+
+## Fandhe-AI/actions の参照方式（@latest）
+
+2026-08-18・オーナー判断。`Fandhe-AI/actions`（組織内の上流リポジトリ）への `uses:` 参照は
+可変タグ `@latest` を使う。本書の「SHA 固定」に関する観点は**第三者 action にのみ**適用し、
+`Fandhe-AI/actions` への `@latest` 参照・SHA pin の除去を指摘しない。`latest` は上流の
+`.github/workflows/move-latest-tag.yml` が main への push ごとに付け替える。
