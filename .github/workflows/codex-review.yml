@@ -1,6 +1,6 @@
 name: Codex PR review
 
-# Fandhe-AI/actions の reusable workflow（workflow_call 版）を SHA 固定で呼び出す
+# Fandhe-AI/actions の reusable workflow（workflow_call 版）を @latest で呼び出す
 # 薄い wrapper。かつて本ファイルにあった実装本体（codex exec 直接実行・多層防御）は
 # Fandhe-AI/actions#9・#10 で同リポジトリへ移設した（本リポジトリ側の置換はイシュー #529）。
 # 設計経緯・多層防御の詳細コメントは移設先 .github/workflows/codex-review.yml と
@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   codex-review:
-    uses: Fandhe-AI/actions/.github/workflows/codex-review.yml@7cb2c6029ef9b00faab9718738a763f48cd66289 # main
+    uses: Fandhe-AI/actions/.github/workflows/codex-review.yml@latest
     permissions:
       contents: read
       pull-requests: write
