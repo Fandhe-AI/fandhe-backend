@@ -23,11 +23,15 @@ concurrency:
 
 jobs:
   codex-review:
-    uses: Fandhe-AI/actions/.github/workflows/codex-review.yml@4c93891e1a6d7f86dee8fd4336b2fb9446fdab57 # main
+    uses: Fandhe-AI/actions/.github/workflows/codex-review.yml@7cb2c6029ef9b00faab9718738a763f48cd66289 # main
     permissions:
       contents: read
       pull-requests: write
     with:
+      # update-external.yml が生成する日次同期 PR は上流の取り込みそのもので、
+      # codex の指摘があってもこの PR では直せない（修正先は取り込み元の上流リポジトリ）。
+      # 判定は上流の sync-gate ジョブが変更ファイル集合を実測して行う。
+      skip-sync-pr-review: true
       # 既定値と同値だが、no-sudo（汎用防御ラベル）→ codex（用途ラベル）への変更点
       # （親 #528 で確定）を明示するため省略しない。codex 実行ジョブは codex-home
       # 方式の認証情報を self-hosted runner 上に配置する構成のため、public 化後も
