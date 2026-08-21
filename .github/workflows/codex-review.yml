@@ -30,8 +30,11 @@ jobs:
     with:
       # update-external.yml が生成する日次同期 PR は上流の取り込みそのもので、
       # codex の指摘があってもこの PR では直せない（修正先は取り込み元の上流リポジトリ）。
-      # 判定は上流の sync-gate ジョブが変更ファイル集合を実測して行う。
-      skip-sync-pr-review: true
+      # 判定はブランチ名の接頭辞のみで行うため、push できる主体は該当接頭辞の
+      # ブランチで gate を回避できる（受容済み残留リスク。第三者の write
+      # コラボレーターがいる場合は指定しないこと）。接頭辞は自動生成 PR 専用の
+      # 十分に限定的な値にする（区切り文字の "-" まで含める）。
+      skip-branch-prefixes: chore/skills-update-,chore/submodule-update-
       # 既定値と同値だが、no-sudo（汎用防御ラベル）→ codex（用途ラベル）への変更点
       # （親 #528 で確定）を明示するため省略しない。codex 実行ジョブは codex-home
       # 方式の認証情報を self-hosted runner 上に配置する構成のため、public 化後も
