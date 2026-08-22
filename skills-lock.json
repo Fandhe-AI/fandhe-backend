@@ -26,7 +26,7 @@
       "computedHash": "00893e0904b5636de82e36e2f08ecc2d3385b5e141158c71953ddd94590375bc"
     },
     "create-html-report": {
-      "source": "Fandhe-AI/agent-cli-skills",
+      "source": "Fandhe-AI/agent-util-skills",
       "sourceType": "github",
       "skillPath": "skills/create-html-report/SKILL.md",
       "computedHash": "9f6a4de774dc2f7b9f9d61947e45ab67b93a9f1cba9cad46fdfc25cdcbdc469c"
