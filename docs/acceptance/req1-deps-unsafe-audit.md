@@ -289,7 +289,7 @@ used unsafe（`functions.unsafe_`/`exprs.unsafe_`/`item_impls.unsafe_`/
 
 ### 基準 E / F の FAIL はスクリプトの誤検知
 
-- **E（コアループの feature 非分岐）**: スクリプトの awk 抽出が想定する関数シグネチャと現行実装が一致せず「計測不能」となった。実体は `crates/core/src/server.rs` の接続ループ（`run` / `handle_connection` / `handle_connection_with_peer_addr`）内に `#[cfg(feature = ...)]` が 0 箇所であることを手動 grep で確認済み（`server.rs` 内の `cfg(feature` 42 箇所はすべてプラグイン登録メソッド側）
+- **E（コアループの feature 非分岐）**: スクリプトの awk 抽出が想定する関数シグネチャと現行実装が一致せず「計測不能」となった。実体は `crates/core/src/server.rs` の接続ループ（`run` / `handle_connection` / `handle_connection_with_peer_addr`）内に `#[cfg(feature = ...)]` が 0 箇所であることを手動 grep で確認済み（`server.rs` 内の `cfg(feature` 42 箇所はすべてコアループ外の登録・配線コード側 — プラグイン登録メソッドのほか、cfg ゲートされた型・impl・フィールド・初期化式を含む）
 - **F（プラグイン非依存）**: `crates/http/Cargo.toml` の **コメント行**（memchr 導入の説明文中の「plugin-graphql」等の文字列）に反応した誤検知。`cargo tree -p fandhe-backend-http -e normal` の依存一覧にプラグインクレートは含まれない
 
 スクリプトの検出ロジック修正（E の関数パターン更新・F のコメント行除外）は別イシューで扱う。
