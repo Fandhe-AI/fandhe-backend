@@ -14,8 +14,11 @@
 # 依存監査・pay-for-what-you-use 検証（`.claude/rules/pay-for-what-you-use.md`）に
 # 影響しない。
 #
-# ビルド: `cargo build --release --manifest-path benches/refs/Cargo.toml`
-# （成果物は `benches/refs/target/release/{actix-ref,rocket-ref}`）。
+# ビルド: `cargo build --release --locked --manifest-path benches/refs/Cargo.toml`
+# （成果物は `benches/refs/target/release/{actix-ref,rocket-ref}`）。`Cargo.lock` は
+# 比較結果の再現性のためコミット対象（`.gitignore` の例外）。依存監査は
+# `cargo deny --manifest-path benches/refs/Cargo.toml check --config benches/refs/deny.toml`
+# （本 workspace 専用の設定。評価記録は `docs/dep-impact/records.md`）。
 [workspace]
 resolver = "3"
 members = ["actix-ref", "rocket-ref"]

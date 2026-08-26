@@ -8,7 +8,10 @@
 ## 実施日時・環境
 
 - 実施日時: 2026-08-26（UTC）
-- 対象コミット: `bf8d2b4`（main、v0.4.0 公開後）
+- 対象コミット: 基点 `bf8d2b4`（main、v0.4.0 公開後）+ PR #651 の差分（`benches/bench-compare.sh`・
+  `benches/refs/` は本 PR で新設。計測は同差分をコミット前のワークツリーに適用した状態で実施し、
+  ハーネス・参照実装・`core-bench` / `axum-ref` のソースは PR head と同一内容。`crates/` 配下に
+  未コミット変更はなし。再現は PR head のコミットで `benches/README.md` の手順を実行する）
 - OS: macOS（Darwin 25.6.0 arm64）
 - CPU: Apple M4 Max（論理コア 16）、メモリ 64GB
 - rustc / cargo: 1.96.0（stable, 2026-05-25）
@@ -131,6 +134,8 @@ axum 比の基準を維持していることを確認した。p95 の 3 帯域�
 - 本 run は macOS 単発計測。Linux（週次 `bench-schedule.yml` と同環境）での横並び計測は
   未実施。`bench-compare.sh` を週次 CI に組み込む判断は行わない（判定を持たず、対象数に
   比例してジョブ時間が伸びるため）
+- 参照実装の依存監査（依存数・ライセンス・RUSTSEC-2026-0258 の受容判断）は
+  `docs/dep-impact/records.md`（2026-08-26 エントリ）と `benches/refs/deny.toml` に記録
 - actix-web の p99 が他 3 実装より高い原因（worker 分配・接続数との比率）は未分析
 - `benches/refs/` の CI ジョブ（ビルド・テスト・`cargo deny`）は本 PR では追加していない。
   `benches/microbench` と同様に ci.yml へ組み込むかは別 Issue で判断する

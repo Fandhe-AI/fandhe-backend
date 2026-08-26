@@ -818,6 +818,12 @@ standalone workspace（`crates/http/fuzz`・`benches/microbench` と同パター
 `cargo tree` / `cargo geiger` にこれらの依存は一切現れず、公開 13 クレートの依存監査・
 pay-for-what-you-use 検証に影響しない。
 
+`benches/refs/Cargo.lock` はコミット対象（`benches/microbench` と同じ例外。比較レポートの
+再現性のため依存版を固定する）。依存監査は本 workspace 専用の `benches/refs/deny.toml`
+（root `deny.toml` を汚さず、actix-web / Rocket 由来の推移依存への判断を隔離）で
+`cargo deny --manifest-path benches/refs/Cargo.toml check --config benches/refs/deny.toml`
+を実行する。評価結果と採否根拠は `docs/dep-impact/records.md` に記録している。
+
 各参照実装は axum-ref と同じ 4 エンドポイント・同じレスポンス body スキーマ・同じ
 エラー応答（400）を提供し、`BIND_ADDR=host:port` で起動する（`lib/common.sh` の
 `start_server` 契約）。フレームワーク固有の既定構成（worker 数・ランタイム形態）は
@@ -831,7 +837,7 @@ pay-for-what-you-use 検証に影響しない。
 # 対象バイナリを release ビルドする（bench-compare.sh は自動ビルドしない）
 cargo build --release -p axum-ref
 cargo build --release --example core-bench -p fandhe-backend-core
-cargo build --release --manifest-path benches/refs/Cargo.toml
+cargo build --release --locked --manifest-path benches/refs/Cargo.toml
 
 # 既定パラメータ（RUNS=5 DURATION=15s CONNECTIONS=128）で 4 実装を横並び計測する
 REPORT_MD=/tmp/compare.md ./benches/bench-compare.sh \
