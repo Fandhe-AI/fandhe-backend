@@ -8,6 +8,102 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-08-26 — `benches/refs`（standalone workspace）に actix-web / Rocket 参照実装を新規追加（他フレームワーク横並び比較、PR #651 codex-review 指摘 P1 対応）
+
+`benches/refs`（`benches/microbench` と同パターンの standalone workspace、root `Cargo.toml`
+の `[workspace] exclude` 登録済み）に、`benches/bench-compare.sh` の計測対象として
+actix-web 4.15.0（`actix-ref`）・Rocket 0.5.1（`rocket-ref`）の参照実装を追加した。
+直接依存は `actix-web = "4"`・`rocket = { version = "0.5", features = ["json"] }`・
+`serde = { version = "1", features = ["derive"] }`（両クレート）。依存版は
+`benches/refs/Cargo.lock`（コミット対象）で固定する。
+
+### 採否根拠
+
+- **actix-web / Rocket**: 記事・対外説明で求められる「axum 以外の主要 Rust Web
+  フレームワークとの横並び実測」を、`crates/axum-ref` と同一の 4 エンドポイント・
+  同一 body スキーマ・同一 `lto = true` で再現可能にするため。比較は「フレームワーク
+  既定構成どうし」を原則とし、feature の削減（actix-web の `http2` / `compress-*` 等）は
+  行わない（比較条件を変えないため。`benches/README.md`「bench-compare.sh」節）
+- **serde**: レスポンス body（`UserResponse` / `EchoBody` / `ErrorBody`）の derive に使用。
+  axum-ref と同一の直接依存
+- 受け入れ判定（`bench-accept.sh`、REQ-1 / NFR-1 / NFR-2）の baseline は axum-ref のままで
+  変更しない。本 workspace は情報提供目的の比較専用で、CI ゲートを持たない
+
+### pay-for-what-you-use への影響
+
+root workspace の `cargo metadata --no-deps`（16 パッケージ）・`cargo tree`
+（`grep -c 'actix\|rocket'` = 0）・`cargo geiger`（root 起点）のいずれにも現れず、
+公開 13 クレートの依存グラフ・バイナリサイズには**影響しない**。
+
+### 依存クレート数（workspace メンバー除外・`cargo tree -e normal`・union）
+
+| バイナリ | 依存クレート数 | 参考: axum-ref（root） |
+|---|---|---|
+| actix-ref（actix-web 4.15.0、既定 feature） | 134 | 49 |
+| rocket-ref（Rocket 0.5.1 + `json`） | 110 | 49 |
+| 両者 union（`benches/refs` 全体） | 187 | — |
+
+`cargo deny` の `bans` は重複版 8 件（`http` 0.2/1.x、`cookie`、`rand`、`rand_core`、
+`getrandom`、`socket2`、`syn`、`atomic`）を warn 検出。actix-web（hyper 非依存・
+`http` 0.2 系）と Rocket（hyper 0.14・`http` 0.2 系）+ `serde` 側の `http` 1.x 混在に
+よるもので、計測専用のため root と同じ `multiple-versions = "warn"` で許容する。
+
+### リリースバイナリサイズ（`lto = true`、macOS arm64、2026-08-26）
+
+| バイナリ | サイズ | 参考: axum-ref / core-bench |
+|---|---|---|
+| actix-ref | 4,118,848 B | 1,229,584 B / 957,088 B |
+| rocket-ref | 3,728,464 B | 同上 |
+
+（計測値の全体は `benches/reports/multi-framework-compare-2026-08.md`）
+
+### unsafe 件数（`cargo geiger --output-format Ratio`、2026-08-26）
+
+- `actix-ref` 自体: unsafe 0（Functions 6/6・Expressions 44/44 が safe）
+- `rocket-ref` 自体: unsafe 0（Functions 6/6・Expressions 42/42 が safe）
+- 推移依存には unsafe を含むクレートがある（例: `bytes` 1.12.1 Expressions 1694/2520 safe、
+  `rocket` 0.5.1 8740/8758 safe）。フレームワーク本体の unsafe であり本リポジトリの
+  制御外。公開クレートの `unsafe` 集計（`scripts/unsafe-triage.sh`）には影響しない
+
+### ライセンス（`cargo deny check licenses`）
+
+root `deny.toml` の許可リストに対し、`foldhash` 0.2.0（actix-http の推移依存、**Zlib**）
+1 件が不許可となる。Zlib は OSI 承認・FSF Free/Libre 済みの寛容ライセンスで
+コピーレフト条項を持たないため、**`benches/refs/deny.toml`（本 workspace 専用設定）で
+許可**した。root の許可リストには追加しない（公開クレートの依存グラフに Zlib は
+現れないため、許可範囲を広げない）。
+
+### 既知脆弱性（`cargo audit` / `cargo deny check advisories`）
+
+**RUSTSEC-2026-0258**（h2 0.3.27「unbounded empty DATA frames」、HTTP/2 の DoS、
+修正版 h2 ≥ 0.4.16）を 1 件検出。推移経路は actix-web 4.15 → actix-http 3.13（`http2`
+feature、既定 ON、`h2` は optional）→ h2 0.3、および Rocket 0.5.1 → rocket_http →
+hyper 0.14.32 → h2 0.3。修正版は hyper 1.x / actix-http 4 系が前提で、現行安定版の
+actix-web 4 / Rocket 0.5 では取り込めない。
+
+**本 workspace に限り受容**（`benches/refs/deny.toml` の `[advisories] ignore` に理由付きで
+登録。root `deny.toml` の `ignore = []` は変更しない）。根拠:
+
+1. 両バイナリは既定でループバック（127.0.0.1）にのみバインドし外部公開しない
+2. actix-web・Rocket とも HTTP/2 は TLS + ALPN 経由でのみ有効化され、平文 TCP（h2c）では
+   h2 のコードパスに到達しない。本 workspace は TLS を構成せず、負荷生成（oha）も
+   HTTP/1.1 のため、脆弱なフレーム処理は実行されない
+3. actix-web の `http2` feature を外す構成変更は「既定構成どうし」の比較条件を変えるため
+   行わない（Rocket 側は hyper の `http2` が非 optional で外せない）
+
+再検討トリガ: actix-web 5 系 / Rocket 0.6 系（hyper 1.x）の安定版公開時に依存を更新して
+ignore を外す。
+
+### 検証コマンド
+
+```
+$ cargo build --release --locked --manifest-path benches/refs/Cargo.toml
+$ cargo deny --manifest-path benches/refs/Cargo.toml check --config benches/refs/deny.toml
+advisories ok, bans ok, licenses ok, sources ok
+$ cargo tree --manifest-path Cargo.toml | grep -c 'actix\|rocket'
+0
+```
+
 ## 2026-08-12 — `benches/microbench`（standalone crate）に `serde_json` / `stats_alloc` を新規追加（決定的マイクロベンチ、イシュー #615、PR #619 codex-review 指摘 P1 対応）
 
 `benches/microbench`（`crates/http/fuzz`・`plugin-webrtc/tests-e2e` と同パターンの

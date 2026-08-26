@@ -1,0 +1,38 @@
+# 他フレームワーク参照実装の独立 workspace（`benches/bench-compare.sh` の計測対象）。
+#
+# `crates/axum-ref`（axum。REQ-1 / NFR-1 / NFR-2 の受け入れ判定 baseline）に加えて、
+# actix-web / Rocket を同一 4 エンドポイント（`GET /health` / `GET /hello/{name}` /
+# `GET /users/{id}` / `POST /echo`）で実装し、`benches/bench-http.sh` /
+# `bench-rss.sh` / `bench-footprint.sh` の共通ハーネスで横並び計測するための参照
+# バイナリ群。**受け入れ判定（`bench-accept.sh`）の baseline は axum-ref のままで
+# 変えない**。本 workspace は情報提供目的の比較専用であり、判定・CI ゲートを持たない。
+#
+# `crates/http/fuzz`・`crates/plugin-webrtc/tests-e2e`・`benches/microbench` と同じ
+# standalone workspace パターンを踏襲し、root `Cargo.toml` の `[workspace] exclude` に
+# 本パスを登録する。root workspace の `cargo metadata` / `cargo tree` /
+# `cargo geiger` に actix-web / Rocket の依存グラフが一切現れず、公開 13 クレートの
+# 依存監査・pay-for-what-you-use 検証（`.claude/rules/pay-for-what-you-use.md`）に
+# 影響しない。
+#
+# ビルド: `cargo build --release --locked --manifest-path benches/refs/Cargo.toml`
+# （成果物は `benches/refs/target/release/{actix-ref,rocket-ref}`）。`Cargo.lock` は
+# 比較結果の再現性のためコミット対象（`.gitignore` の例外）。依存監査は
+# `cargo deny --manifest-path benches/refs/Cargo.toml check --config benches/refs/deny.toml`
+# （本 workspace 専用の設定。評価記録は `docs/dep-impact/records.md`）。
+[workspace]
+resolver = "3"
+members = ["actix-ref", "rocket-ref"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+# root workspace と同一のデュアルライセンス（`cargo deny check` の
+# `[licenses.private] ignore = false` が unlicensed 検知するため明記する）。
+license = "MIT OR Apache-2.0"
+publish = false
+
+# `crates/axum-ref` と同じ release プロファイル（root Cargo.toml の `[profile.release]`
+# は独立 workspace に継承されないため再掲する）。lto の有無はバイナリサイズ・
+# RPS に影響するため、比較の公平性のために必ず揃える。
+[profile.release]
+lto = true

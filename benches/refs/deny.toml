@@ -1,0 +1,63 @@
+# `benches/refs`（他フレームワーク参照実装、standalone workspace）専用の cargo-deny 設定。
+#
+# root `deny.toml`（公開 13 クレートの依存監査、REQ-15）と同じ許可リスト方式・
+# フェイルクローズ方針を踏襲しつつ、本 workspace にしか現れない actix-web / Rocket
+# 由来の推移依存に対する判断を **root 設定を汚さずに** ここへ隔離する。root 側の
+# `[advisories] ignore = []`・ライセンス許可リストは変更しない（本 workspace は
+# root から `[workspace] exclude` 済みで、公開クレートの依存グラフに一切現れない）。
+#
+# 実行: `cargo deny --manifest-path benches/refs/Cargo.toml check --config benches/refs/deny.toml`
+# 評価結果・採否根拠は `docs/dep-impact/records.md`（2026-08-26 エントリ）参照。
+
+[graph]
+all-features = true
+
+[advisories]
+# RUSTSEC-2026-0258（h2 0.3.27「unbounded empty DATA frames」、HTTP/2 の DoS）。
+# 推移経路: actix-web 4.15 → actix-http 3.13（`http2` feature、既定 ON）→ h2 0.3、
+# および Rocket 0.5.1 → rocket_http → hyper 0.14 → h2 0.3。修正版 h2 0.4.16 以上は
+# hyper 1.x / actix-http 4 系が前提で、現行安定版の actix-web 4 / Rocket 0.5 では
+# 取り込めない（上流のメジャー更新待ち）。
+#
+# 本 workspace で受容する根拠（計測専用バイナリに限定した判断。公開クレートには
+# 適用しない）:
+#   1. 両バイナリは既定でループバック（127.0.0.1）にのみバインドし外部公開しない
+#   2. actix-web・Rocket とも HTTP/2 は TLS + ALPN 経由でのみ有効化され、平文 TCP
+#      （h2c）では h2 のコードパスに到達しない。本 workspace は TLS を構成せず、
+#      負荷生成（oha）も HTTP/1.1 のため、脆弱なフレーム処理は実行されない
+#   3. 「フレームワーク既定構成どうし」を比較する方針（benches/README.md）のため、
+#      actix-web の `http2` feature を外す構成変更（比較条件の変更）は行わない
+# 再検討トリガ: actix-web 5 系 / Rocket 0.6 系（hyper 1.x）の安定版公開時に依存を
+# 更新して本 ignore を外す。
+ignore = [
+    { id = "RUSTSEC-2026-0258", reason = "h2 0.3 は上流（actix-http 3 / hyper 0.14）固定。計測専用・ループバック限定・HTTP/2 未使用（TLS 非構成）のため到達不能。上流メジャー更新で解消" },
+]
+
+[licenses]
+# root deny.toml の許可リストに、actix-http が推移的に引き込む foldhash 0.2（Zlib）を
+# 追加する。Zlib ライセンスは OSI 承認・FSF Free/Libre 済みの寛容ライセンスで
+# コピーレフト条項を持たない（BSD-2-Clause 等と同一の判断根拠）。root の許可リスト
+# には追加しない（公開クレートの依存グラフに Zlib は現れないため）。
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "Unicode-3.0",
+    "BSD-3-Clause",
+    "ISC",
+    "BSD-2-Clause",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = false
+
+[bans]
+# actix-web と Rocket が異なる版の http / cookie / rand 等を要求するため重複は不可避。
+# root と同じく warn に留める（計測専用のため許容）。
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

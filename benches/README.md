@@ -49,6 +49,7 @@ cargo build --release --bin axum-ref
 | `compression-e2e-bench.sh` | compression 有効構成の並行負荷下 E2E 比較（`crates/core/examples/compression_e2e_bench.rs` を使用）。`GET /large`（既定しきい値 64 KiB 以上）への背景負荷と同時に `GET /small`（常にインライン圧縮）を計測し、`spawn_blocking` オフロード（既定）と常時インライン（`BLOCKING_THRESHOLD=max`）の 2 構成で p99 テールレイテンシを比較する（イシュー #473、`benches/reports/issue473-compression-e2e.md`） |
 | `compression-e2e-exclusive.sh` | `compression-e2e-bench.sh` の専有計測 wrapper（flock 相互排他・静穏確認・環境スナップショット。`bench-accept-exclusive.sh` と同型。PASS/FAIL 判定は持たない） |
 | `microbench.sh` | 決定的マイクロベンチ（`benches/microbench/`、per-request alloc カウンタ）のビルド・実行・ベースライン比較（イシュー #615）。実時間計測（本 README の他スクリプト）とは異なり VM ノイズに依存しない 1 回実行の退行検知。詳細は「microbench.sh — 決定的マイクロベンチ」節参照 |
+| `bench-compare.sh` | 複数フレームワークの参照実装（axum-ref / core-bench / `benches/refs/` の actix-ref・rocket-ref）を `NAME=BIN` の組で受け取り、`bench-http.sh` / `bench-rss.sh` / `bench-footprint.sh` を順に実行して横並びの比較表（Markdown）を出力する。**PASS/FAIL 判定は持たない**情報提供用。詳細は「bench-compare.sh — 他フレームワーク横並び比較」節参照 |
 
 共通関数は `lib/common.sh` に集約している（サーバ起動/停止・前提ツール検査・中央値算出・
 `RESULT_JSON` 機械可読出力ヘルパー・数値バリデーション）。
@@ -799,6 +800,69 @@ gh run list --workflow bench-schedule.yml --limit 5
 ベンチ反映要否判断）は
 [`reports/issue594-perf-tree-summary.md`](reports/issue594-perf-tree-summary.md)
 を参照（イシュー #594）。
+
+## bench-compare.sh — 他フレームワーク横並び比較（情報提供用）
+
+`bench-accept.sh` の受け入れ判定は axum-ref のみを baseline とする（REQ-1 / NFR-1 / NFR-2 の
+基準が「axum 比」で定義されているため）。一方、対外説明・記事化では actix-web / Rocket 等の
+他フレームワークとの横並びの数値が求められる。`bench-compare.sh` はそのための
+**判定を持たない**比較ハーネスで、既存の 3 スクリプト（`bench-http.sh` / `bench-rss.sh` /
+`bench-footprint.sh`）を対象バイナリごとに順に呼び出し、`RESULT_JSON` の機械可読出力から
+Markdown の比較表を組み立てる。先頭に指定した対象を比率の基準（=1.00）とする。
+
+### 参照実装（`benches/refs/`）
+
+`benches/refs/` は actix-web（`actix-ref`）・Rocket（`rocket-ref`）の参照実装を持つ
+standalone workspace（`crates/http/fuzz`・`benches/microbench` と同パターン。root
+`Cargo.toml` の `[workspace] exclude` に登録済み）。root workspace の `cargo metadata` /
+`cargo tree` / `cargo geiger` にこれらの依存は一切現れず、公開 13 クレートの依存監査・
+pay-for-what-you-use 検証に影響しない。
+
+`benches/refs/Cargo.lock` はコミット対象（`benches/microbench` と同じ例外。比較レポートの
+再現性のため依存版を固定する）。依存監査は本 workspace 専用の `benches/refs/deny.toml`
+（root `deny.toml` を汚さず、actix-web / Rocket 由来の推移依存への判断を隔離）で
+`cargo deny --manifest-path benches/refs/Cargo.toml check --config benches/refs/deny.toml`
+を実行する。評価結果と採否根拠は `docs/dep-impact/records.md` に記録している。
+
+各参照実装は axum-ref と同じ 4 エンドポイント・同じレスポンス body スキーマ・同じ
+エラー応答（400）を提供し、`BIND_ADDR=host:port` で起動する（`lib/common.sh` の
+`start_server` 契約）。フレームワーク固有の既定構成（worker 数・ランタイム形態）は
+変更せず「既定構成どうし」を比較する。既知の構成差（actix-web の worker ごとの
+単一スレッドランタイム、Rocket のリクエストログを `Critical` に下げていること等）は
+各 `src/main.rs` の doc comment に記録している。
+
+### 実行手順
+
+```bash
+# 対象バイナリを release ビルドする（bench-compare.sh は自動ビルドしない）
+cargo build --release -p axum-ref
+cargo build --release --example core-bench -p fandhe-backend-core
+cargo build --release --locked --manifest-path benches/refs/Cargo.toml
+
+# 既定パラメータ（RUNS=5 DURATION=15s CONNECTIONS=128）で 4 実装を横並び計測する
+REPORT_MD=/tmp/compare.md ./benches/bench-compare.sh \
+  axum=target/release/axum-ref \
+  fandhe-backend=target/release/examples/core-bench \
+  actix-web=benches/refs/target/release/actix-ref \
+  rocket=benches/refs/target/release/rocket-ref
+```
+
+### 専用パラメータ（env で上書き可能）
+
+| 変数 | 既定値 | 意味 |
+|------|-------|------|
+| `REPORT_MD` | 未指定 | 指定時、比較表（Markdown）をこのパスにも書き出す |
+| `RESULT_DIR` | `mktemp -d` | 対象ごとの `RESULT_JSON`（`<NAME>-http.json` 等）の保存先 |
+| `BASE_PORT` | `3201` | 対象ごとに `BASE_PORT + i` を割り当てる（TIME_WAIT 残留との衝突回避） |
+| `SETTLE_SECS` | `5` | 対象・スクリプトの切り替え間の待機秒数 |
+
+### 注意
+
+- 同一ホスト・順次計測のため「同一ホスト計測時のノイズ注意」がそのまま当てはまる。
+  絶対値は環境依存であり、比較表の比率も**同一 run 内の相対値**としてのみ読む
+- 週次 CI（`bench-schedule.yml`）には組み込まない（判定を持たず、対象が増えるほど
+  ジョブ時間が線形に伸びるため）。実測記録は `benches/reports/` に手動で残す
+  （初回: `benches/reports/multi-framework-compare-2026-08.md`、macOS / Apple M4 Max）
 
 ## compression-e2e-bench.sh / compression-e2e-exclusive.sh — compression E2E p99 比較（イシュー #473）
 

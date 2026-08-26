@@ -1,0 +1,15 @@
+[package]
+name = "rocket-ref"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Rocket を横並び性能比較用の参照実装として運用するバイナリ（benches/bench-compare.sh）"
+
+# `crates/axum-ref` と同じ責務境界: 比較専用バイナリであり、ここで追加する依存は
+# root workspace（core・plugin-*）へ一切波及しない（`benches/refs/Cargo.toml` 参照）。
+# Rocket は現行安定版 0.5 系を採用する（2026-08 時点 0.5.1）。`json` feature は
+# `/users/{id}` 応答・`/echo` の JSON 処理に必要。
+[dependencies]
+rocket = { version = "0.5", features = ["json"] }
+serde = { version = "1", features = ["derive"] }

@@ -40,7 +40,7 @@ members = ["crates/*"]
 # （`stats_alloc`・`serde_json`）を混入させず、公開 13 クレートの依存グラフに
 # 一切影響させない）で独立 workspace 化する。`benches/microbench.sh` 経由での
 # みビルド・実行する（CI は `.github/workflows/ci.yml` の `microbench` ジョブ）。
-exclude = ["crates/http/fuzz", "crates/plugin-webrtc/tests-e2e", "benches/microbench"]
+exclude = ["crates/http/fuzz", "crates/plugin-webrtc/tests-e2e", "benches/microbench", "benches/refs"]
 
 [workspace.package]
 edition = "2024"

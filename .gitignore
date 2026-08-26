@@ -21,6 +21,15 @@ crates/plugin-webrtc/tests-e2e/target/
 # 基準値、docs/design/deterministic-microbench.md 参照）。
 benches/microbench/target/
 
+# 他フレームワーク参照実装（actix-web / Rocket、benches/bench-compare.sh の計測対象）専用
+# standalone workspace（root workspace から exclude 済み、benches/microbench と同パターン）
+# のビルド成果物。Cargo.lock は benches/microbench と同じく例外的にコミット対象とする
+# （PR #651 codex-review P2 対応）: 比較レポート（benches/reports/multi-framework-compare-*.md）
+# の RPS・バイナリサイズ・依存監査結果を同一コミットから再現するため、参照実装の依存版を
+# lockfile で固定する（`cargo build --release --locked --manifest-path benches/refs/Cargo.toml`）。
+benches/refs/target/
+!benches/refs/Cargo.lock
+
 # イシュー #619（PR #619 codex-review P1 対応）: benches/microbench/Cargo.lock は
 # 例外的にコミット対象とする。決定的マイクロベンチは「同一コード・同一環境での
 # 厳密比較」が運用契約（4 行目の全体除外ルール `Cargo.lock` の対象からこの 1 個の
