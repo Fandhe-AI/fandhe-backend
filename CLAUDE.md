@@ -722,6 +722,15 @@ fandhe-backend/
 │   │                                    # 比較で退行を検知する。`--check`（ベースライン比較、
 │   │                                    # ci.yml `microbench` ジョブが使用）・
 │   │                                    # `--update-baseline`（レビュー承認前提）に対応
+│   ├── bench-compare.sh                # 他フレームワーク横並び比較（axum-ref / core-bench /
+│   │                                    # `refs/` の actix-ref・rocket-ref を `NAME=BIN` で受け、
+│   │                                    # bench-http / bench-rss / bench-footprint を順に実行して
+│   │                                    # Markdown 比較表を出力）。PASS/FAIL 判定を持たない
+│   │                                    # 情報提供用で CI には組み込まない（記事・対外説明用）
+│   ├── refs/                           # 他フレームワーク参照実装（actix-web / Rocket、standalone
+│   │                                    # workspace。`microbench/` と同パターンで root workspace
+│   │                                    # から exclude 済み。受け入れ判定の baseline は axum-ref
+│   │                                    # のまま変えない）
 │   └── microbench/                     # 決定的マイクロベンチ本体（standalone crate、
 │                                        # `crates/http/fuzz` と同パターンで root workspace
 │                                        # から exclude 済み、イシュー #615）。
