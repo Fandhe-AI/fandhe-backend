@@ -72,6 +72,18 @@ for pair in "$@"; do
         echo "エラー: NAME は英数字・'.'・'_'・'-' のみ使用できます（現在: ${name}）" >&2
         exit 1
     fi
+    # NAME は RESULT_DIR 内の JSON ファイル名（`<NAME>-http.json` 等）と比較表の行キーを
+    # 兼ねるため一意でなければならない。重複を許すと後続の計測が先行の JSON を上書きし、
+    # 表生成時に両行が最後のバイナリの結果を読んで「正常終了したまま誤った比較表」に
+    # なる（先頭 NAME が重複すると比率の基準値まで別バイナリへ置き換わる）。
+    # フェイルクローズで即時エラー終了する（PR #651 codex-review P1 対応。macOS 既定の
+    # bash 3.2 には連想配列がないため配列走査で検査する）。
+    for existing in "${NAMES[@]+"${NAMES[@]}"}"; do
+        if [ "${existing}" = "${name}" ]; then
+            echo "エラー: NAME '${name}' が重複しています。対象ごとに一意の NAME を指定してください" >&2
+            exit 1
+        fi
+    done
     case "${bin}" in
         /*) ;;
         *) bin="${WORKSPACE_ROOT}/${bin}" ;;
