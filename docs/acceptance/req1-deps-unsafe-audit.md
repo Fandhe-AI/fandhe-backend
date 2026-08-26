@@ -253,3 +253,43 @@ used unsafe（`functions.unsafe_`/`exprs.unsafe_`/`item_impls.unsafe_`/
 1 回目のリトライで成功・WARN 経路には落ちなかったことも確認した。`dep-impact.sh`
 の geiger 呼び出し（絶対パス修正後）も単独実行し、正常に Utf8 形式の集計表が
 出力されることを確認した。
+
+## 再検証（2026-08-26、v0.4.0 系 main `a4192b5`）
+
+紹介記事（Fandhe-AI/articles PR #61）で本監査値を引用するにあたり、初回実行（2026-07-18、v0.1.0 公開前のコード）から乖離がないかを確認するため、`scripts/accept/core-deps-unsafe-audit.sh` を main（コミット `a4192b5`、v0.4.0 以降のコード）でフル再実行した。
+
+実行環境: macOS 26.6.2（Apple Silicon）/ rustc 1.96.0 / cargo-geiger 0.13.0。
+
+### 結果サマリー
+
+```text
+[PASS] A: 依存クレート数比 <=50%: core=11 種類 / axum-ref=50 種類（比率 22%、自クレート含む同一手法での cargo tree -e normal 集計）
+[PASS] B: unsafe 0件/根拠明記: 対象コアクレート（crates/core crates/http crates/routes）の src/ に unsafe 0 件
+[WARN] B補足: workspace lint: ルート Cargo.toml で unsafe_code="warn" を設定済み。CI の clippy -D warnings と組み合わせ実質 deny として機能（.claude/rules/security.md）
+[PASS] B補足: cargo geiger（二重検証）: 対象コアクレート（fandhe-backend-core fandhe-backend-http fandhe-backend-routes）の used unsafe（functions/exprs/item_impls/item_traits/methods 合算）が全て 0
+[PASS] C: cargo audit 既知脆弱性 0件: Loaded 1226 security advisories / Scanning Cargo.lock for vulnerabilities (356 crate dependencies)
+[PASS] C: cargo deny check: deny.toml による全項目チェックで違反 0 件
+[FAIL] D: コア実質コード行数 <=5000: 実質コード行数（空行・// コメント行除外）: 8819 行（対象: crates/core crates/http crates/routes） / tokei 参考値: "code":15433
+[PASS] E: 3拡張点 trait 定義: Middleware / UpgradeHandler / RequestGate すべて crates/core/src に定義あり
+[FAIL] E: コアループの feature 非分岐: コアループ関数を crates/core/src/server.rs から検出できず計測不能（スクリプトの検出パターンの陳腐化。下記参照）
+[FAIL] F: プラグイン非依存（http/routes）: 検出: crates/http/Cargo.toml に plugin- 依存あり（コメント行への誤検知。下記参照）
+```
+
+### 初回実行（2026-07-18）からの差分
+
+| 基準 | 2026-07-18（v0.1.0 前） | 2026-08-26（v0.4.0 系） | 判定 |
+| --- | --- | --- | --- |
+| A: コア推移的依存 | 9 種類 / axum-ref 50 種類（18%） | **11 種類** / axum-ref 50 種類（**22%**） | PASS（基準 ≤ 50% 継続） |
+| B: unsafe（grep + geiger） | 0 件 | 0 件（geiger used unsafe 全 0） | PASS |
+| C: cargo audit / deny | 0 件（advisory 1,166・340 deps） | 0 件（advisory 1,226・**356 deps**） | PASS |
+| D: コア実質行数 | 2,478 行 | **8,819 行**（tokei code 15,433） | **FAIL（基準 ≤ 5,000 行を超過）** |
+
+- 基準 A の 11 種類は自クレート 3 個（`fandhe-backend-core` / `fandhe-backend-http` / `fandhe-backend-routes`）を含む（初回と同一手法・axum-ref 側も同じ扱い）。外部クレートは bytes / libc / memchr / mio / pin-project-lite / rustc-hash / socket2 / tokio の 8 種類
+- 基準 D の増加（2,478 → 8,819 行）は v0.2.0〜v0.4.0 の機能追加（`Interceptor`、`GateContext::peer_addr`、DoS 既定値、chunked 復号上限等）によるもので、受け入れ基準 ≤ 5,000 行を超過している。基準値の見直しまたは行数削減は別イシューで扱う
+
+### 基準 E / F の FAIL はスクリプトの誤検知
+
+- **E（コアループの feature 非分岐）**: スクリプトの awk 抽出が想定する関数シグネチャと現行実装が一致せず「計測不能」となった。実体は `crates/core/src/server.rs` の接続ループ（`run` / `handle_connection` / `handle_connection_with_peer_addr`）内に `#[cfg(feature = ...)]` が 0 箇所であることを手動 grep で確認済み（`server.rs` 内の `cfg(feature` 42 箇所はすべてコアループ外の登録・配線コード側 — プラグイン登録メソッドのほか、cfg ゲートされた型・impl・フィールド・初期化式を含む）
+- **F（プラグイン非依存）**: `crates/http/Cargo.toml` の **コメント行**（memchr 導入の説明文中の「plugin-graphql」等の文字列）に反応した誤検知。`cargo tree -p fandhe-backend-http -e normal` の依存一覧にプラグインクレートは含まれない
+
+スクリプトの検出ロジック修正（E の関数パターン更新・F のコメント行除外）は別イシューで扱う。
