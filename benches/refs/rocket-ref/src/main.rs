@@ -143,48 +143,112 @@ fn rocket() -> Rocket<Build> {
 
 #[cfg(test)]
 mod tests {
+    //! axum-ref と同じ 4 エンドポイントの機能等価性を、AGENTS.md「アサーション網羅性」に
+    //! 従いステータス・`Content-Type`・ボディの 3 点で検証する（比較条件の担保）。
     use super::*;
     use rocket::http::ContentType;
-    use rocket::local::blocking::Client;
+    use rocket::local::blocking::{Client, LocalResponse};
 
     fn client() -> Client {
         Client::tracked(build("127.0.0.1:0")).expect("rocket-ref: test client")
     }
 
+    /// レスポンスのステータス・`Content-Type`・ボディを一括検証する。
+    fn assert_response(
+        resp: LocalResponse<'_>,
+        status: Status,
+        content_type: ContentType,
+        body: &str,
+    ) {
+        assert_eq!(resp.status(), status);
+        assert_eq!(resp.content_type(), Some(content_type));
+        assert_eq!(resp.into_string().as_deref(), Some(body));
+    }
+
     #[test]
     fn routes_health() {
         let c = client();
-        let resp = c.get("/health").dispatch();
-        assert_eq!(resp.status(), Status::Ok);
+        assert_response(
+            c.get("/health").dispatch(),
+            Status::Ok,
+            ContentType::Plain,
+            "OK",
+        );
     }
 
     #[test]
-    fn routes_users_valid_and_invalid_id() {
+    fn routes_hello() {
         let c = client();
-        assert_eq!(c.get("/users/42").dispatch().status(), Status::Ok);
-        assert_eq!(c.get("/users/abc").dispatch().status(), Status::BadRequest);
+        assert_response(
+            c.get("/hello/world").dispatch(),
+            Status::Ok,
+            ContentType::Plain,
+            "Hello, world!",
+        );
     }
 
     #[test]
-    fn routes_echo_valid_and_invalid_json() {
+    fn routes_users_valid_id() {
         let c = client();
-        let ok = c
+        assert_response(
+            c.get("/users/42").dispatch(),
+            Status::Ok,
+            ContentType::JSON,
+            r#"{"id":42,"name":"User 42"}"#,
+        );
+    }
+
+    #[test]
+    fn routes_users_invalid_id() {
+        let c = client();
+        assert_response(
+            c.get("/users/abc").dispatch(),
+            Status::BadRequest,
+            ContentType::JSON,
+            r#"{"error":"invalid id"}"#,
+        );
+    }
+
+    #[test]
+    fn routes_echo_valid_json() {
+        let c = client();
+        let resp = c
             .post("/echo")
             .header(ContentType::JSON)
             .body(r#"{"message":"hi"}"#)
             .dispatch();
-        assert_eq!(ok.status(), Status::Ok);
-        let bad = c
+        assert_response(resp, Status::Ok, ContentType::JSON, r#"{"message":"hi"}"#);
+    }
+
+    #[test]
+    fn routes_echo_invalid_json() {
+        let c = client();
+        let resp = c
             .post("/echo")
             .header(ContentType::JSON)
             .body("not json")
             .dispatch();
-        assert_eq!(bad.status(), Status::BadRequest);
+        assert_response(
+            resp,
+            Status::BadRequest,
+            ContentType::JSON,
+            r#"{"error":"invalid json body"}"#,
+        );
     }
 
+    /// 未定義パスは 404。Rocket 既定の catcher は HTML ページを返す（axum-ref は空ボディ）。
+    /// この差は計測対象 URL に含まれない意図した構成差として doc comment に記録済みであり、
+    /// ここでは「HTML の 404 ページが返る」ことを明示的に固定する。
     #[test]
-    fn routes_unknown_path() {
+    fn routes_unknown_path_returns_rocket_default_html() {
         let c = client();
-        assert_eq!(c.get("/nope").dispatch().status(), Status::NotFound);
+        let resp = c.get("/nope").dispatch();
+        assert_eq!(resp.status(), Status::NotFound);
+        assert_eq!(resp.content_type(), Some(ContentType::HTML));
+        let body = resp.into_string().expect("404 body");
+        assert!(
+            body.contains("404"),
+            "Rocket 既定の 404 ページであること: {body}"
+        );
     }
 }

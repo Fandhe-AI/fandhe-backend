@@ -105,36 +105,98 @@ async fn main() -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    //! axum-ref と同じ 4 エンドポイントの機能等価性を、AGENTS.md「アサーション網羅性」に
+    //! 従いステータス・`Content-Type`・ボディの 3 点で検証する（比較条件の担保）。
     use super::*;
+    use actix_web::dev::ServiceResponse;
     use actix_web::http::StatusCode;
+    use actix_web::http::header::CONTENT_TYPE;
     use actix_web::test;
+
+    /// レスポンスのステータス・`Content-Type`・ボディを一括検証する。
+    /// `expected_content_type` が `None` のときは `Content-Type` ヘッダが無いことを検証する。
+    async fn assert_response(
+        resp: ServiceResponse,
+        status: StatusCode,
+        expected_content_type: Option<&str>,
+        body: &str,
+    ) {
+        assert_eq!(resp.status(), status);
+        let content_type = resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .map(|v| v.to_str().expect("content-type is ascii").to_string());
+        assert_eq!(content_type.as_deref(), expected_content_type);
+        let actual = test::read_body(resp).await;
+        assert_eq!(std::str::from_utf8(&actual).expect("utf-8 body"), body);
+    }
 
     #[actix_web::test]
     async fn routes_health() {
         let app = test::init_service(App::new().configure(configure)).await;
         let resp =
             test::call_service(&app, test::TestRequest::get().uri("/health").to_request()).await;
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_response(
+            resp,
+            StatusCode::OK,
+            Some("text/plain; charset=utf-8"),
+            "OK",
+        )
+        .await;
     }
 
     #[actix_web::test]
-    async fn routes_users_valid_and_invalid_id() {
+    async fn routes_hello() {
         let app = test::init_service(App::new().configure(configure)).await;
-        let ok =
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/hello/world").to_request(),
+        )
+        .await;
+        assert_response(
+            resp,
+            StatusCode::OK,
+            Some("text/plain; charset=utf-8"),
+            "Hello, world!",
+        )
+        .await;
+    }
+
+    #[actix_web::test]
+    async fn routes_users_valid_id() {
+        let app = test::init_service(App::new().configure(configure)).await;
+        let resp =
             test::call_service(&app, test::TestRequest::get().uri("/users/42").to_request()).await;
-        assert_eq!(ok.status(), StatusCode::OK);
-        let bad = test::call_service(
+        assert_response(
+            resp,
+            StatusCode::OK,
+            Some("application/json"),
+            r#"{"id":42,"name":"User 42"}"#,
+        )
+        .await;
+    }
+
+    #[actix_web::test]
+    async fn routes_users_invalid_id() {
+        let app = test::init_service(App::new().configure(configure)).await;
+        let resp = test::call_service(
             &app,
             test::TestRequest::get().uri("/users/abc").to_request(),
         )
         .await;
-        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+        assert_response(
+            resp,
+            StatusCode::BAD_REQUEST,
+            Some("application/json"),
+            r#"{"error":"invalid id"}"#,
+        )
+        .await;
     }
 
     #[actix_web::test]
-    async fn routes_echo_valid_and_invalid_json() {
+    async fn routes_echo_valid_json() {
         let app = test::init_service(App::new().configure(configure)).await;
-        let ok = test::call_service(
+        let resp = test::call_service(
             &app,
             test::TestRequest::post()
                 .uri("/echo")
@@ -143,8 +205,19 @@ mod tests {
                 .to_request(),
         )
         .await;
-        assert_eq!(ok.status(), StatusCode::OK);
-        let bad = test::call_service(
+        assert_response(
+            resp,
+            StatusCode::OK,
+            Some("application/json"),
+            r#"{"message":"hi"}"#,
+        )
+        .await;
+    }
+
+    #[actix_web::test]
+    async fn routes_echo_invalid_json() {
+        let app = test::init_service(App::new().configure(configure)).await;
+        let resp = test::call_service(
             &app,
             test::TestRequest::post()
                 .uri("/echo")
@@ -153,14 +226,21 @@ mod tests {
                 .to_request(),
         )
         .await;
-        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+        assert_response(
+            resp,
+            StatusCode::BAD_REQUEST,
+            Some("application/json"),
+            r#"{"error":"invalid json body"}"#,
+        )
+        .await;
     }
 
+    /// 未定義パスは 404・空ボディ（actix-web 既定）。axum-ref と同じく `Content-Type` なし。
     #[actix_web::test]
     async fn routes_unknown_path() {
         let app = test::init_service(App::new().configure(configure)).await;
         let resp =
             test::call_service(&app, test::TestRequest::get().uri("/nope").to_request()).await;
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_response(resp, StatusCode::NOT_FOUND, None, "").await;
     }
 }
