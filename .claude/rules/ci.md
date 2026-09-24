@@ -10,16 +10,16 @@ public 化されており、public リポジトリでは標準ホステッドラ
 決める: public は GitHub ホステッド（`ubuntu-latest` 等）、private は self-hosted」の
 **public 側**の適用である。方針の正は Fandhe-AI/actions の
 [`docs/runner-policy.md`](https://github.com/Fandhe-AI/actions/blob/main/docs/runner-policy.md)
-（Fandhe-AI/actions#33 の成果物。対象リポジトリ一覧・codex-review の self-hosted
-専用 runner 例外を含む）を参照し、本節では書き写さない（ドリフト防止）。
+（Fandhe-AI/actions#33 の成果物。対象リポジトリ一覧・ai-review（旧 codex-review）の
+self-hosted 専用 runner 例外を含む）を参照し、本節では書き写さない（ドリフト防止）。
 
 - 新規ジョブ追加時もホステッドランナーを使用し、`runs-on: self-hosted` を使わない。
   larger runner（有料の大型ホステッドランナー）も使わない
-- **唯一の例外（codex-review の codex 実行ジョブ）**: `codex-review.yml` が呼び出す
-  reusable workflow の codex 実行ジョブ（`runner-label: codex`）のみ、codex-home 方式の
-  認証情報を runner 上に配置する構成のため self-hosted な codex 専用 runner の使用を
-  認める（`docs/runner-policy.md` §3 の明文例外）。例外は codex 実行ジョブに閉じる:
-  PR コメント投稿ジョブ（`post-feedback-runner-label`）は資格情報に触れないため
+- **唯一の例外（ai-review の codex 実行ジョブ）**: `ai-review.yml`（旧 codex-review.yml）
+  が呼び出す reusable workflow の `review` ジョブ（`runner: codex`）のみ、codex-home
+  方式の認証情報を runner 上に配置する構成のため self-hosted な codex 専用 runner の
+  使用を認める（`docs/runner-policy.md` §3 の明文例外）。例外は `review` ジョブに閉じる:
+  資格情報に触れない `preflight` / `post_feedback` ジョブ（`post-feedback-runner`）は
   ubuntu-latest を明示指定し、この例外を根拠に他ジョブを self-hosted 化しない
 - 旧方針（private 前提の self-hosted 既定、PR #549）は public 化に伴い廃止。既存
   ワークフローの移行はトラッキングイシュー #550（子 #551〜#556）で実施した
