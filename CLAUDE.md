@@ -774,20 +774,20 @@ fandhe-backend/
 │       └── core-deps-unsafe-audit.sh  # 依存数比・unsafe・audit/deny・LoC・拡張点・プラグイン非依存の検証本体
 ├── .github/
 │   ├── workflows/
-│   │   └── codex-review.yml           # Codex CLI（`codex exec` 直接実行）による PR 自動レビュー
-│   │                                    # （#520〜#526 で確立）。`runs-on: no-sudo`（codex 専用
-│   │                                    # プール、`.github/actionlint.yaml` 登録・`self-hosted`
-│   │                                    # ラベル非付与。`.claude/rules/ci.md` のカスタムラベル
-│   │                                    # 許容規約の適用第 1 号）で実行し、CODEX_HOME 認証・
-│   │                                    # fork PR 不実行・2 段 gate（`review_completed` 確認 →
-│   │                                    # P0/P1 判定）を備える。#528/#529 で Fandhe-AI/actions の
-│   │                                    # reusable workflow を SHA 固定で呼び出す薄い wrapper へ
-│   │                                    # 移行予定（未了、ラベルは `codex` へ変更見込み）
-│   ├── codex/                          # レビュー制御ファイル（`prompts/review.md`・
-│   │                                    # `review-schema.json`）。AGENTS.md「レビュー基準」節
-│   │                                    # とともにリポジトリに残置し、PR の base コミット参照
-│   │                                    # （`git show <base-sha>:<path>`）で消費される
-│   │                                    # fail-closed 構成（自己参照防止、イシュー #524）
+│   │   └── ai-review.yml               # Fandhe-AI/actions の ai-review reusable workflow
+│   │                                    # （provider: codex）を `@latest` で呼び出す薄い
+│   │                                    # wrapper（旧 codex-review.yml、#528/#529 で移行）。
+│   │                                    # `runner: codex`（self-hosted、codex 専用プール）で
+│   │                                    # `review` ジョブを実行し、CODEX_HOME 認証・fork PR
+│   │                                    # 不実行・2 段 gate（`review_completed` 確認 →
+│   │                                    # P0/P1 判定）を備える。`preflight` / `post_feedback`
+│   │                                    # は ubuntu-latest（資格情報に触れないため）
+│   ├── ai-review/
+│   │   └── prompts/review.md           # レビュー制御ファイル（旧 `.github/codex/prompts/review.md`。
+│   │                                    # schema は独自定義を廃止し ai-review 同梱既定を使用）。
+│   │                                    # AGENTS.md「レビュー基準」節とともにリポジトリに残置し、
+│   │                                    # PR の base コミット参照（`git show <base-sha>:<path>`）
+│   │                                    # で消費される fail-closed 構成（自己参照防止、イシュー #524）
 │   └── actionlint.yaml                 # セルフホストカスタムラベルのホワイトリスト
 │                                        # （`fandhe-server` / `no-sudo` / `codex`）。
 │                                        # `.claude/rules/ci.md` の runs-on 規約・

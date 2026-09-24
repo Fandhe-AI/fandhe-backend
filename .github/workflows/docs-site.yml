@@ -5,7 +5,7 @@ name: docs-site
 # deploy 部分（upload-pages-artifact → deploy-pages）は Fandhe-AI/actions の
 # 共通 reusable workflow `pages-deploy.yml` へ移設済み（イシュー #540。
 # 実装本体・fail-closed 検証の詳細は同リポジトリの `pages-deploy/README.md`
-# 参照。呼び出し側 wrapper 化の先行事例は `codex-review.yml`、#532）。
+# 参照。呼び出し側 wrapper 化の先行事例は `ai-review.yml`（旧 `codex-review.yml`）、#532）。
 #
 # 前提（手動操作）: リポジトリ Settings → Pages → Source を
 # "GitHub Actions" に設定済みであること。未設定の場合 build ジョブは成功し
