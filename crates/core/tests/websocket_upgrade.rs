@@ -222,6 +222,65 @@ async fn non_websocket_path_falls_through_to_default_handler() {
     assert!(response.ends_with("ok"));
 }
 
+/// パターン登録設定（`with_path_pattern`、イシュー #675）でも、非登録パス
+/// への Upgrade リクエストは既定 `Handler`（404 等）へフォールスルーする
+/// （イシュー #677。既存 `non_websocket_path_falls_through_to_default_handler`
+/// は完全一致パス設定のみを対象にしており、パターン登録設定での
+/// フォールスルーは未検証だった。`crates/plugin-websocket/tests/
+/// path_pattern_routing_e2e.rs::unmatched_path_matches_no_registered_pattern`
+/// が検証する「`try_handle_upgrade` が `None` を返す」の応答レベルの実証
+/// （通常の HTTP 処理になること）を本テストが担う。上記モジュール doc
+/// 参照）。
+#[tokio::test]
+async fn pattern_registered_config_falls_through_on_unmatched_path() {
+    struct NotFoundHandler;
+    impl Handler for NotFoundHandler {
+        fn handle(
+            &self,
+            _head: &RequestHead,
+            _body: &[u8],
+        ) -> fandhe_backend_routes::HandlerFuture {
+            Box::pin(std::future::ready(Response::new(
+                404,
+                b"not found".to_vec(),
+            )))
+        }
+    }
+
+    let server = Server::new()
+        .websocket(
+            WebSocketConfig::default()
+                .with_path_pattern("/devtools/browser/{id}")
+                .unwrap(),
+        )
+        .websocket(
+            WebSocketConfig::default()
+                .with_path_pattern("/devtools/page/{id}")
+                .unwrap(),
+        )
+        .handler(NotFoundHandler);
+    let addr = spawn_server(server).await;
+
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    // Upgrade ヘッダを含むが登録済みどのパターンにも一致しないパスへの
+    // リクエスト。`Connection` に `close` を含め、応答後に接続が閉じる
+    // ようにする（`read_to_end` が keep-alive のまま READ_TIMEOUT まで
+    // ブロックしないため。`Connection` ヘッダは複数トークンをカンマ区切りで
+    // 許容する、`fandhe_backend_http::connection::should_keep_alive` 参照）。
+    let request = b"GET /devtools/other/1 HTTP/1.1\r\n\
+        Upgrade: websocket\r\n\
+        Connection: Upgrade, close\r\n\
+        Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+        Sec-WebSocket-Version: 13\r\n\
+        \r\n";
+    stream.write_all(request).await.unwrap();
+
+    let mut out = Vec::new();
+    stream.read_to_end(&mut out).await.unwrap();
+    let response = String::from_utf8(out).unwrap();
+    assert!(response.starts_with("HTTP/1.1 404"));
+}
+
 /// `Server::websocket` を異なる `path` で複数回呼んだとき、両方のパスへの
 /// アップグレードが成立することを確認する回帰テスト（Bugbot 指摘: Duplicate
 /// websocket() breaks first path。単一 `websocket_config: Option<T>` だと
