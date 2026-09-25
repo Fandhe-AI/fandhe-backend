@@ -447,6 +447,59 @@ Issue #175 対応。`crates/plugin-websocket` のセッション処理
 への `close_grace` 適用は `crates/plugin-websocket/tests/idle_timeout.rs` の統合
 テストで検証する。
 
+## 規約: `WsMessageHandler::on_open` フック（サーバー起点 push、イシュー #671）
+
+親 #669「サーバー起点で任意タイミングに push できる WebSocket API」の第 2 段。
+`crates/plugin-websocket/src/handler.rs` が定義する
+`WsMessageHandler::on_open(&self, ctx: WsOpenContext)` は、3 拡張点
+（`Middleware` / `UpgradeHandler` / `RequestGate`）・`Interceptor` のいずれにも
+属さない、`WsMessageHandler` trait 内の新規公開フックである（`plugin-websocket`
+クレート内で完結し、`crates/core` の拡張点シグネチャには影響しない）。
+
+### 位置づけ・呼び出し順序
+
+- `handle_upgrade`（`crates/plugin-websocket/src/lib.rs`）が 101 応答（Switching
+  Protocols）送出**成功後**・`WebSocketStream` 構築（`session::run_session`
+  呼び出し）**前**に、接続ごとに一度だけ同期呼び出しする
+- ハンドシェイク検証失敗（400/426 応答）や、101 応答送出前に世代キャンセル
+  （`ws-cancellation-propagation.md`）が発火していた場合は呼ばれない（フェイル
+  クローズ: 確立していないセッションへ `WsSender` を渡さない）
+- 呼び出しは `WsMessageHandler::on_message`（Text/Binary 受信ごと）より先行し、
+  セッションのライフサイクル内で一度きり
+
+### 同期契約
+
+- 本フックは**同期**（非 `async`）である。呼び出し元（`handle_upgrade`）は
+  セッションループに入る前に一度だけ同期的に呼び、戻り値を待たずに処理を進める
+- `.await` を要する処理（`WsSender::send` によるメッセージ push 等）はフック
+  内部で `tokio::spawn` して切り離す契約（[[coding-rust]] の「Tokio 上で
+  ブロッキング処理を await スレッドで実行しない」と同一原則）
+- 既定実装は `ctx` を無視する no-op で、既存ハンドラは無変更のままコンパイル・
+  動作する（後方互換、Issue #179 の `WsMessageHandler` 導入時と同じ既定実装パターン）
+
+### キャンセル時の扱い
+
+- `on_open` 自体はキャンセルと race しない（`on_message` が持つ #499 の中断安全性
+  契約・`race_cancel` とは無関係）。フックの同期呼び出しそのものは世代キャンセル
+  発火の影響を受けない
+- `on_open` 内で `tokio::spawn` した独立タスクは、世代キャンセル・最終 graceful
+  shutdown・rebind 世代 drain のいずれからも追跡・強制終了されない。これらの
+  機構はセッションの受信ループ・ハンドラ実行・返信送出を打ち切るのみで、
+  `on_open` から spawn したタスクまでは追跡しない契約（過大な保証をしない）
+- spawn したタスクは、セッション終了後（`WsSender::send` が `WsSendError` を
+  返した時点）に自発的に終了すべきである（呼び出し元がタスクのライフサイクルを
+  強制終了しないため、実装側の責務として doc に明記済み）
+- チャネル容量は `handler::DEFAULT_OUTBOUND_CAPACITY = 8` 固定（無制限バッファに
+  よる DoS を避ける、[[security]]）。利用者が調整できる公開 API は本イシューの
+  スコープ外
+
+### 参照
+
+- `crates/plugin-websocket/src/handler.rs`（`WsMessageHandler::on_open` doc
+  comment、doc test 付き）
+- `crates/plugin-websocket/src/lib.rs`（`handle_upgrade` の呼び出し箇所・doc）
+- `docs/design/ws-cancellation-propagation.md`（世代キャンセル機構全体の設計）
+
 ## レビュー基準（Codex PR 自動レビュー）
 
 ai-review（provider: codex）による PR 自動レビュー（`.github/workflows/ai-review.yml`。
