@@ -525,6 +525,7 @@ mod tests {
             idle_timeout: None,
             close_grace: Duration::from_millis(300),
             handler: handler::default_handler(),
+            pattern: None,
         }
     }
 
