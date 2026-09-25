@@ -1475,7 +1475,15 @@ mod tests {
         let head = head_from(b"GET /static/safe-link HTTP/1.1\r\n\r\n");
         let response = try_handle_static(&head, &config).await.unwrap();
         assert_eq!(response.status, 404);
+        // ステータス行・ヘッダ・ボディの網羅的検証（AGENTS.md「アサーション
+        // 網羅性」節、PR #689 レビュー指摘対応）。`Response::empty(404)` は
+        // `Content-Type` を持たずボディも空であることをワイヤ直列化結果で
+        // 確認する（他の拒否系テストと同一パターン）。
         assert!(response.body.is_empty());
+        let text = String::from_utf8(response.serialize(false)).unwrap();
+        assert!(text.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(text.contains("Content-Length: 0\r\n"));
+        assert!(!text.contains("Content-Type:"));
     }
 
     #[test]
