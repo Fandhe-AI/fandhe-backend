@@ -412,6 +412,165 @@ async fn multiple_path_patterns_dispatch_to_correct_handler_via_real_server() {
     }
 }
 
+/// 重複しうるパターン（汎用 `/devtools/{kind}/{id}` と特定 `/devtools/browser/{id}`）を
+/// 実サーバーへ両方の登録順で登録し、`try_handle_upgrade` の `.find()`（登録順に最初に
+/// 一致した設定を使う契約、`crates/core/src/plugin.rs`）が実際にどちらを選ぶかを固定する
+/// （イシュー #677 PR #688 レビュー指摘対応、Codex P2）。
+///
+/// `multiple_path_patterns_dispatch_to_correct_handler_via_real_server` は重ならない
+/// 2 パターンのみを登録しており、どちらのパスも一致しうる設定が常に 1 つしかないため、
+/// 登録順を入れ替えても選択結果は変わらず「登録順に最初に一致した設定を選ぶ」契約が
+/// 破壊されても検出できなかった（Codex 指摘。`crates/plugin-websocket/tests/
+/// path_pattern_routing_e2e.rs::two_patterns_dispatch_to_correct_handler_with_matching_param`
+/// の重複パターンケースは本クレートに依存できない制約からコア `try_handle_upgrade` の
+/// `.find()` ディスパッチをテスト内で再実装した `dispatch()` 越しに検証しており、実際の
+/// `Server::websocket` 登録順・コア側選択ロジックは通っていなかった。本テストは重複パターン
+/// を実サーバー経由・両登録順で駆動し、この隙間を埋める）。
+#[tokio::test]
+async fn overlapping_path_patterns_select_first_registered_config_via_real_server() {
+    use fandhe_backend_plugin_websocket::handler::{
+        WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome,
+    };
+
+    /// `on_open` で `ctx.param(param_name)` を読み取り `"{label}:{value}"` を
+    /// push するハンドラ（`multiple_path_patterns_dispatch_to_correct_handler_via_real_server`
+    /// の `PushParamHandler` と同型。関数スコープ内で重複定義してもコンパイルエラーには
+    /// ならないが、テストごとの独立性を優先しここでも定義する）。
+    struct PushParamHandler {
+        label: &'static str,
+        param_name: &'static str,
+    }
+
+    impl WsMessageHandler for PushParamHandler {
+        fn name(&self) -> &'static str {
+            self.label
+        }
+
+        fn on_open(&self, ctx: WsOpenContext) {
+            let value = ctx.param(self.param_name).unwrap_or("missing").to_string();
+            let tag = format!("{}:{value}", self.label);
+            let sender = ctx.sender().clone();
+            tokio::spawn(async move {
+                let _ = sender.send(WsMessage::Text(tag)).await;
+            });
+        }
+
+        fn on_message(
+            &self,
+            _msg: WsMessage,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<WsOutcome, WsHandlerError>> + Send + '_>,
+        > {
+            Box::pin(async move { Ok(WsOutcome::Reply(vec![])) })
+        }
+    }
+
+    // ケース 1: 汎用パターンを先に登録すると、両方に一致しうる
+    // `/devtools/browser/ABC` でも汎用側が選ばれる（`.find()` が登録順で最初に
+    // 一致した設定を使う契約の直接証跡）。
+    let generic_first_server = Server::new()
+        .websocket(
+            WebSocketConfig::default()
+                .with_path_pattern("/devtools/{kind}/{id}")
+                .unwrap()
+                .with_handler(PushParamHandler {
+                    label: "generic",
+                    param_name: "kind",
+                }),
+        )
+        .websocket(
+            WebSocketConfig::default()
+                .with_path_pattern("/devtools/browser/{id}")
+                .unwrap()
+                .with_handler(PushParamHandler {
+                    label: "specific",
+                    param_name: "id",
+                }),
+        )
+        .handler(NotCalledHandler);
+
+    // ケース 2: 同じ 2 パターンを逆順登録すると、同一パスでも特定側が選ばれる
+    // （結果がハンドラ内容ではなく登録順で変わることの証跡）。
+    let specific_first_server = Server::new()
+        .websocket(
+            WebSocketConfig::default()
+                .with_path_pattern("/devtools/browser/{id}")
+                .unwrap()
+                .with_handler(PushParamHandler {
+                    label: "specific",
+                    param_name: "id",
+                }),
+        )
+        .websocket(
+            WebSocketConfig::default()
+                .with_path_pattern("/devtools/{kind}/{id}")
+                .unwrap()
+                .with_handler(PushParamHandler {
+                    label: "generic",
+                    param_name: "kind",
+                }),
+        )
+        .handler(NotCalledHandler);
+
+    for (server, expected_tag) in [
+        (generic_first_server, "generic:browser"),
+        (specific_first_server, "specific:ABC"),
+    ] {
+        let addr = spawn_server(server).await;
+        let path = "/devtools/browser/ABC";
+
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "GET {path} HTTP/1.1\r\n\
+             Host: example.com\r\n\
+             Upgrade: websocket\r\n\
+             Connection: Upgrade\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\
+             \r\n"
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+
+        let response_head = read_response_head(&mut stream).await;
+        assert!(
+            response_head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"),
+            "expected_tag={expected_tag} が 101 以外を返した: {response_head}"
+        );
+        // アサーション網羅性（AGENTS.md「アサーション網羅性」節、PoC-9）: ステータス
+        // 行だけでなく RFC 6455 4.2.2 が要求する 101 応答の必須ヘッダ（Upgrade /
+        // Connection / Sec-WebSocket-Accept）も検証する。既知ベクタは
+        // `upgrade_succeeds_and_echoes_text_frame` と同一値。
+        assert!(
+            response_head.contains("Upgrade: websocket\r\n"),
+            "expected_tag={expected_tag} の応答に Upgrade ヘッダがない: {response_head}"
+        );
+        assert!(
+            response_head.contains("Connection: Upgrade\r\n"),
+            "expected_tag={expected_tag} の応答に Connection ヘッダがない: {response_head}"
+        );
+        assert!(
+            response_head.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"),
+            "expected_tag={expected_tag} の応答に期待する Sec-WebSocket-Accept がない: {response_head}"
+        );
+
+        let (opcode, payload) = read_server_frame(&mut stream).await;
+        assert_eq!(
+            opcode, 0x1,
+            "expected Text opcode push for expected_tag={expected_tag}"
+        );
+        assert_eq!(
+            payload,
+            expected_tag.as_bytes(),
+            "登録順に応じて期待と異なる設定が選ばれた（try_handle_upgrade の \
+             .find() 契約が破壊されている可能性）: expected_tag={expected_tag}"
+        );
+
+        stream.write_all(&masked_close_frame()).await.unwrap();
+        let mut trailing = Vec::new();
+        let _ = stream.read_to_end(&mut trailing).await;
+    }
+}
+
 /// `Server::websocket` を異なる `path` で複数回呼んだとき、両方のパスへの
 /// アップグレードが成立することを確認する回帰テスト（Bugbot 指摘: Duplicate
 /// websocket() breaks first path。単一 `websocket_config: Option<T>` だと
