@@ -246,7 +246,7 @@ mod tests {
         // 登録順のまま。実際の「登録順に最初に一致した設定を使う」契約は
         // コア側 `crates/core/src/plugin.rs::try_handle_upgrade` の
         // `.find()`（本 PR では変更しない）が担う。
-        let configs = vec![
+        let configs = [
             WebSocketConfig::default()
                 .with_path_pattern("/devtools/{kind}/{id}")
                 .unwrap(),

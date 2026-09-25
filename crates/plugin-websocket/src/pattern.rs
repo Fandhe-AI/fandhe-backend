@@ -35,7 +35,7 @@
 //! `PathPattern::parse` / `match_path` は
 //! [`crate::config::WebSocketConfig::with_path_pattern`] から呼ばれ、構築時
 //! 検証済みの `PathPattern` を `WebSocketConfig` へ保持させる。
-//! [`crate::handshake::matches`] は登録済みパターンの有無で完全一致とパターン
+//! `crate::handshake::matches`（非公開のためリンク不可）は登録済みパターンの有無で完全一致とパターン
 //! 照合を切り替える（パターンがあれば優先、なければ従来どおり `path` との
 //! 完全一致）。
 //!
