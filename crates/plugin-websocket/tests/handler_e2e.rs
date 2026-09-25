@@ -486,6 +486,15 @@ async fn on_open_is_not_called_when_handshake_fails() {
 
     let response = read_http_response_line(&mut client_side).await;
     assert!(response.starts_with("HTTP/1.1 426 Upgrade Required\r\n"));
+    // `handshake::serialize_426` の固定応答（RFC 6455 4.4）を全項目検証する。
+    // `Sec-WebSocket-Version: 13` はクライアントが再試行すべきバージョンを、
+    // `Content-Length: 0` は空ボディであることを明示する契約。
+    assert!(response.contains("Sec-WebSocket-Version: 13\r\n"));
+    assert!(response.contains("Content-Length: 0\r\n"));
+    assert!(
+        response.ends_with("\r\n\r\n"),
+        "426 応答はヘッダ終端直後にボディなしで終わる: {response:?}"
+    );
     assert!(
         !flag.load(Ordering::SeqCst),
         "on_open must not be called for a failed handshake"
