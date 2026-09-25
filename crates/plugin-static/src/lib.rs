@@ -481,12 +481,24 @@ fn resolved_path_is_safe(root: &Path, resolved: &Path) -> bool {
 
 /// [`resolved_path_is_safe`] の各コンポーネント判定。[`is_safe_segment`] と
 /// 異なり、canonicalize 後の実パスコンポーネントは OS のパス区切り文字
-/// （`\`・`/`）や NUL・`:` を構造的に含み得ない（`Component::Normal` は
-/// 単一コンポーネントとして分解済みのため）。ここでは字句検証をすり抜けた
-/// 実体（8.3 短縮名エイリアス等）が拒否対象（ドットファイル・ドット
-/// ディレクトリ）でないことのみを再確認する。
+/// （`\`・`/`）や NUL を構造的に含み得ない（`Component::Normal` は単一
+/// コンポーネントとして分解済みのため）。ただし `:` は unix では通常の
+/// ファイル名文字として実ファイルシステム上に存在しうる（Windows の
+/// ドライブプレフィックス構文とは異なり、パスコンポーネント境界の制約を
+/// 受けない）ため、`Component::Normal` への分解後も構造的排除の対象では
+/// ない。シンボリックリンク自体は [`is_safe_segment`] を満たす安全な名前
+/// でも、リンク先の実ファイル名に `:` を含められる（イシュー #680 P2
+/// 指摘）。[`is_safe_segment`] が字句検証層で `:` を一律拒否している
+/// 契約（NTFS Alternate Data Stream 構文対策）を実体層でも後退させない
+/// よう、ここでも明示的に拒否する。ここではそれに加え、字句検証をすり
+/// 抜けた実体（8.3 短縮名エイリアス等）が拒否対象（ドットファイル・
+/// ドットディレクトリ）でないことも再確認する。
 fn is_safe_segment_relaxed(segment: &str) -> bool {
-    !segment.is_empty() && segment != "." && segment != ".." && !segment.starts_with('.')
+    !segment.is_empty()
+        && segment != "."
+        && segment != ".."
+        && !segment.starts_with('.')
+        && !segment.contains(':')
 }
 
 /// `try_handle_static` の `spawn_blocking` クロージャ内で完結するファイル
@@ -1423,6 +1435,47 @@ mod tests {
         assert!(text.starts_with("HTTP/1.1 404 Not Found\r\n"));
         assert!(text.contains("Content-Length: 0\r\n"));
         assert!(!text.contains("Content-Type:"));
+    }
+
+    #[test]
+    fn resolved_path_is_safe_rejects_colon_component() {
+        // イシュー #680 P2 レビュー指摘対応: `is_safe_segment_relaxed` も
+        // `is_safe_segment` と同様に `:` を拒否することを回帰保証する。
+        // unix では通常のファイル名文字として `:` を含むパスが実在しうる
+        // （NTFS ADS 構文対策とは別に、字句検証層の契約を実体層でも
+        // 後退させない）。
+        let root = Path::new("/tmp/root");
+        assert!(!resolved_path_is_safe(
+            root,
+            &root.join("file.txt:hidden:$DATA")
+        ));
+        assert!(!resolved_path_is_safe(
+            root,
+            &root.join("subdir").join("a:b")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_to_colon_named_file_is_rejected() {
+        // イシュー #680 P2 レビュー指摘対応（PR #689 review thread
+        // PRRT_kwDOTaq0886mGkB2）: `is_safe_segment` を通過する安全な名前
+        // （`safe-link`）のシンボリックリンクが、`:` を含む実ファイル名
+        // （unix では正当なファイル名文字）を指す場合でも配信されないこと
+        // を実接続で確認する。`:` は Windows では実ファイル名に使えない
+        // ため本テストは unix 限定（`resolved_path_is_safe_rejects_colon_component`
+        // が OS 非依存の決定的カバレッジを担う）。
+        let dir = TempDir::new();
+        let target = dir.write("file.txt:hidden:$DATA", b"secret-via-colon-alias");
+        let link = dir.path().join("safe-link");
+        test_symlink_file(&target, &link);
+        assert!(std::fs::canonicalize(&link).is_ok());
+
+        let config = config_for(&dir);
+        let head = head_from(b"GET /static/safe-link HTTP/1.1\r\n\r\n");
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 404);
+        assert!(response.body.is_empty());
     }
 
     #[test]
