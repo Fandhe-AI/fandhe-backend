@@ -180,8 +180,17 @@ async fn multiple_server_pushes_arrive_in_order_without_client_activity() {
 /// 受け入れ基準 2: `on_open` で push タスクを起動しつつ、`on_message` は
 /// 受信した Text をそのまま `"echo:{...}"` として返す（コマンド応答と
 /// イベント push が同一 `WebSocketStream` へ交互に混ざる状況を作る）。
+///
+/// push タスクは `gate`（`tokio::sync::Notify`）から 1 件ずつ許可
+/// （`notify_one`）を得るまで次の push を送出しない。交錯の有無を
+/// スケジューラの実行順（Tokio ランタイムのタスク・I/O 待ち到着順）任せに
+/// せず、テスト側（[`interleaved_replies_and_pushes_do_not_corrupt_frames`]）
+/// が「echo を受信 → 対応する push を許可 → その push の到着を確認」という
+/// 順序を明示的に 1 件ずつ駆動して交錯を決定的に作るための同期点
+/// （イシュー #672 レビュー対応。詳細は同テストの doc を参照）。
 struct InterleavedPushHandler {
     push_count: usize,
+    gate: Arc<tokio::sync::Notify>,
 }
 
 impl WsMessageHandler for InterleavedPushHandler {
@@ -192,8 +201,12 @@ impl WsMessageHandler for InterleavedPushHandler {
     fn on_open(&self, ctx: WsOpenContext) {
         let sender = ctx.sender().clone();
         let push_count = self.push_count;
+        let gate = Arc::clone(&self.gate);
         tokio::spawn(async move {
             for i in 0..push_count {
+                // テスト側が `gate.notify_one()` を呼ぶまで待機する（構造体
+                // doc を参照）。
+                gate.notified().await;
                 if sender
                     .send(WsMessage::Text(format!("push:{i}")))
                     .await
@@ -235,44 +248,35 @@ enum ReceivedFrame {
 /// (b) 実際に両カテゴリが入り混じって届いたこと（一方が完全に先行し他方が
 /// 完全に後続する退化パターンでないこと）の両方を検証する。
 ///
-/// (b) を確実にするため、クライアントは「コマンドを 1 件送信し、その
-/// echo が返るまで受信を続ける（途中に挟まる push フレームは収集しつつ
-/// 読み飛ばす）」というリクエスト・レスポンス相関を 1 件ずつ繰り返す
-/// （イシュー #672 レビュー対応）。相関なしに「1 件送信 → 1 件受信」を
-/// 機械的に繰り返すだけの設計では、実測上（本テストのデバッグ実行で
-/// 確認済み）on_open が起動する push タスクが `WsSender` の bounded
-/// channel（容量 8）を継続的に再充填し続け、`run_session` の受信ループが
-/// 300 件の push をすべて出し切るまで対応する echo を 1 件も返さない
-/// （outbound チャネルが Ready な限り優先され続ける）挙動が再現し、結局
-/// 「push 300 件 → echo 300 件」という 1 ブロックの退化パターンに終始
-/// した。対応する echo を待ってから次のコマンドを送る相関設計にすることで、
-/// 各コマンドの往復ごとに「送信 → （0 件以上の push）→ 対応する echo」の
-/// サイクルが強制され、300 往復にわたって push が echo の間へ実際に
-/// 混在する状況を作る。
-///
-/// なお、相関設計のみでは既定の `#[tokio::test]`（current-thread フレーバー）
-/// 下でも退化パターンが実測で再現した（cooperative スケジューラ下では
-/// outbound チャネルの `recv()` が `ws.next()` の初回 poll より先に確実に
-/// Ready 化するため、`run_session` の反復ごとの優先順反転があっても
-/// outbound 側が実質的に勝ち続けた）。`flavor = "multi_thread"` に
-/// することで push タスク・セッションタスク・本テストタスクが実際の
-/// OS スレッド間で並行実行されるようになり、退化が再現しないことを
-/// 実測で確認した。
+/// (b) の交錯をスケジューラ任せの成功条件にしない（イシュー #672 レビュー
+/// 指摘対応。旧実装は「対応する echo を待ってから次のコマンドを送る」相関
+/// 設計 + `flavor = "multi_thread"` のみに依っており、`on_open` の push
+/// タスクがコマンド送受信とは独立に走る以上、push が全て先着してから echo
+/// が続く実行順が理論上あり得た。`MIN_CATEGORY_TRANSITIONS` アサーションが
+/// スケジューリング次第で偶発的に失敗しうる、という codex・Cursor Bugbot
+/// 双方の指摘は妥当）。[`InterleavedPushHandler`] の `gate`
+/// （`tokio::sync::Notify`）を使い、本テストが「コマンド i を送信 → 対応
+/// する echo(i) を受信 → 該当 push(i) を明示的に許可（`notify_one`）→
+/// push(i) の到着を確認してから次のコマンドへ進む」という順序を 1 件ずつ
+/// 駆動する。push(i) は該当の `notify_one` が呼ばれるまで送出され得ない
+/// ため、到着順の全体列は常に `[Echo(0), Push(0), Echo(1), Push(1), ...]`
+/// という完全な交互パターンになることが構造的に保証され、実行順・
+/// タイミング・ランタイムの flavor に一切依存しない。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn interleaved_replies_and_pushes_do_not_corrupt_frames() {
     const PUSH_COUNT: usize = 300;
     const CMD_COUNT: usize = 300;
-    // カテゴリの切り替わり回数（`order` を先頭から走査して隣接要素の
-    // 判別子が変化した回数）がこの値未満なら、実質的に「1 ブロックずつ」
-    // としか届いておらず交錯を検証できていないとみなす。相関設計により
-    // 300 往復それぞれで push が混在しうるため、通常は数十〜数百回の
-    // 切り替わりが発生する。ごく少数の切り替わりでも「交互に送る状況」
-    // 自体は成立するため、しきい値は「1 ブロックの退化パターンではない」
-    // ことを検出できる最小限の保守的な値に留める。
+    // 上記の決定的な交互駆動により、実行順は常に 2 要素で 1 サイクル
+    // （echo → 対応 push）となるため、カテゴリの切り替わり回数は常に
+    // `CMD_COUNT * 2 - 1`（599）になる。しきい値は「決定的な交互パターンで
+    // あれば確実に上回る、退化パターン（1 ブロックずつ）とは明確に区別
+    // できる」保守的な値に留める。
     const MIN_CATEGORY_TRANSITIONS: usize = 4;
 
+    let gate = Arc::new(tokio::sync::Notify::new());
     let config = WebSocketConfig::default().with_handler(InterleavedPushHandler {
         push_count: PUSH_COUNT,
+        gate: Arc::clone(&gate),
     });
     let (mut client, server_task) = spawn_session(config).await;
 
@@ -312,8 +316,11 @@ async fn interleaved_replies_and_pushes_do_not_corrupt_frames() {
             received
         }
 
-        // 各コマンドを送信し、対応する echo が届くまで受信を続ける
-        // （途中に挟まる push は `order` へ記録しつつ読み飛ばす）。
+        // 各コマンドを送信 → 対応 echo を受信 → 該当 push を明示的に許可し
+        // 到着を確認、という順序を 1 件ずつ決定的に駆動する（構造体 doc・
+        // 本関数 doc を参照。途中に挟まる push は `order` へ記録しつつ
+        // 読み飛ばす契約は維持するが、gate の設計上 echo(i) 受信より前に
+        // push(i) 以降が届くことは構造的に起こらない）。
         for i in 0..CMD_COUNT {
             client
                 .send(Message::Text(format!("cmd:{i}").into()))
@@ -328,13 +335,25 @@ async fn interleaved_replies_and_pushes_do_not_corrupt_frames() {
                     ReceivedFrame::Push(_) => {}
                 }
             }
-        }
 
-        // 全コマンド送信・対応 echo 受信が完了した後、on_open が起動した
-        // push タスクの残り（往復の合間に届かなかった分）を出し切るまで
-        // 受信を続ける。
-        while order.len() < CMD_COUNT + PUSH_COUNT {
-            recv_one(&mut client, &mut order).await;
+            // echo(i) 確認直後に該当 push(i) を許可し、実際に届くまで待つ
+            // （テスト側が交錯を駆動する同期点。構造体 doc を参照。gate の
+            // 設計上 push(i) 以外が届くことは構造的に起こらないため、ここは
+            // 1 回受信して照合するだけでよい — `Echo` 到着は不変条件違反
+            // として即座に panic する。`loop` にすると常に 1 回目の枝で
+            // 終端するため `clippy::never_loop` に抵触する）。
+            gate.notify_one();
+            match recv_one(&mut client, &mut order).await {
+                ReceivedFrame::Push(idx) => {
+                    assert_eq!(
+                        idx, i,
+                        "gated push must correspond to the just-notified index"
+                    );
+                }
+                ReceivedFrame::Echo(idx) => {
+                    panic!("unexpected echo:{idx} while waiting for gated push {i}");
+                }
+            }
         }
     };
     tokio::time::timeout(Duration::from_secs(10), collect)
