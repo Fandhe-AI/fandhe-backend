@@ -380,6 +380,22 @@ async fn multiple_path_patterns_dispatch_to_correct_handler_via_real_server() {
             response_head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"),
             "path {path} が 101 以外を返した: {response_head}"
         );
+        // アサーション網羅性（AGENTS.md「アサーション網羅性」節、PoC-9）: ステータス
+        // 行だけでなく RFC 6455 4.2.2 が要求する 101 応答の必須ヘッダ（Upgrade /
+        // Connection / Sec-WebSocket-Accept）も検証する。既知ベクタは
+        // `upgrade_succeeds_and_echoes_text_frame` と同一値。
+        assert!(
+            response_head.contains("Upgrade: websocket\r\n"),
+            "path {path} の応答に Upgrade ヘッダがない: {response_head}"
+        );
+        assert!(
+            response_head.contains("Connection: Upgrade\r\n"),
+            "path {path} の応答に Connection ヘッダがない: {response_head}"
+        );
+        assert!(
+            response_head.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"),
+            "path {path} の応答に期待する Sec-WebSocket-Accept がない: {response_head}"
+        );
 
         let (opcode, payload) = read_server_frame(&mut stream).await;
         assert_eq!(opcode, 0x1, "expected Text opcode push for path {path}");

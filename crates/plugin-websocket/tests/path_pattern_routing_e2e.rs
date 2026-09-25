@@ -134,6 +134,22 @@ async fn spawn_session_for_config(
 
     let response = read_http_response_line(&mut client_side).await;
     assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    // アサーション網羅性（AGENTS.md「アサーション網羅性」節、PoC-9）: ステータス行
+    // だけでなく RFC 6455 4.2.2 が要求する 101 応答の必須ヘッダ（Upgrade /
+    // Connection / Sec-WebSocket-Accept）も検証する。既知ベクタは
+    // `crates/core/tests/websocket_upgrade.rs` と同一値。
+    assert!(
+        response.contains("Upgrade: websocket\r\n"),
+        "応答に Upgrade ヘッダがない: {response}"
+    );
+    assert!(
+        response.contains("Connection: Upgrade\r\n"),
+        "応答に Connection ヘッダがない: {response}"
+    );
+    assert!(
+        response.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"),
+        "応答に期待する Sec-WebSocket-Accept がない: {response}"
+    );
 
     let client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
     (client, server_task)
@@ -142,12 +158,19 @@ async fn spawn_session_for_config(
 /// ケース 1（受け入れ基準 1・2）: `/devtools/browser/{id}` と
 /// `/devtools/page/{id}` の 2 パターンを同時登録し、それぞれの完全一致
 /// パスへ接続したクライアントが、正しいハンドラ（`label`）・正しい
-/// パラメータ値で push を受け取ることを確認する。登録順を入れ替えた
-/// ケースも合わせて確認し、`.find()` 模倣が「登録順に最初に一致」を
-/// 正しく反映することも担保する。
+/// パラメータ値で push を受け取ることを確認する。
+///
+/// 前半 4 ケース（`/devtools/browser/{id}` と `/devtools/page/{id}`）は
+/// 登録順を入れ替えても各パスに一致しうる設定が 1 つしかないため
+/// （2 パターンは重ならない）、登録順を変えても結果は変わらず「登録順に
+/// 最初に一致」の検証にはなっていなかった（PR #688 レビュー指摘）。
+/// 末尾 2 ケースは同一パス `/devtools/browser/ABC` の両方に一致しうる
+/// 重複パターン（汎用 `/devtools/{kind}/{id}` と特定 `/devtools/browser/{id}`）
+/// を登録順だけ入れ替えて渡し、`.find()` 模倣が実際に「登録順に最初に
+/// 一致した設定」を選ぶこと（後方の一致候補は無視されること）を固定する。
 #[tokio::test]
 async fn two_patterns_dispatch_to_correct_handler_with_matching_param() {
-    let cases: [(Vec<WebSocketConfig>, &str, &str); 4] = [
+    let cases: [(Vec<WebSocketConfig>, &str, &str); 6] = [
         (
             vec![
                 WebSocketConfig::default()
@@ -229,6 +252,51 @@ async fn two_patterns_dispatch_to_correct_handler_with_matching_param() {
             ],
             "/devtools/page/XYZ",
             "page:XYZ",
+        ),
+        // 重複パターン・登録順反転ケース（本 PR で追加、レビュー指摘対応）:
+        // 汎用 `/devtools/{kind}/{id}` を先に登録すると、特定パターンと
+        // 両方に一致しうる `/devtools/browser/ABC` でも汎用側が選ばれる。
+        (
+            vec![
+                WebSocketConfig::default()
+                    .with_path_pattern("/devtools/{kind}/{id}")
+                    .unwrap()
+                    .with_handler(PushParamHandler {
+                        label: "generic",
+                        param_name: "kind",
+                    }),
+                WebSocketConfig::default()
+                    .with_path_pattern("/devtools/browser/{id}")
+                    .unwrap()
+                    .with_handler(PushParamHandler {
+                        label: "specific",
+                        param_name: "id",
+                    }),
+            ],
+            "/devtools/browser/ABC",
+            "generic:browser",
+        ),
+        // 上記と同じ 2 パターンを逆順登録すると、同一パスでも特定側が
+        // 選ばれる（結果がハンドラ内容ではなく登録順で変わることの証跡）。
+        (
+            vec![
+                WebSocketConfig::default()
+                    .with_path_pattern("/devtools/browser/{id}")
+                    .unwrap()
+                    .with_handler(PushParamHandler {
+                        label: "specific",
+                        param_name: "id",
+                    }),
+                WebSocketConfig::default()
+                    .with_path_pattern("/devtools/{kind}/{id}")
+                    .unwrap()
+                    .with_handler(PushParamHandler {
+                        label: "generic",
+                        param_name: "kind",
+                    }),
+            ],
+            "/devtools/browser/ABC",
+            "specific:ABC",
         ),
     ];
 
