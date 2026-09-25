@@ -392,6 +392,15 @@ fn strip_mount<'a>(path: &'a str, mount: &str) -> Option<&'a str> {
 /// `.env`・`.git/config`・`.htpasswd` 等の機密ファイルが置かれた場合の
 /// 意図しない配信（OWASP A01/A05）を防ぐフェイルクローズ判断（イシュー
 /// #318 レビュー指摘対応、`docs/design/plugin-boundary.md` 5.10 節）。
+///
+/// `:` も拒否する（イシュー #680）。Windows では `PathBuf::push` が
+/// 「prefix はあるが root がない」コンポーネント（`C:` のようなドライブ
+/// レター）を受け取ると `self` を丸ごと置き換える契約があり、
+/// `resolve_and_read` の `root.to_path_buf()` を起点にした逐次 `push` が
+/// 1 セグメント目で `root` ごと消えてドライブ相対パスへ迂回されうる
+/// （`root` 配下拘束という設計契約自体が壊れる）。unix では実害はないが、
+/// 副次的に NTFS Alternate Data Stream 構文（`file.txt:hidden:$DATA`）の
+/// 悪用も同時に防げるため OS を問わず一律拒否する。
 fn is_safe_segment(segment: &str) -> bool {
     !segment.is_empty()
         && segment != "."
@@ -399,6 +408,46 @@ fn is_safe_segment(segment: &str) -> bool {
         && !segment.starts_with('.')
         && !segment.contains('\0')
         && !segment.contains('\\')
+        && !segment.contains(':')
+}
+
+/// canonicalize 後の実パス（`root` 相対の残余コンポーネント）が
+/// [`is_safe_segment`] 相当の安全性を満たすかを再検証する（イシュー #680）。
+///
+/// [`is_safe_segment`] は字句検証（URL セグメント）層の防御であり、実体が
+/// 字句検証をすり抜けて拒否対象へ解決されるケースを防げない。代表例は
+/// Windows の NTFS が生成しうる 8.3 短縮ファイル名（`ENV~1` のような
+/// エイリアスは先頭ドットでないため字句検証を通過するが、`canonicalize`
+/// はそれを実体（`.env`）へ解決してしまう）。8.3 短縮名生成は既定で
+/// 無効化されている Windows 環境も多く決定的な再現を保証できないため、
+/// 実ファイルシステムに触れない本関数を `canonicalize` 直後に常時
+/// （OS を問わず）適用し、字句検証をすり抜けた拒否対象をフェイルクローズ
+/// する（cheap・決定的・追加依存なし、pay-for-what-you-use 違反なし）。
+///
+/// `root` は既に canonicalize 済みの前提。`resolved` は `root` 配下で
+/// あることを `starts_with` 確認済みの前提（呼び出し元が保証）。`root`
+/// 自身（`strip_prefix` の残余が空）は常に安全。残余コンポーネントに
+/// `Normal`（通常のファイル名/ディレクトリ名）以外（プレフィックス・
+/// ルート・カレント・親参照）が含まれる、または UTF-8 として読めない
+/// 場合は一律不安全（フェイルクローズ）として扱う。
+fn resolved_path_is_safe(root: &Path, resolved: &Path) -> bool {
+    let Ok(remainder) = resolved.strip_prefix(root) else {
+        return false;
+    };
+    remainder.components().all(|component| match component {
+        std::path::Component::Normal(name) => name.to_str().is_some_and(is_safe_segment_relaxed),
+        _ => false,
+    })
+}
+
+/// [`resolved_path_is_safe`] の各コンポーネント判定。[`is_safe_segment`] と
+/// 異なり、canonicalize 後の実パスコンポーネントは OS のパス区切り文字
+/// （`\`・`/`）や NUL・`:` を構造的に含み得ない（`Component::Normal` は
+/// 単一コンポーネントとして分解済みのため）。ここでは字句検証をすり抜けた
+/// 実体（8.3 短縮名エイリアス等）が拒否対象（ドットファイル・ドット
+/// ディレクトリ）でないことのみを再確認する。
+fn is_safe_segment_relaxed(segment: &str) -> bool {
+    !segment.is_empty() && segment != "." && segment != ".." && !segment.starts_with('.')
 }
 
 /// `try_handle_static` の `spawn_blocking` クロージャ内で完結するファイル
@@ -406,6 +455,9 @@ fn is_safe_segment(segment: &str) -> bool {
 ///
 /// `root` は構築時に canonicalize 済みの前提（[`StaticFilesConfigBuilder::build`]）。
 /// `segments` は [`is_safe_segment`] を通過済みの前提（呼び出し元が保証）。
+/// これは字句（URL セグメント）層の防御であり、[`resolved_path_is_safe`]
+/// が canonicalize 後の実パス（エンティティ）層で第二の再検証を行う
+/// （イシュー #680、8.3 短縮名等の字句検証すり抜け対策）。
 /// `dir_request` は URL が末尾スラッシュ付き（「ディレクトリ要求」、イシュー
 /// #418）だったかを表す。`true` の場合、解決先が通常ファイルであれば配信
 /// しない（一般的な静的サーバーと同挙動、フェイルクローズ）。
@@ -432,6 +484,11 @@ fn resolve_and_read(
     if !canonical.starts_with(root) {
         return None;
     }
+    // 字句検証をすり抜けた拒否対象（8.3 短縮名エイリアス等、イシュー #680）
+    // への第二層再検証。
+    if !resolved_path_is_safe(root, &canonical) {
+        return None;
+    }
 
     let metadata = std::fs::metadata(&canonical).ok()?;
     // 末尾スラッシュ付き要求（ディレクトリ要求）が通常ファイルへ解決された
@@ -446,6 +503,9 @@ fn resolve_and_read(
         let index = canonical.join("index.html");
         let index_canonical = std::fs::canonicalize(&index).ok()?;
         if !index_canonical.starts_with(root) {
+            return None;
+        }
+        if !resolved_path_is_safe(root, &index_canonical) {
             return None;
         }
         index_canonical
@@ -652,6 +712,43 @@ mod tests {
             ParseOutcome::Complete { head, .. } => head,
             other => panic!("unexpected parse outcome: {other:?}"),
         }
+    }
+
+    /// ファイルを指すシンボリックリンクを OS 中立に作成する（イシュー #680）。
+    ///
+    /// 本番コード（`resolve_and_read`・`is_safe_segment`）に `cfg(unix)`
+    /// 分岐は存在しない（二層防御は最初から OS 非依存に書かれている）ため、
+    /// テスト側のリンク作成 API のみをここで吸収し、シンボリックリンク経由の
+    /// root 脱出拒否テストを 3 OS（ubuntu/macos/windows、イシュー #679 の
+    /// test matrix）すべてで常時実行できるようにする。
+    #[cfg(unix)]
+    fn test_symlink_file(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+    #[cfg(windows)]
+    fn test_symlink_file(target: &Path, link: &Path) {
+        std::os::windows::fs::symlink_file(target, link).unwrap();
+    }
+    #[cfg(not(any(unix, windows)))]
+    fn test_symlink_file(_target: &Path, _link: &Path) {
+        // 未対応 OS で黙って無検証にならないよう明示的にビルドを落とす
+        // （フェイルクローズ、`.claude/rules/security.md`）。
+        compile_error!("test_symlink_file: unsupported OS (neither unix nor windows)");
+    }
+
+    /// ディレクトリを指すシンボリックリンクを OS 中立に作成する
+    /// （[`test_symlink_file`] のディレクトリ版、イシュー #680）。
+    #[cfg(unix)]
+    fn test_symlink_dir(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+    #[cfg(windows)]
+    fn test_symlink_dir(target: &Path, link: &Path) {
+        std::os::windows::fs::symlink_dir(target, link).unwrap();
+    }
+    #[cfg(not(any(unix, windows)))]
+    fn test_symlink_dir(_target: &Path, _link: &Path) {
+        compile_error!("test_symlink_dir: unsupported OS (neither unix nor windows)");
     }
 
     /// テスト専用の一意な一時ディレクトリ（`Drop` で自動削除、std のみで実装）。
@@ -886,13 +983,21 @@ mod tests {
         assert_eq!(response.status, 404);
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn symlink_directory_escaping_root_with_trailing_slash_is_rejected() {
         let outside = TempDir::new();
         outside.write("index.html", b"<h1>secret</h1>");
         let dir = TempDir::new();
-        std::os::unix::fs::symlink(outside.path(), dir.path().join("escape")).unwrap();
+        let link = dir.path().join("escape");
+        test_symlink_dir(outside.path(), &link);
+        // リンクが実際に機能していることを事前確認する。壊れたリンク
+        // （canonicalize が失敗し早期に None を返す）でも結果的に 404 に
+        // なるため、事前 assert なしでは「防御ロジックを検証していないのに
+        // テストが通る」偽陽性グリーンが起こりうる（イシュー #680）。
+        assert_eq!(
+            std::fs::canonicalize(&link).unwrap(),
+            std::fs::canonicalize(outside.path()).unwrap()
+        );
         let config = config_for(&dir);
         let head = head_from(b"GET /static/escape/ HTTP/1.1\r\n\r\n");
 
@@ -1039,12 +1144,11 @@ mod tests {
         assert_eq!(response.status, 404);
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn symlink_within_root_is_served() {
         let dir = TempDir::new();
         let target = dir.write("real.txt", b"hello");
-        std::os::unix::fs::symlink(&target, dir.path().join("link.txt")).unwrap();
+        test_symlink_file(&target, &dir.path().join("link.txt"));
         let config = config_for(&dir);
         let head = head_from(b"GET /static/link.txt HTTP/1.1\r\n\r\n");
 
@@ -1053,17 +1157,19 @@ mod tests {
         assert_eq!(response.body, b"hello");
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn symlink_escaping_root_is_rejected() {
         let dir = TempDir::new();
         let outside = TempDir::new();
         outside.write("secret.txt", b"top-secret");
-        std::os::unix::fs::symlink(
-            outside.path().join("secret.txt"),
-            dir.path().join("escape.txt"),
-        )
-        .unwrap();
+        let target = outside.path().join("secret.txt");
+        let link = dir.path().join("escape.txt");
+        test_symlink_file(&target, &link);
+        // リンクが機能していることの事前確認（偽陽性グリーン対策、イシュー #680）。
+        assert_eq!(
+            std::fs::canonicalize(&link).unwrap(),
+            std::fs::canonicalize(&target).unwrap()
+        );
         let config = config_for(&dir);
         let head = head_from(b"GET /static/escape.txt HTTP/1.1\r\n\r\n");
 
@@ -1212,16 +1318,87 @@ mod tests {
         assert!(matches!(err, StaticConfigError::InvalidMimeMapping(_)));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn symlink_directory_escaping_root_is_rejected() {
         let dir = TempDir::new();
         let outside = TempDir::new();
         outside.write("index.html", b"outside-index");
-        std::os::unix::fs::symlink(outside.path(), dir.path().join("escape-dir")).unwrap();
+        let link = dir.path().join("escape-dir");
+        test_symlink_dir(outside.path(), &link);
+        // リンクが機能していることの事前確認（偽陽性グリーン対策、イシュー #680）。
+        assert_eq!(
+            std::fs::canonicalize(&link).unwrap(),
+            std::fs::canonicalize(outside.path()).unwrap()
+        );
         let config = config_for(&dir);
         let head = head_from(b"GET /static/escape-dir HTTP/1.1\r\n\r\n");
 
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 404);
+    }
+
+    #[test]
+    fn is_safe_segment_rejects_colon() {
+        // Windows のドライブプレフィックス（`C:`）が `PathBuf::push` で
+        // `root` を丸ごと置き換えてしまう契約への対策、および NTFS
+        // Alternate Data Stream 構文の防止（イシュー #680）。
+        assert!(!is_safe_segment("C:"));
+        assert!(!is_safe_segment("file.txt:hidden:$DATA"));
+    }
+
+    #[tokio::test]
+    async fn rejects_drive_letter_like_segment_via_full_request_path() {
+        // セグメント単体のユニットテストに加え、HTTP request-target の
+        // パーサ自体は `:` を拒否しない（RFC 3986 pchar は `:` を許容）ため、
+        // `is_safe_segment` の拒否が実際に `try_handle_static` 経由の
+        // フルパスへも反映されることを回帰保証する（イシュー #680）。
+        let dir = TempDir::new();
+        let config = config_for(&dir);
+        let head = head_from(b"GET /static/C:/anything HTTP/1.1\r\n\r\n");
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 404);
+    }
+
+    #[tokio::test]
+    async fn rejects_backslash_segment_via_full_request_path() {
+        // バックスラッシュも `is_safe_segment` が拒否するが（Windows パス
+        // 区切り誤用対策として既存 doc に記載済み）、フルパス経由での
+        // 回帰保証を追加する（イシュー #680）。
+        let dir = TempDir::new();
+        let config = config_for(&dir);
+        let head = head_from(b"GET /static/..\\..\\secret HTTP/1.1\r\n\r\n");
+        let response = try_handle_static(&head, &config).await.unwrap();
+        assert_eq!(response.status, 404);
+    }
+
+    #[test]
+    fn resolved_path_is_safe_rejects_leading_dot_component() {
+        // 実ファイルシステムに触れない決定的テスト（8.3 短縮名生成の
+        // 実環境依存性を排除する、イシュー #680）。字句検証をすり抜けた
+        // 「短縮名っぽい」相対パスであっても、実体側の先頭ドット
+        // コンポーネントを含む場合は拒否する。
+        let root = Path::new("/tmp/root");
+        assert!(!resolved_path_is_safe(
+            root,
+            &root.join("subdir").join(".env")
+        ));
+        assert!(resolved_path_is_safe(
+            root,
+            &root.join("subdir").join("app.js")
+        ));
+        // root 自身（残余コンポーネントなし）は常に安全。
+        assert!(resolved_path_is_safe(root, root));
+    }
+
+    #[tokio::test]
+    async fn reserved_device_name_like_segment_returns_404() {
+        // Windows の予約デバイス名（CON/NUL/PRN/AUX/COM1-9/LPT1-9）は
+        // 特別扱いせず、そのような実ファイルが存在しない限り一律 404 という
+        // 既存の未検出方針にそのまま含まれることを確認する回帰テスト
+        // （イシュー #680）。
+        let dir = TempDir::new();
+        let config = config_for(&dir);
+        let head = head_from(b"GET /static/CON HTTP/1.1\r\n\r\n");
         let response = try_handle_static(&head, &config).await.unwrap();
         assert_eq!(response.status, 404);
     }
