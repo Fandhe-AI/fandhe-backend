@@ -517,7 +517,16 @@ fandhe-backend/
 │   │                                    # （ハンドシェイク失敗・101 送出前キャンセルでは呼ばれない
 │   │                                    # フェイルクローズ契約。チャネル容量は `handler::
 │   │                                    # DEFAULT_OUTBOUND_CAPACITY = 8` 固定、利用者調整 API は
-│   │                                    # スコープ外）
+│   │                                    # スコープ外）。イシュー #675 で `WebSocketConfig::
+│   │                                    # with_path_pattern` + `pattern::PathPattern` により
+│   │                                    # `{name}` パスパラメータ付きパターン登録・マッチングに
+│   │                                    # 対応し（CDP 互換サーバーの `/devtools/page/{id}` 等）、
+│   │                                    # イシュー #676 で抽出したパラメータを `WsOpenContext::
+│   │                                    # param` / `params`（非デコード契約、`Debug` 出力には
+│   │                                    # 含めない）経由で `on_open` ハンドラへ渡す経路を確立した
+│   │                                    # （`handshake::match_config_path` が完全一致/パターン照合
+│   │                                    # と抽出結果を一箇所に集約し、`matches`（真偽値のみ返す
+│   │                                    # 契約は不変）・`handle_upgrade` の双方から共有）
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O

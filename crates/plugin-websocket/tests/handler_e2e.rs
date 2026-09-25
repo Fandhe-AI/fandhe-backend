@@ -181,6 +181,31 @@ impl WsMessageHandler for FlagOnOpenHandler {
     }
 }
 
+/// `on_open` で `ctx.params()` を全件記録するハンドラ（イシュー #676）。
+/// セッション終了後にテストが記録内容を検証できるよう `Arc<Mutex<_>>` へ
+/// 保持する。
+struct CapturingParamsHandler {
+    captured: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+}
+
+impl WsMessageHandler for CapturingParamsHandler {
+    fn name(&self) -> &'static str {
+        "capturing-params"
+    }
+
+    fn on_open(&self, ctx: WsOpenContext) {
+        let params: Vec<(String, String)> = ctx
+            .params()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        *self.captured.lock().unwrap() = params;
+    }
+
+    fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+        Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+    }
+}
+
 /// 常にエラーを返すハンドラ（`WsError::Handler` への変換・接続クローズを
 /// 検証する）。
 struct FailingHandler;
@@ -204,6 +229,48 @@ async fn spawn_session(
     tokio::task::JoinHandle<Result<(), fandhe_backend_plugin_websocket::WsError>>,
 ) {
     let head = match parse_request_head(handshake_request_bytes()).unwrap() {
+        ParseOutcome::Complete { head, .. } => head,
+        ParseOutcome::Incomplete => unreachable!(),
+    };
+    let (server_side, mut client_side) = tokio::io::duplex(64 * 1024);
+    let server_task = tokio::spawn(async move {
+        handle_upgrade(
+            server_side,
+            &head,
+            Vec::new(),
+            &config,
+            std::future::pending::<()>(),
+        )
+        .await
+    });
+
+    let response = read_http_response_line(&mut client_side).await;
+    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+
+    let client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+    (client, server_task)
+}
+
+/// `spawn_session` の可変パス版（イシュー #676）。`request_target`
+/// （例: `/devtools/page/XYZ` や `/devtools/page/XYZ?token=abc`）を含む
+/// リクエストでハンドシェイクを成立させる。
+async fn spawn_session_with_request_target(
+    config: WebSocketConfig,
+    request_target: &str,
+) -> (
+    WebSocketStream<tokio::io::DuplexStream>,
+    tokio::task::JoinHandle<Result<(), fandhe_backend_plugin_websocket::WsError>>,
+) {
+    let request = format!(
+        "GET {request_target} HTTP/1.1\r\n\
+         Host: example.com\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+         Sec-WebSocket-Version: 13\r\n\
+         \r\n"
+    );
+    let head = match parse_request_head(request.as_bytes()).unwrap() {
         ParseOutcome::Complete { head, .. } => head,
         ParseOutcome::Incomplete => unreachable!(),
     };
@@ -499,4 +566,108 @@ async fn on_open_is_not_called_when_handshake_fails() {
         !flag.load(Ordering::SeqCst),
         "on_open must not be called for a failed handshake"
     );
+}
+
+/// ケース A（イシュー #676、受け入れ基準 1）: `with_path_pattern` 登録済み
+/// パターンから抽出したパラメータが `on_open` の `WsOpenContext::param` 経由
+/// でハンドラへ届く。
+#[tokio::test]
+async fn on_open_receives_single_path_param_from_pattern() {
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let config = WebSocketConfig::default()
+        .with_path_pattern("/devtools/page/{id}")
+        .unwrap()
+        .with_handler(CapturingParamsHandler {
+            captured: Arc::clone(&captured),
+        });
+
+    let (mut client, server_task) =
+        spawn_session_with_request_target(config, "/devtools/page/XYZ").await;
+
+    client.close(None).await.expect("close");
+    let result = server_task.await.unwrap();
+    assert!(result.is_ok(), "session should end cleanly: {result:?}");
+
+    let params = captured.lock().unwrap().clone();
+    assert_eq!(params, vec![("id".to_string(), "XYZ".to_string())]);
+}
+
+/// ケース B（イシュー #676）: 複数パラメータ（`{id}`/`{post_id}`）がいずれも
+/// 正しく抽出される。
+#[tokio::test]
+async fn on_open_receives_multiple_path_params_from_pattern() {
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let config = WebSocketConfig::default()
+        .with_path_pattern("/users/{id}/posts/{post_id}")
+        .unwrap()
+        .with_handler(CapturingParamsHandler {
+            captured: Arc::clone(&captured),
+        });
+
+    let (mut client, server_task) =
+        spawn_session_with_request_target(config, "/users/42/posts/99").await;
+
+    client.close(None).await.expect("close");
+    let result = server_task.await.unwrap();
+    assert!(result.is_ok(), "session should end cleanly: {result:?}");
+
+    let params = captured.lock().unwrap().clone();
+    assert_eq!(
+        params,
+        vec![
+            ("id".to_string(), "42".to_string()),
+            ("post_id".to_string(), "99".to_string()),
+        ]
+    );
+}
+
+/// ケース C（イシュー #676、受け入れ基準 2）: `WebSocketConfig::default()`
+/// （パターン未登録、`/ws` 完全一致）では `on_open` に渡る `WsOpenContext` の
+/// パラメータが常に空。既存ハンドラ（`ReverseHandler` 等）が無改修のまま
+/// 動く回帰確認は本ファイル冒頭の既存テスト群がすでに緑のまま担保する。
+#[tokio::test]
+async fn on_open_has_no_params_for_exact_match_config() {
+    let captured = Arc::new(std::sync::Mutex::new(vec![(
+        "sentinel".to_string(),
+        "unset".to_string(),
+    )]));
+    let config = WebSocketConfig::default().with_handler(CapturingParamsHandler {
+        captured: Arc::clone(&captured),
+    });
+
+    let (mut client, server_task) = spawn_session(config).await;
+
+    client.close(None).await.expect("close");
+    let result = server_task.await.unwrap();
+    assert!(result.is_ok(), "session should end cleanly: {result:?}");
+
+    let params = captured.lock().unwrap().clone();
+    assert!(
+        params.is_empty(),
+        "exact-match config must yield no path params, got {params:?}"
+    );
+}
+
+/// クエリ文字列付きリクエストでもパターン照合・パラメータ抽出が機能する
+/// ことを確認する（`handshake.rs` の `matches_ignores_query_string_when_
+/// comparing_path` と対になる統合テスト、イシュー #676）。
+#[tokio::test]
+async fn on_open_receives_path_param_when_query_string_present() {
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let config = WebSocketConfig::default()
+        .with_path_pattern("/devtools/page/{id}")
+        .unwrap()
+        .with_handler(CapturingParamsHandler {
+            captured: Arc::clone(&captured),
+        });
+
+    let (mut client, server_task) =
+        spawn_session_with_request_target(config, "/devtools/page/XYZ?token=abc").await;
+
+    client.close(None).await.expect("close");
+    let result = server_task.await.unwrap();
+    assert!(result.is_ok(), "session should end cleanly: {result:?}");
+
+    let params = captured.lock().unwrap().clone();
+    assert_eq!(params, vec![("id".to_string(), "XYZ".to_string())]);
 }

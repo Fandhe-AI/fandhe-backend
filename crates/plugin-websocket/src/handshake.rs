@@ -11,6 +11,35 @@ use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 
 use crate::config::WebSocketConfig;
 use crate::error::WsError;
+use crate::pattern::PathParams;
+
+/// `head` の request-target が `config` の指すパス（完全一致 or 登録済み
+/// パターン）に該当するかを判定し、該当する場合は抽出済みパスパラメータを
+/// 返す。
+///
+/// `matches`（真偽値のみを返す委譲判定）と [`crate::handle_upgrade`]（抽出
+/// パラメータを `WsOpenContext` へ渡す、イシュー #676）の両方から呼ばれる
+/// 共有ヘルパー。クエリ除去・完全一致/パターン照合の判定ロジックを二重化
+/// せず 1 箇所に集約する。
+///
+/// `config.pattern` が `None`（完全一致パス）の場合、一致しても抽出対象の
+/// パラメータは存在しないため空の [`PathParams`] を返す（`is_some()` で
+/// 「一致」判定はできるが `len() == 0`）。
+#[must_use]
+pub(crate) fn match_config_path<'a>(
+    head: &'a RequestHead,
+    config: &WebSocketConfig,
+) -> Option<PathParams<'a>> {
+    // `RequestHead::target` はクエリ文字列を含む完全な request-target
+    // （例: `/ws?token=...`）。`config.path` はクエリを含まないパス成分の
+    // みを表すため、比較前に `?` 以降を切り落として path 成分だけを見る。
+    let target = head.target();
+    let path = target.split('?').next().unwrap_or(target);
+    match &config.pattern {
+        Some(pattern) => pattern.match_path(path),
+        None => (path == config.path).then(PathParams::default),
+    }
+}
 
 /// リクエストが `config` の指すアップグレード対象（パス + メソッド +
 /// `Upgrade: websocket`）に該当するかを判定する。
@@ -18,23 +47,17 @@ use crate::error::WsError;
 /// コア側 `UpgradeHandler` アダプタ（`crates/core/src/server.rs`）の
 /// `matches` 実装から呼ばれる（`UpgradeHandler::matches` は「委譲判定のみ」の
 /// 契約であり、詳細なハンドシェイク検証は行わない。詳細検証は委譲確定後の
-/// [`validate`] が担う）。
+/// [`validate`] が担う）。パス判定自体は [`match_config_path`] へ委譲する
+/// （ロジックの二重化を避ける。抽出したパラメータは本関数では破棄し
+/// `bool` のみを返す契約は不変、`UpgradeHandler::matches` が同期 bool API
+/// のため）。
 ///
 /// `config` に [`WebSocketConfig::with_path_pattern`] で登録済みのパターンが
 /// あれば、完全一致判定より優先してパターン照合を使う（イシュー #675）。
 #[must_use]
 pub fn matches(head: &RequestHead, config: &WebSocketConfig) -> bool {
-    // `RequestHead::target` はクエリ文字列を含む完全な request-target
-    // （例: `/ws?token=...`）。`config.path` はクエリを含まないパス成分の
-    // みを表すため、比較前に `?` 以降を切り落として path 成分だけを見る。
-    let target = head.target();
-    let path = target.split('?').next().unwrap_or(target);
-    let path_matches = match &config.pattern {
-        Some(pattern) => pattern.match_path(path).is_some(),
-        None => path == config.path,
-    };
-    head.method() == "GET"
-        && path_matches
+    match_config_path(head, config).is_some()
+        && head.method() == "GET"
         && head
             .header("upgrade")
             .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
@@ -209,6 +232,49 @@ mod tests {
         let config = WebSocketConfig::default().with_path("/ws");
         let head = head_from(b"GET /other HTTP/1.1\r\nUpgrade: websocket\r\n\r\n");
         assert!(!matches(&head, &config));
+    }
+
+    #[test]
+    fn match_config_path_extracts_params_for_registered_pattern() {
+        // イシュー #676: `matches` が捨てていた抽出結果を、共有ヘルパー
+        // 経由で取得できることを確認する。
+        let config = WebSocketConfig::default()
+            .with_path_pattern("/devtools/page/{id}")
+            .unwrap();
+        let head = head_from(b"GET /devtools/page/XYZ HTTP/1.1\r\nUpgrade: websocket\r\n\r\n");
+        let params = match_config_path(&head, &config).expect("pattern should match");
+        assert_eq!(params.get("id"), Some("XYZ"));
+        assert_eq!(params.len(), 1);
+    }
+
+    #[test]
+    fn match_config_path_ignores_query_string_when_extracting() {
+        let config = WebSocketConfig::default()
+            .with_path_pattern("/devtools/page/{id}")
+            .unwrap();
+        let head =
+            head_from(b"GET /devtools/page/XYZ?token=abc HTTP/1.1\r\nUpgrade: websocket\r\n\r\n");
+        let params = match_config_path(&head, &config).expect("pattern should match");
+        assert_eq!(params.get("id"), Some("XYZ"));
+    }
+
+    #[test]
+    fn match_config_path_returns_empty_params_for_exact_match_config() {
+        // パターン未登録（完全一致パス）は一致しても抽出対象のパラメータが
+        // 存在しないため、空の `PathParams` を返す（受け入れ基準 2）。
+        let config = WebSocketConfig::default();
+        let head = valid_handshake_head();
+        let params = match_config_path(&head, &config).expect("exact path should match");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn match_config_path_returns_none_for_mismatched_pattern() {
+        let config = WebSocketConfig::default()
+            .with_path_pattern("/devtools/page/{id}")
+            .unwrap();
+        let head = head_from(b"GET /other HTTP/1.1\r\nUpgrade: websocket\r\n\r\n");
+        assert!(match_config_path(&head, &config).is_none());
     }
 
     #[test]
