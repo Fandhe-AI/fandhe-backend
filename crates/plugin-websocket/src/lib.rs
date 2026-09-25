@@ -65,24 +65,27 @@
 //!
 //! # pay-for-what-you-use
 //!
-//! 依存は `fandhe-backend-http`（`RequestHead` 参照のみ）・`tokio`（`io-util` のみ）・
-//! `tokio-tungstenite`（`handshake` feature のみ、TLS 系は無効）・
-//! `futures-util`（`WebSocketStream` の Stream/Sink 駆動用）に限定する
-//! （詳細は `Cargo.toml` のコメントを参照）。`websocket` feature 無効時は
-//! コア（`fandhe-backend-core`）の依存グラフから本クレート自体が除外
-//! される（`cargo tree -p fandhe-backend-core` で確認可能）。
+//! 依存は `fandhe-backend-http`（`RequestHead` 参照のみ）・
+//! `tokio`（`io-util`/`time`/`sync`）・`tokio-tungstenite`（`handshake`
+//! feature のみ、TLS 系は無効）・`futures-util`（`WebSocketStream` の
+//! Stream/Sink 駆動用）に限定する（詳細は `Cargo.toml` のコメントを参照）。
+//! `sync` feature はイシュー #670 で追加した（`crate::handler::WsSender`
+//! が `crate::session::run_session` へ合流するための bounded mpsc 用。
+//! `tokio` の推移依存として新規クレートは増えない）。`websocket` feature
+//! 無効時はコア（`fandhe-backend-core`）の依存グラフから本クレート自体が
+//! 除外される（`cargo tree -p fandhe-backend-core` で確認可能）。
 //!
 //! # キャンセル `Future` の受け渡し（イシュー #492）
 //!
 //! [`handle_upgrade`] はコアから世代キャンセルシグナル（最終 graceful
 //! shutdown・rebind 世代 drain）を通知する `Future` を受け取る
 //! （`docs/design/ws-cancellation-propagation.md` 3.2 節 (i)）。委譲境界を
-//! `tokio::sync::watch::Receiver` ではなく `Future` として越えることで、
-//! 本クレートは `tokio` の `sync` feature を要求しない（本体依存は上記の
-//! とおり `io-util`/`time` のみのまま）。統合テスト（`tests/cancellation.rs`）
-//! はキャンセルトリガに `tokio::sync::oneshot` を使うため、
-//! `[dev-dependencies]` にのみ `sync` feature を追加する（`Cargo.toml` の
-//! コメントを参照。本体ビルド・公開依存グラフには影響しない）。
+//! `tokio::sync::watch::Receiver` ではなく `Future` として越える設計自体は
+//! 変わらない。本クレートは `tokio` の `sync` feature を（イシュー #670
+//! 以降は）本体依存として要求するが、これは [`crate::handler::WsSender`]
+//! の bounded mpsc 用途であり、キャンセル `Future` の受け渡し方式とは
+//! 無関係（統合テスト `tests/cancellation.rs` は引き続きキャンセル
+//! トリガに `tokio::sync::oneshot` を使う）。
 
 mod config;
 mod error;
@@ -235,7 +238,11 @@ where
         return Ok(());
     }
 
-    session::run_session(stream, leftover, config, cancel).await
+    // イシュー #670 時点では `WsSender` をハンドラへ渡す公開経路がなく、
+    // `handle_upgrade` の呼び出し元は誰も outbound 送信チャネルを持たない
+    // ため常に `None` を渡す（合流経路自体は `session::run_session` に
+    // 追加済み。ハンドラへの公開は #671 のスコープ）。
+    session::run_session(stream, leftover, config, cancel, None).await
 }
 
 /// `bytes` を `stream` へ書き込みつつ `cancel` と race する。キャンセルが

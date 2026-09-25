@@ -490,7 +490,29 @@ fandhe-backend/
 │   │                                    # 即座に打ち切って Close ハンドシェイクへ分岐する
 │   │                                    # （シグネチャ変更なし。`on_message` が返す `Future`
 │   │                                    # は任意の `await` 点で drop されうる契約へ変更、
-│   │                                    # `docs/design/ws-cancellation-propagation.md` 10 節）
+│   │                                    # `docs/design/ws-cancellation-propagation.md` 10 節）。
+│   │                                    # イシュー #670（親 #669「サーバー起点で任意タイミングに
+│   │                                    # push できる WebSocket API」の第 1 段）で `run_session`
+│   │                                    # の受信ループへサーバー起点メッセージ用の bounded mpsc を
+│   │                                    # 合流させる内部配線を追加した。送信ハンドル `WsSender`
+│   │                                    # （`handler` モジュール、clone 可能・`send` は満杯時に
+│   │                                    # 待機するバックプレッシャ契約）を新設し、受信ループは
+│   │                                    # cancel（最優先）→ (クライアント受信 or アイドル期限) →
+│   │                                    # outbound（push）の優先順で 1 イベントずつ処理する
+│   │                                    # （`race2` による手動 2-Future race、`tokio::select!` は
+│   │                                    # 使わず `tokio` の `macros` feature を要求しない）。
+│   │                                    # `idle_timeout` はクライアントから実際にフレームを受信
+│   │                                    # した場合にのみ延長し、outbound push ではリセットしない
+│   │                                    # （Issue #175 の DoS 対策を後退させない）。cancel 発火・
+│   │                                    # アイドルタイムアウト発火時は Close ハンドシェイクへ
+│   │                                    # 分岐する前に outbound の受信側を明示的に drop し、満杯
+│   │                                    # チャネルでブロック中の `WsSender::send` を `close_grace`
+│   │                                    # の満了を待たず即座に解放する。本 PR の時点では
+│   │                                    # `WsSender` をユーザーハンドラへ渡す公開経路
+│   │                                    # （`handle_upgrade` は常に `None` を渡す）は存在せず、
+│   │                                    # 公開は #671 のスコープ。`tokio` feature に `sync`
+│   │                                    # （bounded mpsc 用）を追加（`io-util`/`time`/`sync` の
+│   │                                    # 3 つ、新規クレート増分なし）
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O
