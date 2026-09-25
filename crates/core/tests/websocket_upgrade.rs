@@ -240,10 +240,9 @@ async fn pattern_registered_config_falls_through_on_unmatched_path() {
             _head: &RequestHead,
             _body: &[u8],
         ) -> fandhe_backend_routes::HandlerFuture {
-            Box::pin(std::future::ready(Response::new(
-                404,
-                b"not found".to_vec(),
-            )))
+            Box::pin(std::future::ready(
+                Response::new(404, b"not found".to_vec()).with_content_type("text/plain"),
+            ))
         }
     }
 
@@ -278,7 +277,123 @@ async fn pattern_registered_config_falls_through_on_unmatched_path() {
     let mut out = Vec::new();
     stream.read_to_end(&mut out).await.unwrap();
     let response = String::from_utf8(out).unwrap();
-    assert!(response.starts_with("HTTP/1.1 404"));
+    // アサーション網羅性（AGENTS.md「アサーション網羅性」節、PoC-9）: ステータス行・
+    // ヘッダ（Content-Type / Content-Length）・ボディの 3 点をすべて検証する。
+    // ボディ一致のみで「フォールスルーが成立した」と判断しない。
+    assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+    assert!(response.contains("Content-Type: text/plain\r\n"));
+    assert!(response.contains("Content-Length: 9\r\n"));
+    assert!(response.ends_with("not found"));
+}
+
+/// 複数の `with_path_pattern` 設定を実サーバー（`Server::websocket` の実登録順 +
+/// `try_handle_upgrade` の設定選択 + `handle_upgrade` へのハンドラ受け渡し）経由で
+/// 検証する（イシュー #677 PR #688 レビュー指摘対応）。
+///
+/// `crates/plugin-websocket/tests/path_pattern_routing_e2e.rs` の
+/// `two_patterns_dispatch_to_correct_handler_with_matching_param` は、本クレートに
+/// 依存できない制約から `try_handle_upgrade` の `.find()` ディスパッチをテスト内で
+/// 再実装した `dispatch()` 越しに検証しており、実際の `Server::websocket` 登録順・
+/// コア側 `try_handle_upgrade` の設定選択・選択後の `handle_upgrade` へのハンドラ
+/// 受け渡しは通っていなかった。本テストはコア側（本クレートが所有する
+/// `try_handle_upgrade`）を実際に通し、2 パターン登録済みの実サーバーへ両パスで
+/// 接続してタグとパラメータ値を確認することでその隙間を埋める。
+#[tokio::test]
+async fn multiple_path_patterns_dispatch_to_correct_handler_via_real_server() {
+    use fandhe_backend_plugin_websocket::handler::{
+        WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome,
+    };
+
+    /// `on_open` で `ctx.param(param_name)` を読み取り `"{label}:{value}"` を
+    /// push するハンドラ（`crates/plugin-websocket/tests/
+    /// path_pattern_routing_e2e.rs::PushParamHandler` と同型）。実サーバー経由で
+    /// どちらのハンドラが選ばれ、どの値が渡ったかをクライアント側で直接観測する。
+    struct PushParamHandler {
+        label: &'static str,
+        param_name: &'static str,
+    }
+
+    impl WsMessageHandler for PushParamHandler {
+        fn name(&self) -> &'static str {
+            self.label
+        }
+
+        fn on_open(&self, ctx: WsOpenContext) {
+            let value = ctx.param(self.param_name).unwrap_or("missing").to_string();
+            let tag = format!("{}:{value}", self.label);
+            let sender = ctx.sender().clone();
+            tokio::spawn(async move {
+                let _ = sender.send(WsMessage::Text(tag)).await;
+            });
+        }
+
+        fn on_message(
+            &self,
+            _msg: WsMessage,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<WsOutcome, WsHandlerError>> + Send + '_>,
+        > {
+            Box::pin(async move { Ok(WsOutcome::Reply(vec![])) })
+        }
+    }
+
+    let server = Server::new()
+        .websocket(
+            WebSocketConfig::default()
+                .with_path_pattern("/devtools/browser/{id}")
+                .unwrap()
+                .with_handler(PushParamHandler {
+                    label: "browser",
+                    param_name: "id",
+                }),
+        )
+        .websocket(
+            WebSocketConfig::default()
+                .with_path_pattern("/devtools/page/{id}")
+                .unwrap()
+                .with_handler(PushParamHandler {
+                    label: "page",
+                    param_name: "id",
+                }),
+        )
+        .handler(NotCalledHandler);
+    let addr = spawn_server(server).await;
+
+    for (path, expected_tag) in [
+        ("/devtools/browser/ABC", "browser:ABC"),
+        ("/devtools/page/XYZ", "page:XYZ"),
+    ] {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "GET {path} HTTP/1.1\r\n\
+             Host: example.com\r\n\
+             Upgrade: websocket\r\n\
+             Connection: Upgrade\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\
+             \r\n"
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+
+        let response_head = read_response_head(&mut stream).await;
+        assert!(
+            response_head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"),
+            "path {path} が 101 以外を返した: {response_head}"
+        );
+
+        let (opcode, payload) = read_server_frame(&mut stream).await;
+        assert_eq!(opcode, 0x1, "expected Text opcode push for path {path}");
+        assert_eq!(
+            payload,
+            expected_tag.as_bytes(),
+            "path {path} が期待と異なるタグを push した（実サーバー経由のハンドラ選択・\
+             パラメータ受け渡しが期待どおりでない）"
+        );
+
+        stream.write_all(&masked_close_frame()).await.unwrap();
+        let mut trailing = Vec::new();
+        let _ = stream.read_to_end(&mut trailing).await;
+    }
 }
 
 /// `Server::websocket` を異なる `path` で複数回呼んだとき、両方のパスへの
