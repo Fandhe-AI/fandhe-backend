@@ -47,7 +47,7 @@ shutdown（#313）・rebind 世代 drain（#485/#488）双方のキャンセル�
 | 世代管理 | 同上 `run_until` | 世代 = `shutdown_flag`（`Arc<AtomicBool>`）+ `CancelSafeJoinSet` のペア。rebind 時に旧世代の flag を true → `mem::replace` で JoinSet 切り離し → `spawn_generation_drain` |
 | WS セッション受信ループ | `crates/plugin-websocket/src/session.rs` `run_session` | `idle_timeout` 有効時は各受信待ちを `tokio::time::timeout` で監視。`handle_idle_timeout` が Close ハンドシェイク（Close frame 送信 → 相手の Close 応答を `WebSocketConfig::close_grace`（既定 10 秒、イシュー #500 で設定可能化）上限で待機）を既に実装済み |
 | コアの tokio feature | `crates/core/Cargo.toml` | `rt` / `net` / `io-util` / `time` / `sync` の 5 つに限定 |
-| plugin-websocket の tokio feature | `crates/plugin-websocket/Cargo.toml` | `io-util` / `time` のみ（**`sync` を持たない**）。`crates/core` に依存しない設計（`docs/design/plugin-boundary.md` 6.1 節、循環依存回避） |
+| plugin-websocket の tokio feature | `crates/plugin-websocket/Cargo.toml` | `io-util` / `time` / `sync` の 3 つ。`crates/core` に依存しない設計（`docs/design/plugin-boundary.md` 6.1 節、循環依存回避）は不変。`sync` はイシュー #670 で `crate::handler::WsSender`（`run_session` の受信ループへ合流するサーバー起点 push 用 bounded mpsc）のために本体依存へ追加した（下記 3 節 (ii) の比較で「新規依存・tokio feature 追加なしで実現可能」としていた前提は、キャンセル `Future` 方式自体には無関係のまま、#670 で `sync` 自体は別目的により追加済みになったことに留意） |
 
 ## 3. キャンセルシグナルの方式比較
 

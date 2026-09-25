@@ -8,6 +8,30 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-09-25 — `crates/plugin-websocket` の `tokio` feature へ `sync` を追加（イシュー #670、`WsSender` 内部配線）
+
+`crate::handler::WsSender`（サーバー起点で任意タイミングに WebSocket メッセージを push
+するための送信ハンドル、親 #669）が `crate::session::run_session` の受信ループへ合流する
+ための bounded mpsc（`tokio::sync::mpsc`）に用いるため、`crates/plugin-websocket/Cargo.toml`
+の `[dependencies].tokio.features` へ `sync` を追加した（`io-util` / `time` / `sync` の
+3 つ。従来は `[dev-dependencies]` にのみ `sync` を追加していた（`tests/cancellation.rs` が
+キャンセルトリガに `tokio::sync::oneshot` を使うため）が、本体側で既に有効化されるため
+`[dev-dependencies]` 側の重複指定は削除した）。
+
+### pay-for-what-you-use への影響
+
+`cargo tree -p fandhe-backend-plugin-websocket -e no-dev`（変更前後）は完全に一致し、
+**新規クレートの増分はゼロ**（`tokio` は `sync` 有効化前から既にワークスペース依存として
+解決済みで、`sync` は `tokio` 内蔵の feature フラグに過ぎないため）。`websocket` feature
+無効時に本クレート自体がコア（`fandhe-backend-core`）の依存グラフから除外される既存契約
+（`cargo build -p fandhe-backend-core --no-default-features` で確認）にも影響しない。
+
+### unsafe 件数
+
+追加コードに `unsafe` なし（`WsSender` / `WsSendError` / `run_session` の合流ロジックは
+すべて安全な Rust のみで構成、`race2` は `crate::race_cancel` と同型の
+`std::future::poll_fn` + `std::pin::pin!` ベース）。
+
 ## 2026-08-26 — `benches/refs`（standalone workspace）に actix-web / Rocket 参照実装を新規追加（他フレームワーク横並び比較、PR #651 codex-review 指摘 P1 対応）
 
 `benches/refs`（`benches/microbench` と同パターンの standalone workspace、root `Cargo.toml`

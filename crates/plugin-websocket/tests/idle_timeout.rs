@@ -10,7 +10,11 @@
 use std::time::Duration;
 
 use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+use fandhe_backend_plugin_websocket::handler::{
+    WsHandlerError, WsMessage, WsMessageHandler, WsOutcome,
+};
 use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade};
+use futures_util::future::BoxFuture;
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::AsyncReadExt;
 use tokio_tungstenite::WebSocketStream;
@@ -282,5 +286,92 @@ async fn configured_close_grace_is_applied_on_idle_timeout() {
     assert!(
         result.is_ok(),
         "server must terminate within the configured close_grace: {result:?}"
+    );
+}
+
+/// `idle_timeout` 相当の時間だけ `on_message` 内で処理をブロックする
+/// ハンドラ（レビュー指摘の再現用。イシュー #670 PR #682 レビュー、
+/// codex P1 / cursor[bot] Medium が独立に指摘した回帰の再発防止テスト）。
+struct SlowHandler {
+    delay: Duration,
+}
+
+impl WsMessageHandler for SlowHandler {
+    fn name(&self) -> &'static str {
+        "slow"
+    }
+
+    fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+        let delay = self.delay;
+        Box::pin(async move {
+            tokio::time::sleep(delay).await;
+            Ok(WsOutcome::Reply(vec![msg]))
+        })
+    }
+}
+
+/// レビュー指摘（PR #682、codex P1・cursor[bot] Medium が同一箇所を独立に
+/// 指摘）の回帰防止テスト: `on_message` の処理時間が `idle_timeout` 相当
+/// またはそれ以上にかかっても、返信送出後の次の受信待ちで即座に
+/// アイドルタイムアウトとして切断されないこと。
+///
+/// 旧実装（フレーム受信時に `idle_deadline` を更新）では、ハンドラ処理
+/// 時間がアイドル待機時間に算入されてしまい、返信直後の次の `ws.next()`
+/// 待機がほぼゼロの残り時間しか持たず、以降のクライアント無通信を待たず
+/// 即座にアイドルクローズしていた（本テストが `Close` を受信してしまう）。
+/// 修正後は「ハンドラ処理・返信送出が完了し、次の受信待ちに入る直前」に
+/// `idle_deadline` を更新するため、直後の無通信期間が `idle_timeout` 未満
+/// であれば切断されない。
+#[tokio::test]
+async fn slow_handler_does_not_trigger_idle_close_right_after_reply() {
+    let idle_timeout = Duration::from_millis(200);
+    // ハンドラ処理時間を idle_timeout と同程度に設定する（旧実装のバグは
+    // 「受信〜返信完了までの経過時間」がそのまま次回アイドル待機時間を
+    // 侵食する形で現れるため、同程度の遅延で確実に再現する）。
+    let config = WebSocketConfig::default()
+        .with_idle_timeout(idle_timeout)
+        .with_handler(SlowHandler {
+            delay: idle_timeout,
+        });
+    let (mut client, server_task) = handshake(config).await;
+
+    client
+        .send(Message::Text("hello".into()))
+        .await
+        .expect("send text");
+
+    // ハンドラの遅延（idle_timeout 相当）を含めても、返信は
+    // idle_timeout を明確に超える余裕（3 倍）の範囲内に届くこと。
+    // 旧実装ではここで Close フレームが先に届いてしまう。
+    let received = tokio::time::timeout(idle_timeout * 3, client.next())
+        .await
+        .expect("reply should arrive within a generous margin")
+        .expect("stream should yield a message")
+        .expect("no protocol error");
+    assert_eq!(
+        received,
+        Message::Text("hello".into()),
+        "handler processing time must not be counted as idle time \
+         (server must reply, not idle-close, right after slow handling)"
+    );
+
+    // 返信直後の次の受信待ちも、idle_timeout の全期間を新たに得ている
+    // ことを確認するため、idle_timeout の半分だけ待ってもまだ Close
+    // されていないことを検証する。
+    let outcome = tokio::time::timeout(idle_timeout / 2, client.next()).await;
+    assert!(
+        outcome.is_err(),
+        "idle deadline must be freshly extended after handler completion, \
+         not consumed by handler processing time"
+    );
+
+    client.close(None).await.expect("close");
+    let result = tokio::time::timeout(Duration::from_secs(2), server_task)
+        .await
+        .expect("server task should finish")
+        .unwrap();
+    assert!(
+        result.is_ok(),
+        "session should end cleanly after client-initiated close: {result:?}"
     );
 }
