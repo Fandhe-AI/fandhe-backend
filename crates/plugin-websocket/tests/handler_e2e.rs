@@ -3,9 +3,13 @@
 //! 既定エコー回帰・サイズ上限維持を、`handshake_e2e.rs` と同型
 //! （`tokio::io::duplex` + tokio-tungstenite クライアント）で検証する。
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
+
 use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
 use fandhe_backend_plugin_websocket::handler::{
-    WsHandlerError, WsMessage, WsMessageHandler, WsOutcome,
+    WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome,
 };
 use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade};
 use futures_util::future::BoxFuture;
@@ -112,6 +116,68 @@ impl WsMessageHandler for CloseOnMessageHandler {
 
     fn on_message(&self, _msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
         Box::pin(async move { Ok(WsOutcome::Close) })
+    }
+}
+
+/// `on_open` で受け取った `WsSender` をクローンして `tokio::spawn` した
+/// タスクから push するハンドラ（イシュー #671）。
+struct PushOnOpenHandler;
+
+impl WsMessageHandler for PushOnOpenHandler {
+    fn name(&self) -> &'static str {
+        "push-on-open"
+    }
+
+    fn on_open(&self, ctx: WsOpenContext) {
+        let sender = ctx.sender().clone();
+        tokio::spawn(async move {
+            let _ = sender
+                .send(WsMessage::Text("push from on_open".to_string()))
+                .await;
+        });
+    }
+
+    fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+        Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+    }
+}
+
+/// `on_open` の呼び出し回数を数えるハンドラ（1 セッションにつき 1 回のみ
+/// 呼ばれることを検証する）。
+struct CountingOnOpenHandler {
+    count: Arc<AtomicUsize>,
+}
+
+impl WsMessageHandler for CountingOnOpenHandler {
+    fn name(&self) -> &'static str {
+        "counting-on-open"
+    }
+
+    fn on_open(&self, _ctx: WsOpenContext) {
+        self.count.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+        Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+    }
+}
+
+/// `on_open` が呼ばれたら `flag` を立てるハンドラ（呼ばれない経路の検証用）。
+struct FlagOnOpenHandler {
+    flag: Arc<AtomicBool>,
+}
+
+impl WsMessageHandler for FlagOnOpenHandler {
+    fn name(&self) -> &'static str {
+        "flag-on-open"
+    }
+
+    fn on_open(&self, _ctx: WsOpenContext) {
+        self.flag.store(true, Ordering::SeqCst);
+    }
+
+    fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+        Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
     }
 }
 
@@ -340,5 +406,97 @@ async fn oversized_message_is_rejected_before_reaching_handler() {
     assert!(
         result.is_err(),
         "oversized message should be rejected as a protocol error: {result:?}"
+    );
+}
+
+/// ケース 8（イシュー #671）: `on_open` で受け取った `WsSender` を使い、
+/// クライアントが何も送らないうちにサーバー起点で push できる。
+#[tokio::test]
+async fn on_open_pushes_message_before_client_sends_anything() {
+    let config = WebSocketConfig::default().with_handler(PushOnOpenHandler);
+    let (mut client, server_task) = spawn_session(config).await;
+
+    let msg = tokio::time::timeout(Duration::from_secs(2), client.next())
+        .await
+        .expect("push should arrive within timeout")
+        .expect("stream should not end")
+        .expect("frame should not error");
+    assert_eq!(msg, Message::Text("push from on_open".into()));
+
+    client.close(None).await.expect("close");
+    let result = server_task.await.unwrap();
+    assert!(result.is_ok(), "session should end cleanly: {result:?}");
+}
+
+/// ケース 9（イシュー #671）: `on_open` は 1 セッションにつき 1 回だけ
+/// 呼ばれる。
+#[tokio::test]
+async fn on_open_is_called_exactly_once_per_session() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let config = WebSocketConfig::default().with_handler(CountingOnOpenHandler {
+        count: Arc::clone(&count),
+    });
+    let (mut client, server_task) = spawn_session(config).await;
+
+    client
+        .send(Message::Text("hi".into()))
+        .await
+        .expect("send text");
+    let _ = client.next().await;
+
+    client.close(None).await.expect("close");
+    let result = server_task.await.unwrap();
+    assert!(result.is_ok(), "session should end cleanly: {result:?}");
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+
+/// ケース 10（イシュー #671、フェイルクローズ回帰）: ハンドシェイク検証が
+/// 失敗した接続（`Sec-WebSocket-Version` 不一致、426 応答）では `on_open`
+/// が呼ばれない。確立していないセッションへ `WsSender` を渡さない契約の
+/// 検証。
+#[tokio::test]
+async fn on_open_is_not_called_when_handshake_fails() {
+    let flag = Arc::new(AtomicBool::new(false));
+    let config = WebSocketConfig::default().with_handler(FlagOnOpenHandler {
+        flag: Arc::clone(&flag),
+    });
+
+    let bytes = b"GET /ws HTTP/1.1\r\n\
+        Host: example.com\r\n\
+        Upgrade: websocket\r\n\
+        Connection: Upgrade\r\n\
+        Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+        Sec-WebSocket-Version: 8\r\n\
+        \r\n";
+    let head = match parse_request_head(bytes).unwrap() {
+        ParseOutcome::Complete { head, .. } => head,
+        ParseOutcome::Incomplete => unreachable!(),
+    };
+
+    let (server_side, mut client_side) = tokio::io::duplex(4096);
+    let result = handle_upgrade(
+        server_side,
+        &head,
+        Vec::new(),
+        &config,
+        std::future::pending::<()>(),
+    )
+    .await;
+    assert!(result.is_err(), "unsupported version must be rejected");
+
+    let response = read_http_response_line(&mut client_side).await;
+    assert!(response.starts_with("HTTP/1.1 426 Upgrade Required\r\n"));
+    // `handshake::serialize_426` の固定応答（RFC 6455 4.4）を全項目検証する。
+    // `Sec-WebSocket-Version: 13` はクライアントが再試行すべきバージョンを、
+    // `Content-Length: 0` は空ボディであることを明示する契約。
+    assert!(response.contains("Sec-WebSocket-Version: 13\r\n"));
+    assert!(response.contains("Content-Length: 0\r\n"));
+    assert!(
+        response.ends_with("\r\n\r\n"),
+        "426 応答はヘッダ終端直後にボディなしで終わる: {response:?}"
+    );
+    assert!(
+        !flag.load(Ordering::SeqCst),
+        "on_open must not be called for a failed handshake"
     );
 }

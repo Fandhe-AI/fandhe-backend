@@ -34,15 +34,18 @@
 //!    後、残余バイト列とともに [`handle_upgrade`] へ完全委譲される
 //! 3. [`handle_upgrade`] は RFC 6455 4.2.1 の詳細検証（`handshake::validate`）
 //!    を行い、成功時は 101 応答、失敗時は 400/426 応答を送出する
-//! 4. 101 応答成功後は `tokio-tungstenite` の `WebSocketStream` へフレーミング
-//!    処理を委譲し、セッション終了まで面倒を見る（`session::run_session`）。
-//!    Text/Binary メッセージは [`handler::WsMessageHandler`]（既定
-//!    [`handler::EchoHandler`]、Issue #179）へ委譲され、返り値
-//!    （[`handler::WsOutcome`]）に従って返信送出・セッション継続/終了を
-//!    決める。`WebSocketConfig::idle_timeout`（既定 60 秒、fail-safe で有効）
-//!    が設定されている場合、受信アイドルが続く接続は正常な Close
-//!    ハンドシェイクで切断する（リソース枯渇 DoS 対策、Issue #175。詳細は
-//!    `session` モジュールの doc を参照）
+//! 4. 101 応答成功が確定した接続についてのみ、送信ハンドル
+//!    [`handler::WsSender`]（イシュー #670）を生成して
+//!    [`handler::WsMessageHandler::on_open`]（イシュー #671、既定 no-op）を
+//!    同期的に一度だけ呼び出す。以降は `tokio-tungstenite` の
+//!    `WebSocketStream` へフレーミング処理を委譲し、セッション終了まで
+//!    面倒を見る（`session::run_session`）。Text/Binary メッセージは
+//!    [`handler::WsMessageHandler::on_message`]（既定 [`handler::EchoHandler`]、
+//!    Issue #179）へ委譲され、返り値（[`handler::WsOutcome`]）に従って
+//!    返信送出・セッション継続/終了を決める。`WebSocketConfig::idle_timeout`
+//!    （既定 60 秒、fail-safe で有効）が設定されている場合、受信アイドルが
+//!    続く接続は正常な Close ハンドシェイクで切断する（リソース枯渇 DoS
+//!    対策、Issue #175。詳細は `session` モジュールの doc を参照）
 //! 5. コア（`run_until`）から渡されるキャンセル `Future`（`handle_upgrade`
 //!    第 5 引数、イシュー #492）が発火した場合も、アイドルタイムアウトと
 //!    同型の正常な Close ハンドシェイク（close code 1001 Going Away）で
@@ -73,7 +76,10 @@
 //! が `crate::session::run_session` へ合流するための bounded mpsc 用。
 //! `tokio` の推移依存として新規クレートは増えない）。`websocket` feature
 //! 無効時はコア（`fandhe-backend-core`）の依存グラフから本クレート自体が
-//! 除外される（`cargo tree -p fandhe-backend-core` で確認可能）。
+//! 除外される（`cargo tree -p fandhe-backend-core` で確認可能）。イシュー
+//! #671 で `WsMessageHandler::on_open` を追加し、[`handle_upgrade`] が
+//! 101 応答送出成功後にチャネルを生成してハンドラへ渡すようになったが、
+//! 新規クレート依存は増えない（既存の `tokio`/`sync` feature を使うのみ）。
 //!
 //! # キャンセル `Future` の受け渡し（イシュー #492）
 //!
@@ -146,6 +152,12 @@ pub fn matches(head: &RequestHead, config: &WebSocketConfig) -> bool {
 ///   #499。ハンドラ `Future` の中断安全性契約は
 ///   [`handler::WsMessageHandler::on_message`] の doc を参照。詳細は
 ///   `session` モジュールの doc を参照）
+///
+/// 101 応答送出が成功した（＝セッションが確立した）接続についてのみ
+/// [`handler::WsMessageHandler::on_open`] を一度呼ぶ（イシュー #671）。
+/// ハンドシェイク検証失敗（400/426 応答）や、101 応答送出前に `cancel` が
+/// 発火していた場合は呼ばれない（フェイルクローズ: 確立していない
+/// セッションへ [`handler::WsSender`] を渡さない）。
 ///
 /// # Examples
 ///
@@ -239,11 +251,14 @@ where
         return Ok(());
     }
 
-    // イシュー #670 時点では `WsSender` をハンドラへ渡す公開経路がなく、
-    // `handle_upgrade` の呼び出し元は誰も outbound 送信チャネルを持たない
-    // ため常に `None` を渡す（合流経路自体は `session::run_session` に
-    // 追加済み。ハンドラへの公開は #671 のスコープ）。
-    session::run_session(stream, leftover, config, cancel, None).await
+    // イシュー #671: `WsSender` をハンドラへ渡す公開経路。101 応答送出が
+    // 成功した（＝セッションが確立した）接続についてのみチャネルを作り
+    // `on_open` を呼ぶ（ハンドシェイク失敗・101 送出前キャンセルでは
+    // 呼ばれない。フェイルクローズ: 確立していないセッションへ
+    // `WsSender` を渡さない）。
+    let (sender, outbound_rx) = handler::channel(handler::DEFAULT_OUTBOUND_CAPACITY);
+    config.handler.on_open(handler::WsOpenContext::new(sender));
+    session::run_session(stream, leftover, config, cancel, Some(outbound_rx)).await
 }
 
 /// `bytes` を `stream` へ書き込みつつ `cancel` と race する。キャンセルが
