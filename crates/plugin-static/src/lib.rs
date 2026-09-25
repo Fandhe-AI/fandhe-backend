@@ -1396,6 +1396,14 @@ mod tests {
         let head = head_from(b"GET /static/C:/anything HTTP/1.1\r\n\r\n");
         let response = try_handle_static(&head, &config).await.unwrap();
         assert_eq!(response.status, 404);
+        // ステータス行・ヘッダ・ボディの網羅的検証（AGENTS.md「アサーション
+        // 網羅性」節）。`Response::empty(404)` は `Content-Type` を持たず
+        // ボディも空であることをワイヤ直列化結果で確認する。
+        assert!(response.body.is_empty());
+        let text = String::from_utf8(response.serialize(false)).unwrap();
+        assert!(text.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(text.contains("Content-Length: 0\r\n"));
+        assert!(!text.contains("Content-Type:"));
     }
 
     #[tokio::test]
@@ -1408,6 +1416,13 @@ mod tests {
         let head = head_from(b"GET /static/..\\..\\secret HTTP/1.1\r\n\r\n");
         let response = try_handle_static(&head, &config).await.unwrap();
         assert_eq!(response.status, 404);
+        // ステータス行・ヘッダ・ボディの網羅的検証（AGENTS.md「アサーション
+        // 網羅性」節）。
+        assert!(response.body.is_empty());
+        let text = String::from_utf8(response.serialize(false)).unwrap();
+        assert!(text.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(text.contains("Content-Length: 0\r\n"));
+        assert!(!text.contains("Content-Type:"));
     }
 
     #[test]
@@ -1440,6 +1455,13 @@ mod tests {
         let head = head_from(b"GET /static/CON HTTP/1.1\r\n\r\n");
         let response = try_handle_static(&head, &config).await.unwrap();
         assert_eq!(response.status, 404);
+        // ステータス行・ヘッダ・ボディの網羅的検証（AGENTS.md「アサーション
+        // 網羅性」節）。
+        assert!(response.body.is_empty());
+        let text = String::from_utf8(response.serialize(false)).unwrap();
+        assert!(text.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(text.contains("Content-Length: 0\r\n"));
+        assert!(!text.contains("Content-Type:"));
     }
 
     // --- fallthrough_on_miss（イシュー #419） ---
