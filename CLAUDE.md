@@ -38,6 +38,10 @@ fandhe-backend/
 ├── lefthook.yml           # git hooks 定義（pre-commit: cargo fmt --check、commit-msg:
 │                            # Conventional Commits 検証。`make hooks` で配線）
 ├── .editorconfig          # エディタ設定統一（Rust 4 スペース・YAML/TOML 等 2 スペース）
+├── .gitattributes         # `* text=auto eol=lf` でチェックアウト時の改行を LF に正規化
+│                            # （`fuzz/corpus/**`・CRLF フィクスチャは `-text` で除外、
+│                            # Windows matrix ランナーでの `cargo fmt --check` 偽陽性防止、
+│                            # イシュー #679）
 ├── Dockerfile             # 開発用コンテナイメージ（rust:slim + rustfmt/clippy。本番配布用ではない）
 ├── compose.yaml           # 開発用 Docker Compose（`make docker-shell` / `make docker-test`。
 │                            # cargo レジストリ・target をボリュームで高速化）

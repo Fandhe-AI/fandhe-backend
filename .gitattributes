@@ -1,0 +1,26 @@
+# イシュー #679（親 #678）: fmt/clippy/test ジョブを
+# ubuntu-latest/macos-latest/windows-latest の matrix へ拡張したことに伴う対策。
+#
+# `.editorconfig` は `end_of_line = lf` をエディタ向けの指針として宣言しているが、
+# これは git のチェックアウト時の改行変換までは制御しない。Windows ランナーの
+# `core.autocrlf` 既定値により `git checkout` が LF→CRLF 変換を行うと、
+# `cargo fmt --all --check` が実装内容とは無関係な改行差分で偽陽性 FAIL する
+# リスクがある。`.editorconfig` の LF ポリシーを git チェックアウト層でも強制し、
+# それを予防する。
+#
+# `text=auto` は Git 自身のバイナリ判定に委ねるため、
+# `docs/acceptance/assets/issue399/*.png` 等の既存バイナリ資産は対象外のままで、
+# 誤って改行変換の対象になることはない。
+* text=auto eol=lf
+
+# 以下は改行（CRLF）そのものが検証対象のデータであり、LF への正規化対象から
+# 明示的に除外する（`-text` で改行変換を無効化。`git ls-files --eol` で
+# 確認済みの CRLF 保持ファイル一覧、イシュー #679 調査時点）。
+# - fuzz corpus（crates/http/fuzz/corpus/**）: HTTP メッセージの生バイト列を
+#   保持し、chunked/head パーサの CRLF 処理を検証する。fuzz-smoke ジョブ
+#   （ubuntu-latest 固定、matrix 対象外）でのみ消費される。
+# - scripts/tests/fixtures/dep-audit-accept/deny-crlf.toml: CRLF を含む
+#   deny.toml を意図的に用意した回帰テスト用フィクスチャ。unsafe-triage
+#   ジョブ（ubuntu-latest 固定、matrix 対象外）でのみ消費される。
+crates/http/fuzz/corpus/** -text
+scripts/tests/fixtures/dep-audit-accept/deny-crlf.toml -text
