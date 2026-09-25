@@ -34,7 +34,14 @@
 //! 実際にフレームを受信した場合にのみ**更新し、outbound 送出はタイマーを
 //! リセットしない（無通信のデッドクライアントへ定期 push し続けると
 //! アイドルタイムアウトが永久に発火しなくなる退行を避けるため。Issue
-//! #175 が導入した DoS 対策を後退させない）。本 PR（#670）の時点では
+//! #175 が導入した DoS 対策を後退させない）。更新タイミングはフレーム
+//! 受信直後ではなく、ハンドラ実行（`on_message`）・返信送出
+//! （`apply_outcome`）まで完了し次の受信待ちに入る直前とする（受信直後に
+//! 更新すると、ハンドラ処理・返信送出に `idle_timeout` 相当の時間を要した
+//! 場合にその処理時間がアイドル待機時間へ算入され、処理完了直後の次の
+//! 受信待ちで即座に期限切れとなりうるため。レビュー指摘対応、既存の
+//! 「各 `ws.next()` の待機を開始する直前に毎回タイムアウトを設定する」
+//! 契約を回復する）。本 PR（#670）の時点では
 //! `handle_upgrade` は常に outbound を `None` で渡すため、この合流経路は
 //! 内部配線のみで外部から到達しない（ハンドラへの公開は #671 のスコープ）。
 //!
@@ -212,10 +219,6 @@ where
             InboundEvent::Message(None) => break,
             InboundEvent::Message(Some(message)) => {
                 let message = message?;
-                // クライアントから実際にフレームを受信したので、次のアイドル
-                // 期限を延長する（Ping/Pong/Frame を含む全種別。既存挙動を
-                // 維持、モジュール doc を参照）。
-                idle_deadline = config.idle_timeout.map(|d| Instant::now() + d);
                 match message {
                     Message::Text(text) => {
                         let Some(outcome) = race_cancel(
@@ -266,6 +269,16 @@ where
                     // `handler` モジュールの doc を参照）。
                     Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
                 }
+                // クライアントから実際にフレームを受信し、ハンドラ処理・返信
+                // 送出（`apply_outcome`）まで完了したので、次の受信待ちに
+                // 入る直前でアイドル期限を延長する（Ping/Pong/Frame を含む
+                // 全種別。outbound push ではリセットしない契約はモジュール
+                // doc を参照）。受信直後ではなくここで更新することで、
+                // ハンドラ処理・返信送出に idle_timeout 相当の時間を要した
+                // 場合でもその処理時間をアイドル待機時間に算入しない
+                // （レビュー指摘対応。旧来の「受信待ちの開始直前にタイム
+                // アウトを設定する」契約を回復する）。
+                idle_deadline = config.idle_timeout.map(|d| Instant::now() + d);
             }
         }
     }
