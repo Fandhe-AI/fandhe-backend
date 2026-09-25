@@ -49,6 +49,12 @@ const DEFAULT_CLOSE_GRACE: Duration = Duration::from_secs(10);
 #[derive(Clone)]
 pub struct WebSocketConfig {
     /// WebSocket アップグレードを受け付ける request-target（既定 `/ws`）。
+    ///
+    /// [`with_path_pattern`][Self::with_path_pattern] でパターンを登録した
+    /// 場合、実際の照合（`crate::handshake::matches`）はパターン側が優先
+    /// され、この `path` フィールドを直接読み替えても判定には反映されない
+    /// （診断・`Debug` 用の文字列表現にとどまる。パターン登録時は
+    /// `with_path_pattern` に渡した元の文字列をそのまま保持する）。
     pub path: String,
     /// 受信メッセージ（フレーム結合後）の最大バイト数（既定 1 MiB）。
     /// 超過した接続は tokio-tungstenite 側がプロトコルエラーとして
@@ -94,6 +100,10 @@ pub struct WebSocketConfig {
     /// 複数ハンドラの合成）の余地を狭めるため、`pub(crate)` にとどめ
     /// [`with_handler`][Self::with_handler] 経由でのみ差し替えを許す。
     pub(crate) handler: Arc<dyn WsMessageHandler>,
+    /// [`with_path_pattern`][Self::with_path_pattern] で登録されたパス
+    /// パターン（イシュー #675）。`None`（既定）のときは `path` との完全
+    /// 一致で照合する（`crate::handshake::matches` を参照）。
+    pub(crate) pattern: Option<crate::pattern::PathPattern>,
 }
 
 impl fmt::Debug for WebSocketConfig {
@@ -105,6 +115,7 @@ impl fmt::Debug for WebSocketConfig {
             .field("idle_timeout", &self.idle_timeout)
             .field("close_grace", &self.close_grace)
             .field("handler", &self.handler.name())
+            .field("pattern", &self.pattern)
             .finish()
     }
 }
@@ -118,16 +129,81 @@ impl Default for WebSocketConfig {
             idle_timeout: Some(DEFAULT_IDLE_TIMEOUT),
             close_grace: DEFAULT_CLOSE_GRACE,
             handler: default_handler(),
+            pattern: None,
         }
     }
 }
 
 impl WebSocketConfig {
     /// アップグレード対象パスを指定した設定を作る（他フィールドは既定値）。
+    ///
+    /// 以前 [`with_path_pattern`][Self::with_path_pattern] で登録された
+    /// パターンがあれば破棄し、完全一致契約へ確実に戻す（イシュー #675。
+    /// 呼び出し順に関わらず「最後に呼ばれた方が有効」という直感的な契約を
+    /// 保つ）。
     #[must_use]
     pub fn with_path(mut self, path: impl Into<String>) -> Self {
         self.path = path.into();
+        self.pattern = None;
         self
+    }
+
+    /// アップグレード対象パスを `{name}` パラメータ付きパターンとして登録
+    /// する（イシュー #675、親 #673）。
+    ///
+    /// `{`/`}` を含まない文字列は構築時検証なしの完全一致として扱われ、
+    /// [`with_path`][Self::with_path] と同じ挙動になる
+    /// （[`crate::pattern::PathPattern::parse`] の契約を参照）。`{name}` を
+    /// 含む場合は構築時に検証済みの [`crate::pattern::PathPattern`] として
+    /// 保持し、`crate::handshake::matches` はこのパターンを優先して照合する
+    /// （完全一致判定より優先、[`path`][Self::path] フィールドの doc も
+    /// 参照）。
+    ///
+    /// 複数の `WebSocketConfig` をコア側 `Server::websocket`
+    /// （`fandhe-backend-core`、`websocket` feature）へ複数回登録することで、
+    /// `/devtools/browser/{id}` と `/devtools/page/{id}` のような複数
+    /// パターンを同時に扱える。**登録順に最初に一致した設定を使う**契約は
+    /// コア側（`crates/core/src/plugin.rs` の `try_handle_upgrade` が行う
+    /// `.find()`）が担い、本メソッドはそこに影響しない。
+    ///
+    /// 本メソッドの後に [`with_path`][Self::with_path] を呼ぶとパターンは
+    /// 破棄される。
+    ///
+    /// # Errors
+    ///
+    /// `pattern` が [`crate::pattern::PathPattern::parse`] の検証（先頭
+    /// スラッシュ・パラメータ名の文字集合・重複・セグメント数上限等）に
+    /// 違反する場合は [`crate::pattern::PathPatternError`] を返す
+    /// （panic しない fail-closed 契約、`.claude/rules/coding-rust.md`）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_websocket::WebSocketConfig;
+    ///
+    /// let config = WebSocketConfig::default()
+    ///     .with_path_pattern("/devtools/page/{id}")
+    ///     .unwrap();
+    /// assert_eq!(config.path, "/devtools/page/{id}");
+    /// ```
+    ///
+    /// 不正なパターンは `Err` になる（先頭スラッシュなし）:
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_websocket::WebSocketConfig;
+    ///
+    /// let result = WebSocketConfig::default().with_path_pattern("devtools/{id}");
+    /// assert!(result.is_err());
+    /// ```
+    pub fn with_path_pattern(
+        mut self,
+        pattern: impl Into<String>,
+    ) -> Result<Self, crate::pattern::PathPatternError> {
+        let pattern = pattern.into();
+        let parsed = crate::pattern::PathPattern::parse(&pattern)?;
+        self.path = pattern;
+        self.pattern = Some(parsed);
+        Ok(self)
     }
 
     /// 受信メッセージの最大バイト数を指定する。
@@ -246,5 +322,37 @@ impl WebSocketConfig {
     #[must_use]
     pub fn handler_name(&self) -> &'static str {
         self.handler.name()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_path_pattern_accepts_valid_pattern_and_updates_path() {
+        let config = WebSocketConfig::default()
+            .with_path_pattern("/devtools/page/{id}")
+            .unwrap();
+        assert_eq!(config.path, "/devtools/page/{id}");
+        assert!(config.pattern.is_some());
+    }
+
+    #[test]
+    fn with_path_pattern_rejects_invalid_pattern() {
+        let err = WebSocketConfig::default()
+            .with_path_pattern("devtools/{id}")
+            .unwrap_err();
+        assert_eq!(err, crate::pattern::PathPatternError::MissingLeadingSlash);
+    }
+
+    #[test]
+    fn with_path_after_with_path_pattern_resets_to_exact_match() {
+        let config = WebSocketConfig::default()
+            .with_path_pattern("/devtools/page/{id}")
+            .unwrap()
+            .with_path("/ws");
+        assert!(config.pattern.is_none());
+        assert_eq!(config.path, "/ws");
     }
 }

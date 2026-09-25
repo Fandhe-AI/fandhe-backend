@@ -27,16 +27,21 @@
 //! - パラメータを 1 つも含まないパターン（`{`/`}` を含まない文字列）は、
 //!   検証を一切行わずそのまま完全一致として扱う。
 //!   これは既存 `WebSocketConfig::path`（任意の `String`、無検証）の挙動を
-//!   壊さないための契約であり、`WebSocketConfig` へのパターン登録は後続
-//!   （#675）が担う
+//!   壊さないための契約であり、`WebSocketConfig` へのパターン登録は
+//!   `WebSocketConfig::with_path_pattern`（イシュー #675）として実装済み
 //!
-//! # このモジュールが配線されていないことについて
+//! # `WebSocketConfig` / `handshake::matches` への配線について（イシュー #675）
 //!
-//! 本 Issue のスコープは `PathPattern` のパース・照合の追加のみに限定する。
-//! `WebSocketConfig` への登録・`handshake::matches` での実照合・ハンドラへの
-//! 値受け渡しはいずれも後続の子 Issue（#675〜#677）が担うため、本モジュールは
-//! 現時点で `lib.rs` からモジュール宣言（`pub mod pattern;`）されるのみで、
-//! 他モジュールからは参照されない。
+//! `PathPattern::parse` / `match_path` は
+//! [`crate::config::WebSocketConfig::with_path_pattern`] から呼ばれ、構築時
+//! 検証済みの `PathPattern` を `WebSocketConfig` へ保持させる。
+//! `crate::handshake::matches`（非公開のためリンク不可）は登録済みパターンの有無で完全一致とパターン
+//! 照合を切り替える（パターンがあれば優先、なければ従来どおり `path` との
+//! 完全一致）。
+//!
+//! 抽出した [`PathParams`] をユーザーハンドラへ渡す経路（`WsOpenContext` 等）
+//! は依然として後続の子 Issue（#676）のスコープであり、`matches` は真偽値
+//! のみを返す契約（`UpgradeHandler::matches` が同期 bool API のため）である。
 
 use std::error::Error;
 use std::fmt;

@@ -19,6 +19,9 @@ use crate::error::WsError;
 /// `matches` 実装から呼ばれる（`UpgradeHandler::matches` は「委譲判定のみ」の
 /// 契約であり、詳細なハンドシェイク検証は行わない。詳細検証は委譲確定後の
 /// [`validate`] が担う）。
+///
+/// `config` に [`WebSocketConfig::with_path_pattern`] で登録済みのパターンが
+/// あれば、完全一致判定より優先してパターン照合を使う（イシュー #675）。
 #[must_use]
 pub fn matches(head: &RequestHead, config: &WebSocketConfig) -> bool {
     // `RequestHead::target` はクエリ文字列を含む完全な request-target
@@ -26,8 +29,12 @@ pub fn matches(head: &RequestHead, config: &WebSocketConfig) -> bool {
     // みを表すため、比較前に `?` 以降を切り落として path 成分だけを見る。
     let target = head.target();
     let path = target.split('?').next().unwrap_or(target);
+    let path_matches = match &config.pattern {
+        Some(pattern) => pattern.match_path(path).is_some(),
+        None => path == config.path,
+    };
     head.method() == "GET"
-        && path == config.path
+        && path_matches
         && head
             .header("upgrade")
             .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
@@ -208,6 +215,56 @@ mod tests {
     fn matches_rejects_missing_upgrade_header() {
         let config = WebSocketConfig::default();
         let head = head_from(b"GET /ws HTTP/1.1\r\n\r\n");
+        assert!(!matches(&head, &config));
+    }
+
+    #[test]
+    fn matches_routes_devtools_browser_and_page_patterns_independently() {
+        // イシュー #675 受け入れ基準 1: 複数パターン登録の `WebSocketConfig`
+        // が、それぞれ対応するパスにのみ一致し他方には一致しないこと。
+        let browser_config = WebSocketConfig::default()
+            .with_path_pattern("/devtools/browser/{id}")
+            .unwrap();
+        let page_config = WebSocketConfig::default()
+            .with_path_pattern("/devtools/page/{id}")
+            .unwrap();
+
+        let browser_head =
+            head_from(b"GET /devtools/browser/ABC HTTP/1.1\r\nUpgrade: websocket\r\n\r\n");
+        let page_head = head_from(b"GET /devtools/page/XYZ HTTP/1.1\r\nUpgrade: websocket\r\n\r\n");
+
+        assert!(matches(&browser_head, &browser_config));
+        assert!(!matches(&browser_head, &page_config));
+        assert!(matches(&page_head, &page_config));
+        assert!(!matches(&page_head, &browser_config));
+    }
+
+    #[test]
+    fn matches_respects_registration_order_first_match_wins() {
+        // イシュー #675 受け入れ基準 2 の補助的証跡: パターン設定同士が
+        // 重複してマッチしうる場合でも、探索順序（`Iterator::position`）は
+        // 登録順のまま。実際の「登録順に最初に一致した設定を使う」契約は
+        // コア側 `crates/core/src/plugin.rs::try_handle_upgrade` の
+        // `.find()`（本 PR では変更しない）が担う。
+        let configs = [
+            WebSocketConfig::default()
+                .with_path_pattern("/devtools/{kind}/{id}")
+                .unwrap(),
+            WebSocketConfig::default()
+                .with_path_pattern("/devtools/page/{id}")
+                .unwrap(),
+        ];
+        let head = head_from(b"GET /devtools/page/XYZ HTTP/1.1\r\nUpgrade: websocket\r\n\r\n");
+        let position = configs.iter().position(|c| matches(&head, c));
+        assert_eq!(position, Some(0));
+    }
+
+    #[test]
+    fn matches_rejects_pattern_with_missing_segment() {
+        let config = WebSocketConfig::default()
+            .with_path_pattern("/devtools/page/{id}")
+            .unwrap();
+        let head = head_from(b"GET /devtools/page HTTP/1.1\r\nUpgrade: websocket\r\n\r\n");
         assert!(!matches(&head, &config));
     }
 
