@@ -215,35 +215,76 @@ impl WsMessageHandler for InterleavedPushHandler {
     }
 }
 
+/// [`interleaved_replies_and_pushes_do_not_corrupt_frames`] が受信フレームを
+/// 到着順のまま分類するためのタグ（イシュー #672 レビュー対応。カテゴリ別
+/// `Vec` へ振り分けるだけでは「全 push が先着し、その後に全 echo が続く」
+/// という非交錯パターンでも通過してしまうため、到着順の全体列をまず記録し、
+/// 交錯の有無を別途検証する）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceivedFrame {
+    Echo(usize),
+    Push(usize),
+}
+
 /// ケース 2（受け入れ基準 2）: コマンドへの応答（echo）とイベント push を
 /// 交互に大量送出してもフレームが壊れない。単一の送信元（本セッションの
 /// `WebSocketStream` を排他的に所有する 1 タスク）が直列に送出するため、
 /// 各カテゴリ内の順序は決定的である。欠落・重複・破損・並び替わりのすべて
-/// を検出するため、`HashSet` ではなく順序一致の `Vec` 比較で検証する。
-#[tokio::test]
+/// を検出するため、到着順の全体列（`ReceivedFrame` の `Vec`）を記録し、
+/// (a) カテゴリごとの部分列が欠落・重複・並び替わりなく元の順序を保つこと、
+/// (b) 実際に両カテゴリが入り混じって届いたこと（一方が完全に先行し他方が
+/// 完全に後続する退化パターンでないこと）の両方を検証する。
+///
+/// (b) を確実にするため、クライアントは「コマンドを 1 件送信し、その
+/// echo が返るまで受信を続ける（途中に挟まる push フレームは収集しつつ
+/// 読み飛ばす）」というリクエスト・レスポンス相関を 1 件ずつ繰り返す
+/// （イシュー #672 レビュー対応）。相関なしに「1 件送信 → 1 件受信」を
+/// 機械的に繰り返すだけの設計では、実測上（本テストのデバッグ実行で
+/// 確認済み）on_open が起動する push タスクが `WsSender` の bounded
+/// channel（容量 8）を継続的に再充填し続け、`run_session` の受信ループが
+/// 300 件の push をすべて出し切るまで対応する echo を 1 件も返さない
+/// （outbound チャネルが Ready な限り優先され続ける）挙動が再現し、結局
+/// 「push 300 件 → echo 300 件」という 1 ブロックの退化パターンに終始
+/// した。対応する echo を待ってから次のコマンドを送る相関設計にすることで、
+/// 各コマンドの往復ごとに「送信 → （0 件以上の push）→ 対応する echo」の
+/// サイクルが強制され、300 往復にわたって push が echo の間へ実際に
+/// 混在する状況を作る。
+///
+/// なお、相関設計のみでは既定の `#[tokio::test]`（current-thread フレーバー）
+/// 下でも退化パターンが実測で再現した（cooperative スケジューラ下では
+/// outbound チャネルの `recv()` が `ws.next()` の初回 poll より先に確実に
+/// Ready 化するため、`run_session` の反復ごとの優先順反転があっても
+/// outbound 側が実質的に勝ち続けた）。`flavor = "multi_thread"` に
+/// することで push タスク・セッションタスク・本テストタスクが実際の
+/// OS スレッド間で並行実行されるようになり、退化が再現しないことを
+/// 実測で確認した。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn interleaved_replies_and_pushes_do_not_corrupt_frames() {
     const PUSH_COUNT: usize = 300;
     const CMD_COUNT: usize = 300;
+    // カテゴリの切り替わり回数（`order` を先頭から走査して隣接要素の
+    // 判別子が変化した回数）がこの値未満なら、実質的に「1 ブロックずつ」
+    // としか届いておらず交錯を検証できていないとみなす。相関設計により
+    // 300 往復それぞれで push が混在しうるため、通常は数十〜数百回の
+    // 切り替わりが発生する。ごく少数の切り替わりでも「交互に送る状況」
+    // 自体は成立するため、しきい値は「1 ブロックの退化パターンではない」
+    // ことを検出できる最小限の保守的な値に留める。
+    const MIN_CATEGORY_TRANSITIONS: usize = 4;
 
     let config = WebSocketConfig::default().with_handler(InterleavedPushHandler {
         push_count: PUSH_COUNT,
     });
     let (mut client, server_task) = spawn_session(config).await;
 
-    // 受信を挟まずに大量のコマンドを送信する（送信のみで duplex バッファを
-    // ブロックしない程度のサイズに留める）。
-    for i in 0..CMD_COUNT {
-        client
-            .send(Message::Text(format!("cmd:{i}").into()))
-            .await
-            .expect("send command");
-    }
-
-    let mut echoes = Vec::with_capacity(CMD_COUNT);
-    let mut pushes = Vec::with_capacity(PUSH_COUNT);
+    let mut order: Vec<ReceivedFrame> = Vec::with_capacity(CMD_COUNT + PUSH_COUNT);
 
     let collect = async {
-        while echoes.len() < CMD_COUNT || pushes.len() < PUSH_COUNT {
+        // 受信 1 フレームを分類して `order` へ積む（echo/push いずれかの
+        // ペイロード以外は破損とみなして panic する）。
+        async fn recv_one(
+            client: &mut WebSocketStream<tokio::io::DuplexStream>,
+            order: &mut Vec<ReceivedFrame>,
+        ) -> ReceivedFrame {
             let frame = client
                 .next()
                 .await
@@ -253,21 +294,69 @@ async fn interleaved_replies_and_pushes_do_not_corrupt_frames() {
                 panic!("unexpected non-text frame: {frame:?}");
             };
             let text = text.to_string();
-            if let Some(rest) = text.strip_prefix("echo:") {
-                echoes.push(rest.to_string());
+            let received = if let Some(rest) = text.strip_prefix("echo:") {
+                let idx: usize = rest
+                    .strip_prefix("cmd:")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or_else(|| panic!("unexpected echo payload: {text}"));
+                ReceivedFrame::Echo(idx)
             } else if let Some(rest) = text.strip_prefix("push:") {
-                pushes.push(rest.to_string());
+                let idx: usize = rest
+                    .parse()
+                    .unwrap_or_else(|_| panic!("unexpected push payload: {text}"));
+                ReceivedFrame::Push(idx)
             } else {
                 panic!("unexpected frame payload (possible corruption): {text}");
+            };
+            order.push(received);
+            received
+        }
+
+        // 各コマンドを送信し、対応する echo が届くまで受信を続ける
+        // （途中に挟まる push は `order` へ記録しつつ読み飛ばす）。
+        for i in 0..CMD_COUNT {
+            client
+                .send(Message::Text(format!("cmd:{i}").into()))
+                .await
+                .expect("send command");
+            loop {
+                match recv_one(&mut client, &mut order).await {
+                    ReceivedFrame::Echo(idx) => {
+                        assert_eq!(idx, i, "echo must correspond to the most recently sent cmd");
+                        break;
+                    }
+                    ReceivedFrame::Push(_) => {}
+                }
             }
+        }
+
+        // 全コマンド送信・対応 echo 受信が完了した後、on_open が起動した
+        // push タスクの残り（往復の合間に届かなかった分）を出し切るまで
+        // 受信を続ける。
+        while order.len() < CMD_COUNT + PUSH_COUNT {
+            recv_one(&mut client, &mut order).await;
         }
     };
     tokio::time::timeout(Duration::from_secs(10), collect)
         .await
         .expect("all frames should arrive within timeout");
 
-    let expected_echoes: Vec<String> = (0..CMD_COUNT).map(|i| format!("cmd:{i}")).collect();
-    let expected_pushes: Vec<String> = (0..PUSH_COUNT).map(|i| i.to_string()).collect();
+    let echoes: Vec<usize> = order
+        .iter()
+        .filter_map(|f| match f {
+            ReceivedFrame::Echo(i) => Some(*i),
+            ReceivedFrame::Push(_) => None,
+        })
+        .collect();
+    let pushes: Vec<usize> = order
+        .iter()
+        .filter_map(|f| match f {
+            ReceivedFrame::Push(i) => Some(*i),
+            ReceivedFrame::Echo(_) => None,
+        })
+        .collect();
+    let expected_echoes: Vec<usize> = (0..CMD_COUNT).collect();
+    let expected_pushes: Vec<usize> = (0..PUSH_COUNT).collect();
     assert_eq!(
         echoes, expected_echoes,
         "echo replies must arrive in order without loss or duplication"
@@ -275,6 +364,23 @@ async fn interleaved_replies_and_pushes_do_not_corrupt_frames() {
     assert_eq!(
         pushes, expected_pushes,
         "pushes must arrive in order without loss or duplication"
+    );
+
+    // 受け入れ基準 2 が要求する「交互に送る状況」そのものの検証: 到着順の
+    // 全体列でカテゴリが実際に何度も入れ替わったことを確認する。これが
+    // ゼロ・僅少のままだと、上記 2 つの `assert_eq!` は「push が全件先着し、
+    // その後に echo が全件到着する」だけの非交錯ケースでも通過してしまい、
+    // 交互送出時の破損有無という本来の検証意図を満たさない。
+    let category_transitions = order
+        .windows(2)
+        .filter(|pair| std::mem::discriminant(&pair[0]) != std::mem::discriminant(&pair[1]))
+        .count();
+    assert!(
+        category_transitions >= MIN_CATEGORY_TRANSITIONS,
+        "echoes and pushes must actually interleave on the wire (got {category_transitions} \
+         category transitions, expected at least {MIN_CATEGORY_TRANSITIONS}); a low count means \
+         one category arrived as a single contiguous block before the other, which does not \
+         exercise interleaved send/receive at all"
     );
 
     client.close(None).await.expect("close");
