@@ -88,6 +88,7 @@ mod config;
 mod error;
 pub mod handler;
 mod handshake;
+pub mod pattern;
 mod session;
 
 use std::future::Future;
