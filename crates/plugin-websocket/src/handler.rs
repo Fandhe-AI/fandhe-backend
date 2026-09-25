@@ -237,18 +237,31 @@ pub trait WsMessageHandler: Send + Sync + 'static {
 ///
 /// 非公開フィールド + アクセサという構成（`crates/core/src/extension.rs` の
 /// `GateContext` と同型）に加え `#[non_exhaustive]` を付け、将来のフィールド
-/// 追加（パスパラメータ、イシュー #676 で検討予定）が破壊的変更にならない
-/// ようにする。
+/// 追加が破壊的変更にならないようにする。イシュー #676 で
+/// [`WebSocketConfig::with_path_pattern`][crate::config::WebSocketConfig::with_path_pattern]
+/// 由来のパスパラメータを保持する `params` フィールドを追加した
+/// （[`Self::param`] / [`Self::params`] 参照）。
 #[non_exhaustive]
 pub struct WsOpenContext {
     sender: WsSender,
+    /// マッチしたパスパラメータ（登録順）。パターン未登録の
+    /// `WebSocketConfig`（完全一致パス）では常に空。
+    ///
+    /// `crate::handshake::match_config_path` が返す借用 `PathParams<'a>`
+    /// は `head`（`crate::handle_upgrade` のスタックフレーム内で生存）に
+    /// 依存しており `'static` にできないため、`handle_upgrade` が
+    /// `on_open` 呼び出し時点で所有 `Vec` へコピーしたものを保持する
+    /// （コピー量は `crate::pattern::MAX_PATTERN_SEGMENTS` ×
+    /// `crate::pattern::MAX_SEGMENT_BYTES` で有界、新たな DoS 懸念には
+    /// ならない）。
+    params: Vec<(String, String)>,
 }
 
 impl WsOpenContext {
-    /// `sender` を包んだコンテキストを構築する（`pub(crate)`、`crate::
-    /// handle_upgrade` からのみ呼ばれる）。
-    pub(crate) fn new(sender: WsSender) -> Self {
-        Self { sender }
+    /// `sender` と抽出済みパスパラメータを包んだコンテキストを構築する
+    /// （`pub(crate)`、`crate::handle_upgrade` からのみ呼ばれる）。
+    pub(crate) fn new(sender: WsSender, params: Vec<(String, String)>) -> Self {
+        Self { sender, params }
     }
 
     /// このセッションへ push するための `WsSender` への参照を返す。
@@ -257,10 +270,125 @@ impl WsOpenContext {
     pub fn sender(&self) -> &WsSender {
         &self.sender
     }
+
+    /// `name` に対応するパスパラメータの値を返す（イシュー #676）。
+    ///
+    /// 値は % デコードしない生の文字列（`crate::pattern::PathParams` と
+    /// 同じ非デコード契約。デコードが必要な場合は呼び出し側の責務）。
+    /// `WebSocketConfig::with_path_pattern` 未登録（完全一致パス）の場合、
+    /// あるいは `name` が登録パターンに存在しない場合は常に `None`。
+    ///
+    /// # Examples
+    ///
+    /// （`with_path_pattern` を登録した `WebSocketConfig` で実ハンドシェイクを
+    /// 駆動し、`on_open` 内で `ctx.param("id")` を読み取った値をクライアントへ
+    /// push する。CDP（Chrome DevTools Protocol）互換サーバーが
+    /// `/devtools/page/{id}` の `id` からセッションを特定するユースケースの
+    /// 最小形。）
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+    /// use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade};
+    /// use fandhe_backend_plugin_websocket::handler::{
+    ///     WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome,
+    /// };
+    /// use futures_util::future::BoxFuture;
+    /// use futures_util::StreamExt;
+    /// use tokio::io::AsyncReadExt;
+    /// use tokio_tungstenite::WebSocketStream;
+    /// use tokio_tungstenite::tungstenite::protocol::Role;
+    ///
+    /// struct PushPageId;
+    ///
+    /// impl WsMessageHandler for PushPageId {
+    ///     fn name(&self) -> &'static str {
+    ///         "push-page-id"
+    ///     }
+    ///
+    ///     fn on_open(&self, ctx: WsOpenContext) {
+    ///         let id = ctx.param("id").unwrap_or("unknown").to_string();
+    ///         let sender = ctx.sender().clone();
+    ///         tokio::spawn(async move {
+    ///             let _ = sender.send(WsMessage::Text(id)).await;
+    ///         });
+    ///     }
+    ///
+    ///     fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+    ///         Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+    ///     }
+    /// }
+    ///
+    /// # async fn read_http_response_line<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> String {
+    /// #     let mut buf = Vec::new();
+    /// #     let mut byte = [0u8; 1];
+    /// #     loop {
+    /// #         let n = stream.read(&mut byte).await.unwrap();
+    /// #         assert_ne!(n, 0);
+    /// #         buf.push(byte[0]);
+    /// #         if buf.ends_with(b"\r\n\r\n") { break; }
+    /// #     }
+    /// #     String::from_utf8(buf).unwrap()
+    /// # }
+    /// #
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// let buf = b"GET /devtools/page/ABC123 HTTP/1.1\r\n\
+    ///     Upgrade: websocket\r\n\
+    ///     Connection: Upgrade\r\n\
+    ///     Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+    ///     Sec-WebSocket-Version: 13\r\n\
+    ///     \r\n";
+    /// let head = match parse_request_head(buf).unwrap() {
+    ///     ParseOutcome::Complete { head, .. } => head,
+    ///     ParseOutcome::Incomplete => unreachable!(),
+    /// };
+    /// let config = WebSocketConfig::default()
+    ///     .with_path_pattern("/devtools/page/{id}")
+    ///     .unwrap()
+    ///     .with_handler(PushPageId);
+    ///
+    /// let (server_side, mut client_side) = tokio::io::duplex(4096);
+    /// let server_task = tokio::spawn(async move {
+    ///     handle_upgrade(server_side, &head, Vec::new(), &config, std::future::pending::<()>()).await
+    /// });
+    ///
+    /// let response = read_http_response_line(&mut client_side).await;
+    /// assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    ///
+    /// let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+    /// let msg = tokio::time::timeout(Duration::from_secs(2), client.next())
+    ///     .await
+    ///     .expect("push should arrive within timeout")
+    ///     .expect("stream should not end")
+    ///     .expect("frame should not error");
+    /// assert_eq!(msg.into_text().unwrap(), "ABC123");
+    ///
+    /// client.close(None).await.ok();
+    /// let _ = tokio::time::timeout(Duration::from_secs(2), server_task).await;
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn param(&self, name: &str) -> Option<&str> {
+        self.params
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// マッチしたパスパラメータ全件を登録順（パターン上の出現順）に返す
+    /// （イシュー #676）。単一パラメータの取得には [`Self::param`] の方が
+    /// 簡潔。
+    pub fn params(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.params.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
 }
 
 impl fmt::Debug for WsOpenContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // パスパラメータは攻撃者が URL セグメントとして自由に制御できる
+        // 入力のため、Debug 出力には含めない（ログ・診断出力への機密混入
+        // 防止、`.claude/rules/security.md`）。
         f.debug_struct("WsOpenContext").finish_non_exhaustive()
     }
 }
@@ -430,7 +558,7 @@ mod tests {
         let handler = UppercaseHandler;
         let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
         // no-op であることの確認は「panic しないこと」のみで、戻り値もない。
-        handler.on_open(WsOpenContext::new(sender));
+        handler.on_open(WsOpenContext::new(sender, Vec::new()));
     }
 
     /// `WsOpenContext::sender()` が返す参照を `.clone()` して送信すると、
@@ -439,7 +567,7 @@ mod tests {
     #[tokio::test]
     async fn open_context_sender_clone_delivers_message() {
         let (sender, mut rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
-        let ctx = WsOpenContext::new(sender);
+        let ctx = WsOpenContext::new(sender, Vec::new());
         let cloned = ctx.sender().clone();
         cloned
             .send(WsMessage::Text("hi".to_string()))
@@ -447,5 +575,33 @@ mod tests {
             .unwrap();
         let received = rx.recv().await.unwrap();
         assert_eq!(received, WsMessage::Text("hi".to_string()));
+    }
+
+    /// パラメータ未登録（`Vec::new()`）の `WsOpenContext` は `param`/`params`
+    /// が常に空を返すことを確認する（イシュー #676、受け入れ基準 2 の単体
+    /// レベルの裏取り。実ハンドシェイク経由の確認は `tests/handler_e2e.rs`）。
+    #[tokio::test]
+    async fn open_context_without_params_returns_none_and_empty_iter() {
+        let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        let ctx = WsOpenContext::new(sender, Vec::new());
+        assert_eq!(ctx.param("id"), None);
+        assert_eq!(ctx.params().count(), 0);
+    }
+
+    /// 複数パラメータを保持する `WsOpenContext` から `param`/`params` の
+    /// 両方で取得できることを確認する（イシュー #676）。
+    #[tokio::test]
+    async fn open_context_with_params_exposes_param_and_params() {
+        let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        let params = vec![
+            ("id".to_string(), "XYZ".to_string()),
+            ("post_id".to_string(), "42".to_string()),
+        ];
+        let ctx = WsOpenContext::new(sender, params);
+        assert_eq!(ctx.param("id"), Some("XYZ"));
+        assert_eq!(ctx.param("post_id"), Some("42"));
+        assert_eq!(ctx.param("missing"), None);
+        let collected: Vec<(&str, &str)> = ctx.params().collect();
+        assert_eq!(collected, vec![("id", "XYZ"), ("post_id", "42")]);
     }
 }

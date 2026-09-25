@@ -35,9 +35,13 @@
 //! 3. [`handle_upgrade`] は RFC 6455 4.2.1 の詳細検証（`handshake::validate`）
 //!    を行い、成功時は 101 応答、失敗時は 400/426 応答を送出する
 //! 4. 101 応答成功が確定した接続についてのみ、送信ハンドル
-//!    [`handler::WsSender`]（イシュー #670）を生成して
-//!    [`handler::WsMessageHandler::on_open`]（イシュー #671、既定 no-op）を
-//!    同期的に一度だけ呼び出す。以降は `tokio-tungstenite` の
+//!    [`handler::WsSender`]（イシュー #670）を生成し、`config.pattern`
+//!    （[`WebSocketConfig::with_path_pattern`]、イシュー #675）由来の
+//!    パスパラメータを抽出した [`handler::WsOpenContext`] とともに
+//!    [`handler::WsMessageHandler::on_open`]（イシュー #671、既定 no-op。
+//!    パラメータ経路はイシュー #676）を同期的に一度だけ呼び出す。パターン
+//!    未登録（完全一致パス）の場合はパラメータなしのコンテキストになる。
+//!    以降は `tokio-tungstenite` の
 //!    `WebSocketStream` へフレーミング処理を委譲し、セッション終了まで
 //!    面倒を見る（`session::run_session`）。Text/Binary メッセージは
 //!    [`handler::WsMessageHandler::on_message`]（既定 [`handler::EchoHandler`]、
@@ -256,8 +260,25 @@ where
     // `on_open` を呼ぶ（ハンドシェイク失敗・101 送出前キャンセルでは
     // 呼ばれない。フェイルクローズ: 確立していないセッションへ
     // `WsSender` を渡さない）。
+    //
+    // イシュー #676: `config.pattern` 由来のパスパラメータを
+    // `WsOpenContext` へ渡す。`match_config_path` が返す `PathParams<'_>`
+    // は `head`（本関数のスタックフレーム内でのみ生存）への借用のため、
+    // `on_open` へ渡す前に所有 `Vec<(String, String)>` へコピーする
+    // （`handler::WsOpenContext` の doc 参照。パターン未登録・不一致
+    // （後者は理論上到達しないはずの防御的フォールバック）ではいずれも
+    // 空 `Vec` になる）。
+    let params: Vec<(String, String)> = handshake::match_config_path(head, config)
+        .map(|p| {
+            p.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
     let (sender, outbound_rx) = handler::channel(handler::DEFAULT_OUTBOUND_CAPACITY);
-    config.handler.on_open(handler::WsOpenContext::new(sender));
+    config
+        .handler
+        .on_open(handler::WsOpenContext::new(sender, params));
     session::run_session(stream, leftover, config, cancel, Some(outbound_rx)).await
 }
 

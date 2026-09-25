@@ -35,13 +35,17 @@
 //! `PathPattern::parse` / `match_path` は
 //! [`crate::config::WebSocketConfig::with_path_pattern`] から呼ばれ、構築時
 //! 検証済みの `PathPattern` を `WebSocketConfig` へ保持させる。
-//! `crate::handshake::matches`（非公開のためリンク不可）は登録済みパターンの有無で完全一致とパターン
-//! 照合を切り替える（パターンがあれば優先、なければ従来どおり `path` との
-//! 完全一致）。
+//! `crate::handshake::match_config_path`（非公開のためリンク不可）が登録済み
+//! パターンの有無で完全一致とパターン照合を切り替え、抽出結果
+//! `Option<PathParams<'_>>` を返す共有ヘルパーとして機能する。
+//! `crate::handshake::matches`（`UpgradeHandler::matches` が要求する同期 bool
+//! API）はこれを `.is_some()` で真偽値に落とすのみで、抽出結果自体は使わない。
 //!
-//! 抽出した [`PathParams`] をユーザーハンドラへ渡す経路（`WsOpenContext` 等）
-//! は依然として後続の子 Issue（#676）のスコープであり、`matches` は真偽値
-//! のみを返す契約（`UpgradeHandler::matches` が同期 bool API のため）である。
+//! 抽出した [`PathParams`] をユーザーハンドラへ渡す経路はイシュー #676 で
+//! 実装済み。`crate::handle_upgrade` が 101 応答送出成功後、
+//! `match_config_path` の結果を所有 `Vec<(String, String)>` へコピーして
+//! [`crate::handler::WsOpenContext`] へ渡し、ハンドラは
+//! `WsOpenContext::param` / `WsOpenContext::params` で参照できる。
 
 use std::error::Error;
 use std::fmt;
