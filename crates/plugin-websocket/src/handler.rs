@@ -20,6 +20,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
+use tokio::sync::mpsc;
 
 /// ユーザーコードとやり取りするメッセージ表現。
 ///
@@ -145,6 +146,80 @@ impl WsMessageHandler for EchoHandler {
 /// `config.rs` の `Default` 実装から呼ばれる）。
 pub(crate) fn default_handler() -> Arc<dyn WsMessageHandler> {
     Arc::new(EchoHandler)
+}
+
+/// サーバー起点で任意タイミングに WebSocket メッセージを push するための
+/// 送信ハンドル（イシュー #670。親 #669「サーバー起点で任意タイミングに
+/// push できる WebSocket API」の第 1 段）。
+///
+/// `crate::session::run_session` の受信ループへ bounded mpsc 経由で合流し、
+/// クライアントからの受信・ユーザーハンドラの返信（[`WsOutcome::Reply`]）と
+/// 同一の `WebSocketStream` を単一タスクが排他的に所有した状態で直列に
+/// 送出される（フレームが混ざらないことを構造的に保証する。詳細は
+/// `crate::session` モジュールの doc を参照）。
+///
+/// **本 PR（#670）の時点では `WsSender` をユーザーハンドラへ渡す公開経路
+/// （`WsMessageHandler::on_open` 等）は存在しない。** `run_session` への
+/// 内部配線のみを追加し、公開経路の追加は別イシュー（#671）のスコープと
+/// する。
+///
+/// clone 可能で、複数タスクから同時に `send` してよい（内部の
+/// `mpsc::Sender` がそのままクローン可能なことに由来する）。
+#[derive(Clone)]
+pub struct WsSender {
+    tx: mpsc::Sender<WsMessage>,
+}
+
+impl WsSender {
+    /// `msg` をセッションの送信キューへ入れる。
+    ///
+    /// チャネルが満杯の場合、受信側（`crate::session::run_session`）が
+    /// キューを消費するまで `.await` で待機する契約（
+    /// `crates/core/src/streaming.rs` の `BodyWriter::send` と同型の
+    /// バックプレッシャ。無制限バッファ化を防ぐリソース枯渇 DoS 対策、
+    /// `.claude/rules/security.md`）。
+    ///
+    /// セッションが既に終了している場合（受信側が drop 済み）は
+    /// [`WsSendError`] を返す。セッションの世代キャンセル（最終 graceful
+    /// shutdown・rebind 世代 drain）発火時は、ブロック中の呼び出しも
+    /// `WebSocketConfig::close_grace` の満了を待たず即座にこのエラーで
+    /// 解放される（`crate::session` が cancel 発火時に受信側 `Receiver` を
+    /// 明示的に drop するため。イシュー #670 の受け入れ基準 3）。
+    pub async fn send(&self, msg: WsMessage) -> Result<(), WsSendError> {
+        self.tx.send(msg).await.map_err(|_| WsSendError)
+    }
+}
+
+/// [`WsSender::send`] が返すエラー（セッション終了後の送信試行）。
+///
+/// `Display` はペイロード・内部状態を含まない固定文言とする（ログ・診断
+/// 名に送信内容や内部状態を含めない、`.claude/rules/security.md`。既存
+/// `crates/core/src/streaming.rs` の `StreamClosed` と同型）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WsSendError;
+
+impl fmt::Display for WsSendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "websocket session already closed")
+    }
+}
+
+impl StdError for WsSendError {}
+
+/// [`WsSender`] と、`crate::session::run_session` が受け取る側の
+/// `mpsc::Receiver<WsMessage>` のペアを構築する（`pub(crate)`、内部配線
+/// 専用）。
+///
+/// 外部へは [`WsSender::send`] のみを公開する非対称 API とし、受信側
+/// （`Receiver`）はクレート内部（`run_session`）にのみ渡す。
+///
+/// `capacity` は `1` に切り上げる（`mpsc::channel(0)` は panic するため、
+/// `crates/core/src/streaming.rs` の `StreamingResponse::channel` と同一の
+/// 防御）。
+#[allow(dead_code)] // #671（ハンドラへの公開経路）まで呼び出し元を持たない
+pub(crate) fn channel(capacity: usize) -> (WsSender, mpsc::Receiver<WsMessage>) {
+    let (tx, rx) = mpsc::channel(capacity.max(1));
+    (WsSender { tx }, rx)
 }
 
 #[cfg(test)]
