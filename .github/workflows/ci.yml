@@ -41,6 +41,15 @@ name: CI
 # ジョブとして追加した（scripts/openapi-ts.sh を呼ぶだけの薄いジョブ、
 # docs/design/openapi-typescript-pipeline.md 参照）。node/npm ビルドを伴うため
 # schedule からは除外する。
+# イシュー #679（親 #678）: fmt/clippy/test の 3 ジョブに
+# `strategy.matrix.os`（ubuntu-latest/macos-latest/windows-latest、いずれも
+# GitHub ホステッド、.claude/rules/ci.md の runner 方針に準拠）を追加し、
+# Linux 限定だった検証を 3 OS へ拡張した。ジョブ ID（fmt/clippy/test）自体は
+# 不変のため、`ci-complete` の `needs` 配列・PASS/FAIL 判定ロジック・
+# `scripts/setup-required-checks.sh`（`ci-complete` のジョブ名のみを required
+# status check として参照）はいずれも無変更（詳細は `ci-complete` ジョブ直前の
+# コメント参照）。Windows ランナーでの `cargo fmt --check` 偽陽性 FAIL を防ぐため
+# `.gitattributes`（`* text=auto eol=lf`）を新設し、改行を LF に正規化した。
 on:
   pull_request:
     branches: [main]
@@ -63,16 +72,24 @@ jobs:
   # cargo fmt --check（整形差分の検出）
   # --------------------------------------------------
   fmt:
-    name: cargo fmt --check
+    name: cargo fmt --check (${{ matrix.os }})
     # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
     # により GitHub ホステッドランナーへ移行（イシュー #551）。
-    runs-on: ubuntu-latest
+    # イシュー #679: 3 OS（ubuntu-latest/macos-latest/windows-latest、いずれも
+    # GitHub ホステッド）へ matrix 化。`fail-fast: false` で 1 OS の失敗が他 OS の
+    # 実行を止めないようにし、各 OS の結果を独立して観測できるようにする。
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     # schedule（日次）実行時は依存監査（dep-audit）のみを走らせる
     if: github.event_name != 'schedule'
     # TASK-11.4（#36）: ハングしたジョブの無期限実行を防ぐ上限（多層防御の一段目。
     # ホステッドランナーでも分数浪費・キュー占有を防ぐ意味で維持する）。
-    # fmt --check は通常数秒〜数十秒で完了する。
-    timeout-minutes: 10
+    # fmt --check は通常数秒〜数十秒で完了するが、イシュー #679 で macOS/Windows
+    # ランナーの起動・チェックアウトのオーバーヘッド分を見込み 15 分へ増やした。
+    timeout-minutes: 15
     steps:
       - name: Checkout
         # actions/checkout v6.0.3。update-external.yml と同一 SHA で固定する。
@@ -98,13 +115,20 @@ jobs:
   # cargo clippy -- -D warnings（lint ゲート）
   # --------------------------------------------------
   clippy:
-    name: cargo clippy
+    name: cargo clippy (${{ matrix.os }})
     # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
     # により GitHub ホステッドランナーへ移行（イシュー #551）。
-    runs-on: ubuntu-latest
+    # イシュー #679: fmt ジョブと同一方針で 3 OS へ matrix 化。
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     if: github.event_name != 'schedule'
     # TASK-11.4（#36）: 多層防御の一段目。clippy はビルドを伴うため fmt より長めに確保する。
-    timeout-minutes: 30
+    # イシュー #679: `--all-features`（webrtc 込み）のコールドビルドを 3 OS 分行うため
+    # 45 分へ増やした。
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -167,14 +191,21 @@ jobs:
   # （.claude/rules/coding-rust.md）を守るべく `cargo test --doc` を別ステップで維持する。
   # --------------------------------------------------
   test:
-    name: cargo test
+    name: cargo test (${{ matrix.os }})
     # public 化に伴う組織 runner 方針（Fandhe-AI/actions リポジトリの docs/runner-policy.md）
     # により GitHub ホステッドランナーへ移行（イシュー #552。置換方針は #551 で確立）。
-    runs-on: ubuntu-latest
+    # イシュー #679: fmt/clippy ジョブと同一方針で 3 OS へ matrix 化。
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     if: github.event_name != 'schedule'
     # TASK-11.4（#36）: テスト単位のタイムアウト（nextest 側、最大 120 秒/テスト）に
     # 加えたジョブ全体の上限。多層防御。
-    timeout-minutes: 30
+    # イシュー #679: cargo-nextest のソースビルドインストールを 3 OS 分行うため
+    # 45 分へ増やした（`cargo test --doc` ステップの個別 timeout-minutes: 15 は維持）。
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -1083,6 +1114,12 @@ jobs:
   # required check にすればよく、ジョブ追加時は needs に足すだけで判定対象を拡張できる。
   # 詳細な責務分界（機械判定できない「受け入れ基準充足」はレビューゲート TASK-14.3 が担う）は
   # docs/design/ci-completion-criteria.md を参照。
+  # イシュー #679: fmt/clippy/test は 3 OS（ubuntu/macos/windows）へ matrix 化されたが
+  # ジョブ ID（fmt/clippy/test）自体は不変であり、GitHub Actions の仕様上
+  # `needs.<job_id>.result` はそのジョブのマトリクス全 leg を集約した結果
+  # （いずれか 1 leg でも failure なら failure）を返す。そのため本 needs 配列・
+  # 直下のシェル判定ロジックはいずれも変更不要で、1 OS でも失敗すれば
+  # `ci-complete` は fail する。
   # --------------------------------------------------
   ci-complete:
     name: ci-complete
