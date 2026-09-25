@@ -287,7 +287,19 @@ async fn spawn_session_with_request_target(
     });
 
     let response = read_http_response_line(&mut client_side).await;
+    // AGENTS.md「アサーション網羅性」節: ステータス行だけでなく、101 応答が
+    // 契約する必須ヘッダ（`Upgrade`/`Connection`/`Sec-WebSocket-Accept`）と
+    // ボディなし条件（ヘッダ終端 `\r\n\r\n` 直後で応答が終わること）も検証する
+    // （固定テスト鍵 `dGhlIHNhbXBsZSBub25jZQ==` に対する `Sec-WebSocket-Accept`
+    // 値は `handshake_e2e.rs`・`handshake.rs` の RFC 6455 4.2.2 既知ベクタと同値）。
     assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert!(response.contains("Upgrade: websocket\r\n"));
+    assert!(response.contains("Connection: Upgrade\r\n"));
+    assert!(response.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"));
+    assert!(
+        response.ends_with("\r\n\r\n"),
+        "101 応答はヘッダ終端直後にボディなしで終わる: {response:?}"
+    );
 
     let client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
     (client, server_task)
