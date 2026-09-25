@@ -41,9 +41,10 @@
 //! 場合にその処理時間がアイドル待機時間へ算入され、処理完了直後の次の
 //! 受信待ちで即座に期限切れとなりうるため。レビュー指摘対応、既存の
 //! 「各 `ws.next()` の待機を開始する直前に毎回タイムアウトを設定する」
-//! 契約を回復する）。本 PR（#670）の時点では
-//! `handle_upgrade` は常に outbound を `None` で渡すため、この合流経路は
-//! 内部配線のみで外部から到達しない（ハンドラへの公開は #671 のスコープ）。
+//! 契約を回復する）。イシュー #671 で `handle_upgrade` が
+//! `WsMessageHandler::on_open` 経由でハンドラへ `WsSender` を渡す公開経路を
+//! 追加し、101 応答送出成功後は常に `Some(rx)` を渡すようになった（本
+//! モジュールの合流ロジック自体は無変更）。
 //!
 //! # ハンドラ Future の中断安全性契約（イシュー #499）
 //!
@@ -501,11 +502,14 @@ where
 
 /// `run_session` の outbound 合流経路（イシュー #670）の単体テスト。
 ///
-/// `run_session` は `pub(crate)` であり、`WsSender` をユーザーハンドラへ
-/// 渡す公開経路が存在しない（#671 まで）ため、統合テスト（`tests/*.rs`）
-/// からは到達できない。そのためクレート内単体テストとして追加する
-/// （`.claude/rules/feature-modification.md` の「実装変更には同一クレートの
-/// テスト追加を伴わせる」を `#[cfg(test)]` で満たす）。
+/// `run_session` は `pub(crate)` であり、直接は呼べない。イシュー #671 で
+/// `handle_upgrade` → `WsMessageHandler::on_open` 経由の公開経路
+/// （`tests/handler_e2e.rs` 等の統合テストから到達可能）が追加されたが、
+/// 本テスト群は `run_session` の合流ロジック自体（cancel → 受信/idle →
+/// outbound の優先順位・idle_timeout 非リセット等）を `on_open`/ハンドラを
+/// 介さず直接検証する目的で維持する（`.claude/rules/feature-modification.md`
+/// の「実装変更には同一クレートのテスト追加を伴わせる」を `#[cfg(test)]`
+/// で満たす）。
 #[cfg(test)]
 mod tests {
     use super::*;

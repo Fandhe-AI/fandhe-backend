@@ -507,12 +507,17 @@ fandhe-backend/
 │   │                                    # アイドルタイムアウト発火時は Close ハンドシェイクへ
 │   │                                    # 分岐する前に outbound の受信側を明示的に drop し、満杯
 │   │                                    # チャネルでブロック中の `WsSender::send` を `close_grace`
-│   │                                    # の満了を待たず即座に解放する。本 PR の時点では
-│   │                                    # `WsSender` をユーザーハンドラへ渡す公開経路
-│   │                                    # （`handle_upgrade` は常に `None` を渡す）は存在せず、
-│   │                                    # 公開は #671 のスコープ。`tokio` feature に `sync`
+│   │                                    # の満了を待たず即座に解放する。`tokio` feature に `sync`
 │   │                                    # （bounded mpsc 用）を追加（`io-util`/`time`/`sync` の
-│   │                                    # 3 つ、新規クレート増分なし）
+│   │                                    # 3 つ、新規クレート増分なし）。イシュー #671（親 #669 の
+│   │                                    # 第 2 段）で `WsMessageHandler::on_open`（既定 no-op）を
+│   │                                    # 追加し、`handle_upgrade` が 101 応答送出成功後に
+│   │                                    # `handler::channel` でチャネルを生成して `WsOpenContext`
+│   │                                    # 経由で `WsSender` をハンドラへ渡す公開経路を確立した
+│   │                                    # （ハンドシェイク失敗・101 送出前キャンセルでは呼ばれない
+│   │                                    # フェイルクローズ契約。チャネル容量は `handler::
+│   │                                    # DEFAULT_OUTBOUND_CAPACITY = 8` 固定、利用者調整 API は
+│   │                                    # スコープ外）
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O
