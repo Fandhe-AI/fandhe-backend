@@ -26,25 +26,35 @@
 //! [`run_session`] は [`crate::handler::WsSender`]（イシュー #670、親
 //! #669）が bounded mpsc 経由で送るサーバー起点メッセージも受信ループへ
 //! 合流させる。受信ループは cancel（最優先）→ (クライアント受信 or
-//! アイドル期限) → outbound（サーバー起点 push）の優先順で 1 イベントを
-//! 選び、outbound メッセージは既存の `ws.send()`（[`apply_outcome`] の
-//! `WsOutcome::Reply` 送出と同一の `&mut WebSocketStream`）へ直列に送出
-//! する（フレームが混ざらないことを構造的に保証する。単一タスクが `ws`
-//! を排他的に所有するため）。`config.idle_timeout` は**クライアントから
-//! 実際にフレームを受信した場合にのみ**更新し、outbound 送出はタイマーを
-//! リセットしない（無通信のデッドクライアントへ定期 push し続けると
-//! アイドルタイムアウトが永久に発火しなくなる退行を避けるため。Issue
-//! #175 が導入した DoS 対策を後退させない）。更新タイミングはフレーム
-//! 受信直後ではなく、ハンドラ実行（`on_message`）・返信送出
-//! （`apply_outcome`）まで完了し次の受信待ちに入る直前とする（受信直後に
-//! 更新すると、ハンドラ処理・返信送出に `idle_timeout` 相当の時間を要した
-//! 場合にその処理時間がアイドル待機時間へ算入され、処理完了直後の次の
-//! 受信待ちで即座に期限切れとなりうるため。レビュー指摘対応、既存の
-//! 「各 `ws.next()` の待機を開始する直前に毎回タイムアウトを設定する」
-//! 契約を回復する）。イシュー #671 で `handle_upgrade` が
-//! `WsMessageHandler::on_open` 経由でハンドラへ `WsSender` を渡す公開経路を
-//! 追加し、101 応答送出成功後は常に `Some(rx)` を渡すようになった（本
-//! モジュールの合流ロジック自体は無変更）。
+//! アイドル期限) と outbound（サーバー起点 push）を 1 イベントずつ選ぶ。
+//! 両方が同時に Ready な場合にどちらを優先するかはループ反復ごとに
+//! 交互（alternating）に入れ替える（[`race2_alternating`]、イシュー
+//! #684 レビュー指摘対応）。固定でクライアント受信を優先する `race2` を
+//! 使うと、クライアントが連続送信を続ける限り `ws.next()` が常に
+//! ポーリング時点で Ready となり得るケースで `rx.recv()`（outbound）が
+//! 恒久的に飢餓状態になり、サーバー起点 push が無期限に滞留しうるため
+//! （スケジューリング上両方が Ready であることが構造的に起こりうる以上、
+//! 固定優先度は公平性を保証しない）。交互化により、連続受信が続いても
+//! 最悪 2 反復に 1 回は outbound 側が優先ポーリングされ、送信済み
+//! push メッセージが有界回数内に処理される。outbound メッセージは既存の
+//! `ws.send()`（[`apply_outcome`] の `WsOutcome::Reply` 送出と同一の
+//! `&mut WebSocketStream`）へ直列に送出する（フレームが混ざらないことを
+//! 構造的に保証する。単一タスクが `ws` を排他的に所有するため）。
+//! `config.idle_timeout` は**クライアントから実際にフレームを受信した
+//! 場合にのみ**更新し、outbound 送出はタイマーをリセットしない（無通信の
+//! デッドクライアントへ定期 push し続けるとアイドルタイムアウトが永久に
+//! 発火しなくなる退行を避けるため。Issue #175 が導入した DoS 対策を
+//! 後退させない）。更新タイミングはフレーム受信直後ではなく、ハンドラ
+//! 実行（`on_message`）・返信送出（`apply_outcome`）まで完了し次の
+//! 受信待ちに入る直前とする（受信直後に更新すると、ハンドラ処理・返信
+//! 送出に `idle_timeout` 相当の時間を要した場合にその処理時間がアイドル
+//! 待機時間へ算入され、処理完了直後の次の受信待ちで即座に期限切れと
+//! なりうるため。レビュー指摘対応、既存の「各 `ws.next()` の待機を
+//! 開始する直前に毎回タイムアウトを設定する」契約を回復する）。イシュー
+//! #671 で `handle_upgrade` が `WsMessageHandler::on_open` 経由で
+//! ハンドラへ `WsSender` を渡す公開経路を追加し、101 応答送出成功後は
+//! 常に `Some(rx)` を渡すようになった（本モジュールの合流ロジック自体は
+//! イシュー #684 の交互化以外は無変更）。
 //!
 //! # ハンドラ Future の中断安全性契約（イシュー #499）
 //!
@@ -131,11 +141,14 @@ use crate::race_cancel;
 ///
 /// `outbound` は [`crate::handler::WsSender`]（イシュー #670）が送る
 /// サーバー起点メッセージの受信側。`Some` の場合、クライアント受信待ちと
-/// 合流させて 1 イベントずつ処理する（モジュール doc を参照）。全
-/// `WsSender` クローンが drop されチャネルが閉じた場合はそのイベント源を
-/// 無効化するのみでセッション自体は継続する（`None` にはしない設計だと
-/// 毎回 `recv()` を呼び続けビジーループ化しうるため、内部で
-/// `outbound = None` 相当に切り替えて以後は選択しないようにする）。
+/// 合流させて 1 イベントずつ処理する（モジュール doc を参照）。両者が
+/// 同時に Ready な場合の優先順はループ反復ごとに交互化し、連続受信
+/// クライアントによる outbound 飢餓を防ぐ（[`race2_alternating`]、
+/// イシュー #684）。全 `WsSender` クローンが drop されチャネルが閉じた
+/// 場合はそのイベント源を無効化するのみでセッション自体は継続する
+/// （`None` にはしない設計だと毎回 `recv()` を呼び続けビジーループ化
+/// しうるため、内部で `outbound = None` 相当に切り替えて以後は選択
+/// しないようにする）。
 /// cancel 発火時・アイドルタイムアウト発火時は、[`handle_cancellation`] /
 /// [`handle_idle_timeout`] を呼ぶ**前**に `outbound` を drop し、満杯
 /// チャネルでブロック中の [`crate::handler::WsSender::send`] 呼び出しを
@@ -162,6 +175,13 @@ where
     // 更新する（モジュール doc を参照。outbound push ではリセットしない）。
     let mut idle_deadline: Option<Instant> = config.idle_timeout.map(|d| Instant::now() + d);
 
+    // inbound（クライアント受信 + アイドル期限）と outbound（サーバー起点
+    // push）が同時に Ready な場合にどちらを優先ポーリングするかを反復
+    // ごとに交互化するフラグ（イシュー #684）。固定でクライアント受信を
+    // 優先すると、連続送信クライアント下で outbound が恒久的に飢餓
+    // しうるため（モジュール doc を参照）。
+    let mut prefer_outbound = false;
+
     loop {
         // クライアント受信（+ アイドル期限）を 1 つの Future にまとめる。
         // 新規 `ws.next()` / `sleep_until()` を毎ループ作り直す既存パターン
@@ -179,7 +199,17 @@ where
         };
 
         let event = if let Some(rx) = outbound.as_mut() {
-            match race_cancel(cancel.as_mut(), race2(inbound, rx.recv())).await {
+            // 反復ごとに優先順を反転する（交互化、モジュール doc を参照）。
+            // 両方 Ready でない通常時はこの反転自体が結果へ影響しない
+            // （どちらが先にポーリングされても Pending の側は素通りする
+            // だけのため）。両方 Ready な場合にのみ順序が意味を持つ。
+            prefer_outbound = !prefer_outbound;
+            match race_cancel(
+                cancel.as_mut(),
+                race2_alternating(prefer_outbound, inbound, rx.recv()),
+            )
+            .await
+            {
                 None => {
                     drop(outbound.take());
                     return handle_cancellation(ws, config.close_grace).await;
@@ -329,6 +359,46 @@ where
 enum Either<L, R> {
     Left(L),
     Right(R),
+}
+
+/// [`race2`] の公平版。`prefer_b` で「両方の `Future` が同時に Ready な
+/// 場合にどちらを先にポーリングするか」を呼び出し側から指定できる
+/// （`false` なら `race2` と同じ `a` 優先、`true` なら `b` 優先）。
+///
+/// [`run_session`] が inbound（クライアント受信 + アイドル期限）と
+/// outbound（[`crate::handler::WsSender`] からの push）を合流させる際、
+/// 反復ごとに `prefer_b` を反転させて呼ぶことで両者の優先順位を交互化し、
+/// 固定優先度による飢餓（連続受信クライアント下で outbound 側が恒久的に
+/// 選ばれなくなる退行）を避ける（イシュー #684、モジュール doc の
+/// 「両方 Ready 時」節を参照）。`a`・`b` いずれか一方のみが Ready な
+/// 通常時は `prefer_b` の値に関わらず結果が変わらない（Pending の側は
+/// 単に素通りするため）。
+async fn race2_alternating<A, B>(prefer_b: bool, a: A, b: B) -> Either<A::Output, B::Output>
+where
+    A: Future,
+    B: Future,
+{
+    let mut a = std::pin::pin!(a);
+    let mut b = std::pin::pin!(b);
+    std::future::poll_fn(move |cx| {
+        if prefer_b {
+            if let Poll::Ready(output) = b.as_mut().poll(cx) {
+                return Poll::Ready(Either::Right(output));
+            }
+            if let Poll::Ready(output) = a.as_mut().poll(cx) {
+                return Poll::Ready(Either::Left(output));
+            }
+        } else {
+            if let Poll::Ready(output) = a.as_mut().poll(cx) {
+                return Poll::Ready(Either::Left(output));
+            }
+            if let Poll::Ready(output) = b.as_mut().poll(cx) {
+                return Poll::Ready(Either::Right(output));
+            }
+        }
+        Poll::Pending
+    })
+    .await
 }
 
 /// [`WsMessage`] を tungstenite の `Message` へ変換する（[`apply_outcome`]
@@ -728,5 +798,97 @@ mod tests {
         );
 
         let _ = pusher.await;
+    }
+
+    /// [`race2_alternating`] 単体テスト（イシュー #684、PR #684 レビュー
+    /// 指摘対応）: `a`・`b` の両方が即座に Ready な場合、`prefer_b` の値が
+    /// そのまま選ばれる側を決めること。`run_session` は反復ごとに
+    /// `prefer_b` を反転させて呼ぶため、この性質により固定優先度による
+    /// outbound 飢餓（連続受信クライアント下で `rx.recv()` が恒久的に
+    /// 選ばれなくなる退行）を避けられる。
+    #[tokio::test]
+    async fn race2_alternating_respects_prefer_b_when_both_ready() {
+        // prefer_b = false（inbound 優先）: 両方 Ready なら a（Left）が選ばれる。
+        let result =
+            race2_alternating(false, std::future::ready('a'), std::future::ready('b')).await;
+        assert!(
+            matches!(result, Either::Left('a')),
+            "prefer_b=false のとき、両方 Ready なら a が優先されるべき"
+        );
+
+        // prefer_b = true（outbound 優先）: 両方 Ready なら b（Right）が選ばれる。
+        let result =
+            race2_alternating(true, std::future::ready('a'), std::future::ready('b')).await;
+        assert!(
+            matches!(result, Either::Right('b')),
+            "prefer_b=true のとき、両方 Ready なら b が優先されるべき"
+        );
+    }
+
+    /// 受け入れ基準（PR #684 レビュー指摘）: `run_session` が反復ごとに
+    /// `prefer_outbound` を反転させることで、クライアントが連続送信を
+    /// 続けている間でも outbound push が有界回数内に届くこと。
+    ///
+    /// 固定優先度（旧実装の `race2(inbound, rx.recv())`）では、client の
+    /// 連続送信によって `ws.next()` が常にポーリング時点で Ready になり
+    /// うる場合、`rx.recv()` が恒久的に選ばれない飢餓が構造的に起こり
+    /// うる契約だった。交互化後は最悪でも 2 反復に 1 回は outbound 側が
+    /// 優先されるため、outbound push は高々「クライアント送信数 + 定数」
+    /// 反復以内に届く（無期限の滞留がないことを実測で確認する）。
+    #[tokio::test]
+    async fn outbound_push_is_not_starved_by_continuous_client_sends() {
+        let config: &'static WebSocketConfig = Box::leak(Box::new(test_config()));
+        let (server_side, client_side) = tokio::io::duplex(1 << 20);
+        let (tx, rx) = handler::channel(4);
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session(server_side, Vec::new(), config, cancel.as_mut(), Some(rx)).await
+        });
+
+        let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+
+        // outbound push を先にキューイングしておく。
+        tx.send(WsMessage::Text("urgent-push".to_string()))
+            .await
+            .expect("outbound send should succeed");
+
+        // クライアントは大量のメッセージを連続送信する（応答を読まずに
+        // 送りっぱなしにすることで `ws.next()` を継続的に Ready に近づけ、
+        // 固定優先度なら飢餓が起きやすい状況を模す）。
+        const CLIENT_MESSAGES: usize = 40;
+        for i in 0..CLIENT_MESSAGES {
+            client
+                .send(Message::Text(format!("client-{i}").into()))
+                .await
+                .expect("client send should succeed");
+        }
+
+        // 受信した最初の CLIENT_MESSAGES + 定数 件のうちに outbound push
+        // （"urgent-push"）が含まれることを確認する（全件の末尾まで届かない
+        // ことをもって「飢餓していない」とみなす）。
+        let mut found_push = false;
+        let scan_limit = CLIENT_MESSAGES / 2;
+        for _ in 0..scan_limit {
+            let msg = tokio::time::timeout(Duration::from_secs(2), client.next())
+                .await
+                .expect("should receive a frame within timeout")
+                .expect("stream should not end early")
+                .expect("frame should not error");
+            if msg == Message::Text("urgent-push".into()) {
+                found_push = true;
+                break;
+            }
+        }
+        assert!(
+            found_push,
+            "outbound push should arrive within the first {scan_limit} frames, \
+             not be starved until after all {CLIENT_MESSAGES} client echoes"
+        );
+
+        drop(tx);
+        drop(client);
+        let _ = tokio::time::timeout(Duration::from_secs(2), session_handle).await;
     }
 }
