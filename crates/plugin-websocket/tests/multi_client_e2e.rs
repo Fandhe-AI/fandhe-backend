@@ -363,7 +363,11 @@ async fn two_clients_isolated_state_and_push_then_client_close_only_fires_own_on
         .close(None)
         .await
         .expect("client A close should send");
-    while client_a.next().await.is_some() {}
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while client_a.next().await.is_some() {}
+    })
+    .await
+    .expect("client A drain should complete before test timeout");
     let result_a = tokio::time::timeout(Duration::from_secs(5), task_a)
         .await
         .expect("server task A should finish before test timeout")
@@ -427,7 +431,11 @@ async fn two_clients_isolated_state_and_push_then_client_close_only_fires_own_on
         .close(None)
         .await
         .expect("client B close should send");
-    while client_b.next().await.is_some() {}
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while client_b.next().await.is_some() {}
+    })
+    .await
+    .expect("client B drain should complete before test timeout");
     let result_b = tokio::time::timeout(Duration::from_secs(5), task_b)
         .await
         .expect("server task B should finish before test timeout")
@@ -554,7 +562,11 @@ async fn two_clients_eof_on_one_only_fires_its_on_close_and_other_continues() {
         .close(None)
         .await
         .expect("client B close should send");
-    while client_b.next().await.is_some() {}
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while client_b.next().await.is_some() {}
+    })
+    .await
+    .expect("client B drain should complete before test timeout");
     let result_b = tokio::time::timeout(Duration::from_secs(5), task_b)
         .await
         .expect("server task B should finish before test timeout")
