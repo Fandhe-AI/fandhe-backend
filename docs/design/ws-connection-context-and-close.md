@@ -308,34 +308,66 @@ Debug` と同一のログ・診断への機密混入防止方針）。
 | `apply_outcome` が返す `SessionFlow::Closed`（`WsOutcome::Close`、268 行・287 行） | `HandlerClose` |
 | `outcome?` の `Err(WsHandlerError)`（`on_message` の戻り値、266 行・285 行。現状 `outcome?` で即時 `Err` 化） | `Failed(FailureKind::Handler)` |
 | `message?` の `Err`（252 行、tungstenite）: `Error::Capacity(_)` | `MessageTooLarge` |
-| `message?` の `Err`（252 行）: `Capacity` 以外 | `Failed(FailureKind::Protocol)`（`Io` にはならない。理由は次項） |
-| `InboundEvent::Outbound` 分岐の `ws.send` 失敗（`Some(Err(err)) => return Err(err.into())`、247 行） | `Failed(FailureKind::Protocol)` |
-| `apply_outcome(...).await?` が伝播する `apply_outcome` 内部の `ws.send`/`ws.close` 失敗（`apply_outcome` 内 451 行・459 行の `result?`、呼び出し元の `.await?` 経由。Text 分岐 266 行・Binary 分岐 285 行） | `Failed(FailureKind::Protocol)` |
+| `message?` の `Err`（252 行）: `Error::Io(_)` | `Failed(FailureKind::Io)` |
+| `message?` の `Err`（252 行）: `Capacity`/`Io` 以外（`ConnectionClosed`/`AlreadyClosed` を含む。次項「`ConnectionClosed`/`AlreadyClosed` の扱い」を参照） | `Failed(FailureKind::Protocol)` |
+| `InboundEvent::Outbound` 分岐の `ws.send` 失敗（`Some(Err(err)) => return Err(err.into())`、247 行）: `Error::Io(_)` | `Failed(FailureKind::Io)` |
+| `InboundEvent::Outbound` 分岐の `ws.send` 失敗（247 行）: `Io` 以外 | `Failed(FailureKind::Protocol)` |
+| `apply_outcome(...).await?` が伝播する `apply_outcome` 内部の `ws.send`/`ws.close` 失敗（`apply_outcome` 内 451 行・459 行の `result?`、呼び出し元の `.await?` 経由。Text 分岐 266 行・Binary 分岐 285 行）: `Error::Io(_)` | `Failed(FailureKind::Io)` |
+| 同上: `Io` 以外 | `Failed(FailureKind::Protocol)` |
 
-#### `FailureKind::Io` は `run_session_inner` の脱出点からは到達しない
+#### `FailureKind::Io` の判別方法（`Error::Io(_)` を明示的に振り分ける）
 
-上表のとおり、`session.rs` 内で `WsError` へ変換される箇所（252 行の `message?`・
-247 行の `err.into()`・451/459 行の `result?`）はいずれも
-`tokio_tungstenite::tungstenite::Error` を `From<tungstenite::Error> for WsError`
-（`crates/plugin-websocket/src/error.rs`）経由で変換しており、この `From` 実装は
-常に `WsError::Protocol(_)` を生成する（`Io` にはならない）。`WsError::Io` を
-生成する `From<std::io::Error> for WsError` は `crates/plugin-websocket/src/
-lib.rs` の `write_racing_cancel`（101/400/426 応答の書き込み、ハンドシェイク
-検証・101 送出の途中でのみ呼ばれる）でのみ使われており、これは常に `on_open`
-呼び出し（＝セッション確立、101 送出成功後）より**前**に発生する。`on_close` は
-`on_open` が呼ばれた接続に限って呼ぶ設計（本節末尾の不変条件を参照）のため、
-`run_session_inner` の脱出点が `Failed(FailureKind::Io)` を返す経路は現状存在
-しない。
+`FailureKind::Io` は `Protocol` へ埋没させず、`MessageTooLarge`（`Error::
+Capacity(_)`）と同じ手法でパターンマッチにより明示的に振り分ける。
 
-**採用する設計**: `FailureKind::Io` は enum から削除せず維持する（`WsError::Io`
-との対称性を保ち、`#[non_exhaustive]` の将来拡張余地——例えば #706 の送信キュー
-消化方式が `session.rs` 内に直接 I/O を持ち込む場合——に備えるため）。ただし
-上表・本項の記述により、現時点で `run_session_inner` から `Failed(FailureKind::
-Io)` が生じないことを設計として明記し、#705 の実装者が「`message?` の `Err` を
-`Io`/`Protocol` へどう振り分けるか」で迷わないようにする。振り分けが不要な理由は
-「`tungstenite::Error` からの変換は判別せず一律 `Protocol` にする」という上記
-`From` 実装のとおりであり、`session.rs` 側で追加の判定ロジックを実装する必要は
-ない。
+`tokio_tungstenite::tungstenite::Error`（tungstenite 0.30）には `Io(std::io::
+Error)` variant があり、tungstenite 自身の `error.rs`（37-41 行）が「fatal」と
+明記する種別である。接続リセット（`ECONNRESET`）等、実運用で頻発しうる終了経路を
+`Protocol` へ一括で丸めると、切断理由の診断価値（本設計の `on_close` 通知の主目的）
+が損なわれる。
+
+判定は `message?`（252 行）・`InboundEvent::Outbound` の `ws.send` 失敗（247 行）・
+`apply_outcome` 内部の `ws.send`/`ws.close` 失敗（451/459 行、266/285 行の
+`.await?` 経由）の 3 箇所すべてで、`?`/`.into()` による早期変換の**前**に
+`Result` の `Err` を一度 `match` し、`tungstenite::Error::Io(_)` かどうかを
+判定してから `CloseReason` を確定させる（`Capacity(_)` の判定と同一パターン）。
+`run_session_inner` が返す `Result<(), WsError>` 側は変更しない
+（`From<tungstenite::Error> for WsError`（`crates/plugin-websocket/src/
+error.rs`）は無変更のまま常に `WsError::Protocol(_)` を生成し続けてよい。
+`MessageTooLarge` も同様に `WsError` 側は `Protocol(Error::Capacity(_))` の
+ままであり、`CloseReason` の分類は `WsError` の variant と 1:1 対応しない
+既存の設計と整合する）。したがって「`From` 実装を変えない」という制約は
+`Io` の判別を妨げない。判別は `run_session_inner` 側のパターンマッチのみで
+実現できるため、`error.rs` への変更は不要。
+
+`WsError::Io`（`From<std::io::Error> for WsError`、`crates/plugin-websocket/
+src/lib.rs` の `write_racing_cancel` が 101/400/426 応答書き込みで使う、常に
+`on_open` 呼び出し以前に発生する経路）とは別物である点に注意する。`run_session_
+inner` の脱出点における `Failed(FailureKind::Io)` は、`tungstenite::Error::
+Io(_)` の判別結果であり、`WsError::Io` variant 自体が使われるわけではない。
+
+`session.rs` 内で `tungstenite::Error` を `WsError` へ変換する箇所は上記 3 箇所
+（252/247/451・459 行）に加えてもう 1 つある。`close_and_drain`（`handle_idle_
+timeout`/`handle_cancellation` の共通ヘルパー、569 行付近の `Ok(Err(err)) =>
+Err(err.into())`）が、Close 送出後のドレインで 2 次的に失敗した場合の変換
+経路である。ここは新たに `Io`/`Protocol` を判別する対象に加えない。本節末尾の
+不変条件（「`close_and_drain` 内で発生する二次的なエラー・タイムアウトは、
+既に確定した `CloseReason`（`IdleTimeout` または `Cancelled`）を上書きしない」）
+により、この経路の `WsError` の内容に関わらず `CloseReason` は既に確定済みの
+`IdleTimeout`/`Cancelled` のまま変わらないため、上表への追加行は不要
+（`Result<(), WsError>` 側にのみ反映される）。
+
+#### `ConnectionClosed`/`AlreadyClosed` の扱い（Nit 対応）
+
+247 行の `InboundEvent::Outbound` の `ws.send` 失敗が
+`tungstenite::Error::ConnectionClosed` / `AlreadyClosed`（相手が既に切断済みの
+状態への送信）だった場合も、`Io` ではないため上表の「`Io` 以外」行に従い
+`Failed(FailureKind::Protocol)` になる。`ClientClose` へは分類しない。
+`ClientClose` は「Close フレームを受信した」（`Message::Close(_) => break;`、
+294-296 行）という明示的なプロトコル手続きの完了を表す variant であり、
+送信側で「相手が既に閉じていた」ことを検出した経路とは意味が異なるため
+（前者はクライアント起点の正常な Close ハンドシェイク、後者はサーバ起点の
+push が届け先を失っていたというエラー経路）、混同を避けて別区分に保つ。
 
 ### 不変条件（構造で保証、個別 return への散在実装を禁止）
 
