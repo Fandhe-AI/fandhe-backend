@@ -132,6 +132,107 @@ impl fmt::Display for WsConnId {
     }
 }
 
+/// セッション（`crate::session::run_session`）がどの経路で終了したかを表す
+/// 終了理由（イシュー #726、親 #705。設計は
+/// `docs/design/ws-connection-context-and-close.md` 4 節）。
+///
+/// `crate::session::run_session_inner` が全終了経路（クライアントの
+/// Close・EOF・idle timeout・shutdown/rebind キャンセル・受信上限超過・
+/// プロトコル/IO エラー・ハンドラの Close・ハンドラのエラー）ごとに
+/// 値を算出する。現時点では算出のみでハンドラへの通知経路はなく、
+/// `crate::session::run_session`（既存の公開シグネチャを保つ薄い
+/// ラッパー）はこの値を破棄する。切断通知 API（`on_close(ctx,
+/// CloseReason)`）は後続イシュー（#729）が追加する。
+///
+/// # 情報露出の最小化（`.claude/rules/security.md`）
+///
+/// クライアントが送った Close reason 文字列・URL パラメータ等の payload を
+/// 一切保持しない `Copy` な種別値のみで構成する。`Debug` 出力にも機密は
+/// 含まれない。
+///
+/// # 網羅性
+///
+/// `#[non_exhaustive]` のため、下流の `match` はワイルドカード腕
+/// （`_ => ...`）を必要とする。将来 variant を追加してもこれは
+/// 非破壊変更（0.4.2 以降のバージョン方針、設計 7 節）として扱う。
+///
+/// ```
+/// use fandhe_backend_plugin_websocket::handler::{CloseReason, FailureKind};
+///
+/// fn describe(reason: CloseReason) -> &'static str {
+///     match reason {
+///         CloseReason::ClientClose => "client closed",
+///         CloseReason::Eof => "eof",
+///         CloseReason::IdleTimeout => "idle timeout",
+///         CloseReason::Cancelled => "cancelled",
+///         CloseReason::HandlerClose => "handler closed",
+///         CloseReason::MessageTooLarge => "message too large",
+///         CloseReason::Failed(FailureKind::Io) => "io failure",
+///         // `#[non_exhaustive]` のため他の `Failed(_)` はワイルドカードで拾う。
+///         _ => "other",
+///     }
+/// }
+///
+/// let reason = CloseReason::ClientClose;
+/// assert_eq!(describe(reason), "client closed");
+/// // `Copy` + `PartialEq` を持つため値のコピー・比較ができる。
+/// let copied = reason;
+/// assert_eq!(reason, copied);
+/// ```
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseReason {
+    /// クライアントが Close フレームを送出した（正常終了）。
+    ClientClose,
+    /// Close ハンドシェイクなしに接続が切断された（読み取り EOF）。
+    ///
+    /// 到達経路は 2 つある（`crate::session::SessionFailure::recv` が
+    /// 分類）。(1) `ws.next()` が `None` を返す経路（`ConnectionClosed`/
+    /// `AlreadyClosed` 到達後の fused 呼び出し等）で、この場合セッション
+    /// 側の `Result` は `Ok(())`。(2) tokio-tungstenite 0.30 で Close
+    /// フレームなしの TCP 切断が観測される主経路である
+    /// `tungstenite::Error::Protocol(ProtocolError::
+    /// ResetWithoutClosingHandshake)`（イシュー #726 レビュー指摘対応で
+    /// 本 variant へ分類するようになった）で、この場合 `Result` は
+    /// `Err(WsError::Protocol(_))`（読み取り自体は失敗している）。
+    /// いずれも「Close ハンドシェイクなしの切断」という本 variant の
+    /// 定義に一致する。
+    Eof,
+    /// `WebSocketConfig::idle_timeout` の期限内にクライアントからの
+    /// フレームが届かず、アイドルと判定してサーバー側から切断した。
+    IdleTimeout,
+    /// コアの世代キャンセルシグナル（最終 graceful shutdown・rebind
+    /// 世代 drain）発火によりサーバー側から切断した。
+    Cancelled,
+    /// ユーザーハンドラ（`WsMessageHandler`）が `WsOutcome::Close` を
+    /// 返し、サーバー側から Close ハンドシェイクを開始した。
+    HandlerClose,
+    /// 受信メッセージが `max_message_size` / `max_frame_size` を超過した
+    /// （tungstenite 側で強制、`tungstenite::Error::Capacity` 経由）。
+    MessageTooLarge,
+    /// 上記以外の失敗で終了した。詳細種別は [`FailureKind`] のみを運び、
+    /// `WsError`（I/O・プロトコルエラーの詳細）自体はここには含まれない
+    /// （`WsError` は `Clone` を実装しないため、また情報露出を最小化する
+    /// ため。エラー詳細は `Result` 側（`crate::session::run_session_inner`
+    /// の戻り値の第 2 要素）から取得する）。
+    Failed(FailureKind),
+}
+
+/// [`CloseReason::Failed`] が運ぶ失敗の種別。
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    /// 送受信中の I/O エラー（`tungstenite::Error::Io`）。
+    Io,
+    /// プロトコル違反・容量超過以外の tungstenite エラー
+    /// （`tungstenite::Error::Protocol` や `ConnectionClosed`/
+    /// `AlreadyClosed` を伴う送信失敗等）。
+    Protocol,
+    /// ユーザーハンドラ（`WsMessageHandler::on_message_with_ctx`）が
+    /// `Err` を返した（`WsHandlerError` 相当）。
+    Handler,
+}
+
 /// Text/Binary メッセージ受信ごとに呼ばれるユーザー定義ハンドラ。
 ///
 /// `crate::session::run_session` がメッセージごとに直列 `await` する

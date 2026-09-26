@@ -25,6 +25,17 @@ BREAKING CHANGE はありません（後方互換な API 追加のみ）。0.4.2
   （`DEFAULT_OUTBOUND_CAPACITY = 8`）を超えて送信してもデッドロックしないよう、
   送信キューを実行中に消化する内側ループも同時に実装しました
   （[#706](https://github.com/Fandhe-AI/fandhe-backend/issues/706) 相当）
+- `fandhe-backend-plugin-websocket`: セッション終了理由の型
+  `handler::CloseReason`（`ClientClose` / `Eof` / `IdleTimeout` / `Cancelled` /
+  `HandlerClose` / `MessageTooLarge` / `Failed(FailureKind)`）と
+  `handler::FailureKind`（`Io` / `Protocol` / `Handler`）を追加し、
+  セッション内部（`run_session_inner`）が全終了経路ごとに終了理由を算出する
+  ようにしました。いずれも `#[non_exhaustive]` で、クライアント入力の
+  payload は保持しません。現時点では算出のみで、ハンドラへの通知 API
+  （`on_close`）は追加していません（後続イシューが担う予定。設計は
+  `docs/design/ws-connection-context-and-close.md` 4 節、イシュー
+  [#726](https://github.com/Fandhe-AI/fandhe-backend/issues/726)、親
+  [#705](https://github.com/Fandhe-AI/fandhe-backend/issues/705)）
 
 ## [0.4.1] - 2026-09-26
 

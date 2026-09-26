@@ -549,7 +549,16 @@ fandhe-backend/
 │   │                                    # （`session::run_handler_with_outbound_drain`）も
 │   │                                    # 前倒しで実装し、`on_message_with_ctx` 実行中の
 │   │                                    # 自己送信（容量 8 超）がデッドロックしないように
-│   │                                    # した
+│   │                                    # した。イシュー #726（親 #705、#703 の 3 分割の
+│   │                                    # 1 つ）で終了理由型 `handler::CloseReason` /
+│   │                                    # `FailureKind`（いずれも `#[non_exhaustive]`）を
+│   │                                    # 追加し、`session::run_session` を内部実装
+│   │                                    # `run_session_inner`（脱出点ごとに `CloseReason`
+│   │                                    # を返す）と既存公開シグネチャを保つ薄いラッパーへ
+│   │                                    # 分割した（`SessionFailure` が
+│   │                                    # `tungstenite::Error` を受信/送信方向別に分類）。
+│   │                                    # 現時点では算出のみでハンドラへの通知（`on_close`）
+│   │                                    # は #729 が追加する予定
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O
