@@ -38,7 +38,7 @@ RFC 6455 ハンドシェイク検証・101 応答・tokio-tungstenite へのフ�
 | 既定値 | `path = "/ws"`、`max_message_size = 1 MiB`、`max_frame_size = 256 KiB`、`idle_timeout = Some(60 秒)`、`close_grace = 10 秒` |
 | メッセージハンドラ | `with_handler(impl WsMessageHandler)` で差し替え。既定は `EchoHandler`（後方互換） |
 | 接続コンテキスト | `WsMessageHandler::on_message_with_ctx`（provided、既定は既存の `on_message` へ委譲）で `WsConnContext`（`conn_id()` / `sender()` / `param()` / `params()`）を参照可能。`WsOpenContext::conn_id()` で `on_open` 時点からも同じ接続 ID を取得できる（`docs/design/ws-connection-context-and-close.md` 参照） |
-| 終了理由 | `handler::CloseReason` / `handler::FailureKind`（いずれも `#[non_exhaustive]`）でセッションの終了経路を種別化。現時点ではセッション内部で算出されるのみで、ハンドラへ通知する API（`on_close`）はまだ提供していない（イシュー [#726](https://github.com/Fandhe-AI/fandhe-backend/issues/726)、`docs/design/ws-connection-context-and-close.md` 4 節） |
+| 終了理由 | `handler::CloseReason` / `handler::FailureKind`（いずれも `#[non_exhaustive]`）でセッションの終了経路を種別化。現時点ではセッション内部で算出されるのみで、ハンドラへ通知する API（`on_close`）はまだ提供していない（`docs/design/ws-connection-context-and-close.md` 4 節参照） |
 
 - 注意: サイズ上限はメモリ枯渇 DoS 対策。アイドルタイムアウトは既定で有効（fail-safe）であり、無効化は `without_idle_timeout` の明示操作でのみ可能
 - 注意: `close_grace`（`with_close_grace`）はコアの世代キャンセル（最終 graceful
