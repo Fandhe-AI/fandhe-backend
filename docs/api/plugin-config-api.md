@@ -52,11 +52,15 @@ RFC 6455 ハンドシェイク検証・101 応答・tokio-tungstenite へのフ�
 - 注意: `WsConnId` はサーバー側の単調カウンタ発行（`unsafe` 不使用・クライアント
   入力から独立）でプロセス内一意。値は推測可能なため認可トークン・セッション
   秘密として使ってはならない（識別子であって資格情報ではない）
-- 注意: `on_message_with_ctx` 実行中に `ctx.sender()` から容量
-  （`DEFAULT_OUTBOUND_CAPACITY = 8`）を超えて `send(...).await` してもデッドロックしない。
-  実行中に到着した push はその都度消化され、排出開始時点で既に格納済みだった
-  push はハンドラが返す `WsOutcome::Reply`/`Close` より先に送出される
-  （`docs/design/ws-connection-context-and-close.md` 6 節）
+- 注意: `on_message_with_ctx`（`on_message` にも適用）実行中も `WsSender::send`
+  の送信キュー（既定容量 8）を cancel（最優先）→ (ハンドラ完了 | outbound
+  到着) の順で消化するため、ハンドラ内（`ctx.sender()` 経由）から容量を
+  超える回数 `send(...).await` してもデッドロックしない。排出ステップ開始
+  時点で既に到着済みの push は、そのハンドラが返す `WsOutcome::Reply`/
+  `Close` より先に送出される保証つき（それ以外の push との相対順序は不定）。
+  詳細契約は `crates/plugin-websocket/src/session.rs` モジュール doc
+  「ハンドラ実行中の送信キュー消化」節・`docs/design/
+  ws-connection-context-and-close.md` 6 節を参照
 
 ### 2.2 plugin-graphql（`graphql`）
 

@@ -67,6 +67,20 @@
 //! 常に `Some(rx)` を渡すようになった（本モジュールの合流ロジック自体は
 //! イシュー #684 の交互化以外は無変更）。
 //!
+//! # ハンドラ実行中の送信キュー消化（イシュー #706）
+//!
+//! 上記の合流は「クライアント受信待ち」の間のみ outbound を消化する。
+//! Text/Binary メッセージ受信後に [`WsMessageHandler::on_message_with_ctx`]
+//! を単独 `await` すると、ハンドラ本体（または `on_message_with_ctx` が
+//! `.await` するタスク）がハンドラ実行中に `WsSender::send` を outbound
+//! チャネル容量（既定 [`crate::handler::DEFAULT_OUTBOUND_CAPACITY`] = 8）を
+//! 超える回数呼んだ場合、受信側（本モジュール）がその間キューを一切消費
+//! しないため `send` が永久にブロックしデッドロックする（CDP の
+//! `Page.navigate` のように「応答の前に複数イベントを送る」ハンドラで
+//! 現実に起こる）。[`run_handler_with_outbound_drain`] がこれを解消する
+//! 内側ループとして働く（手順・送出順序の保証と不定契約は同関数の doc を
+//! 参照。本節で重複記述しない）。
+//!
 //! # ハンドラ Future の中断安全性契約（イシュー #499）
 //!
 //! `on_message` が返す `Future` は shutdown・rebind 世代 drain の発火時に
@@ -208,6 +222,12 @@ where
 /// [`handle_idle_timeout`] を呼ぶ**前**に `outbound` を drop し、満杯
 /// チャネルでブロック中の [`crate::handler::WsSender::send`] 呼び出しを
 /// `close_grace` の満了を待たず即座に解放する。
+///
+/// Text/Binary メッセージ受信後の [`WsMessageHandler::on_message_with_ctx`]
+/// 実行中も [`run_handler_with_outbound_drain`] 経由で outbound を消化し
+/// 続ける（イシュー #706、モジュール doc の「ハンドラ実行中の送信キュー
+/// 消化」節を参照。デッドロック解消のための追加区間で、モジュール doc
+/// 上部が既に述べる受信待ち中の合流とは独立した内側ループ）。
 ///
 /// # 終了理由の割り当て（イシュー #726、設計 4 節の脱出点対応表）
 ///
@@ -704,6 +724,15 @@ where
 /// [`SessionFlow::Cancelled`] を返す）。`idle_deadline` は本関数の実行中は
 /// 更新しない（モジュール doc の「クライアントから実際にフレームを受信した
 /// 場合にのみ延長」契約を変えない）。
+///
+/// **既知の限界（イシュー #706 スコープ外）**: `idle_deadline` は本関数の
+/// 実行中「更新されない」だけでなく「評価もされない」。アイドルタイムアウト
+/// の判定（[`run_session_inner`] 外側ループの `tokio::time::timeout`）は
+/// ハンドラ完了後に受信待ちへ戻ってから初めて働くため、ハンドラ自体が
+/// `idle_timeout` を超える時間 `await` し続けても、その間は無通信であっても
+/// アイドルタイムアウトは発火しない（ハンドラの実行時間そのものは監視対象
+/// 外というポリシー上の判断であり、本関数が解消する「outbound 送信キューの
+/// デッドロック」とは別種の懸念のため、本イシューでは対処しない）。
 async fn run_handler_with_outbound_drain<S, C>(
     ws: &mut WebSocketStream<S>,
     mut cancel: Pin<&mut C>,
