@@ -500,6 +500,36 @@ Issue #175 対応。`crates/plugin-websocket` のセッション処理
 - `crates/plugin-websocket/src/lib.rs`（`handle_upgrade` の呼び出し箇所・doc）
 - `docs/design/ws-cancellation-propagation.md`（世代キャンセル機構全体の設計）
 
+## 規約: `WsMessageHandler::on_message_with_ctx` / `WsConnContext`（接続コンテキスト、イシュー #704）
+
+親 #702「接続単位のハンドラ状態と切断通知に対応する」の第 1 段（設計は #703、
+`docs/design/ws-connection-context-and-close.md`）。`on_message` 処理中に接続 ID・
+`WsSender`・パスパラメータを参照できるようにする API。
+
+- **provided・後方互換**: `on_message_with_ctx` は provided メソッドで、既定実装は
+  `ctx` を無視して既存の `on_message` へ委譲する。`on_message` のみを実装した
+  既存ハンドラ（`EchoHandler` 等）は無変更のままコンパイル・動作する
+- **`WsConnId` の一意性の範囲**: プロセス内一意（複数の `WebSocketConfig` 登録を
+  またいでも一意）に限る。`AtomicU64` 発行（`unsafe` 不使用）でクライアント入力
+  から独立するが、値は推測可能な連番のため**認可トークン・セッション秘密として
+  使ってはならない**（識別子であって資格情報ではない）
+- **`Debug` にパスパラメータを出さない**: `WsConnContext`/`WsOpenContext` の
+  `Debug` は攻撃者制御下の URL セグメント（パスパラメータ）を出力しない契約を
+  維持する（`conn_id` はサーバー側発行のため出力してよい）
+- **outbound 消化の既知の制約**: `on_message_with_ctx` 実行中に `ctx.sender()` から
+  容量（`DEFAULT_OUTBOUND_CAPACITY = 8`）を超えて `send(...).await` すると
+  デッドロックする（`run_session` の受信ループ本体がハンドラの `await` 中は
+  動かないため）。#706 で解消するまでの既知の限界として doc に明記する
+- 両メソッド（`on_message`/`on_message_with_ctx`）を provided 化して相互に委譲
+  させる構成は無限再帰になるため採らない。`on_message` は必須のまま据え置く
+
+### 参照
+
+- `crates/plugin-websocket/src/handler.rs`（`WsConnId`/`WsConnContext`/
+  `WsMessageHandler::on_message_with_ctx` doc comment、doc test 付き）
+- `docs/design/ws-connection-context-and-close.md`（設計全体・`on_close`/
+  `CloseReason` は #705 が引き続き担う）
+
 ## レビュー基準（Codex PR 自動レビュー）
 
 ai-review（provider: codex）による PR 自動レビュー（`.github/workflows/ai-review.yml`。

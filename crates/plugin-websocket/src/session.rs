@@ -14,6 +14,12 @@
 //! Close ハンドシェイクで切断する（リソース枯渇 DoS 対策、Issue #175。
 //! 詳細は [`run_session`] の doc を参照）。
 //!
+//! Text/Binary メッセージは [`crate::handler::WsMessageHandler::
+//! on_message_with_ctx`]（イシュー #704、既定実装は既存の `on_message`
+//! へ委譲）へ渡す。`run_session` の呼び出し元（`crate::handle_upgrade`）が
+//! 接続確立時に 1 回だけ構築する [`crate::handler::WsConnContext`] を
+//! セッション全体で使い回す（`conn_ctx` 引数）。
+//!
 //! `crate::handle_upgrade` から渡されるキャンセル `Future`（コアの世代
 //! キャンセルシグナル、イシュー #492）は受信待ちだけでなく、ユーザー
 //! ハンドラ実行中（`WsMessageHandler::on_message` の `await`）・
@@ -89,7 +95,7 @@ use futures_util::{SinkExt, StreamExt};
 
 use crate::config::WebSocketConfig;
 use crate::error::WsError;
-use crate::handler::{WsMessage, WsOutcome};
+use crate::handler::{WsConnContext, WsMessage, WsOutcome};
 use crate::race_cancel;
 
 /// 101 応答送出済みのストリームを受け取り、WebSocket セッション終了まで
@@ -148,7 +154,10 @@ use crate::race_cancel;
 /// 場合はそのイベント源を無効化するのみでセッション自体は継続する
 /// （`None` にはしない設計だと毎回 `recv()` を呼び続けビジーループ化
 /// しうるため、内部で `outbound = None` 相当に切り替えて以後は選択
-/// しないようにする）。
+/// しないようにする。イシュー #704 で `conn_ctx`（[`WsConnContext`]）
+/// 自身が `WsSender` のクローンをセッション終了まで保持するようになり、
+/// この分岐はセッション実行中は到達不能になった。将来の保持方式変更に
+/// 備えた防御的コードとして維持する）。
 /// cancel 発火時・アイドルタイムアウト発火時は、[`handle_cancellation`] /
 /// [`handle_idle_timeout`] を呼ぶ**前**に `outbound` を drop し、満杯
 /// チャネルでブロック中の [`crate::handler::WsSender::send`] 呼び出しを
@@ -159,6 +168,7 @@ pub(crate) async fn run_session<S, C>(
     config: &WebSocketConfig,
     mut cancel: Pin<&mut C>,
     mut outbound: Option<mpsc::Receiver<WsMessage>>,
+    conn_ctx: &WsConnContext,
 ) -> Result<(), WsError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -220,6 +230,15 @@ where
                     // 全 WsSender クローンが drop 済み。以後このイベント源を
                     // 選択しないよう無効化し、セッション自体は継続する
                     // （ビジーループ化を防ぐ）。
+                    //
+                    // イシュー #704: `conn_ctx`（`WsConnContext`）自身が
+                    // `WsSender` のクローンを 1 個セッション終了まで保持する
+                    // ようになったため、この分岐はセッション実行中は
+                    // **到達不能**になった（全クローンが drop されるのは
+                    // セッション終了後のみ）。将来 `WsConnContext` の保持
+                    // 方式が変わった場合の安全網として、削除せず防御的
+                    // コードのまま維持する（`docs/design/
+                    // ws-connection-context-and-close.md` 5 節）。
                     drop(outbound.take());
                     continue;
                 }
@@ -254,9 +273,10 @@ where
                     Message::Text(text) => {
                         let Some(outcome) = race_cancel(
                             cancel.as_mut(),
-                            config
-                                .handler
-                                .on_message(WsMessage::Text(text.as_str().to_owned())),
+                            config.handler.on_message_with_ctx(
+                                conn_ctx,
+                                WsMessage::Text(text.as_str().to_owned()),
+                            ),
                         )
                         .await
                         else {
@@ -275,7 +295,9 @@ where
                     Message::Binary(bin) => {
                         let Some(outcome) = race_cancel(
                             cancel.as_mut(),
-                            config.handler.on_message(WsMessage::Binary(bin.into())),
+                            config
+                                .handler
+                                .on_message_with_ctx(conn_ctx, WsMessage::Binary(bin.into())),
                         )
                         .await
                         else {
@@ -599,6 +621,15 @@ mod tests {
         }
     }
 
+    /// テスト用の `WsConnContext`（イシュー #704）。`run_session` は
+    /// `pub(crate)` の非公開シグネチャに `conn_ctx: &WsConnContext` を
+    /// 要求するため、本モジュールのテストが直接呼ぶ際に使うヘルパー。
+    /// `sender` は呼び出し元が渡した `WsSender`（本番の `handle_upgrade`
+    /// と同様、outbound チャネルの送信側クローンを 1 個保持する）。
+    fn test_conn_ctx(sender: handler::WsSender) -> WsConnContext {
+        WsConnContext::new(handler::WsConnId::next(), sender, Vec::new())
+    }
+
     /// 受け入れ基準 1: `WsSender` からの push とクライアント宛の返信
     /// （`EchoHandler`）が同一 `WebSocketStream` 上で混ざらず、両方とも
     /// 欠落なく届くこと。
@@ -607,11 +638,20 @@ mod tests {
         let config: &'static WebSocketConfig = Box::leak(Box::new(test_config()));
         let (server_side, client_side) = tokio::io::duplex(8192);
         let (tx, rx) = handler::channel(4);
+        let conn_ctx = test_conn_ctx(tx.clone());
 
         let session_handle = tokio::spawn(async move {
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
-            run_session(server_side, Vec::new(), config, cancel.as_mut(), Some(rx)).await
+            run_session(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
         });
 
         let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
@@ -716,13 +756,23 @@ mod tests {
         let blocked =
             tokio::spawn(async move { tx2.send(WsMessage::Text("second".to_string())).await });
 
+        let conn_ctx = test_conn_ctx(tx.clone());
+
         // 既に発火済みのキャンセルを渡す（`race_cancel` は cancel を最優先で
         // ポーリングするため、outbound にキュー済みメッセージがあっても
         // 送出よりキャンセル分岐が優先される）。
         let session_handle = tokio::spawn(async move {
             let cancel = std::future::ready(());
             let mut cancel = std::pin::pin!(cancel);
-            run_session(server_side, Vec::new(), config, cancel.as_mut(), Some(rx)).await
+            run_session(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
         });
 
         let blocked_result = tokio::time::timeout(Duration::from_millis(500), blocked)
@@ -766,11 +816,20 @@ mod tests {
         let _client_side = client_side;
 
         let (tx, rx) = handler::channel(4);
+        let conn_ctx = test_conn_ctx(tx.clone());
 
         let session_handle = tokio::spawn(async move {
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
-            run_session(server_side, Vec::new(), config, cancel.as_mut(), Some(rx)).await
+            run_session(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
         });
 
         let pusher = tokio::spawn(async move {
@@ -840,11 +899,20 @@ mod tests {
         let config: &'static WebSocketConfig = Box::leak(Box::new(test_config()));
         let (server_side, client_side) = tokio::io::duplex(1 << 20);
         let (tx, rx) = handler::channel(4);
+        let conn_ctx = test_conn_ctx(tx.clone());
 
         let session_handle = tokio::spawn(async move {
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
-            run_session(server_side, Vec::new(), config, cancel.as_mut(), Some(rx)).await
+            run_session(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
         });
 
         let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
@@ -890,5 +958,160 @@ mod tests {
         drop(tx);
         drop(client);
         let _ = tokio::time::timeout(Duration::from_secs(2), session_handle).await;
+    }
+
+    /// 受け入れ基準 1・2（イシュー #704）: `run_session` が
+    /// `on_message_with_ctx` へ渡す `&WsConnContext` が、呼び出し元
+    /// （本テストの `test_conn_ctx`）が構築したものと同一の `conn_id` を
+    /// 持ち、受信メッセージごとに一貫していること。
+    #[tokio::test]
+    async fn on_message_with_ctx_receives_the_conn_ctx_passed_to_run_session() {
+        use futures_util::future::BoxFuture;
+        use std::sync::Mutex;
+
+        /// 受け取った `conn_id` を蓄積するだけの検証用ハンドラ。
+        struct RecordingHandler {
+            observed: std::sync::Arc<Mutex<Vec<handler::WsConnId>>>,
+        }
+
+        impl handler::WsMessageHandler for RecordingHandler {
+            fn name(&self) -> &'static str {
+                "recording"
+            }
+
+            fn on_message(
+                &self,
+                msg: WsMessage,
+            ) -> BoxFuture<'_, Result<WsOutcome, handler::WsHandlerError>> {
+                // on_message_with_ctx をオーバーライドしているため実行時には
+                // 呼ばれない（トレードオフ、`handler` モジュール doc 参照）。
+                Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+            }
+
+            fn on_message_with_ctx<'a>(
+                &'a self,
+                ctx: &'a WsConnContext,
+                msg: WsMessage,
+            ) -> BoxFuture<'a, Result<WsOutcome, handler::WsHandlerError>> {
+                self.observed.lock().unwrap().push(ctx.conn_id());
+                Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+            }
+        }
+
+        let observed = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let mut config = test_config();
+        config.handler = std::sync::Arc::new(RecordingHandler {
+            observed: observed.clone(),
+        });
+        let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+        let (server_side, client_side) = tokio::io::duplex(4096);
+        let (tx, rx) = handler::channel(4);
+        let conn_ctx = test_conn_ctx(tx);
+        let expected_conn_id = conn_ctx.conn_id();
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+        for i in 0..3 {
+            client
+                .send(Message::Text(format!("msg-{i}").into()))
+                .await
+                .expect("client send should succeed");
+            let reply = tokio::time::timeout(Duration::from_secs(2), client.next())
+                .await
+                .expect("should receive a reply within timeout")
+                .expect("stream should not end early")
+                .expect("frame should not error");
+            assert_eq!(reply, Message::Text(format!("msg-{i}").into()));
+        }
+
+        drop(client);
+        let _ = tokio::time::timeout(Duration::from_secs(2), session_handle).await;
+
+        let observed = observed.lock().unwrap();
+        assert_eq!(
+            observed.len(),
+            3,
+            "on_message_with_ctx should run once per message"
+        );
+        assert!(
+            observed.iter().all(|id| *id == expected_conn_id),
+            "every call should observe the same conn_id passed to run_session: {observed:?}"
+        );
+    }
+
+    /// 受け入れ基準 3（設計 6 節・#706 引き渡し事項の一部先取り確認）:
+    /// ハンドラが `Err` を返した場合、`run_session` は排出・送信を行わず
+    /// 即時に `Err(WsError::Handler(_))` で終了すること（既存 `outcome?`
+    /// の契約、`docs/design/ws-connection-context-and-close.md` 4 節の
+    /// 対応表 「outcome? の Err」行）。
+    #[tokio::test]
+    async fn handler_error_short_circuits_without_sending() {
+        use futures_util::future::BoxFuture;
+
+        struct FailingHandler;
+
+        impl handler::WsMessageHandler for FailingHandler {
+            fn name(&self) -> &'static str {
+                "failing"
+            }
+
+            fn on_message(
+                &self,
+                _msg: WsMessage,
+            ) -> BoxFuture<'_, Result<WsOutcome, handler::WsHandlerError>> {
+                Box::pin(async move { Err(handler::WsHandlerError::new("boom")) })
+            }
+        }
+
+        let mut config = test_config();
+        config.handler = std::sync::Arc::new(FailingHandler);
+        let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+        let (server_side, client_side) = tokio::io::duplex(4096);
+        let (tx, rx) = handler::channel(4);
+        let conn_ctx = test_conn_ctx(tx);
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+        client
+            .send(Message::Text("trigger".into()))
+            .await
+            .expect("client send should succeed");
+
+        let result = tokio::time::timeout(Duration::from_secs(2), session_handle)
+            .await
+            .expect("session should finish within timeout")
+            .expect("session task should not panic");
+        assert!(
+            matches!(result, Err(WsError::Handler(_))),
+            "handler error should short-circuit run_session: {result:?}"
+        );
     }
 }
