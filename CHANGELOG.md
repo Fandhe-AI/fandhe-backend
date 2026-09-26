@@ -5,6 +5,27 @@
 （詳細は [`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7 節）。
 恒久非公開クレート（`axum-ref` / `ws-load-client` / `docs-site`）はこの一覧に含めない。
 
+## [Unreleased]
+
+BREAKING CHANGE はありません（後方互換な API 追加のみ）。0.4.2 として lockstep
+バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 節）。
+
+### Added
+
+- `fandhe-backend-plugin-websocket`: `on_message` 処理中に接続 ID・接続コンテキスト
+  を参照できるようにしました。プロセス内で一意な接続識別子 `WsConnId`、接続単位の
+  コンテキスト `WsConnContext`（`conn_id()` / `sender()` / `param()` / `params()`）、
+  `WsOpenContext::conn_id` を追加し、`WsMessageHandler` に provided メソッド
+  `on_message_with_ctx`（既定実装は既存の `on_message` へ委譲）を追加しました。
+  既存の `on_message` のみを実装したハンドラは無変更のままコンパイル・動作します
+  （後方互換。設計は `docs/design/ws-connection-context-and-close.md`、イシュー
+  [#704](https://github.com/Fandhe-AI/fandhe-backend/issues/704)、親
+  [#702](https://github.com/Fandhe-AI/fandhe-backend/issues/702)）。
+  `on_message_with_ctx` の実行中に `ctx.sender()` から容量
+  （`DEFAULT_OUTBOUND_CAPACITY = 8`）を超えて送信してもデッドロックしないよう、
+  送信キューを実行中に消化する内側ループも同時に実装しました
+  （[#706](https://github.com/Fandhe-AI/fandhe-backend/issues/706) 相当）
+
 ## [0.4.1] - 2026-09-26
 
 公開対象 13 クレートを lockstep バンプ（`docs/design/crates-io-release.md` 7.5 節）。

@@ -455,10 +455,23 @@ drop し、他に clone を保持していない場合に到達可能だった�
 
 ## 6. 送信キュー消化方式の設計指針（#706 の前提）
 
-現状: `race_cancel(cancel, config.handler.on_message_with_ctx(ctx, msg))` は単独
+> **実装済み（#704 の PR #725 レビュー指摘対応で前倒し実装）**: 当初は #704
+> （本ドキュメント）を設計のみ、実装は #706 に分離する計画だった。しかし
+> `on_message_with_ctx` の「正常な使い方（接続自身への push）」が容量超で
+> 停止する点が ai-review（codex）から P1 として指摘され、doc への制約明記
+> だけでは gate を解除できないと判断されたため、本節の手順・保証をそのまま
+> `crates/plugin-websocket/src/session.rs` の
+> `run_handler_with_outbound_drain`（新設の非公開ヘルパー）として #704 の
+> スコープ内で実装した。以下の「現状」節・手順・保証は設計時点の記述を
+> そのまま残すが、コードは既にこの設計を反映済みである（#706 は本節の
+> 実装が完了したことをもってクローズ対象になる。テストは
+> `crates/plugin-websocket/src/session.rs` の
+> `on_message_with_ctx_self_send_beyond_capacity_does_not_deadlock`）。
+
+現状（設計時点）: `race_cancel(cancel, config.handler.on_message_with_ctx(ctx, msg))` は単独
 await であり、この間 `WsSender` の outbound チャネルを消費するものが誰もいない
 （受信ループ先頭の race は次の反復まで戻ってこない）ため、`on_message_with_ctx`
-内で容量（既定 8）超の `send` を呼ぶとデッドロックする。
+内で容量（既定 8）超の `send` を呼ぶとデッドロックしていた。
 
 **PR #724 レビュー指摘対応（P1/P2、まとめて再構成）**: 当初案は「ハンドラ実行中に
 送出された push は構造的に Reply より先にワイヤへ出る」という主張から出発し、
@@ -535,7 +548,7 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
 上記以外の push（排出ステップ開始後にチャネルへ格納された push・排出開始時点で
 送信途中だった push を含む）と `Reply`/`Close` の相対順序は**不定**とする。
 
-### #706 への引き渡し事項
+### #706 への引き渡し事項（#704 の PR #725 で前倒し実装済み）
 
 上記の手順・保証・不定の 3 点に沿って実装し、テストで固定すること:
 
@@ -551,6 +564,14 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
 - 上記以外（保証の対象外）の push については、順序が不定であることの確認に
   留め、特定の順序を新たに固定しない
 
+> **実装状況**: 上記 4 点はすべて `run_handler_with_outbound_drain`
+> （`crates/plugin-websocket/src/session.rs`）として #704 のスコープ内で
+> 実装済み。ただし `Failed(FailureKind::Handler)`（4 節の `CloseReason`
+> 拡張）自体は #705 のスコープであり未実装のため、現時点ではハンドラ
+> エラー時は既存契約どおり即時 `Err(WsError::Handler(_))` で終了する
+> （`on_close` 通知はまだ発生しない）。#706 は本節の実装が完了したことを
+> もってクローズ対象になる（残作業があれば #706 側で追跡する）。
+
 ## 7. バージョン方針
 
 [`versioning-policy.md`](./versioning-policy.md) 2 節「pre-1.0（0.x）期の規則」を
@@ -565,8 +586,8 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
   （非公開フィールドのため非破壊）
 - `WsSender` への新規メソッド（`closed()`/`is_closed()`）追加
 - `handle_upgrade`・`WebSocketConfig` の公開シグネチャは無変更
-- `session.rs`（非公開モジュール）の内部リファクタリング（#706 のデッドロック修正）
-  はそもそも公開 API 面の変更ではない
+- `session.rs`（非公開モジュール）の内部リファクタリング（デッドロック修正、
+  6 節・#706）はそもそも公開 API 面の変更ではない
 
 **直接の先例**: `on_open`/`WsOpenContext`/`with_path_pattern`（#671/#675/#676）は
 同じ「provided メソッド追加・`#[non_exhaustive]` 型への追加」パターンで、
@@ -601,15 +622,18 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
 
 - **#704**: `WsConnId`/`WsConnContext`/`WsOpenContext::conn_id` の実装、`session.rs`
   の呼び出し口変更（`on_message` → `on_message_with_ctx`、ライフタイム注記は 3 節を
-  参照）、ユニットテスト
+  参照）、ユニットテスト。**PR #725 レビュー指摘対応として #706（6 節）の送信キュー
+  消化実装も前倒しでスコープに含めた**（`run_handler_with_outbound_drain`）
 - **#705**: `CloseReason`/`FailureKind`・`run_session_inner`/`run_session` 分割・
   `on_close` 呼び出し（4 節の脱出点対応表が挙げる全経路で exactly-once。panic・
   プロセス kill 由来の 3 つの既知の限界（4 節「不変条件」参照）は対象外）・
   `WsSender::closed()`/`is_closed()`・各終了経路ごとの実接続テスト。
   `crates/core/src/plugin.rs` は変更不要である旨を明記済みなので影響範囲から
   除外してよい
-- **#706**: 送信キュー消化の内側レース実装・順序契約のテスト固定（前提: #704 完了後）
-- **#707**: 2 クライアント同時接続 e2e（前提: #704/#705/#706 完了後）
+- **#706**: 送信キュー消化の内側レース実装・順序契約のテスト固定（6 節、
+  **#704 の PR #725 で前倒し実装済み**。残作業がなければクローズ対象）
+- **#707**: 2 クライアント同時接続 e2e（前提: #704/#705 完了後。#706 は前倒し
+  実装済みのため実質前提済み）
 
 実装着手時に行うこと（各実装イシューへの引き渡し事項）:
 

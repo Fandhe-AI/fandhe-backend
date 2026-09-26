@@ -539,7 +539,17 @@ fandhe-backend/
 │   │                                    # 設計した（`docs/design/
 │   │                                    # ws-connection-context-and-close.md`。設計のみで
 │   │                                    # コード変更なし、実装は #704〜#707 が担う。バージョン
-│   │                                    # 方針は非破壊追加のみのため 0.4.2）
+│   │                                    # 方針は非破壊追加のみのため 0.4.2）。イシュー #704 で
+│   │                                    # `WsConnId` / `WsConnContext` と
+│   │                                    # `on_message_with_ctx`（provided、非破壊）を追加し、
+│   │                                    # `on_message` 処理中に接続 ID・`WsSender`・パス
+│   │                                    # パラメータを参照可能にした。PR #725 レビュー
+│   │                                    # 指摘対応として、#706（設計 6 節）が予定していた
+│   │                                    # 送信キュー消化の内側ループ
+│   │                                    # （`session::run_handler_with_outbound_drain`）も
+│   │                                    # 前倒しで実装し、`on_message_with_ctx` 実行中の
+│   │                                    # 自己送信（容量 8 超）がデッドロックしないように
+│   │                                    # した
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O

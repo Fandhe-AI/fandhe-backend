@@ -34,18 +34,23 @@
 //!    後、残余バイト列とともに [`handle_upgrade`] へ完全委譲される
 //! 3. [`handle_upgrade`] は RFC 6455 4.2.1 の詳細検証（`handshake::validate`）
 //!    を行い、成功時は 101 応答、失敗時は 400/426 応答を送出する
-//! 4. 101 応答成功が確定した接続についてのみ、送信ハンドル
-//!    [`handler::WsSender`]（イシュー #670）を生成し、`config.pattern`
+//! 4. 101 応答成功が確定した接続についてのみ、一意な接続識別子
+//!    [`handler::WsConnId`]（イシュー #704）を発行し、送信ハンドル
+//!    [`handler::WsSender`]（イシュー #670）を生成する。`config.pattern`
 //!    （[`WebSocketConfig::with_path_pattern`]、イシュー #675）由来の
-//!    パスパラメータを抽出した [`handler::WsOpenContext`] とともに
+//!    パスパラメータとともに [`handler::WsOpenContext`] を構築して
 //!    [`handler::WsMessageHandler::on_open`]（イシュー #671、既定 no-op。
-//!    パラメータ経路はイシュー #676）を同期的に一度だけ呼び出す。パターン
-//!    未登録（完全一致パス）の場合はパラメータなしのコンテキストになる。
-//!    以降は `tokio-tungstenite` の
-//!    `WebSocketStream` へフレーミング処理を委譲し、セッション終了まで
-//!    面倒を見る（`session::run_session`）。Text/Binary メッセージは
-//!    [`handler::WsMessageHandler::on_message`]（既定 [`handler::EchoHandler`]、
-//!    Issue #179）へ委譲され、返り値（[`handler::WsOutcome`]）に従って
+//!    パラメータ経路はイシュー #676、`conn_id` はイシュー #704）を
+//!    同期的に一度だけ呼び出す。パターン未登録（完全一致パス）の場合は
+//!    パラメータなしのコンテキストになる。同じ `conn_id`・`WsSender`・
+//!    パラメータを保持する [`handler::WsConnContext`]（イシュー #704）も
+//!    同時に構築し、以降のセッション全体で使い回す。以降は
+//!    `tokio-tungstenite` の `WebSocketStream` へフレーミング処理を委譲し、
+//!    セッション終了まで面倒を見る（`session::run_session`）。Text/Binary
+//!    メッセージは [`handler::WsMessageHandler::on_message_with_ctx`]
+//!    （既定実装は既存の [`handler::WsMessageHandler::on_message`]（既定
+//!    実装 [`handler::EchoHandler`]、Issue #179）へ委譲、イシュー #704）へ
+//!    委譲され、返り値（[`handler::WsOutcome`]）に従って
 //!    返信送出・セッション継続/終了を決める。`WebSocketConfig::idle_timeout`
 //!    （既定 60 秒、fail-safe で有効）が設定されている場合、受信アイドルが
 //!    続く接続は正常な Close ハンドシェイクで切断する（リソース枯渇 DoS
@@ -276,10 +281,28 @@ where
         })
         .unwrap_or_default();
     let (sender, outbound_rx) = handler::channel(handler::DEFAULT_OUTBOUND_CAPACITY);
+
+    // イシュー #704（親 #702）: この接続専用の一意 ID を 1 回だけ発行する。
+    // ハンドシェイク失敗・101 送出前キャンセルではこの行に到達しないため
+    // `conn_id` は発行されない（`on_open`/`on_close` のフェイルクローズ対称性、
+    // `docs/design/ws-connection-context-and-close.md` 4 節を参照）。
+    let conn_id = handler::WsConnId::next();
+    // `on_message_with_ctx` へ渡す `WsConnContext` は `on_open` の呼び出し前に
+    // 構築する（`WsSender` のクローンを保持するため、セッション終了まで
+    // outbound チャネルの送信側が閉じなくなる副作用がある。設計 5 節を参照）。
+    let conn_ctx = handler::WsConnContext::new(conn_id, sender.clone(), params.clone());
     config
         .handler
-        .on_open(handler::WsOpenContext::new(sender, params));
-    session::run_session(stream, leftover, config, cancel, Some(outbound_rx)).await
+        .on_open(handler::WsOpenContext::new(conn_id, sender, params));
+    session::run_session(
+        stream,
+        leftover,
+        config,
+        cancel,
+        Some(outbound_rx),
+        &conn_ctx,
+    )
+    .await
 }
 
 /// `bytes` を `stream` へ書き込みつつ `cancel` と race する。キャンセルが
