@@ -202,14 +202,17 @@ pub trait WsMessageHandler: Send + Sync + 'static {
     /// コアの世代キャンセルシグナル発火時に任意の `await` 点で drop
     /// されうる。
     ///
-    /// # outbound 消化に関する既知の制約
+    /// # outbound 消化（自己送信の安全性）
     ///
     /// 本メソッド実行中に `ctx.sender()` から容量
-    /// （`DEFAULT_OUTBOUND_CAPACITY` = 8）を超えて `send(...).await` すると
-    /// デッドロックする（`crate::session::run_session` の受信ループ本体は
-    /// 本メソッドの `await` 中は動かず、outbound チャネルを消化する者が
-    /// いないため）。送信キュー消化用の内側ループはイシュー #706 で解消
-    /// する（`docs/design/ws-connection-context-and-close.md` 6 節）。
+    /// （`DEFAULT_OUTBOUND_CAPACITY` = 8）を超えて `send(...).await` しても
+    /// デッドロックしない。`crate::session::run_session` は本メソッドの
+    /// `Future` を単独 `await` せず、outbound 到着と race させて都度
+    /// 消化するため（PR #725 レビュー指摘対応、設計は
+    /// `docs/design/ws-connection-context-and-close.md` 6 節。排出開始
+    /// 時点で既に格納済みだった push は本メソッドが返す
+    /// `WsOutcome::Reply`/`Close` より先に送出される保証があり、それ以外の
+    /// 相対順序は不定）。
     ///
     /// # Examples
     ///

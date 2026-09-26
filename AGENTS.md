@@ -516,10 +516,15 @@ Issue #175 対応。`crates/plugin-websocket` のセッション処理
 - **`Debug` にパスパラメータを出さない**: `WsConnContext`/`WsOpenContext` の
   `Debug` は攻撃者制御下の URL セグメント（パスパラメータ）を出力しない契約を
   維持する（`conn_id` はサーバー側発行のため出力してよい）
-- **outbound 消化の既知の制約**: `on_message_with_ctx` 実行中に `ctx.sender()` から
-  容量（`DEFAULT_OUTBOUND_CAPACITY = 8`）を超えて `send(...).await` すると
-  デッドロックする（`run_session` の受信ループ本体がハンドラの `await` 中は
-  動かないため）。#706 で解消するまでの既知の限界として doc に明記する
+- **outbound 消化（自己送信の安全性）**: `on_message_with_ctx` 実行中に
+  `ctx.sender()` から容量（`DEFAULT_OUTBOUND_CAPACITY = 8`）を超えて
+  `send(...).await` してもデッドロックしない（PR #725 レビュー指摘対応で
+  #706 の設計を前倒し実装。`run_session` はハンドラ Future を単独 `await`
+  せず、`session::run_handler_with_outbound_drain` が outbound 到着と
+  race させて都度消化する。排出開始時点で既に格納済みだった push は
+  ハンドラが返す `WsOutcome::Reply`/`Close` より先に送出される保証があり、
+  それ以外の相対順序は不定。設計は
+  `docs/design/ws-connection-context-and-close.md` 6 節）
 - 両メソッド（`on_message`/`on_message_with_ctx`）を provided 化して相互に委譲
   させる構成は無限再帰になるため採らない。`on_message` は必須のまま据え置く
 

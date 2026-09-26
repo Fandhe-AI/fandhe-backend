@@ -52,9 +52,10 @@ RFC 6455 ハンドシェイク検証・101 応答・tokio-tungstenite へのフ�
   入力から独立）でプロセス内一意。値は推測可能なため認可トークン・セッション
   秘密として使ってはならない（識別子であって資格情報ではない）
 - 注意: `on_message_with_ctx` 実行中に `ctx.sender()` から容量
-  （`DEFAULT_OUTBOUND_CAPACITY = 8`）を超えて `send(...).await` するとデッドロック
-  する既知の制約がある（送信キュー消化用の内側ループでの解消は今後の対応予定、
-  `docs/design/ws-connection-context-and-close.md` 6 節）
+  （`DEFAULT_OUTBOUND_CAPACITY = 8`）を超えて `send(...).await` してもデッドロックしない。
+  実行中に到着した push はその都度消化され、排出開始時点で既に格納済みだった
+  push はハンドラが返す `WsOutcome::Reply`/`Close` より先に送出される
+  （`docs/design/ws-connection-context-and-close.md` 6 節）
 
 ### 2.2 plugin-graphql（`graphql`）
 
