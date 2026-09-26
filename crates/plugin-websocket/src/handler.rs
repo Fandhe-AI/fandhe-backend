@@ -782,6 +782,235 @@ impl WsSender {
     pub async fn send(&self, msg: WsMessage) -> Result<(), WsSendError> {
         self.tx.send(msg).await.map_err(|_| WsSendError)
     }
+
+    /// セッションが outbound push を受け付けなくなるまで待つ（イシュー #727。
+    /// `on_close`（#729、予定）を使わない最小の代替として、切断待ちの表現を
+    /// 提供する）。
+    ///
+    /// # 意味・完了タイミング
+    ///
+    /// 完了する時点は [`WsSender::send`] が [`WsSendError`] を返し始める時点と
+    /// 同じ（受信側 `mpsc::Receiver` の drop）である。`crate::session` の
+    /// すべての終了経路（正常終了・ハンドラエラー・`WsOutcome::Close`・
+    /// プロトコルエラー・future の drop）でこの `Receiver` は drop される。
+    /// cancel（世代キャンセル）経路・idle timeout 経路では、Close
+    /// ハンドシェイクのドレインより**前**に drop されるため、`closed()` は
+    /// その時点で完了する（[`WsSender::send`] の doc にある「`close_grace`
+    /// の満了を待たず解放」と同じ時点）。
+    ///
+    /// どの clone から呼んでも、同じ時点で完了する（[`mpsc::Sender::closed`]
+    /// への薄い委譲であり、送信側の数に依存しない）。
+    ///
+    /// tokio の `Sender::closed` と同じく cancel-safe なので、`select!` や
+    /// `timeout` と組み合わせて打ち切ってよい。
+    ///
+    /// # デッドロックに関する注意
+    ///
+    /// `on_message` / `on_message_with_ctx` の実装の中でこの `Future` を
+    /// インラインで `await` してはならない。ハンドラの `Future` が実行中は
+    /// `crate::session::run_handler_with_outbound_drain` がクライアントの
+    /// 受信ストリームを読まないため、受信側 `Receiver` はハンドラが返るまで
+    /// drop されず、自己デッドロックになる（世代キャンセル発火時のみ解除
+    /// される）。`closed()` は `on_open` / `on_message_with_ctx` から
+    /// `tokio::spawn` した別タスクでのみ使うこと。
+    ///
+    /// # 既知の限界
+    ///
+    /// ランタイムがタスクを強制終了した場合の完了通知は保証しない
+    /// （タスク自体が消え、待機している `.await` も評価されなくなるため）。
+    ///
+    /// ```
+    /// use std::sync::{Arc, Mutex};
+    /// use std::time::Duration;
+    /// use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+    /// use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade};
+    /// use fandhe_backend_plugin_websocket::handler::{
+    ///     WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome, WsSender,
+    /// };
+    /// use futures_util::future::BoxFuture;
+    /// use futures_util::{SinkExt, StreamExt};
+    /// use tokio::io::AsyncReadExt;
+    /// use tokio_tungstenite::WebSocketStream;
+    /// use tokio_tungstenite::tungstenite::protocol::Role;
+    ///
+    /// struct CaptureHandler {
+    ///     captured: Arc<Mutex<Option<WsSender>>>,
+    /// }
+    ///
+    /// impl WsMessageHandler for CaptureHandler {
+    ///     fn name(&self) -> &'static str {
+    ///         "capture"
+    ///     }
+    ///
+    ///     fn on_open(&self, ctx: WsOpenContext) {
+    ///         *self.captured.lock().unwrap() = Some(ctx.sender().clone());
+    ///     }
+    ///
+    ///     fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+    ///         Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+    ///     }
+    /// }
+    ///
+    /// # async fn read_http_response_line<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> String {
+    /// #     let mut buf = Vec::new();
+    /// #     let mut byte = [0u8; 1];
+    /// #     loop {
+    /// #         let n = stream.read(&mut byte).await.unwrap();
+    /// #         assert_ne!(n, 0);
+    /// #         buf.push(byte[0]);
+    /// #         if buf.ends_with(b"\r\n\r\n") { break; }
+    /// #     }
+    /// #     String::from_utf8(buf).unwrap()
+    /// # }
+    /// #
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// let buf = b"GET /ws HTTP/1.1\r\n\
+    ///     Upgrade: websocket\r\n\
+    ///     Connection: Upgrade\r\n\
+    ///     Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+    ///     Sec-WebSocket-Version: 13\r\n\
+    ///     \r\n";
+    /// let head = match parse_request_head(buf).unwrap() {
+    ///     ParseOutcome::Complete { head, .. } => head,
+    ///     ParseOutcome::Incomplete => unreachable!(),
+    /// };
+    /// let captured = Arc::new(Mutex::new(None));
+    /// let config = WebSocketConfig::default().with_handler(CaptureHandler { captured: captured.clone() });
+    ///
+    /// let (server_side, mut client_side) = tokio::io::duplex(4096);
+    /// let server_task = tokio::spawn(async move {
+    ///     handle_upgrade(server_side, &head, Vec::new(), &config, std::future::pending::<()>()).await
+    /// });
+    ///
+    /// let response = read_http_response_line(&mut client_side).await;
+    /// assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    ///
+    /// let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+    ///
+    /// // on_open の実行を保証するため 1 往復エコーする（101 応答を読めた
+    /// // だけでは on_open 実行を保証しない）。
+    /// client.send(tokio_tungstenite::tungstenite::Message::Text("hi".into())).await.unwrap();
+    /// let _ = client.next().await;
+    ///
+    /// let sender = captured.lock().unwrap().clone().unwrap();
+    /// assert!(!sender.is_closed());
+    ///
+    /// client.close(None).await.unwrap();
+    /// while client.next().await.is_some() {}
+    /// let _ = tokio::time::timeout(Duration::from_secs(2), server_task).await;
+    ///
+    /// tokio::time::timeout(Duration::from_secs(2), sender.closed())
+    ///     .await
+    ///     .expect("closed() は有界時間内に完了する");
+    /// assert!(sender.is_closed());
+    /// # }
+    /// ```
+    pub async fn closed(&self) {
+        self.tx.closed().await
+    }
+
+    /// セッションが outbound push を受け付けなくなっているかを判定する
+    /// （イシュー #727）。
+    ///
+    /// [`WsSender::closed`] と同じ時点（受信側 `Receiver` の drop）で
+    /// `false` から `true` へ変わる。
+    ///
+    /// # 参考値であること（TOCTOU）
+    ///
+    /// この判定は呼び出し直後の [`WsSender::send`] の成否を保証しない
+    /// （`false` を見た直後にセッションが終了しうる）。フェイルクローズな
+    /// 正の判定基準は引き続き `send` が返す [`Result`] であり、`is_closed`
+    /// は事前フィルタとしてのみ使う（`.claude/rules/security.md`）。
+    ///
+    /// ```
+    /// use std::sync::{Arc, Mutex};
+    /// use std::time::Duration;
+    /// use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+    /// use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade};
+    /// use fandhe_backend_plugin_websocket::handler::{
+    ///     WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome, WsSender,
+    /// };
+    /// use futures_util::future::BoxFuture;
+    /// use futures_util::{SinkExt, StreamExt};
+    /// use tokio::io::AsyncReadExt;
+    /// use tokio_tungstenite::WebSocketStream;
+    /// use tokio_tungstenite::tungstenite::protocol::Role;
+    ///
+    /// struct CaptureHandler {
+    ///     captured: Arc<Mutex<Option<WsSender>>>,
+    /// }
+    ///
+    /// impl WsMessageHandler for CaptureHandler {
+    ///     fn name(&self) -> &'static str {
+    ///         "capture-is-closed"
+    ///     }
+    ///
+    ///     fn on_open(&self, ctx: WsOpenContext) {
+    ///         *self.captured.lock().unwrap() = Some(ctx.sender().clone());
+    ///     }
+    ///
+    ///     fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+    ///         Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+    ///     }
+    /// }
+    ///
+    /// # async fn read_http_response_line<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> String {
+    /// #     let mut buf = Vec::new();
+    /// #     let mut byte = [0u8; 1];
+    /// #     loop {
+    /// #         let n = stream.read(&mut byte).await.unwrap();
+    /// #         assert_ne!(n, 0);
+    /// #         buf.push(byte[0]);
+    /// #         if buf.ends_with(b"\r\n\r\n") { break; }
+    /// #     }
+    /// #     String::from_utf8(buf).unwrap()
+    /// # }
+    /// #
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// let buf = b"GET /ws HTTP/1.1\r\n\
+    ///     Upgrade: websocket\r\n\
+    ///     Connection: Upgrade\r\n\
+    ///     Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+    ///     Sec-WebSocket-Version: 13\r\n\
+    ///     \r\n";
+    /// let head = match parse_request_head(buf).unwrap() {
+    ///     ParseOutcome::Complete { head, .. } => head,
+    ///     ParseOutcome::Incomplete => unreachable!(),
+    /// };
+    /// let captured = Arc::new(Mutex::new(None));
+    /// let config = WebSocketConfig::default().with_handler(CaptureHandler { captured: captured.clone() });
+    ///
+    /// let (server_side, mut client_side) = tokio::io::duplex(4096);
+    /// let server_task = tokio::spawn(async move {
+    ///     handle_upgrade(server_side, &head, Vec::new(), &config, std::future::pending::<()>()).await
+    /// });
+    ///
+    /// let response = read_http_response_line(&mut client_side).await;
+    /// assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    ///
+    /// let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+    /// client.send(tokio_tungstenite::tungstenite::Message::Text("hi".into())).await.unwrap();
+    /// let _ = client.next().await;
+    ///
+    /// let sender = captured.lock().unwrap().clone().unwrap();
+    /// assert!(!sender.is_closed());
+    ///
+    /// client.close(None).await.unwrap();
+    /// while client.next().await.is_some() {}
+    /// tokio::time::timeout(Duration::from_secs(2), server_task)
+    ///     .await
+    ///     .expect("session should end within timeout")
+    ///     .unwrap();
+    ///
+    /// assert!(sender.is_closed());
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.tx.is_closed()
+    }
 }
 
 /// [`WsSender::send`] が返すエラー（セッション終了後の送信試行）。
@@ -1022,5 +1251,81 @@ mod tests {
             via_ctx,
             WsOutcome::Reply(vec![WsMessage::Text("HI".to_string())])
         );
+    }
+
+    /// 受け入れ基準 2（イシュー #727）: 受信側 `Receiver` の生存中は
+    /// `is_closed() == false` であり、`closed()` はまだ完了しない
+    /// （短い `timeout` 内で `Err` を返す）。
+    #[tokio::test]
+    async fn sender_is_not_closed_while_receiver_alive() {
+        let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+
+        assert!(!sender.is_closed());
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(50), sender.closed()).await;
+        assert!(
+            result.is_err(),
+            "closed() should not complete while the receiver is alive"
+        );
+    }
+
+    /// 受け入れ基準 1・2（イシュー #727）: 受信側を drop すると
+    /// `is_closed() == true` になり、`closed()` が有界時間内に完了する。
+    #[tokio::test]
+    async fn sender_closed_completes_after_receiver_drop() {
+        let (sender, rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        drop(rx);
+
+        assert!(sender.is_closed());
+        tokio::time::timeout(std::time::Duration::from_secs(2), sender.closed())
+            .await
+            .expect("closed() should complete once the receiver is dropped");
+    }
+
+    /// 受け入れ基準 3（イシュー #727）: clone した `WsSender` でも、drop 前は
+    /// `false`、drop 後は `true` になり、`closed()` が両方で完了する。
+    #[tokio::test]
+    async fn cloned_sender_observes_same_close() {
+        let (sender, rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        let cloned = sender.clone();
+
+        assert!(!sender.is_closed());
+        assert!(!cloned.is_closed());
+
+        drop(rx);
+
+        assert!(sender.is_closed());
+        assert!(cloned.is_closed());
+        tokio::time::timeout(std::time::Duration::from_secs(2), sender.closed())
+            .await
+            .expect("original sender's closed() should complete");
+        tokio::time::timeout(std::time::Duration::from_secs(2), cloned.closed())
+            .await
+            .expect("cloned sender's closed() should complete");
+    }
+
+    /// 受け入れ基準 1（イシュー #727）: 先に `closed()` を待つタスクを
+    /// spawn しておき、後から受信側を drop すると、その待機タスクが
+    /// 有界時間内に起こされること（「後から終了」の順序を確認する）。
+    #[tokio::test]
+    async fn closed_wakes_pending_waiter_on_receiver_drop() {
+        let (sender, rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        let waiter_sender = sender.clone();
+        let waiter = tokio::spawn(async move {
+            waiter_sender.closed().await;
+        });
+
+        // waiter が `closed()` の poll に到達する猶予を与える（`yield_now`
+        // で十分。実行順序を厳密に保証する必要はなく、drop 前に waiter が
+        // pending であることを確認できれば良い）。
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        drop(rx);
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
+            .await
+            .expect("waiter should be woken within timeout")
+            .unwrap();
     }
 }

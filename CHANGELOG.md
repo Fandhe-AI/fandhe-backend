@@ -25,6 +25,15 @@ BREAKING CHANGE はありません（後方互換な API 追加のみ）。0.4.2
   （`DEFAULT_OUTBOUND_CAPACITY = 8`）を超えて送信してもデッドロックしないよう、
   送信キューを実行中に消化する内側ループも同時に実装しました
   （[#706](https://github.com/Fandhe-AI/fandhe-backend/issues/706) 相当）
+- `fandhe-backend-plugin-websocket`: `WsSender::closed()`（切断まで待つ非同期
+  メソッド）と `WsSender::is_closed()`（同期判定）を追加しました。`on_close`
+  を使わない最小限の代替として、セッションの切断を待つ・判定する手段を
+  提供します。clone した `WsSender` でも同じ時点で切断を観測します。
+  ハンドラ本体（`on_message`/`on_message_with_ctx`）の中で `closed()` を
+  インライン `await` すると自己デッドロックするため、`on_open` 等から
+  `tokio::spawn` した別タスクでのみ使う契約です（イシュー
+  [#727](https://github.com/Fandhe-AI/fandhe-backend/issues/727)、親
+  [#705](https://github.com/Fandhe-AI/fandhe-backend/issues/705)）
 
 ## [0.4.1] - 2026-09-26
 

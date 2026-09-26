@@ -216,6 +216,10 @@ provided 化し互いの既定実装で委譲し合う構成にすると、い�
 `is_closed()`（同期判定）へ薄く委譲する（tokio 1.53.1 で利用可能なことを確認済み、
 新規依存なし）。
 
+イシュー #727（親 #705）で実装済み（`crates/plugin-websocket/src/handler.rs`。
+`session.rs`/`lib.rs` は無変更、`Receiver` drop の既存全終了経路の意味論をそのまま
+利用する。統合テストは `crates/plugin-websocket/tests/sender_closed_e2e.rs`）。
+
 ## 4. `CloseReason`
 
 ```rust
