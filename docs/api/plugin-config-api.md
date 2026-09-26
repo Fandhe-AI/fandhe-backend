@@ -37,7 +37,7 @@ RFC 6455 ハンドシェイク検証・101 応答・tokio-tungstenite へのフ�
 | builder メソッド | `with_path` / `with_max_message_size` / `with_max_frame_size` / `with_idle_timeout` / `without_idle_timeout` / `with_handler` / `with_close_grace` |
 | 既定値 | `path = "/ws"`、`max_message_size = 1 MiB`、`max_frame_size = 256 KiB`、`idle_timeout = Some(60 秒)`、`close_grace = 10 秒` |
 | メッセージハンドラ | `with_handler(impl WsMessageHandler)` で差し替え。既定は `EchoHandler`（後方互換） |
-| 接続コンテキスト | `WsMessageHandler::on_message_with_ctx`（provided、既定は既存の `on_message` へ委譲）で `WsConnContext`（`conn_id()` / `sender()` / `param()` / `params()`）を参照可能。`WsOpenContext::conn_id()` で `on_open` 時点からも同じ接続 ID を取得できる（イシュー #704） |
+| 接続コンテキスト | `WsMessageHandler::on_message_with_ctx`（provided、既定は既存の `on_message` へ委譲）で `WsConnContext`（`conn_id()` / `sender()` / `param()` / `params()`）を参照可能。`WsOpenContext::conn_id()` で `on_open` 時点からも同じ接続 ID を取得できる（`docs/design/ws-connection-context-and-close.md` 参照） |
 
 - 注意: サイズ上限はメモリ枯渇 DoS 対策。アイドルタイムアウトは既定で有効（fail-safe）であり、無効化は `without_idle_timeout` の明示操作でのみ可能
 - 注意: `close_grace`（`with_close_grace`）はコアの世代キャンセル（最終 graceful
@@ -53,7 +53,7 @@ RFC 6455 ハンドシェイク検証・101 応答・tokio-tungstenite へのフ�
   秘密として使ってはならない（識別子であって資格情報ではない）
 - 注意: `on_message_with_ctx` 実行中に `ctx.sender()` から容量
   （`DEFAULT_OUTBOUND_CAPACITY = 8`）を超えて `send(...).await` するとデッドロック
-  する既知の制約がある（送信キュー消化用の内側ループはイシュー #706 で解消予定、
+  する既知の制約がある（送信キュー消化用の内側ループでの解消は今後の対応予定、
   `docs/design/ws-connection-context-and-close.md` 6 節）
 
 ### 2.2 plugin-graphql（`graphql`）
