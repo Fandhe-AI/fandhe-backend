@@ -457,10 +457,37 @@ Future 自身が `WsSender::send(...).await` を完了させてから（await �
 結果だけから復元することはできない（構造的に保証されない）。
 
 **確定した設計（排出ステップを追加）**: ハンドラ Future が `Poll::Ready(outcome)`
-を返した時点で、`apply_outcome` を呼ぶ**前**に、outbound の `Receiver` を
-`try_recv()`（非 `await`、同期）で排出し、そこで取得できた push をすべて
-`ws.send()` で（到着順に、`apply_outcome` の送出と同じ `&mut WebSocketStream`
-へ直列に）送出してから、`WsOutcome::Reply`/`Close` を送出する。
+を返した時点で、まず `outcome`（`Result<WsOutcome, WsHandlerError>`）の
+`Ok`/`Err` を判定する。排出ステップを行うのは `outcome` が `Ok` の場合のみで、
+`Err` の場合は行わない。
+
+**PR #724 再レビュー指摘対応（P1・2 件目）**: 当初案は「ハンドラ完了を検知したら
+（`outcome` の内容に関わらず）排出してから `apply_outcome` を呼ぶ」としていたが
+誤り。`outcome` が `Err(WsHandlerError)` の場合、現行 `session.rs`（252 行の
+`message?` と同様の早期 `?` パターン、266 行・285 行の `outcome?`）は排出も
+`apply_outcome` 呼び出しも行わず即座に `Err(WsError::Handler(_))` を返す。この
+順序を維持しないと、(a) ハンドラが失敗した接続へ push を送ってしまう（失敗した
+ハンドラが確定した意味的な状態と矛盾する応答をクライアントに見せる恐れがある）、
+(b) 排出中の `ws.send()` が失敗した場合、その `Failed(FailureKind::Io/Protocol)`
+が本来の `Failed(FailureKind::Handler)` を上書きしてしまい、`on_close` の
+呼び出しコード（`run_session` 外側ラッパー）が確定させる `CloseReason` が
+ハンドラ失敗という一次要因を隠す、という 2 つの問題が生じる。したがって
+`outcome` の判定を排出より**先**に行う順序を設計として確定する:
+
+1. `outcome` が `Err(err)` の場合: 排出を行わず、直ちに `Failed(FailureKind::
+   Handler)` を `CloseReason` として確定し、`Err(WsError::Handler(err))` を
+   返す（現行 `outcome?` と同じ即時終了、4 節の対応表の該当行と整合）。
+2. `outcome` が `Ok(outcome)` の場合: 排出ステップへ進む（`outcome` が
+   `WsOutcome::Reply`/`Close` のいずれであっても、以下の排出手順自体は共通）。
+
+| `outcome` | 排出を行うか | 送出順序 |
+|---|---|---|
+| `Err(WsHandlerError)` | 行わない | 何も送出せず `Failed(FailureKind::Handler)` を確定して即座に抜ける |
+| `Ok(WsOutcome::Reply(messages))`（`messages` が空でも同様） | 行う | 排出した push（到着順）→ `messages`（到着順） |
+| `Ok(WsOutcome::Close)` | 行う | 排出した push（到着順）→ Close フレーム |
+
+排出ステップの内容（`try_recv()` による同期排出・`ws.send()` での直列送出）は
+`Ok` の 2 ケースで共通、以下に続ける。
 
 排出は有界にする。上限は「排出を開始する時点の `Receiver` の長さ
 （`tokio::sync::mpsc::Receiver::len()` のスナップショット）」とし、排出ループは
@@ -497,6 +524,16 @@ Reply/Close の送出へ進む。他タスクが排出中も継続して push �
 Error::Io(_)` なら `Failed(FailureKind::Io)`、それ以外なら `Failed(FailureKind::
 Protocol)` へ振り分ける）。
 
+このエラーは `run_session_inner` にとって一次的な脱出（そのまま `CloseReason`
+として確定し `Err(WsError)` を返す）であり、`close_and_drain`（4 節「不変条件」
+節を参照）が既に確定した `IdleTimeout`/`Cancelled` トリガを上書きしないという
+契約とは無関係である。両者は別の場面で発生する別のエラー処理: `close_and_drain`
+の上書き禁止契約は「`IdleTimeout`/`Cancelled` で切断を決めた**後**の Close
+ハンドシェイク送出・ドレイン中に生じる二次的なエラー」を対象とし、本排出
+ステップのエラーは「まだ `CloseReason` が確定していない受信ループの途中」で
+生じる一次的なエラーである。したがって排出ステップの送出失敗がそのまま
+`CloseReason` になる（上書きの概念自体が発生しない）。
+
 排出ステップ中に cancel が発火した場合も既存の優先順位（cancel 最優先）を
 維持する: 排出ループの各 `ws.send()` は他の送出箇所と同様に `cancel` と race
 させ（`race_cancel`）、発火時は当該送出を打ち切って `handle_cancellation` へ
@@ -507,10 +544,13 @@ outbound を明示的に drop し満杯チャネルでの送出待ちを即座�
 
 **#706 への引き渡し事項**: 本節の排出ステップ（`try_recv()` による有界排出・
 上限の具体的な算出方法・4 節対応表と同じ `Io`/`Protocol` 振り分け・排出中
-cancel の扱い）の実装、および上記「保証する順序契約」をテストで固定すること
-（ハンドラ内で `send().await` 完了後に `Reply` を返すケースを実接続で検証し、
-push が Reply より先にワイヤへ出ることを確認する）を #706 の受け入れ基準に
-追加する。
+cancel の扱い・`outcome` が `Err(WsHandlerError)` の場合は排出を行わず即座に
+`Failed(FailureKind::Handler)` を確定する順序）の実装、および上記「保証する
+順序契約」をテストで固定すること（(1) ハンドラ内で `send().await` 完了後に
+`Ok(Reply)` を返すケースを実接続で検証し、push が Reply より先にワイヤへ出る
+ことを確認する、(2) ハンドラが `Err` を返すケースで、事前に `send().await`
+済みの push があっても排出されずに `Failed(FailureKind::Handler)` で終了する
+ことを確認する）を #706 の受け入れ基準に追加する。
 
 ## 7. バージョン方針
 
