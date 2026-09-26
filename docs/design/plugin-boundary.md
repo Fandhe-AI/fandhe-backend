@@ -360,6 +360,11 @@ Upgrade 型パターン確立後もアプリケーションロジックを差し
   `Handler(...)` variant として合流させ、コア境界を越えて panic させない
   契約を維持する
 
+本節の設計判断（Issue #179）を継続し、イシュー #703（親 #702）で接続単位ハンドラ
+（`on_message_with_ctx`）・切断通知（`on_close(ctx, CloseReason)`）・送信キュー
+消化中のデッドロック解消の API 設計を追補した。詳細は
+[`ws-connection-context-and-close.md`](./ws-connection-context-and-close.md) を参照。
+
 ## 5.6 Gate 型パターン（依存逆転型、TASK-9.1 / #61 で確立、TASK-9.2 / #62 で
 RS256 + JWKS へ差し替え）
 
