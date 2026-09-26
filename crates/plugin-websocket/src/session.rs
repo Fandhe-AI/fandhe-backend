@@ -29,6 +29,11 @@
 //! Going Away）へ分岐する（イシュー #499。[`handle_cancellation`] の
 //! doc・`docs/design/ws-cancellation-propagation.md` 10 節を参照）。
 //!
+//! [`run_session`] は終了時、[`crate::handler::WsMessageHandler::on_close`]
+//! （イシュー #729）を [`crate::handler::CloseReason`] 付きでちょうど 1 回
+//! 呼ぶ（[`run_session`] の doc を参照。呼び出し箇所が本モジュール内 1 箇所
+//! のみのため個々の脱出点に呼び出しを散らさずに済む）。
+//!
 //! [`run_session`] は [`crate::handler::WsSender`]（イシュー #670、親
 //! #669）が bounded mpsc 経由で送るサーバー起点メッセージも受信ループへ
 //! 合流させる。受信ループは cancel（最優先）→ (クライアント受信 or
@@ -96,12 +101,49 @@ use futures_util::{SinkExt, StreamExt};
 use crate::config::WebSocketConfig;
 use crate::error::WsError;
 use crate::handler::{
-    DEFAULT_OUTBOUND_CAPACITY, WsConnContext, WsHandlerError, WsMessage, WsOutcome,
+    CloseReason, DEFAULT_OUTBOUND_CAPACITY, FailureKind, WsConnContext, WsHandlerError, WsMessage,
+    WsOutcome,
 };
 use crate::race_cancel;
 
 /// 101 応答送出済みのストリームを受け取り、WebSocket セッション終了まで
-/// 処理する。
+/// 処理する（既存の公開シグネチャを保つ薄いラッパー、イシュー #726）。
+///
+/// 本体は [`run_session_inner`] に移した。本関数はその戻り値
+/// （`(CloseReason, Result<(), WsError>)`）を分解し、[`crate::handler::
+/// WsMessageHandler::on_close`] を `CloseReason` 付きでちょうど 1 回呼んだ
+/// あと、従来どおり `Result<(), WsError>` のみを返す（呼び出し元
+/// `crate::handle_upgrade` および既存の `#[cfg(test)]` テストは無変更で
+/// 動作する。イシュー #729）。
+///
+/// 呼び出し箇所が本関数内の 1 箇所だけであり、`run_session_inner` も
+/// ちょうど 1 つの `(CloseReason, _)` を返す構造上、`on_close` は個々の
+/// `return`/`break` に散らさずともここで自動的にちょうど 1 回呼ばれる
+/// （`docs/design/ws-connection-context-and-close.md` 4 節の不変条件・
+/// 9 節を参照）。呼び出し時点では `outbound` の受信側は
+/// `run_session_inner` へ move 済みで既に drop されているため、
+/// `WsMessageHandler::on_close` の doc が述べる「`ctx.sender().send(..)`
+/// は常に失敗する」契約はこの drop に由来する。
+pub(crate) async fn run_session<S, C>(
+    stream: S,
+    leftover: Vec<u8>,
+    config: &WebSocketConfig,
+    cancel: Pin<&mut C>,
+    outbound: Option<mpsc::Receiver<WsMessage>>,
+    conn_ctx: &WsConnContext,
+) -> Result<(), WsError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    C: Future<Output = ()>,
+{
+    let (reason, result) =
+        run_session_inner(stream, leftover, config, cancel, outbound, conn_ctx).await;
+    config.handler.on_close(conn_ctx, reason);
+    result
+}
+
+/// [`run_session`] の本体（イシュー #726）。セッション終了まで処理し、
+/// 終了理由（[`CloseReason`]）と従来の `Result<(), WsError>` を両方返す。
 ///
 /// `leftover` は 101 応答送出前にクライアントから先行到着していた可能性の
 /// ある残余バイト列（コア側 `RecvBuffer::unread` 由来）。
@@ -127,8 +169,9 @@ use crate::race_cancel;
 /// 受信するたびにタイマーは実質リセットされる。`d` 以内に何も届かなければ
 /// アイドルと判定し、サーバ側から Close フレーム（1000 Normal Closure）を
 /// 送出したうえで、`config.close_grace`（既定 10 秒）を上限にクライアントの
-/// Close 応答（または EOF）をドレインしてから `Ok(())` で終了する（ポリシー駆動の正常終了。
-/// プロトコル違反ではないため `WsError` の新規 variant は追加しない）。
+/// Close 応答（または EOF）をドレインしてから `(CloseReason::IdleTimeout,
+/// Ok(()))` で終了する（ポリシー駆動の正常終了。プロトコル違反ではないため
+/// `WsError` の新規 variant は追加しない）。
 /// `idle_timeout` が `None`（`without_idle_timeout` による明示的無効化）の
 /// 場合は従来どおり無期限に受信を待つ。
 ///
@@ -136,7 +179,8 @@ use crate::race_cancel;
 ///
 /// `max_message_size` / `max_frame_size` は tungstenite 側で強制されるため、
 /// 上限超過メッセージはハンドラへ届く前にプロトコルエラーとして拒否される
-/// （`ws.next()` が `Err` を返す）。ハンドラ呼び出し前のサイズ検証という
+/// （`ws.next()` が `Err` を返す。`CloseReason::MessageTooLarge` へ分類、
+/// [`SessionFailure::recv`] 参照）。ハンドラ呼び出し前のサイズ検証という
 /// 既存の安全性方針を後退させない。
 ///
 /// `cancel` は `crate::handle_upgrade` が pin 済みで渡すキャンセル `Future`
@@ -164,14 +208,30 @@ use crate::race_cancel;
 /// [`handle_idle_timeout`] を呼ぶ**前**に `outbound` を drop し、満杯
 /// チャネルでブロック中の [`crate::handler::WsSender::send`] 呼び出しを
 /// `close_grace` の満了を待たず即座に解放する。
-pub(crate) async fn run_session<S, C>(
+///
+/// # 終了理由の割り当て（イシュー #726、設計 4 節の脱出点対応表）
+///
+/// - クライアントの Close フレーム受信 → [`CloseReason::ClientClose`]
+/// - 受信 EOF（`ws.next()` が `None`）、または Close ハンドシェイクなしの
+///   TCP 切断（`ws.next()` が `Err(Protocol(ResetWithoutClosingHandshake))`
+///   を返す、tokio-tungstenite 0.30 での主経路。[`SessionFailure::recv`]
+///   が両方を [`CloseReason::Eof`] へ分類する） → [`CloseReason::Eof`]
+///   （前者は `Result` 側が `Ok(())`、後者は `Err(WsError::Protocol(_))`）
+/// - `config.idle_timeout` 発火 → [`CloseReason::IdleTimeout`]
+/// - コアの世代キャンセル発火 → [`CloseReason::Cancelled`]
+/// - ハンドラが `WsOutcome::Close` → [`CloseReason::HandlerClose`]
+/// - 受信サイズ上限超過 → [`CloseReason::MessageTooLarge`]
+/// - その他の受信/送信/ハンドラ失敗 → [`CloseReason::Failed`]（種別は
+///   [`SessionFailure::recv`]/[`SessionFailure::send`]/[`SessionFailure::handler`]
+///   が決定する）
+async fn run_session_inner<S, C>(
     stream: S,
     leftover: Vec<u8>,
     config: &WebSocketConfig,
     mut cancel: Pin<&mut C>,
     mut outbound: Option<mpsc::Receiver<WsMessage>>,
     conn_ctx: &WsConnContext,
-) -> Result<(), WsError>
+) -> (CloseReason, Result<(), WsError>)
 where
     S: AsyncRead + AsyncWrite + Unpin,
     C: Future<Output = ()>,
@@ -194,7 +254,12 @@ where
     // しうるため（モジュール doc を参照）。
     let mut prefer_outbound = false;
 
-    loop {
+    // 脱出点対応表（イシュー #726、上記 doc 参照）: ループは必ず
+    // `CloseReason` を伴って抜ける（`break <reason>` または関数からの
+    // `return (<reason>, <result>)`）。戻り値型がタプルになったことで、
+    // 値なしの `break`・素の `?` はコンパイルエラーとなり、脱出点の
+    // 網羅が型で保証される。
+    let reason = loop {
         // クライアント受信（+ アイドル期限）を 1 つの Future にまとめる。
         // 新規 `ws.next()` / `sleep_until()` を毎ループ作り直す既存パターン
         // （drop による打ち切りは `ws` 自体の状態に影響しない）を踏襲する。
@@ -224,7 +289,10 @@ where
             {
                 None => {
                     drop(outbound.take());
-                    return handle_cancellation(ws, config.close_grace).await;
+                    return (
+                        CloseReason::Cancelled,
+                        handle_cancellation(ws, config.close_grace).await,
+                    );
                 }
                 Some(Either::Left(inbound_event)) => inbound_event,
                 Some(Either::Right(Some(msg))) => InboundEvent::Outbound(msg),
@@ -247,7 +315,12 @@ where
             }
         } else {
             match race_cancel(cancel.as_mut(), inbound).await {
-                None => return handle_cancellation(ws, config.close_grace).await,
+                None => {
+                    return (
+                        CloseReason::Cancelled,
+                        handle_cancellation(ws, config.close_grace).await,
+                    );
+                }
                 Some(inbound_event) => inbound_event,
             }
         };
@@ -255,22 +328,31 @@ where
         match event {
             InboundEvent::Idle => {
                 drop(outbound.take());
-                return handle_idle_timeout(ws, config.close_grace).await;
+                return (
+                    CloseReason::IdleTimeout,
+                    handle_idle_timeout(ws, config.close_grace).await,
+                );
             }
             InboundEvent::Outbound(msg) => {
                 let frame = to_tungstenite_message(msg);
                 match race_cancel(cancel.as_mut(), ws.send(frame)).await {
                     None => {
                         drop(outbound.take());
-                        return handle_cancellation(ws, config.close_grace).await;
+                        return (
+                            CloseReason::Cancelled,
+                            handle_cancellation(ws, config.close_grace).await,
+                        );
                     }
                     Some(Ok(())) => {}
-                    Some(Err(err)) => return Err(err.into()),
+                    Some(Err(err)) => return SessionFailure::send(err).into_parts(),
                 }
             }
-            InboundEvent::Message(None) => break,
+            InboundEvent::Message(None) => break CloseReason::Eof,
             InboundEvent::Message(Some(message)) => {
-                let message = message?;
+                let message = match message {
+                    Ok(message) => message,
+                    Err(err) => return SessionFailure::recv(err).into_parts(),
+                };
                 match message {
                     Message::Text(text) => {
                         let handler_fut = config.handler.on_message_with_ctx(
@@ -283,14 +365,18 @@ where
                             &mut outbound,
                             handler_fut,
                         )
-                        .await?
+                        .await
                         {
-                            SessionFlow::Continue => {}
-                            SessionFlow::Closed => break,
-                            SessionFlow::Cancelled => {
+                            Ok(SessionFlow::Continue) => {}
+                            Ok(SessionFlow::Closed) => break CloseReason::HandlerClose,
+                            Ok(SessionFlow::Cancelled) => {
                                 drop(outbound.take());
-                                return handle_cancellation(ws, config.close_grace).await;
+                                return (
+                                    CloseReason::Cancelled,
+                                    handle_cancellation(ws, config.close_grace).await,
+                                );
                             }
+                            Err(failure) => return failure.into_parts(),
                         }
                     }
                     Message::Binary(bin) => {
@@ -303,18 +389,22 @@ where
                             &mut outbound,
                             handler_fut,
                         )
-                        .await?
+                        .await
                         {
-                            SessionFlow::Continue => {}
-                            SessionFlow::Closed => break,
-                            SessionFlow::Cancelled => {
+                            Ok(SessionFlow::Continue) => {}
+                            Ok(SessionFlow::Closed) => break CloseReason::HandlerClose,
+                            Ok(SessionFlow::Cancelled) => {
                                 drop(outbound.take());
-                                return handle_cancellation(ws, config.close_grace).await;
+                                return (
+                                    CloseReason::Cancelled,
+                                    handle_cancellation(ws, config.close_grace).await,
+                                );
                             }
+                            Err(failure) => return failure.into_parts(),
                         }
                     }
                     Message::Close(_) => {
-                        break;
+                        break CloseReason::ClientClose;
                     }
                     // Ping/Pong は tungstenite が内部で自動応答するため、Stream
                     // 経由でここへ届くのは診断用の可視化のみ。ハンドラには
@@ -334,9 +424,9 @@ where
                 idle_deadline = config.idle_timeout.map(|d| Instant::now() + d);
             }
         }
-    }
+    };
 
-    Ok(())
+    (reason, Ok(()))
 }
 
 /// クライアント受信待ちの 1 イベント（[`run_session`] のループが処理する
@@ -433,8 +523,94 @@ fn to_tungstenite_message(msg: WsMessage) -> Message {
     }
 }
 
-/// [`apply_outcome`] の戻り値。セッションループ（[`run_session`]）が次に
-/// 取るべき動作を表す（イシュー #499 で `Result<bool, WsError>` から
+/// [`apply_outcome`] / [`run_handler_with_outbound_drain`] の内部失敗表現
+/// （イシュー #726、設計 4 節「内部失敗表」）。[`run_session_inner`] が
+/// 返すべき [`CloseReason`] と、呼び出し元へ伝播する `WsError` を 1 個の
+/// 値としてまとめて運ぶ非公開型（公開 API には出さない）。
+///
+/// 受信側・送信側で分類器を分ける（[`Self::recv`] / [`Self::send`]）。
+/// tungstenite の送信は受信と異なるエラー分布を返しうるため、単一の
+/// 分類器を共用すると設計 4 節の対応表からずれる。方向を取り違えないよう
+/// `From<tungstenite::Error> for SessionFailure` は意図的に実装しない
+/// （`?` による暗黙変換で誤った分類器を通す経路を作らないため。呼び出し元
+/// は必ず `SessionFailure::recv(err)` / `SessionFailure::send(err)` を
+/// 明示的に選ぶ）。
+struct SessionFailure {
+    reason: CloseReason,
+    error: WsError,
+}
+
+impl SessionFailure {
+    /// 受信失敗（`ws.next()` が返した `Err`）を分類する。
+    ///
+    /// `Capacity`（メッセージ/フレームサイズ上限超過）は
+    /// [`CloseReason::MessageTooLarge`] へ、`Io` は
+    /// [`FailureKind::Io`] へ倒す。`Protocol(ResetWithoutClosingHandshake)`
+    /// は tokio-tungstenite 0.30 で Close フレームなしの TCP 切断が実際に
+    /// 観測される経路（`ws.next()` が `None` を返す `InboundEvent::
+    /// Message(None)` はこの構成では実質到達しない）であり、
+    /// [`CloseReason::Eof`] の doc が定義する事象と 1:1 対応するため
+    /// [`CloseReason::Eof`] へ分類する（イシュー #726 レビュー指摘対応。
+    /// `Result` 側は引き続き `Err`（呼び出し元は読み取り自体が失敗した
+    /// ことを判別できる。`MessageTooLarge`/`Err(Capacity(_))` と同型の
+    /// 「正常系 reason + Err」の組み合わせ）。その他の分類不能なエラー
+    /// （`ConnectionClosed`/`AlreadyClosed`/その他 `Protocol`/`Tls` 等）は
+    /// [`FailureKind::Protocol`] へ倒す（設計 4 節の脱出点対応表。
+    /// フェイルクローズ: 分類不能なエラーは `Eof`/`ClientClose` へ
+    /// 倒さない）。
+    fn recv(err: tokio_tungstenite::tungstenite::Error) -> Self {
+        use tokio_tungstenite::tungstenite::error::ProtocolError;
+
+        let reason = match &err {
+            tokio_tungstenite::tungstenite::Error::Capacity(_) => CloseReason::MessageTooLarge,
+            tokio_tungstenite::tungstenite::Error::Io(_) => CloseReason::Failed(FailureKind::Io),
+            tokio_tungstenite::tungstenite::Error::Protocol(
+                ProtocolError::ResetWithoutClosingHandshake,
+            ) => CloseReason::Eof,
+            _ => CloseReason::Failed(FailureKind::Protocol),
+        };
+        Self {
+            reason,
+            error: WsError::from(err),
+        }
+    }
+
+    /// 送信失敗（`ws.send`/`ws.close` が返した `Err`）を分類する。
+    ///
+    /// 受信側と異なり、`Capacity`（送信時は「メッセージがサイズ上限を
+    /// 超える」を意味する）・`ConnectionClosed`/`AlreadyClosed` を含む
+    /// 非 `Io` エラーはすべて [`FailureKind::Protocol`] へ倒す（設計 4 節
+    /// レビュー指摘対応: `ConnectionClosed`/`AlreadyClosed` での送信失敗を
+    /// [`CloseReason::ClientClose`] に誤分類しない）。
+    fn send(err: tokio_tungstenite::tungstenite::Error) -> Self {
+        let reason = match &err {
+            tokio_tungstenite::tungstenite::Error::Io(_) => CloseReason::Failed(FailureKind::Io),
+            _ => CloseReason::Failed(FailureKind::Protocol),
+        };
+        Self {
+            reason,
+            error: WsError::from(err),
+        }
+    }
+
+    /// ユーザーハンドラ（`WsMessageHandler::on_message_with_ctx`）が
+    /// `Err` を返した場合の失敗（[`FailureKind::Handler`] 固定）。
+    fn handler(err: WsHandlerError) -> Self {
+        Self {
+            reason: CloseReason::Failed(FailureKind::Handler),
+            error: WsError::from(err),
+        }
+    }
+
+    /// [`run_session_inner`] の戻り値型 `(CloseReason, Result<(), WsError>)`
+    /// への変換ヘルパー。
+    fn into_parts(self) -> (CloseReason, Result<(), WsError>) {
+        (self.reason, Err(self.error))
+    }
+}
+
+/// [`apply_outcome`] の戻り値。セッションループ（[`run_session_inner`]）が
+/// 次に取るべき動作を表す（イシュー #499 で `Result<bool, WsError>` から
 /// 拡張し、キャンセル打ち切りを独立した分岐として表現できるようにした）。
 enum SessionFlow {
     /// 返信送出まで完了し、セッションを継続する（`WsOutcome::Reply`）。
@@ -459,7 +635,7 @@ async fn apply_outcome<S, C>(
     ws: &mut WebSocketStream<S>,
     outcome: WsOutcome,
     mut cancel: Pin<&mut C>,
-) -> Result<SessionFlow, WsError>
+) -> Result<SessionFlow, SessionFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin,
     C: Future<Output = ()>,
@@ -470,7 +646,8 @@ where
                 let frame = to_tungstenite_message(msg);
                 match race_cancel(cancel.as_mut(), ws.send(frame)).await {
                     None => return Ok(SessionFlow::Cancelled),
-                    Some(result) => result?,
+                    Some(Ok(())) => {}
+                    Some(Err(err)) => return Err(SessionFailure::send(err)),
                 }
             }
             Ok(SessionFlow::Continue)
@@ -478,7 +655,8 @@ where
         WsOutcome::Close => {
             match race_cancel(cancel.as_mut(), ws.close(None)).await {
                 None => return Ok(SessionFlow::Cancelled),
-                Some(result) => result?,
+                Some(Ok(())) => {}
+                Some(Err(err)) => return Err(SessionFailure::send(err)),
             }
             Ok(SessionFlow::Closed)
         }
@@ -531,7 +709,7 @@ async fn run_handler_with_outbound_drain<S, C>(
     mut cancel: Pin<&mut C>,
     outbound: &mut Option<mpsc::Receiver<WsMessage>>,
     handler_fut: futures_util::future::BoxFuture<'_, Result<WsOutcome, WsHandlerError>>,
-) -> Result<SessionFlow, WsError>
+) -> Result<SessionFlow, SessionFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin,
     C: Future<Output = ()>,
@@ -541,8 +719,8 @@ where
     // ステップ 1: ハンドラ完了まで cancel（最優先）→ (ハンドラ完了 |
     // outbound 到着) を反復する。outbound が既に無効化済み（`None`）の場合は
     // 常に Pending なダミー Future を使い、以後選択されないようにする
-    // （`run_session` 外側ループの `Right(None)` 分岐と同じ「無効化してビジー
-    // ループ化を防ぐ」方針を踏襲）。
+    // （`run_session_inner` 外側ループの `Right(None)` 分岐と同じ「無効化して
+    // ビジーループ化を防ぐ」方針を踏襲）。
     let outcome = loop {
         let progress = match outbound.as_mut() {
             Some(rx) => race_cancel(cancel.as_mut(), race2(&mut handler_fut, rx.recv())).await,
@@ -565,11 +743,11 @@ where
                 match race_cancel(cancel.as_mut(), ws.send(frame)).await {
                     None => return Ok(SessionFlow::Cancelled),
                     Some(Ok(())) => {}
-                    Some(Err(err)) => return Err(err.into()),
+                    Some(Err(err)) => return Err(SessionFailure::send(err)),
                 }
             }
             Some(Either::Right(None)) => {
-                // 全 `WsSender` クローンが drop 済み（`run_session` 外側
+                // 全 `WsSender` クローンが drop 済み（`run_session_inner` 外側
                 // ループの同種分岐と同じ防御的コード。`conn_ctx` がクローンを
                 // 保持し続けるためセッション実行中は到達不能）。
                 *outbound = None;
@@ -577,8 +755,12 @@ where
         }
     };
 
-    // ステップ 2: ハンドラエラーは排出・送信を行わず即時終了する。
-    let outcome = outcome?;
+    // ステップ 2: ハンドラエラーは排出・送信を行わず即時終了する
+    // （[`FailureKind::Handler`] へ分類、`WsError::Handler` を保持）。
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(err) => return Err(SessionFailure::handler(err)),
+    };
 
     // ステップ 3: 排出開始時点で既に格納済みだった push を、
     // `DEFAULT_OUTBOUND_CAPACITY` 回（既定 8）まで `try_recv()` で取り出し、
@@ -593,7 +775,7 @@ where
                     match race_cancel(cancel.as_mut(), ws.send(frame)).await {
                         None => return Ok(SessionFlow::Cancelled),
                         Some(Ok(())) => {}
-                        Some(Err(err)) => return Err(err.into()),
+                        Some(Err(err)) => return Err(SessionFailure::send(err)),
                     }
                 }
                 Err(mpsc::error::TryRecvError::Empty) => break,
@@ -1347,5 +1529,435 @@ mod tests {
             matches!(result, Err(WsError::Handler(_))),
             "handler error should short-circuit run_session: {result:?}"
         );
+    }
+
+    // --- イシュー #726: `run_session_inner` の `CloseReason` 検証 ---
+    //
+    // 以下は `run_session_inner`（`pub(crate)` の `run_session` がタプルの
+    // `.1` のみを返す薄いラッパーの内側）を直接呼び、戻り値タプルの両側
+    // （`CloseReason` と `Result<(), WsError>`）を検証する。設計 4 節の
+    // 脱出点対応表・3 節「対象ファイル・変更箇所」の割り当て表に対応する。
+
+    /// 脱出点対応表: クライアントの Close フレーム受信 →
+    /// `(CloseReason::ClientClose, Ok(()))`。
+    #[tokio::test]
+    async fn client_close_yields_client_close_reason() {
+        let config: &'static WebSocketConfig = Box::leak(Box::new(test_config()));
+        let (server_side, client_side) = tokio::io::duplex(4096);
+        let (tx, rx) = handler::channel(4);
+        let conn_ctx = test_conn_ctx(tx);
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session_inner(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+        client
+            .close(None)
+            .await
+            .expect("client close should succeed");
+
+        let (reason, result) = tokio::time::timeout(Duration::from_secs(2), session_handle)
+            .await
+            .expect("session should finish within timeout")
+            .expect("session task should not panic");
+        assert!(
+            matches!(reason, CloseReason::ClientClose),
+            "expected ClientClose, got {reason:?}"
+        );
+        assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+    }
+
+    /// 脱出点対応表: Close ハンドシェイクなしの TCP 切断（クライアント側
+    /// duplex を Close 送出なしで drop）は tungstenite 0.30 では
+    /// `Protocol(ResetWithoutClosingHandshake)` として観測される。これは
+    /// `CloseReason::Eof` の doc が定義する事象そのものであるため
+    /// `SessionFailure::recv` が `CloseReason::Eof` へ分類する（`Result`
+    /// 側は読み取り失敗を示す `Err(WsError::Protocol(_))` のまま。イシュー
+    /// #726 レビュー指摘対応。詳細は `handler::CloseReason::Eof` の doc・
+    /// 設計文書 4 節・9 節を参照）。
+    #[tokio::test]
+    async fn disconnect_without_close_handshake_yields_eof() {
+        let config: &'static WebSocketConfig = Box::leak(Box::new(test_config()));
+        let (server_side, client_side) = tokio::io::duplex(4096);
+        let (tx, rx) = handler::channel(4);
+        let conn_ctx = test_conn_ctx(tx);
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session_inner(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        // Close フレームを送らずに切断する。
+        drop(client_side);
+
+        let (reason, result) = tokio::time::timeout(Duration::from_secs(2), session_handle)
+            .await
+            .expect("session should finish within timeout")
+            .expect("session task should not panic");
+        assert!(
+            matches!(reason, CloseReason::Eof),
+            "expected Eof, got {reason:?}"
+        );
+        assert!(
+            matches!(result, Err(WsError::Protocol(_))),
+            "expected Err(WsError::Protocol(_)), got {result:?}"
+        );
+    }
+
+    /// 脱出点対応表: アイドルタイムアウト発火 →
+    /// `(CloseReason::IdleTimeout, Ok(()))`。
+    #[tokio::test]
+    async fn idle_timeout_yields_idle_timeout_reason() {
+        let config = WebSocketConfig {
+            idle_timeout: Some(Duration::from_millis(80)),
+            ..test_config()
+        };
+        let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+        let (server_side, client_side) = tokio::io::duplex(4096);
+        let _client_side = client_side;
+        let (tx, rx) = handler::channel(4);
+        let conn_ctx = test_conn_ctx(tx);
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session_inner(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        let (reason, result) = tokio::time::timeout(Duration::from_secs(2), session_handle)
+            .await
+            .expect("session should finish within timeout")
+            .expect("session task should not panic");
+        assert!(
+            matches!(reason, CloseReason::IdleTimeout),
+            "expected IdleTimeout, got {reason:?}"
+        );
+        assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+    }
+
+    /// 脱出点対応表: コアの世代キャンセル発火 →
+    /// `(CloseReason::Cancelled, Ok(()))`。
+    #[tokio::test]
+    async fn cancellation_yields_cancelled_reason() {
+        let config: &'static WebSocketConfig = Box::leak(Box::new(test_config()));
+        let (server_side, client_side) = tokio::io::duplex(4096);
+        // クライアントは Close 応答を返さない（passive）。
+        let _client_side = client_side;
+        let (tx, rx) = handler::channel(4);
+        let conn_ctx = test_conn_ctx(tx);
+
+        let session_handle = tokio::spawn(async move {
+            // 既に発火済みのキャンセルを渡す。
+            let cancel = std::future::ready(());
+            let mut cancel = std::pin::pin!(cancel);
+            run_session_inner(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        let (reason, result) = tokio::time::timeout(Duration::from_secs(2), session_handle)
+            .await
+            .expect("session should finish within timeout")
+            .expect("session task should not panic");
+        assert!(
+            matches!(reason, CloseReason::Cancelled),
+            "expected Cancelled, got {reason:?}"
+        );
+        assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+    }
+
+    /// 脱出点対応表: 受信メッセージが `max_message_size` を超過 →
+    /// `(CloseReason::MessageTooLarge, Err(WsError::Protocol(Capacity(_))))`。
+    #[tokio::test]
+    async fn oversized_message_yields_message_too_large_reason() {
+        let config = WebSocketConfig {
+            max_message_size: 64,
+            max_frame_size: 64,
+            ..test_config()
+        };
+        let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+        let (server_side, client_side) = tokio::io::duplex(1 << 16);
+        let (tx, rx) = handler::channel(4);
+        let conn_ctx = test_conn_ctx(tx);
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session_inner(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+        // `max_message_size`（64 bytes）を超えるテキストを送信する。
+        let oversized = "x".repeat(256);
+        client
+            .send(Message::Text(oversized.into()))
+            .await
+            .expect("client send should succeed at the transport layer");
+
+        let (reason, result) = tokio::time::timeout(Duration::from_secs(2), session_handle)
+            .await
+            .expect("session should finish within timeout")
+            .expect("session task should not panic");
+        assert!(
+            matches!(reason, CloseReason::MessageTooLarge),
+            "expected MessageTooLarge, got {reason:?}"
+        );
+        assert!(
+            matches!(
+                result,
+                Err(WsError::Protocol(
+                    tokio_tungstenite::tungstenite::Error::Capacity(_)
+                ))
+            ),
+            "expected Err(WsError::Protocol(Capacity(_))), got {result:?}"
+        );
+    }
+
+    /// 脱出点対応表: ハンドラが `WsOutcome::Close` →
+    /// `(CloseReason::HandlerClose, Ok(()))`。
+    #[tokio::test]
+    async fn handler_close_yields_handler_close_reason() {
+        use futures_util::future::BoxFuture;
+
+        struct ClosingHandler;
+
+        impl handler::WsMessageHandler for ClosingHandler {
+            fn name(&self) -> &'static str {
+                "closing"
+            }
+
+            fn on_message(
+                &self,
+                _msg: WsMessage,
+            ) -> BoxFuture<'_, Result<WsOutcome, handler::WsHandlerError>> {
+                Box::pin(async move { Ok(WsOutcome::Close) })
+            }
+        }
+
+        let mut config = test_config();
+        config.handler = std::sync::Arc::new(ClosingHandler);
+        let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+        let (server_side, client_side) = tokio::io::duplex(4096);
+        let (tx, rx) = handler::channel(4);
+        let conn_ctx = test_conn_ctx(tx);
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session_inner(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+        client
+            .send(Message::Text("trigger".into()))
+            .await
+            .expect("client send should succeed");
+
+        let (reason, result) = tokio::time::timeout(Duration::from_secs(2), session_handle)
+            .await
+            .expect("session should finish within timeout")
+            .expect("session task should not panic");
+        assert!(
+            matches!(reason, CloseReason::HandlerClose),
+            "expected HandlerClose, got {reason:?}"
+        );
+        assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+    }
+
+    /// 脱出点対応表: ハンドラが `Err` →
+    /// `(CloseReason::Failed(FailureKind::Handler), Err(WsError::Handler(_)))`。
+    #[tokio::test]
+    async fn handler_error_yields_handler_failure_reason() {
+        use futures_util::future::BoxFuture;
+
+        struct FailingHandler;
+
+        impl handler::WsMessageHandler for FailingHandler {
+            fn name(&self) -> &'static str {
+                "failing"
+            }
+
+            fn on_message(
+                &self,
+                _msg: WsMessage,
+            ) -> BoxFuture<'_, Result<WsOutcome, handler::WsHandlerError>> {
+                Box::pin(async move { Err(handler::WsHandlerError::new("boom")) })
+            }
+        }
+
+        let mut config = test_config();
+        config.handler = std::sync::Arc::new(FailingHandler);
+        let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+        let (server_side, client_side) = tokio::io::duplex(4096);
+        let (tx, rx) = handler::channel(4);
+        let conn_ctx = test_conn_ctx(tx);
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session_inner(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+        client
+            .send(Message::Text("trigger".into()))
+            .await
+            .expect("client send should succeed");
+
+        let (reason, result) = tokio::time::timeout(Duration::from_secs(2), session_handle)
+            .await
+            .expect("session should finish within timeout")
+            .expect("session task should not panic");
+        assert!(
+            matches!(reason, CloseReason::Failed(FailureKind::Handler)),
+            "expected Failed(Handler), got {reason:?}"
+        );
+        assert!(
+            matches!(result, Err(WsError::Handler(_))),
+            "expected Err(WsError::Handler(_)), got {result:?}"
+        );
+    }
+
+    /// [`SessionFailure::recv`] / [`SessionFailure::send`] の分類テーブル
+    /// 単体検証（実接続を経由せずエラー値を直接分類器に渡す）。設計 4 節の
+    /// 対応表のうち、実接続で起こしにくい経路（送信失敗・`Io`）を
+    /// カバーする。
+    #[test]
+    fn session_failure_recv_classifies_by_error_variant() {
+        use tokio_tungstenite::tungstenite::Error as TError;
+        use tokio_tungstenite::tungstenite::error::{CapacityError, ProtocolError};
+
+        let capacity = SessionFailure::recv(TError::Capacity(CapacityError::MessageTooLong {
+            size: 100,
+            max_size: 10,
+        }));
+        assert!(matches!(capacity.reason, CloseReason::MessageTooLarge));
+
+        let io = SessionFailure::recv(TError::Io(std::io::Error::from(
+            std::io::ErrorKind::ConnectionReset,
+        )));
+        assert!(matches!(io.reason, CloseReason::Failed(FailureKind::Io)));
+
+        // `ResetWithoutClosingHandshake` は `CloseReason::Eof` の doc が
+        // 定義する事象（Close なし切断）と 1:1 対応するため `Eof` へ分類
+        // する（イシュー #726 レビュー指摘対応。`_` 腕の分類不能エラーとは
+        // 区別する）。
+        let reset_without_close = SessionFailure::recv(TError::Protocol(
+            ProtocolError::ResetWithoutClosingHandshake,
+        ));
+        assert!(matches!(reset_without_close.reason, CloseReason::Eof));
+
+        // それ以外の `Protocol` variant は分類不能として `Failed(Protocol)`
+        // へ倒す（フェイルクローズ）。
+        let other_protocol =
+            SessionFailure::recv(TError::Protocol(ProtocolError::SendAfterClosing));
+        assert!(matches!(
+            other_protocol.reason,
+            CloseReason::Failed(FailureKind::Protocol)
+        ));
+
+        let connection_closed = SessionFailure::recv(TError::ConnectionClosed);
+        assert!(matches!(
+            connection_closed.reason,
+            CloseReason::Failed(FailureKind::Protocol)
+        ));
+    }
+
+    /// [`SessionFailure::send`] は受信側と異なり、`Capacity`・
+    /// `ConnectionClosed`/`AlreadyClosed` を含む非 `Io` エラーをすべて
+    /// `Failed(Protocol)` へ倒す（`ClientClose` への誤分類防止、設計 4 節
+    /// レビュー指摘対応）。
+    #[test]
+    fn session_failure_send_never_maps_to_client_close() {
+        use tokio_tungstenite::tungstenite::Error as TError;
+        use tokio_tungstenite::tungstenite::error::CapacityError;
+
+        let capacity = SessionFailure::send(TError::Capacity(CapacityError::MessageTooLong {
+            size: 100,
+            max_size: 10,
+        }));
+        assert!(matches!(
+            capacity.reason,
+            CloseReason::Failed(FailureKind::Protocol)
+        ));
+
+        let connection_closed = SessionFailure::send(TError::ConnectionClosed);
+        assert!(matches!(
+            connection_closed.reason,
+            CloseReason::Failed(FailureKind::Protocol)
+        ));
+
+        let already_closed = SessionFailure::send(TError::AlreadyClosed);
+        assert!(matches!(
+            already_closed.reason,
+            CloseReason::Failed(FailureKind::Protocol)
+        ));
+
+        let io = SessionFailure::send(TError::Io(std::io::Error::from(
+            std::io::ErrorKind::BrokenPipe,
+        )));
+        assert!(matches!(io.reason, CloseReason::Failed(FailureKind::Io)));
     }
 }

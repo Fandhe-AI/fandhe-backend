@@ -313,7 +313,8 @@ Debug` と同一のログ・診断への機密混入防止方針）。
 | `outcome?` の `Err(WsHandlerError)`（`on_message` の戻り値、266 行・285 行。現状 `outcome?` で即時 `Err` 化） | `Failed(FailureKind::Handler)` |
 | `message?` の `Err`（252 行、tungstenite）: `Error::Capacity(_)` | `MessageTooLarge` |
 | `message?` の `Err`（252 行）: `Error::Io(_)` | `Failed(FailureKind::Io)` |
-| `message?` の `Err`（252 行）: `Capacity`/`Io` 以外（`ConnectionClosed`/`AlreadyClosed` を含む。次項「`ConnectionClosed`/`AlreadyClosed` の扱い」を参照） | `Failed(FailureKind::Protocol)` |
+| `message?` の `Err`（252 行）: `Error::Protocol(ProtocolError::ResetWithoutClosingHandshake)`（Close フレームなしの TCP 切断。tokio-tungstenite 0.30 でこの事象が観測される主経路、9 節「#726 実装済みの既知のギャップ」参照） | `Eof`（`Result` は `Err(WsError::Protocol(_))`） |
+| `message?` の `Err`（252 行）: `Capacity`/`Io`/`ResetWithoutClosingHandshake` 以外（`ConnectionClosed`/`AlreadyClosed` を含む。次項「`ConnectionClosed`/`AlreadyClosed` の扱い」を参照） | `Failed(FailureKind::Protocol)` |
 | `InboundEvent::Outbound` 分岐の `ws.send` 失敗（`Some(Err(err)) => return Err(err.into())`、247 行）: `Error::Io(_)` | `Failed(FailureKind::Io)` |
 | `InboundEvent::Outbound` 分岐の `ws.send` 失敗（247 行）: `Io` 以外 | `Failed(FailureKind::Protocol)` |
 | `apply_outcome(...).await?` が伝播する `apply_outcome` 内部の `ws.send`/`ws.close` 失敗（`apply_outcome` 内 451 行・459 行の `result?`、呼び出し元の `.await?` 経由。Text 分岐 266 行・Binary 分岐 285 行）: `Error::Io(_)` | `Failed(FailureKind::Io)` |
@@ -633,7 +634,33 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
   プロセス kill 由来の 3 つの既知の限界（4 節「不変条件」参照）は対象外）・
   `WsSender::closed()`/`is_closed()`・各終了経路ごとの実接続テスト。
   `crates/core/src/plugin.rs` は変更不要である旨を明記済みなので影響範囲から
-  除外してよい
+  除外してよい。**#705 はその後 3 分割された**: #726（`CloseReason`/
+  `FailureKind` の定義・`run_session_inner` への分割・脱出点対応表の実装。
+  **実装済み**、`docs/design/ws-connection-context-and-close.md` 本節参照）・
+  #727（`WsSender::closed()`/`is_closed()`）・#729（`on_close` 呼び出し、#726 に
+  依存。**実装済み**。`WsMessageHandler::on_close(&self, ctx: &WsConnContext,
+  reason: CloseReason)`（既定 no-op）を追加し、`session::run_session`
+  ラッパーが `run_session_inner` の戻り値を分解してちょうど 1 回呼ぶ構成
+  とした。Issue 本文は `crates/core/src/plugin.rs` も影響範囲に挙げていた
+  が、本節の設計方針（コアは変更しない）に従い `crates/core` は無変更のまま
+  実装した。ハンドシェイク段階の失敗（400/426・101 送出前キャンセル）は
+  `on_open` と対称に `on_close` の対象外とし、失敗の詳細は
+  `handle_upgrade` の戻り値からのみ観測できる契約を維持した）
+- **#726 実装済みの既知のギャップ（PR #731 レビュー指摘対応で解消済み）**:
+  4 節の脱出点対応表は当初 `InboundEvent::Message(None)`（EOF）→ `Eof` の
+  みを明記し、tokio-tungstenite 0.30 が Close ハンドシェイクなしの TCP
+  切断を返す主経路である `Err(Protocol(ResetWithoutClosingHandshake))` は
+  `Failed(FailureKind::Protocol)` へ倒していたため、`Eof` が通常の切断
+  経路で実質到達不能になっていた。`CloseReason::Eof` の doc が定義する
+  事象（Close ハンドシェイクなしの切断）と `ResetWithoutClosingHandshake`
+  が 1:1 対応することから、`SessionFailure::recv`（`session.rs`）で
+  `ResetWithoutClosingHandshake` を `Eof` へ分類するよう変更した（`Result`
+  側は読み取り失敗を示す `Err(WsError::Protocol(_))` のまま。上記の脱出点
+  対応表・4 節参照）。`ws.next()` が実際に `None` を返す経路
+  （`ConnectionClosed`/`AlreadyClosed` 到達後の fused 呼び出し等）も
+  引き続き `Eof` へ分類され、この場合は `Result` が `Ok(())`。`Eof` は
+  1 つの意味論（Close なし切断）に 2 つの到達経路（`Result` が `Ok`/`Err`
+  のいずれか）を持つ variant として確定した
 - **#706**: 送信キュー消化の内側レース実装・順序契約のテスト固定（6 節、
   **#704 の PR #725 で前倒し実装済み**。残作業がなければクローズ対象）
 - **#707**: 2 クライアント同時接続 e2e（前提: #704/#705 完了後。#706 は前倒し

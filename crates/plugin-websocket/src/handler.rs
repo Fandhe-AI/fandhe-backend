@@ -132,6 +132,108 @@ impl fmt::Display for WsConnId {
     }
 }
 
+/// セッション（`crate::session::run_session`）がどの経路で終了したかを表す
+/// 終了理由（イシュー #726、親 #705。設計は
+/// `docs/design/ws-connection-context-and-close.md` 4 節）。
+///
+/// `crate::session::run_session_inner` が全終了経路（クライアントの
+/// Close・EOF・idle timeout・shutdown/rebind キャンセル・受信上限超過・
+/// プロトコル/IO エラー・ハンドラの Close・ハンドラのエラー）ごとに
+/// 値を算出する。`crate::session::run_session`（既存の公開シグネチャを保つ
+/// 薄いラッパー）がこの値を [`WsMessageHandler::on_close`] へ渡してから
+/// 従来どおりの `Result<(), WsError>` を返す（イシュー #729。`on_open` が
+/// 呼ばれた接続についてのみちょうど 1 回呼ぶフェイルクローズ対称契約は
+/// [`WsMessageHandler::on_close`] の doc を参照）。
+///
+/// # 情報露出の最小化（`.claude/rules/security.md`）
+///
+/// クライアントが送った Close reason 文字列・URL パラメータ等の payload を
+/// 一切保持しない `Copy` な種別値のみで構成する。`Debug` 出力にも機密は
+/// 含まれない。
+///
+/// # 網羅性
+///
+/// `#[non_exhaustive]` のため、下流の `match` はワイルドカード腕
+/// （`_ => ...`）を必要とする。将来 variant を追加してもこれは
+/// 非破壊変更（0.4.2 以降のバージョン方針、設計 7 節）として扱う。
+///
+/// ```
+/// use fandhe_backend_plugin_websocket::handler::{CloseReason, FailureKind};
+///
+/// fn describe(reason: CloseReason) -> &'static str {
+///     match reason {
+///         CloseReason::ClientClose => "client closed",
+///         CloseReason::Eof => "eof",
+///         CloseReason::IdleTimeout => "idle timeout",
+///         CloseReason::Cancelled => "cancelled",
+///         CloseReason::HandlerClose => "handler closed",
+///         CloseReason::MessageTooLarge => "message too large",
+///         CloseReason::Failed(FailureKind::Io) => "io failure",
+///         // `#[non_exhaustive]` のため他の `Failed(_)` はワイルドカードで拾う。
+///         _ => "other",
+///     }
+/// }
+///
+/// let reason = CloseReason::ClientClose;
+/// assert_eq!(describe(reason), "client closed");
+/// // `Copy` + `PartialEq` を持つため値のコピー・比較ができる。
+/// let copied = reason;
+/// assert_eq!(reason, copied);
+/// ```
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseReason {
+    /// クライアントが Close フレームを送出した（正常終了）。
+    ClientClose,
+    /// Close ハンドシェイクなしに接続が切断された（読み取り EOF）。
+    ///
+    /// 到達経路は 2 つある（`crate::session::SessionFailure::recv` が
+    /// 分類）。(1) `ws.next()` が `None` を返す経路（`ConnectionClosed`/
+    /// `AlreadyClosed` 到達後の fused 呼び出し等）で、この場合セッション
+    /// 側の `Result` は `Ok(())`。(2) tokio-tungstenite 0.30 で Close
+    /// フレームなしの TCP 切断が観測される主経路である
+    /// `tungstenite::Error::Protocol(ProtocolError::
+    /// ResetWithoutClosingHandshake)`（イシュー #726 レビュー指摘対応で
+    /// 本 variant へ分類するようになった）で、この場合 `Result` は
+    /// `Err(WsError::Protocol(_))`（読み取り自体は失敗している）。
+    /// いずれも「Close ハンドシェイクなしの切断」という本 variant の
+    /// 定義に一致する。
+    Eof,
+    /// `WebSocketConfig::idle_timeout` の期限内にクライアントからの
+    /// フレームが届かず、アイドルと判定してサーバー側から切断した。
+    IdleTimeout,
+    /// コアの世代キャンセルシグナル（最終 graceful shutdown・rebind
+    /// 世代 drain）発火によりサーバー側から切断した。
+    Cancelled,
+    /// ユーザーハンドラ（`WsMessageHandler`）が `WsOutcome::Close` を
+    /// 返し、サーバー側から Close ハンドシェイクを開始した。
+    HandlerClose,
+    /// 受信メッセージが `max_message_size` / `max_frame_size` を超過した
+    /// （tungstenite 側で強制、`tungstenite::Error::Capacity` 経由）。
+    MessageTooLarge,
+    /// 上記以外の失敗で終了した。詳細種別は [`FailureKind`] のみを運び、
+    /// `WsError`（I/O・プロトコルエラーの詳細）自体はここには含まれない
+    /// （`WsError` は `Clone` を実装しないため、また情報露出を最小化する
+    /// ため。エラー詳細は `Result` 側（`crate::session::run_session_inner`
+    /// の戻り値の第 2 要素）から取得する）。
+    Failed(FailureKind),
+}
+
+/// [`CloseReason::Failed`] が運ぶ失敗の種別。
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    /// 送受信中の I/O エラー（`tungstenite::Error::Io`）。
+    Io,
+    /// プロトコル違反・容量超過以外の tungstenite エラー
+    /// （`tungstenite::Error::Protocol` や `ConnectionClosed`/
+    /// `AlreadyClosed` を伴う送信失敗等）。
+    Protocol,
+    /// ユーザーハンドラ（`WsMessageHandler::on_message_with_ctx`）が
+    /// `Err` を返した（`WsHandlerError` 相当）。
+    Handler,
+}
+
 /// Text/Binary メッセージ受信ごとに呼ばれるユーザー定義ハンドラ。
 ///
 /// `crate::session::run_session` がメッセージごとに直列 `await` する
@@ -436,6 +538,152 @@ pub trait WsMessageHandler: Send + Sync + 'static {
     /// ```
     fn on_open(&self, ctx: WsOpenContext) {
         let _ = ctx;
+    }
+
+    /// セッション終了時（[`Self::on_open`] を呼んだ接続についてのみ）に
+    /// ちょうど 1 回呼ばれる切断通知フック（イシュー #729、親 #705。設計は
+    /// `docs/design/ws-connection-context-and-close.md` 4 節・9 節）。
+    ///
+    /// 既定実装は `ctx`・`reason` を無視する no-op で、既存ハンドラ
+    /// （`on_message`/`on_open` のみを実装したもの）は無変更のまま
+    /// コンパイル・動作する（後方互換）。接続単位の状態（CDP 互換サーバーの
+    /// 購読レジストリ等）の後片付けや、切断理由の診断ログ出力に使う。
+    ///
+    /// # 呼ばれる条件・呼ばれない条件（`on_open` との対称性、フェイルクローズ）
+    ///
+    /// - [`Self::on_open`] が呼ばれた接続（101 応答送出成功後）についてのみ、
+    ///   `crate::session::run_session` がセッション終了時に必ず 1 回呼ぶ
+    ///   （`run_session_inner` の戻り値をラッパーが分解して呼ぶ構造上、
+    ///   呼び出し箇所が 1 つしかないため、個々の脱出点に呼び出しを散らさず
+    ///   ちょうど 1 回になる。`docs/design/ws-connection-context-and-close.md`
+    ///   4 節の脱出点対応表を参照）。
+    /// - ハンドシェイク検証失敗（400/426 応答）・101 応答送出前に世代
+    ///   キャンセルが既に発火していた接続では呼ばれない（`on_open` が
+    ///   呼ばれていない接続へ切断通知も渡さない、フェイルクローズの対称性。
+    ///   `crate::handle_upgrade` の doc を参照）。
+    ///
+    /// # 保証外（既知の限界）
+    ///
+    /// 次の場合は本メソッドが呼ばれない、または呼ばれた後の状態について
+    /// 追加の保証をしない（設計 4 節「不変条件」参照。本メソッド自身が
+    /// panic しないことは実装者の責務であり、ここでの保証外には含めない）。
+    ///
+    /// - [`Self::on_message_with_ctx`]（既定実装経由の [`Self::on_message`]
+    ///   を含む）や [`Self::on_open`] が panic した場合
+    /// - プロセスの kill やランタイムの強制 drop によりセッションタスク自体が
+    ///   実行を継続できなくなった場合
+    ///
+    /// # `reason` から取得できる情報
+    ///
+    /// `reason` は [`CloseReason`]（`#[non_exhaustive]`）で、クライアントが
+    /// 送った Close reason 文字列等の payload は一切含まない種別値のみを
+    /// 運ぶ（情報露出の最小化、`.claude/rules/security.md`）。失敗の詳細
+    /// （`WsError`）自体は本メソッドには渡らず、`handle_upgrade` の戻り値
+    /// （`Result`）側からのみ取得できる契約は変更しない（設計 4 節・10 節。
+    /// `WsError` は `Clone` を実装しないため、また情報露出を最小化する
+    /// ため）。
+    ///
+    /// # 呼び出し時点の `ctx` の状態
+    ///
+    /// 呼ばれた時点で `WebSocketStream` も outbound チャネルの受信側も
+    /// drop 済みである。そのため `ctx.sender().send(..)` を呼んでも常に
+    /// [`WsSendError`] になる。
+    ///
+    /// # 同期フック・実行コンテキスト
+    ///
+    /// [`Self::on_open`] と同じく本メソッドは**同期**（非 `async`）で、
+    /// セッションタスク内で呼ばれる。呼ばれた時点ではコアの
+    /// `max_connections` permit をまだ保持しており、`WebSocketConfig::
+    /// close_grace` の上限の外で実行される。重い処理・ブロッキング処理は
+    /// permit の解放と graceful shutdown の完了を遅らせるため、非同期処理を
+    /// 要する場合は `tokio::spawn` で切り離す（`on_open` と同じ原則。
+    /// ライブラリ側は本メソッドの実行にタイムアウトを設けない）。
+    ///
+    /// # Examples
+    ///
+    /// （`handle_upgrade` を実際に駆動し、クライアントが Close フレームを
+    /// 送出した経路で `on_close` がちょうど 1 回・`CloseReason::ClientClose`
+    /// で呼ばれることを確認する。`Arc<Mutex<Vec<CloseReason>>>` へ記録する
+    /// パターンは、接続単位の後片付けを行うハンドラの基本形。）
+    ///
+    /// ```
+    /// use std::sync::{Arc, Mutex};
+    /// use std::time::Duration;
+    /// use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+    /// use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade};
+    /// use fandhe_backend_plugin_websocket::handler::{
+    ///     CloseReason, WsConnContext, WsHandlerError, WsMessage, WsMessageHandler, WsOutcome,
+    /// };
+    /// use futures_util::future::BoxFuture;
+    /// use futures_util::SinkExt;
+    /// use tokio::io::AsyncReadExt;
+    /// use tokio_tungstenite::WebSocketStream;
+    /// use tokio_tungstenite::tungstenite::protocol::Role;
+    ///
+    /// struct RecordCloses(Arc<Mutex<Vec<CloseReason>>>);
+    ///
+    /// impl WsMessageHandler for RecordCloses {
+    ///     fn name(&self) -> &'static str {
+    ///         "record-closes"
+    ///     }
+    ///
+    ///     fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+    ///         Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+    ///     }
+    ///
+    ///     fn on_close(&self, _ctx: &WsConnContext, reason: CloseReason) {
+    ///         self.0.lock().unwrap().push(reason);
+    ///     }
+    /// }
+    ///
+    /// # async fn read_http_response_line<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> String {
+    /// #     let mut buf = Vec::new();
+    /// #     let mut byte = [0u8; 1];
+    /// #     loop {
+    /// #         let n = stream.read(&mut byte).await.unwrap();
+    /// #         assert_ne!(n, 0);
+    /// #         buf.push(byte[0]);
+    /// #         if buf.ends_with(b"\r\n\r\n") { break; }
+    /// #     }
+    /// #     String::from_utf8(buf).unwrap()
+    /// # }
+    /// #
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// let buf = b"GET /ws HTTP/1.1\r\n\
+    ///     Upgrade: websocket\r\n\
+    ///     Connection: Upgrade\r\n\
+    ///     Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+    ///     Sec-WebSocket-Version: 13\r\n\
+    ///     \r\n";
+    /// let head = match parse_request_head(buf).unwrap() {
+    ///     ParseOutcome::Complete { head, .. } => head,
+    ///     ParseOutcome::Incomplete => unreachable!(),
+    /// };
+    /// let closes = Arc::new(Mutex::new(Vec::new()));
+    /// let config = WebSocketConfig::default().with_handler(RecordCloses(closes.clone()));
+    ///
+    /// let (server_side, mut client_side) = tokio::io::duplex(4096);
+    /// let server_task = tokio::spawn(async move {
+    ///     handle_upgrade(server_side, &head, Vec::new(), &config, std::future::pending::<()>()).await
+    /// });
+    ///
+    /// let response = read_http_response_line(&mut client_side).await;
+    /// assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    ///
+    /// let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+    /// client.close(None).await.ok();
+    ///
+    /// // `on_close` はセッションタスク内で同期に呼ばれるため、タスクを
+    /// // join し終えた時点で実行済みであることが保証される（`sleep` は使わない）。
+    /// let _ = tokio::time::timeout(Duration::from_secs(2), server_task).await;
+    ///
+    /// let recorded = closes.lock().unwrap();
+    /// assert_eq!(recorded.as_slice(), &[CloseReason::ClientClose]);
+    /// # }
+    /// ```
+    fn on_close(&self, ctx: &WsConnContext, reason: CloseReason) {
+        let _ = (ctx, reason);
     }
 }
 
@@ -1098,6 +1346,19 @@ mod tests {
         let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
         // no-op であることの確認は「panic しないこと」のみで、戻り値もない。
         handler.on_open(WsOpenContext::new(WsConnId::next(), sender, Vec::new()));
+    }
+
+    /// 既定 `on_close` が no-op（`ctx`・`reason` を無視するのみ）であることを
+    /// 確認する（イシュー #729、受け入れ基準 4「既存ハンドラは無変更のまま
+    /// コンパイル・動作する」の単体レベルの裏取り。実ハンドシェイク経由の
+    /// 全終了経路の確認は `tests/on_close_e2e.rs`）。
+    #[tokio::test]
+    async fn default_on_close_is_noop() {
+        let handler = UppercaseHandler;
+        let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        let ctx = WsConnContext::new(WsConnId::next(), sender, Vec::new());
+        // no-op であることの確認は「panic しないこと」のみで、戻り値もない。
+        handler.on_close(&ctx, CloseReason::ClientClose);
     }
 
     /// `WsOpenContext::sender()` が返す参照を `.clone()` して送信すると、
