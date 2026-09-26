@@ -596,7 +596,18 @@ fandhe-backend/
 │   │                                    # （`Router` 等）へフォールスルーし、mount `/`
 │   │                                    # + 動的エンドポイント共存構成を可能にする。外部依存ゼロ
 │   │                                    # （`fandhe-backend-http` + `tokio` の `rt` feature のみ）、
-│   │                                    # `docs/design/plugin-boundary.md` 5.11 節を参照）
+│   │                                    # `docs/design/plugin-boundary.md` 5.11 節を参照）。
+│   │                                    # イシュー #680 で `is_safe_segment` へ `:` 拒否
+│   │                                    # （Windows ドライブプレフィックスによる `root` 拘束
+│   │                                    # 崩壊対策・NTFS ADS 構文防止）と、`canonicalize` 後の
+│   │                                    # 実パスを再検証する `resolved_path_is_safe`（8.3 短縮
+│   │                                    # ファイル名エイリアスによるドットファイル保護バイパス
+│   │                                    # 対策）を追加し、二層防御が 3 OS（親 #679・PR #685 の
+│   │                                    # `ubuntu-latest`/`macos-latest`/`windows-latest`
+│   │                                    # test matrix）で一貫して機能することをテストで保証した
+│   │                                    # （本番コードは元々 `cfg(unix)` 非依存。テスト側のみ
+│   │                                    # `test_symlink_file`/`test_symlink_dir` ヘルパで OS
+│   │                                    # 分岐、詳細は `docs/design/plugin-boundary.md` 5.11.3.2 節）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
 │   ├── docs-site                      # GitHub Pages ドキュメントサイト生成ツール（SSG、
 │   │                                    # fandhe-frontend の docs-site を移植。publish=false で

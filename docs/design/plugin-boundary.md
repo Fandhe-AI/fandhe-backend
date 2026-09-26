@@ -931,17 +931,22 @@ WebRTC 中継）が非同期の上流通信を要するのに対し、本プラ�
 ### 5.11.3 フェイルクローズ設計（二層防御）
 
 1. **I/O 前の字句検証**: 末尾パスをセグメント分割し、空・`.`・`..`・NUL・
-   `\`・先頭が `.` のセグメント（ドットファイル・ドットディレクトリ）を
+   `\`・`:`・先頭が `.` のセグメント（ドットファイル・ドットディレクトリ）を
    含むセグメントを拒否する。パーセントデコードは行わない
    （`crates/routes/src/pattern.rs` の `is_safe_segment_value` と同一の
    「正規化しない」方針を踏襲）。先頭ドット拒否は、公開 root 配下に
    `.env`・`.git/config`・`.htpasswd` 等の機密ファイルが置かれた場合の
    意図しない配信（OWASP A01/A05）を防ぐフェイルクローズ判断で、イシュー
    #318 のレビュー指摘（`.` 始まり通常ファイル名が拒否対象から漏れていた）
-   を受けて追加した
+   を受けて追加した。`:` 拒否はイシュー #680（5.11.3.2 節参照）で追加した
 2. **`canonicalize` 後の実パス検証**: 正規化済み実パスが正規化済み root
    配下（`starts_with`）であることを確認し、シンボリックリンク経由の
-   root 脱出を拒否する
+   root 脱出を拒否する。加えて、残余コンポーネント（root 相対部分）が
+   `is_safe_segment` 相当の安全性を満たすかを再検証する
+   （`resolved_path_is_safe`、イシュー #680、5.11.3.2 節参照）。これは
+   1 の字句検証をすり抜けて拒否対象へ解決される実体（8.3 短縮ファイル名
+   エイリアス等）に対する第二の再検証であり、`starts_with` による root
+   脱出検証とは独立した防御である
 
 ファイル未検出・検証失敗・権限エラー・サイズ超過（`max_file_bytes`）は
 一律 404（存在オラクル・列挙を作らないフェイルクローズ、
@@ -991,6 +996,93 @@ WebRTC 中継）が非同期の上流通信を要するのに対し、本プラ�
 検討したが、利用者が動的ルートを列挙し続ける保守負担を生む上、opt-in
 フォールスルー方式が同じユースケースを包含するため採用しなかった
 （イシュー #419 の議論を参照）。
+
+#### 5.11.3.2 Windows でのクロスプラットフォーム検証（イシュー #680）
+
+親イシュー #679（PR #685）で `test` ジョブが `ubuntu-latest` /
+`macos-latest` / `windows-latest` の 3 OS matrix 化されたことを受け、
+本クレートの `#[cfg(unix)]` 分岐（テスト 4 件、いずれもシンボリック
+リンク作成のみ）が Windows でどう振る舞うかを機械的に保証した。
+
+**事前調査の結論**: 本番コード（`resolve_and_read`・`is_safe_segment`・
+`try_handle_static`）には `cfg(unix)` 分岐が一切存在しない。二層防御
+（字句検証 + `canonicalize` + `starts_with`）は最初から OS 非依存に
+書かれている。したがって対応は (a) テストヘルパの OS 分岐設計と (b)
+調査中に見つかった実在の Windows 固有バイパス経路 2 点への防御強化
+の 2 本柱になった。
+
+**発見した Windows 固有のバイパス経路**:
+
+1. **ドライブプレフィックスによる `PathBuf::push` のリセット**: 旧
+   `is_safe_segment` は `:` を拒否していなかった。URL セグメント `"C:"`
+   は空・`.`/`..`・NUL・`\`・先頭ドットのいずれにも該当せず通過する。
+   Rust std の `PathBuf::push` は「prefix はあるが root がない」
+   コンポーネント（Windows のドライブレター `C:` はこれに該当）を
+   push すると **`self` を丸ごと置き換える**契約を持つ。`resolve_and_read`
+   は `root.to_path_buf()` から `segments` を順に `push` するため、
+   1 セグメント目が `"C:"` のようなドライブプレフィックスだと `root`
+   が丸ごと消え、`root` 配下拘束という設計契約そのものが Windows でのみ
+   壊れる。`is_safe_segment` へ `:` 拒否を追加して解消した（副次効果と
+   して NTFS Alternate Data Stream 構文 `file.txt:hidden:$DATA` の防止に
+   もなる）
+2. **8.3 短縮ファイル名によるドットファイル保護のバイパス**（NTFS の
+   8.3 名前生成が有効なボリューム限定）: `.env` のような実ファイルには
+   `ENV~1` のような短縮名が生成されうる。`"ENV~1"` は先頭ドットでないため
+   字句検証を通過し、`canonicalize` はそれを実体（`.env`）へ解決し、
+   `starts_with(root)` も通る（root 配下だから）ため配信されてしまう。
+   8.3 名前生成は既定で無効化されている Windows 環境も多く決定的な e2e
+   再現は保証できないため、`canonicalize` 後の実パスコンポーネントに
+   対して `is_safe_segment` 相当の再検証を行う `resolved_path_is_safe`
+   を追加し（実ファイルシステムに触れない純粋関数、追加依存なし）、8.3
+   が有効かどうかに関わらずフェイルクローズにした
+
+**テストヘルパの OS 分岐設計**: `#[cfg(test)]` 内に
+`test_symlink_file` / `test_symlink_dir` を新設し、内部を
+`#[cfg(unix)] std::os::unix::fs::symlink` /
+`#[cfg(windows)] std::os::windows::fs::symlink_file` /
+`symlink_dir` へ分岐させた（`#[cfg(not(any(unix, windows)))]` は
+`compile_error!` で未対応 OS を明示的に落とす）。4 件のシンボリック
+リンクテストから `#[cfg(unix)]` を除去し、3 OS すべてで常時実行される
+ようにした。「脱出拒否」系 3 テストには、404 を assert する前に
+「リンクが機能している」ことの事前 assert（`canonicalize(&link) ==
+canonicalize(&outside_target)`）を追加した。これを怠ると、リンク作成が
+失敗した環境で「リンクが壊れていて `canonicalize` が `None` を返し、
+結果的に 404」という**偽陽性グリーン**（防御ロジックを検証していないのに
+テストが通る）が起こりうるため、この事前 assert が本イシューの受け入れ
+基準を機械的に担保する。
+
+**Windows 固有だが脆弱性ではない既知の差異**（doc に明記のみ）:
+
+- `std::fs::canonicalize` は Windows では `\\?\` プレフィックス付きの
+  冗長パスを返すが、`root`（構築時に canonicalize 済み）と `candidate`
+  の canonicalize 結果は同じ関数を通るため `starts_with` 比較は OS を
+  問わず正しく機能する
+- 大小文字非区別ファイルシステム（Windows の既定 NTFS・macOS の既定 APFS）
+  では `GET /static/App.js` が `app.js` を返しうるが、大小文字を区別する
+  ファイルシステム（Linux の ext4 等）では同じリクエストが 404 になる差異
+  がある。これは OS 単位の差異ではなくファイルシステム単位の差異であり、
+  パストラバーサル防御とは無関係でセキュリティ上の後退ではない
+- 予約デバイス名（`CON`/`NUL`/`PRN`/`AUX`/`COM1`〜`9`/`LPT1`〜`9`）は
+  特別扱いせず、いずれの OS でも「そのような実ファイルが存在しない限り
+  404」という既存の一律 404 方針にそのまま含まれる
+
+**後方互換性への影響**: `:` を含むファイル名（unix では技術的に許可
+される）を root 配下に置いている既存利用者がいた場合、新たに 404 になる
+（配信不可になる）挙動変化がある。`is_safe_segment`・`resolve_and_read`
+は非公開関数で公開 API シグネチャの破壊的変更ではないが、実利用者の
+挙動には影響しうる（実務上 `:` を含むファイル名を静的配信 root に
+置く例は稀と想定される）。
+
+**検証**: `crates/plugin-static/src/lib.rs` の `#[cfg(test)] mod tests`
+（新規: `is_safe_segment_rejects_colon`・
+`rejects_drive_letter_like_segment_via_full_request_path`・
+`rejects_backslash_segment_via_full_request_path`・
+`resolved_path_is_safe_rejects_leading_dot_component`・
+`reserved_device_name_like_segment_returns_404`）+ CI の
+`test (windows-latest)` ジョブでの実 Windows 実行 + ローカルでの
+`cargo check --tests --target x86_64-pc-windows-msvc` /
+`cargo clippy --tests --target x86_64-pc-windows-msvc` によるビルド前
+検証（`#[cfg(windows)]` コードの構文・API 誤りを事前検出、リンク不要）。
 
 ### 5.11.4 循環依存の回避・依存関係
 
