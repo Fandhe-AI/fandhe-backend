@@ -393,8 +393,27 @@ outbound の `Receiver` は既に drop 済みのため、ハンドラが `on_clo
 ランタイム強制終了（プロセス kill 等）でタスクごと drop された場合は保証外
 （既知の限界として明記）。同様に、`on_message_with_ctx` 実行中にユーザーハンドラが
 panic した場合も `run_session_inner` がアンワインドして `on_close` を呼ぶ前に
-関数を抜けるため、この経路も exactly-once 契約の保証外として明記する（#705 の
-受け入れ基準を確定する際、この 2 つの既知の限界を区別して扱う）。
+関数を抜けるため、この経路も exactly-once 契約の保証外として明記する。
+
+**PR #724 再レビュー指摘対応（P2-1）**: 上記に加えて、`on_open` 自身が panic した
+場合も保証外として明記する。`crates/plugin-websocket/src/lib.rs` の
+`handle_upgrade` は `config.handler.on_open(handler::WsOpenContext::new(sender,
+params))` を（同期呼び出しで、`.await` を挟まず）呼んだ**直後**に
+`session::run_session(...)` を呼ぶ。`on_open` の呼び出しは新設の `run_session`
+外側ラッパー（`on_close` を呼ぶ側）よりも**前**の段階、すなわち `handle_upgrade`
+自身の中で発生するため、`on_open` が panic すると `handle_upgrade` の呼び出し
+スタックがそのままアンワインドし、`run_session`（したがって `on_close`）には
+到達しない。この経路は「`on_close` が呼ばれるのは `on_open` が呼ばれた接続に
+限る」という前提そのものが崩れる（`on_open` の呼び出し自体が完了していない）
+ケースであり、`on_message_with_ctx` の panic・プロセス kill と並ぶ第 3 の既知の
+限界として明記する。
+
+`on_open` の戻り値は現行 `fn on_open(&self, ctx: WsOpenContext)`
+（`crates/plugin-websocket/src/handler.rs`、既定実装は no-op）であり `Result` を
+返さない。本設計は `on_open` のシグネチャを変更しない（3 節）ため、`on_open` が
+`Err` を返す経路は存在せず、上記の panic 以外に整合させるべき失敗経路はない
+（#705 の受け入れ基準を確定する際、この 3 つの既知の限界（`on_message_with_ctx`
+panic・プロセス kill・`on_open` panic）を区別して扱う）。
 
 `crates/core/src/plugin.rs` の `let _ = fandhe_backend_plugin_websocket::
 handle_upgrade(...)` は変更不要（切断理由はプラグイン内部で `on_close` を通じて
@@ -506,8 +525,18 @@ Reply/Close の送出へ進む。他タスクが排出中も継続して push �
 完了した push は、そのハンドラが返す `WsOutcome::Reply`/`Close` の送出より
 **先に**ワイヤへ出る」。以下は明示的に順序保証の対象**外**とする:
 
-- ハンドラ完了**後**に届いた push（排出ステップ通過後にチャネルへ入った分。
-  次回の外側ループ反復で通常の `InboundEvent::Outbound` 経路として処理される）
+- ハンドラ完了**後**に届いた push（排出ステップ通過後にチャネルへ入った分）の
+  扱いは `outcome` によって異なる（**PR #724 再レビュー指摘対応（P2-2）**、
+  直前の「outcome ごとの排出表」と整合させる）:
+  - `Ok(WsOutcome::Reply(_))` の場合: セッションは継続する（`SessionFlow::
+    Continue`）ため、次回の外側ループ反復で通常の `InboundEvent::Outbound`
+    経路として処理される（送出される）
+  - `Ok(WsOutcome::Close)` の場合: `apply_outcome` が Close フレームを送出した
+    時点でセッションは終了する（`SessionFlow::Closed => break;`）。外側ループの
+    次回反復は発生しないため、この push は送出されずセッション終了時に
+    `Receiver` が drop されて破棄される（`Err(WsHandlerError)` の場合と同様に
+    「送出されない」経路であり、順序保証の対象外というより、そもそも送出され
+    ない事象として扱う）
 - ハンドラを呼んだタスクとは別のタスクから並行して送られる push
   （どのタイミングで `send` が完了するかはスケジューラ依存であり、ハンドラの
   実行と時系列上の前後関係を文書レベルで固定できない）
