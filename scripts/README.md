@@ -341,6 +341,10 @@ bash scripts/feature-flow-check.sh --base origin/main --allow-no-tests pseudo-cr
   `exit 1`（フェイルクローズ）。
 - `--allow-no-tests <crate> "<理由>"` で理由必須の明示的除外が可能（警告出力・レビューで
   人間が確認する前提）。
+- テストマーカー判定の終端は、`grep -q` のような早期終了 grep ではなく入力を最後まで
+  読み切る `grep -E ... >/dev/null` にしている。`git diff` の出力はパイプ容量（Linux
+  既定 64 KiB 等）を容易に超えるため、`grep -q` を使うと `set -euo pipefail` 下で
+  上流が SIGPIPE を受け、テスト追加ありを見落とす false negative になる（イシュー #692）。
 - CI からは呼ばれない。PR の必須ゲートとしての組み込みは #82（完遂判定への組み込み）の
   スコープ。フロー全体・運用規約は
   [`docs/design/feature-modification-flow.md`](../docs/design/feature-modification-flow.md)・

@@ -134,13 +134,17 @@ pair_tree_detail=""
 for f in "${REQ2_FEATURES_ARR[@]}"; do
     plugin_crate="fandhe-backend-plugin-${f}"
     disabled_tree="$(cargo tree -p fandhe-backend-core --no-default-features 2>/tmp/plugin-mechanism-accept-tree-"${f}"-disabled.log || true)"
-    if printf '%s\n' "${disabled_tree}" | grep -q "${plugin_crate}"; then
+    # `printf | grep -q` は grep の早期終了で printf が SIGPIPE を受け、
+    # pipefail 下で「一致したのに非 0」となる偽陰性を生む
+    # （`scripts/pay-for-what-you-use-check.sh` の同種コメント・イシュー #692
+    # の棚卸しで検出）。here-string でパイプ自体を排除する。
+    if grep -q "${plugin_crate}" <<<"${disabled_tree}"; then
         pair_tree_ok=0
         pair_tree_detail="${pair_tree_detail}${f}: 無効構成で ${plugin_crate} が cargo tree に出現（除外失敗）\n"
         continue
     fi
     enabled_tree="$(cargo tree -p fandhe-backend-core --no-default-features --features "${f}" 2>/tmp/plugin-mechanism-accept-tree-"${f}"-enabled.log || true)"
-    if ! printf '%s\n' "${enabled_tree}" | grep -q "${plugin_crate}"; then
+    if ! grep -q "${plugin_crate}" <<<"${enabled_tree}"; then
         pair_tree_ok=0
         pair_tree_detail="${pair_tree_detail}${f}: 有効構成で ${plugin_crate} が cargo tree に不出現（配線切れの疑い、ポジティブコントロール失敗）\n"
     fi

@@ -363,6 +363,51 @@ set -e
 assert_exit_code "ネストした src + ネストした tests 変更は exit 0" 0 "${exit12}"
 rm -rf "${REPO12}"
 
+echo "===== ケース13: 大きな diff（先頭近くにテストマーカー）でも SIGPIPE で見落とさない ====="
+# イシュー #692 の回帰テスト。`feature-flow-check.sh` の
+# `SRC_HAS_TEST_MARKER` 判定（`TEST_MARKER_PATTERN` に対する grep パイプライン）は
+# `git diff | grep -E | grep -vE | grep -qE` の 4 段パイプラインで、
+# `set -euo pipefail` の下で動く。終端の `grep -q` は最初の一致で終了するため、
+# diff がパイプ容量（Linux 既定 64 KiB 等）を超えて大きいと、まだ書き込み中の
+# 上流（`git diff`／中間 `grep`）が SIGPIPE（exit 141）を受け、pipefail により
+# パイプライン全体が非 0 になる。テストが実際に追加されているのに
+# 「テスト追加なし」の exit 1 に誤判定する false negative が起きる
+# （PR #689 の作業中に再現、修正前の scripts/feature-flow-check.sh で確認済み）。
+# パディングを 20,000 行以上にするのは、diff を数百 KB 規模にしてパイプ容量を
+# 確実に超えさせるため。これより少ないと書き手の書き込みが `grep` の終了前に
+# 完了してしまい、SIGPIPE が発生せず不具合が再現しない。この行数を
+# 「簡略化」で減らさないこと（減らすと本テストが無意味になる）。
+REPO13="$(setup_repo)"
+BASE13="$(cd "${REPO13}" && git rev-parse HEAD)"
+(
+    cd "${REPO13}"
+    {
+        # 先頭近くに新規テストマーカーを追加する（診断対象の -U16 窓内）。
+        echo
+        echo "#[cfg(test)]"
+        echo "mod tests_large_diff {"
+        echo "    use super::*;"
+        echo
+        echo "    #[test]"
+        echo "    fn add_works_large_diff() {"
+        echo "        assert_eq!(add(1, 1), 2);"
+        echo "    }"
+        echo "}"
+        # diff をパイプ容量超に膨らませるための大量パディング（20,000 行以上）。
+        for i in $(seq 1 20000); do
+            echo "pub fn pad_${i}() {}"
+        done
+    } >> crates/pseudo-crate/src/lib.rs
+)
+commit_all "${REPO13}" "先頭近くにテストマーカー + 大量パディングを追加"
+set +e
+out13="$(run_check_in "${REPO13}" --base "${BASE13}" 2>&1)"
+exit13=$?
+set -e
+assert_exit_code "大きな diff でも先頭近くのテストマーカーを検知して exit 0（#692）" 0 "${exit13}"
+assert_contains "クレート 'pseudo-crate' をテスト追加ありと判定する（#692）" "${out13}" "OK: クレート 'pseudo-crate'"
+rm -rf "${REPO13}"
+
 echo
 echo "===== 結果: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} ====="
 if [ "${FAIL_COUNT}" -ne 0 ]; then

@@ -163,10 +163,22 @@ for f in "${CHANGED_FILES[@]}"; do
             # するため（doc test 追加を検知する近似ヒューリスティックであり、
             # -U16 圏外の遠い誤判定・-U16 を超える長いテスト関数の取りこぼしは
             # 残り得る。誤検知・誤判定は --allow-no-tests + レビューで運用）。
+            # 終端段はあえて `grep -qE`（早期終了）にしない。`git diff` は
+            # クレート全体の diff を出力しうるためパイプ容量（Linux 既定
+            # 64 KiB 等）を容易に超え、`grep -q` が先に一致して終了すると
+            # 上流の `git diff`／中間の `grep` が SIGPIPE（exit 141）を受ける。
+            # `set -euo pipefail` 下ではパイプライン全体が非 0 になり、
+            # テストが実際に追加されていても「テスト追加なし」と誤判定する
+            # false negative になる（イシュー #692。PR #689 で再現・
+            # `scripts/pay-for-what-you-use-check.sh:207` 付近の SIGPIPE 対策
+            # コメントと同種の問題）。`grep -E ... >/dev/null` は入力を
+            # 最後まで読み切るため、上流が早期終了で SIGPIPE を受けることが
+            # ない。`grep -q` に戻す「簡略化」は false negative を再発させる
+            # ため行わないこと。
             if git diff -U16 "${BASE_REV}...${HEAD_REV}" -- "${f}" \
                 | grep -E '^[+ ]' \
                 | grep -vE '^\+\+\+' \
-                | grep -qE "${TEST_MARKER_PATTERN}"; then
+                | grep -E "${TEST_MARKER_PATTERN}" >/dev/null; then
                 SRC_HAS_TEST_MARKER["${crate}"]=1
             fi
             ;;
