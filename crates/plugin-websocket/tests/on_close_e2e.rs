@@ -69,6 +69,52 @@ async fn read_http_response_line<S: AsyncRead + Unpin>(stream: &mut S) -> String
     String::from_utf8(buf).expect("response must be valid utf-8")
 }
 
+/// 101 応答（`handshake::serialize_101`）を厳密に検証する共通ヘルパー
+/// （AGENTS.md「アサーション網羅性」節: ステータス行・ヘッダ・ボディを
+/// すべて検証する。PR #732 レビュー指摘対応）。
+///
+/// 本ファイルの全テストが送る `handshake_request_bytes` の
+/// `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==` は RFC 6455 4.2.2 の
+/// 既知ベクタで、対応する `Sec-WebSocket-Accept` は
+/// `s3pPLMBiTxaQ9kYGzzhZRbK+xOo=` に固定される（`handshake.rs` の
+/// `serialize_101_produces_expected_headers` と同一の期待値）。
+/// `read_http_response_line` は応答全体を `\r\n\r\n` まで読み切る契約
+/// のため、この完全一致は「ステータス行」「Upgrade / Connection /
+/// Sec-WebSocket-Accept ヘッダ」「ボディなし（ヘッダ終端直後で応答が
+/// 終わる）」の 3 点を同時に保証する。
+fn assert_101_response(response: &str) {
+    assert_eq!(
+        response,
+        "HTTP/1.1 101 Switching Protocols\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\
+         \r\n",
+        "101 response must exactly match handshake::serialize_101's output \
+         (status line + Upgrade/Connection/Sec-WebSocket-Accept headers, no body)"
+    );
+}
+
+/// 426 応答（`handshake::serialize_426`）を厳密に検証する共通ヘルパー
+/// （`Sec-WebSocket-Version` 不一致時のフェイルクローズ応答。
+/// PR #732 レビュー指摘対応）。
+///
+/// `Content-Length: 0` を含む固定テンプレートと完全一致させることで、
+/// ステータス行・`Sec-WebSocket-Version`/`Connection`/`Content-Length`
+/// ヘッダに加え、ボディが空であることも保証する。
+fn assert_426_response(response: &str) {
+    assert_eq!(
+        response,
+        "HTTP/1.1 426 Upgrade Required\r\n\
+         Sec-WebSocket-Version: 13\r\n\
+         Connection: close\r\n\
+         Content-Length: 0\r\n\
+         \r\n",
+        "426 response must exactly match handshake::serialize_426's output \
+         (status line + Sec-WebSocket-Version/Connection/Content-Length headers, empty body)"
+    );
+}
+
 /// `RequestHead` を都度パースするヘルパー（各テストが所有権を持てるよう
 /// `head` を返す。`fandhe_backend_http::request::RequestHead` は `Clone` を
 /// 実装しないため、テストごとに再パースする）。
@@ -156,7 +202,7 @@ async fn on_close_client_close_called_once() {
     });
 
     let response = read_http_response_line(&mut client_side).await;
-    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert_101_response(&response);
 
     let mut client: WebSocketStream<_> =
         WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
@@ -202,7 +248,7 @@ async fn on_close_eof_called_once() {
     });
 
     let response = read_http_response_line(&mut client_side).await;
-    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert_101_response(&response);
 
     // Close ハンドシェイクを行わず、クライアント側の生ストリームを drop
     // する（`WebSocketStream` へ包まないため Close フレームは送出されない）。
@@ -257,7 +303,7 @@ async fn on_close_idle_timeout_called_once() {
 
     let mut client_side = client_side;
     let response = read_http_response_line(&mut client_side).await;
-    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert_101_response(&response);
 
     // クライアントは何も送らず接続を保持したまま放置する（idle timeout を
     // 発火させるため drop しない）。
@@ -296,7 +342,7 @@ async fn on_close_cancelled_called_once() {
     });
 
     let response = read_http_response_line(&mut client_side).await;
-    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert_101_response(&response);
 
     let mut client: WebSocketStream<_> =
         WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
@@ -347,7 +393,7 @@ async fn on_close_protocol_error_called_once() {
     });
 
     let response = read_http_response_line(&mut client_side).await;
-    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert_101_response(&response);
 
     // マスクなし Text フレーム（FIN=1, opcode=1, payload len=2, "hi"）を
     // 生バイトで直接書き込む（`WebSocketStream` を経由するとクライアント
@@ -399,7 +445,7 @@ async fn on_close_handler_close_called_once() {
     });
 
     let response = read_http_response_line(&mut client_side).await;
-    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert_101_response(&response);
 
     let mut client: WebSocketStream<_> =
         WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
@@ -449,7 +495,7 @@ async fn on_close_handler_error_called_once() {
     });
 
     let response = read_http_response_line(&mut client_side).await;
-    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert_101_response(&response);
 
     let mut client: WebSocketStream<_> =
         WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
@@ -503,7 +549,7 @@ async fn on_close_message_too_large_called_once() {
     });
 
     let response = read_http_response_line(&mut client_side).await;
-    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert_101_response(&response);
 
     let mut client: WebSocketStream<_> =
         WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
@@ -564,7 +610,7 @@ async fn on_close_not_called_on_handshake_failure() {
     // 426 応答（Upgrade Required）を読み切る（`read_http_response_line` は
     // ステータス行を含むヘッダ全体を `\r\n\r\n` まで読む共通ヘルパー）。
     let response = read_http_response_line(&mut client_side).await;
-    assert!(response.starts_with("HTTP/1.1 426"));
+    assert_426_response(&response);
 
     let result = tokio::time::timeout(Duration::from_secs(2), server_task)
         .await
@@ -651,7 +697,7 @@ async fn on_close_default_noop_keeps_echo_working() {
     });
 
     let response = read_http_response_line(&mut client_side).await;
-    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert_101_response(&response);
 
     let mut client: WebSocketStream<_> =
         WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
