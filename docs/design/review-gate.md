@@ -86,8 +86,15 @@ required status check の context は ci.yml 等のジョブ名（一部は `mat
 2. 管理者が `scripts/setup-required-checks.sh --check` を実行し、旧名の削除・新名の追加
    だけが差分に出ることを確認する
 3. マージ直前に管理者が `scripts/setup-required-checks.sh`（apply）を実行する（旧名が
-   required のままだと当該 PR 自身がマージできなくなるため、マージ前に適用する必要がある）
-4. マージ後に `--check` が exit 0 になることを確認する
+   required のままだと当該 PR 自身がマージできなくなるため、マージ前に適用する必要がある）。
+   **通常の default branch（`main`）チェックアウトではまだ旧 context 定義のスクリプトしか
+   手元になく、解消したいマージ不能状態（新 context が required でない・旧 context が
+   required のまま）を解消できない。** 新 context 定義を含む PR head 側のスクリプトを
+   明示的に使う（例: `git fetch origin pull/<PR番号>/head && git show
+   origin/pull/<PR番号>/head:scripts/setup-required-checks.sh | bash -s --` や、PR ブランチを
+   `checkout` してからの実行）
+4. マージ後に `--check` が exit 0 になることを確認する（この時点では `main` を checkout
+   した状態で実行してよい。マージ後の `main` に新 context 定義が反映済みのため）
 
 ### 人間判断ダイヤル（本タスクでは実施判断を行わない項目）
 

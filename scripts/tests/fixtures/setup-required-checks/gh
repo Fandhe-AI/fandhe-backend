@@ -36,7 +36,7 @@ case "$1" in
                 # `--json nameWithOwner` / `--json defaultBranchRef` のどちらでも
                 # 同じスタブから返せるよう、要求された --jq 式で判定する。
                 if [[ "$*" == *"defaultBranchRef"* ]]; then
-                    echo "${STUB_DEFAULT_BRANCH:-main}"
+                    echo "${STUB_DEFAULT_BRANCH-main}"
                 else
                     echo "${STUB_NWO:-test-owner/test-repo}"
                 fi

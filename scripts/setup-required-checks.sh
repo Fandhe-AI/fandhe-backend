@@ -215,26 +215,20 @@ build_desired_json() {
 # ソートして、GitHub 側の順序変化を差分として誤検知しない。
 # --------------------------------------------------
 readonly NORMALIZE_FILTER='
-    {
-        name, target, enforcement,
-        bypass_actors: (.bypass_actors // [] | sort),
-        conditions: {
-            ref_name: {
-                include: (.conditions.ref_name.include // [] | sort),
-                exclude: (.conditions.ref_name.exclude // [] | sort)
-            }
-        },
-        rules: (
-            .rules
-            | map(
-                if .type == "required_status_checks" then
-                    .parameters.required_status_checks |=
-                        sort_by(.context, .integration_id)
-                else . end
-              )
-            | sort_by(.type)
-        )
-    }
+    del(.id, .node_id, .created_at, .updated_at, ._links, .source, .source_type,
+        .current_user_can_bypass)
+    | .bypass_actors |= (. // [] | sort)
+    | .conditions.ref_name.include |= (. // [] | sort)
+    | .conditions.ref_name.exclude |= (. // [] | sort)
+    | .rules |= (
+        map(
+            if .type == "required_status_checks" then
+                .parameters.required_status_checks |=
+                    sort_by(.context, .integration_id)
+            else . end
+          )
+        | sort_by(.type)
+      )
 '
 
 DESIRED_JSON="$(build_desired_json)"

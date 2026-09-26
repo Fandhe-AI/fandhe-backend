@@ -159,8 +159,11 @@ bash scripts/setup-required-checks.sh --help
   等のジョブ名変更と本スクリプトの required contexts 定義の変更を同じ PR で行う、
   (2) 管理者が `--check` を実行し旧名の削除・新名の追加だけが差分に出ることを確認する、
   (3) マージ直前に管理者が apply する（旧名が required のままだと PR がマージできなく
-  なる。#679/PR #685 で実際に発生した事例）、(4) マージ後に `--check` が exit 0 になる
-  ことを確認する。
+  なる。#679/PR #685 で実際に発生した事例）。**このとき通常の default branch（`main`）
+  checkout ではまだ旧 context 定義のスクリプトしか手元になく、解消したいマージ不能状態
+  を解消できない。新 context 定義を含む PR head 側のスクリプトを明示的に使う**（(4)
+  マージ後に `--check` が exit 0 になることを確認する。この時点は `main` checkout で
+  よい）。
 
 ## `tests/run-setup-required-checks-tests.sh` — main-protection 定義のオフラインセルフテスト（#693）
 
