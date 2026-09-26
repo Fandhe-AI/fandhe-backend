@@ -321,7 +321,7 @@ Debug` と同一のログ・診断への機密混入防止方針）。
 Capacity(_)`）と同じ手法でパターンマッチにより明示的に振り分ける。
 
 `tokio_tungstenite::tungstenite::Error`（tungstenite 0.30）には `Io(std::io::
-Error)` variant があり、tungstenite 自身の `error.rs`（37-41 行）が「fatal」と
+Error)` variant があり、tungstenite 自身の `error.rs`（34-37 行）が「fatal」と
 明記する種別である。接続リセット（`ECONNRESET`）等、実運用で頻発しうる終了経路を
 `Protocol` へ一括で丸めると、切断理由の診断価値（本設計の `on_close` 通知の主目的）
 が損なわれる。
