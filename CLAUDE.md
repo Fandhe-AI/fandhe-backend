@@ -534,8 +534,8 @@ fandhe-backend/
 │   │                                    # イシュー #703（親 #702）で、接続単位ハンドラ
 │   │                                    # （`on_message_with_ctx`、既定実装は既存
 │   │                                    # `on_message` へ委譲）・切断通知
-│   │                                    # （`on_close(ctx, CloseReason)`、6 系統の終了経路を
-│   │                                    # 網羅）・送信キュー消化中のデッドロック解消の API を
+│   │                                    # （`on_close(ctx, CloseReason)`、全終了経路を
+│   │                                    # 網羅する対応表付き）・送信キュー消化中のデッドロック解消の API を
 │   │                                    # 設計した（`docs/design/
 │   │                                    # ws-connection-context-and-close.md`。設計のみで
 │   │                                    # コード変更なし、実装は #704〜#707 が担う。バージョン

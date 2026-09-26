@@ -59,11 +59,13 @@
   `WsSender`（`mpsc::Sender<WsMessage>` の薄いラッパー、`send` のみ公開）
 - `crates/plugin-websocket/src/session.rs`: `run_session` が受信ループ本体。
   `Message::Close(_) => break;`／`InboundEvent::Message(None) => break;`（EOF）／
-  `InboundEvent::Idle`／`race_cancel` が `None`（shutdown/rebind キャンセル、2 箇所:
-  受信ループ先頭・outbound 送出中）／`WsOutcome::Close`（[`apply_outcome`] の
-  `SessionFlow::Closed`）／ハンドラ `Err`（`outcome?` で即時 `Err(WsError::Handler)`
-  として関数を抜け、Close ハンドシェイクを経ない）という最低 6 系統の終了経路が
-  個別の `break`/`return` に分散している
+  `InboundEvent::Idle`／`race_cancel` が `None`（shutdown/rebind キャンセル、受信ループ
+  先頭・outbound 送出中・on_message 実行中・`apply_outcome` 内部レース由来の複数箇所）／
+  `WsOutcome::Close`（[`apply_outcome`] の `SessionFlow::Closed`）／ハンドラ `Err`
+  （`outcome?` で即時 `Err(WsError::Handler)` として関数を抜け、Close ハンドシェイクを
+  経ない）／`InboundEvent::Outbound` 分岐の `ws.send` 失敗・`apply_outcome` 内部の
+  `ws.send`/`ws.close` 失敗（いずれも `Err(WsError::Protocol(_))` として即時関数を抜ける）
+  という終了経路が個別の `break`/`return`/`?` に分散している。全経路の網羅表は 4 節を参照
 - `crates/plugin-websocket/src/lib.rs` `handle_upgrade`: 101 応答成功後に
   `handler::channel(handler::DEFAULT_OUTBOUND_CAPACITY)` でチャネルを作り、
   `WsOpenContext::new(sender, params)` を構築して `on_open` を一度呼び、
@@ -292,18 +294,48 @@ Debug` と同一のログ・診断への機密混入防止方針）。
 
 ### `session.rs` の脱出点対応表
 
-設計文書に表形式で明記し、#705 がそのまま実装できる粒度とする。
+設計文書に表形式で明記し、#705 がそのまま実装できる粒度とする。行番号は
+`crates/plugin-websocket/src/session.rs`（v0.4.1、worktree 上で main と無差分）を
+実際に読んで確認したもの。`run_session` を包む `loop` 本体・`apply_outcome`
+（436-464 行）の両方から抜ける経路をすべて挙げる。
 
-| session.rs の分岐 | `CloseReason` |
+| session.rs の分岐（行番号） | `CloseReason` |
 |---|---|
-| `Message::Close(_) => break;` | `ClientClose` |
-| `InboundEvent::Message(None) => break;`（EOF） | `Eof` |
-| `InboundEvent::Idle`（`handle_idle_timeout` へ） | `IdleTimeout` |
-| `race_cancel` が `None`（`handle_cancellation` へ、受信ループ先頭・outbound 送出中の 2 箇所） | `Cancelled` |
-| `WsOutcome::Close`（[`apply_outcome`] の `SessionFlow::Closed`） | `HandlerClose` |
-| `on_message_with_ctx` の `Err(WsHandlerError)`（現状 `outcome?` で即時 `Err` 化） | `Failed(FailureKind::Handler)` |
-| `message?` の `Err`（tungstenite）: `Error::Capacity(_)` | `MessageTooLarge` |
-| `message?` の `Err`: その他（`Protocol`/`Io` 等） | `Failed(FailureKind::Protocol)` / `Failed(FailureKind::Io)` |
+| `Message::Close(_) => break;`（294-296 行） | `ClientClose` |
+| `InboundEvent::Message(None) => break;`（250 行、EOF） | `Eof` |
+| `InboundEvent::Idle => { ...; return handle_idle_timeout(...); }`（235-238 行） | `IdleTimeout` |
+| `race_cancel` が `None` → `handle_cancellation`（215 行・229 行: 受信ループ先頭、outbound 有無で分岐する 2 箇所／244 行: `InboundEvent::Outbound` 分岐内の `ws.send` 送出中／264 行・283 行: `on_message` 実行中（Text/Binary 各分岐）／269-271 行・288-290 行: `apply_outcome` が返した `SessionFlow::Cancelled` を受けて Text/Binary 各分岐から再度 `handle_cancellation` へ分岐） | `Cancelled` |
+| `apply_outcome` が返す `SessionFlow::Closed`（`WsOutcome::Close`、268 行・287 行） | `HandlerClose` |
+| `outcome?` の `Err(WsHandlerError)`（`on_message` の戻り値、266 行・285 行。現状 `outcome?` で即時 `Err` 化） | `Failed(FailureKind::Handler)` |
+| `message?` の `Err`（252 行、tungstenite）: `Error::Capacity(_)` | `MessageTooLarge` |
+| `message?` の `Err`（252 行）: `Capacity` 以外 | `Failed(FailureKind::Protocol)`（`Io` にはならない。理由は次項） |
+| `InboundEvent::Outbound` 分岐の `ws.send` 失敗（`Some(Err(err)) => return Err(err.into())`、247 行） | `Failed(FailureKind::Protocol)` |
+| `apply_outcome(...).await?` が伝播する `apply_outcome` 内部の `ws.send`/`ws.close` 失敗（`apply_outcome` 内 451 行・459 行の `result?`、呼び出し元の `.await?` 経由。Text 分岐 266 行・Binary 分岐 285 行） | `Failed(FailureKind::Protocol)` |
+
+#### `FailureKind::Io` は `run_session_inner` の脱出点からは到達しない
+
+上表のとおり、`session.rs` 内で `WsError` へ変換される箇所（252 行の `message?`・
+247 行の `err.into()`・451/459 行の `result?`）はいずれも
+`tokio_tungstenite::tungstenite::Error` を `From<tungstenite::Error> for WsError`
+（`crates/plugin-websocket/src/error.rs`）経由で変換しており、この `From` 実装は
+常に `WsError::Protocol(_)` を生成する（`Io` にはならない）。`WsError::Io` を
+生成する `From<std::io::Error> for WsError` は `crates/plugin-websocket/src/
+lib.rs` の `write_racing_cancel`（101/400/426 応答の書き込み、ハンドシェイク
+検証・101 送出の途中でのみ呼ばれる）でのみ使われており、これは常に `on_open`
+呼び出し（＝セッション確立、101 送出成功後）より**前**に発生する。`on_close` は
+`on_open` が呼ばれた接続に限って呼ぶ設計（本節末尾の不変条件を参照）のため、
+`run_session_inner` の脱出点が `Failed(FailureKind::Io)` を返す経路は現状存在
+しない。
+
+**採用する設計**: `FailureKind::Io` は enum から削除せず維持する（`WsError::Io`
+との対称性を保ち、`#[non_exhaustive]` の将来拡張余地——例えば #706 の送信キュー
+消化方式が `session.rs` 内に直接 I/O を持ち込む場合——に備えるため）。ただし
+上表・本項の記述により、現時点で `run_session_inner` から `Failed(FailureKind::
+Io)` が生じないことを設計として明記し、#705 の実装者が「`message?` の `Err` を
+`Io`/`Protocol` へどう振り分けるか」で迷わないようにする。振り分けが不要な理由は
+「`tungstenite::Error` からの変換は判別せず一律 `Protocol` にする」という上記
+`From` 実装のとおりであり、`session.rs` 側で追加の判定ロジックを実装する必要は
+ない。
 
 ### 不変条件（構造で保証、個別 return への散在実装を禁止）
 
