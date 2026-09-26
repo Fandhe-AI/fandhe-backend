@@ -482,6 +482,12 @@ jobs:
       - name: run-review-gate-tests.sh --offline（レビューゲート運用のオフライン退行検知、TASK-14.3、#41）
         run: bash scripts/tests/run-review-gate-tests.sh --offline
 
+      # イシュー #693: main の実際の保護（ruleset main-protection）と
+      # scripts/setup-required-checks.sh の定義が一致することを、gh 認証・
+      # ネットワーク不要のスタブ経由でオフライン検証する。
+      - name: run-setup-required-checks-tests.sh（main-protection ruleset 定義のオフラインセルフテスト、#693）
+        run: bash scripts/tests/run-setup-required-checks-tests.sh
+
       - name: run-guardrail-tests.sh（対応可否判定記録バリデータのセルフテスト、TASK-12.3-2、#84）
         run: bash scripts/tests/run-guardrail-tests.sh
 

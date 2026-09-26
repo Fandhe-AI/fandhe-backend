@@ -55,21 +55,33 @@ individual ジョブ名を required status check として個別に登録する�
 ### ジョブ追加・改名時の運用
 
 新しい品質ゲートジョブを追加する場合、`ci-complete` の `needs` と判定ステップの `env` /
-ループ対象に 1 行追加するだけで判定対象を拡張できる。既存ジョブを改名する場合は
-`ci-complete` の `needs` と `scripts/setup-required-checks.sh` の `REQUIRED_CHECK_NAME`
-（`ci-complete` 自体は改名しない限り不変）を確認する。`ci-complete` というジョブ名自体を
-改名する場合は、本ジョブ名を参照する `scripts/setup-required-checks.sh` の
-`REQUIRED_CHECK_NAME` を同時に更新すること。
+ループ対象に 1 行追加するだけで判定対象を拡張できる。**個別ジョブ名も required status
+check として ruleset に個別登録されている**（`ci-complete` のみを required にする運用では
+ない。#693 で main の実際の保護 ruleset `main-protection` と一致するよう改めた。matrix 化
+した fmt/clippy/test の 9 件・codex 系 3 件・Cursor Bugbot 等、required contexts の全量は
+`scripts/setup-required-checks.sh --print-desired` を正とする）。ジョブ名を改名する場合は
+`ci-complete` の `needs` に加えて `scripts/setup-required-checks.sh` の required contexts
+定義も同じ PR で更新し、マージ前に管理者が `--check` → apply（`scripts/setup-required-
+checks.sh`、差分がある場合のみ書き込み）を実行する必要がある（旧名が required のままだと
+当該 PR 自身がマージできなくなる。#679/PR #685 で実際に発生した事例、手順の詳細は
+`docs/design/review-gate.md` §2.1）。`ci-complete` というジョブ名自体を改名する場合も
+同様に required contexts 定義の該当エントリを更新すること。
 
 ## 実装: required status check の設定
 
-`scripts/setup-required-checks.sh` が default branch（通常 `main`）の repository ruleset に
-`ci-complete` を required status check として設定する。詳細は `scripts/README.md` を参照。
+`scripts/setup-required-checks.sh` が default branch の repository ruleset
+`main-protection` に required status check を設定する。詳細は `scripts/README.md` を参照。
 
-- 本タスク（TASK-14.1）時点では required_status_checks のみを設定した。
+- 本タスク（TASK-14.1）時点では required_status_checks（`ci-complete` のみ）を設定した。
 - PR 必須化・force push 禁止・ブランチ削除禁止の追加ルールは TASK-14.3（#41）で
   `scripts/setup-required-checks.sh` に追加済み。詳細・人間判断ダイヤル（承認数・
   strict policy）は `docs/design/review-gate.md` を参照。
+- #693 で、スクリプトの宛先を実際の運用 ruleset `main-protection` に一致させ、
+  required status check を `ci-complete` を含む 25 件（matrix 化した fmt/clippy/test・
+  codex 系・Cursor Bugbot 等）へ拡張した。実際の保護はこの時点までリポジトリの外
+  （GitHub UI）で手作業運用されており、スクリプトの定義とは乖離していた
+  （`docs/design/review-gate.md` §2・4.3 参照）。live との差分は
+  `scripts/setup-required-checks.sh --check`（読み取り専用）で検出できる。
 - 実装時点（2026-07-16）で main ブランチは無保護（branch protection 404 / ruleset 0 件）
   だったため、本スクリプトの実行により初めて `ci-complete` が必須化される。
   管理者権限を持つトークンで `gh` にログインした状態でのみ成功する。403 になる場合は
