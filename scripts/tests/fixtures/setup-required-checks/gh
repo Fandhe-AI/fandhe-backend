@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# `scripts/tests/run-setup-required-checks-tests.sh` 専用の `gh` スタブ。
+# PATH の先頭に本ディレクトリを置くことで実 API を一切呼ばずに
+# `scripts/setup-required-checks.sh` をオフライン検証する（イシュー #693）。
+#
+# 呼び出しはすべて $STUB_LOG（呼び出し元が用意する一時ファイル）へ追記する。
+# 書き込み系メソッド（PUT/POST/PATCH/DELETE）は必ずログしたうえで exit 97 にし、
+# テスト側で「apply 経路を一切呼んでいないこと」を機械的に確認できるようにする
+# （受け入れ基準 5: 実装・テスト過程で live へ書き込みしないことの担保）。
+set -euo pipefail
+
+: "${STUB_LOG:?STUB_LOG が未設定です（呼び出し元テストのバグ）}"
+printf '%s\n' "$*" >>"${STUB_LOG}"
+
+fail_if_requested() {
+    if [ "${STUB_FAIL:-0}" = "1" ]; then
+        echo "stub: STUB_FAIL=1 のため gh api 呼び出しを失敗させます" >&2
+        exit 1
+    fi
+}
+
+# --method PUT/POST/PATCH/DELETE を含む呼び出しは書き込み系として一律拒否する。
+for arg in "$@"; do
+    case "${arg}" in
+        PUT|POST|PATCH|DELETE)
+            echo "stub: 書き込み系メソッド '${arg}' が呼ばれました（テスト用スタブは拒否します）" >&2
+            exit 97
+            ;;
+    esac
+done
+
+case "$1" in
+    repo)
+        case "$2" in
+            view)
+                # `--json nameWithOwner` / `--json defaultBranchRef` のどちらでも
+                # 同じスタブから返せるよう、要求された --jq 式で判定する。
+                if [[ "$*" == *"defaultBranchRef"* ]]; then
+                    echo "${STUB_DEFAULT_BRANCH:-main}"
+                else
+                    echo "${STUB_NWO:-test-owner/test-repo}"
+                fi
+                ;;
+            *)
+                echo "stub: 未対応の repo サブコマンド: $*" >&2
+                exit 2
+                ;;
+        esac
+        ;;
+    api)
+        fail_if_requested
+        # 最後の非オプション引数がパス（例: repos/x/y/rulesets/123）
+        path=""
+        for arg in "$@"; do
+            case "${arg}" in
+                --*) ;;
+                api) ;;
+                *) path="${arg}" ;;
+            esac
+        done
+        case "${path}" in
+            */rulesets)
+                cat "${STUB_LIST_FILE:?STUB_LIST_FILE 未設定}"
+                ;;
+            */rulesets/*)
+                cat "${STUB_RULESET_FILE:?STUB_RULESET_FILE 未設定}"
+                ;;
+            */rules/branches/*)
+                cat "${STUB_BRANCH_RULES_FILE:-/dev/null}" 2>/dev/null || echo '[]'
+                ;;
+            *)
+                echo "stub: 未対応の api パス: ${path}" >&2
+                exit 2
+                ;;
+        esac
+        ;;
+    *)
+        echo "stub: 未対応のサブコマンド: $*" >&2
+        exit 2
+        ;;
+esac

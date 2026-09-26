@@ -1,5 +1,11 @@
 # REQ-14 受け入れ検証レポート — AI 改修の検証ゲート（TASK-14.1〜14.3）
 
+> **注記（2026-09-26、#693）**: 本レポートが参照する ruleset `main-required-checks` は
+> #693 で `main-protection`（main の実際の保護、リポジトリ外運用）に一本化された。
+> 現行の定義・差分検出は `scripts/setup-required-checks.sh --check`・
+> `docs/design/review-gate.md` §2・4.3 を参照。本レポート本体（過去の実施記録）は
+> 変更していない。
+
 ## 本レポートの位置づけ
 
 `docs/spec/04-requirements.md` REQ-14（AI 改修の検証ゲート）は TASK-14.1（#39）・

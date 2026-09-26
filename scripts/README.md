@@ -132,22 +132,50 @@ req6-typescript-types.md` 参照）。
 | `shellcheck`（`actionlint.sh` のみ、任意。未導入時は actionlint の `run:` ブロック検査が縮退する WARN のみ。動作確認済み: 0.11.0） | actionlint の `run:` ブロック shellcheck 統合 | OS のパッケージマネージャ（例: `apt install shellcheck`） |
 | `cargo`（`standalone-crates-io-check.sh`。他スクリプトでも暗黙の前提だが、本スクリプトは Rust ツールチェーン以外の追加ツールを要さないため明示する） | standalone クレートの `cargo build` / `cargo test`（crates.io レジストリ解決） | rustup（https://rustup.rs/）でツールチェーンを導入 |
 
-## `setup-required-checks.sh` — required status check の設定
+## `setup-required-checks.sh` — main-protection ruleset の定義・適用・差分検出（#693）
 
 ```bash
-bash scripts/setup-required-checks.sh
+bash scripts/setup-required-checks.sh --print-desired  # 定義（正規化 JSON）を表示（gh 不要）
+bash scripts/setup-required-checks.sh --check          # live との差分を表示するだけ（書き込みなし）
+bash scripts/setup-required-checks.sh                   # apply（差分がある場合のみ PUT/POST、admin 権限要）
+bash scripts/setup-required-checks.sh --help
 ```
 
-- default branch（通常 `main`）を対象に、`ci-complete`（`.github/workflows/ci.yml` の集約
-  ゲートジョブ）を required status check とする repository ruleset を作成・更新する。
-- 同名 ruleset（`main-required-checks`）が既にあれば更新、無ければ新規作成するため
-  複数回実行しても安全（冪等）。
-- TASK-14.3（#41）以降、required_status_checks に加えて `pull_request`
-  （`required_approving_review_count: 0`、main への直 push 禁止）・`non_fast_forward`
-  （force push 禁止）・`deletion`（ブランチ削除禁止）を設定する。承認数・strict policy を
-  含む運用定義は `docs/design/review-gate.md` を参照。
-- リポジトリ管理者権限が無いトークンで実行すると 403 で失敗する。その場合は本スクリプトを
-  握りつぶさず、権限を持つ人間が手動実行する。
+- 対象は default branch（`~DEFAULT_BRANCH`）を保護する repository ruleset
+  **`main-protection`**。イシュー #693 以前はスクリプトの宛先が存在しない
+  `main-required-checks` になっており、実際の保護（`main-protection`、required status
+  check 25 件・`required_review_thread_resolution: true`・squash マージのみ・
+  `bypass_actors` 空）とは別の ruleset を作ってしまう不整合があった。#693 で
+  `main-protection` を正としてその全構成を定義に持つよう改めた。
+- **終了コード**: `0` = 一致（apply なら適用済みか変更不要）、`1` = 差分あり（`--check`
+  時。存在しない ruleset を含む）、`2` = 前提エラー（gh/jq 不在・認証失敗・API エラー・
+  同名 ruleset の重複・不明な引数）。`--check` は書き込みを一切行わない。
+- **apply（既定・引数なし）**: 差分がある場合のみ PUT/POST する（冪等）。同名 ruleset が
+  無い場合は、default branch に既に何らかの branch ruleset が適用されていないかを
+  確認してから POST し、2 つ目の ruleset を誤って作らないようにする。リポジトリ管理者
+  権限が無いトークンで実行すると 403 で失敗する。その場合は本スクリプトを握りつぶさず、
+  権限を持つ人間が手動実行する。
+- **ジョブ名を変えるときの運用**（`docs/design/review-gate.md` §2.1 参照）: (1) ci.yml
+  等のジョブ名変更と本スクリプトの required contexts 定義の変更を同じ PR で行う、
+  (2) 管理者が `--check` を実行し旧名の削除・新名の追加だけが差分に出ることを確認する、
+  (3) マージ直前に管理者が apply する（旧名が required のままだと PR がマージできなく
+  なる。#679/PR #685 で実際に発生した事例）、(4) マージ後に `--check` が exit 0 になる
+  ことを確認する。
+
+## `tests/run-setup-required-checks-tests.sh` — main-protection 定義のオフラインセルフテスト（#693）
+
+```bash
+bash scripts/tests/run-setup-required-checks-tests.sh
+```
+
+- `fixtures/setup-required-checks/gh` スタブ（live の `main-protection` スナップショット
+  を返す）を PATH に差し込み、`setup-required-checks.sh --check` の差分検出・終了コードを
+  17 ケース（一致・順序入れ替え許容・required context の追加/削除/integration_id 変更・
+  `pull_request` パラメータ改変・`bypass_actors` 追加・対象ブランチ誤り・ruleset 不在/
+  重複・API エラー・`--print-desired` の内容一致・不明引数）で検証する。ネットワーク・gh
+  認証は不要で、`ci.yml` の `unsafe-triage` ジョブから常時呼ばれる。
+- 末尾でスタブの呼び出しログに書き込み系メソッド（PUT/POST/PATCH/DELETE）が 1 件も
+  無いことを確認し、テスト自体が live へ書き込まないことを機械的に保証する。
 
 ## `tests/run-review-gate-tests.sh` — レビューゲート運用の受け入れテスト（TASK-14.3、#41）
 
@@ -161,10 +189,12 @@ bash scripts/tests/run-review-gate-tests.sh            # フル層（受け入�
   静的に確認する。`unsafe-triage` ジョブから常時呼ばれる。
 - フル層（既定）: 上記に加えて (1) `git archive HEAD` による一時複製へ PoC-9 模擬パターンを
   注入し `cargo clippy` が `uninit_vec` で失敗し `#[allow]` 変種が `E0453` で失敗することを
-  確認する deny lint 検出テスト、(2) `gh api` で ruleset `main-required-checks` の
-  `pull_request`/`non_fast_forward`/`deletion`/`required_status_checks` を確認する
-  ruleset 検証テストを実行する。いずれもリポジトリの作業ツリー・共有設定を変更しない
-  読み取り専用テストである。
+  確認する deny lint 検出テスト、(2) `setup-required-checks.sh --check` を実行して
+  `main-protection` ruleset が live の定義と一致することを確認し、`gh api` で ruleset が
+  実際にデフォルトブランチへ適用されていることを確認する ruleset 検証テストを実行する
+  （ruleset の内容照合そのものは #693 で `setup-required-checks.sh --check` に一本化した。
+  オフラインのケース網羅は `tests/run-setup-required-checks-tests.sh` が担う）。
+  いずれもリポジトリの作業ツリー・共有設定を変更しない読み取り専用テストである。
 - 詳細（レビューゲートの定義・受け入れテストの設計判断・実施記録）は
   `docs/design/review-gate.md` を参照。
 
