@@ -278,7 +278,7 @@ breaking change を 0.x 系で一度安定させる位置づけ）。
   対象外のためマージは阻害しない）。publish 完了後に `workflow_dispatch` で
   再実行し PASS を確認する
 
-### 7.5 v0.4.1 リリース（2026-09-26 準備、publish は準備中）
+### 7.5 v0.4.1 リリース（2026-09-26 publish 完了）
 
 v0.4.0 公開（2026-08-13）後に main へ入った変更は breaking change を含まず、
 `fandhe-backend-plugin-websocket` への後方互換な API 追加（#670・#671・#675・
@@ -289,6 +289,13 @@ v0.4.0 公開（2026-08-13）後に main へ入った変更は breaking change �
 できる。ただし本リポジトリの lockstep 運用は 7 節の方針どおり 13 クレート
 一斉更新を維持し、クレート単位でのバージョン差異は設けない）。
 
+- **実 publish（Phase B）は 2026-09-26 に完了**。`v0.4.1` タグ push により
+  `release.yml`（run 36232494978）の verify → dry-run → GitHub Environments
+  `crates-io-release` の承認を経て `cargo publish --workspace` が実行され、公開
+  対象 13 クレートすべての 0.4.1 が crates.io インデックスへ反映されたことを
+  crates.io API で確認済み（あわせて本ドキュメント・`CHANGELOG.md`・README・
+  `docs/guide/getting-started.md`・`site/index.md`・CLAUDE.md の v0.4.0 表現を
+  「公開済み（2026-09-26）」・v0.4.1 へ切り替えた）。
 - **Added**（`fandhe-backend-plugin-websocket`）: サーバー起点で任意タイミングに
   push できる送信ハンドル `WsSender`（イシュー #670、PR #682）、
   `WsMessageHandler::on_open`（既定 no-op）+ `WsOpenContext` による `WsSender`
@@ -315,13 +322,13 @@ v0.4.0 公開（2026-08-13）後に main へ入った変更は breaking change �
   fandhe-backend-routes`）、`CHANGELOG.md` の `[0.4.1] - 2026-09-26` 節追加を
   実施した
 - README・`docs/guide/getting-started.md`・`site/index.md`・CLAUDE.md の現行
-  公開版表記は、v0.4.0（7.4 節）・v0.3.0（7.3 節）と同じ慣例に従い、**Phase B
-  publish 完了後**に追随する（publish 未完了の間は「v0.4.0（2026-08-13）公開
-  済み」の表記が事実として正しいため）
+  公開版表記は、v0.4.0（7.4 節）・v0.3.0（7.3 節）と同じ慣例に従い、Phase B
+  publish 完了（2026-09-26）を受けて「公開済み（2026-09-26）」・v0.4.1 へ
+  追随済み
 - `standalone-crates-io.yml` は v0.4.1 publish 完了までは構造的に FAIL する
   （v0.2.0〜v0.4.0（7.1・7.3・7.4 節）と同一のニワトリ卵問題、required check
   対象外のためマージは阻害しない）。publish 完了後に `workflow_dispatch` で
-  再実行し PASS を確認する
+  再実行し、PASS を確認した（2026-09-26、success。run 36233416660）
 
 ## 8. 公開前チェックリスト
 
@@ -395,18 +402,19 @@ v0.4.0 公開（2026-08-13）後に main へ入った変更は breaking change �
       `fandhe-backend-core = "^0.4.0"` 等を crates.io 公開版のみで解決できて PASS することを
       確認する（2026-08-13 実施済み、success。run 31683835828）
 
-### v0.4.1（2026-09-26 準備、publish は準備中）
+### v0.4.1（2026-09-26 publish 完了）
 
 - [x] 公開対象 13 クレートの `version` および workspace 内 path 依存の `version` 併記が
       すべて 0.4.1 に揃っている（恒久非公開 3 クレートは対象外。2026-09-26 実施済み）
 - [x] `cargo publish --workspace --dry-run` が公開対象 13 クレート全件で成功する
       （2026-09-26 実施済み）
-- [ ] Phase B: `v0.4.1` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
-      の実行
-- [ ] Phase B publish 完了後、`standalone-crates-io.yml` を `workflow_dispatch` で
+- [x] Phase B: `v0.4.1` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
+      の実行（2026-09-26 実施済み。13 クレートすべての 0.4.1 が crates.io
+      インデックスへ反映されたことを確認済み。release run 36232494978）
+- [x] Phase B publish 完了後、`standalone-crates-io.yml` を `workflow_dispatch` で
       再実行し、`templates/app`・`examples/with-*` 4 件の 5 クレートが
       `fandhe-backend-core = "^0.4.1"` 等を crates.io 公開版のみで解決できて PASS することを
-      確認する
+      確認する（2026-09-26 実施済み、success。run 36233416660）
 
 ## 参照
 
