@@ -209,3 +209,20 @@
   まま維持で確定扱いしない —
   区分は `benches/reports/issue616-hosted-runner-calibration.md` 11 節参照）。
   設計のみでコード変更なし、実装は Phase 2（#613・#614）へ引き渡す）
+- [`ws-connection-context-and-close.md`](./ws-connection-context-and-close.md):
+  接続単位ハンドラと切断通知の API 設計（イシュー #703、親 #702。fandhe-browser の
+  CDP 互換サーバー採用に向け、`WsMessageHandler::on_message` が接続コンテキストを
+  持てない・ハンドラが接続単位の状態を持てない・切断が明示通知されない・
+  `on_message` 実行中の送信キュー未消化によるデッドロックの 4 点を解消する API を
+  設計。`with_handler_factory` によるインスタンス化案（案 A）と `on_message_with_ctx`/
+  `on_close` を既定実装付きで追加する案（案 B）を比較し、`CloseReason` 通知に
+  Drop ベースの通知が使えないことを決定打として案 B を採用。`CloseReason` は
+  実際の `WsError` を運ばず種別（`FailureKind`）のみを運ぶ設計（`WsError` が
+  `Clone` 非実装のため）・全終了経路から `CloseReason` への対応表
+  （`tungstenite::Error::Io(_)` を明示的に判別して `FailureKind::Io` へ
+  振り分ける基準を含む）・
+  `WsConnContext` が `WsSender` を保持することで既存の outbound チャネル閉鎖検知
+  分岐が到達不能になる副作用・送信キュー消化の内側レース方針（#706 の前提）を
+  記述。バージョン方針は非破壊追加のみのため 0.4.2（先例: #671/#675/#676）。設計
+  のみでコード変更なし、実装は #704（接続コンテキスト）・#705（`CloseReason`/
+  `on_close`）・#706（送信キュー消化）・#707（e2e）へ引き渡す）
