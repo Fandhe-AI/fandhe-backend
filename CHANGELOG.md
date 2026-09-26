@@ -5,6 +5,58 @@
 （詳細は [`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7 節）。
 恒久非公開クレート（`axum-ref` / `ws-load-client` / `docs-site`）はこの一覧に含めない。
 
+## [0.4.1] - 2026-09-26
+
+公開対象 13 クレートを lockstep バンプ（`docs/design/crates-io-release.md` 7.5 節）。
+実 publish（`v0.4.1` タグ push → verify → dry-run → GitHub Environments
+`crates-io-release` の required reviewers 承認 → `cargo publish --workspace`）は
+準備中（詳細は
+[`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7.5 節・8 節チェックリスト参照）。
+
+BREAKING CHANGE はありません（後方互換な API 追加とセキュリティ修正のみ）。
+
+### Added
+
+- `fandhe-backend-plugin-websocket`: サーバー起点で任意タイミングにメッセージを
+  push できる送信ハンドル `WsSender` を追加しました。`run_session` の受信ループへ
+  bounded mpsc の outbound チャネルを合流させ、cancel（最優先）→
+  （クライアント受信 or アイドル期限）→ outbound（push）の優先順で処理します
+  （イシュー [#670](https://github.com/Fandhe-AI/fandhe-backend/issues/670)、PR
+  [#682](https://github.com/Fandhe-AI/fandhe-backend/pull/682)）
+- `fandhe-backend-plugin-websocket`: `WsMessageHandler::on_open`（既定 no-op）と
+  `WsOpenContext` を追加し、101 応答送出成功後に `WsSender` をハンドラへ渡す経路を
+  確立しました（ハンドシェイク失敗・101 送出前キャンセルでは呼ばれないフェイル
+  クローズ契約。チャネル容量は `handler::DEFAULT_OUTBOUND_CAPACITY = 8` 固定、
+  イシュー [#671](https://github.com/Fandhe-AI/fandhe-backend/issues/671)、PR
+  [#684](https://github.com/Fandhe-AI/fandhe-backend/pull/684)）
+- `fandhe-backend-plugin-websocket`: `WebSocketConfig::with_path_pattern` +
+  `pattern::PathPattern` により `{name}` パスパラメータ付きパターン登録・
+  マッチングに対応しました（CDP 互換サーバーの `/devtools/page/{id}` 等、イシュー
+  [#675](https://github.com/Fandhe-AI/fandhe-backend/issues/675)、PR
+  [#683](https://github.com/Fandhe-AI/fandhe-backend/pull/683)）
+- `fandhe-backend-plugin-websocket`: `WsOpenContext::param` / `params`
+  （非デコード契約、`Debug` 出力には含めない）で、`with_path_pattern` が抽出した
+  パスパラメータを `on_open` ハンドラから読めるようにしました。完全一致パスのみの
+  設定では従来どおりパラメータは空です（イシュー
+  [#676](https://github.com/Fandhe-AI/fandhe-backend/issues/676)、PR
+  [#687](https://github.com/Fandhe-AI/fandhe-backend/pull/687)）
+
+上記 4 件に伴い、`fandhe-backend-plugin-websocket` の `tokio` feature へ
+`sync`（bounded mpsc 用）を追加しました（`io-util` / `time` / `sync` の 3 つ、
+新規クレート増分なし）。
+
+### Security
+
+- `fandhe-backend-plugin-static`: URL セグメントの字句検証で `:` を拒否し、
+  Windows のドライブ相対パスへの迂回と NTFS ADS 構文を遮断しました
+  （`is_safe_segment` / `is_safe_segment_relaxed`）。あわせて `canonicalize` 後の
+  実パスを root 配下で再検証する `resolved_path_is_safe` を追加し、8.3 短縮
+  ファイル名エイリアスによるドットファイル保護のバイパスも防ぎます。二層防御が
+  3 OS（`ubuntu-latest` / `macos-latest` / `windows-latest`）で一貫して機能する
+  ことをテストで確認済みです（本番コードは元々 `cfg(unix)` 非依存。イシュー
+  [#680](https://github.com/Fandhe-AI/fandhe-backend/issues/680)、PR
+  [#689](https://github.com/Fandhe-AI/fandhe-backend/pull/689)）
+
 ## [0.4.0] - 2026-08-13
 
 公開対象 13 クレートを lockstep バンプ（`docs/design/crates-io-release.md` 7.4 節）。
