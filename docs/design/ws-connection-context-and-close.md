@@ -629,7 +629,21 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
   プロセス kill 由来の 3 つの既知の限界（4 節「不変条件」参照）は対象外）・
   `WsSender::closed()`/`is_closed()`・各終了経路ごとの実接続テスト。
   `crates/core/src/plugin.rs` は変更不要である旨を明記済みなので影響範囲から
-  除外してよい
+  除外してよい。**#705 はその後 3 分割された**: #726（`CloseReason`/
+  `FailureKind` の定義・`run_session_inner` への分割・脱出点対応表の実装。
+  **実装済み**、`docs/design/ws-connection-context-and-close.md` 本節参照）・
+  #727（`WsSender::closed()`/`is_closed()`）・#729（`on_close` 呼び出し、#726 に
+  依存）
+- **#726 実装済みの既知のギャップ（5 節「既知の設計ギャップと対応方針」相当、
+  実装計画から転記）**: 4 節の脱出点対応表は `InboundEvent::Message(None)`
+  （EOF）→ `Eof` を明記するが、tokio-tungstenite 0.30 は Close ハンドシェイク
+  なしの TCP 切断を `Err(Protocol(ResetWithoutClosingHandshake))` として返す
+  経路が主であり、`ws.next()` が実際に `None` を返す（`Eof` に到達する）のは
+  `ConnectionClosed`/`AlreadyClosed` 到達後の fused 呼び出し等に限られる
+  （実質到達不能）。受け入れ基準「脱出点対応表の定義どおり」を優先し、表を
+  文字どおり実装した（`ResetWithoutClosingHandshake` を `Eof` へ読み替える
+  変更は行っていない）。`ResetWithoutClosingHandshake` の分類見直しは
+  再検討事項として残す（起票はまだ行っていない）
 - **#706**: 送信キュー消化の内側レース実装・順序契約のテスト固定（6 節、
   **#704 の PR #725 で前倒し実装済み**。残作業がなければクローズ対象）
 - **#707**: 2 クライアント同時接続 e2e（前提: #704/#705 完了後。#706 は前倒し
