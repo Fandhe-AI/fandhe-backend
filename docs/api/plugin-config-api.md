@@ -39,7 +39,7 @@ RFC 6455 ハンドシェイク検証・101 応答・tokio-tungstenite へのフ�
 | メッセージハンドラ | `with_handler(impl WsMessageHandler)` で差し替え。既定は `EchoHandler`（後方互換） |
 | 接続コンテキスト | `WsMessageHandler::on_message_with_ctx`（provided、既定は既存の `on_message` へ委譲）で `WsConnContext`（`conn_id()` / `sender()` / `param()` / `params()`）を参照可能。`WsOpenContext::conn_id()` で `on_open` 時点からも同じ接続 ID を取得できる（`docs/design/ws-connection-context-and-close.md` 参照） |
 | 終了理由 | `handler::CloseReason` / `handler::FailureKind`（いずれも `#[non_exhaustive]`）でセッションの終了経路を種別化。`WsMessageHandler::on_close(&self, ctx: &WsConnContext, reason: CloseReason)`（既定 no-op）で `on_open` が呼ばれた接続についてのみ終了経路を問わずちょうど 1 回通知される（ハンドシェイク検証失敗・101 送出前キャンセルでは呼ばれない、`on_open` と対称のフェイルクローズ契約。`docs/design/ws-connection-context-and-close.md` 4 節参照） |
-| 送信ハンドル（切断待ち） | `WsSender::closed().await` で切断まで待つ（受信側 `Receiver` drop 時に完了。cancel-safe）、`WsSender::is_closed()` で同期判定（`send` の `Err` が正の判定基準、こちらは参考値）。clone 間で同じ時点を観測（イシュー #727） |
+| 送信ハンドル（切断待ち） | `WsSender::closed().await` で切断まで待つ（受信側 `Receiver` drop 時に完了。cancel-safe）、`WsSender::is_closed()` で同期判定（`send` の `Err` が正の判定基準、こちらは参考値）。clone 間で同じ時点を観測 |
 
 - 注意: サイズ上限はメモリ枯渇 DoS 対策。アイドルタイムアウトは既定で有効（fail-safe）であり、無効化は `without_idle_timeout` の明示操作でのみ可能
 - 注意: `close_grace`（`with_close_grace`）はコアの世代キャンセル（最終 graceful
