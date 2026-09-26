@@ -7,8 +7,8 @@
 
 ## [Unreleased]
 
-BREAKING CHANGE はありません（後方互換な API 追加のみ）。0.4.2 として lockstep
-バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 節）。
+BREAKING CHANGE はありません（後方互換な API 追加・非破壊修正のみ）。0.4.2 として
+lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 節）。
 
 ### Added
 
@@ -21,10 +21,6 @@ BREAKING CHANGE はありません（後方互換な API 追加のみ）。0.4.2
   （後方互換。設計は `docs/design/ws-connection-context-and-close.md`、イシュー
   [#704](https://github.com/Fandhe-AI/fandhe-backend/issues/704)、親
   [#702](https://github.com/Fandhe-AI/fandhe-backend/issues/702)）。
-  `on_message_with_ctx` の実行中に `ctx.sender()` から容量
-  （`DEFAULT_OUTBOUND_CAPACITY = 8`）を超えて送信してもデッドロックしないよう、
-  送信キューを実行中に消化する内側ループも同時に実装しました
-  （[#706](https://github.com/Fandhe-AI/fandhe-backend/issues/706) 相当）
 - `fandhe-backend-plugin-websocket`: セッション終了理由の型
   `handler::CloseReason`（`ClientClose` / `Eof` / `IdleTimeout` / `Cancelled` /
   `HandlerClose` / `MessageTooLarge` / `Failed(FailureKind)`）と
@@ -45,6 +41,18 @@ BREAKING CHANGE はありません（後方互換な API 追加のみ）。0.4.2
   `docs/design/ws-connection-context-and-close.md` 4 節・9 節、イシュー
   [#729](https://github.com/Fandhe-AI/fandhe-backend/issues/729)、親
   [#705](https://github.com/Fandhe-AI/fandhe-backend/issues/705)）
+
+### Fixed
+
+- `fandhe-backend-plugin-websocket`: `WsMessageHandler::on_message`（および
+  `on_message_with_ctx`）実行中に `WsSender::send` を送信キュー容量
+  （`DEFAULT_OUTBOUND_CAPACITY = 8`）を超える回数呼ぶとデッドロックする不具合を
+  修正しました。ハンドラ実行中も outbound を cancel（最優先）→ (ハンドラ完了 |
+  outbound 到着) の順で消化する内側 race ループを追加し、ハンドラ完了直後・
+  返信送出前に既に到着済みの push を排出するようにしました（送出順序の保証・
+  不定契約は `crates/plugin-websocket/src/session.rs` モジュール doc
+  「ハンドラ実行中の送信キュー消化」節を参照。イシュー
+  [#706](https://github.com/Fandhe-AI/fandhe-backend/issues/706)）
 
 ## [0.4.1] - 2026-09-26
 

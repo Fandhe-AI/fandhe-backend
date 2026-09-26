@@ -465,9 +465,11 @@ drop し、他に clone を保持していない場合に到達可能だった�
 > `run_handler_with_outbound_drain`（新設の非公開ヘルパー）として #704 の
 > スコープ内で実装した。以下の「現状」節・手順・保証は設計時点の記述を
 > そのまま残すが、コードは既にこの設計を反映済みである（#706 は本節の
-> 実装が完了したことをもってクローズ対象になる。テストは
+> 実装が完了したことをもってクローズ対象になる。単体テストは
 > `crates/plugin-websocket/src/session.rs` の
-> `on_message_with_ctx_self_send_beyond_capacity_does_not_deadlock`）。
+> `on_message_with_ctx_self_send_beyond_capacity_does_not_deadlock`、
+> e2e テストは `crates/plugin-websocket/tests/handler_push_ordering_e2e.rs`
+> で受け入れ基準 1〜3 を検証する）。
 
 現状（設計時点）: `race_cancel(cancel, config.handler.on_message_with_ctx(ctx, msg))` は単独
 await であり、この間 `WsSender` の outbound チャネルを消費するものが誰もいない
@@ -658,7 +660,9 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
   1 つの意味論（Close なし切断）に 2 つの到達経路（`Result` が `Ok`/`Err`
   のいずれか）を持つ variant として確定した
 - **#706**: 送信キュー消化の内側レース実装・順序契約のテスト固定（6 節、
-  **#704 の PR #725 で前倒し実装済み**。残作業がなければクローズ対象）
+  **#704 の PR #725 で前倒し実装済み**。e2e テスト
+  `crates/plugin-websocket/tests/handler_push_ordering_e2e.rs` を追加し
+  受け入れ基準 1〜3 を固定した。クローズ対象）
 - **#707**: 2 クライアント同時接続 e2e（前提: #704/#705 完了後。#706 は前倒し
   実装済みのため実質前提済み）
 
