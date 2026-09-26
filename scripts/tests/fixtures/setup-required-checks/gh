@@ -66,6 +66,14 @@ case "$1" in
                 cat "${STUB_RULESET_FILE:?STUB_RULESET_FILE 未設定}"
                 ;;
             */rules/branches/*)
+                # STUB_BRANCH_RULES_FAIL=1 で本エンドポイントのみを失敗させる（他の
+                # api 呼び出しは成功させたまま、fail-closed 分岐（PR #695 レビュー指摘）
+                # をピンポイントで検証するため。全 api 呼び出しを落とす STUB_FAIL とは
+                # 独立したフラグ）。
+                if [ "${STUB_BRANCH_RULES_FAIL:-0}" = "1" ]; then
+                    echo "stub: STUB_BRANCH_RULES_FAIL=1 のため rules/branches の取得を失敗させます" >&2
+                    exit 1
+                fi
                 cat "${STUB_BRANCH_RULES_FILE:-/dev/null}" 2>/dev/null || echo '[]'
                 ;;
             *)

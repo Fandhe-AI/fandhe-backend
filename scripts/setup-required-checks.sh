@@ -288,7 +288,18 @@ if [ -z "${EXISTING_ID}" ]; then
     # 既に何らかの branch ruleset が適用されていないか確認してから POST する
     # （fail-closed。新規 fork 等、本当に何も無い場合のみ POST が成立する）。
     DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')"
-    BRANCH_RULES_JSON="$(gh api "repos/${REPO_NWO}/rules/branches/${DEFAULT_BRANCH}" 2>/dev/null || echo '[]')"
+    if [ -z "${DEFAULT_BRANCH}" ]; then
+        echo "エラー: gh repo view で default branch 名を取得できません（空文字）。'ルールなし' と誤判定して 2 つ目の ruleset を作らないため中止します" >&2
+        exit 2
+    fi
+    # fail-closed: API 呼び出し失敗（一時障害・403 等）と「既存ルールが実際にゼロ件」
+    # という正常応答を区別する。失敗を空リストへ読み替えて POST へ進むと、既存の
+    # 保護を確認できないまま別の main-protection ruleset を重複作成しうる
+    # （PR #695 レビュー指摘。codex/review・Cursor Bugbot が独立に同一箇所を指摘）。
+    if ! BRANCH_RULES_JSON="$(gh api "repos/${REPO_NWO}/rules/branches/${DEFAULT_BRANCH}" 2>&1)"; then
+        echo "エラー: repos/${REPO_NWO}/rules/branches/${DEFAULT_BRANCH} の取得に失敗しました（gh api エラー: ${BRANCH_RULES_JSON}）。既存ルールの有無を確認できないため中止します" >&2
+        exit 2
+    fi
     if [ "$(printf '%s' "${BRANCH_RULES_JSON}" | jq 'length')" != "0" ]; then
         echo "エラー: ruleset '${RULESET_NAME}' は存在しませんが、default branch '${DEFAULT_BRANCH}' には既に別の ruleset が適用されています。2 つ目の ruleset を作らないため中止します。手動で確認してください" >&2
         exit 2

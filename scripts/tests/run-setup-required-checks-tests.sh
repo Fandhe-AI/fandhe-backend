@@ -233,8 +233,55 @@ run_target --no-such-option
 assert_exit "n. 不明な引数" 2 "${RUN_EC}"
 
 # ==================================================
+# p. apply モード・ruleset 未存在・rules/branches 取得失敗 → exit 2
+#    （PR #695 レビュー指摘: 取得失敗を空リストへ読み替えて POST へ進んでは
+#    ならない。fail-closed。書き込み系呼び出しが行われていないことも確認する）
+# ==================================================
+: >"${STUB_LOG}"
+STUB_LIST_FILE="${VARIANT_LIST_J}" STUB_RULESET_FILE="${BASE_RULESET}" STUB_BRANCH_RULES_FAIL=1 run_target
+assert_exit "p. ruleset 未存在時に rules/branches 取得が失敗" 2 "${RUN_EC}"
+if grep -qE 'PUT|POST|PATCH|DELETE' "${STUB_LOG}"; then
+    fail "p. rules/branches 取得失敗時に POST 等の書き込み系呼び出しが行われている"
+else
+    pass "p. rules/branches 取得失敗時に POST 等の書き込み系呼び出しが行われていない"
+fi
+
+# ==================================================
+# q. apply モード・ruleset 未存在・default branch 名が空文字 → exit 2
+#    （PR #695 レビュー指摘に付随する境界: 空の default-branch 名も「保護なし」と
+#    誤判定させない）
+# ==================================================
+: >"${STUB_LOG}"
+STUB_LIST_FILE="${VARIANT_LIST_J}" STUB_RULESET_FILE="${BASE_RULESET}" STUB_DEFAULT_BRANCH="" run_target
+assert_exit "q. default branch 名が空文字" 2 "${RUN_EC}"
+if grep -qE 'PUT|POST|PATCH|DELETE' "${STUB_LOG}"; then
+    fail "q. default branch 名が空文字の際に POST 等の書き込み系呼び出しが行われている"
+else
+    pass "q. default branch 名が空文字の際に POST 等の書き込み系呼び出しが行われていない"
+fi
+
+# ==================================================
+# r. apply モード・ruleset 未存在・rules/branches が実際に空リスト（正常系）→
+#    fail-closed 判定を通過して POST（新規作成）まで進む（fail-closed 化で正常系まで
+#    壊していないことの確認）。スタブは受け入れ基準5のため書き込み系呼び出しを
+#    exit 97 で一律拒否する契約なので、ここでの期待 exit は 97（POST 自体には
+#    到達したことの証跡）であり、0 ではない
+# ==================================================
+: >"${STUB_LOG}"
+EMPTY_BRANCH_RULES="${WORK_DIR}/branch-rules-empty.json"
+printf '[]' >"${EMPTY_BRANCH_RULES}"
+STUB_LIST_FILE="${VARIANT_LIST_J}" STUB_RULESET_FILE="${BASE_RULESET}" STUB_BRANCH_RULES_FILE="${EMPTY_BRANCH_RULES}" run_target
+assert_exit "r. rules/branches が正常に空リストを返せば新規作成の POST まで到達する" 97 "${RUN_EC}"
+if grep -qE '\bPOST\b' "${STUB_LOG}"; then
+    pass "r. 新規作成の POST 呼び出しが記録されている"
+else
+    fail "r. 新規作成の POST 呼び出しが記録されていない"
+fi
+
+# ==================================================
 # o. 全ケース終了後、スタブログに書き込み系メソッドの呼び出しが1件も無い
-#    （受け入れ基準5の機械保証）
+#    （受け入れ基準5の機械保証。p〜r は意図的に書き込み系を呼ぶ／拒否するケースの
+#    ため、ここでは改めてクリアなログから確認する）
 # ==================================================
 : >"${STUB_LOG}"
 STUB_LIST_FILE="${BASE_LIST}" STUB_RULESET_FILE="${BASE_RULESET}" run_target --check
