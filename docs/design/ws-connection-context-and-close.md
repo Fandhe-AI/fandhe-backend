@@ -44,7 +44,8 @@
    `crates/plugin-websocket/src/session.rs` `run_session` の受信ループは、
    `race_cancel(cancel.as_mut(), config.handler.on_message(...))` として
    ユーザーハンドラの `Future` を cancel のみと race させ、単独 await する
-   （154〜340 行付近の Text/Binary 分岐 2 箇所）。この間、`WsSender` の outbound
+   （`Message::Text(text)`/`Message::Binary(bin)` の Text/Binary 分岐 2 箇所）。
+   この間、`WsSender` の outbound
    チャネル（既定容量 [`DEFAULT_OUTBOUND_CAPACITY`] = 8）を消費する者がいない。
    受信ループ本体（`inbound` と `outbound` の合流、[`race2_alternating`]）は
    `on_message` 呼び出しの**外側**でのみ機能するため、`on_message` 内で容量超の
@@ -195,8 +196,10 @@ WsConnContext` を同一の明示ライフタイム `'a` に統一し、返す `
 オーバーライドする。この場合トレイトの制約上 `on_message` も何らかの実装を書く
 必要がある（`on_message_with_ctx` をオーバーライドしていれば `on_message` は実行時
 には呼ばれない）ことをトレードオフとして明記する。`on_message_with_ctx` の既定
-実装が `on_message` を呼ぶ構造上、`on_message` を provided にはできない。両方
-provided にすると「両方未実装で無限に何もしない」ハンドラを許してしまうため。
+実装が `on_message` を呼ぶ構造上、`on_message` を provided にはできない。両方を
+provided 化し互いの既定実装で委譲し合う構成にすると、いずれもオーバーライドしない
+ハンドラは呼び出しが両者間を無限に往復し、スタックオーバーフローになりうるため
+（「何もしない」ではなく、実際には無限再帰による panic に直結する）。
 
 ### セッションループの呼び出し変更
 
@@ -324,7 +327,10 @@ WsError>` を薄い外側ラッパーとして置き、`run_session_inner` の�
 outbound の `Receiver` は既に drop 済みのため、ハンドラが `on_close` 内で
 `ctx.sender().send(...)` を呼んでも常に `WsSendError` になる契約を明記する。
 ランタイム強制終了（プロセス kill 等）でタスクごと drop された場合は保証外
-（既知の限界として明記）。
+（既知の限界として明記）。同様に、`on_message_with_ctx` 実行中にユーザーハンドラが
+panic した場合も `run_session_inner` がアンワインドして `on_close` を呼ぶ前に
+関数を抜けるため、この経路も exactly-once 契約の保証外として明記する（#705 の
+受け入れ基準を確定する際、この 2 つの既知の限界を区別して扱う）。
 
 `crates/core/src/plugin.rs` の `let _ = fandhe_backend_plugin_websocket::
 handle_upgrade(...)` は変更不要（切断理由はプラグイン内部で `on_close` を通じて
