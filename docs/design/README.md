@@ -219,7 +219,8 @@
   Drop ベースの通知が使えないことを決定打として案 B を採用。`CloseReason` は
   実際の `WsError` を運ばず種別（`FailureKind`）のみを運ぶ設計（`WsError` が
   `Clone` 非実装のため）・全終了経路から `CloseReason` への対応表
-  （`FailureKind::Io` が現状到達不能であることの判定基準を含む）・
+  （`tungstenite::Error::Io(_)` を明示的に判別して `FailureKind::Io` へ
+  振り分ける基準を含む）・
   `WsConnContext` が `WsSender` を保持することで既存の outbound チャネル閉鎖検知
   分岐が到達不能になる副作用・送信キュー消化の内側レース方針（#706 の前提）を
   記述。バージョン方針は非破壊追加のみのため 0.4.2（先例: #671/#675/#676）。設計

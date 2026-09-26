@@ -415,6 +415,18 @@ params))` を（同期呼び出しで、`.await` を挟まず）呼んだ**直�
 （#705 の受け入れ基準を確定する際、この 3 つの既知の限界（`on_message_with_ctx`
 panic・プロセス kill・`on_open` panic）を区別して扱う）。
 
+`on_close` 自身が panic した場合は、上記 3 つの既知の限界とは性質が異なる:
+`on_close` の呼び出し自体は（`run_session` 外側ラッパーが `on_close(conn_ctx,
+reason)` を呼んだ時点で）既に完了しているため、「呼ばれる回数が 1 回以下」という
+exactly-once 契約（回数の契約）はこの経路では破れない。panic はその呼び出しの
+**戻り**（呼び出し後の後続処理・接続クローズの完遂）に影響するのみであり、
+`on_message_with_ctx`/`on_open` の panic（呼び出しそのものが `on_close` へ
+到達する前に発生し、呼ばれる回数が 0 になる経路）とは区別する。したがって
+`on_close` 自身の panic は既知の限界の第 4 項目としては扱わず、`on_close` 実装が
+panic しないことはハンドラ実装者側の責務（`on_message_with_ctx` の panic-safety
+契約と同様、`.claude/rules/coding-rust.md` の「panic はライブラリ境界を越えさせ
+ない」方針の対象）として明記する。
+
 `crates/core/src/plugin.rs` の `let _ = fandhe_backend_plugin_websocket::
 handle_upgrade(...)` は変更不要（切断理由はプラグイン内部で `on_close` を通じて
 観測できるため、影響範囲想定から core を明示的に除外する）。
@@ -448,152 +460,96 @@ await であり、この間 `WsSender` の outbound チャネルを消費する�
 （受信ループ先頭の race は次の反復まで戻ってこない）ため、`on_message_with_ctx`
 内で容量（既定 8）超の `send` を呼ぶとデッドロックする。
 
-**方針**: ハンドラ呼び出しをハンドラ Future を `pin!` した内側ループで包み、各
-反復で「cancel（最優先）→ (ハンドラ完了 | outbound 到着)」を race する。outbound が
-先着した場合は即座に `ws.send()` で送出し、ハンドラ Future は **drop せず再ポーリ
-ング**してループを継続する（[`race2_alternating`] のような優先順位交互化は不要と
-判定: ハンドラ Future は 1 回しか完了しない単発イベントであり、`ws.next()` のよう
-に継続的に Ready を生成し続ける入力ではないため、固定順のポーリングでもハンドラ
-完了検知が飢餓することはない。ただし cancel は既存どおり最優先を維持する）。
+**PR #724 レビュー指摘対応（P1/P2、まとめて再構成）**: 当初案は「ハンドラ実行中に
+送出された push は構造的に Reply より先にワイヤへ出る」という主張から出発し、
+Err・Close・別タスク・スナップショット前後の派生ケースを都度追記して修正を重ねた
+結果、記述量が増えるほど食い違いが増える状態になった。本節は追記ではなく、以下の
+**手順**を先に確定し、保証はその手順から直接導ける 1 文だけに絞る（対象外の push
+の挙動は個別に記述しない）。
 
-outbound チャネルが閉鎖済み（`recv()` が `None`）の場合は既存の外側ループと同じ
-振る舞い（そのイベント源を無効化し、ビジーループ化を防ぎつつセッション自体は継続）
-を内側ループにも適用する。5 節で述べたとおり、`conn_ctx` がセッション生存中は
-`WsSender` を保持するため、この分岐はセッション実行中は到達不能である（防御的
-コードとして維持）。
+### 手順（`on_message_with_ctx` 呼び出しを包む内側ループ、1 反復分）
 
-**PR #724 レビュー指摘対応（P1）**: 当初案は「ハンドラ実行中に送出された push は
-構造的に Reply より先にワイヤへ出る」としていたが誤り。内側ループは「cancel →
-(ハンドラ完了 | outbound 到着)」を 1 反復ごとに race するだけであり、ハンドラ
-Future 自身が `WsSender::send(...).await` を完了させてから（await 中に中断
-されなければ同一 `poll()` 内で）続きを実行し `Poll::Ready(outcome)` を返す場合、
-その反復では「ハンドラ完了」の分岐が「outbound 到着」の分岐より先に（あるいは
-同時に、ポーリング順序に関わらず）選ばれうる。この場合、ハンドラ自身が直前に
-`send` を完了させた push がチャネル内に残っていても、内側ループはそれを検出
-する前にハンドラ完了へ分岐し、`apply_outcome` が `WsOutcome::Reply`/`Close` を
-先に送出してしまう。race の対象が「push の到着」と「ハンドラの完了」という
-2 つの独立な非同期イベントである以上、片方が他方の**内部で**起きたことを race の
-結果だけから復元することはできない（構造的に保証されない）。
-
-**確定した設計（排出ステップを追加）**: ハンドラ Future が `Poll::Ready(outcome)`
-を返した時点で、まず `outcome`（`Result<WsOutcome, WsHandlerError>`）の
-`Ok`/`Err` を判定する。排出ステップを行うのは `outcome` が `Ok` の場合のみで、
-`Err` の場合は行わない。
-
-**PR #724 再レビュー指摘対応（P1・2 件目）**: 当初案は「ハンドラ完了を検知したら
-（`outcome` の内容に関わらず）排出してから `apply_outcome` を呼ぶ」としていたが
-誤り。`outcome` が `Err(WsHandlerError)` の場合、現行 `session.rs`（252 行の
-`message?` と同様の早期 `?` パターン、266 行・285 行の `outcome?`）は排出も
-`apply_outcome` 呼び出しも行わず即座に `Err(WsError::Handler(_))` を返す。この
-順序を維持しないと、(a) ハンドラが失敗した接続へ push を送ってしまう（失敗した
-ハンドラが確定した意味的な状態と矛盾する応答をクライアントに見せる恐れがある）、
-(b) 排出中の `ws.send()` が失敗した場合、その `Failed(FailureKind::Io/Protocol)`
-が本来の `Failed(FailureKind::Handler)` を上書きしてしまい、`on_close` の
-呼び出しコード（`run_session` 外側ラッパー）が確定させる `CloseReason` が
-ハンドラ失敗という一次要因を隠す、という 2 つの問題が生じる。したがって
-`outcome` の判定を排出より**先**に行う順序を設計として確定する:
-
-1. `outcome` が `Err(err)` の場合: 排出を行わず、直ちに `Failed(FailureKind::
+1. ハンドラ Future が `Poll::Ready(outcome)`（`outcome: Result<WsOutcome,
+   WsHandlerError>`）を返すまで、`cancel`（最優先）とハンドラ Future・outbound
+   到着を race する既存方針（後述）でポーリングを続ける。
+2. `outcome` が `Err(err)` の場合: 排出・送信を行わず、`Failed(FailureKind::
    Handler)` を `CloseReason` として確定し、`Err(WsError::Handler(err))` を
-   返す（現行 `outcome?` と同じ即時終了、4 節の対応表の該当行と整合）。
-2. `outcome` が `Ok(outcome)` の場合: 排出ステップへ進む（`outcome` が
-   `WsOutcome::Reply`/`Close` のいずれであっても、以下の排出手順自体は共通）。
+   返して終了する（現行 `outcome?` と同じ即時終了、4 節の対応表の該当行と整合）。
+3. `outcome` が `Ok(outcome)` の場合: outbound の `Receiver` から `try_recv()`
+   を呼び、`Empty`（キューが空）が返るまで、または `DEFAULT_OUTBOUND_CAPACITY`
+   回（既定 8）に達するまで繰り返し、取り出せた push を到着順に `ws.send()` で
+   送出する。`Receiver::len()` のスナップショットは使わない（チャネルは容量
+   固定の bounded mpsc のため、`DEFAULT_OUTBOUND_CAPACITY` 回で排出開始時点の
+   格納分は全件取り出せる。`len()` はチャネル実装によって同期精度が変わりうる
+   のに対し `try_recv()` の呼び出し回数上限は実装に依存しない。ワークスペースの
+   tokio 依存指定が `"1"`（`Cargo.toml`）であることも踏まえ、最低バージョン
+   要求を増やさない構成を優先する）。
+4. `apply_outcome` で `outcome` を送出する（`Ok(WsOutcome::Reply(_))` なら
+   返信メッセージを、`Ok(WsOutcome::Close)` なら Close フレームを送る）。
+5. `outcome` が `Ok(WsOutcome::Close)` ならセッションを終了する
+   （`SessionFlow::Closed`）。`Ok(WsOutcome::Reply(_))` なら外側ループの次の
+   反復へ進む（`SessionFlow::Continue`）。
 
-| `outcome` | 排出を行うか | 送出順序 |
+上記手順中のエラー・キャンセルの扱い（各ステップに 1 行ずつ）:
+
+- ステップ 3（排出）中の `ws.send()` 失敗は、外側ループの `InboundEvent::
+  Outbound` 分岐と同じ扱いにする（4 節の対応表を参照。`tungstenite::
+  Error::Io(_)` なら `Failed(FailureKind::Io)`、それ以外なら `Failed(FailureKind::
+  Protocol)` へ振り分け、そのまま `CloseReason` として確定して終了する）。
+- ステップ 3（排出）中に `cancel` が発火した場合は既存の優先順位（cancel 最優先）
+  を維持し、当該 `ws.send()` を打ち切って `handle_cancellation`（`Cancelled`）へ
+  分岐する（既存の「cancel 発火時は outbound を明示的に drop し満杯チャネルでの
+  送出待ちを即座に解放する」契約と整合する）。
+- ステップ 1 の race・ステップ 4 の送出中のエラー・キャンセルの扱いは既存方針を
+  変えない（`race_cancel`・`apply_outcome` は現行のまま。詳細はモジュール doc・
+  4 節の対応表を参照）。
+
+上記手順を反映した outcome 別の対応表（4 節「outcome? の Err」行・
+`apply_outcome` 行と整合させたもの）:
+
+| `outcome` | ステップ 3（排出） | ステップ 4（送出） |
 |---|---|---|
-| `Err(WsHandlerError)` | 行わない | 何も送出せず `Failed(FailureKind::Handler)` を確定して即座に抜ける |
-| `Ok(WsOutcome::Reply(messages))`（`messages` が空でも同様） | 行う | 排出した push（到着順）→ `messages`（到着順） |
-| `Ok(WsOutcome::Close)` | 行う | 排出した push（到着順）→ Close フレーム |
+| `Err(WsHandlerError)` | 行わない | 行わない（`Failed(FailureKind::Handler)` で終了） |
+| `Ok(WsOutcome::Reply(messages))` | 行う | `messages` を送出、セッション継続 |
+| `Ok(WsOutcome::Close)` | 行う | Close フレームを送出、セッション終了 |
 
-排出ステップの内容（`try_recv()` による同期排出・`ws.send()` での直列送出）は
-`Ok` の 2 ケースで共通、以下に続ける。
-
-排出は有界にする。上限は「排出を開始する時点の `Receiver` の長さ
-（`tokio::sync::mpsc::Receiver::len()` のスナップショット）」とし、排出ループは
-このスナップショット件数に達したら（それ以上 `try_recv()` を呼ばずに）停止して
-Reply/Close の送出へ進む。他タスクが排出中も継続して push し続けても、その分は
-次回の外側ループ反復（`InboundEvent::Outbound` 分岐）で処理され、本排出ステップ
-自体は有限回で終わる（Reply が無期限に遅延しない）。`len()` が実装依存で不正確に
-なる可能性（同期メソッドのため通常は正確だが、将来のチャネル実装変更を想定）に
-備え、フォールバック上限として既定容量 `DEFAULT_OUTBOUND_CAPACITY`（= 8）を
-採用してもよい（`min(len(), DEFAULT_OUTBOUND_CAPACITY)` 等、実装イシュー側の
-判断に委ねる。本文書は「有界であること」を不変条件として課すのみで、具体的な
-上限式の選択までは固定しない）。
-
-**保証する順序契約（doc・テストで固定する対象、再定義）**: 「**送信元がハンドラ
-自身か別タスクかに関わらず**、ハンドラの `Future` が完了する（`Poll::Ready` を
-返す）**前**に `WsSender::send(...).await` が完了した push は、そのハンドラが
-返す `WsOutcome::Reply`/`Close` の送出より**先に**ワイヤへ出る」。排出は
-`try_recv()` でチャネルに格納済みの値を送信元を区別せず取り出すため、この保証は
-実装と一致する（送信元で区別する制約は課さない）。
-
-**PR #724 再レビュー指摘対応（P2・3 件目）**: 以前の版は上記の保証を宣言した
-直後に「別タスクから並行して送られる push は一律対象外」という完了時刻と無関係な
-除外を追加しており、両者が矛盾していた（別タスクの `send` がハンドラ完了前に
-完了した場合、保証の対象になるはずなのに除外規定に該当してしまう）。除外条件を
-**完了タイミングのみ**で定義し直し、送信元による区別を削除する。以下は明示的に
-順序保証の対象**外**とする:
-
-- **ハンドラ完了後**に `send(...).await` が完了した push（送信元がハンドラ自身か
-  別タスクかを問わない）。この push が実際にいつ送出されるかは `outcome` に
-  よって異なる（直前の「outcome ごとの排出表」と整合させる）:
-  - `Ok(WsOutcome::Reply(_))` の場合: セッションは継続する（`SessionFlow::
-    Continue`）ため、次回の外側ループ反復で通常の `InboundEvent::Outbound`
-    経路として処理される（送出される）
-  - `Ok(WsOutcome::Close)` の場合: `apply_outcome` が Close フレームを送出した
-    時点でセッションは終了する（`SessionFlow::Closed => break;`）。外側ループの
-    次回反復は発生しないため、この push は送出されずセッション終了時に
-    `Receiver` が drop されて破棄される（`Err(WsHandlerError)` の場合と同様に
-    そもそも送出されない事象として扱う）
-- **ハンドラ完了と同時刻**（同一の排出開始時点）に `send(...).await` が実行中
-  だった push（送信元を問わない。チャネルが満杯で送信待機中のものを含む）。
-  `try_recv()` はチャネルに既に格納済みの値のみを取り出すため、送信途中の
-  ものは排出対象にならない
-- 排出上限（本節で定めたスナップショット件数）を超えた分。上限に達した時点で
-  排出ループは停止するため、超過分は次回の外側ループ反復で処理される
+内側ループがハンドラ完了を待つ間の「cancel（最優先）→ (ハンドラ完了 |
+outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の交互化は不要、
+ハンドラ Future は 1 回しか完了しない単発イベントのため固定順ポーリングでも
+飢餓しない。ただし cancel は最優先を維持）を変えない。outbound チャネルが
+閉鎖済み（`recv()` が `None`）の場合の扱い（そのイベント源を無効化しセッション
+自体は継続）も既存の外側ループと同じ振る舞いを内側ループに適用する（5 節で
+述べたとおり `conn_ctx` がセッション生存中は `WsSender` を保持するため、この
+分岐はセッション実行中は到達不能・防御的コードとして維持）。
 
 `idle_deadline` は本内側ループ・排出ステップ中は更新しない（既存の「クライアント
 から実際にフレームを受信したときのみ延長」契約を変えない。outbound 送出は
 アイドル判定に影響しない）。
 
-内側ループ中の `ws.send()` エラー（排出ステップでの送出を含む）は外側ループの
-`InboundEvent::Outbound` 分岐と同じ扱いにする（4 節の対応表を参照。`tungstenite::
-Error::Io(_)` なら `Failed(FailureKind::Io)`、それ以外なら `Failed(FailureKind::
-Protocol)` へ振り分ける）。
+### 保証（手順から直接導ける 1 文）
 
-このエラーは `run_session_inner` にとって一次的な脱出（そのまま `CloseReason`
-として確定し `Err(WsError)` を返す）であり、`close_and_drain`（4 節「不変条件」
-節を参照）が既に確定した `IdleTimeout`/`Cancelled` トリガを上書きしないという
-契約とは無関係である。両者は別の場面で発生する別のエラー処理: `close_and_drain`
-の上書き禁止契約は「`IdleTimeout`/`Cancelled` で切断を決めた**後**の Close
-ハンドシェイク送出・ドレイン中に生じる二次的なエラー」を対象とし、本排出
-ステップのエラーは「まだ `CloseReason` が確定していない受信ループの途中」で
-生じる一次的なエラーである。したがって排出ステップの送出失敗がそのまま
-`CloseReason` になる（上書きの概念自体が発生しない）。
+**排出ステップ（ステップ 3）の開始時点で、すでに outbound のチャネルへ格納済み
+だった push は、そのハンドラが返す `WsOutcome::Reply`/`Close` の送出（ステップ 4）
+より先に送出される。**
 
-排出ステップ中に cancel が発火した場合も既存の優先順位（cancel 最優先）を
-維持する: 排出ループの各 `ws.send()` は他の送出箇所と同様に `cancel` と race
-させ（`race_cancel`）、発火時は当該送出を打ち切って `handle_cancellation` へ
-分岐する（`Cancelled`）。排出予定だった残りの push は送出されないままセッションが
-終了する（Close ハンドシェイクへ移るため。これは既存の「cancel 発火時は
-outbound を明示的に drop し満杯チャネルでの送出待ちを即座に解放する」契約と
-整合する）。
+上記以外の push（排出ステップ開始後にチャネルへ格納された push・排出開始時点で
+送信途中だった push を含む）と `Reply`/`Close` の相対順序は**不定**とする。
 
-**#706 への引き渡し事項**: 本節の排出ステップ（`try_recv()` による有界排出・
-上限の具体的な算出方法・4 節対応表と同じ `Io`/`Protocol` 振り分け・排出中
-cancel の扱い・`outcome` が `Err(WsHandlerError)` の場合は排出を行わず即座に
-`Failed(FailureKind::Handler)` を確定する順序）の実装、および上記「保証する
-順序契約」（送信元に関わらず完了タイミングのみで判定する版）をテストで固定
-すること（(1) ハンドラ自身が `send().await` 完了後に `Ok(Reply)` を返すケースを
-実接続で検証し、push が Reply より先にワイヤへ出ることを確認する、(2) ハンドラ
-とは**別タスク**から、ハンドラ完了**前**に `send().await` を完了させた push が
-Reply より先に届くことを検証する（送信元による区別がないことの確認）、(3) 別
-タスクからの `send().await` がハンドラ完了と同時刻・完了後に完了するケースは
-順序保証の対象外であることを確認する（フレーク回避のため、タイミング制御が
-難しい場合はこのケースを厳密な e2e ではなく設計注記の確認に留めてもよい）、
-(4) ハンドラが `Err` を返すケースで、事前に `send().await` 済みの push があっても
-排出されずに `Failed(FailureKind::Handler)` で終了することを確認する）を #706
-の受け入れ基準に追加する。
+### #706 への引き渡し事項
+
+上記の手順・保証・不定の 3 点に沿って実装し、テストで固定すること:
+
+- 手順（ステップ 1〜5、エラー・キャンセルの扱い）をそのまま実装する
+- 保証（排出開始時点で格納済みの push が Reply/Close より先に送出される）を
+  実接続で検証する。十分条件のテスト観点として、ハンドラ Future が
+  `Poll::Ready` を返す**前**に `WsSender::send(...).await` が完了した push
+  （送信元がハンドラ自身か別タスクかを問わない）を用いてよい（この完了時刻
+  条件は排出開始時点での格納を成立させる十分条件であり、保証の定義そのもの
+  ではない）
+- `outcome` が `Err(WsHandlerError)` の場合は排出・送信を一切行わず
+  `Failed(FailureKind::Handler)` で終了することを確認する
+- 上記以外（保証の対象外）の push については、順序が不定であることの確認に
+  留め、特定の順序を新たに固定しない
 
 ## 7. バージョン方針
 
@@ -647,9 +603,11 @@ Reply より先に届くことを検証する（送信元による区別がな�
   の呼び出し口変更（`on_message` → `on_message_with_ctx`、ライフタイム注記は 3 節を
   参照）、ユニットテスト
 - **#705**: `CloseReason`/`FailureKind`・`run_session_inner`/`run_session` 分割・
-  `on_close` 呼び出し（全終了経路で exactly-once）・`WsSender::closed()`/
-  `is_closed()`・各終了経路ごとの実接続テスト。`crates/core/src/plugin.rs` は変更
-  不要である旨を明記済みなので影響範囲から除外してよい
+  `on_close` 呼び出し（4 節の脱出点対応表が挙げる全経路で exactly-once。panic・
+  プロセス kill 由来の 3 つの既知の限界（4 節「不変条件」参照）は対象外）・
+  `WsSender::closed()`/`is_closed()`・各終了経路ごとの実接続テスト。
+  `crates/core/src/plugin.rs` は変更不要である旨を明記済みなので影響範囲から
+  除外してよい
 - **#706**: 送信キュー消化の内側レース実装・順序契約のテスト固定（前提: #704 完了後）
 - **#707**: 2 クライアント同時接続 e2e（前提: #704/#705/#706 完了後）
 
