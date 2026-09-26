@@ -32,11 +32,20 @@
 //!   （`WsSender::closed` の doc test の注意と同じ）。各クライアントで
 //!   1 往復エコーしてから状態（`conns`/`opens`）を参照する
 //! - 「push が他方に届かない」という否定の検証はタイミング窓ではなく
-//!   **順序バリア**で行う: A へ push → A で受信確認 → B で 1 往復し、
-//!   B の次フレームが B 自身の返信であることを確認する。セッションは
-//!   接続ごとに単一タスクが `WebSocketStream` を排他所有して直列送出する
-//!   ため（`WsSender` の doc 参照）、push が紛れ込んでいればこの手順で
-//!   検出できる
+//!   **順序バリア + 厳密ドレイン**の 2 段で行う: (1) A へ push → A で
+//!   受信確認 → B で 1 往復し、B の次フレームが B 自身の返信であることを
+//!   確認する（順序バリア。誤配送が次にアサーションするフレームより前に
+//!   届けば直後の `assert_eq!` が検出する）。(2) Close 送出後のドレインは
+//!   `drain_expect_only_close` で Close フレーム・EOF 以外を受信したら
+//!   即座に `panic!` する（厳密ドレイン。誤配送が最後のアサーション後・
+//!   Close ドレイン中に届いた場合でも、無言で読み捨てずに検出する）。
+//!   両方を組み合わせることで、セッション終了までの全期間にわたり
+//!   誤配送が「無言で消える」経路を残さない。ただし、クライアント
+//!   Close 受信時にサーバー側が outbound チャネルの受信側を drop する
+//!   実装（`session.rs` の `ClientClose` 経路）のため、Close 受信と
+//!   同時刻にまだワイヤへ書き出されていない push はサーバー側で破棄され
+//!   うる。この分はブラックボックステストの検出範囲外という既知の限界
+//!   として残る
 //! - `on_close` の判定はサーバタスクの `JoinHandle` を timeout 付きで
 //!   join し終えた後に行う（`on_close` はセッションタスク内で同期に呼ばれる
 //!   ため、join 完了時点で実行済みが保証される。`on_close_e2e.rs` と同方針）
@@ -263,6 +272,51 @@ impl WsMessageHandler for Registry {
     }
 }
 
+/// Close 送出後のドレインを厳密化するヘルパー（レビュー指摘対応、PR #734）。
+///
+/// 素朴な `while next().await.is_some() {}` は、Close 応答以外の任意の
+/// フレーム（他方の接続へ誤配送された push 等）を無言で読み捨ててしまう。
+/// 本ヘルパーは Close フレーム・EOF・`ConnectionClosed`/`AlreadyClosed`
+/// のみを正常なドレインとして許容し、それ以外（push の誤配送を含む
+/// Text/Binary 等）を受信したら即座に `panic!` して検出する。
+///
+/// これにより、push の誤配送を検出する範囲が「次にアサーションする
+/// フレームが届くまで」から「セッション終了（Close ドレイン完了）まで」
+/// 全体へ拡張される。ただし、サーバー側がクライアント Close 受信時に
+/// outbound チャネルの受信側を drop する実装（`session.rs` の
+/// `ClientClose` 経路）のため、Close 受信と同時刻にまだ書き出されていない
+/// push はサーバー側で破棄されワイヤに現れない可能性があり、その分は
+/// 本テストの検出範囲外（ブラックボックステストの既知の限界）である。
+///
+/// `Protocol(ResetWithoutClosingHandshake)` は、サーバーが `ClientClose`
+/// 経路で自身の Close 応答を送らずにストリームを終端するため
+/// tokio-tungstenite 0.30 で観測される正常系の主経路であり（
+/// `on_close_e2e.rs` の `on_close_client_close_called_once` と同一の
+/// 既知挙動、`docs/design/ws-connection-context-and-close.md` 4 節）、
+/// push 誤配送とは無関係なので正常終了として扱う。
+async fn drain_expect_only_close(client: &mut WebSocketStream<tokio::io::DuplexStream>) {
+    loop {
+        match client.next().await {
+            None => break,
+            Some(Ok(Message::Close(_))) => continue,
+            Some(Ok(other)) => panic!(
+                "unexpected frame while draining close handshake \
+                 (possible push contamination from the other connection): {other:?}"
+            ),
+            Some(Err(
+                tokio_tungstenite::tungstenite::Error::ConnectionClosed
+                | tokio_tungstenite::tungstenite::Error::AlreadyClosed
+                | tokio_tungstenite::tungstenite::Error::Protocol(
+                    tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+                ),
+            )) => break,
+            Some(Err(other)) => {
+                panic!("unexpected error while draining close handshake: {other:?}")
+            }
+        }
+    }
+}
+
 /// テスト用の 1 往復エコー: `text` を送って応答テキストを受け取る
 /// （timeout 付き。`on_open` 実行完了の同期も兼ねる）。
 async fn roundtrip(client: &mut WebSocketStream<tokio::io::DuplexStream>, text: &str) -> String {
@@ -363,9 +417,10 @@ async fn two_clients_isolated_state_and_push_then_client_close_only_fires_own_on
         .close(None)
         .await
         .expect("client A close should send");
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while client_a.next().await.is_some() {}
-    })
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        drain_expect_only_close(&mut client_a),
+    )
     .await
     .expect("client A drain should complete before test timeout");
     let result_a = tokio::time::timeout(Duration::from_secs(5), task_a)
@@ -431,9 +486,10 @@ async fn two_clients_isolated_state_and_push_then_client_close_only_fires_own_on
         .close(None)
         .await
         .expect("client B close should send");
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while client_b.next().await.is_some() {}
-    })
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        drain_expect_only_close(&mut client_b),
+    )
     .await
     .expect("client B drain should complete before test timeout");
     let result_b = tokio::time::timeout(Duration::from_secs(5), task_b)
@@ -562,9 +618,10 @@ async fn two_clients_eof_on_one_only_fires_its_on_close_and_other_continues() {
         .close(None)
         .await
         .expect("client B close should send");
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while client_b.next().await.is_some() {}
-    })
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        drain_expect_only_close(&mut client_b),
+    )
     .await
     .expect("client B drain should complete before test timeout");
     let result_b = tokio::time::timeout(Duration::from_secs(5), task_b)

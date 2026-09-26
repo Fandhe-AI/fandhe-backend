@@ -673,7 +673,11 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
   示す「案 B」の実装例、`Mutex<HashMap<WsConnId, _>>` で接続単位状態を管理）を
   `/devtools/page/{id}` パターンへ共有 `Arc` として登録し、2 クライアントが
   同時接続した状態で (1) 接続ごとの状態（受信メッセージカウンタ）とサーバー
-  起点 push が他方の接続へ混入しないこと（順序バリアによる否定検証）、
+  起点 push が他方の接続へ混入しないこと（順序バリア + Close ドレイン時の
+  厳密検査の 2 段による否定検証。PR #734 レビュー指摘対応で、Close 送出後の
+  ドレインも Close フレーム・EOF 以外を受信したら即座に検出する
+  `drain_expect_only_close` へ強化し、セッション終了までの全期間を検出範囲に
+  含めた）、
   (2) 一方をクライアント Close で切断すると、その接続についてのみ `on_close`
   が `CloseReason::ClientClose` でちょうど 1 回呼ばれ、もう一方は送受信・push
   を継続できること、(3) 同じ検証を EOF（Close ハンドシェイクなしの drop）
