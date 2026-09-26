@@ -54,7 +54,12 @@
 //!    返信送出・セッション継続/終了を決める。`WebSocketConfig::idle_timeout`
 //!    （既定 60 秒、fail-safe で有効）が設定されている場合、受信アイドルが
 //!    続く接続は正常な Close ハンドシェイクで切断する（リソース枯渇 DoS
-//!    対策、Issue #175。詳細は `session` モジュールの doc を参照）
+//!    対策、Issue #175。詳細は `session` モジュールの doc を参照）。
+//!    セッション終了時には、終了経路を問わず
+//!    [`handler::WsMessageHandler::on_close`]（イシュー #729）が
+//!    [`handler::CloseReason`] 付きでちょうど 1 回呼ばれる（`on_open` が
+//!    呼ばれた接続についてのみ。フェイルクローズの対称性は
+//!    [`handler::WsMessageHandler::on_close`] の doc を参照）
 //! 5. コア（`run_until`）から渡されるキャンセル `Future`（`handle_upgrade`
 //!    第 5 引数、イシュー #492）が発火した場合も、アイドルタイムアウトと
 //!    同型の正常な Close ハンドシェイク（close code 1001 Going Away）で
@@ -167,6 +172,13 @@ pub fn matches(head: &RequestHead, config: &WebSocketConfig) -> bool {
 /// ハンドシェイク検証失敗（400/426 応答）や、101 応答送出前に `cancel` が
 /// 発火していた場合は呼ばれない（フェイルクローズ: 確立していない
 /// セッションへ [`handler::WsSender`] を渡さない）。
+///
+/// `on_open` が呼ばれた接続については、終了経路を問わず
+/// [`handler::WsMessageHandler::on_close`]（イシュー #729）が
+/// [`handler::CloseReason`] 付きでちょうど 1 回呼ばれる（`session::
+/// run_session` が担う。`on_open` と対称に、上記のハンドシェイク失敗・
+/// 101 送出前キャンセルの場合は `on_close` も呼ばれない。これらの場合、
+/// 失敗の詳細は本関数の戻り値（`Err`）からのみ観測できる）。
 ///
 /// # Examples
 ///

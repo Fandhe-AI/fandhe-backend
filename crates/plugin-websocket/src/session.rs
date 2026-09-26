@@ -29,6 +29,11 @@
 //! Going Away）へ分岐する（イシュー #499。[`handle_cancellation`] の
 //! doc・`docs/design/ws-cancellation-propagation.md` 10 節を参照）。
 //!
+//! [`run_session`] は終了時、[`crate::handler::WsMessageHandler::on_close`]
+//! （イシュー #729）を [`crate::handler::CloseReason`] 付きでちょうど 1 回
+//! 呼ぶ（[`run_session`] の doc を参照。呼び出し箇所が本モジュール内 1 箇所
+//! のみのため個々の脱出点に呼び出しを散らさずに済む）。
+//!
 //! [`run_session`] は [`crate::handler::WsSender`]（イシュー #670、親
 //! #669）が bounded mpsc 経由で送るサーバー起点メッセージも受信ループへ
 //! 合流させる。受信ループは cancel（最優先）→ (クライアント受信 or
@@ -105,12 +110,20 @@ use crate::race_cancel;
 /// 処理する（既存の公開シグネチャを保つ薄いラッパー、イシュー #726）。
 ///
 /// 本体は [`run_session_inner`] に移した。本関数はその戻り値
-/// （`(CloseReason, Result<(), WsError>)`）から `CloseReason` を**破棄**し、
-/// 従来どおり `Result<(), WsError>` のみを返す（呼び出し元
+/// （`(CloseReason, Result<(), WsError>)`）を分解し、[`crate::handler::
+/// WsMessageHandler::on_close`] を `CloseReason` 付きでちょうど 1 回呼んだ
+/// あと、従来どおり `Result<(), WsError>` のみを返す（呼び出し元
 /// `crate::handle_upgrade` および既存の `#[cfg(test)]` テストは無変更で
-/// 動作する）。切断通知 API（`on_close(conn_ctx, reason)` の呼び出し）は
-/// 後続イシュー #729 が本ラッパーへ追加する予定（設計は
-/// `docs/design/ws-connection-context-and-close.md` 9 節）。
+/// 動作する。イシュー #729）。
+///
+/// 呼び出し箇所が本関数内の 1 箇所だけであり、`run_session_inner` も
+/// ちょうど 1 つの `(CloseReason, _)` を返す構造上、`on_close` は個々の
+/// `return`/`break` に散らさずともここで自動的にちょうど 1 回呼ばれる
+/// （`docs/design/ws-connection-context-and-close.md` 4 節の不変条件・
+/// 9 節を参照）。呼び出し時点では `outbound` の受信側は
+/// `run_session_inner` へ move 済みで既に drop されているため、
+/// `WsMessageHandler::on_close` の doc が述べる「`ctx.sender().send(..)`
+/// は常に失敗する」契約はこの drop に由来する。
 pub(crate) async fn run_session<S, C>(
     stream: S,
     leftover: Vec<u8>,
@@ -123,9 +136,10 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     C: Future<Output = ()>,
 {
-    run_session_inner(stream, leftover, config, cancel, outbound, conn_ctx)
-        .await
-        .1
+    let (reason, result) =
+        run_session_inner(stream, leftover, config, cancel, outbound, conn_ctx).await;
+    config.handler.on_close(conn_ctx, reason);
+    result
 }
 
 /// [`run_session`] の本体（イシュー #726）。セッション終了まで処理し、
