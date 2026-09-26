@@ -186,14 +186,17 @@ pub enum CloseReason {
     ClientClose,
     /// Close ハンドシェイクなしに接続が切断された（読み取り EOF）。
     ///
-    /// tokio-tungstenite 0.30 の現行実装では、Close フレームなしの
-    /// TCP 切断は `tungstenite::Error::Protocol(ProtocolError::
-    /// ResetWithoutClosingHandshake)` として観測され、本 variant では
-    /// なく [`CloseReason::Failed`]`(`[`FailureKind::Protocol`]`)` へ
-    /// 分類される（`crate::session` の分類ヘルパー参照）。本 variant は
-    /// `ws.next()` が `None` を返す経路（`ConnectionClosed`/
-    /// `AlreadyClosed` 到達後の fused 呼び出し等）に対する防御的な
-    /// 分岐として維持する。
+    /// 到達経路は 2 つある（`crate::session::SessionFailure::recv` が
+    /// 分類）。(1) `ws.next()` が `None` を返す経路（`ConnectionClosed`/
+    /// `AlreadyClosed` 到達後の fused 呼び出し等）で、この場合セッション
+    /// 側の `Result` は `Ok(())`。(2) tokio-tungstenite 0.30 で Close
+    /// フレームなしの TCP 切断が観測される主経路である
+    /// `tungstenite::Error::Protocol(ProtocolError::
+    /// ResetWithoutClosingHandshake)`（イシュー #726 レビュー指摘対応で
+    /// 本 variant へ分類するようになった）で、この場合 `Result` は
+    /// `Err(WsError::Protocol(_))`（読み取り自体は失敗している）。
+    /// いずれも「Close ハンドシェイクなしの切断」という本 variant の
+    /// 定義に一致する。
     Eof,
     /// `WebSocketConfig::idle_timeout` の期限内にクライアントからの
     /// フレームが届かず、アイドルと判定してサーバー側から切断した。

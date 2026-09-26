@@ -198,8 +198,11 @@ where
 /// # 終了理由の割り当て（イシュー #726、設計 4 節の脱出点対応表）
 ///
 /// - クライアントの Close フレーム受信 → [`CloseReason::ClientClose`]
-/// - 受信 EOF（`ws.next()` が `None`。現行構造では[`CloseReason::Eof`] の
-///   doc が示すとおり実質到達不能） → [`CloseReason::Eof`]
+/// - 受信 EOF（`ws.next()` が `None`）、または Close ハンドシェイクなしの
+///   TCP 切断（`ws.next()` が `Err(Protocol(ResetWithoutClosingHandshake))`
+///   を返す、tokio-tungstenite 0.30 での主経路。[`SessionFailure::recv`]
+///   が両方を [`CloseReason::Eof`] へ分類する） → [`CloseReason::Eof`]
+///   （前者は `Result` 側が `Ok(())`、後者は `Err(WsError::Protocol(_))`）
 /// - `config.idle_timeout` 発火 → [`CloseReason::IdleTimeout`]
 /// - コアの世代キャンセル発火 → [`CloseReason::Cancelled`]
 /// - ハンドラが `WsOutcome::Close` → [`CloseReason::HandlerClose`]
@@ -528,14 +531,28 @@ impl SessionFailure {
     ///
     /// `Capacity`（メッセージ/フレームサイズ上限超過）は
     /// [`CloseReason::MessageTooLarge`] へ、`Io` は
-    /// [`FailureKind::Io`] へ、それ以外（`ConnectionClosed`/
-    /// `AlreadyClosed`/`Protocol`/`Tls` 等）は [`FailureKind::Protocol`]
-    /// へ倒す（設計 4 節の脱出点対応表。フェイルクローズ: 分類不能な
-    /// エラーは正常終了側（`Eof`/`ClientClose`）へ倒さない）。
+    /// [`FailureKind::Io`] へ倒す。`Protocol(ResetWithoutClosingHandshake)`
+    /// は tokio-tungstenite 0.30 で Close フレームなしの TCP 切断が実際に
+    /// 観測される経路（`ws.next()` が `None` を返す `InboundEvent::
+    /// Message(None)` はこの構成では実質到達しない）であり、
+    /// [`CloseReason::Eof`] の doc が定義する事象と 1:1 対応するため
+    /// [`CloseReason::Eof`] へ分類する（イシュー #726 レビュー指摘対応。
+    /// `Result` 側は引き続き `Err`（呼び出し元は読み取り自体が失敗した
+    /// ことを判別できる。`MessageTooLarge`/`Err(Capacity(_))` と同型の
+    /// 「正常系 reason + Err」の組み合わせ）。その他の分類不能なエラー
+    /// （`ConnectionClosed`/`AlreadyClosed`/その他 `Protocol`/`Tls` 等）は
+    /// [`FailureKind::Protocol`] へ倒す（設計 4 節の脱出点対応表。
+    /// フェイルクローズ: 分類不能なエラーは `Eof`/`ClientClose` へ
+    /// 倒さない）。
     fn recv(err: tokio_tungstenite::tungstenite::Error) -> Self {
+        use tokio_tungstenite::tungstenite::error::ProtocolError;
+
         let reason = match &err {
             tokio_tungstenite::tungstenite::Error::Capacity(_) => CloseReason::MessageTooLarge,
             tokio_tungstenite::tungstenite::Error::Io(_) => CloseReason::Failed(FailureKind::Io),
+            tokio_tungstenite::tungstenite::Error::Protocol(
+                ProtocolError::ResetWithoutClosingHandshake,
+            ) => CloseReason::Eof,
             _ => CloseReason::Failed(FailureKind::Protocol),
         };
         Self {
@@ -1547,15 +1564,16 @@ mod tests {
         assert!(result.is_ok(), "expected Ok(()), got {result:?}");
     }
 
-    /// 脱出点対応表・5 節「既知の設計ギャップ」: Close ハンドシェイクなしの
-    /// TCP 切断（クライアント側 duplex を Close 送出なしで drop）は
-    /// tungstenite 0.30 では `Protocol(ResetWithoutClosingHandshake)` として
-    /// 観測されるため、`CloseReason::Eof` ではなく
-    /// `Failed(FailureKind::Protocol)` へ分類される（受け入れ基準
-    /// 「脱出点対応表の定義どおり」を文字どおり実装した結果。詳細は
-    /// `handler::CloseReason::Eof` の doc・設計文書 5 節を参照）。
+    /// 脱出点対応表: Close ハンドシェイクなしの TCP 切断（クライアント側
+    /// duplex を Close 送出なしで drop）は tungstenite 0.30 では
+    /// `Protocol(ResetWithoutClosingHandshake)` として観測される。これは
+    /// `CloseReason::Eof` の doc が定義する事象そのものであるため
+    /// `SessionFailure::recv` が `CloseReason::Eof` へ分類する（`Result`
+    /// 側は読み取り失敗を示す `Err(WsError::Protocol(_))` のまま。イシュー
+    /// #726 レビュー指摘対応。詳細は `handler::CloseReason::Eof` の doc・
+    /// 設計文書 4 節・9 節を参照）。
     #[tokio::test]
-    async fn disconnect_without_close_handshake_yields_protocol_failure() {
+    async fn disconnect_without_close_handshake_yields_eof() {
         let config: &'static WebSocketConfig = Box::leak(Box::new(test_config()));
         let (server_side, client_side) = tokio::io::duplex(4096);
         let (tx, rx) = handler::channel(4);
@@ -1583,8 +1601,8 @@ mod tests {
             .expect("session should finish within timeout")
             .expect("session task should not panic");
         assert!(
-            matches!(reason, CloseReason::Failed(FailureKind::Protocol)),
-            "expected Failed(Protocol), got {reason:?}"
+            matches!(reason, CloseReason::Eof),
+            "expected Eof, got {reason:?}"
         );
         assert!(
             matches!(result, Err(WsError::Protocol(_))),
@@ -1868,11 +1886,21 @@ mod tests {
         )));
         assert!(matches!(io.reason, CloseReason::Failed(FailureKind::Io)));
 
-        let protocol = SessionFailure::recv(TError::Protocol(
+        // `ResetWithoutClosingHandshake` は `CloseReason::Eof` の doc が
+        // 定義する事象（Close なし切断）と 1:1 対応するため `Eof` へ分類
+        // する（イシュー #726 レビュー指摘対応。`_` 腕の分類不能エラーとは
+        // 区別する）。
+        let reset_without_close = SessionFailure::recv(TError::Protocol(
             ProtocolError::ResetWithoutClosingHandshake,
         ));
+        assert!(matches!(reset_without_close.reason, CloseReason::Eof));
+
+        // それ以外の `Protocol` variant は分類不能として `Failed(Protocol)`
+        // へ倒す（フェイルクローズ）。
+        let other_protocol =
+            SessionFailure::recv(TError::Protocol(ProtocolError::SendAfterClosing));
         assert!(matches!(
-            protocol.reason,
+            other_protocol.reason,
             CloseReason::Failed(FailureKind::Protocol)
         ));
 
