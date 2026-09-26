@@ -31,10 +31,19 @@ BREAKING CHANGE はありません（後方互換な API 追加のみ）。0.4.2
   `handler::FailureKind`（`Io` / `Protocol` / `Handler`）を追加し、
   セッション内部（`run_session_inner`）が全終了経路ごとに終了理由を算出する
   ようにしました。いずれも `#[non_exhaustive]` で、クライアント入力の
-  payload は保持しません。現時点では算出のみで、ハンドラへの通知 API
-  （`on_close`）は追加していません（後続イシューが担う予定。設計は
+  payload は保持しません（設計は
   `docs/design/ws-connection-context-and-close.md` 4 節、イシュー
   [#726](https://github.com/Fandhe-AI/fandhe-backend/issues/726)、親
+  [#705](https://github.com/Fandhe-AI/fandhe-backend/issues/705)）
+- `fandhe-backend-plugin-websocket`: 切断通知フック `WsMessageHandler::
+  on_close(&self, ctx: &WsConnContext, reason: CloseReason)`（既定 no-op）を
+  追加しました。`on_open` が呼ばれた接続についてのみ、終了経路を問わず
+  セッション終了時にちょうど 1 回呼ばれます（ハンドシェイク検証失敗・101
+  送出前キャンセルでは `on_open` 同様呼ばれない、フェイルクローズの対称性）。
+  既存の `on_message`/`on_open` のみを実装したハンドラは無変更のまま
+  コンパイル・動作します（後方互換。設計は
+  `docs/design/ws-connection-context-and-close.md` 4 節・9 節、イシュー
+  [#729](https://github.com/Fandhe-AI/fandhe-backend/issues/729)、親
   [#705](https://github.com/Fandhe-AI/fandhe-backend/issues/705)）
 
 ## [0.4.1] - 2026-09-26

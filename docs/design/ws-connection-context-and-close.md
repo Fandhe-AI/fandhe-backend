@@ -634,7 +634,14 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
   `FailureKind` の定義・`run_session_inner` への分割・脱出点対応表の実装。
   **実装済み**、`docs/design/ws-connection-context-and-close.md` 本節参照）・
   #727（`WsSender::closed()`/`is_closed()`）・#729（`on_close` 呼び出し、#726 に
-  依存）
+  依存。**実装済み**。`WsMessageHandler::on_close(&self, ctx: &WsConnContext,
+  reason: CloseReason)`（既定 no-op）を追加し、`session::run_session`
+  ラッパーが `run_session_inner` の戻り値を分解してちょうど 1 回呼ぶ構成
+  とした。Issue 本文は `crates/core/src/plugin.rs` も影響範囲に挙げていた
+  が、本節の設計方針（コアは変更しない）に従い `crates/core` は無変更のまま
+  実装した。ハンドシェイク段階の失敗（400/426・101 送出前キャンセル）は
+  `on_open` と対称に `on_close` の対象外とし、失敗の詳細は
+  `handle_upgrade` の戻り値からのみ観測できる契約を維持した）
 - **#726 実装済みの既知のギャップ（PR #731 レビュー指摘対応で解消済み）**:
   4 節の脱出点対応表は当初 `InboundEvent::Message(None)`（EOF）→ `Eof` の
   みを明記し、tokio-tungstenite 0.30 が Close ハンドシェイクなしの TCP

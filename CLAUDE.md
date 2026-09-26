@@ -557,8 +557,21 @@ fandhe-backend/
 │   │                                    # を返す）と既存公開シグネチャを保つ薄いラッパーへ
 │   │                                    # 分割した（`SessionFailure` が
 │   │                                    # `tungstenite::Error` を受信/送信方向別に分類）。
-│   │                                    # 現時点では算出のみでハンドラへの通知（`on_close`）
-│   │                                    # は #729 が追加する予定
+│   │                                    # イシュー #729（#726 に依存）で切断通知フック
+│   │                                    # `WsMessageHandler::on_close(&self, ctx:
+│   │                                    # &WsConnContext, reason: CloseReason)`（既定
+│   │                                    # no-op）を追加し、`session::run_session` ラッパーが
+│   │                                    # `run_session_inner` の戻り値を分解して
+│   │                                    # ちょうど 1 回呼ぶようにした。`on_open` が呼ばれた
+│   │                                    # 接続についてのみ、全終了経路（クライアント Close・
+│   │                                    # EOF・idle timeout・shutdown/rebind キャンセル・
+│   │                                    # プロトコルエラー・ハンドラの Close/エラー・受信
+│   │                                    # サイズ上限超過）を網羅して通知する（ハンドシェイク
+│   │                                    # 検証失敗・101 送出前キャンセルでは `on_open` と
+│   │                                    # 対称に呼ばれないフェイルクローズ契約。`crates/core`
+│   │                                    # は無変更のまま実装、
+│   │                                    # `docs/design/ws-connection-context-and-close.md`
+│   │                                    # 9 節参照）
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O
