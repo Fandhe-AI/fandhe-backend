@@ -60,7 +60,8 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   timeout・送出失敗で打ち切られた場合は、残りの push と Close フレームを
   送らずに終了します）。close 後の `send`/`WsSender::is_closed()` は他の
   終了経路と同様の挙動を返します。close code の RFC 6455 7.4 節・IANA 登録に
-  基づく検証（`1000..=1003`・`1007..=1014`・`3000..=4999` のみ許可）・reason の
+  基づく検証（`1000..=1003`・`1007..=1009`・`1011..=1014`・`3000..=4999` のみ
+  許可。`1010` はクライアント専用のため拒否）・reason の
   123 バイト上限検証に
   失敗した場合、または既に close 済み・セッション終了済みの場合は
   `WsCloseError`（`InvalidCode` / `ReasonTooLong` / `Closed`、
