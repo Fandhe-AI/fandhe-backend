@@ -933,8 +933,8 @@ cancel・idle timeout・クライアント Close・EOF・受信/送信エラー�
 手順（`handler.rs`・`session.rs`）:
 
 1. `WsSender::close` は検証を通った時点で、`reserve` の前に `closing` と同じロックで
-   確定前の要求数を増やし、要求シグナル（`close_request_signal`、`closed_signal` とは
-   別）を送る。確定したら、または呼び出しの future が drop されたら要求数を減らし、
+   確定前の要求数を増やし、同じロック区間で要求シグナル（`close_request_signal`、
+   `closed_signal` とは別）を送る（ロック外で送ると並行する取り下げと送信順が逆転しうる）。確定したら、または呼び出しの future が drop されたら要求数を減らし、
    「確定前の要求が残っている、または `closing`」を送り直す（`CloseRequest` ガード）。
    確定の定義・Reply の判定点・封鎖との関係は変えない。
 2. `CloseBound` が要求シグナルを購読し、要求を初めて観測した時刻から `close_grace` 後を
@@ -947,8 +947,9 @@ cancel・idle timeout・クライアント Close・EOF・受信/送信エラー�
 4. Close 指示を取り出したら、同じ期限で `close_and_drain` を行う。終了経路の排出中に
    見つかった場合は、排出の期限と早い方を使う。
 
-**保証**: `close()` を呼んだら、セッションは要求の観測（通常は呼び出しの直後）から
-`close_grace` 以内に Close ハンドシェイクを終えるか接続を打ち切る。その間に世代キャンセル・
+**保証**: `close()` を呼んだら、呼び出しを確定前に取り下げない限り、セッションは要求の
+観測（通常は呼び出しの直後）から `close_grace` 以内に Close ハンドシェイクを終えるか
+接続を打ち切る。その間に世代キャンセル・
 idle timeout が先に発火した場合は、その経路の契約（発火時点から `close_grace`、終了理由
 `Cancelled`/`IdleTimeout`）に従う。
 

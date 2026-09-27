@@ -1109,29 +1109,36 @@ struct CloseState {
 /// 残っている、または `closing`」を送り直す（確定済みなら true のまま）。
 struct CloseRequest<'a>(&'a WsSender);
 
+// `close_request_signal` の送信は、要求数の更新と同じ `closing` のロック区間で
+// 行う（PR #736 レビュー指摘対応）。ロック解放後に送ると、並行する取り下げ
+// （false を計算 → 解放 → 遅れて送信）と新規要求（true）の送信順が逆転し、
+// 要求が残っているのに最終値が false になって期限が解除されうる。ロック区間内
+// なら送信順は要求数の更新順と一致する。受信側（`crate::session::CloseBound`）は
+// watch の `borrow`/`changed` だけを使い `closing` のロックを取らず、送信側も
+// watch の内部ロックを持ったまま `closing` のロックを取らないため、
+// デッドロックしない。
 impl<'a> CloseRequest<'a> {
     fn new(sender: &'a WsSender) -> Self {
-        sender
+        let mut state = sender
             .closing
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pending_close_requests += 1;
+            .unwrap_or_else(PoisonError::into_inner);
+        state.pending_close_requests += 1;
         sender.close_request_signal.send_replace(true);
+        drop(state);
         Self(sender)
     }
 }
 
 impl Drop for CloseRequest<'_> {
     fn drop(&mut self) {
-        let active = {
-            let mut state = self
-                .0
-                .closing
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            state.pending_close_requests = state.pending_close_requests.saturating_sub(1);
-            state.pending_close_requests > 0 || state.closing
-        };
+        let mut state = self
+            .0
+            .closing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.pending_close_requests = state.pending_close_requests.saturating_sub(1);
+        let active = state.pending_close_requests > 0 || state.closing;
         self.0.close_request_signal.send_replace(active);
     }
 }
@@ -1481,7 +1488,9 @@ impl WsSender {
         }
         if closing_after {
             // 受信側は `_closed_signal_anchor` が最低 1 個生存を保証するため
-            // 送信は必ず成功する（戻り値は無視してよい）。
+            // 送信は必ず成功する（戻り値は無視してよい）。`closed_signal` は
+            // true にしか変わらない単調な値なので、ロック解放後に送って他の
+            // 送信と順序が入れ替わっても最終値は変わらない（無害）。
             let _ = self.closed_signal.send(true);
         }
         Ok(())
@@ -1503,7 +1512,8 @@ impl WsSender {
             .unwrap_or_else(PoisonError::into_inner)
             .closing = true;
         // 受信側は `_closed_signal_anchor` が最低 1 個生存を保証するため
-        // 送信は必ず成功する（戻り値は無視してよい）。
+        // 送信は必ず成功する（戻り値は無視してよい）。`closed_signal` は単調
+        // （true のみ）なので、ロック外で送っても順序の入れ替わりは無害。
         let _ = self.closed_signal.send(true);
     }
 

@@ -582,6 +582,10 @@ impl Drop for OutboundGuard<'_> {
 /// 記録する）とし、以後の送出（[`send_bounded`]）・Close 送出・応答待ち
 /// （[`close_and_drain`]）をすべて本構造体の期限で打ち切る。close を要求して
 /// いない間の送出には期限を設けない（既存の挙動）。
+///
+/// watch は最新値だけを保持するため、取り下げ → 新規要求（false → true）が
+/// 短い間に続くと本構造体が false を見逃し、古い要求の期限が残りうる。その場合も
+/// 期限が早まるだけで、`close_grace` の上限は守られる。
 struct CloseBound {
     /// close 要求（確定前を含む）の有無（`WsSender::subscribe_close_request`）。
     requested: watch::Receiver<bool>,
@@ -917,7 +921,7 @@ enum SessionFlow {
         code: u16,
         /// 検証済みの close reason（123 バイト以内）。
         reason: String,
-        /// Close ハンドシェイク（[`close_and_drain`]）に使う期限。close 確定の
+        /// Close ハンドシェイク（[`close_and_drain`]）に使う期限。close 要求の
         /// 観測から `close_grace` 後（[`CloseBound::deadline`]）で、終了経路の
         /// 排出（[`flush_outbound`]）中に見つかった場合はその排出と共有する期限と
         /// 早い方を使う。いずれの経路でも、close 要求から Close ハンドシェイク
@@ -1362,7 +1366,7 @@ where
 /// `Err` を返す。
 ///
 /// 継続経路で排出開始後に格納された push と Reply の相対順序のみ不定（判定より
-/// 後に確定した close では Reply が Close より先に送出されうるが、close 確定の
+/// 後に確定した close では Reply が Close より先に送出されうるが、close 要求の
 /// 観測から `close_grace` で打ち切る）。
 ///
 /// outbound 到着時の `ws.send()` 失敗・cancel 発火時の扱いは
