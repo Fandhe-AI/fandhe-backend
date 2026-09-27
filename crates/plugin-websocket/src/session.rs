@@ -115,8 +115,8 @@ use futures_util::{SinkExt, StreamExt};
 use crate::config::WebSocketConfig;
 use crate::error::WsError;
 use crate::handler::{
-    CloseReason, DEFAULT_OUTBOUND_CAPACITY, FailureKind, WsConnContext, WsHandlerError, WsMessage,
-    WsOutcome,
+    CloseReason, DEFAULT_OUTBOUND_CAPACITY, FailureKind, OutboundItem, WsConnContext,
+    WsHandlerError, WsMessage, WsOutcome,
 };
 use crate::race_cancel;
 
@@ -143,7 +143,7 @@ pub(crate) async fn run_session<S, C>(
     leftover: Vec<u8>,
     config: &WebSocketConfig,
     cancel: Pin<&mut C>,
-    outbound: Option<mpsc::Receiver<WsMessage>>,
+    outbound: Option<mpsc::Receiver<OutboundItem>>,
     conn_ctx: &WsConnContext,
 ) -> Result<(), WsError>
 where
@@ -244,12 +244,15 @@ where
 /// - その他の受信/送信/ハンドラ失敗 → [`CloseReason::Failed`]（種別は
 ///   [`SessionFailure::recv`]/[`SessionFailure::send`]/[`SessionFailure::handler`]
 ///   が決定する）
+/// - [`crate::handler::WsSender::close`] によるサーバー起点の Close 指示
+///   → [`CloseReason::SenderClose`]（イシュー #710。受信待ち中・ハンドラ
+///   実行中のいずれから検出されても同一の `CloseReason` になる）
 async fn run_session_inner<S, C>(
     stream: S,
     leftover: Vec<u8>,
     config: &WebSocketConfig,
     mut cancel: Pin<&mut C>,
-    mut outbound: Option<mpsc::Receiver<WsMessage>>,
+    mut outbound: Option<mpsc::Receiver<OutboundItem>>,
     conn_ctx: &WsConnContext,
 ) -> (CloseReason, Result<(), WsError>)
 where
@@ -353,7 +356,7 @@ where
                     handle_idle_timeout(ws, config.close_grace).await,
                 );
             }
-            InboundEvent::Outbound(msg) => {
+            InboundEvent::Outbound(OutboundItem::Message(msg)) => {
                 let frame = to_tungstenite_message(msg);
                 match race_cancel(cancel.as_mut(), ws.send(frame)).await {
                     None => {
@@ -366,6 +369,18 @@ where
                     Some(Ok(())) => {}
                     Some(Err(err)) => return SessionFailure::send(err).into_parts(),
                 }
+            }
+            InboundEvent::Outbound(OutboundItem::Close { code, reason }) => {
+                // `WsSender::close`（イシュー #710）: 受信ループを抜けて
+                // Close ハンドシェイクへ分岐する。close 時点でキュー済み
+                // だった push は FIFO 順で本イベントより前に既に送出済み
+                // （`WsSender` の順序保証、`handler.rs` の doc を参照）。
+                drop(outbound.take());
+                let frame = to_close_frame(code, reason);
+                return (
+                    CloseReason::SenderClose,
+                    close_and_drain(ws, Some(frame), config.close_grace).await,
+                );
             }
             InboundEvent::Message(None) => break CloseReason::Eof,
             InboundEvent::Message(Some(message)) => {
@@ -396,6 +411,19 @@ where
                                     handle_cancellation(ws, config.close_grace).await,
                                 );
                             }
+                            Ok(SessionFlow::SenderClose { code, reason }) => {
+                                // `WsSender::close`（イシュー #710）がハンドラ実行中に
+                                // 呼ばれた場合。ハンドラの戻り値（Reply/Close）は
+                                // `run_handler_with_outbound_drain` が既に破棄済み
+                                // （Close フレームの後にデータフレームを送れない、
+                                // RFC 6455 5.5.1 節）。
+                                drop(outbound.take());
+                                let frame = to_close_frame(code, reason);
+                                return (
+                                    CloseReason::SenderClose,
+                                    close_and_drain(ws, Some(frame), config.close_grace).await,
+                                );
+                            }
                             Err(failure) => return failure.into_parts(),
                         }
                     }
@@ -418,6 +446,17 @@ where
                                 return (
                                     CloseReason::Cancelled,
                                     handle_cancellation(ws, config.close_grace).await,
+                                );
+                            }
+                            Ok(SessionFlow::SenderClose { code, reason }) => {
+                                // `WsSender::close`（イシュー #710）がハンドラ実行中に
+                                // 呼ばれた場合。上の `Message::Text` 分岐と同一の理由
+                                // （RFC 6455 5.5.1 節）でハンドラの戻り値は破棄済み。
+                                drop(outbound.take());
+                                let frame = to_close_frame(code, reason);
+                                return (
+                                    CloseReason::SenderClose,
+                                    close_and_drain(ws, Some(frame), config.close_grace).await,
                                 );
                             }
                             Err(failure) => return failure.into_parts(),
@@ -458,8 +497,11 @@ enum InboundEvent {
     Message(Option<Result<Message, tokio_tungstenite::tungstenite::Error>>),
     /// `idle_deadline` に到達した。
     Idle,
-    /// [`crate::handler::WsSender`] からの push メッセージ。
-    Outbound(WsMessage),
+    /// [`crate::handler::WsSender`] からの push メッセージ、または
+    /// [`crate::handler::WsSender::close`] の Close 指示（イシュー #710。
+    /// 内部表現 [`OutboundItem`] のまま運び、分岐は消費側（呼び出し元の
+    /// `match`）に委ねる）。
+    Outbound(OutboundItem),
 }
 
 /// 2 つの `Future` を手動 race させる汎用ヘルパー（`crate::race_cancel` と
@@ -540,6 +582,18 @@ fn to_tungstenite_message(msg: WsMessage) -> Message {
     match msg {
         WsMessage::Text(t) => Message::Text(t.into()),
         WsMessage::Binary(b) => Message::Binary(b.into()),
+    }
+}
+
+/// [`crate::handler::WsSender::close`] が enqueue した `(code, reason)` を
+/// tungstenite の `CloseFrame` へ変換する（イシュー #710）。`code` の RFC
+/// 6455 許可判定・`reason` の長さ検証は `WsSender::close` の呼び出し時点
+/// （API 境界、`handler.rs`）で既に完了しているため、本関数では再検証しない
+/// （検証の重複を避け、責務を 1 箇所に集約する）。
+fn to_close_frame(code: u16, reason: String) -> CloseFrame {
+    CloseFrame {
+        code: CloseCode::from(code),
+        reason: Utf8Bytes::from(reason),
     }
 }
 
@@ -641,6 +695,19 @@ enum SessionFlow {
     /// 送出中にキャンセルが発火し、当該 `Future` を打ち切った。呼び出し元は
     /// [`handle_cancellation`] へ分岐する。
     Cancelled,
+    /// [`crate::handler::WsSender::close`] によるサーバー起点の Close 指示を
+    /// 受け取った（イシュー #710。[`run_handler_with_outbound_drain`] が
+    /// ハンドラ実行中の outbound 消化中に検出する）。呼び出し元はハンドラの
+    /// 戻り値（`WsOutcome::Reply`/`Close`）を破棄し、`code`/`reason` で
+    /// Close ハンドシェイクへ分岐する（Close フレームの後にデータフレームを
+    /// 送れない、RFC 6455 5.5.1 節）。
+    SenderClose {
+        /// 検証済みの close code（[`crate::handler::WsSender::close`] の
+        /// 呼び出し時点で RFC 6455 の許可判定を通過済み）。
+        code: u16,
+        /// 検証済みの close reason（123 バイト以内）。
+        reason: String,
+    },
 }
 
 /// [`crate::handler::WsMessageHandler::on_message`] の戻り値をセッション
@@ -736,7 +803,7 @@ where
 async fn run_handler_with_outbound_drain<S, C>(
     ws: &mut WebSocketStream<S>,
     mut cancel: Pin<&mut C>,
-    outbound: &mut Option<mpsc::Receiver<WsMessage>>,
+    outbound: &mut Option<mpsc::Receiver<OutboundItem>>,
     handler_fut: futures_util::future::BoxFuture<'_, Result<WsOutcome, WsHandlerError>>,
 ) -> Result<SessionFlow, SessionFailure>
 where
@@ -758,7 +825,7 @@ where
                     cancel.as_mut(),
                     race2(
                         &mut handler_fut,
-                        std::future::pending::<Option<WsMessage>>(),
+                        std::future::pending::<Option<OutboundItem>>(),
                     ),
                 )
                 .await
@@ -767,13 +834,21 @@ where
         match progress {
             None => return Ok(SessionFlow::Cancelled),
             Some(Either::Left(handler_result)) => break handler_result,
-            Some(Either::Right(Some(msg))) => {
+            Some(Either::Right(Some(OutboundItem::Message(msg)))) => {
                 let frame = to_tungstenite_message(msg);
                 match race_cancel(cancel.as_mut(), ws.send(frame)).await {
                     None => return Ok(SessionFlow::Cancelled),
                     Some(Ok(())) => {}
                     Some(Err(err)) => return Err(SessionFailure::send(err)),
                 }
+            }
+            Some(Either::Right(Some(OutboundItem::Close { code, reason }))) => {
+                // `WsSender::close`（イシュー #710）がハンドラ実行中に呼ばれた。
+                // ハンドラの `Future`（`handler_fut`）はここで `return` により
+                // drop する（#499 の中断安全性契約の範囲内。close 後は送信
+                // できないためハンドラ完了を待つ意味がなく、待てば Close
+                // 送出が遅れて有界性を損なう）。
+                return Ok(SessionFlow::SenderClose { code, reason });
             }
             Some(Either::Right(None)) => {
                 // 全 `WsSender` クローンが drop 済み（`run_session_inner` 外側
@@ -799,13 +874,19 @@ where
     if let Some(rx) = outbound.as_mut() {
         for _ in 0..DEFAULT_OUTBOUND_CAPACITY {
             match rx.try_recv() {
-                Ok(msg) => {
+                Ok(OutboundItem::Message(msg)) => {
                     let frame = to_tungstenite_message(msg);
                     match race_cancel(cancel.as_mut(), ws.send(frame)).await {
                         None => return Ok(SessionFlow::Cancelled),
                         Some(Ok(())) => {}
                         Some(Err(err)) => return Err(SessionFailure::send(err)),
                     }
+                }
+                Ok(OutboundItem::Close { code, reason }) => {
+                    // ハンドラの戻り値（`outcome`）は破棄する。Close フレームの
+                    // 後にデータフレームを送れない契約（RFC 6455 5.5.1 節）の
+                    // ため、`apply_outcome` へは委譲しない。
+                    return Ok(SessionFlow::SenderClose { code, reason });
                 }
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -1054,7 +1135,10 @@ mod tests {
         );
 
         let first = rx.recv().await.expect("first message should be queued");
-        assert_eq!(first, WsMessage::Text("first".to_string()));
+        assert_eq!(
+            first,
+            OutboundItem::Message(WsMessage::Text("first".to_string()))
+        );
 
         let result = tokio::time::timeout(Duration::from_millis(200), &mut second)
             .await

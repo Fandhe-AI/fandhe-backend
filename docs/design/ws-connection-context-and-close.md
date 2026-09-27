@@ -233,6 +233,8 @@ pub enum CloseReason {
     HandlerClose,
     MessageTooLarge,
     Failed(FailureKind),
+    // イシュー #710 で追加。12 節を参照。
+    SenderClose,
 }
 
 #[non_exhaustive]
@@ -319,6 +321,7 @@ Debug` と同一のログ・診断への機密混入防止方針）。
 | `InboundEvent::Outbound` 分岐の `ws.send` 失敗（247 行）: `Io` 以外 | `Failed(FailureKind::Protocol)` |
 | `apply_outcome(...).await?` が伝播する `apply_outcome` 内部の `ws.send`/`ws.close` 失敗（`apply_outcome` 内 451 行・459 行の `result?`、呼び出し元の `.await?` 経由。Text 分岐 266 行・Binary 分岐 285 行）: `Error::Io(_)` | `Failed(FailureKind::Io)` |
 | 同上: `Io` 以外 | `Failed(FailureKind::Protocol)` |
+| `WsSender::close` が enqueue した `OutboundItem::Close`（受信待ち中の `InboundEvent::Outbound` 分岐、またはハンドラ実行中の `run_handler_with_outbound_drain` の 2 経路のいずれかから検出。イシュー #710、12 節参照） | `SenderClose` |
 
 #### `FailureKind::Io` の判別方法（`Error::Io(_)` を明示的に振り分ける）
 
@@ -754,6 +757,75 @@ impl WsMessageHandler for CdpHandler {
 `on_message_with_ctx` で `ctx.conn_id()` をキーに購読状態を登録、`on_close` で
 エントリを削除する最小スケッチであり、案 B の運用像を具体化する目的のみに使う
 （コンパイル可能であることは保証しない説明用コード）。
+
+## 12. #710: `WsSender::close` によるサーバー起点の Close
+
+親 #708「サーバー起点で任意タイミングに Close を送れる WebSocket API」対応。
+`on_message` の戻り値 `WsOutcome::Close`（`HandlerClose`）は `on_message` の
+`Future` 内からしか呼べず、`on_open` で spawn したタスク等、ハンドラの外からは
+接続を閉じられなかった。`WsSender::close(code, reason)` を追加してこれを解消する。
+
+### 順序保証と競合排除（reserve + 単一 Mutex）
+
+「フラグを確認してから `tx.send().await`」という素朴な実装は、確認と enqueue の
+間に別タスクの `close` が割り込むと、送信済みメッセージが Close の後ろへ積まれて
+破棄される（`send` は `Ok` を返すのに実際には届かない）静かなデータ欠落を招く。
+
+これを避けるため、`WsSender` は次の構造を取る。
+
+- 送信キューを流れる要素を `OutboundItem { Message(WsMessage), Close { code,
+  reason } }` に統一し、`send`/`close` の両方が同一の bounded mpsc へ enqueue
+  する（2 本の別チャネルに分けてマージ順序を別途保証するより、単一チャネルの
+  FIFO 特性だけで順序保証を得る方が構造的に単純）。
+- `closing: Arc<std::sync::Mutex<bool>>` を全 clone で共有し、`commit`（`tx.
+  reserve()`/`try_reserve()` で確保した `Permit` を受け取る非公開ヘルパー）が
+  「フラグ確認 → （close 呼び出しなら）フラグを立てる → `Permit::send`（同期）」
+  の 3 手順を同一ロック区間で行う。ロック保持中に `.await` しない
+  （`.claude/rules/coding-rust.md`）ため、`reserve()` の非同期待機はロックの
+  **外側**で完了させ、ロック内は同期処理のみに限定する。
+
+この結果、`send` が `Ok` を返したメッセージは必ず Close より前に enqueue され、
+Close 確定後に enqueue を試みた `send` は必ず `Err` になる。
+
+### 検証（RFC 6455 7.4 節・5.5 節）
+
+- close code は tungstenite の `CloseCode::from(code).is_allowed()` で検証する
+  （`<1000`・`1005`・`1006`・`1015`・予約域 `1016..=2999`・`>=5000` を拒否）。
+  tungstenite 自身は送信する Close フレームの code を検証しないため、API 境界
+  （`WsSender::close`）での入力検証が必須（`.claude/rules/security.md`）。
+- reason は制御フレームの payload 上限 125 バイトから close code 分の 2 バイトを
+  引いた 123 バイトまでを許容する。UTF-8 は `&str` の型で保証される。
+- いずれかの検証に失敗した場合、close 済みフラグは立てない（不正な要求で以後の
+  `send`/`close` を巻き込んで失敗させない）。
+
+### 2 回目以降の `close`・ハンドラ実行中の `close`
+
+- 検証を通過した後、既に close 済み・セッション終了済みであれば
+  `WsCloseError::Closed` を返す（`send` の close 後の挙動と一貫させる、
+  フェイルクローズ）。
+- ハンドラ（`on_message_with_ctx`）実行中に別タスクから `close` が呼ばれた場合、
+  `run_handler_with_outbound_drain`（6 節）が outbound 消化中に `OutboundItem::
+  Close` を検出し、ハンドラの `Future` を drop して即座に Close ハンドシェイクへ
+  分岐する（#499 の中断安全性契約の範囲内。ハンドラの完了を待たない理由は、
+  close 後は送信できず待つ意味がないうえ、待てば Close 送出が遅れて有界性を
+  損なうため）。ハンドラが返す `WsOutcome::Reply`/`Close` は破棄される（RFC 6455
+  5.5.1 節: Close フレームの後にデータフレームを送れない）。
+
+### `is_closed()` の意味の変更
+
+`WsSender::is_closed()` は「`closing` フラグ、または受信側 `Receiver` の
+drop」のいずれか早い方で `true` になる。`close()` 確定直後は受信側がまだ
+drop されていなくても `true` を返しうる点が、`closed()`（受信側 drop まで
+完了しない）との違いである。`docs/api/plugin-config-api.md` の記述もこれに
+追随させる。
+
+### スコープ外（変更しない）
+
+- 既存の `WsOutcome::Close`（`HandlerClose` 経路）がキュー済みの push を捨てる
+  挙動の是正は、本イシューの受け入れ基準に含まれない（親 #708 の別課題として
+  残す）。
+- 送信キューの容量設定・`try_send`（#709）は本イシューの対象外。`OutboundItem`・
+  `commit` は `try_reserve()` を使う `try_send` をそのまま載せられる形にしてある。
 
 [`WsOpenContext`]: ../../crates/plugin-websocket/src/handler.rs
 [`WsSendError`]: ../../crates/plugin-websocket/src/handler.rs

@@ -50,6 +50,22 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   `tokio::spawn` した別タスクでのみ使う契約です（イシュー
   [#727](https://github.com/Fandhe-AI/fandhe-backend/issues/727)、親
   [#705](https://github.com/Fandhe-AI/fandhe-backend/issues/705)）
+- `fandhe-backend-plugin-websocket`: `WsSender::close(code, reason)` を
+  追加しました。`on_message` の戻り値 `WsOutcome::Close` とは異なり、
+  `on_open` から `spawn` したタスク等、ハンドラの外からも任意のタイミングで
+  サーバー起点の Close ハンドシェイクを開始できます。close 呼び出し前に
+  `send` が `Ok` を返した push メッセージはすべてクライアントへ届いてから
+  Close フレームが送出される順序保証を持ち（内部の送信キューへ単一の
+  bounded mpsc として直列に流すことで FIFO 特性のみで保証）、close 後の
+  `send`/`WsSender::is_closed()` は他の終了経路と同様の挙動を返します。
+  close code の RFC 6455 7.4 節準拠検証・reason の 123 バイト上限検証に
+  失敗した場合、または既に close 済み・セッション終了済みの場合は
+  `WsCloseError`（`InvalidCode` / `ReasonTooLong` / `Closed`、
+  `#[non_exhaustive]`）を返します。終了理由 `CloseReason` に variant
+  `SenderClose` を追加しました（非破壊。設計は
+  `docs/design/ws-connection-context-and-close.md`、イシュー
+  [#710](https://github.com/Fandhe-AI/fandhe-backend/issues/710)、親
+  [#708](https://github.com/Fandhe-AI/fandhe-backend/issues/708)）
 
 ### Fixed
 
