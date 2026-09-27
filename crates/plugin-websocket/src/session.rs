@@ -282,12 +282,19 @@ where
 ///   させる（[`send_bounded_with_liveness`]）。
 ///
 /// **既知の限界**: ユーザーハンドラ実行中
-/// （[`run_handler_with_outbound_drain`]）は `ws.next()` をポーリングしない
-/// ため、Ping を送出せず Pong 期限も評価しない（`idle_timeout` と同種の
-/// 既存の限界）。ハンドラから受信待ちへ戻った直後の反復では `ws.next()` を
-/// 先にポーリングするため、バッファ済みの Pong が期限切れ判定より先に処理
-/// され、ハンドラが `pong_timeout` より長く実行してもすぐ応答するクライアン
-/// トが誤って切断されることはない（偽陽性なし）。
+/// （[`run_handler_with_outbound_drain`]）は `next_ping_at`（新規 Ping の
+/// 送出）を評価しない（`idle_timeout` と同種の既存の限界）。ただし
+/// `pong_deadline`（未応答の Ping の Pong 期限）はハンドラ実行開始時点で
+/// 既に `Some` であれば、その期限が実際に来た瞬間に非ブロッキングで
+/// サンプリングする（続報レビュー指摘、PR #738、codex P1 ×2・
+/// cursor(Bugbot) High 対応。詳細は [`run_handler_with_outbound_drain`] の
+/// doc「ハンドラ実行中の Ping keepalive 監視」節を参照）。ハンドラが
+/// `pong_timeout` より長く実行してもすぐ応答するクライアントが誤って
+/// 切断されることはなく（偽陽性なし、`buffered_pong_after_slow_handler_
+/// prevents_false_positive_timeout` 等が固定する契約）、逆に期限までに
+/// Pong が届かなければハンドラ完了を待たずに「タイムアウト済み」と確定し、
+/// ハンドラ完了後に確実に切断する（期限後に届いたかもしれない Pong を
+/// 再確認して受理することはない）。
 ///
 /// `pong_deadline` の期限切れ検知はループ反復先頭のハード判定
 /// （[`drain_for_pong`] による待機なし・最大 `PONG_DRAIN_CAP` 件までの
@@ -301,7 +308,9 @@ where
 /// 処理する（旧実装は単一フレームの [`poll_once`] のみで確認しており、
 /// Pong の手前に他フレームが 1 件でもあると誤って `PongTimeout` にしていた。
 /// 外部レビュー codex P1・cursor(Bugbot) High 指摘対応）。`PONG_DRAIN_CAP`
-/// 件確認しても見つからなければ新規データの到着を待たず即座に切断する。
+/// 件確認しても見つからなければ新規データの到着を待たず即座に切断する
+/// （[`PONG_DRAIN_CAP`] の doc を参照。ハンドラ実行中の同種のハード判定は
+/// [`run_handler_with_outbound_drain`] の doc を参照）。
 /// Ping/outbound push 送出自体が生存期限に達した場合
 /// （[`send_bounded_with_liveness`]）は、フレーム投入（`Sink::start_send`）
 /// 確定前に限り未送出のまま安全に切断する（phase-split 実装により、
@@ -323,6 +332,13 @@ where
 ///   で解除、[`Self::on_ping_sent`] は既に `Some` のときは延長しない —
 ///   後続の Ping が期限を先延ばしにすると、応答しない相手を検知できなくなる
 ///   ため）。
+/// - `missed`: [`run_handler_with_outbound_drain`] がハンドラ実行中に
+///   `pong_deadline` の到達を検知し、その時点の非ブロッキング確認で Pong が
+///   見つからなかったことを表す（イシュー #713 続報レビュー指摘対応、P1。
+///   `run_handler_with_outbound_drain` の doc を参照）。一度立てば
+///   `pong_deadline` 自体は変更しない（`Self::on_pong` は依然呼べる形を
+///   保つが、`true` の間は呼び出し元がハンドラ完了後すぐに
+///   `SessionFlow::PongTimedOut` へ分岐するため実際には呼ばれない）。
 ///
 /// `Instant + Duration` はオーバーフローで panic するため、`checked_add` で
 /// 計算し、失敗時（極端に大きい `Duration` を明示指定した場合）は `None`
@@ -333,6 +349,7 @@ struct KeepaliveState {
     pong_timeout: Duration,
     next_ping_at: Option<Instant>,
     pong_deadline: Option<Instant>,
+    missed: bool,
 }
 
 impl KeepaliveState {
@@ -342,6 +359,7 @@ impl KeepaliveState {
             pong_timeout: keepalive.pong_timeout,
             next_ping_at: now.checked_add(keepalive.interval),
             pong_deadline: None,
+            missed: false,
         }
     }
 
@@ -778,6 +796,10 @@ where
                             handler_fut,
                             config.close_grace,
                             config.outbound_capacity,
+                            &mut PongWatch {
+                                keepalive: keepalive.as_mut(),
+                                pending_inbound: &mut pending_inbound,
+                            },
                         )
                         .await
                         {
@@ -811,6 +833,25 @@ where
                                 outbound.release();
                                 return close_grace_expired();
                             }
+                            Ok(SessionFlow::PongTimedOut) => {
+                                // ハンドラ実行中に Ping keepalive の Pong 期限が
+                                // 切れ、その時点の非ブロッキング確認で Pong が
+                                // 見つからなかった（イシュー #713 続報レビュー
+                                // 指摘対応、P1。`run_handler_with_outbound_drain`
+                                // の doc を参照）。ハンドラの戻り値（Reply/Close）は
+                                // 既に破棄済み。
+                                outbound.release();
+                                return (
+                                    CloseReason::PongTimeout,
+                                    handle_pong_timeout(ws, config.close_grace).await,
+                                );
+                            }
+                            Ok(SessionFlow::Eof) => {
+                                // ハンドラ実行中の Pong 期限確認で EOF を検出した
+                                // （イシュー #713 続報レビュー指摘対応、P1）。
+                                outbound.release();
+                                break CloseReason::Eof;
+                            }
                             Err(failure) => return failure.into_parts(),
                         }
                     }
@@ -825,6 +866,10 @@ where
                             handler_fut,
                             config.close_grace,
                             config.outbound_capacity,
+                            &mut PongWatch {
+                                keepalive: keepalive.as_mut(),
+                                pending_inbound: &mut pending_inbound,
+                            },
                         )
                         .await
                         {
@@ -855,6 +900,21 @@ where
                             Ok(SessionFlow::CloseGraceExpired) => {
                                 outbound.release();
                                 return close_grace_expired();
+                            }
+                            Ok(SessionFlow::PongTimedOut) => {
+                                // 上の `Message::Text` 分岐と同一の理由
+                                // （イシュー #713 続報レビュー指摘対応、P1）。
+                                outbound.release();
+                                return (
+                                    CloseReason::PongTimeout,
+                                    handle_pong_timeout(ws, config.close_grace).await,
+                                );
+                            }
+                            Ok(SessionFlow::Eof) => {
+                                // 上の `Message::Text` 分岐と同一の理由
+                                // （イシュー #713 続報レビュー指摘対応、P1）。
+                                outbound.release();
+                                break CloseReason::Eof;
                             }
                             Err(failure) => return failure.into_parts(),
                         }
@@ -1333,11 +1393,35 @@ async fn poll_once<F: Future>(fut: F) -> Poll<F::Output> {
 /// （イシュー #713 レビュー指摘対応、P1）。継続送信クライアントに対する
 /// 恒久飢餓防止（`pong_timeout_still_fires_when_client_never_pongs_but_
 /// keeps_sending` が固定する契約）のため、[`Instant::now() >= deadline`]
-/// のハード判定自体は必ず有界時間で完了しなければならない。既知の限界
-/// として、Pong が `PONG_DRAIN_CAP` 件より手前に埋もれている極端な高頻度
-/// 連続送信では誤って `PongTimeout` になりうる（モジュール doc「既知の
-/// 限界」節を参照）。
-const PONG_DRAIN_CAP: usize = 32;
+/// のハード判定自体は必ず有界時間で完了しなければならない。
+///
+/// 続報レビュー指摘（PR #738、codex P1・cursor(Bugbot) High）を受けて、
+/// [`run_handler_with_outbound_drain`] からの呼び出し（ハンドラ実行中の
+/// Pong 期限サンプリング）に限っては役割を変更した。同関数の doc が
+/// 説明するとおり、その呼び出しは `pong_deadline` が「実際にその期限が
+/// 来た瞬間」に非ブロッキングで発火するため、正当性（バックログの手前に
+/// どれだけ非 Pong フレームがあっても偽陽性の `PongTimeout` にしないこと）
+/// はこの件数に依存しない（サンプリングの瞬間にバッファ済みのフレームは、
+/// 件数を問わずすべて期限以前に届いていたことが保証される）。この呼び
+/// 出しにおいて本上限が果たす役割は純粋なメモリ・CPU 安全性の保険のみ
+/// （1 回のサンプリングで一括到着したフレームが極端に多い、悪意ある高
+/// 頻度連続送信のケース。`pending_inbound` を無制限に肥大化させない、
+/// finding High「先読みキューが無制限に増大しうる」への対応）で、発火
+/// する場合（`PONG_DRAIN_CAP` 件確認しても Pong が見つからない）は
+/// `PongTimeout` として切断する（`drain_cap_reached_at_deadline_without_
+/// pong_is_treated_as_timeout` が固定する契約）。
+///
+/// **既知の限界（変更なし）**: [`run_session_inner`] 外側ループ先頭からの
+/// 呼び出し（ハンドラ実行中でない通常の受信待ちの間に検知した期限切れ）
+/// では、上記「実際にその期限が来た瞬間」という保証がない（`ws.send()` の
+/// 長時間ブロック（[`apply_outcome`] の Reply 送出等、クライアントが受信を
+/// 止めている場合）中は読み取りを一切行わないため、送出が完了して
+/// ループ先頭へ戻ってきた時点で、その間にクライアントが送った非 Pong
+/// フレームの量が本上限を超えていれば、実際には期限内に届いていた Pong を
+/// 誤って `PongTimeout` にする可能性が残る。[`run_handler_with_outbound_
+/// drain`] が解消する「ハンドラ実行中」の窓とは異なる残存窓であり、本
+/// 続報レビュー対応のスコープ外として意図的に残す）。
+const PONG_DRAIN_CAP: usize = 64;
 
 /// [`drain_for_pong`] の結果。
 enum PongDrainOutcome {
@@ -1573,6 +1657,19 @@ enum SessionFlow {
     /// （[`SendOutcome::CloseGraceExpired`]）。呼び出し元は
     /// [`close_grace_expired`] でセッションを終える。
     CloseGraceExpired,
+    /// ハンドラ実行中に Ping keepalive（[`KeepaliveState`]、イシュー #713）の
+    /// `pong_deadline` が到達し、その時点の非ブロッキング確認
+    /// （[`drain_for_pong`]）で Pong が見つからなかった（イシュー #713
+    /// 続報レビュー指摘対応、P1。[`run_handler_with_outbound_drain`] の
+    /// doc を参照）。ハンドラの戻り値（`WsOutcome::Reply`/`Close`）は
+    /// 既に破棄済み（`SenderClose` と同型 — 応答よりも死活監視契約の
+    /// 遵守を優先する）。呼び出し元は [`handle_pong_timeout`] へ分岐する。
+    PongTimedOut,
+    /// ハンドラ実行中の Pong 期限確認（[`drain_for_pong`]）でストリームが
+    /// EOF に達した（イシュー #713 続報レビュー指摘対応、P1）。呼び出し元は
+    /// `CloseReason::Eof` でセッションを終える（[`run_session_inner`] 外側
+    /// ループの `PongDrainOutcome::Eof` 分岐と同型）。
+    Eof,
 }
 
 /// [`crate::handler::WsMessageHandler::on_message`] の戻り値をセッション
@@ -2027,6 +2124,70 @@ where
 /// アイドルタイムアウトは発火しない（ハンドラの実行時間そのものは監視対象
 /// 外というポリシー上の判断であり、本関数が解消する「outbound 送信キューの
 /// デッドロック」とは別種の懸念のため、本イシューでは対処しない）。
+///
+/// # ハンドラ実行中の Ping keepalive 監視（イシュー #713 続報レビュー
+/// 指摘対応、P1）
+///
+/// 旧実装は本関数の実行中（ハンドラ完了を待つ間）は `pong_deadline` を
+/// 一切監視せず、[`run_session_inner`] 外側ループへ戻ってから初めて
+/// ループ反復先頭のハード判定（[`drain_for_pong`]）で評価していた。この
+/// 「ハンドラ完了後にまとめて確認する」方式には 2 つの欠陥があった
+/// （外部レビュー codex P1 ×2・cursor(Bugbot) High 指摘）:
+///
+/// 1. ハンドラが `pong_timeout` より長く実行する間に届いた非 Pong フレームが
+///    ハンドラ完了まで無制限に溜まり、その件数がハード判定の確認上限
+///    （`PONG_DRAIN_CAP`）を超えていると、実際には期限内に届いていた
+///    正当な Pong を「後ろに埋もれている」だけで見つけられず誤って
+///    `PongTimeout` にしていた（finding P1「32 フレームより後ろの有効な
+///    Pong で誤切断される」）。
+/// 2. 逆に、期限後に届いた Pong を「見つかった」という事実だけで無条件に
+///    受理していた。ハード判定はハンドラ完了後の任意の時点で初めて実行
+///    されるため、その時点までに Pong が届いていれば、それが実際に
+///    `pong_deadline` 以前・以後のどちらだったかを判別する材料がなかった
+///    （finding P1「期限後の Pong でタイムアウトが解除される」）。
+///
+/// 本関数は `pong_deadline` を「その期限が実際に来た瞬間」に非ブロッキングで
+/// サンプリングすることでこれを解消する。ハンドラ実行開始時点で
+/// `pong_deadline` が `Some(deadline)` であれば、ステップ 1 の race へ
+/// `sleep_until(deadline)` を第 3 の腕として加える（`keepalive` が `None`
+/// または `pong_deadline` が `None` の場合は常に Pending なダミー
+/// `Future` を使い、以後選択されない。同じ理由で一度発火したら以後は
+/// 再度選択しない — 本関数の実行中に新しい Ping が送出されることはなく、
+/// 監視すべき期限は最大 1 つのため）。発火した瞬間、[`drain_for_pong`] で
+/// 現在バッファ済みのフレームだけを非ブロッキングに確認する。その時点で
+/// バッファされているフレームは、まさにその瞬間より前に届いていたことが
+/// 保証されるため（`poll_once` は新規データの到着を待たない）、件数を
+/// 気にせず「Pong が見つかったか」だけで正しく判定できる（finding P1
+/// (1) の解消。旧実装が抱えていた「件数上限に依存した正当性判定」という
+/// 根本原因自体を取り除くため、[`PONG_DRAIN_CAP`] は純粋なメモリ安全性の
+/// 保険としてのみ残る）。見つからなければ [`KeepaliveState::missed`] を
+/// 立てる（`pong_deadline` 自体は変更しない）。ハンドラ完了後、`missed`
+/// が立っていれば [`SessionFlow::PongTimedOut`] を返し、ハンドラの戻り値
+/// （Reply/Close）を破棄して即座に切断へ分岐する — その後に届いたかもしれ
+/// ない Pong を再確認して受理することはない（finding P1 (2) の解消。
+/// 死活監視契約「送出から `pong_timeout` 以内に Pong が届かなければ切断
+/// する」を字義通り守る）。
+///
+/// `idle_deadline` は本節の Pong 監視でも更新しない（上記「既知の限界」
+/// 節の既存方針を維持。Pong 発見時に `idle_deadline` を延長しないのは、
+/// 本関数の実行中は元々アイドル判定自体が働かない領域のため、他の経路
+/// （[`drain_for_pong`] の通常呼び出し）と異なる扱いをしても実害がない
+/// ことを理由とする意図的な選択）。
+/// [`run_handler_with_outbound_drain`] へ渡す Ping keepalive 関連の可変
+/// 参照をまとめる（`clippy::too_many_arguments` 対策で 2 引数
+/// （`keepalive`・`pending_inbound`）を 1 個の借用にまとめたもの。
+/// [`run_session_inner`] のローカル変数への `&mut` を束ねるだけで、
+/// 所有権は持たない）。
+struct PongWatch<'a> {
+    /// Ping keepalive の状態（[`WebSocketConfig::with_ping_interval`] が
+    /// 無効なら `None`）。
+    keepalive: Option<&'a mut KeepaliveState>,
+    /// [`drain_for_pong`] が Pong より手前で読んだ非 Pong フレームを積む、
+    /// [`run_session_inner`] の受信キュー（モジュール doc・同関数の doc を
+    /// 参照）。
+    pending_inbound: &'a mut VecDeque<Message>,
+}
+
 async fn run_handler_with_outbound_drain<S, C>(
     ws: &mut WebSocketStream<S>,
     mut cancel: Pin<&mut C>,
@@ -2034,6 +2195,7 @@ async fn run_handler_with_outbound_drain<S, C>(
     handler_fut: futures_util::future::BoxFuture<'_, Result<WsOutcome, WsHandlerError>>,
     close_grace: Duration,
     outbound_capacity: usize,
+    pong_watch: &mut PongWatch<'_>,
 ) -> Result<SessionFlow, SessionFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -2041,20 +2203,43 @@ where
 {
     let mut handler_fut = handler_fut;
 
+    // ハンドラ実行開始時点で監視すべき Pong 期限（関数 doc「ハンドラ実行中の
+    // Ping keepalive 監視」節）。本関数の実行中に新しい Ping が送出される
+    // ことはないため、この値は変わらない。発火後は `None` にして以後の
+    // 反復で再度選択されないようにする。
+    let mut armed_pong_deadline = pong_watch
+        .keepalive
+        .as_ref()
+        .and_then(|state| state.pong_deadline);
+
     // ステップ 1: ハンドラ完了まで cancel（最優先）→ (ハンドラ完了 |
-    // outbound 到着) を反復する。outbound が既に無効化済み（`None`）の場合は
-    // 常に Pending なダミー Future を使い、以後選択されないようにする
-    // （`run_session_inner` 外側ループの `Right(None)` 分岐と同じ「無効化して
-    // ビジーループ化を防ぐ」方針を踏襲）。
+    // outbound 到着 | Pong 期限到達) を反復する。outbound が既に無効化済み
+    // （`None`）の場合は常に Pending なダミー Future を使い、以後選択され
+    // ないようにする（`run_session_inner` 外側ループの `Right(None)` 分岐と
+    // 同じ「無効化してビジーループ化を防ぐ」方針を踏襲）。Pong 期限側も
+    // `armed_pong_deadline` が `None`（未設定・発火済み）なら同様に常に
+    // Pending。
     let outcome = loop {
+        let pong_wait = async {
+            match armed_pong_deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         let progress = match outbound.rx.as_mut() {
-            Some(rx) => race_cancel(cancel.as_mut(), race2(&mut handler_fut, rx.recv())).await,
+            Some(rx) => {
+                race_cancel(
+                    cancel.as_mut(),
+                    race2(&mut handler_fut, race2(rx.recv(), pong_wait)),
+                )
+                .await
+            }
             None => {
                 race_cancel(
                     cancel.as_mut(),
                     race2(
                         &mut handler_fut,
-                        std::future::pending::<Option<OutboundItem>>(),
+                        race2(std::future::pending::<Option<OutboundItem>>(), pong_wait),
                     ),
                 )
                 .await
@@ -2063,7 +2248,7 @@ where
         match progress {
             None => return Ok(SessionFlow::Cancelled),
             Some(Either::Left(handler_result)) => break handler_result,
-            Some(Either::Right(Some(OutboundItem::Message(msg)))) => {
+            Some(Either::Right(Either::Left(Some(OutboundItem::Message(msg))))) => {
                 let frame = to_tungstenite_message(msg);
                 match send_bounded(ws, cancel.as_mut(), &mut outbound.close, frame).await {
                     SendOutcome::Cancelled => return Ok(SessionFlow::Cancelled),
@@ -2072,7 +2257,7 @@ where
                     SendOutcome::Failed(err) => return Err(SessionFailure::send(err)),
                 }
             }
-            Some(Either::Right(Some(OutboundItem::Close { code, reason }))) => {
+            Some(Either::Right(Either::Left(Some(OutboundItem::Close { code, reason })))) => {
                 // `WsSender::close`（イシュー #710）がハンドラ実行中に呼ばれた。
                 // ハンドラの `Future`（`handler_fut`）はここで `return` により
                 // drop する（#499 の中断安全性契約の範囲内。close 後は送信
@@ -2084,14 +2269,49 @@ where
                     deadline: outbound.close.deadline(),
                 });
             }
-            Some(Either::Right(None)) => {
+            Some(Either::Right(Either::Left(None))) => {
                 // 全 `WsSender` クローンが drop 済み（`run_session_inner` 外側
                 // ループの同種分岐と同じ防御的コード。`conn_ctx` がクローンを
                 // 保持し続けるためセッション実行中は到達不能）。
                 outbound.release();
             }
+            Some(Either::Right(Either::Right(()))) => {
+                // Pong 期限が到達した（関数 doc「ハンドラ実行中の Ping
+                // keepalive 監視」節）。以後この期限を再監視しない
+                // （一度限りのサンプリング）。
+                armed_pong_deadline = None;
+                if let Some(state) = pong_watch.keepalive.as_deref_mut() {
+                    match drain_for_pong(ws, PONG_DRAIN_CAP).await {
+                        PongDrainOutcome::PongFound(drained) => {
+                            state.on_pong();
+                            pong_watch.pending_inbound.extend(drained);
+                        }
+                        PongDrainOutcome::NoPong => {
+                            state.missed = true;
+                        }
+                        PongDrainOutcome::Eof => {
+                            outbound.release();
+                            return Ok(SessionFlow::Eof);
+                        }
+                        PongDrainOutcome::RecvErr(err) => {
+                            return Err(SessionFailure::recv(err));
+                        }
+                    }
+                }
+            }
         }
     };
+
+    // ハンドラ完了直後、実行中に Pong 期限切れを検知済みなら、ハンドラの
+    // 戻り値（Reply/Close）を送出せず即座に切断へ分岐する（関数 doc「ハンドラ
+    // 実行中の Ping keepalive 監視」節。`SenderClose` と同型の優先順位判断）。
+    if pong_watch
+        .keepalive
+        .as_deref()
+        .is_some_and(|state| state.missed)
+    {
+        return Ok(SessionFlow::PongTimedOut);
+    }
 
     // ステップ 2: 継続経路と終了経路で排出方法を分ける（関数 doc の手順 2）。
     // 終了経路の期限は「排出 + Close 送出」全体で共有する単一期限として
@@ -6171,6 +6391,369 @@ mod tests {
             assert!(
                 matches!(reason, CloseReason::ClientClose),
                 "expected ClientClose (not PongTimeout), got {reason:?}"
+            );
+            assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+        }
+
+        /// 外部レビュー指摘（PR #738 続報、codex P1「期限後の Pong でタイム
+        /// アウトが解除される」）の回帰テスト。旧実装（ハンドラ完了後に
+        /// まとめて `drain_for_pong` を実行する方式）は、見つかった Pong が
+        /// 実際に `pong_deadline` 以前・以後のどちらに届いたかを判別する
+        /// 材料を持たなかったため、期限後に届いた Pong でも無条件に生存の
+        /// 証拠として受理してしまっていた。
+        ///
+        /// 本テストはサーバーが送出する Ping フレーム自体を意図的に読まない
+        /// （tungstenite は Ping を `.next()` で読んだ瞬間に既定動作で
+        /// 自動応答用の Pong を内部にキューし、次の書き込みで一緒に送出する
+        /// ため、Ping を読んでしまうと「期限後の Pong」という状況を意図的に
+        /// 作れなくなる。サーバー側の `pong_deadline` 設定は自身が Ping を
+        /// 送出した時点で完了するため、クライアントが Ping を読むかどうかに
+        /// 依存しない。また `pong_deadline` の判定はペイロード非照合
+        /// （モジュール doc「Pong の受信だけを生存の証拠として扱う」節）の
+        /// ため、クライアントは受け取った Ping と無関係な Pong を送ってよい）。
+        ///
+        /// タイムライン: t=30ms でサーバーが Ping #1 を送出（`pong_deadline`
+        /// = 50ms、クライアントはこれを読まない）。クライアントは
+        /// `interval` 経過を待ってから（t=35ms）Text("trigger") のみを
+        /// 送ってハンドラ（100ms delay、t=35ms〜135ms）を起動し、その後
+        /// `pong_deadline` を優に過ぎるまで待って（t=75ms）から Pong を
+        /// 送る。`run_handler_with_outbound_drain` の Pong 期限サンプリング
+        /// は t=50ms 時点で非ブロッキング確認するため、その時点ではまだ
+        /// 何も届いていない（`PongDrainOutcome::NoPong` →
+        /// `KeepaliveState::missed = true`）。t=75ms に届く Pong は無視され、
+        /// ハンドラ完了後（t=135ms）に `SessionFlow::PongTimedOut` として
+        /// 切断されること（"trigger" のエコーは送出されない）。
+        #[tokio::test(start_paused = true)]
+        async fn late_pong_sent_after_deadline_during_slow_handler_is_treated_as_timeout() {
+            let interval = Duration::from_millis(30);
+            let pong_timeout = Duration::from_millis(20);
+            let handler_delay = Duration::from_millis(100);
+            let mut config = keepalive_config(interval, pong_timeout);
+            config.handler = std::sync::Arc::new(SlowEchoHandler {
+                delay: handler_delay,
+            });
+            let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+            let (server_side, client_side) = tokio::io::duplex(8192);
+            let (tx, rx) = handler::channel(4);
+            let conn_ctx = test_conn_ctx(tx);
+
+            let session_handle = tokio::spawn(async move {
+                let cancel = std::future::pending::<()>();
+                let mut cancel = std::pin::pin!(cancel);
+                run_session_inner(
+                    server_side,
+                    Vec::new(),
+                    config,
+                    cancel.as_mut(),
+                    Some(rx),
+                    &conn_ctx,
+                )
+                .await
+            });
+
+            let mut client =
+                WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+
+            // サーバーが `interval` 経過（t=30ms）で Ping を送出し
+            // `pong_deadline`（t=50ms）を設定するまで待つ。Ping フレーム
+            // 自体は意図的に読まない（関数 doc を参照）。余裕を持たせて
+            // `interval` より 5ms 長く待つ。
+            tokio::time::sleep(interval + Duration::from_millis(5)).await;
+
+            client
+                .send(Message::Text("trigger".into()))
+                .await
+                .expect("client text send should succeed");
+
+            // `pong_deadline`（t=50ms）を優に過ぎるまで待ってから、サーバーが
+            // 送った Ping とは無関係な Pong を送る（ハンドラはまだ完了
+            // しない）。
+            tokio::time::sleep(pong_timeout * 2).await;
+            client
+                .send(Message::Pong(Bytes::new()))
+                .await
+                .expect("late pong send should succeed");
+
+            // 期限後の Pong は生存の証拠として受理されないため、"trigger" の
+            // エコーではなく `PongTimeout` による Close が届くはず。未読の
+            // まま残っている先頭の Ping フレームはスキップする。
+            let received = loop {
+                let frame = tokio::time::timeout(Duration::from_secs(5), client.next())
+                    .await
+                    .expect("a frame should arrive within a generous margin")
+                    .expect("stream should yield a message")
+                    .expect("no protocol error");
+                if !matches!(frame, Message::Ping(_)) {
+                    break frame;
+                }
+            };
+            match received {
+                Message::Close(_) => {}
+                Message::Text(text) => {
+                    panic!(
+                        "unexpected echoed reply {text:?} (late pong incorrectly accepted \
+                         as on-time?)"
+                    );
+                }
+                other => panic!("unexpected frame: {other:?}"),
+            }
+
+            let (reason, result) = tokio::time::timeout(Duration::from_secs(5), session_handle)
+                .await
+                .expect("session should finish after the pong timeout fires")
+                .expect("session task should not panic");
+            assert!(
+                matches!(reason, CloseReason::PongTimeout),
+                "expected PongTimeout (late pong must not be accepted), got {reason:?}"
+            );
+            assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+        }
+
+        /// 外部レビュー指摘（PR #738 続報、codex P1「32 フレームより後ろの
+        /// 有効な Pong で誤切断される」）の回帰テスト。旧実装
+        /// （`PONG_DRAIN_CAP` = 32 件までの確認のみで正当性を判定する方式）
+        /// は、ハンドラ実行中にバッファされた非 Pong フレームが 32 件を
+        /// 超えるだけで、実際には期限内に届いていた Pong を誤って
+        /// `PongTimeout` にしていた。本テストは、正当性がもはや
+        /// `PONG_DRAIN_CAP` の具体値に依存しないことを固定する
+        /// （`run_handler_with_outbound_drain` が `pong_deadline` を「実際に
+        /// その期限が来た瞬間」にサンプリングする新方式では、サンプリング
+        /// 時点でバッファ済みのフレームは件数を問わず期限以前に届いていた
+        /// ことが保証される）。
+        ///
+        /// 本テストもサーバーが送出する Ping フレーム自体を意図的に読まない
+        /// （`late_pong_sent_after_deadline_during_slow_handler_is_treated_
+        /// as_timeout` の doc と同一の理由 — 読むと tungstenite の既定動作で
+        /// 自動応答用の Pong が即座にキューされ、次の書き込みで "trigger" と
+        /// 一緒に送出されてしまい、本テストが検証したい「Pong より手前に
+        /// 40 件の非 Pong フレームがある」状況を意図せず壊してしまう。
+        /// 2 回目以降の Ping（keepalive は継続する）は通常どおり読んで Pong
+        /// で応答する）。
+        ///
+        /// タイムライン: t=30ms でサーバーが Ping #1 を送出（`pong_deadline`
+        /// = 50ms、クライアントはこれを読まない）。クライアントは
+        /// `interval` 経過を待ってから（t=35ms）、Text("trigger") →
+        /// Text("f0")..Text("f39")（40 件、旧 `PONG_DRAIN_CAP` = 32 を超える
+        /// 数）→ Pong（サーバーの Ping とは無関係）の順で、間に待機を挟まず
+        /// 送信する（すべて t≈35ms 時点で duplex バッファに到達済みになる）。
+        /// サーバーは "trigger" を読んでハンドラ（100ms delay）を実行し、
+        /// その間 f0..f39・Pong は未読のままバッファされる。t=50ms の
+        /// ハンドラ実行中サンプリングが `drain_for_pong` で f0..f39 を
+        /// 読み進めた後に Pong を見つけ、40 件を `pending_inbound` へ積む。
+        /// `PongTimeout` が誤発火せず、"trigger" に続く f0..f39 のエコーが
+        /// この順序で届くこと（新規 Ping にはその都度 Pong を返す）。
+        #[tokio::test(start_paused = true)]
+        async fn many_buffered_frames_ahead_of_in_time_pong_during_handler_is_not_a_false_positive_timeout()
+         {
+            let interval = Duration::from_millis(30);
+            let pong_timeout = Duration::from_millis(20);
+            let handler_delay = Duration::from_millis(100);
+            const EXTRA_FRAMES: usize = 40;
+            let mut config = keepalive_config(interval, pong_timeout);
+            config.handler = std::sync::Arc::new(SlowEchoHandler {
+                delay: handler_delay,
+            });
+            let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+            let (server_side, client_side) = tokio::io::duplex(1 << 16);
+            let (tx, rx) = handler::channel(4);
+            let conn_ctx = test_conn_ctx(tx);
+
+            let session_handle = tokio::spawn(async move {
+                let cancel = std::future::pending::<()>();
+                let mut cancel = std::pin::pin!(cancel);
+                run_session_inner(
+                    server_side,
+                    Vec::new(),
+                    config,
+                    cancel.as_mut(),
+                    Some(rx),
+                    &conn_ctx,
+                )
+                .await
+            });
+
+            let mut client =
+                WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+
+            // サーバーが `interval` 経過（t=30ms）で Ping を送出し
+            // `pong_deadline`（t=50ms）を設定するまで待つ（関数 doc を
+            // 参照。Ping フレーム自体は意図的に読まない）。
+            tokio::time::sleep(interval + Duration::from_millis(5)).await;
+
+            client
+                .send(Message::Text("trigger".into()))
+                .await
+                .expect("client text send should succeed");
+            let extra_names: Vec<String> = (0..EXTRA_FRAMES).map(|i| format!("f{i}")).collect();
+            for name in &extra_names {
+                client
+                    .send(Message::Text(name.as_str().into()))
+                    .await
+                    .expect("client text send should succeed");
+            }
+            client
+                .send(Message::Pong(Bytes::new()))
+                .await
+                .expect("client pong send should succeed");
+
+            let mut expected_replies: Vec<String> = vec!["trigger".to_owned()];
+            expected_replies.extend(extra_names.iter().cloned());
+
+            let mut replies = Vec::new();
+            // 各エコー応答の間に追加の Ping が挟まってもよいので、十分な
+            // 反復回数を確保する（都度 Pong で応答する）。
+            for _ in 0..(expected_replies.len() * 2 + 20) {
+                if replies.len() == expected_replies.len() {
+                    break;
+                }
+                let received =
+                    tokio::time::timeout(handler_delay * (EXTRA_FRAMES as u32 + 5), client.next())
+                        .await
+                        .expect("a frame should arrive within a generous margin")
+                        .expect("stream should yield a message")
+                        .expect("no protocol error");
+                match received {
+                    Message::Text(text) => replies.push(text.as_str().to_owned()),
+                    Message::Ping(p) => {
+                        client
+                            .send(Message::Pong(p))
+                            .await
+                            .expect("pong send should succeed");
+                    }
+                    Message::Close(frame) => {
+                        panic!(
+                            "unexpected close before all replies arrived \
+                             (false positive pong timeout?): {frame:?}"
+                        );
+                    }
+                    other => panic!("unexpected frame: {other:?}"),
+                }
+            }
+            assert_eq!(
+                replies, expected_replies,
+                "expected all echoed replies in order before any close frame"
+            );
+
+            client.close(None).await.expect("close");
+            let (reason, result) = tokio::time::timeout(Duration::from_secs(5), session_handle)
+                .await
+                .expect("session should finish after client-initiated close")
+                .expect("session task should not panic");
+            assert!(
+                matches!(reason, CloseReason::ClientClose),
+                "expected ClientClose (not PongTimeout), got {reason:?}"
+            );
+            assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+        }
+
+        /// Bugbot 指摘（PR #738 続報、High severity「先読みキューが無制限に
+        /// 増大しうる」）の境界確認。[`PONG_DRAIN_CAP`] は
+        /// `run_handler_with_outbound_drain` のサンプリング方式導入後は
+        /// メモリ・CPU 安全性の保険としてのみ残るため、Pong より手前の
+        /// バッファが実際にこの上限を超える極端なケースでは意図的に
+        /// `PongTimeout` として切断する（無条件に読み進めて
+        /// `pending_inbound` を無制限に肥大化させない）。この境界が実際に
+        /// 機能することを固定する。
+        ///
+        /// 本テストもサーバーが送出する Ping フレーム自体を意図的に読まない
+        /// （`late_pong_sent_after_deadline_during_slow_handler_is_treated_
+        /// as_timeout` の doc と同一の理由 — 読むと tungstenite の既定動作で
+        /// 自動応答用の Pong が即座にキューされ、次の書き込みで
+        /// "trigger" と一緒に送出されてしまい、`PONG_DRAIN_CAP` を確実に
+        /// 超えさせるという本テストの前提が崩れる）。
+        ///
+        /// タイムライン: t=30ms で Ping #1 送出（クライアントは読まない）。
+        /// クライアントは `interval` 経過を待ってから（t=35ms）
+        /// Text("trigger") → Text（`PONG_DRAIN_CAP + 5` 件、上限を確実に
+        /// 超える数）→ Pong（サーバーの Ping とは無関係）の順で送信する。
+        /// ハンドラ（100ms delay、t=35ms〜135ms）実行中の t=50ms
+        /// サンプリングは `PONG_DRAIN_CAP` 件確認しても Pong が見つからず
+        /// `missed = true` になる。ハンドラ完了後、"trigger" のエコーは
+        /// 送出されず（`SessionFlow::PongTimedOut` がハンドラの戻り値を
+        /// 破棄する）、`PongTimeout` による Close のみが届くこと。
+        #[tokio::test(start_paused = true)]
+        async fn drain_cap_reached_at_deadline_without_pong_is_treated_as_timeout() {
+            let interval = Duration::from_millis(30);
+            let pong_timeout = Duration::from_millis(20);
+            let handler_delay = Duration::from_millis(100);
+            let mut config = keepalive_config(interval, pong_timeout);
+            config.handler = std::sync::Arc::new(SlowEchoHandler {
+                delay: handler_delay,
+            });
+            let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+            let (server_side, client_side) = tokio::io::duplex(1 << 20);
+            let (tx, rx) = handler::channel(4);
+            let conn_ctx = test_conn_ctx(tx);
+
+            let session_handle = tokio::spawn(async move {
+                let cancel = std::future::pending::<()>();
+                let mut cancel = std::pin::pin!(cancel);
+                run_session_inner(
+                    server_side,
+                    Vec::new(),
+                    config,
+                    cancel.as_mut(),
+                    Some(rx),
+                    &conn_ctx,
+                )
+                .await
+            });
+
+            let mut client =
+                WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+
+            // サーバーが `interval` 経過（t=30ms）で Ping を送出し
+            // `pong_deadline`（t=50ms）を設定するまで待つ（関数 doc を
+            // 参照。Ping フレーム自体は意図的に読まない）。
+            tokio::time::sleep(interval + Duration::from_millis(5)).await;
+
+            client
+                .send(Message::Text("trigger".into()))
+                .await
+                .expect("client text send should succeed");
+            for i in 0..(PONG_DRAIN_CAP + 5) {
+                client
+                    .send(Message::Text(format!("f{i}").into()))
+                    .await
+                    .expect("client text send should succeed");
+            }
+            client
+                .send(Message::Pong(Bytes::new()))
+                .await
+                .expect("client pong send should succeed");
+
+            // 未読のまま残っている先頭の Ping フレームはスキップする。
+            let received = loop {
+                let frame = tokio::time::timeout(handler_delay * 5, client.next())
+                    .await
+                    .expect("a frame should arrive within a generous margin")
+                    .expect("stream should yield a message")
+                    .expect("no protocol error");
+                if !matches!(frame, Message::Ping(_)) {
+                    break frame;
+                }
+            };
+            match received {
+                Message::Close(_) => {}
+                Message::Text(text) => {
+                    panic!(
+                        "unexpected echoed reply {text:?} (handler outcome should have been \
+                         discarded on pong timeout)"
+                    );
+                }
+                other => panic!("unexpected frame: {other:?}"),
+            }
+
+            let (reason, result) = tokio::time::timeout(Duration::from_secs(5), session_handle)
+                .await
+                .expect("session should finish after the pong timeout fires")
+                .expect("session task should not panic");
+            assert!(
+                matches!(reason, CloseReason::PongTimeout),
+                "expected PongTimeout (drain cap must be enforced), got {reason:?}"
             );
             assert!(result.is_ok(), "expected Ok(()), got {result:?}");
         }
