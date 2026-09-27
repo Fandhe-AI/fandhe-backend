@@ -1239,17 +1239,19 @@ impl WsSender {
     ///
     /// # 満杯と終了の判定順（フェイルクローズ）
     ///
-    /// 1. まず `close_committed`（非公開）で close 確定・セッション封鎖済みかを
-    ///    確認する。true なら [`WsTrySendError::Closed`] を返す。
-    ///    - この事前確認が必要な理由: close が確定していて、かつキューも
-    ///      満杯のとき、`try_reserve` は `Full` を返してしまう。切断済みを
-    ///      「後で空くかもしれない満杯」と誤って伝えないよう、こちらを
-    ///      優先する。
-    /// 2. `try_reserve()` が `Full`/`Closed` を返せばそのまま対応する
-    ///    variant を返す。
-    /// 3. `Ok` の場合は `commit_with`（非公開）で確定する（手順 1 と本手順の
-    ///    間に別 clone の `close()` が確定した場合も、同じロック区間の判定で
-    ///    `Closed` に変換される）。
+    /// 1. `try_reserve()` を試みる。`Closed`（受信側 drop 済み）ならそのまま
+    ///    [`WsTrySendError::Closed`] を返す。
+    /// 2. `Full` の場合、`close_committed`（非公開）を確認する。close が
+    ///    確定していて、かつキューも満杯のとき（別 clone の `close()` が
+    ///    最後の空き枠を埋めて確定した場合を含む）、`try_reserve` 単体では
+    ///    `Full` を返してしまうため、こちらで [`WsTrySendError::Closed`] へ
+    ///    変換する（切断済みを「後で空くかもしれない満杯」と誤って伝えない。
+    ///    codex/review・Cursor Bugbot 指摘対応）。確定していなければそのまま
+    ///    [`WsTrySendError::Full`] を返す。
+    /// 3. `Ok`（permit 取得）の場合は `commit_with`（非公開）で確定する。
+    ///    permit を取得した後に別 clone の `close()` が確定した場合も、
+    ///    同じロック区間の判定で `Closed` に変換される（`send` と同一の
+    ///    フェイルクローズ判定を共有する）。
     ///
     /// [`Self::idle_timeout`][`crate::config::WebSocketConfig::idle_timeout`]
     /// は延長しない（[`Self::send`] と同じ push 契約、Issue #175 の DoS
@@ -1333,12 +1335,26 @@ impl WsSender {
     /// # }
     /// ```
     pub fn try_send(&self, msg: WsMessage) -> Result<(), WsTrySendError> {
-        if self.close_committed() {
-            return Err(WsTrySendError::Closed(msg));
-        }
         let permit = match self.tx.try_reserve() {
             Ok(permit) => permit,
-            Err(mpsc::error::TrySendError::Full(())) => return Err(WsTrySendError::Full(msg)),
+            // キューが満杯（`Full`）でも、別 clone の `close()` が既に確定
+            // している可能性がある（`close()` が最後の空き枠を使って
+            // permit を確保・`commit_with` で確定させた場合。TOCTOU、
+            // codex/review・Cursor Bugbot 指摘対応）。`close_committed()`
+            // を都度確認することで、切断済みを「後で空くかもしれない満杯」
+            // と誤って伝えない。`close_committed()` は `commit_with` と同じ
+            // `closing` ロックを経由するため、ここで読む値は本呼び出しの
+            // 直前までに確定した close の有無を正確に反映する
+            // （事前確認を廃し `Full` 時のみ確認することで、
+            // 「確認 → `try_reserve` の間」に生じていた TOCTOU の窓
+            // 自体を無くしている）。
+            Err(mpsc::error::TrySendError::Full(())) => {
+                return if self.close_committed() {
+                    Err(WsTrySendError::Closed(msg))
+                } else {
+                    Err(WsTrySendError::Full(msg))
+                };
+            }
             Err(mpsc::error::TrySendError::Closed(())) => {
                 return Err(WsTrySendError::Closed(msg));
             }
@@ -2685,6 +2701,31 @@ mod tests {
             .try_send(WsMessage::Text("late".to_string()))
             .unwrap_err();
         assert!(err.is_closed());
+    }
+
+    /// TOCTOU 回帰テスト（codex/review・Cursor Bugbot 指摘対応、PR #737）:
+    /// キューが満杯の状態で `seal_for_session`（`close()` 確定と同じ
+    /// `closing` ロックを共有する）が先に立つと、`try_reserve` は
+    /// `Full` を返すが、`try_send` は `close_committed()` の再確認で
+    /// `Closed` へ変換しなければならない。修正前の実装（`try_reserve` が
+    /// 返した `Full` をそのまま返す）ではこのアサーションが失敗する。
+    #[tokio::test]
+    async fn try_send_returns_closed_when_full_and_sealed_concurrently() {
+        let (sender, _rx) = channel(1);
+        sender
+            .try_send(WsMessage::Text("fills-the-only-slot".to_string()))
+            .unwrap();
+        // セッション終了処理（`crate::session`）が受信側を drop する前に
+        // 呼ぶ封鎖処理を模す。`close()` の `commit_with` 確定と同じ
+        // `closing` ロックを立てるため、実際の競合（別 clone の `close()`
+        // が確定と同時に最後の空き枠を埋める）と等価な状態を作れる。
+        sender.seal_for_session();
+
+        let msg = WsMessage::Text("after-seal".to_string());
+        let err = sender.try_send(msg.clone()).unwrap_err();
+        assert!(err.is_closed(), "expected Closed, got {err:?}");
+        assert!(!err.is_full());
+        assert_eq!(err.into_inner(), msg);
     }
 
     /// `crate::session` がセッション終了時に呼ぶ `seal_for_session` の後も
