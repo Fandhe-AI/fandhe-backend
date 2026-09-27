@@ -73,7 +73,8 @@
 //! Text/Binary メッセージ受信後に [`WsMessageHandler::on_message_with_ctx`]
 //! を単独 `await` すると、ハンドラ本体（または `on_message_with_ctx` が
 //! `.await` するタスク）がハンドラ実行中に `WsSender::send` を outbound
-//! チャネル容量（既定 [`crate::handler::DEFAULT_OUTBOUND_CAPACITY`] = 8）を
+//! チャネル容量（設定された容量、`WebSocketConfig::outbound_capacity`。
+//! 既定 [`crate::handler::DEFAULT_OUTBOUND_CAPACITY`] = 8、イシュー #709）を
 //! 超える回数呼んだ場合、受信側（本モジュール）がその間キューを一切消費
 //! しないため `send` が永久にブロックしデッドロックする（CDP の
 //! `Page.navigate` のように「応答の前に複数イベントを送る」ハンドラで
@@ -411,6 +412,7 @@ where
                             &mut outbound,
                             handler_fut,
                             config.close_grace,
+                            config.outbound_capacity,
                         )
                         .await
                         {
@@ -457,6 +459,7 @@ where
                             &mut outbound,
                             handler_fut,
                             config.close_grace,
+                            config.outbound_capacity,
                         )
                         .await
                         {
@@ -1187,8 +1190,10 @@ where
 /// 1. 受信側は閉じずに、`try_recv()` を最大 `capacity` 回行う。`capacity` は
 ///    呼び出し元が渡すチャネル容量で、`outbound` を生成した `handler::channel`
 ///    に渡した値と一致させる（呼び出し元の契約。現状は
-///    [`run_handler_with_outbound_drain`] が
-///    [`crate::handler::DEFAULT_OUTBOUND_CAPACITY`] を渡す 1 か所のみ）。
+///    [`run_handler_with_outbound_drain`] が `outbound_capacity` 引数
+///    （`crate::lib::handle_upgrade` が `handler::channel` へ渡した値と同じ
+///    `WebSocketConfig::outbound_capacity`）を渡す 1 か所のみ、イシュー
+///    #709）。
 /// 2. `Message` は到着順に送出する（[`send_bounded`]）。`Close` を見つけたら
 ///    Reply を破棄して `Some(SessionFlow::SenderClose)` を返す。`Empty` で
 ///    打ち切り、`Disconnected` なら `outbound` を無効化して打ち切る。
@@ -1329,9 +1334,9 @@ where
 ///
 /// 旧実装はハンドラ Future を単独 `await` していたため、`on_message_with_ctx`
 /// 内で `ctx.sender().send(...).await` を呼んでも、その outbound チャネルを
-/// 消化する者（本関数自身）がハンドラ完了まで戻ってこず、容量
-/// （[`crate::handler::DEFAULT_OUTBOUND_CAPACITY`]、既定 8）を超えると送信側・受信側の両方が
-/// 進めなくなっていた。本関数はハンドラ Future と outbound 到着を
+/// 消化する者（本関数自身）がハンドラ完了まで戻ってこず、設定された容量
+/// （`WebSocketConfig::outbound_capacity`、既定 8、イシュー #709）を超えると
+/// 送信側・受信側の両方が進めなくなっていた。本関数はハンドラ Future と outbound 到着を
 /// `race2`（cancel を最優先とした 3 者 race）し、到着ごとに即座に `ws.send()`
 /// で送出することでこれを解消する。
 ///
@@ -1343,7 +1348,7 @@ where
 ///    drop して [`SessionFlow::SenderClose`] を返す。
 /// 2. ハンドラの結果で排出方法を分ける（PR #736 codex P0/P1 レビュー指摘対応）。
 ///    - `Ok(WsOutcome::Reply)`（継続経路）: [`drain_before_reply`] で受信側を
-///      閉じずに容量（[`crate::handler::DEFAULT_OUTBOUND_CAPACITY`]）回まで
+///      閉じずに設定された容量（`outbound_capacity` 引数）回まで
 ///      排出してから [`apply_outcome`] へ進む。`apply_outcome` は Reply の送出を
 ///      始める直前に `close()` の確定をロックで判定し（`WsSender::close_committed`）、
 ///      確定済みなら Reply を破棄して Close 指示まで排出する
@@ -1390,6 +1395,7 @@ async fn run_handler_with_outbound_drain<S, C>(
     outbound: &mut OutboundGuard<'_>,
     handler_fut: futures_util::future::BoxFuture<'_, Result<WsOutcome, WsHandlerError>>,
     close_grace: Duration,
+    outbound_capacity: usize,
 ) -> Result<SessionFlow, SessionFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -1455,10 +1461,13 @@ where
     match outcome {
         Ok(WsOutcome::Reply(messages)) => {
             // 回数上限はチャネル生成（`crate::handle_upgrade` の
-            // `handler::channel(DEFAULT_OUTBOUND_CAPACITY)`）と同じ容量値。
-            // 容量を設定可能にする #709 ではここを設定値に置き換える。
-            let capacity = crate::handler::DEFAULT_OUTBOUND_CAPACITY;
-            if let Some(flow) = drain_before_reply(ws, cancel.as_mut(), outbound, capacity).await? {
+            // `handler::channel(config.outbound_capacity)`、イシュー #709）と
+            // 同じ容量値（呼び出し元がこの関数の `outbound_capacity` 引数へ
+            // `config.outbound_capacity` を渡す契約。本関数のモジュール doc・
+            // `drain_before_reply` の doc も参照）。
+            if let Some(flow) =
+                drain_before_reply(ws, cancel.as_mut(), outbound, outbound_capacity).await?
+            {
                 return Ok(flow);
             }
             let close_deadline = Instant::now() + close_grace;
@@ -1638,6 +1647,7 @@ mod tests {
             close_grace: Duration::from_millis(300),
             handler: handler::default_handler(),
             pattern: None,
+            outbound_capacity: handler::DEFAULT_OUTBOUND_CAPACITY,
         }
     }
 
@@ -2181,6 +2191,116 @@ mod tests {
             received[PUSH_COUNT],
             Message::Text("done".into()),
             "final reply should arrive after all self-sent pushes: {received:?}"
+        );
+
+        drop(client);
+        let _ = tokio::time::timeout(Duration::from_secs(2), session_handle).await;
+    }
+
+    /// イシュー #709 の回帰テスト: `run_handler_with_outbound_drain` の排出
+    /// 回数上限が `WebSocketConfig::outbound_capacity`（設定値）に追随し、
+    /// `crate::handler::DEFAULT_OUTBOUND_CAPACITY`（8）に固定されたままに
+    /// なっていないことを確認する。
+    ///
+    /// `outbound_capacity` を既定（8）より大きい 16 に設定し、ハンドラの
+    /// `on_message_with_ctx` が `.await` を挟まず（同期的な `try_send` のみ
+    /// で）16 件を outbound キューへ積んでから `WsOutcome::Reply` を返す
+    /// ようにする。ハンドラ Future が最初のポーリングで完了するため、
+    /// `run_handler_with_outbound_drain` は排出（`drain_before_reply`）を
+    /// 開始した時点でキューに 16 件すべてが格納済みの状態になる。排出回数
+    /// 上限が古い固定値 8 のままだと、残り 8 件より先に Reply が送出されて
+    /// しまい本テストは失敗する。
+    #[tokio::test]
+    async fn outbound_drain_uses_configured_capacity_not_fixed_default() {
+        use futures_util::future::BoxFuture;
+
+        const CONFIGURED_CAPACITY: usize = 16;
+
+        /// `.await` を挟まず `try_send` のみで push してから Reply を返す
+        /// ハンドラ。
+        struct SyncSelfSendingHandler;
+
+        impl handler::WsMessageHandler for SyncSelfSendingHandler {
+            fn name(&self) -> &'static str {
+                "sync-self-sending"
+            }
+
+            fn on_message(
+                &self,
+                msg: WsMessage,
+            ) -> BoxFuture<'_, Result<WsOutcome, handler::WsHandlerError>> {
+                Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+            }
+
+            fn on_message_with_ctx<'a>(
+                &'a self,
+                ctx: &'a WsConnContext,
+                _msg: WsMessage,
+            ) -> BoxFuture<'a, Result<WsOutcome, handler::WsHandlerError>> {
+                for i in 0..CONFIGURED_CAPACITY {
+                    ctx.sender()
+                        .try_send(WsMessage::Text(format!("push-{i}")))
+                        .expect("channel capacity matches CONFIGURED_CAPACITY");
+                }
+                Box::pin(
+                    async move { Ok(WsOutcome::Reply(vec![WsMessage::Text("done".to_string())])) },
+                )
+            }
+        }
+
+        let mut config = test_config();
+        config.handler = std::sync::Arc::new(SyncSelfSendingHandler);
+        config.outbound_capacity = CONFIGURED_CAPACITY;
+        let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+        let (server_side, client_side) = tokio::io::duplex(1 << 16);
+        // 実チャネル容量も設定値と一致させる（本番の `crate::lib::handle_upgrade`
+        // が `handler::channel(config.outbound_capacity)` を呼ぶ契約と対応）。
+        let (tx, rx) = handler::channel(CONFIGURED_CAPACITY);
+        let conn_ctx = test_conn_ctx(tx);
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+        client
+            .send(Message::Text("trigger".into()))
+            .await
+            .expect("client send should succeed");
+
+        let mut received = Vec::new();
+        for _ in 0..(CONFIGURED_CAPACITY + 1) {
+            let msg = tokio::time::timeout(Duration::from_secs(2), client.next())
+                .await
+                .expect("drain should not stall")
+                .expect("stream should not end early")
+                .expect("frame should not error");
+            received.push(msg);
+        }
+
+        for i in 0..CONFIGURED_CAPACITY {
+            assert_eq!(
+                received[i],
+                Message::Text(format!("push-{i}").into()),
+                "push-{i} should arrive before the reply when capacity is configured to {CONFIGURED_CAPACITY}: {received:?}"
+            );
+        }
+        assert_eq!(
+            received[CONFIGURED_CAPACITY],
+            Message::Text("done".into()),
+            "final reply should arrive only after all {CONFIGURED_CAPACITY} configured-capacity \
+             pushes: {received:?}"
         );
 
         drop(client);

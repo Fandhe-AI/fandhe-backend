@@ -70,6 +70,20 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   `docs/design/ws-connection-context-and-close.md`、イシュー
   [#710](https://github.com/Fandhe-AI/fandhe-backend/issues/710)、親
   [#708](https://github.com/Fandhe-AI/fandhe-backend/issues/708)）
+- `fandhe-backend-plugin-websocket`: `WebSocketConfig::with_outbound_capacity`
+  で送信キュー（`WsSender`）の容量を接続ごとに指定できるようにしました
+  （既定は変わらず 8）。0 は `OutboundCapacityError::Zero`、上限
+  `MAX_OUTBOUND_CAPACITY`（4096）を超える値は `OutboundCapacityError::TooLarge`
+  を返し、`tokio::sync::mpsc::channel` がライブラリ境界で panic する余地を
+  構築時に排除します。あわせて `WsSender::try_send` を追加しました。
+  `WsSender::send` とは異なり満杯でも `.await` で待たず、送信キューが
+  「満杯（`WsTrySendError::Full`）」か「セッション終了・close 確定済み
+  （`WsTrySendError::Closed`）」かを区別して即座に返します。いずれの
+  variant も送れなかった `WsMessage` をそのまま保持し、呼び出し側が
+  再試行・破棄を選べます（`into_inner()`/`is_full()`/`is_closed()`）。
+  順序保証・push の消化契約は `WsSender::send` と同一です（イシュー
+  [#709](https://github.com/Fandhe-AI/fandhe-backend/issues/709)、親
+  [#708](https://github.com/Fandhe-AI/fandhe-backend/issues/708)）
 
 ### Fixed
 
