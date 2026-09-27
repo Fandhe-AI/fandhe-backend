@@ -101,7 +101,7 @@ use std::task::Poll;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
@@ -263,7 +263,7 @@ where
     // の drop を含む）で「送信キューの封鎖 → 受信側の drop」の順を保証する
     // （PR #736 レビュー指摘対応。[`OutboundGuard`] の doc を参照）。途中で受信側を
     // 手放す箇所は [`OutboundGuard::release`] を使う。
-    let mut outbound = OutboundGuard::new(outbound, conn_ctx.sender());
+    let mut outbound = OutboundGuard::new(outbound, conn_ctx.sender(), config.close_grace);
 
     let ws_config = TungsteniteConfig::default()
         .max_message_size(Some(config.max_message_size))
@@ -364,16 +364,20 @@ where
             }
             InboundEvent::Outbound(OutboundItem::Message(msg)) => {
                 let frame = to_tungstenite_message(msg);
-                match race_cancel(cancel.as_mut(), ws.send(frame)).await {
-                    None => {
+                match send_bounded(&mut ws, cancel.as_mut(), &mut outbound.close, frame).await {
+                    SendOutcome::Cancelled => {
                         outbound.release();
                         return (
                             CloseReason::Cancelled,
                             handle_cancellation(ws, config.close_grace).await,
                         );
                     }
-                    Some(Ok(())) => {}
-                    Some(Err(err)) => return SessionFailure::send(err).into_parts(),
+                    SendOutcome::Sent => {}
+                    SendOutcome::CloseGraceExpired => {
+                        outbound.release();
+                        return close_grace_expired();
+                    }
+                    SendOutcome::Failed(err) => return SessionFailure::send(err).into_parts(),
                 }
             }
             InboundEvent::Outbound(OutboundItem::Close { code, reason }) => {
@@ -381,11 +385,12 @@ where
                 // Close ハンドシェイクへ分岐する。close 時点でキュー済み
                 // だった push は FIFO 順で本イベントより前に既に送出済み
                 // （`WsSender` の順序保証、`handler.rs` の doc を参照）。
+                let deadline = outbound.close.deadline();
                 outbound.release();
                 let frame = to_close_frame(code, reason);
                 return (
                     CloseReason::SenderClose,
-                    close_and_drain(ws, Some(frame), Instant::now() + config.close_grace).await,
+                    close_and_drain(ws, Some(frame), deadline).await,
                 );
             }
             InboundEvent::Message(None) => break CloseReason::Eof,
@@ -432,14 +437,12 @@ where
                                 let frame = to_close_frame(code, reason);
                                 return (
                                     CloseReason::SenderClose,
-                                    close_and_drain(
-                                        ws,
-                                        Some(frame),
-                                        deadline
-                                            .unwrap_or_else(|| Instant::now() + config.close_grace),
-                                    )
-                                    .await,
+                                    close_and_drain(ws, Some(frame), deadline).await,
                                 );
+                            }
+                            Ok(SessionFlow::CloseGraceExpired) => {
+                                outbound.release();
+                                return close_grace_expired();
                             }
                             Err(failure) => return failure.into_parts(),
                         }
@@ -478,14 +481,12 @@ where
                                 let frame = to_close_frame(code, reason);
                                 return (
                                     CloseReason::SenderClose,
-                                    close_and_drain(
-                                        ws,
-                                        Some(frame),
-                                        deadline
-                                            .unwrap_or_else(|| Instant::now() + config.close_grace),
-                                    )
-                                    .await,
+                                    close_and_drain(ws, Some(frame), deadline).await,
                                 );
+                            }
+                            Ok(SessionFlow::CloseGraceExpired) => {
+                                outbound.release();
+                                return close_grace_expired();
                             }
                             Err(failure) => return failure.into_parts(),
                         }
@@ -534,11 +535,22 @@ struct OutboundGuard<'a> {
     rx: Option<mpsc::Receiver<OutboundItem>>,
     /// `rx` と同じチャネルの送信側（呼び出し元の契約）。封鎖にのみ使う。
     sender: &'a WsSender,
+    /// close 確定後の打ち切り期限（[`CloseBound`]）。`rx` と別フィールドに
+    /// 分け、`rx` を借用したままでも同時に借用できるようにする。
+    close: CloseBound,
 }
 
 impl<'a> OutboundGuard<'a> {
-    fn new(rx: Option<mpsc::Receiver<OutboundItem>>, sender: &'a WsSender) -> Self {
-        Self { rx, sender }
+    fn new(
+        rx: Option<mpsc::Receiver<OutboundItem>>,
+        sender: &'a WsSender,
+        close_grace: Duration,
+    ) -> Self {
+        Self {
+            rx,
+            sender,
+            close: CloseBound::new(sender.subscribe_closing(), close_grace),
+        }
     }
 
     /// 送信キューを封鎖する（受信側は保持したまま）。
@@ -558,6 +570,111 @@ impl Drop for OutboundGuard<'_> {
         // フィールド `rx` はこの関数の後に drop される。
         self.seal();
     }
+}
+
+/// `WsSender::close` の確定を観測し、そこから `close_grace` 後を Close
+/// ハンドシェイクの期限とする（Cursor Bugbot 指摘対応、PR #736）。
+///
+/// close が確定してもキューには先行する push が残りうる。受信を止めた
+/// クライアント相手ではその送出が止まり、Close ハンドシェイクに到達しない。
+/// close 確定後の送出（[`send_bounded`]）・Close 送出・応答待ち
+/// （[`close_and_drain`]）はすべて本構造体の期限で打ち切る。close 未確定時の
+/// 送出には期限を設けない（既存の挙動）。
+struct CloseBound {
+    /// `WsSender` の close 確定シグナル（`WsSender::subscribe_closing`）。
+    closing: watch::Receiver<bool>,
+    close_grace: Duration,
+    /// close 確定を初めて観測した時刻 + `close_grace`（未観測なら `None`）。
+    deadline: Option<Instant>,
+}
+
+impl CloseBound {
+    fn new(closing: watch::Receiver<bool>, close_grace: Duration) -> Self {
+        Self {
+            closing,
+            close_grace,
+            deadline: None,
+        }
+    }
+
+    /// close 確定済みなら期限を返す（初めて観測したときにその時刻を起点に
+    /// 期限を定める）。未確定なら `None`。
+    fn observe(&mut self) -> Option<Instant> {
+        if self.deadline.is_none() && *self.closing.borrow() {
+            self.deadline = Some(Instant::now() + self.close_grace);
+        }
+        self.deadline
+    }
+
+    /// Close ハンドシェイクに使う期限。close 確定を観測済みならその期限、
+    /// 未観測なら今から `close_grace` 後（Close 指示を取り出した時点では
+    /// close は確定済みのため、通常は前者になる）。
+    fn deadline(&mut self) -> Instant {
+        self.observe()
+            .unwrap_or_else(|| Instant::now() + self.close_grace)
+    }
+
+    /// close 確定の観測から `close_grace` が経過したら完了する（cancel-safe）。
+    async fn expired(&mut self) {
+        loop {
+            if let Some(deadline) = self.observe() {
+                tokio::time::sleep_until(deadline).await;
+                return;
+            }
+            if self.closing.changed().await.is_err() {
+                // 送信側（`WsSender`）がすべて drop された。`conn_ctx` が保持する
+                // ためセッション実行中は到達しない。期限は発火させない。
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+}
+
+/// [`send_bounded`] の結果。
+enum SendOutcome {
+    /// 送出した。
+    Sent,
+    /// 送出中に cancel が発火した（呼び出し元は [`handle_cancellation`] へ）。
+    Cancelled,
+    /// close 確定の観測から `close_grace` が経過した（呼び出し元は
+    /// [`close_grace_expired`] で終了する）。
+    CloseGraceExpired,
+    /// 送出に失敗した。
+    Failed(tokio_tungstenite::tungstenite::Error),
+}
+
+/// push・返信の 1 フレームを、cancel（最優先）・送出・close 確定後の期限の
+/// 順で race して送出する（Cursor Bugbot 指摘対応）。
+///
+/// 期限超過・cancel で送出中の `ws.send` の future を drop しても安全である:
+/// tokio-tungstenite 0.30 の `Sink::start_send` はフレームを丸ごと tungstenite
+/// の書き込みバッファへ積み、`poll_flush` がそれを書き出すだけなので、drop は
+/// 「未投入のフレームを捨てる」か「投入済みのフレームをバッファに残す」の
+/// どちらかになり、`ws` の状態は壊れない（モジュール doc「ワイヤ安全性」節）。
+/// 期限超過時は呼び出し元が `ws` への書き込みをせずにそのまま drop する。
+async fn send_bounded<S, C>(
+    ws: &mut WebSocketStream<S>,
+    cancel: Pin<&mut C>,
+    close: &mut CloseBound,
+    frame: Message,
+) -> SendOutcome
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    C: Future<Output = ()>,
+{
+    match race_cancel(cancel, race2(ws.send(frame), close.expired())).await {
+        None => SendOutcome::Cancelled,
+        Some(Either::Left(Ok(()))) => SendOutcome::Sent,
+        Some(Either::Left(Err(err))) => SendOutcome::Failed(err),
+        Some(Either::Right(())) => SendOutcome::CloseGraceExpired,
+    }
+}
+
+/// close 確定後に `close_grace` 以内に Close ハンドシェイクを終えられなかった
+/// ときのセッション結果。[`close_and_drain`] の期限超過と同じ扱い
+/// （`SenderClose` + `Ok(())`、`ws` は書き込まずに drop する）にそろえる。
+fn close_grace_expired() -> (CloseReason, Result<(), WsError>) {
+    (CloseReason::SenderClose, Ok(()))
 }
 
 /// クライアント受信待ちの 1 イベント（[`run_session`] のループが処理する
@@ -780,13 +897,17 @@ enum SessionFlow {
         code: u16,
         /// 検証済みの close reason（123 バイト以内）。
         reason: String,
-        /// Close ハンドシェイク（[`close_and_drain`]）に使う期限。終了経路の
-        /// 排出（[`flush_outbound`]）中に見つかった場合は、その排出と共有する
-        /// 残りの期限（`Some`）を引き継ぎ、合計を `close_grace` 以内に収める。
-        /// それ以外（ハンドラ実行中・継続経路の排出中）は `None` で、呼び出し元が
-        /// その時点から `close_grace` を数える。
-        deadline: Option<Instant>,
+        /// Close ハンドシェイク（[`close_and_drain`]）に使う期限。close 確定の
+        /// 観測から `close_grace` 後（[`CloseBound::deadline`]）で、終了経路の
+        /// 排出（[`flush_outbound`]）中に見つかった場合はその排出と共有する期限と
+        /// 早い方を使う。いずれの経路でも、close 確定から Close ハンドシェイク
+        /// 完了までを `close_grace` 以内に収める。
+        deadline: Instant,
     },
+    /// close 確定の観測から `close_grace` 以内に送出を終えられなかった
+    /// （[`SendOutcome::CloseGraceExpired`]）。呼び出し元は
+    /// [`close_grace_expired`] でセッションを終える。
+    CloseGraceExpired,
 }
 
 /// [`crate::handler::WsMessageHandler::on_message`] の戻り値をセッション
@@ -826,10 +947,11 @@ where
         WsOutcome::Reply(messages) => {
             for msg in messages {
                 let frame = to_tungstenite_message(msg);
-                match race_cancel(cancel.as_mut(), ws.send(frame)).await {
-                    None => return Ok(SessionFlow::Cancelled),
-                    Some(Ok(())) => {}
-                    Some(Err(err)) => return Err(SessionFailure::send(err)),
+                match send_bounded(ws, cancel.as_mut(), &mut outbound.close, frame).await {
+                    SendOutcome::Cancelled => return Ok(SessionFlow::Cancelled),
+                    SendOutcome::Sent => {}
+                    SendOutcome::CloseGraceExpired => return Ok(SessionFlow::CloseGraceExpired),
+                    SendOutcome::Failed(err) => return Err(SessionFailure::send(err)),
                 }
             }
             Ok(SessionFlow::Continue)
@@ -856,11 +978,15 @@ where
                 // `commit` doc）を優先し、`ws.close(None)` 送出はスキップして
                 // `SessionFlow::SenderClose` へ分岐する（キュー中の Close は
                 // 必ず最後の要素のため、後続の排出対象は残らない）。
-                FlushOutcome::SenderClose { code, reason } => {
+                FlushOutcome::SenderClose {
+                    code,
+                    reason,
+                    deadline,
+                } => {
                     return Ok(SessionFlow::SenderClose {
                         code,
                         reason,
-                        deadline: Some(close_deadline),
+                        deadline,
                     });
                 }
                 FlushOutcome::Done => {}
@@ -916,6 +1042,9 @@ enum FlushOutcome {
         code: u16,
         /// 検証済みの close reason（123 バイト以内）。
         reason: String,
+        /// Close ハンドシェイクに使う期限（排出の期限と、close 確定の観測から
+        /// `close_grace` 後の早い方）。
+        deadline: Instant,
     },
 }
 
@@ -940,7 +1069,9 @@ enum FlushOutcome {
 /// 4. 手順 3 全体を `close_deadline`（呼び出し元が `close_grace` から 1 回だけ
 ///    計算し、後続の `ws.close(None)` と共有する単一期限、イシュー #711
 ///    PR #735）で有界化し、超過時は残りを諦めて [`FlushOutcome::TimedOut`] を
-///    返す（クライアントが受信を止めた場合の DoS 対策）。
+///    返す（クライアントが受信を止めた場合の DoS 対策）。封鎖より前に close が
+///    確定していれば、その観測から `close_grace` 後（[`CloseBound`]）と早い方を
+///    期限にする。
 ///
 /// **保証**: 手順 1 より前に `WsSender::send`/`close` が `Ok` を返した項目は、
 /// `close_deadline` 超過・cancel・送出失敗（以後の項目と Close フレームも送出
@@ -968,6 +1099,13 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     C: Future<Output = ()>,
 {
+    // 封鎖より前に close が確定していれば、その観測から `close_grace` 後と
+    // 呼び出し元の期限の早い方を使う（封鎖も close 確定シグナルを送るため、
+    // 観測は封鎖より前に行う）。
+    let close_deadline = outbound
+        .close
+        .observe()
+        .map_or(close_deadline, |observed| observed.min(close_deadline));
     outbound.seal();
     let Some(rx) = outbound.rx.as_mut() else {
         return Ok(FlushOutcome::Done);
@@ -988,7 +1126,11 @@ where
                     }
                 }
                 Ok(OutboundItem::Close { code, reason }) => {
-                    return Ok(FlushOutcome::SenderClose { code, reason });
+                    return Ok(FlushOutcome::SenderClose {
+                        code,
+                        reason,
+                        deadline: close_deadline,
+                    });
                 }
                 Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
                     return Ok(FlushOutcome::Done);
@@ -1047,10 +1189,13 @@ where
         match rx.try_recv() {
             Ok(OutboundItem::Message(msg)) => {
                 let frame = to_tungstenite_message(msg);
-                match race_cancel(cancel.as_mut(), ws.send(frame)).await {
-                    None => return Ok(Some(SessionFlow::Cancelled)),
-                    Some(Ok(())) => {}
-                    Some(Err(err)) => return Err(SessionFailure::send(err)),
+                match send_bounded(ws, cancel.as_mut(), &mut outbound.close, frame).await {
+                    SendOutcome::Cancelled => return Ok(Some(SessionFlow::Cancelled)),
+                    SendOutcome::Sent => {}
+                    SendOutcome::CloseGraceExpired => {
+                        return Ok(Some(SessionFlow::CloseGraceExpired));
+                    }
+                    SendOutcome::Failed(err) => return Err(SessionFailure::send(err)),
                 }
             }
             Ok(OutboundItem::Close { code, reason }) => {
@@ -1059,7 +1204,7 @@ where
                 return Ok(Some(SessionFlow::SenderClose {
                     code,
                     reason,
-                    deadline: None,
+                    deadline: outbound.close.deadline(),
                 }));
             }
             Err(mpsc::error::TryRecvError::Empty) => break,
@@ -1169,10 +1314,11 @@ where
             Some(Either::Left(handler_result)) => break handler_result,
             Some(Either::Right(Some(OutboundItem::Message(msg)))) => {
                 let frame = to_tungstenite_message(msg);
-                match race_cancel(cancel.as_mut(), ws.send(frame)).await {
-                    None => return Ok(SessionFlow::Cancelled),
-                    Some(Ok(())) => {}
-                    Some(Err(err)) => return Err(SessionFailure::send(err)),
+                match send_bounded(ws, cancel.as_mut(), &mut outbound.close, frame).await {
+                    SendOutcome::Cancelled => return Ok(SessionFlow::Cancelled),
+                    SendOutcome::Sent => {}
+                    SendOutcome::CloseGraceExpired => return Ok(SessionFlow::CloseGraceExpired),
+                    SendOutcome::Failed(err) => return Err(SessionFailure::send(err)),
                 }
             }
             Some(Either::Right(Some(OutboundItem::Close { code, reason }))) => {
@@ -1184,7 +1330,7 @@ where
                 return Ok(SessionFlow::SenderClose {
                     code,
                     reason,
-                    deadline: None,
+                    deadline: outbound.close.deadline(),
                 });
             }
             Some(Either::Right(None)) => {
@@ -1226,13 +1372,17 @@ where
             let close_deadline = Instant::now() + close_grace;
             match flush_outbound(ws, outbound, cancel, close_deadline).await {
                 Ok(FlushOutcome::Cancelled) => Ok(SessionFlow::Cancelled),
-                Ok(FlushOutcome::SenderClose { code, reason }) => {
+                Ok(FlushOutcome::SenderClose {
+                    code,
+                    reason,
+                    deadline,
+                }) => {
                     // 送信キューの封鎖前に確定した `WsSender::close` を優先して
                     // 届ける（ハンドラエラーは破棄、設計 12 節）。
                     Ok(SessionFlow::SenderClose {
                         code,
                         reason,
-                        deadline: Some(close_deadline),
+                        deadline,
                     })
                 }
                 // 排出の完了・期限超過・送信失敗のいずれでも、終了理由は元の
@@ -3175,7 +3325,7 @@ mod tests {
                 tokio::task::yield_now().await;
             }
 
-            let mut outbound = OutboundGuard::new(Some(rx), &tx);
+            let mut outbound = OutboundGuard::new(Some(rx), &tx, Duration::from_secs(10));
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
             // ドレイン待ちを長めに取り、「即座に解放される」ことと
@@ -3343,7 +3493,7 @@ mod tests {
                     .expect("send should succeed while channel capacity remains");
             }
 
-            let mut outbound = OutboundGuard::new(Some(rx), &tx);
+            let mut outbound = OutboundGuard::new(Some(rx), &tx, Duration::from_secs(10));
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
             let close_grace = Duration::from_millis(200);
@@ -3400,7 +3550,7 @@ mod tests {
             // `FlushOutcome::Done`）させ、`ws.close(None)` 自体の有界化のみを
             // 検証する。
             let (tx, _rx) = handler::channel(1);
-            let mut outbound = OutboundGuard::new(None, &tx);
+            let mut outbound = OutboundGuard::new(None, &tx, Duration::from_secs(10));
             // cancel は発火しないままにする。`ws.close(None)` の打ち切り手段が
             // `close_deadline` しかないことを保証する（cancel が打ち切りの
             // 唯一の手段だった旧実装ではこのテストはハングする）。
@@ -3469,7 +3619,7 @@ mod tests {
                 .await
                 .expect("send should succeed while channel capacity remains");
 
-            let mut outbound = OutboundGuard::new(Some(rx), &tx);
+            let mut outbound = OutboundGuard::new(Some(rx), &tx, Duration::from_secs(10));
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
             // 他ステップが
@@ -3945,7 +4095,7 @@ mod tests {
             tx.commit_close_for_test(permit, 4000, "late")
                 .expect("a commit before the seal must succeed");
 
-            let mut outbound = OutboundGuard::new(Some(rx), &tx);
+            let mut outbound = OutboundGuard::new(Some(rx), &tx, Duration::from_secs(10));
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
             let close_deadline = Instant::now() + Duration::from_secs(2);
@@ -3959,7 +4109,7 @@ mod tests {
             .expect("the drain must not wait for the receiver to be woken")
             .unwrap_or_else(|_| panic!("flush_outbound should not fail"));
             match outcome {
-                FlushOutcome::SenderClose { code, reason } => {
+                FlushOutcome::SenderClose { code, reason, .. } => {
                     assert_eq!(code, 4000);
                     assert_eq!(reason, "late");
                 }
@@ -3981,7 +4131,7 @@ mod tests {
                 .await
                 .expect("permit should be available");
 
-            let mut outbound = OutboundGuard::new(Some(rx), &tx);
+            let mut outbound = OutboundGuard::new(Some(rx), &tx, Duration::from_secs(10));
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
             let close_deadline = Instant::now() + Duration::from_secs(2);
@@ -4106,7 +4256,7 @@ mod tests {
             let (tx, rx) = handler::channel(CAPACITY);
             tx.close(4000, "bye").await.expect("close should succeed");
 
-            let mut outbound = OutboundGuard::new(Some(rx), &tx);
+            let mut outbound = OutboundGuard::new(Some(rx), &tx, Duration::from_secs(10));
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
             let close_deadline = Instant::now() + Duration::from_secs(2);
@@ -4128,13 +4278,98 @@ mod tests {
                     assert_eq!(code, 4000);
                     assert_eq!(reason, "bye");
                     assert_eq!(
-                        deadline,
-                        Some(close_deadline),
+                        deadline, close_deadline,
                         "the Close handshake must reuse the remaining shared deadline"
                     );
                 }
                 _ => panic!("expected SenderClose"),
             }
+        }
+
+        /// Cursor Bugbot 指摘（PR #736、Medium）の回帰テスト本体:
+        /// 受信を止めたクライアント（書き込みが Pending のまま進まない）に対し、
+        /// push を積んだ後に `WsSender::close` が `Ok` を返したら、セッションは
+        /// close 確定の観測から `close_grace` 以内に終わること（修正前は先行 push の
+        /// `ws.send` が期限なしで止まり、Close ハンドシェイクに到達しなかった）。
+        /// 仮想時間（`start_paused`）で決定的に検証する。`close_before_start` が
+        /// true なら、セッション開始前に close を確定させておく。
+        async fn assert_close_is_bounded_for_stalled_client(close_before_start: bool) {
+            const CLOSE_GRACE: Duration = Duration::from_secs(10);
+            let mut config = test_config();
+            config.close_grace = CLOSE_GRACE;
+            let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+            // バッファを極小にし、クライアント側を一切読まない（書き込みが
+            // Pending のまま進まない）。
+            let (server_side, client_side) = tokio::io::duplex(64);
+            let _client_side = client_side;
+            let (tx, rx) = handler::channel(CAPACITY);
+            for i in 0..3 {
+                tx.send(WsMessage::Text(format!("push-{i}-{}", "x".repeat(1024))))
+                    .await
+                    .expect("push within capacity should succeed");
+            }
+            let closer = tx.clone();
+            if close_before_start {
+                closer
+                    .close(4000, "bye")
+                    .await
+                    .expect("close should succeed");
+            }
+            let conn_ctx = test_conn_ctx(tx);
+            let session_handle = tokio::spawn(async move {
+                let cancel = std::future::pending::<()>();
+                let mut cancel = std::pin::pin!(cancel);
+                run_session_inner(
+                    server_side,
+                    Vec::new(),
+                    config,
+                    cancel.as_mut(),
+                    Some(rx),
+                    &conn_ctx,
+                )
+                .await
+            });
+            if !close_before_start {
+                // 先頭の push の送出が止まるところまでセッションを進めてから close する。
+                for _ in 0..8 {
+                    tokio::task::yield_now().await;
+                }
+                closer
+                    .close(4000, "bye")
+                    .await
+                    .expect("close should succeed");
+            }
+            let started = Instant::now();
+
+            let (reason, result) = tokio::time::timeout(Duration::from_secs(600), session_handle)
+                .await
+                .expect(
+                    "the session must end within close_grace after close() returned Ok, \
+                     even if the client stops reading",
+                )
+                .expect("session task should not panic");
+            assert!(
+                started.elapsed() <= CLOSE_GRACE + Duration::from_millis(1),
+                "the session must end within close_grace, took {:?}",
+                started.elapsed()
+            );
+            assert!(
+                matches!(reason, CloseReason::SenderClose),
+                "expected SenderClose, got {reason:?}"
+            );
+            assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+        }
+
+        /// セッションが先頭の push の送出で止まっている最中に close が確定する場合。
+        #[tokio::test(start_paused = true)]
+        async fn close_during_stalled_push_is_bounded_by_close_grace() {
+            assert_close_is_bounded_for_stalled_client(false).await;
+        }
+
+        /// セッション開始前に close が確定している場合（初回の送出で観測する）。
+        #[tokio::test(start_paused = true)]
+        async fn close_before_stalled_push_is_bounded_by_close_grace() {
+            assert_close_is_bounded_for_stalled_client(true).await;
         }
     }
 }

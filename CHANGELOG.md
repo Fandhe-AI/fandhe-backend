@@ -87,7 +87,10 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   Close・EOF・受信/送信エラーの経路でも、受信側を手放した後に `send`/`close` が
   `Ok` を返す（値が黙って捨てられる）ことはなくなりました（これらの経路は
   従来どおりキュー済みの push を送出しません）。`WsOutcome::Reply`
-  を返した場合の排出は送信キュー容量回までに制限します。イシュー
+  を返した場合の排出は送信キュー容量回までに制限します。また、`WsSender::close`
+  が `Ok` を返した後は、クライアントが受信を止めていても、close 確定の観測から
+  `close_grace` 以内に Close ハンドシェイクを終えるか接続を打ち切ります（close
+  未確定時の push の送出には従来どおり期限を設けません）。イシュー
   [#710](https://github.com/Fandhe-AI/fandhe-backend/issues/710)
 
 ## [0.4.1] - 2026-09-26

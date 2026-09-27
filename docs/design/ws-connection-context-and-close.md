@@ -528,6 +528,8 @@ Err・Close・別タスク・スナップショット前後の派生ケースを
   送らずに終了、`Err` は `Failed(FailureKind::Handler)` で終了する。排出中に Close 指示が
   見つかった場合、その Close ハンドシェイクは排出と同じ期限を引き継ぐ（排出・Close 送出・
   応答待ちの合計が `close_grace` 以内）。
+- close 確定後の push・返信の送出: 12 節「close 確定後の有界化」の期限で打ち切り、
+  `SenderClose` で終了する（close 未確定時の送出は期限なしのまま）。
 
 > **排出方式の改訂経緯（PR #736）**: 当初は両経路とも `try_recv()` を固定回数
 > （容量）行っていたが、満杯キューで `reserve()` 待ちだった `WsSender::close` が排出中に
@@ -897,6 +899,32 @@ cancel・idle timeout・クライアント Close・EOF・受信/送信エラー�
 確定前に drop された場合も、確定は `Err` になる）。
 
 `on_close` の呼び出し回数（ちょうど 1 回）と `CloseReason` の分類は変えない。
+
+### close 確定後の有界化（Cursor Bugbot 指摘対応、PR #736）
+
+`close()` が確定しても、キューには先行する push が残りうる。受信を止めたクライアント
+相手ではその送出が止まり、Close ハンドシェイクに到達しなかった。
+
+手順（`session.rs`）:
+
+1. `CloseBound` が `WsSender` の close 確定シグナルを購読し、確定を初めて観測した時刻
+   から `close_grace` 後を期限とする。
+2. push・返信の送出（`send_bounded`。外側ループ・ハンドラ実行中・継続経路の排出・
+   `WsOutcome::Reply`）は、cancel（最優先）・送出・期限の順で race する。期限を過ぎたら
+   `ws` に書き込まずに drop し、`close_and_drain` の期限超過と同じく `SenderClose` +
+   `Ok(())` で終了する。
+3. Close 指示を取り出したら、同じ期限で `close_and_drain` を行う。終了経路の排出中に
+   見つかった場合は、排出の期限と早い方を使う。
+
+**保証**: `close()` が `Ok` を返したら、セッションは close 確定の観測から `close_grace`
+以内に Close ハンドシェイクを終えるか接続を打ち切る。
+
+close 未確定時の push・返信の送出には期限を設けない（既存の挙動）。
+
+送出中の future を drop しても安全な根拠: tokio-tungstenite 0.30 の `Sink::start_send`
+はフレームを丸ごと tungstenite の書き込みバッファへ積み、`poll_flush` がそれを書き出す
+だけなので、drop は未投入のフレームを捨てるか投入済みのフレームをバッファに残すかの
+どちらかで、`ws` の状態は壊れない（期限超過後は `ws` へ書き込まない）。
 
 ### `is_closed()` の意味の変更
 

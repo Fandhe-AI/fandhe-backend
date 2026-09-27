@@ -1199,6 +1199,13 @@ impl WsSender {
     /// ワイヤ上の送出完了を待たない（[`Self::send`] と同型のバック
     /// プレッシャ契約。チャネルが満杯なら受信側が消費するまで待機する）。
     ///
+    /// 本メソッドが `Ok` を返した後、セッションは close の確定を観測した
+    /// 時点から `WebSocketConfig::close_grace`（既定 10 秒）以内に、先行する
+    /// push の送出・Close フレームの送出・応答待ちを終えるか、接続を打ち切る
+    /// （クライアントが受信を止めていても有界。打ち切った場合の終了理由も
+    /// `CloseReason::SenderClose`）。close 未確定時の push の送出には期限を
+    /// 設けない。
+    ///
     /// ワイヤ上の完了（セッション終了）を待ちたい場合の代替として
     /// [`Self::closed`] があるが、本メソッドが起こす `SenderClose` 経路
     /// （`crate::session`）では、実際に Close フレームを書き込みピアの
@@ -1224,7 +1231,9 @@ impl WsSender {
     ///
     /// （`on_open` で spawn したタスクから push を数件送ったあと
     /// `close(4000, "bye")` を呼ぶ。クライアントは push を順に受け取り、
-    /// 最後に code 4000・reason "bye" の Close を受け取る。）
+    /// 最後に code 4000・reason "bye" の Close を受け取る。クライアントが
+    /// 受信を止めていた場合も、セッションは close 確定から `close_grace`
+    /// 以内に終わる。）
     ///
     /// ```
     /// use std::time::Duration;
@@ -1410,6 +1419,16 @@ impl WsSender {
         // 受信側は `_closed_signal_anchor` が最低 1 個生存を保証するため
         // 送信は必ず成功する（戻り値は無視してよい）。
         let _ = self.closed_signal.send(true);
+    }
+
+    /// close 確定（またはセッションの封鎖）を観測する watch 受信側を返す
+    /// （`pub(crate)`、`crate::session` 専用。Cursor Bugbot 指摘対応）。
+    /// セッションは close 確定を観測した時点から `close_grace` 以内に Close
+    /// ハンドシェイクを終えるか接続を打ち切る（`crate::session::CloseBound`）。
+    /// 返り値は購読時点の値を既読扱いにするため、呼び出し側は `borrow()` で
+    /// 現在値を確かめてから `changed()` を待つこと。
+    pub(crate) fn subscribe_closing(&self) -> watch::Receiver<bool> {
+        self.closed_signal.subscribe()
     }
 
     /// [`Self::send`]/[`Self::close`] が使う共通の `reserve()` ラッパー
