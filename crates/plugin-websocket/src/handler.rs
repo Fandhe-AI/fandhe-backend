@@ -47,6 +47,19 @@ pub enum WsOutcome {
     /// 空の `Vec` は「返信なしで継続」を表す。
     Reply(Vec<WsMessage>),
     /// サーバ側から Close ハンドシェイクを開始し、セッションを正常終了する。
+    ///
+    /// 送信キューの flush（イシュー #711）: `on_message`（`on_message_with_ctx`）
+    /// 内で本 variant を返す前に [`WsSender::send`] で push したメッセージは、
+    /// **`WebSocketConfig::close_grace`（既定 10 秒）の期限内に送出できた
+    /// 範囲で** Close フレームより先に送出される。Close 処理の開始時点で
+    /// 送信キューは閉じられ（`crate::session::flush_outbound`）、以後の
+    /// `WsSender::send` 呼び出しはすべて [`WsSendError`] で失敗する（同じ
+    /// クローンを保持する別タスクからの送信も対象）。クライアントが受信を
+    /// 止めている等で `close_grace` を超過した場合、残りのキュー済み
+    /// メッセージは送出されずに破棄され、Close フレーム自体も送らずに
+    /// セッションを即座に終了する（二次 DoS 対策、Codex レビュー指摘対応。
+    /// `crate::session::FlushOutcome::TimedOut` 参照）。「必ず先に送出」は
+    /// `close_grace` 内に収まる場合の契約であり、無条件の保証ではない。
     Close,
 }
 
@@ -1112,6 +1125,20 @@ impl WsSender {
     /// 間に別 clone の [`Self::close`] が確定した場合も、キューの実ドレインを
     /// 待たず即座に [`WsSendError`] を返す（`Self::reserve_or_closed` の
     /// doc を参照、PR #736 レビュー指摘対応）。
+    ///
+    /// `WsOutcome::Close`（イシュー #711）: ハンドラが `WsOutcome::Close` を
+    /// 返した時点で、`crate::session::flush_outbound` が受信側を
+    /// `close()`（drop ではなく）する。これにより、`ws.close()` の送出完了を
+    /// 待たず（応答を読まないクライアント相手では送出自体が長時間ブロック
+    /// しうる）、ブロック中の本メソッド呼び出しも即座にこのエラーで
+    /// 解放される。閉鎖時点までに既にキュー済みだったメッセージ
+    /// （本メソッドの呼び出しが完了済みの分）は、**`WebSocketConfig::
+    /// close_grace`（既定 10 秒）の期限内に送出できた範囲で** 破棄されず
+    /// Close フレームより先に送出される。クライアントが受信を止めている等で
+    /// `close_grace` を超過した場合は、残りのキュー済みメッセージは送出
+    /// されずに破棄され、Close フレーム自体も送らずにセッションが即座に
+    /// 終了する（二次 DoS 対策。`crate::session::FlushOutcome::TimedOut` を
+    /// 参照。「破棄されず送出される」は無条件の保証ではない）。
     pub async fn send(&self, msg: WsMessage) -> Result<(), WsSendError> {
         let permit = self.reserve_or_closed().await.map_err(|()| WsSendError)?;
         self.commit(permit, OutboundItem::Message(msg), false)
@@ -1394,13 +1421,17 @@ impl WsSender {
     /// # 意味・完了タイミング
     ///
     /// 完了する時点は [`WsSender::send`] が [`WsSendError`] を返し始める時点と
-    /// 同じ（受信側 `mpsc::Receiver` の drop）である。`crate::session` の
-    /// すべての終了経路（正常終了・ハンドラエラー・`WsOutcome::Close`・
-    /// プロトコルエラー・future の drop）でこの `Receiver` は drop される。
-    /// cancel（世代キャンセル）経路・idle timeout 経路では、Close
-    /// ハンドシェイクのドレインより**前**に drop されるため、`closed()` は
-    /// その時点で完了する（[`WsSender::send`] の doc にある「`close_grace`
-    /// の満了を待たず解放」と同じ時点）。
+    /// 同じ（受信側 `mpsc::Receiver` の `close()` または drop）である。
+    /// `crate::session` のすべての終了経路（正常終了・ハンドラエラー・
+    /// `WsOutcome::Close`・プロトコルエラー・future の drop）でこの
+    /// `Receiver` は最終的に drop される。cancel（世代キャンセル）経路・
+    /// idle timeout 経路では、Close ハンドシェイクのドレインより**前**に
+    /// drop されるため、`closed()` はその時点で完了する（[`WsSender::send`]
+    /// の doc にある「`close_grace` の満了を待たず解放」と同じ時点）。
+    /// `WsOutcome::Close` 経路（イシュー #711）では、`ws.close()` の送出
+    /// **前**に受信側が `close()` されるため（drop ではないが `Sender::
+    /// closed()` は同様に完了する）、`closed()` も同じく `ws.close()` の
+    /// 完了を待たずに完了する。
     ///
     /// どの clone から呼んでも、同じ時点で完了する（[`mpsc::Sender::closed`]
     /// への薄い委譲であり、送信側の数に依存しない）。

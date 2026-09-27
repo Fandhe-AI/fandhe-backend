@@ -80,23 +80,50 @@ fn header_vec_capacity_is_clamped_to_max_header_count() {
         std::hint::black_box(&outcome);
     });
 
+    // 具体的な上限を固定する: `MAX_HEADER_COUNT` 件分の `(Range<usize>,
+    // Range<usize>)`（各 16 バイト × 2 = 32 バイト）を大きく超えないこと。
+    //
+    // macOS（`macos-latest` CI ランナー）では、`Vec::with_capacity` へ渡す
+    // 確保サイズ自体は上記のとおり N に依存せず一定であるにもかかわらず、
+    // `stats_alloc` が計測する `bytes_allocated` に実行タイミング依存の
+    // 数百バイト規模の変動が実測された（イシュー #711 レビュー指摘。
+    // ubuntu-latest / windows-latest では再現せず macOS 固有。厳密等価
+    // （`assert_eq!`）では毎回 flaky に FAIL する）。この変動は 2 回の
+    // 呼び出し（small/large）のどちらに乗るかも一定しない一方、量として
+    // `MAX_HEADER_COUNT` 分の確保サイズに対して小さく（許容誤差
+    // `TOLERANCE_BYTES` の範囲内）、本テストが検出対象とするクランプ漏れ
+    // （N=10 倍で確保量も約 10 倍に膨れ上がる規模の増加）とは明確に区別
+    // できる。そのため上限判定・N 非依存判定の両方を厳密等価ではなく
+    // 許容誤差付きの不等式で行い、macOS のアロケータ挙動の変動を吸収し
+    // つつクランプ漏れ（線形スケール）のみを不合格とする。
+    const TOLERANCE_BYTES: usize = 1024;
+    let exact_expected =
+        MAX_HEADER_COUNT * std::mem::size_of::<(std::ops::Range<usize>, std::ops::Range<usize>)>();
+    let max_expected = exact_expected + TOLERANCE_BYTES;
+    assert!(
+        small_delta <= max_expected,
+        "headers Vec allocation ({small_delta} bytes, N={just_over}) exceeds \
+         MAX_HEADER_COUNT-bounded capacity ({max_expected} bytes = {exact_expected} \
+         + {TOLERANCE_BYTES} バイトの許容誤差)"
+    );
+    assert!(
+        large_delta <= max_expected,
+        "headers Vec allocation ({large_delta} bytes, N={far_over}) exceeds \
+         MAX_HEADER_COUNT-bounded capacity ({max_expected} bytes = {exact_expected} \
+         + {TOLERANCE_BYTES} バイトの許容誤差)"
+    );
+
     // `headers: Vec<_>` に起因する確保バイト数は N に依存せず一定である
     // こと（= `MAX_HEADER_COUNT` でクランプ済みであること）を検証する。
     // クランプ漏れがあれば `large_delta` は `small_delta` の約 10 倍（N 倍）
-    // に膨れ上がり、この比較で検出できる。
-    assert_eq!(
-        small_delta, large_delta,
-        "headers Vec allocation bytes must not scale with header count N \
-         (N={just_over}: {small_delta} bytes, N={far_over}: {large_delta} bytes) \
-         — Vec::with_capacity must be clamped to MAX_HEADER_COUNT before the size check"
-    );
-
-    // 具体的な上限も固定する: `MAX_HEADER_COUNT` 件分の `(Range<usize>,
-    // Range<usize>)`（各 16 バイト × 2 = 32 バイト）を大きく超えないこと。
-    let max_expected =
-        MAX_HEADER_COUNT * std::mem::size_of::<(std::ops::Range<usize>, std::ops::Range<usize>)>();
+    // に膨れ上がる（差分は `exact_expected` の 9 倍規模、約 28800 バイト）
+    // ため、`TOLERANCE_BYTES` を大きく超えるこの比較で検出できる。
+    let diff = small_delta.abs_diff(large_delta);
     assert!(
-        small_delta <= max_expected,
-        "headers Vec allocation ({small_delta} bytes) exceeds MAX_HEADER_COUNT-bounded capacity ({max_expected} bytes)"
+        diff <= TOLERANCE_BYTES,
+        "headers Vec allocation bytes must not scale with header count N \
+         (N={just_over}: {small_delta} bytes, N={far_over}: {large_delta} bytes, \
+         diff={diff} bytes exceeds tolerance {TOLERANCE_BYTES} bytes) \
+         — Vec::with_capacity must be clamped to MAX_HEADER_COUNT before the size check"
     );
 }
