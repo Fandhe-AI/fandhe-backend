@@ -495,18 +495,22 @@ Err・Close・別タスク・スナップショット前後の派生ケースを
 1. ハンドラ Future が `Poll::Ready(outcome)`（`outcome: Result<WsOutcome,
    WsHandlerError>`）を返すまで、`cancel`（最優先）とハンドラ Future・outbound
    到着を race する既存方針（後述）でポーリングを続ける。
-2. `outcome` が `Err(err)` の場合: 排出・送信を行わず、`Failed(FailureKind::
-   Handler)` を `CloseReason` として確定し、`Err(WsError::Handler(err))` を
-   返して終了する（現行 `outcome?` と同じ即時終了、4 節の対応表の該当行と整合）。
-3. `outcome` が `Ok(outcome)` の場合: outbound の `Receiver` から `try_recv()`
-   を呼び、`Empty`（キューが空）が返るまで、または `DEFAULT_OUTBOUND_CAPACITY`
-   回（既定 8）に達するまで繰り返し、取り出せた push を到着順に `ws.send()` で
-   送出する。`Receiver::len()` のスナップショットは使わない（チャネルは容量
-   固定の bounded mpsc のため、`DEFAULT_OUTBOUND_CAPACITY` 回で排出開始時点の
-   格納分は全件取り出せる。`len()` はチャネル実装によって同期精度が変わりうる
-   のに対し `try_recv()` の呼び出し回数上限は実装に依存しない。ワークスペースの
-   tokio 依存指定が `"1"`（`Cargo.toml`）であることも踏まえ、最低バージョン
-   要求を増やさない構成を優先する）。
+2. `outcome` の `Ok`/`Err` に関わらず（**#710・PR #736 レビュー指摘対応で
+   ステップ順序を変更**、後述の注記参照）: outbound の `Receiver` から
+   `try_recv()` を呼び、`Empty`（キューが空）が返るまで、または
+   `DEFAULT_OUTBOUND_CAPACITY` 回（既定 8）に達するまで繰り返し、取り出せた
+   push を到着順に `ws.send()` で送出する。`Receiver::len()` のスナップショット
+   は使わない（チャネルは容量固定の bounded mpsc のため、
+   `DEFAULT_OUTBOUND_CAPACITY` 回で排出開始時点の格納分は全件取り出せる。
+   `len()` はチャネル実装によって同期精度が変わりうるのに対し `try_recv()`
+   の呼び出し回数上限は実装に依存しない。ワークスペースの tokio 依存指定が
+   `"1"`（`Cargo.toml`）であることも踏まえ、最低バージョン要求を増やさない
+   構成を優先する）。排出中に `OutboundItem::Close` が見つかった場合は
+   `outcome`（`Err` を含む）を破棄し `SessionFlow::SenderClose` で終了する。
+3. 排出で Close 指示が見つからなかった場合に限り `outcome` を評価する:
+   `Err(err)` なら `Failed(FailureKind::Handler)` を `CloseReason` として確定
+   し、`Err(WsError::Handler(err))` を返して終了する（4 節の対応表の該当行と
+   整合）。`Ok(outcome)` なら次のステップへ進む。
 4. `apply_outcome` で `outcome` を送出する（`Ok(WsOutcome::Reply(_))` なら
    返信メッセージを、`Ok(WsOutcome::Close)` なら Close フレームを送る）。
 5. `outcome` が `Ok(WsOutcome::Close)` ならセッションを終了する
@@ -530,9 +534,16 @@ Err・Close・別タスク・スナップショット前後の派生ケースを
 上記手順を反映した outcome 別の対応表（4 節「outcome? の Err」行・
 `apply_outcome` 行と整合させたもの）:
 
+> **#710・PR #736 レビュー指摘対応で更新**: 当初この表は `Err(WsHandlerError)`
+> の場合にステップ 3（排出）を「行わない」としていたが、これは
+> `WsSender::close`（イシュー #710）が enqueue した Close 指示・先行する push
+> を無言破棄する経路になっていた。排出は `outcome` の `Ok`/`Err` に関わらず
+> 常に行うへ修正済み（12 節「ハンドラ自身が `close` を呼んだ直後に `Err`/
+> `WsOutcome::Close` を返す場合」参照）。下表は現状の実装を反映する。
+
 | `outcome` | ステップ 3（排出） | ステップ 4（送出） |
 |---|---|---|
-| `Err(WsHandlerError)` | 行わない | 行わない（`Failed(FailureKind::Handler)` で終了） |
+| `Err(WsHandlerError)` | 行う。Close 指示が見つかれば `SenderClose` で終了（後続のエラー評価は行わない） | 見つからなければ `Failed(FailureKind::Handler)` で終了 |
 | `Ok(WsOutcome::Reply(messages))` | 行う | `messages` を送出、セッション継続 |
 | `Ok(WsOutcome::Close)` | 行う | Close フレームを送出、セッション終了 |
 
@@ -569,8 +580,10 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
   （送信元がハンドラ自身か別タスクかを問わない）を用いてよい（この完了時刻
   条件は排出開始時点での格納を成立させる十分条件であり、保証の定義そのもの
   ではない）
-- `outcome` が `Err(WsHandlerError)` の場合は排出・送信を一切行わず
-  `Failed(FailureKind::Handler)` で終了することを確認する
+- `outcome` が `Err(WsHandlerError)` の場合の排出方針は #710・PR #736 で
+  改訂済み（12 節参照）: 排出自体は `outcome` の `Ok`/`Err` に関わらず行い、
+  Close 指示が見つからなかった場合に限り `Failed(FailureKind::Handler)` で
+  終了することを確認する
 - 上記以外（保証の対象外）の push については、順序が不定であることの確認に
   留め、特定の順序を新たに固定しない
 
@@ -810,6 +823,32 @@ Close 確定後に enqueue を試みた `send` は必ず `Err` になる。
   close 後は送信できず待つ意味がないうえ、待てば Close 送出が遅れて有界性を
   損なうため）。ハンドラが返す `WsOutcome::Reply`/`Close` は破棄される（RFC 6455
   5.5.1 節: Close フレームの後にデータフレームを送れない）。
+
+### ハンドラ自身が `close` を呼んだ直後に `Err`/`WsOutcome::Close` を返す場合（PR #736 レビュー指摘対応）
+
+「ハンドラ実行中に別タスクから `close` が呼ばれた場合」（上記）とは別に、
+ハンドラ自身が `on_message_with_ctx` の中で `ctx.sender().close(...).await`
+を呼び、その直後に（追加の `await` を経ずに）`Err`/`Ok(WsOutcome::Close)` を
+返すケースがある。この場合、`close` の enqueue とハンドラ自身の完了が同じ
+`handler_fut` の実行内で連続して起こるため、`run_handler_with_outbound_drain`
+（6 節）の外側 race が outbound 側（`Right`）より先にハンドラ側（`Left`）を
+Ready と観測しうる。
+
+当初の実装は、ハンドラが `Err` を返した場合に排出ステップ自体を丸ごと
+省略していたため、この経路では既に enqueue 済みの `OutboundItem::Close`
+（および Close より手前に enqueue 済みの push）が排出されずに無言破棄されて
+いた（本節冒頭「順序保証と競合排除」の「`send` が `Ok` を返したメッセージは
+必ず Close より前に enqueue され」という保証が、enqueue 後にハンドラが
+`Err` で終了する経路では「実際に送出される」ところまで届いていなかった）。
+
+`run_handler_with_outbound_drain` の排出ステップを、ハンドラの `Ok`/`Err`
+判定より**前**に無条件で実行する順序へ変更し、この経路でも push・Close
+指示を先行処理してから（Close が見つかればそこで `SenderClose` として
+終了し、見つからなければ）ハンドラの結果（`Err` を含む）を評価するように
+修正した。`WsSender::send`/`close` が呼び出し元へ `Ok` を返した時点で確定
+した「届ける」契約を、ハンドラ自身の以後の終了結果で覆さない（6 節の
+「保証」を `Err` 経路にも一貫させたもの。詳細は `crates/plugin-websocket/
+src/session.rs` の `run_handler_with_outbound_drain` doc comment を参照）。
 
 ### `is_closed()` の意味の変更
 

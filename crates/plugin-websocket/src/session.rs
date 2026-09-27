@@ -773,15 +773,20 @@ where
 ///    outbound push はその都度 `ws.send()` で送出する（ハンドラ Future は
 ///    1 回しか完了しない単発イベントのため `race2_alternating` 型の交互化
 ///    は不要）。
-/// 2. ハンドラが `Err` を返した場合: 排出・送信を一切行わず、その場で
-///    `Err` を返す（既存の `outcome?` と同一の即時終了契約）。
-/// 3. `Ok(outcome)` の場合: `try_recv()` を [`DEFAULT_OUTBOUND_CAPACITY`]
-///    回まで（`Empty` に達するまで）繰り返し、追加で溜まっていた push を
-///    到着順に送出してから [`apply_outcome`] へ委譲する。
+/// 2. ハンドラの `Ok`/`Err` に関わらず（PR #736 レビュー指摘対応）:
+///    `try_recv()` を [`DEFAULT_OUTBOUND_CAPACITY`] 回まで（`Empty` に
+///    達するまで）繰り返し、排出開始時点で既に溜まっていた push を到着順に
+///    送出する。Close 指示が見つかった場合はハンドラの結果（`Err` を含む）
+///    を破棄し [`SessionFlow::SenderClose`] を返す。
+/// 3. 排出で Close 指示が見つからなかった場合に限りハンドラの結果を評価する:
+///    `Err` ならその場で `Err` を返す（既存の `outcome?` と同一の即時終了
+///    契約）。`Ok(outcome)` なら [`apply_outcome`] へ委譲する。
 ///
-/// **保証**: 排出ステップ（3.）の開始時点で既にチャネルへ格納済みだった
-/// push は、そのハンドラが返す `WsOutcome::Reply`/`Close` の送出より必ず
-/// 先に送出される。それ以外（排出開始後に格納された push・送出途中だった
+/// **保証**: 排出ステップ（2.）の開始時点で既にチャネルへ格納済みだった
+/// push・Close 指示は、そのハンドラが返す `WsOutcome::Reply`/`Close`・`Err`
+/// より必ず先に送出・優先される（`WsSender::send`/`close` が呼び出し元へ
+/// `Ok` を返した時点で確定した「届ける」契約を、ハンドラ自身の以後の終了
+/// 結果で覆さない）。それ以外（排出開始後に格納された push・送出途中だった
 /// push）との相対順序は不定とする（設計 6 節「保証」を参照。対象外の順序を
 /// 新たに固定しない）。
 ///
@@ -859,18 +864,19 @@ where
         }
     };
 
-    // ステップ 2: ハンドラエラーは排出・送信を行わず即時終了する
-    // （[`FailureKind::Handler`] へ分類、`WsError::Handler` を保持）。
-    let outcome = match outcome {
-        Ok(outcome) => outcome,
-        Err(err) => return Err(SessionFailure::handler(err)),
-    };
-
-    // ステップ 3: 排出開始時点で既に格納済みだった push を、
+    // ステップ 2: 排出開始時点で既に格納済みだった push・Close 指示を、
     // `DEFAULT_OUTBOUND_CAPACITY` 回（既定 8）まで `try_recv()` で取り出し、
     // 到着順に送出する。`Receiver::len()` は使わない（bounded mpsc の
     // 実装依存の同期精度に左右されず、呼び出し回数上限で足りるため。
     // `handler.rs` の該当コメント・設計 6 節ステップ 3 を参照）。
+    //
+    // ハンドラの終了結果（`outcome`、`Ok`/`Err` いずれも）より前に必ず実行する
+    // （PR #736 レビュー指摘対応、session.rs:895 該当）。`WsSender::send`/
+    // `close` が `Ok` を返した時点で「届ける」契約は確定済みであり、その後に
+    // ハンドラ自身が `Err` を返しても、キューへ確定済みの push・Close 指示を
+    // 消さずに先行処理する（旧実装は `outcome` が `Err` の場合に排出を丸ごと
+    // 省略していたため、`WsSender::close` が enqueue した Close 指示・先行する
+    // push が即時終了経路で無言破棄されるケースがあった）。
     if let Some(rx) = outbound.as_mut() {
         for _ in 0..DEFAULT_OUTBOUND_CAPACITY {
             match rx.try_recv() {
@@ -883,9 +889,10 @@ where
                     }
                 }
                 Ok(OutboundItem::Close { code, reason }) => {
-                    // ハンドラの戻り値（`outcome`）は破棄する。Close フレームの
-                    // 後にデータフレームを送れない契約（RFC 6455 5.5.1 節）の
-                    // ため、`apply_outcome` へは委譲しない。
+                    // ハンドラの戻り値（`outcome`。`Err` を含む）は破棄する。
+                    // Close フレームの後にデータフレームを送れない契約
+                    // （RFC 6455 5.5.1 節）のため、`apply_outcome` へも
+                    // `SessionFailure::handler` へも委譲しない。
                     return Ok(SessionFlow::SenderClose { code, reason });
                 }
                 Err(mpsc::error::TryRecvError::Empty) => break,
@@ -896,6 +903,14 @@ where
             }
         }
     }
+
+    // ステップ 3: キューに Close 指示が無かった場合に限り、ハンドラの終了
+    // 結果を評価する。エラーは排出後もここで即時終了する
+    // （[`FailureKind::Handler`] へ分類、`WsError::Handler` を保持）。
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(err) => return Err(SessionFailure::handler(err)),
+    };
 
     apply_outcome(ws, outcome, cancel).await
 }
@@ -2156,6 +2171,119 @@ mod tests {
         assert!(
             matches!(reason, CloseReason::SenderClose),
             "expected SenderClose, got {reason:?}"
+        );
+        assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+    }
+
+    /// PR #736 レビュー指摘対応（codex P1）の回帰テスト: ハンドラが
+    /// `ctx.sender().close(...)` を確定させた直後に `Err` を返しても、
+    /// 既に enqueue 済みの push・Close 指示が無言破棄されず先行処理される
+    /// こと（`run_handler_with_outbound_drain` の排出ステップが `outcome`
+    /// の `Ok`/`Err` に関わらず実行されることの実接続検証）。
+    ///
+    /// 修正前の実装に戻すと、本テストは `CloseReason::Failed(FailureKind::
+    /// Handler)` を観測して FAIL する（push・Close フレームがワイヤへ
+    /// 送出されない）。
+    #[tokio::test]
+    async fn sender_close_then_handler_error_still_delivers_pending_push_and_close() {
+        use futures_util::future::BoxFuture;
+
+        struct PushCloseThenErrorHandler;
+
+        impl handler::WsMessageHandler for PushCloseThenErrorHandler {
+            fn name(&self) -> &'static str {
+                "push-close-then-error"
+            }
+
+            fn on_message(
+                &self,
+                _msg: WsMessage,
+            ) -> BoxFuture<'_, Result<WsOutcome, handler::WsHandlerError>> {
+                Box::pin(async move { Err(handler::WsHandlerError::new("boom")) })
+            }
+
+            fn on_message_with_ctx<'a>(
+                &'a self,
+                ctx: &'a WsConnContext,
+                _msg: WsMessage,
+            ) -> BoxFuture<'a, Result<WsOutcome, handler::WsHandlerError>> {
+                Box::pin(async move {
+                    ctx.sender()
+                        .send(WsMessage::Text("push-0".to_string()))
+                        .await
+                        .expect("push should succeed before close");
+                    ctx.sender()
+                        .close(4000, "bye")
+                        .await
+                        .expect("close should succeed");
+                    Err(handler::WsHandlerError::new("boom-after-close"))
+                })
+            }
+        }
+
+        let mut config = test_config();
+        config.handler = std::sync::Arc::new(PushCloseThenErrorHandler);
+        let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+        let (server_side, client_side) = tokio::io::duplex(8192);
+        // 容量（8）は push 1 件 + close 1 件を余裕を持って収められる大きさに
+        // する（`sender_close_after_handler_completes_discards_pending_reply`
+        // と同じ意図。バックプレッシャなしで単独ポーリングで完了させ、
+        // 検証対象をステップ 2（排出）の経路に固定する）。
+        let (tx, rx) = handler::channel(8);
+        let conn_ctx = test_conn_ctx(tx);
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session_inner(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+        client
+            .send(Message::Text("trigger".into()))
+            .await
+            .expect("client send should succeed");
+
+        let msg = tokio::time::timeout(Duration::from_secs(2), client.next())
+            .await
+            .expect("push should arrive within timeout")
+            .expect("stream should not end before push arrives")
+            .expect("frame should not error");
+        assert_eq!(
+            msg,
+            Message::Text("push-0".into()),
+            "push enqueued before close should still be delivered despite handler Err"
+        );
+
+        let close_frame = tokio::time::timeout(Duration::from_secs(2), client.next())
+            .await
+            .expect("close frame should arrive within timeout")
+            .expect("stream should not end before close frame")
+            .expect("frame should not error");
+        match close_frame {
+            Message::Close(Some(frame)) => {
+                assert_eq!(u16::from(frame.code), 4000);
+                assert_eq!(frame.reason.as_str(), "bye");
+            }
+            other => panic!("expected a close frame with code/reason, got {other:?}"),
+        }
+
+        let (reason, result) = tokio::time::timeout(Duration::from_secs(2), session_handle)
+            .await
+            .expect("session should finish within timeout")
+            .expect("session task should not panic");
+        assert!(
+            matches!(reason, CloseReason::SenderClose),
+            "expected SenderClose (queued Close instruction takes priority over handler Err), got {reason:?}"
         );
         assert!(result.is_ok(), "expected Ok(()), got {result:?}");
     }
