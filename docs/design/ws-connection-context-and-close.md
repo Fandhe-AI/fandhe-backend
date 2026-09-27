@@ -494,75 +494,53 @@ Err・Close・別タスク・スナップショット前後の派生ケースを
 
 1. ハンドラ Future が `Poll::Ready(outcome)`（`outcome: Result<WsOutcome,
    WsHandlerError>`）を返すまで、`cancel`（最優先）とハンドラ Future・outbound
-   到着を race する既存方針（後述）でポーリングを続ける。
-2. `outcome` の `Ok`/`Err` に関わらず（**#710・PR #736 レビュー指摘対応で
-   ステップ順序を変更**、後述の注記参照）: outbound の `Receiver` から
-   `try_recv()` を呼び、`Empty`（キューが空）または `Disconnected`（全
-   `WsSender` クローン drop 済み）が返るまで**回数無制限**で繰り返し、
-   取り出せた push を到着順に `ws.send()` で送出する。`Receiver::len()` の
-   スナップショットは使わない（排出中に増える件数を数える意味がないため）。
-   排出中に `OutboundItem::Close` が見つかった場合は `outcome`（`Err` を
-   含む）を破棄し `SessionFlow::SenderClose` で終了する。
-   >
-   > **Cursor Bugbot 指摘対応（PR #736 #discussion_r4113894722）**: 当初の
-   > 実装は `try_recv()` を `DEFAULT_OUTBOUND_CAPACITY` 回（既定 8）に固定し、
-   > 「チャネルは容量固定の bounded mpsc のため、この回数で排出開始時点の
-   > 格納分は全件取り出せる」という前提で回数上限を導入していた。この前提
-   > は排出中に新規の commit が起こらないことを仮定しており、実際には
-   > 排出開始時点でキューが満杯かつ別 clone の `send`/`close` が `reserve()`
-   > 待ちでブロックされていた場合、本ステップが `Message` を `ws.send()` で
-   > 送出する `.await` の間にそのブロックが解消してキューへ追加で 1 件
-   > 積まれることがある（`handler::WsSender::commit` が `reserve()` 完了
-   > 直後に同期的に enqueue するため）。この追加分は固定回数の予算に含まれず、
-   > `close()` が既に `Ok` を返して確定させた Close 指示が排出されずに
-   > キューへ残ったまま `outbound` が drop され、静かに失われていた
-   > （`close()` の「届ける」契約に反する）。固定回数を撤廃し `Empty`/
-   > `Disconnected` まで無制限に取り出すことで、排出中に新たに確定した
-   > 項目も取り残さず捕捉するようにした。無制限ループでもキャンセル
-   > 応答性は後退しない（`Message` の送出は依然 `race_cancel` で cancel と
-   > 競合させ、`Close` を見つけた時点で即時終了するため）。反復のみ
-   > （`close`/エラーで終わらず無限に `Message` が供給され続ける）場合に
-   > 排出が長引く可能性は既知の限界とし、本関数の「既知の限界」節と同種の
-   > 受容済みリスクとして扱う。
-3. 排出で Close 指示が見つからなかった場合に限り `outcome` を評価する:
-   `Err(err)` なら `Failed(FailureKind::Handler)` を `CloseReason` として確定
-   し、`Err(WsError::Handler(err))` を返して終了する（4 節の対応表の該当行と
-   整合）。`Ok(outcome)` なら次のステップへ進む。
-4. `apply_outcome` で `outcome` を送出する（`Ok(WsOutcome::Reply(_))` なら
-   返信メッセージを、`Ok(WsOutcome::Close)` なら Close フレームを送る）。
-5. `outcome` が `Ok(WsOutcome::Close)` ならセッションを終了する
-   （`SessionFlow::Closed`）。`Ok(WsOutcome::Reply(_))` なら外側ループの次の
-   反復へ進む（`SessionFlow::Continue`）。
+   到着を race する既存方針（後述）でポーリングを続ける。到着した push はその都度
+   送出し、Close 指示が届いたらハンドラ Future を drop して `SessionFlow::SenderClose`
+   で終了する。
+2. `outcome` に応じて送信キューを排出する（**#710・PR #736 レビュー指摘対応で改訂**、
+   後述の注記参照）。
+   - **継続経路**（`Ok(WsOutcome::Reply(_))`、`drain_before_reply`）: 受信側は
+     閉じずに、`try_recv()` を最大でチャネル容量（`Receiver::max_capacity()`）回
+     行い、取り出した push を到着順に `ws.send()` で送出する。`Empty` で打ち切り、
+     残りはキューに残したまま外側ループに任せる。Close 指示が見つかれば `Reply` を
+     破棄して `SessionFlow::SenderClose` で終了する。
+   - **終了経路**（`Ok(WsOutcome::Close)`・`Err(WsHandlerError)`、`flush_outbound`）:
+     `Receiver::close()` で受信側を閉じてから、`recv()` が `None` を返すまで取り出して
+     到着順に送出する。Close 指示が見つかれば `outcome`（`Err` を含む）を破棄して
+     `SessionFlow::SenderClose` で終了する。排出全体を `close_grace` で有界化する。
+3. `outcome` を反映する。`Ok(WsOutcome::Reply(messages))` なら `messages` を送出して
+   外側ループの次の反復へ進む（`SessionFlow::Continue`）。`Ok(WsOutcome::Close)` なら
+   Close フレームを送出してセッションを終了する（`SessionFlow::Closed`）。
+   `Err(err)` なら `Failed(FailureKind::Handler)` を `CloseReason` として確定し、
+   `Err(WsError::Handler(err))` を返して終了する（4 節の対応表の該当行と整合）。
 
-上記手順中のエラー・キャンセルの扱い（各ステップに 1 行ずつ）:
+上記手順中のエラー・キャンセルの扱い（各 1 行）:
 
-- ステップ 3（排出）中の `ws.send()` 失敗は、外側ループの `InboundEvent::
-  Outbound` 分岐と同じ扱いにする（4 節の対応表を参照。`tungstenite::
-  Error::Io(_)` なら `Failed(FailureKind::Io)`、それ以外なら `Failed(FailureKind::
-  Protocol)` へ振り分け、そのまま `CloseReason` として確定して終了する）。
-- ステップ 3（排出）中に `cancel` が発火した場合は既存の優先順位（cancel 最優先）
-  を維持し、当該 `ws.send()` を打ち切って `handle_cancellation`（`Cancelled`）へ
-  分岐する（既存の「cancel 発火時は outbound を明示的に drop し満杯チャネルでの
-  送出待ちを即座に解放する」契約と整合する）。
-- ステップ 1 の race・ステップ 4 の送出中のエラー・キャンセルの扱いは既存方針を
-  変えない（`race_cancel`・`apply_outcome` は現行のまま。詳細はモジュール doc・
-  4 節の対応表を参照）。
+- 排出中の `ws.send()` 失敗: 継続経路・`Ok(WsOutcome::Close)` では外側ループの
+  `InboundEvent::Outbound` 分岐と同じ扱い（4 節の対応表）。`Err` 経路では元の
+  ハンドラエラーを上書きせず `Failed(FailureKind::Handler)` のまま終了する。
+- 排出中の `cancel` 発火: cancel 最優先を維持し、当該 `Future` を打ち切って
+  `handle_cancellation`（`Cancelled`）へ分岐する（どの経路でも同じ）。
+- 終了経路の `close_grace` 超過: 残りを諦め、`Ok(WsOutcome::Close)` は Close フレームを
+  送らずに終了、`Err` は `Failed(FailureKind::Handler)` で終了する。
+
+> **排出方式の改訂経緯（PR #736）**: 当初は両経路とも `try_recv()` を固定回数
+> （容量）行っていたが、満杯キューで `reserve()` 待ちだった `WsSender::close` が排出中に
+> 確定すると回数から漏れ、`close()` が `Ok` を返したのに Close が送られなかった
+> （Cursor Bugbot）。`Empty` まで無制限に取り出す修正は、送り続ける別タスクがいると
+> 終わらず（codex P0）、`Empty` 判定から受信側 drop までの間に確定した Close も失った
+> （codex P1）。回数を調整するのではなく、受信側を閉じてから排出する終了経路と、
+> 閉じずに容量回で打ち切る継続経路に分けることで、両方を構造的に解消した（終了経路が
+> 取りこぼさず有界である根拠は 12 節「終了経路の排出（受信側を閉じてから排出）」）。
 
 上記手順を反映した outcome 別の対応表（4 節「outcome? の Err」行・
 `apply_outcome` 行と整合させたもの）:
 
-> **#710・PR #736 レビュー指摘対応で更新**: 当初この表は `Err(WsHandlerError)`
-> の場合にステップ 3（排出）を「行わない」としていたが、これは
-> `WsSender::close`（イシュー #710）が enqueue した Close 指示・先行する push
-> を無言破棄する経路になっていた。排出は `outcome` の `Ok`/`Err` に関わらず
-> 常に行うへ修正済み（12 節「ハンドラ自身が `close` を呼んだ直後に `Err`/
-> `WsOutcome::Close` を返す場合」参照）。下表は現状の実装を反映する。
-
-| `outcome` | ステップ 3（排出） | ステップ 4（送出） |
+| `outcome` | ステップ 2（排出） | ステップ 3（反映） |
 |---|---|---|
-| `Err(WsHandlerError)` | 行う。Close 指示が見つかれば `SenderClose` で終了（後続のエラー評価は行わない） | 見つからなければ `Failed(FailureKind::Handler)` で終了 |
-| `Ok(WsOutcome::Reply(messages))` | 行う | `messages` を送出、セッション継続 |
-| `Ok(WsOutcome::Close)` | 行う | Close フレームを送出、セッション終了 |
+| `Ok(WsOutcome::Reply(messages))` | 受信側を閉じずに容量回まで。Close 指示が見つかれば `SenderClose` で終了 | `messages` を送出、セッション継続 |
+| `Ok(WsOutcome::Close)` | 受信側を閉じてから `recv()` が `None` まで。Close 指示が見つかれば `SenderClose` で終了 | Close フレームを送出、セッション終了 |
+| `Err(WsHandlerError)` | 同上 | `Failed(FailureKind::Handler)` で終了 |
 
 内側ループがハンドラ完了を待つ間の「cancel（最優先）→ (ハンドラ完了 |
 outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の交互化は不要、
@@ -579,18 +557,18 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
 
 ### 保証（手順から直接導ける 1 文）
 
-**排出ステップ（ステップ 3）の開始時点で、すでに outbound のチャネルへ格納済み
-だった push は、そのハンドラが返す `WsOutcome::Reply`/`Close` の送出（ステップ 4）
-より先に送出される。**
+**継続経路では排出開始時点ですでにチャネルへ格納済みだった push が `Reply` より
+先に送出され、終了経路では受信側を閉じる前に `WsSender::send`/`close` が `Ok` を
+返した項目が（`close_grace` 超過・cancel で打ち切られない限り）すべて Close 送出・
+終了より先に処理される。**
 
-上記以外の push（排出ステップ開始後にチャネルへ格納された push・排出開始時点で
-送信途中だった push を含む）と `Reply`/`Close` の相対順序は**不定**とする。
+これ以外の push と `Reply`/`Close` の相対順序は不定とする。
 
 ### #706 への引き渡し事項（#704 の PR #725 で前倒し実装済み）
 
 上記の手順・保証・不定の 3 点に沿って実装し、テストで固定すること:
 
-- 手順（ステップ 1〜5、エラー・キャンセルの扱い）をそのまま実装する
+- 手順（ステップ 1〜3、エラー・キャンセルの扱い）をそのまま実装する
 - 保証（排出開始時点で格納済みの push が Reply/Close より先に送出される）を
   実接続で検証する。十分条件のテスト観点として、ハンドラ Future が
   `Poll::Ready` を返す**前**に `WsSender::send(...).await` が完了した push
@@ -858,14 +836,41 @@ Ready と観測しうる。
 必ず Close より前に enqueue され」という保証が、enqueue 後にハンドラが
 `Err` で終了する経路では「実際に送出される」ところまで届いていなかった）。
 
-`run_handler_with_outbound_drain` の排出ステップを、ハンドラの `Ok`/`Err`
-判定より**前**に無条件で実行する順序へ変更し、この経路でも push・Close
-指示を先行処理してから（Close が見つかればそこで `SenderClose` として
-終了し、見つからなければ）ハンドラの結果（`Err` を含む）を評価するように
-修正した。`WsSender::send`/`close` が呼び出し元へ `Ok` を返した時点で確定
-した「届ける」契約を、ハンドラ自身の以後の終了結果で覆さない（6 節の
-「保証」を `Err` 経路にも一貫させたもの。詳細は `crates/plugin-websocket/
-src/session.rs` の `run_handler_with_outbound_drain` doc comment を参照）。
+`Err` を `WsOutcome::Close` と同じ終了経路として扱い、ハンドラの結果を
+反映する**前**に送信キューを排出する（6 節の手順 2。Close が見つかればそこで
+`SenderClose` として終了し、見つからなければハンドラエラーで終了する）。
+`WsSender::send`/`close` が呼び出し元へ `Ok` を返した時点で確定した「届ける」
+契約を、ハンドラ自身の以後の終了結果で覆さない。
+
+### 終了経路の排出（受信側を閉じてから排出、PR #736 レビュー指摘対応）
+
+手順（`session.rs` の `flush_outbound`）:
+
+1. `Receiver::close()` で受信側を閉じる。以後の `send`/`close` は permit を得られず
+   即座に失敗し、満杯キューで待機中の呼び出しも解放される。
+2. `recv()` が `None` を返すまで取り出し、`Message` は到着順に送出する（待機・送出は
+   cancel と race）。`Close` を見つけたら `SenderClose` で終了する。
+3. 手順 2 全体を `close_grace` で有界化する。
+
+**保証**: 手順 1 より前に `send`/`close` が `Ok` を返した項目は、`close_grace` 超過・
+cancel で打ち切られない限り、すべて送出（Close 指示は `SenderClose` として処理）される。
+
+それ以外（手順 1 以後に `Err` を返した呼び出し）は送出されない。
+
+この保証と有界性は tokio 1.x の `mpsc` の閉鎖セマンティクスに依拠する（1.53.1 の
+ソースで確認）:
+
+- `Receiver::close()` は semaphore を閉じるだけで、確保済みの `Permit` は無効化しない
+  （`Permit::send` は受信側を閉じた後も成功する）。
+- `try_recv()` は、キューが空でも未返却の permit があれば `Disconnected` ではなく
+  `Empty` を返す。`Empty` で打ち切ると、permit 確保済みで確定直前の Close を取りこぼす。
+- `recv()` は「閉鎖済みかつ未返却 permit ゼロ」になるまで `None` を返さず、permit の
+  確定・drop で起床する。取りこぼしがないため、終了経路はこちらを使う。
+- `WsSender::send`/`close` は permit の確保から `Permit::send` までを `.await` を
+  挟まない同期区間で行う（`handler.rs` の `WsSender::commit`）ため、permit 保持者を
+  待つ時間はその同期区間の残りだけで済む。
+- 閉鎖後は新たな permit が発行されないため、取り出せる件数はチャネル容量以下で
+  構造的に有界になる（送り続ける別タスクがいても終わる）。
 
 ### `is_closed()` の意味の変更
 
@@ -878,8 +883,7 @@ drop されていなくても `true` を返しうる点が、`closed()`（受信
 ### スコープ外（変更しない）
 
 - 既存の `WsOutcome::Close`（`HandlerClose` 経路）がキュー済みの push を捨てる
-  挙動の是正は、本イシューの受け入れ基準に含まれない（親 #708 の別課題として
-  残す）。
+  挙動の是正は本イシューの受け入れ基準に含まれない（#711 で是正済み）。
 - 送信キューの容量設定・`try_send`（#709）は本イシューの対象外。`OutboundItem`・
   `commit` は `try_reserve()` を使う `try_send` をそのまま載せられる形にしてある。
 

@@ -35,6 +35,8 @@ workspace = true
 #   依存グラフに新規クレートは増えない。`sync` feature も `tokio` の
 #   推移依存の範囲内で追加クレートを要求しない（`docs/dep-impact/records.md`
 #   参照）。ソケット I/O 自体はコア（crates/core）が保持する接続から渡される
+#   下限 1.38 は `mpsc::Receiver::max_capacity`（1.38.0 で追加）を
+#   `crate::session::drain_before_reply` が使うため（解決版は変わらない）。
 # - `tokio-tungstenite`: RFC 6455 フレーミング実装への委譲。
 #   `default-features = false` + `handshake` feature のみを有効化する。
 #   `handshake` feature は `Sec-WebSocket-Accept` 導出（`derive_accept_key`）
@@ -45,7 +47,7 @@ workspace = true
 #   継続的に確認する）。
 [dependencies]
 fandhe-backend-http = { workspace = true }
-tokio = { version = "1", default-features = false, features = [
+tokio = { version = "1.38", default-features = false, features = [
   "io-util",
   "sync",
   "time",

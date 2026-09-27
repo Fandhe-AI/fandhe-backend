@@ -1126,8 +1126,8 @@ impl WsSender {
     /// 待たず即座に [`WsSendError`] を返す（`Self::reserve_or_closed` の
     /// doc を参照、PR #736 レビュー指摘対応）。
     ///
-    /// `WsOutcome::Close`（イシュー #711）: ハンドラが `WsOutcome::Close` を
-    /// 返した時点で、`crate::session::flush_outbound` が受信側を
+    /// `WsOutcome::Close`（イシュー #711）: ハンドラが `WsOutcome::Close`（または
+    /// `Err`）を返した時点で、`crate::session::flush_outbound` が受信側を
     /// `close()`（drop ではなく）する。これにより、`ws.close()` の送出完了を
     /// 待たず（応答を読まないクライアント相手では送出自体が長時間ブロック
     /// しうる）、ブロック中の本メソッド呼び出しも即座にこのエラーで
@@ -1161,6 +1161,13 @@ impl WsSender {
     /// 確定した**後**に enqueue しようとした `send` は必ず `Err` になる
     /// （`Self::commit` が同一ロック区間で判定するため、「送信済みなのに
     /// Close の後ろへ積まれて破棄される」という静かなデータ欠落は起こらない）。
+    ///
+    /// 本メソッドが `Ok` を返した Close 指示は、セッションがハンドラの
+    /// `Err`/`WsOutcome::Close` で送信キューを閉じる処理と競合した場合も
+    /// （`close_grace` 超過・世代キャンセルで打ち切られない限り）破棄されず
+    /// 処理される（閉じた後に確保しようとした場合は
+    /// [`WsCloseError::Closed`] を返す。`crate::session::flush_outbound` の
+    /// doc を参照）。
     ///
     /// # 検証（RFC 6455 7.4 節・5.5 節）
     ///
@@ -1346,6 +1353,16 @@ impl WsSender {
     /// 既に close 済みの場合は `permit` を drop して `Err(())` を返す
     /// （呼び出し元が [`WsSendError`]/[`WsCloseError::Closed`] へ変換する）。
     ///
+    /// **同期区間の前提（PR #736 レビュー指摘対応）**: [`Self::send`]/
+    /// [`Self::close`] は `Self::reserve_or_closed` が permit を返した後、
+    /// `.await` を挟まずに本メソッドを呼び、本メソッドも `.await` しない。
+    /// したがって permit の保持は「確保 → `Permit::send`（または drop）」の
+    /// 同期区間に限られる。`crate::session::flush_outbound` は受信側を閉じた
+    /// 後、この未返却 permit による確定を `recv()` で待ってから排出を終える
+    /// ため、閉鎖と競合した確定（`Ok` を返したもの）も取りこぼさない。この
+    /// 前提を崩す変更（permit を保持したまま `.await` する等）を加える場合は、
+    /// 同関数の有界性の根拠も見直すこと。
+    ///
     /// `closing_after` で close 済みへ遷移させた場合は、ロック解放後に
     /// `closed_signal` へブロードキャストし、送信キュー満杯で
     /// `Self::reserve_or_closed` の中で保留中の他 clone を即時に解放する
@@ -1428,8 +1445,9 @@ impl WsSender {
     /// idle timeout 経路では、Close ハンドシェイクのドレインより**前**に
     /// drop されるため、`closed()` はその時点で完了する（[`WsSender::send`]
     /// の doc にある「`close_grace` の満了を待たず解放」と同じ時点）。
-    /// `WsOutcome::Close` 経路（イシュー #711）では、`ws.close()` の送出
-    /// **前**に受信側が `close()` されるため（drop ではないが `Sender::
+    /// `WsOutcome::Close` 経路（イシュー #711）・ハンドラ `Err` 経路では、
+    /// `ws.close()` の送出・セッション終了の**前**に受信側が `close()` される
+    /// ため（drop ではないが `Sender::
     /// closed()` は同様に完了する）、`closed()` も同じく `ws.close()` の
     /// 完了を待たずに完了する。
     ///
@@ -1649,6 +1667,44 @@ impl WsSender {
     #[must_use]
     pub fn is_closed(&self) -> bool {
         *self.closing.lock().unwrap_or_else(PoisonError::into_inner) || self.tx.is_closed()
+    }
+
+    /// テスト専用: [`Self::close`] の permit 確保だけを行い、確定（`commit`）を
+    /// 呼び出し元へ委ねる（PR #736 レビュー指摘の回帰テスト用）。
+    ///
+    /// 本番の [`Self::close`] は permit 確保から `commit` までを同期的に
+    /// （間に `.await` を挟まず）行うが、マルチスレッドランタイムでは
+    /// その同期区間の最中に別スレッドのセッションが受信側を `close()`
+    /// しうる。本ヘルパーと [`Self::commit_close_for_test`] の 2 段に分けることで、
+    /// 「permit 保持中に受信側が閉じられ、その後に Close が確定する」
+    /// 順序を単一スレッドのテストで決定的に再現する。
+    #[cfg(test)]
+    pub(crate) async fn reserve_close_for_test(
+        &self,
+    ) -> Result<mpsc::Permit<'_, OutboundItem>, WsCloseError> {
+        self.reserve_or_closed()
+            .await
+            .map_err(|()| WsCloseError::Closed)
+    }
+
+    /// テスト専用: [`Self::reserve_close_for_test`] で確保した permit で
+    /// Close 指示を確定する（[`Self::close`] の後半と同一の処理）。
+    #[cfg(test)]
+    pub(crate) fn commit_close_for_test(
+        &self,
+        permit: mpsc::Permit<'_, OutboundItem>,
+        code: u16,
+        reason: &str,
+    ) -> Result<(), WsCloseError> {
+        self.commit(
+            permit,
+            OutboundItem::Close {
+                code,
+                reason: reason.to_string(),
+            },
+            true,
+        )
+        .map_err(|()| WsCloseError::Closed)
     }
 }
 
