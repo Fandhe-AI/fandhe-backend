@@ -636,7 +636,8 @@ enum SessionFlow {
     /// 返信送出まで完了し、セッションを継続する（`WsOutcome::Reply`）。
     Continue,
     /// Close ハンドシェイクを開始済みで、セッションを正常終了する
-    /// （`WsOutcome::Close`）。
+    /// （`WsOutcome::Close`）。送信キューは `ws.close()` の前に
+    /// `flush_outbound` で flush 済み（イシュー #711）。
     Closed,
     /// 送出中にキャンセルが発火し、当該 `Future` を打ち切った。呼び出し元は
     /// [`handle_cancellation`] へ分岐する。
@@ -651,9 +652,14 @@ enum SessionFlow {
 /// ため、打ち切り後も `WebSocketStream` 内部のフレーミングバッファ状態
 /// （書き込み位置）は保たれ、後続の Close 送出が破損したバイト列を生まない
 /// （モジュール doc の「ワイヤ安全性」節を参照）。
+///
+/// `outbound` は `WsOutcome::Close` 分岐でのみ使う（[`flush_outbound`] へ
+/// 委譲、イシュー #711）。`WsOutcome::Reply` ではセッションが継続するため
+/// 送信キューを閉じない。
 async fn apply_outcome<S, C>(
     ws: &mut WebSocketStream<S>,
     outcome: WsOutcome,
+    outbound: &mut Option<mpsc::Receiver<WsMessage>>,
     mut cancel: Pin<&mut C>,
 ) -> Result<SessionFlow, SessionFailure>
 where
@@ -673,12 +679,104 @@ where
             Ok(SessionFlow::Continue)
         }
         WsOutcome::Close => {
+            // イシュー #711: Close 送出前に送信キューを flush する。
+            //
+            // 排出ループ（[`run_handler_with_outbound_drain`] ステップ 3）は
+            // ハンドラ完了時点で既に格納済みだった push を
+            // `DEFAULT_OUTBOUND_CAPACITY` 回まで排出済みだが、`outbound` 自体は
+            // まだ `Some` のまま残る。ここで `flush_outbound` が `rx.close()`
+            // を呼んで送信キューを閉じ、以後の新規 `send` を即座に
+            // `WsSendError` で失敗させたうえで、閉鎖時点までにキュー済み
+            // だった残りのメッセージ（別タスクからの push 等）をすべて
+            // 送出してから `ws.close()` へ進む（詳細・上限根拠は
+            // [`flush_outbound`] の doc を参照）。
+            match flush_outbound(ws, outbound, cancel.as_mut()).await? {
+                FlushOutcome::Cancelled => return Ok(SessionFlow::Cancelled),
+                FlushOutcome::Done => {}
+            }
             match race_cancel(cancel.as_mut(), ws.close(None)).await {
                 None => return Ok(SessionFlow::Cancelled),
                 Some(Ok(())) => {}
                 Some(Err(err)) => return Err(SessionFailure::send(err)),
             }
             Ok(SessionFlow::Closed)
+        }
+    }
+}
+
+/// [`flush_outbound`] の戻り値。`SessionFlow` とは意味が異なる（flush 自体の
+/// 完了/中断を表すのみで、セッション継続/終了の判断はここでは行わない）ため
+/// 専用の小さな型として分ける。
+enum FlushOutcome {
+    /// キューを閉じ、閉鎖時点までに格納済みだったメッセージをすべて送出
+    /// した（キューが空、または受信側が全滅した場合を含む）。
+    Done,
+    /// 送出中にキャンセルが発火し、当該 `Future` を打ち切った。呼び出し元は
+    /// [`SessionFlow::Cancelled`] へ分岐する。
+    Cancelled,
+}
+
+/// [`apply_outcome`] の `WsOutcome::Close` 分岐から呼ばれる、Close 送出前の
+/// 送信キュー flush（イシュー #711、親 #708）。
+///
+/// # 手順
+///
+/// 1. `outbound` が `Some(rx)` の場合、まず [`mpsc::Receiver::close`] を
+///    呼ぶ。これにより以後の新規 `send` は [`crate::handler::WsSendError`]
+///    で即座に失敗するようになり、満杯チャネルで待機中だった
+///    [`crate::handler::WsSender::send`] 呼び出しも（tokio の semaphore が
+///    閉じられることで）`ws.close()` の完了を待たず即座に解放される
+///    （cancel/idle 経路が `drop(outbound.take())` で提供する契約と同型。
+///    レスポンスを読まないクライアント相手では `ws.close()` 自体の書き込みが
+///    長時間ブロックしうるため、`ws.close()` の前に閉じることが重要）。
+/// 2. `try_recv()` を `Err` になるまで繰り返し、閉鎖時点で既にキュー済み
+///    だった各メッセージを到着順に `ws.send()` で送出する（各送出は
+///    `cancel` と race させる、イシュー #499 の契約を維持）。`try_recv()` を
+///    使うため待機は発生しない（`close()` 後に取り出せる件数はチャネル
+///    容量までに収まる。`recv().await` を使うと空になった後も
+///    `Disconnected` を待ってブロックしうるため使わない）。
+/// 3. `outbound` が `None`（全 `WsSender` クローンが drop 済み）の場合は
+///    何もしない（捨てられるメッセージは存在しない）。
+///
+/// # 既知の限界（イシュー #711 スコープ外）
+///
+/// `rx.close()` の瞬間と競合する `send`（別スレッドで直前に permit を
+/// 取得していた場合等）は `try_recv()` から見て `Empty` 扱いになり得、
+/// 届かないことがある。Close と並行して送った送信であり許容する。
+/// cancel・アイドルタイムアウト経路は本関数を経由せず `outbound` を
+/// drop するのみで、送信キューを flush しない（既存契約は変えない、
+/// [`run_session_inner`] の doc を参照）。
+///
+/// 親 #708 配下の #710（`WsSender::close`）が同じ「キューを閉じて
+/// 排出してから送出する」手順を必要とする場合、本関数の可視性を
+/// `pub(crate)` へ広げて再利用できる（現時点の呼び出し元は
+/// [`apply_outcome`] の 1 箇所のみのため、`FlushOutcome`/`SessionFailure`
+/// との可視性不整合を避けてモジュール内 `async fn` に留める）。
+async fn flush_outbound<S, C>(
+    ws: &mut WebSocketStream<S>,
+    outbound: &mut Option<mpsc::Receiver<WsMessage>>,
+    mut cancel: Pin<&mut C>,
+) -> Result<FlushOutcome, SessionFailure>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    C: Future<Output = ()>,
+{
+    let Some(rx) = outbound.as_mut() else {
+        return Ok(FlushOutcome::Done);
+    };
+    rx.close();
+    loop {
+        match rx.try_recv() {
+            Ok(msg) => {
+                let frame = to_tungstenite_message(msg);
+                match race_cancel(cancel.as_mut(), ws.send(frame)).await {
+                    None => return Ok(FlushOutcome::Cancelled),
+                    Some(Ok(())) => {}
+                    Some(Err(err)) => return Err(SessionFailure::send(err)),
+                }
+            }
+            Err(mpsc::error::TryRecvError::Empty)
+            | Err(mpsc::error::TryRecvError::Disconnected) => return Ok(FlushOutcome::Done),
         }
     }
 }
@@ -796,6 +894,14 @@ where
     // 到着順に送出する。`Receiver::len()` は使わない（bounded mpsc の
     // 実装依存の同期精度に左右されず、呼び出し回数上限で足りるため。
     // `handler.rs` の該当コメント・設計 6 節ステップ 3 を参照）。
+    //
+    // outcome が `WsOutcome::Close` の場合、本ステップの直後に呼ぶ
+    // `apply_outcome` がさらに `flush_outbound`（イシュー #711）を通し、
+    // 受信側を `close()` してから残り（本ステップの対象外である、`on_open`
+    // で保持したクローンを別タスクが独立に送信し続けているケース）を
+    // 空になるまで排出する。本ステップは「ハンドラ自身の実行中に送信
+    // されたもの」を対象とし、両者は排他的に働くわけではなく段階的に
+    // 積み上がる（本ステップが対象外にした分を `flush_outbound` が拾う）。
     if let Some(rx) = outbound.as_mut() {
         for _ in 0..DEFAULT_OUTBOUND_CAPACITY {
             match rx.try_recv() {
@@ -816,7 +922,7 @@ where
         }
     }
 
-    apply_outcome(ws, outcome, cancel).await
+    apply_outcome(ws, outcome, outbound, cancel).await
 }
 
 /// アイドルタイムアウト発火時の切断シーケンス（正常な Close ハンドシェイク、
@@ -1988,5 +2094,301 @@ mod tests {
             std::io::ErrorKind::BrokenPipe,
         )));
         assert!(matches!(io.reason, CloseReason::Failed(FailureKind::Io)));
+    }
+
+    /// イシュー #711 の回帰テスト群（`flush_outbound`）。
+    ///
+    /// `tests/handler_push_ordering_e2e.rs` の T3
+    /// （`handler_push_beyond_capacity_arrives_before_close`）は既に
+    /// 「`on_message` 内で push してから `WsOutcome::Close` を返す」経路で
+    /// push が Close フレームより先に届くことを検証済みである（イシュー
+    /// #706／PR #725 の `run_handler_with_outbound_drain` ステップ 3 が
+    /// ハンドラ完了直後の排出を担うため、本イシュー着手前から成立していた
+    /// 性質）。本モジュールのテストは、そのステップ 3 が対象としない
+    /// ケース（`run_handler_with_outbound_drain` の外、すなわち `on_open` で
+    /// 保持した `WsSender` クローンを別タスクが独立に保持し続ける場合の
+    /// 満杯チャネル解放・継続的な push の有界終了）に絞る。
+    mod flush_outbound_tests {
+        use super::*;
+
+        /// 受け入れ基準（設計 2.1）: `on_message` 内で push してから
+        /// `WsOutcome::Close` を返した場合、push がすべて Close フレームより
+        /// 先に届き、`run_session` が `Ok(())` で終わること。
+        ///
+        /// 上記モジュール doc が述べるとおり `run_handler_with_outbound_drain`
+        /// ステップ 3 により本イシュー着手前から成立する性質だが、
+        /// `flush_outbound` 導入後も回帰しないことを固定するピンとして
+        /// `run_session` を直接駆動する本モジュールの流儀で維持する。
+        #[tokio::test]
+        async fn queued_pushes_are_flushed_before_close() {
+            struct PushThenCloseHandler;
+
+            impl handler::WsMessageHandler for PushThenCloseHandler {
+                fn name(&self) -> &'static str {
+                    "push-then-close"
+                }
+                fn on_message(
+                    &self,
+                    _msg: WsMessage,
+                ) -> futures_util::future::BoxFuture<'_, Result<WsOutcome, WsHandlerError>>
+                {
+                    Box::pin(async move { Ok(WsOutcome::Close) })
+                }
+                fn on_message_with_ctx<'a>(
+                    &'a self,
+                    ctx: &'a WsConnContext,
+                    _msg: WsMessage,
+                ) -> futures_util::future::BoxFuture<'a, Result<WsOutcome, WsHandlerError>>
+                {
+                    Box::pin(async move {
+                        for i in 0..3 {
+                            ctx.sender()
+                                .send(WsMessage::Text(format!("push-{i}")))
+                                .await
+                                .expect("push should succeed before Close");
+                        }
+                        Ok(WsOutcome::Close)
+                    })
+                }
+            }
+
+            let mut config = test_config();
+            config.handler = std::sync::Arc::new(PushThenCloseHandler);
+            let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+            let (server_side, client_side) = tokio::io::duplex(1 << 16);
+            let (tx, rx) = handler::channel(4);
+            let conn_ctx = test_conn_ctx(tx);
+
+            let session_handle = tokio::spawn(async move {
+                let cancel = std::future::pending::<()>();
+                let mut cancel = std::pin::pin!(cancel);
+                run_session(
+                    server_side,
+                    Vec::new(),
+                    config,
+                    cancel.as_mut(),
+                    Some(rx),
+                    &conn_ctx,
+                )
+                .await
+            });
+
+            let mut client =
+                WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+            client
+                .send(Message::Text("trigger".into()))
+                .await
+                .expect("client send should succeed");
+
+            for i in 0..3 {
+                let msg = tokio::time::timeout(Duration::from_secs(2), client.next())
+                    .await
+                    .expect("push should arrive within timeout")
+                    .expect("stream should not end early")
+                    .expect("frame should not error");
+                assert_eq!(
+                    msg,
+                    Message::Text(format!("push-{i}").into()),
+                    "pushes must arrive in order before the close frame"
+                );
+            }
+
+            let closing = tokio::time::timeout(Duration::from_secs(2), client.next())
+                .await
+                .expect("close frame should arrive after all pushes")
+                .expect("stream should not end early")
+                .expect("frame should not error");
+            assert!(
+                matches!(closing, Message::Close(_)),
+                "expected a close frame after all pushes, got {closing:?}"
+            );
+
+            drop(client);
+            let result = tokio::time::timeout(Duration::from_secs(2), session_handle)
+                .await
+                .expect("session should end within timeout")
+                .expect("session task should not panic");
+            assert!(result.is_ok(), "session should end normally: {result:?}");
+        }
+
+        /// 受け入れ基準（設計 2.1 手順 1）: `on_open` で保持した `WsSender`
+        /// クローンを別タスクが独立に保持し、満杯チャネルで `send` に
+        /// ブロックしている状態でハンドラが `WsOutcome::Close` を返した
+        /// とき、`flush_outbound` の `rx.close()` により待機中の `send` が
+        /// `close_grace`（本テストでは意図的に長め）の満了を待たず
+        /// 即座に [`WsSendError`] で解放されること。バッファ済みだった
+        /// 1 件目 (`"first"`) はクライアントへ届くことも確認する
+        /// （`rx.close()` は排出中のメッセージを破棄しない）。
+        #[tokio::test]
+        async fn blocked_sender_is_released_when_close_flushes() {
+            struct CloseImmediatelyHandler;
+            impl handler::WsMessageHandler for CloseImmediatelyHandler {
+                fn name(&self) -> &'static str {
+                    "close-immediately"
+                }
+                fn on_message(
+                    &self,
+                    _msg: WsMessage,
+                ) -> futures_util::future::BoxFuture<'_, Result<WsOutcome, WsHandlerError>>
+                {
+                    Box::pin(async move { Ok(WsOutcome::Close) })
+                }
+            }
+
+            let mut config = test_config();
+            config.handler = std::sync::Arc::new(CloseImmediatelyHandler);
+            // ドレイン待ちを長めに取り、「即座に解放される」ことと
+            // 「close_grace 満了まで待たされる」ことを明確に区別できるように
+            // する（既存テスト `blocked_send_is_released_immediately_on_
+            // cancellation` と同じ構成）。
+            config.close_grace = Duration::from_secs(2);
+            let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+            let (server_side, client_side) = tokio::io::duplex(1 << 16);
+            let (tx, rx) = handler::channel(1);
+            tx.send(WsMessage::Text("first".to_string()))
+                .await
+                .expect("first send fills capacity 1 without blocking");
+
+            let tx2 = tx.clone();
+            let blocked =
+                tokio::spawn(async move { tx2.send(WsMessage::Text("second".to_string())).await });
+
+            let conn_ctx = test_conn_ctx(tx);
+
+            let session_handle = tokio::spawn(async move {
+                let cancel = std::future::pending::<()>();
+                let mut cancel = std::pin::pin!(cancel);
+                run_session(
+                    server_side,
+                    Vec::new(),
+                    config,
+                    cancel.as_mut(),
+                    Some(rx),
+                    &conn_ctx,
+                )
+                .await
+            });
+
+            let mut client =
+                WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+            client
+                .send(Message::Text("trigger".into()))
+                .await
+                .expect("client send should succeed");
+
+            let blocked_result = tokio::time::timeout(Duration::from_millis(500), blocked)
+                .await
+                .expect(
+                    "blocked WsSender::send should be released well before close_grace \
+                     (2s) elapses",
+                )
+                .expect("task should not panic");
+            assert_eq!(
+                blocked_result,
+                Err(WsSendError),
+                "send should fail once flush_outbound closes the receiver"
+            );
+
+            let first = tokio::time::timeout(Duration::from_secs(2), client.next())
+                .await
+                .expect("buffered first message should still be flushed")
+                .expect("stream should not end early")
+                .expect("frame should not error");
+            assert_eq!(
+                first,
+                Message::Text("first".into()),
+                "the message already buffered before close must not be dropped"
+            );
+
+            drop(client);
+            let session_result = tokio::time::timeout(Duration::from_secs(5), session_handle)
+                .await
+                .expect("run_session should finish within close_grace bound")
+                .expect("session task should not panic");
+            assert!(
+                session_result.is_ok(),
+                "session should end normally via HandlerClose: {session_result:?}"
+            );
+        }
+
+        /// 受け入れ基準（DoS 回帰防止、設計 7 節）: 満杯チャネルへ継続的に
+        /// push し続けるバックグラウンドタスクが存在しても、ハンドラが
+        /// `WsOutcome::Close` を返した時点で `flush_outbound` が `rx.close()`
+        /// を呼ぶため、セッションは有界時間内に終わること（無制限に
+        /// バッファする・無期限に待つことがない）。
+        #[tokio::test]
+        async fn continuous_pusher_does_not_prevent_close() {
+            struct CloseImmediatelyHandler;
+            impl handler::WsMessageHandler for CloseImmediatelyHandler {
+                fn name(&self) -> &'static str {
+                    "close-immediately-under-load"
+                }
+                fn on_message(
+                    &self,
+                    _msg: WsMessage,
+                ) -> futures_util::future::BoxFuture<'_, Result<WsOutcome, WsHandlerError>>
+                {
+                    Box::pin(async move { Ok(WsOutcome::Close) })
+                }
+            }
+
+            let mut config = test_config();
+            config.handler = std::sync::Arc::new(CloseImmediatelyHandler);
+            config.close_grace = Duration::from_secs(2);
+            let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+            let (server_side, client_side) = tokio::io::duplex(1 << 16);
+            let (tx, rx) = handler::channel(4);
+            let conn_ctx = test_conn_ctx(tx.clone());
+
+            let pusher = tokio::spawn(async move {
+                let mut i: u64 = 0;
+                loop {
+                    if tx.send(WsMessage::Text(format!("push-{i}"))).await.is_err() {
+                        break;
+                    }
+                    i += 1;
+                }
+            });
+
+            let session_handle = tokio::spawn(async move {
+                let cancel = std::future::pending::<()>();
+                let mut cancel = std::pin::pin!(cancel);
+                run_session(
+                    server_side,
+                    Vec::new(),
+                    config,
+                    cancel.as_mut(),
+                    Some(rx),
+                    &conn_ctx,
+                )
+                .await
+            });
+
+            let mut client =
+                WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+            client
+                .send(Message::Text("trigger".into()))
+                .await
+                .expect("client send should succeed");
+
+            // クライアントは受信を続け、`ws.send()` 自体が duplex 輻輳で
+            // ブロックしないようにする（本テストが検証したい「継続 push が
+            // Close を無期限に遅らせないこと」とは別種の遅延を混入させない
+            // ため）。
+            let drain_client =
+                tokio::spawn(async move { while let Some(Ok(_)) = client.next().await {} });
+
+            let result = tokio::time::timeout(Duration::from_secs(1), session_handle)
+                .await
+                .expect("session should end within a bounded time despite continuous pushes")
+                .expect("session task should not panic");
+            assert!(result.is_ok(), "session should end normally: {result:?}");
+
+            let _ = tokio::time::timeout(Duration::from_secs(2), pusher).await;
+            let _ = tokio::time::timeout(Duration::from_secs(2), drain_client).await;
+        }
     }
 }

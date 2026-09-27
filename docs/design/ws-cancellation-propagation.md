@@ -447,7 +447,11 @@ Future 跨ぎで保持する挙動に依拠する）。
 `WsOutcome::Reply` の各 `ws.send`・`WsOutcome::Close` の `ws.close` を
 `race_cancel` で包む。既存の `handle_cancellation` → `close_and_drain`
 （`CLOSE_GRACE` 有界化・`ConnectionClosed`/`AlreadyClosed` 許容）は無変更で
-共有する。
+共有する。イシュー #711 で `WsOutcome::Close` の送出は「outbound の flush
+（`flush_outbound`。各送出は cancel と race）→ `ws.close`」の順に変更した
+（送信キューを閉じてから既存キュー分をすべて送出し、その後に Close
+フレームを送出する。cancel/idle 経路の drop のみ・flush なしという既存契約は
+変えない）。
 
 ## 11. WS 以外への水平展開（イシュー #498）
 
