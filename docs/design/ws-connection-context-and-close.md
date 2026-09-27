@@ -534,8 +534,8 @@ Err・Close・別タスク・スナップショット前後の派生ケースを
   送らずに終了、`Err` は `Failed(FailureKind::Handler)` で終了する。排出中に Close 指示が
   見つかった場合、その Close ハンドシェイクは排出と同じ期限を引き継ぐ（排出・Close 送出・
   応答待ちの合計が `close_grace` 以内）。
-- close 確定後の push・返信の送出: 12 節「close 確定後の有界化」の期限で打ち切り、
-  `SenderClose` で終了する（close 未確定時の送出は期限なしのまま）。
+- close 要求後の push・返信の送出: 12 節「close 要求後の有界化」の期限で打ち切り、
+  `SenderClose` で終了する（close を要求していない間の送出は期限なしのまま）。
 
 > **排出方式の改訂経緯（PR #736）**: 当初は両経路とも `try_recv()` を固定回数
 > （容量）行っていたが、満杯キューで `reserve()` 待ちだった `WsSender::close` が排出中に
@@ -580,7 +580,7 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
 ロック区間でのフラグ更新を指す（12 節と同じ）。
 
 継続経路で排出開始後に格納された push と `Reply` の相対順序のみ不定とする（判定点より
-後に確定した close では `Reply` が Close より先に送出されうるが、close 確定の観測から
+後に確定した close では `Reply` が Close より先に送出されうるが、close 要求の観測から
 `close_grace` で打ち切る）。
 
 ### #706 への引き渡し事項（#704 の PR #725 で前倒し実装済み）
@@ -804,7 +804,8 @@ impl WsMessageHandler for CdpHandler {
   reason } }` に統一し、`send`/`close` の両方が同一の bounded mpsc へ enqueue
   する（2 本の別チャネルに分けてマージ順序を別途保証するより、単一チャネルの
   FIFO 特性だけで順序保証を得る方が構造的に単純）。
-- `closing: Arc<std::sync::Mutex<bool>>` を全 clone で共有し、`commit`（`tx.
+- `closing: Arc<std::sync::Mutex<CloseState>>`（`closing` フラグと確定前の close
+  要求数。後者は 12 節「close 要求後の有界化」）を全 clone で共有し、`commit`（`tx.
   reserve()`/`try_reserve()` で確保した `Permit` を受け取る非公開ヘルパー）が
   「フラグ確認 → （close 呼び出しなら）フラグを立てる → `Permit::send`（同期）」
   の 3 手順を同一ロック区間で行う。ロック保持中に `.await` しない
@@ -847,7 +848,7 @@ Close 確定後に enqueue を試みた `send` は必ず `Err` になる。
   （`WsSender::close_committed`）、`WsOutcome::Close`・ハンドラ `Err` では送信キューの
   封鎖（同じロック区間）である。確認を重ねるのではなくロックで判定点を 1 つに定める
   ことで、別スレッドとの競合でも境界が一意になる。判定点より後に確定した場合、`Reply`
-  は Close より先に送出されうる（close 確定の観測から `close_grace` で打ち切る）。
+  は Close より先に送出されうる（close 要求の観測から `close_grace` で打ち切る）。
 
 ### ハンドラ自身が `close` を呼んだ直後に `Err`/`WsOutcome::Close` を返す場合（PR #736 レビュー指摘対応）
 
@@ -922,28 +923,36 @@ cancel・idle timeout・クライアント Close・EOF・受信/送信エラー�
 
 `on_close` の呼び出し回数（ちょうど 1 回）と `CloseReason` の分類は変えない。
 
-### close 確定後の有界化（Cursor Bugbot 指摘対応、PR #736）
+### close 要求後の有界化（Cursor Bugbot 指摘対応、PR #736）
 
-`close()` が確定しても、キューには先行する push が残りうる。受信を止めたクライアント
-相手ではその送出が止まり、Close ハンドシェイクに到達しなかった。
+`close()` を呼んでも、キューには先行する push が残りうる。受信を止めたクライアント相手
+ではその送出が止まり、Close ハンドシェイクに到達しなかった。さらにキューが満杯だと
+`close()` は空きを待って確定もできず、期限の起点を確定に置くと無期限に止まる
+（`on_message` 内で `close().await` した場合など）。このため起点は確定ではなく要求とする。
 
-手順（`session.rs`）:
+手順（`handler.rs`・`session.rs`）:
 
-1. `CloseBound` が `WsSender` の close 確定シグナルを購読し、確定を初めて観測した時刻
-   から `close_grace` 後を期限とする。
-2. push・返信の送出（`send_bounded`。外側ループ・ハンドラ実行中・継続経路の排出・
+1. `WsSender::close` は検証を通った時点で、`reserve` の前に `closing` と同じロックで
+   確定前の要求数を増やし、要求シグナル（`close_request_signal`、`closed_signal` とは
+   別）を送る。確定したら、または呼び出しの future が drop されたら要求数を減らし、
+   「確定前の要求が残っている、または `closing`」を送り直す（`CloseRequest` ガード）。
+   確定の定義・Reply の判定点・封鎖との関係は変えない。
+2. `CloseBound` が要求シグナルを購読し、要求を初めて観測した時刻から `close_grace` 後を
+   期限とする（要求がすべて取り下げられたら期限を解除する）。
+3. push・返信の送出（`send_bounded`。外側ループ・ハンドラ実行中・継続経路の排出・
    `WsOutcome::Reply`）は、cancel（最優先）・送出・期限の順で race する。期限を過ぎたら
    `ws` に書き込まずに drop し、`close_and_drain` の期限超過と同じく `SenderClose` +
-   `Ok(())` で終了する。
-3. Close 指示を取り出したら、同じ期限で `close_and_drain` を行う。終了経路の排出中に
+   `Ok(())` で終了する（確定前でもこの分類。まだ待機中の `close()` は封鎖により
+   `Err(Closed)` を返す）。
+4. Close 指示を取り出したら、同じ期限で `close_and_drain` を行う。終了経路の排出中に
    見つかった場合は、排出の期限と早い方を使う。
 
-**保証**: `close()` が `Ok` を返したら、セッションは close 確定の観測（通常は close 確定の
-直後）から `close_grace` 以内に Close ハンドシェイクを終えるか接続を打ち切る。その間に
-世代キャンセル・idle timeout が先に発火した場合は、その経路の契約（発火時点から
-`close_grace`、終了理由 `Cancelled`/`IdleTimeout`）に従う。
+**保証**: `close()` を呼んだら、セッションは要求の観測（通常は呼び出しの直後）から
+`close_grace` 以内に Close ハンドシェイクを終えるか接続を打ち切る。その間に世代キャンセル・
+idle timeout が先に発火した場合は、その経路の契約（発火時点から `close_grace`、終了理由
+`Cancelled`/`IdleTimeout`）に従う。
 
-close 未確定時の push・返信の送出には期限を設けない（既存の挙動）。
+close を要求していない間の push・返信の送出には期限を設けない（既存の挙動）。
 
 送出中の future を drop しても安全な根拠: tokio-tungstenite 0.30 の `Sink::start_send`
 はフレームを丸ごと tungstenite の書き込みバッファへ積み、`poll_flush` がそれを書き出す

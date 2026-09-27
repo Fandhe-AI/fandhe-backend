@@ -1041,7 +1041,7 @@ pub(crate) fn default_handler() -> Arc<dyn WsMessageHandler> {
 /// 分けると、消費側でのマージ順序を別途保証する必要が生じる。`crate::session`
 /// の消費側は `OutboundItem` を分岐して処理する）。
 ///
-/// `closing`（`Arc<Mutex<bool>>`、全 clone で共有）は「以後の enqueue を拒否
+/// `closing`（`Arc<Mutex<CloseState>>` の `closing` フラグ、全 clone で共有）は「以後の enqueue を拒否
 /// するか（[`Self::close`] の確定済み、またはセッションの終了処理で送信キューを
 /// 封鎖済み）」の単一の真実源であり、`Self::commit` が enqueue 判定と同一ロック区間で
 /// 読み書きすることで、「フラグ確認 → enqueue」の間に別タスクの `close` が
@@ -1067,11 +1067,17 @@ pub(crate) fn default_handler() -> Arc<dyn WsMessageHandler> {
 #[derive(Clone)]
 pub struct WsSender {
     tx: mpsc::Sender<OutboundItem>,
-    /// 以後の enqueue を拒否するかどうかの単一の真実源（全 clone で共有）。
-    /// [`Self::close`] の確定時、またはセッションが終了経路で送信キューを
-    /// 封鎖した時（`Self::seal_for_session`）に true になる（`Self::commit`
-    /// の doc を参照）。
-    closing: Arc<Mutex<bool>>,
+    /// close 状態（全 clone で共有）。`closing` は以後の enqueue を拒否する
+    /// かどうかの単一の真実源で、[`Self::close`] の確定時、またはセッションが
+    /// 終了経路で送信キューを封鎖した時（`Self::seal_for_session`）に true に
+    /// なる（`Self::commit` の doc を参照）。`pending_close_requests` は確定前の
+    /// close 要求の数（`CloseRequest` を参照）。
+    closing: Arc<Mutex<CloseState>>,
+    /// close 要求（確定前を含む）の有無を `crate::session::CloseBound` へ伝える
+    /// watch シグナル（Cursor Bugbot 指摘対応）。値は「確定前の要求がある、
+    /// または `closing`」で、`closing` と同じロック区間で計算してから送る。
+    /// `send_replace` で送るため受信側の生存を要しない。
+    close_request_signal: Arc<watch::Sender<bool>>,
     /// close 確定・セッションの封鎖を待機中の呼び出しへ伝える watch シグナル
     /// （[`Self`] の doc を参照）。`watch::Sender::send` は `&self` で呼べるため
     /// `Arc` 越しに全 clone から共有できる。
@@ -1082,6 +1088,52 @@ pub struct WsSender {
     /// `closed_signal.subscribe()` で作る一時 `Receiver` が担うため、
     /// 本フィールド自身の値は読まない）。
     _closed_signal_anchor: watch::Receiver<bool>,
+}
+
+/// [`WsSender`] の close 状態（`closing` の `Mutex` で保護する）。
+#[derive(Debug, Default)]
+struct CloseState {
+    /// 以後の enqueue を拒否する（close 確定済み、またはセッションが封鎖済み）。
+    closing: bool,
+    /// `reserve` 待ちなど、確定前の [`WsSender::close`] 呼び出しの数。
+    pending_close_requests: usize,
+}
+
+/// [`WsSender::close`] の要求を、確定するまで（または呼び出しの future が
+/// drop されるまで）記録する RAII ガード（Cursor Bugbot 指摘対応）。
+///
+/// 送信キューが満杯だと `close()` は空きを待って確定できず、受信を止めた
+/// クライアント相手ではその間セッションが先行 push の送出で止まる。セッションが
+/// `close_grace` を数え始められるよう、`reserve` の前に要求を記録して
+/// `close_request_signal` を送る。drop 時に要求を取り下げ、「確定前の要求が
+/// 残っている、または `closing`」を送り直す（確定済みなら true のまま）。
+struct CloseRequest<'a>(&'a WsSender);
+
+impl<'a> CloseRequest<'a> {
+    fn new(sender: &'a WsSender) -> Self {
+        sender
+            .closing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pending_close_requests += 1;
+        sender.close_request_signal.send_replace(true);
+        Self(sender)
+    }
+}
+
+impl Drop for CloseRequest<'_> {
+    fn drop(&mut self) {
+        let active = {
+            let mut state = self
+                .0
+                .closing
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            state.pending_close_requests = state.pending_close_requests.saturating_sub(1);
+            state.pending_close_requests > 0 || state.closing
+        };
+        self.0.close_request_signal.send_replace(active);
+    }
 }
 
 /// [`WsSender`] の送信キューを流れる内部アイテム（`pub(crate)`、イシュー
@@ -1213,14 +1265,21 @@ impl WsSender {
     /// ワイヤ上の送出完了を待たない（[`Self::send`] と同型のバック
     /// プレッシャ契約。チャネルが満杯なら受信側が消費するまで待機する）。
     ///
-    /// 本メソッドが `Ok` を返した後、セッションは close の確定を観測した
-    /// 時点（通常は close 確定の直後）から `WebSocketConfig::close_grace`
+    /// 本メソッドを呼ぶと、検証を通った時点で close の要求が記録される
+    /// （送信キューが満杯で確定を待っている間も含む）。セッションは要求を
+    /// 観測した時点（通常は呼び出しの直後）から `WebSocketConfig::close_grace`
     /// （既定 10 秒）以内に、先行する push の送出・Close フレームの送出・応答
     /// 待ちを終えるか、接続を打ち切る（クライアントが受信を止めていても有界。
     /// 打ち切った場合の終了理由も `CloseReason::SenderClose`）。ただし、その
     /// 間に世代キャンセル・idle timeout が先に発火した場合は、その経路の契約
     /// （発火時点から `close_grace`、終了理由 `Cancelled`/`IdleTimeout`）に従う。
-    /// close 未確定時の push の送出には期限を設けない。
+    /// close を要求していない間の push の送出には期限を設けない。
+    ///
+    /// 確定前に `close_grace` を超えてセッションが打ち切られた場合、本メソッドは
+    /// （呼び出しがまだ待機中なら）[`WsCloseError::Closed`] を返す（ハンドラの
+    /// 中から呼んだ場合はハンドラの future ごと drop される）。確定前に本メソッドの
+    /// future を drop すると要求は取り下げられ、ほかに要求がなければ期限も解除
+    /// される。
     ///
     /// ワイヤ上の完了（セッション終了）を待ちたい場合の代替として
     /// [`Self::closed`] があるが、本メソッドが起こす `SenderClose` 経路
@@ -1244,7 +1303,7 @@ impl WsSender {
     /// され送出されない**（ハンドラの実行中か完了後の送信キュー排出中かを
     /// 問わない。RFC 6455 5.5.1 節: Close フレームの後にデータフレームを送れない
     /// ため）。判定より後に確定した場合、`Reply` は Close より先に送出されうる
-    /// （close 確定の観測から `close_grace` で打ち切る）。呼び出し後に返す値に意味を持たせ
+    /// （close 要求の観測から `close_grace` で打ち切る）。呼び出し後に返す値に意味を持たせ
     /// たい場合は、本メソッドを `on_open` 等から `tokio::spawn` した別
     /// タスクから呼ぶ構成にする（ハンドラ自身の戻り値と競合しない）。
     ///
@@ -1253,7 +1312,7 @@ impl WsSender {
     /// （`on_open` で spawn したタスクから push を数件送ったあと
     /// `close(4000, "bye")` を呼ぶ。クライアントは push を順に受け取り、
     /// 最後に code 4000・reason "bye" の Close を受け取る。クライアントが
-    /// 受信を止めていた場合も、セッションは close 確定から `close_grace`
+    /// 受信を止めていた場合も、セッションは close の要求から `close_grace`
     /// 以内に終わる。）
     ///
     /// ```
@@ -1360,6 +1419,9 @@ impl WsSender {
         if reason.len() > MAX_CLOSE_REASON_BYTES {
             return Err(WsCloseError::ReasonTooLong);
         }
+        // 検証を通った要求を `reserve` の前に記録する（確定まで、または本
+        // future が drop されるまで。`CloseRequest` の doc を参照）。
+        let _request = CloseRequest::new(self);
         let permit = self
             .reserve_or_closed()
             .await
@@ -1407,13 +1469,13 @@ impl WsSender {
         closing_after: bool,
     ) -> Result<(), ()> {
         {
-            let mut closed = self.closing.lock().unwrap_or_else(PoisonError::into_inner);
-            if *closed {
+            let mut state = self.closing.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.closing {
                 drop(permit);
                 return Err(());
             }
             if closing_after {
-                *closed = true;
+                state.closing = true;
             }
             permit.send(item);
         }
@@ -1436,7 +1498,10 @@ impl WsSender {
     /// ロック保持中は `.await` せず、ほかのロックも取らない（デッドロックの
     /// 余地がない）。何度呼んでもよい。
     pub(crate) fn seal_for_session(&self) {
-        *self.closing.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        self.closing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .closing = true;
         // 受信側は `_closed_signal_anchor` が最低 1 個生存を保証するため
         // 送信は必ず成功する（戻り値は無視してよい）。
         let _ = self.closed_signal.send(true);
@@ -1453,17 +1518,21 @@ impl WsSender {
     /// （封鎖する防御分岐では受信側を無効化する）ため、`true` は `close()` の
     /// 確定と判定してよい。
     pub(crate) fn close_committed(&self) -> bool {
-        *self.closing.lock().unwrap_or_else(PoisonError::into_inner)
+        self.closing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .closing
     }
 
-    /// close 確定（またはセッションの封鎖）を観測する watch 受信側を返す
+    /// close 要求（確定前を含む）の有無を観測する watch 受信側を返す
     /// （`pub(crate)`、`crate::session` 専用。Cursor Bugbot 指摘対応）。
-    /// セッションは close 確定を観測した時点から `close_grace` 以内に Close
+    /// セッションは要求を観測した時点から `close_grace` 以内に Close
     /// ハンドシェイクを終えるか接続を打ち切る（`crate::session::CloseBound`）。
-    /// 返り値は購読時点の値を既読扱いにするため、呼び出し側は `borrow()` で
-    /// 現在値を確かめてから `changed()` を待つこと。
-    pub(crate) fn subscribe_closing(&self) -> watch::Receiver<bool> {
-        self.closed_signal.subscribe()
+    /// 確定前の要求がすべて取り下げられる（`close()` の future が drop される）と
+    /// `false` に戻る。返り値は購読時点の値を既読扱いにするため、呼び出し側は
+    /// `borrow()` で現在値を確かめてから `changed()` を待つこと。
+    pub(crate) fn subscribe_close_request(&self) -> watch::Receiver<bool> {
+        self.close_request_signal.subscribe()
     }
 
     /// [`Self::send`]/[`Self::close`] が使う共通の `reserve()` ラッパー
@@ -1741,7 +1810,11 @@ impl WsSender {
     /// ```
     #[must_use]
     pub fn is_closed(&self) -> bool {
-        *self.closing.lock().unwrap_or_else(PoisonError::into_inner) || self.tx.is_closed()
+        self.closing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .closing
+            || self.tx.is_closed()
     }
 
     /// テスト専用: 送信キューの現在の空き容量（`mpsc::Sender::capacity`）。
@@ -1865,7 +1938,8 @@ pub(crate) fn channel(capacity: usize) -> (WsSender, mpsc::Receiver<OutboundItem
     (
         WsSender {
             tx,
-            closing: Arc::new(Mutex::new(false)),
+            closing: Arc::new(Mutex::new(CloseState::default())),
+            close_request_signal: Arc::new(watch::channel(false).0),
             closed_signal: Arc::new(closed_tx),
             _closed_signal_anchor: closed_rx,
         },
@@ -2172,6 +2246,52 @@ mod tests {
             .await
             .expect("waiter should be woken within timeout")
             .unwrap();
+    }
+
+    /// Cursor Bugbot 指摘対応: `close()` は `reserve` の前に要求を記録し
+    /// （満杯キューで確定を待っている間も要求シグナルは true）、確定前に future が
+    /// drop されると要求を取り下げる。確定後は true のまま。
+    #[tokio::test]
+    async fn close_request_is_recorded_before_reserve_and_withdrawn_on_drop() {
+        use futures_util::FutureExt;
+
+        let (sender, mut rx) = channel(1);
+        let requested = sender.subscribe_close_request();
+        sender
+            .send(WsMessage::Text("fill".to_string()))
+            .await
+            .expect("send within capacity should succeed");
+        assert!(!*requested.borrow(), "no close has been requested yet");
+
+        {
+            let mut pending = Box::pin(sender.close(4000, "bye"));
+            assert!(
+                (&mut pending).now_or_never().is_none(),
+                "close() must wait for a free slot while the queue is full"
+            );
+            assert!(
+                *requested.borrow(),
+                "the request must be visible before close() is committed"
+            );
+        }
+        assert!(
+            !*requested.borrow(),
+            "dropping close() before it commits must withdraw the request"
+        );
+        assert!(
+            !sender.close_committed(),
+            "the withdrawn close must not commit"
+        );
+
+        rx.recv().await.expect("the queued push should be received");
+        sender
+            .close(4000, "bye")
+            .await
+            .expect("close should succeed");
+        assert!(
+            *requested.borrow(),
+            "a committed close keeps the request signal set"
+        );
     }
 
     /// 受け入れ基準（イシュー #710）: RFC 6455 7.4 節・IANA 登録で送信が許される
