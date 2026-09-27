@@ -47,10 +47,16 @@ pub enum WsOutcome {
     ///
     /// 送信キューの flush（イシュー #711）: `on_message`（`on_message_with_ctx`）
     /// 内で本 variant を返す前に [`WsSender::send`] で push したメッセージは、
-    /// Close フレームより必ず先に送出される。Close 処理の開始時点で送信
-    /// キューは閉じられ（`crate::session::flush_outbound`）、以後の
+    /// **`WebSocketConfig::close_grace`（既定 10 秒）の期限内に送出できた
+    /// 範囲で** Close フレームより先に送出される。Close 処理の開始時点で
+    /// 送信キューは閉じられ（`crate::session::flush_outbound`）、以後の
     /// `WsSender::send` 呼び出しはすべて [`WsSendError`] で失敗する（同じ
-    /// クローンを保持する別タスクからの送信も対象）。
+    /// クローンを保持する別タスクからの送信も対象）。クライアントが受信を
+    /// 止めている等で `close_grace` を超過した場合、残りのキュー済み
+    /// メッセージは送出されずに破棄され、Close フレーム自体も送らずに
+    /// セッションを即座に終了する（二次 DoS 対策、Codex レビュー指摘対応。
+    /// `crate::session::FlushOutcome::TimedOut` 参照）。「必ず先に送出」は
+    /// `close_grace` 内に収まる場合の契約であり、無条件の保証ではない。
     Close,
 }
 
@@ -1041,8 +1047,13 @@ impl WsSender {
     /// 待たず（応答を読まないクライアント相手では送出自体が長時間ブロック
     /// しうる）、ブロック中の本メソッド呼び出しも即座にこのエラーで
     /// 解放される。閉鎖時点までに既にキュー済みだったメッセージ
-    /// （本メソッドの呼び出しが完了済みの分）は破棄されず、Close フレームより
-    /// 先に送出される。
+    /// （本メソッドの呼び出しが完了済みの分）は、**`WebSocketConfig::
+    /// close_grace`（既定 10 秒）の期限内に送出できた範囲で** 破棄されず
+    /// Close フレームより先に送出される。クライアントが受信を止めている等で
+    /// `close_grace` を超過した場合は、残りのキュー済みメッセージは送出
+    /// されずに破棄され、Close フレーム自体も送らずにセッションが即座に
+    /// 終了する（二次 DoS 対策。`crate::session::FlushOutcome::TimedOut` を
+    /// 参照。「破棄されず送出される」は無条件の保証ではない）。
     pub async fn send(&self, msg: WsMessage) -> Result<(), WsSendError> {
         self.tx.send(msg).await.map_err(|_| WsSendError)
     }
