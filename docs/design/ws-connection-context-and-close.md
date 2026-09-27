@@ -816,8 +816,11 @@ Close 確定後に enqueue を試みた `send` は必ず `Err` になる。
 
 ### 検証（RFC 6455 7.4 節・5.5 節）
 
-- close code は tungstenite の `CloseCode::from(code).is_allowed()` で検証する
-  （`<1000`・`1005`・`1006`・`1015`・予約域 `1016..=2999`・`>=5000` を拒否）。
+- close code は RFC 6455 7.4 節と IANA WebSocket Close Code Number Registry に基づく
+  自前の判定（`is_sendable_close_code`）で検証し、`1000..=1003`・`1007..=1014`・
+  `3000..=4999` のみを許可する（`<1000`・`1004`・`1005`・`1006`・`1015`・予約域 `1016..=2999`・`>=5000` を拒否）。
+  tungstenite の `CloseCode::is_allowed()` は `1014`（Bad Gateway）を拒否するため
+  使わない（Cursor Bugbot 指摘対応）。
   tungstenite 自身は送信する Close フレームの code を検証しないため、API 境界
   （`WsSender::close`）での入力検証が必須（`.claude/rules/security.md`）。
 - reason は制御フレームの payload 上限 125 バイトから close code 分の 2 バイトを

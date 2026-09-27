@@ -24,7 +24,6 @@ use std::task::Poll;
 
 use futures_util::future::BoxFuture;
 use tokio::sync::{mpsc, watch};
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
 /// ユーザーコードとやり取りするメッセージ表現。
 ///
@@ -1103,6 +1102,20 @@ pub(crate) enum OutboundItem {
     },
 }
 
+/// [`WsSender::close`] で送信を許す close code か（RFC 6455 7.4 節・IANA
+/// WebSocket Close Code Number Registry）。
+///
+/// 許可するのは登録済みの `1000..=1003`・`1007..=1014` と、ライブラリ・
+/// フレームワーク用の `3000..=3999`・私用の `4000..=4999`。`1004`（予約）・
+/// `1005`/`1006`/`1015`（フレームに載せてはならない）・未割り当ての
+/// `1016..=2999`・範囲外（`<1000`・`>=5000`）は拒否する。tungstenite の
+/// `CloseCode::is_allowed()` は `1014`（Bad Gateway）を知らず拒否するため使わない
+/// （Cursor Bugbot 指摘対応。なお tungstenite 0.30 のクライアントは受信した
+/// `1014` に 1002 で応答する。相手側の実装の制限）。
+fn is_sendable_close_code(code: u16) -> bool {
+    matches!(code, 1000..=1003 | 1007..=1014 | 3000..=4999)
+}
+
 /// [`WsSender::close`] が受け付ける close reason の最大バイト長（イシュー
 /// #710）。制御フレームの payload 上限（125 バイト）から close code 分の
 /// 2 バイトを引いた値（RFC 6455 5.5 節）。
@@ -1175,9 +1188,10 @@ impl WsSender {
     ///
     /// # 検証（RFC 6455 7.4 節・5.5 節）
     ///
-    /// - `code`: 送信が許されない値（`<1000`・`1005`・`1006`・`1015`・
-    ///   予約域 `1016..=2999`・`>=5000`）は [`WsCloseError::InvalidCode`] を
-    ///   返す。この検証で拒否した場合、close 済みフラグは立たず、以後の
+    /// - `code`: RFC 6455 7.4 節と IANA WebSocket Close Code Number Registry
+    ///   に基づき、`1000..=1003`・`1007..=1014`・`3000..=4999` のみを許可する。
+    ///   それ以外（`<1000`・`1004`・`1005`・`1006`・`1015`・予約域 `1016..=2999`・`>=5000`）は
+    ///   [`WsCloseError::InvalidCode`] を返す。この検証で拒否した場合、close 済みフラグは立たず、以後の
     ///   `send`/`close` は通常どおり成功しうる（不正なフレームを実際には
     ///   送出しない入力検証、`.claude/rules/security.md`）。
     /// - `reason`: UTF-8 は `&str` の型で保証されるが、バイト長が
@@ -1340,7 +1354,7 @@ impl WsSender {
     /// # }
     /// ```
     pub async fn close(&self, code: u16, reason: &str) -> Result<(), WsCloseError> {
-        if !CloseCode::from(code).is_allowed() {
+        if !is_sendable_close_code(code) {
             return Err(WsCloseError::InvalidCode);
         }
         if reason.len() > MAX_CLOSE_REASON_BYTES {
@@ -1801,8 +1815,8 @@ impl StdError for WsSendError {}
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WsCloseError {
-    /// `code` が RFC 6455 7.4 節の意味で送信を許されない値だった
-    /// （`<1000`・`1005`・`1006`・`1015`・予約域 `1016..=2999`・`>=5000`）。
+    /// `code` が RFC 6455 7.4 節・IANA WebSocket Close Code Number Registry の
+    /// 意味で送信を許されない値だった（`<1000`・`1004`・`1005`・`1006`・`1015`・予約域 `1016..=2999`・`>=5000`）。
     /// この検証は不正な Close フレームを実際には送出しないための入力検証
     /// であり（`.claude/rules/security.md`）、[`WsSender::close`] は
     /// close 済みフラグを立てずに拒否する。
@@ -2160,14 +2174,16 @@ mod tests {
             .unwrap();
     }
 
-    /// 受け入れ基準（イシュー #710）: RFC 6455 7.4 節で送信が許される
-    /// close code は `Ok`、許されない code（`<1000`・`1005`・`1006`・
-    /// `1015`・予約域・`>=5000`）は `InvalidCode` を返す。検証エラー後も
+    /// 受け入れ基準（イシュー #710）: RFC 6455 7.4 節・IANA 登録で送信が許される
+    /// close code（`1014` Bad Gateway と各範囲の境界値を含む）は `Ok`、許されない
+    /// code（`<1000`・`1004`・`1005`・`1006`・`1015`・予約域 `1016..=2999`・`>=5000`）は `InvalidCode` を返す。検証エラー後も
     /// close 済みフラグが立たないこと（`send` が引き続き成功すること）も
     /// 確認する。
     #[tokio::test]
     async fn close_validates_code_per_rfc6455() {
-        for code in [1000u16, 1001, 1002, 1003, 1007, 1011, 1012, 3000, 4999] {
+        for code in [
+            1000u16, 1001, 1002, 1003, 1007, 1011, 1012, 1013, 1014, 3000, 3999, 4000, 4999,
+        ] {
             let (sender, mut rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
             sender.close(code, "").await.unwrap_or_else(|err| {
                 panic!("code {code} should be accepted, got {err}");
@@ -2181,7 +2197,7 @@ mod tests {
             );
         }
 
-        for code in [999u16, 1004, 1005, 1006, 1015, 1016, 2999, 5000] {
+        for code in [0u16, 999, 1004, 1005, 1006, 1015, 1016, 2999, 5000, 65535] {
             let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
             assert_eq!(
                 sender.close(code, "").await,
