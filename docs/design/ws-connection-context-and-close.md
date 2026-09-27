@@ -504,7 +504,10 @@ Err・Close・別タスク・スナップショット前後の派生ケースを
      `run_handler_with_outbound_drain` が引数で渡す 1 か所のみで、#709 で設定値
      に置き換える）回行い、取り出した push を到着順に `ws.send()` で送出する。
      `Empty` で打ち切り、残りはキューに残したまま外側ループに任せる。Close 指示が
-     見つかれば `Reply` を破棄して `SessionFlow::SenderClose` で終了する。
+     見つかれば `Reply` を破棄して `SessionFlow::SenderClose` で終了する。容量回を
+     使い切った・空になった時点で close が確定済みなら、Close 指示まで取り出し続けて
+     同様に終了する（close 確定後は新規 enqueue が `Err` のため件数は容量で有界。
+     継続経路では封鎖しないので、確定シグナルは `close()` によるものと判定できる）。
    - **終了経路**（`Ok(WsOutcome::Close)`・`Err(WsHandlerError)`、`flush_outbound`）:
      送信キューを封鎖し（以後の `send`/`close` は `Err`）、受信側を閉じてから、
      `try_recv()` が `Empty`/`Disconnected` を返すまで取り出して到着順に送出する。
@@ -545,7 +548,7 @@ Err・Close・別タスク・スナップショット前後の派生ケースを
 
 | `outcome` | ステップ 2（排出） | ステップ 3（反映） |
 |---|---|---|
-| `Ok(WsOutcome::Reply(messages))` | 受信側を閉じずに容量回まで。Close 指示が見つかれば `SenderClose` で終了 | `messages` を送出、セッション継続 |
+| `Ok(WsOutcome::Reply(messages))` | 受信側を閉じずに容量回まで（close 確定済みなら Close 指示まで）。Close 指示が見つかれば `SenderClose` で終了 | `messages` を送出、セッション継続 |
 | `Ok(WsOutcome::Close)` | 封鎖してから `try_recv()` が `Empty`/`Disconnected` まで。Close 指示が見つかれば `SenderClose` で終了 | Close フレームを送出、セッション終了 |
 | `Err(WsHandlerError)` | 同上 | `Failed(FailureKind::Handler)` で終了 |
 
@@ -565,12 +568,15 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
 ### 保証（手順から直接導ける 1 文）
 
 **継続経路では排出開始時点ですでにチャネルへ格納済みだった push が `Reply` より
-先に送出され、終了経路では封鎖より前に `WsSender::send`/`close` が `Ok` を返した
+先に送出され、`Reply` の送出を始める前に close が確定していれば `Reply` は送出されず、
+終了経路では封鎖より前に `WsSender::send`/`close` が `Ok` を返した
 項目が（`close_grace` 超過・cancel・排出中の送出失敗（以後の項目と Close フレームも
 送出されない）で打ち切られない限り）すべて Close 送出・終了より先に処理され、封鎖
 より後の呼び出しは `Err` を返す。**
 
-継続経路で排出開始後に格納された push と `Reply` の相対順序のみ不定とする。
+継続経路で排出開始後に格納された push と `Reply` の相対順序、および `Reply` の送出
+開始後に確定した close と `Reply` の関係のみ不定とする（後者の `Reply` 送出は close
+確定の観測から `close_grace` で打ち切る）。
 
 ### #706 への引き渡し事項（#704 の PR #725 で前倒し実装済み）
 
@@ -826,6 +832,12 @@ Close 確定後に enqueue を試みた `send` は必ず `Err` になる。
   close 後は送信できず待つ意味がないうえ、待てば Close 送出が遅れて有界性を
   損なうため）。ハンドラが返す `WsOutcome::Reply`/`Close` は破棄される（RFC 6455
   5.5.1 節: Close フレームの後にデータフレームを送れない）。
+- 戻り値を破棄する条件は「その送出を始める前に close が確定していること」に一本化
+  する（ハンドラ実行中か、完了後の送信キュー排出中かを区別しない。PR #736 codex P1
+  指摘対応）。排出中に close が確定し、Close 指示が容量回の排出の外に積まれた場合も、
+  Reply 送出の直前に確定を確認して Close 指示まで取り出し、Reply を送らない。`Reply`
+  の送出を始めた後に確定した場合は `Reply` の残りが送出されうる（close 確定の観測から
+  `close_grace` で打ち切る）。
 
 ### ハンドラ自身が `close` を呼んだ直後に `Err`/`WsOutcome::Close` を返す場合（PR #736 レビュー指摘対応）
 

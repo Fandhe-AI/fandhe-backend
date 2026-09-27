@@ -1151,32 +1151,41 @@ where
 }
 
 /// セッションが続く経路（ハンドラが `WsOutcome::Reply` を返した）で、Reply
-/// 送出前に行う有界な排出（PR #736 codex P0 レビュー指摘対応）。
+/// 送出前に行う有界な排出（PR #736 codex P0/P1 レビュー指摘対応）。
 ///
 /// # 手順
 ///
-/// 1. 受信側は閉じずに、`try_recv()` を最大 `capacity` 回だけ行う。
-///    `capacity` は呼び出し元が渡すチャネル容量で、`outbound` を生成した
-///    `handler::channel` に渡した値と一致させる（呼び出し元の契約。現状は
+/// 1. 受信側は閉じずに、`try_recv()` を最大 `capacity` 回行う。`capacity` は
+///    呼び出し元が渡すチャネル容量で、`outbound` を生成した `handler::channel`
+///    に渡した値と一致させる（呼び出し元の契約。現状は
 ///    [`run_handler_with_outbound_drain`] が
 ///    [`crate::handler::DEFAULT_OUTBOUND_CAPACITY`] を渡す 1 か所のみ）。
-/// 2. `Message` は到着順に `ws.send()` で送出する（`cancel` と race させ、発火
-///    したら `Some(SessionFlow::Cancelled)` を返す）。`Close` を見つけたら
-///    `Some(SessionFlow::SenderClose)` を返す。`Empty` で打ち切り、
-///    `Disconnected` なら `outbound` を無効化して打ち切る。
-/// 3. 打ち切り後の残りは取り出さず、`None` を返して呼び出し元に Reply を送出
-///    させる。残りはキューに残ったまま外側ループが通常どおり処理するため
-///    失われない（受信側を閉じないので `WsSender::close` の確定も妨げない）。
+/// 2. `Message` は到着順に送出する（[`send_bounded`]）。`Close` を見つけたら
+///    Reply を破棄して `Some(SessionFlow::SenderClose)` を返す。`Disconnected`
+///    なら `outbound` を無効化して打ち切る。
+/// 3. `capacity` 回を使い切った、または `Empty` になった時点で close の確定を
+///    確認する（[`CloseBound::observe`]）。確定済みなら Close 指示まで取り出し
+///    続け（手順 2）、未確定なら `None` を返して呼び出し元に Reply を送出させる。
+///    残りはキューに残ったまま外側ループが処理するため失われない。
 ///
 /// **保証**: 本関数の開始時点でキューに格納済みだった push は Reply より先に
-/// 送出される（格納済み件数は容量以下で、FIFO の先頭に並ぶため手順 1 の回数で
-/// すべて取り出せる。`capacity` がチャネル容量より小さい場合はこの限りでない）。
+/// 送出され、`None` を返す直前の確認までに close が確定していれば Reply は
+/// 送出されない（`capacity` がチャネル容量より小さい場合は前者の限りでない）。
 ///
-/// これ以外の push と Reply の相対順序は不定。
+/// これ以外の push と Reply の相対順序、および Reply の送出開始後に確定した
+/// close と Reply の関係は不定（後者の Reply 送出は close 確定の観測から
+/// `close_grace` で打ち切る）。
+///
+/// 手順 3 が有界である根拠: close 確定後は新しい enqueue が `Err` になるため、
+/// 取り出す件数はチャネル容量以下。また `WsSender::commit` は Close 指示の
+/// enqueue と close 確定フラグの更新を同じロック区間で行い、確定シグナルは
+/// その後に送るため、確定を観測した時点で Close 指示はキューにある
+/// （継続経路では封鎖しないので、確定シグナルは `close()` によるものと判定して
+/// よい。封鎖する防御分岐では `outbound` を無効化するため、ここで打ち切る）。
 ///
 /// `try_recv()` は別送信者の書き込み途中（tokio 内部の `Busy`）に当たると、
 /// その書き込みが終わるまでワーカースレッドをごく短時間 park しうる（書き込みは
-/// 同期区間で完了するため有界で、回数も `capacity` 以下）。
+/// 同期区間で完了するため有界）。
 async fn drain_before_reply<S, C>(
     ws: &mut WebSocketStream<S>,
     mut cancel: Pin<&mut C>,
@@ -1187,10 +1196,18 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     C: Future<Output = ()>,
 {
-    let Some(rx) = outbound.rx.as_mut() else {
-        return Ok(None);
-    };
-    for _ in 0..capacity {
+    let mut budget = capacity;
+    // close 確定後に `Empty` を見て取り出し直したか（下の `Empty` 分岐を参照）。
+    let mut retried_after_close = false;
+    loop {
+        // 手順 3: 容量回を使い切ったら、close 確定済みの場合に限り続ける。
+        if budget == 0 && outbound.close.observe().is_none() {
+            return Ok(None);
+        }
+        budget = budget.saturating_sub(1);
+        let Some(rx) = outbound.rx.as_mut() else {
+            return Ok(None);
+        };
         match rx.try_recv() {
             Ok(OutboundItem::Message(msg)) => {
                 let frame = to_tungstenite_message(msg);
@@ -1212,18 +1229,29 @@ where
                     deadline: outbound.close.deadline(),
                 }));
             }
-            Err(mpsc::error::TryRecvError::Empty) => break,
+            Err(mpsc::error::TryRecvError::Empty) => {
+                // 手順 3: 空の時点で close が確定していれば、その Close 指示は
+                // 空を観測した後に積まれている（確定を観測した時点でキューに
+                // ある）ので、もう一度取り出す。未確定なら Reply へ進む。
+                // 取り出し直しは 1 回まで（close 確定後の FIFO では Close 指示より
+                // 先に空になることはないため、2 回目の `Empty` は起こらない。
+                // 防御として、`.await` のない空回りにならないよう打ち切る）。
+                if outbound.close.observe().is_none() || retried_after_close {
+                    return Ok(None);
+                }
+                retried_after_close = true;
+                budget = budget.max(1);
+            }
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 // 全 `WsSender` クローンが drop 済み（`conn_ctx` がクローンを
                 // 保持するためセッション実行中は到達しない防御的コード）。
                 // 到達すると封鎖が close 確定シグナルも送るため、以後の送出は
                 // close 未確定でも `close_grace` で打ち切られる（[`CloseBound`]）。
                 outbound.release();
-                break;
+                return Ok(None);
             }
         }
     }
-    Ok(None)
 }
 
 /// [`crate::handler::WsMessageHandler::on_message_with_ctx`] のハンドラ
@@ -1251,7 +1279,8 @@ where
 /// 2. ハンドラの結果で排出方法を分ける（PR #736 codex P0/P1 レビュー指摘対応）。
 ///    - `Ok(WsOutcome::Reply)`（継続経路）: [`drain_before_reply`] で受信側を
 ///      閉じずに容量（[`crate::handler::DEFAULT_OUTBOUND_CAPACITY`]）回まで
-///      排出してから、[`apply_outcome`] で Reply を送出する。
+///      排出する。その時点で close が確定済みなら Close 指示まで取り出して
+///      Reply を破棄し、未確定なら [`apply_outcome`] で Reply を送出する。
 ///    - `Ok(WsOutcome::Close)`（終了経路）: [`apply_outcome`] が
 ///      [`flush_outbound`]（送信キューを封鎖してから排出）を経て Close
 ///      フレームを送出する。
@@ -1262,12 +1291,15 @@ where
 ///      して返す（送信失敗でハンドラエラーを上書きしない）。
 ///
 /// **保証**: 継続経路では排出開始時点で格納済みの push が Reply より先に送出
-/// され、終了経路では封鎖より前に `WsSender::send`/`close` が `Ok` を返した
+/// され、Reply の送出を始める前に close が確定していれば Reply は送出されず、
+/// 終了経路では封鎖より前に `WsSender::send`/`close` が `Ok` を返した
 /// 項目が（`close_grace` 超過・cancel・送出失敗（以後の項目と Close フレームも
 /// 送出されない）で打ち切られない限り）すべて送出され、封鎖より後の呼び出しは
 /// `Err` を返す。
 ///
-/// 継続経路で排出開始後に格納された push と Reply の相対順序のみ不定。
+/// 継続経路で排出開始後に格納された push と Reply の相対順序、および Reply の
+/// 送出開始後に確定した close と Reply の関係のみ不定（後者の Reply 送出は close
+/// 確定の観測から `close_grace` で打ち切る）。
 ///
 /// outbound 到着時の `ws.send()` 失敗・cancel 発火時の扱いは
 /// [`run_session`] 外側ループの `InboundEvent::Outbound` 分岐と同一
@@ -3695,6 +3727,11 @@ mod tests {
             refill: Option<handler::WsSender>,
             refilled: Arc<AtomicUsize>,
             fail_writes: Arc<AtomicBool>,
+            /// `Some` なら最初の `poll_write` で 1 回だけ `close(4000, "bye")` を
+            /// 同期的に試み、結果を `close_result` に残す（排出の途中で close が
+            /// 確定する競合の再現用）。
+            close_on_first_write: Option<handler::WsSender>,
+            close_result: Arc<std::sync::Mutex<Option<Result<(), handler::WsCloseError>>>>,
         }
 
         impl TestStream {
@@ -3704,6 +3741,8 @@ mod tests {
                     refill: None,
                     refilled: Arc::new(AtomicUsize::new(0)),
                     fail_writes: Arc::new(AtomicBool::new(false)),
+                    close_on_first_write: None,
+                    close_result: Arc::new(std::sync::Mutex::new(None)),
                 }
             }
         }
@@ -3728,6 +3767,13 @@ mod tests {
                     return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
                 }
                 let result = Pin::new(&mut self.inner).poll_write(cx, buf);
+                if let Some(closer) = self.close_on_first_write.take() {
+                    let closed = closer.close(4000, "bye").now_or_never();
+                    *self
+                        .close_result
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = closed;
+                }
                 if let Some(sender) = self.refill.as_ref() {
                     let n = self.refilled.load(Ordering::SeqCst);
                     if n < REFILL_LIMIT {
@@ -4388,6 +4434,63 @@ mod tests {
         #[tokio::test(start_paused = true)]
         async fn close_before_stalled_push_is_bounded_by_close_grace() {
             assert_close_is_bounded_for_stalled_client(true).await;
+        }
+
+        /// codex P1（PR #736）の回帰テスト: 送信キューが満杯で別タスクの
+        /// `close()` が permit を待っている状態でハンドラが `WsOutcome::Reply` を
+        /// 返し、継続経路の排出が先頭の項目を取り出した時点で close が確定する
+        /// （Close 指示は既存の項目の後ろ、容量回の排出の外に積まれる）場合でも、
+        /// Reply は送出されず、キュー済みの push → Close の順で届き、終了理由が
+        /// `SenderClose` になること。close は最初の書き込み（先頭 push の送出）に
+        /// 同期して確定させ、決定的に再現する。
+        #[tokio::test(start_paused = true)]
+        async fn close_committed_during_reply_drain_discards_reply() {
+            let (server_side, client_side) = tokio::io::duplex(1 << 16);
+            let (tx, rx) = handler::channel(CAPACITY);
+            let mut stream = TestStream::new(server_side);
+            stream.close_on_first_write = Some(tx.clone());
+            let close_result = Arc::clone(&stream.close_result);
+            let handler = FillThenReturnHandler {
+                outcome: || Ok(WsOutcome::Reply(vec![WsMessage::Text("reply".to_string())])),
+                arm_on_return: None,
+            };
+            let (session_handle, mut client) =
+                start_session(handler, stream, client_side, tx, rx).await;
+
+            for i in 0..CAPACITY {
+                assert_eq!(
+                    next_frame(&mut client).await,
+                    Some(Message::Text(format!("push-{i}").into())),
+                    "pushes queued before close must arrive in order"
+                );
+            }
+            assert_eq!(
+                *close_result
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                Some(Ok(())),
+                "close() must have been committed during the drain"
+            );
+            match next_frame(&mut client).await {
+                Some(Message::Close(Some(frame))) => {
+                    assert_eq!(u16::from(frame.code), 4000);
+                    assert_eq!(frame.reason.as_str(), "bye");
+                }
+                other => panic!(
+                    "the Reply must be discarded once close() is committed, expected the Close \
+                     frame, got {other:?}"
+                ),
+            }
+
+            let (reason, result) = tokio::time::timeout(Duration::from_secs(60), session_handle)
+                .await
+                .expect("session should finish within timeout")
+                .expect("session task should not panic");
+            assert!(
+                matches!(reason, CloseReason::SenderClose),
+                "expected SenderClose, got {reason:?}"
+            );
+            assert!(result.is_ok(), "expected Ok(()), got {result:?}");
         }
     }
 }
