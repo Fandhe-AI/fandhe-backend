@@ -489,9 +489,10 @@ Issue #175 対応。`crates/plugin-websocket` のセッション処理
 - spawn したタスクは、セッション終了後（`WsSender::send` が `WsSendError` を
   返した時点）に自発的に終了すべきである（呼び出し元がタスクのライフサイクルを
   強制終了しないため、実装側の責務として doc に明記済み）
-- チャネル容量は `handler::DEFAULT_OUTBOUND_CAPACITY = 8` 固定（無制限バッファに
-  よる DoS を避ける、[[security]]）。利用者が調整できる公開 API は本イシューの
-  スコープ外
+- チャネル容量は既定 `handler::DEFAULT_OUTBOUND_CAPACITY = 8`（無制限バッファに
+  よる DoS を避ける、[[security]]）。イシュー #709 で `WebSocketConfig::
+  with_outbound_capacity`（0・上限 `MAX_OUTBOUND_CAPACITY` = 4096 超は
+  `OutboundCapacityError` で拒否）により利用者が調整できる公開 API を追加した
 
 ### 参照
 
@@ -517,7 +518,8 @@ Issue #175 対応。`crates/plugin-websocket` のセッション処理
   `Debug` は攻撃者制御下の URL セグメント（パスパラメータ）を出力しない契約を
   維持する（`conn_id` はサーバー側発行のため出力してよい）
 - **outbound 消化（自己送信の安全性）**: `on_message_with_ctx` 実行中に
-  `ctx.sender()` から容量（`DEFAULT_OUTBOUND_CAPACITY = 8`）を超えて
+  `ctx.sender()` から設定された容量（既定 `DEFAULT_OUTBOUND_CAPACITY = 8`、
+  イシュー #709 で利用者調整可能に）を超えて
   `send(...).await` してもデッドロックしない（PR #725 レビュー指摘対応で
   #706 の設計を前倒し実装。`run_session` はハンドラ Future を単独 `await`
   せず、`session::run_handler_with_outbound_drain` が outbound 到着と

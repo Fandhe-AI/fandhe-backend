@@ -519,9 +519,10 @@ fandhe-backend/
 │   │                                    # `handler::channel` でチャネルを生成して `WsOpenContext`
 │   │                                    # 経由で `WsSender` をハンドラへ渡す公開経路を確立した
 │   │                                    # （ハンドシェイク失敗・101 送出前キャンセルでは呼ばれない
-│   │                                    # フェイルクローズ契約。チャネル容量は `handler::
-│   │                                    # DEFAULT_OUTBOUND_CAPACITY = 8` 固定、利用者調整 API は
-│   │                                    # スコープ外）。イシュー #675 で `WebSocketConfig::
+│   │                                    # フェイルクローズ契約。チャネル容量は既定
+│   │                                    # `handler::DEFAULT_OUTBOUND_CAPACITY = 8`、
+│   │                                    # 利用者調整 API はイシュー #709 で追加）。
+│   │                                    # イシュー #675 で `WebSocketConfig::
 │   │                                    # with_path_pattern` + `pattern::PathPattern` により
 │   │                                    # `{name}` パスパラメータ付きパターン登録・マッチングに
 │   │                                    # 対応し（CDP 互換サーバーの `/devtools/page/{id}` 等）、
@@ -597,7 +598,21 @@ fandhe-backend/
 │   │                                    # `WsSender::is_closed()` は `close()` 確定時点も
 │   │                                    # `true` を返す対象に拡張した。設計は
 │   │                                    # `docs/design/ws-connection-context-and-close.md`
-│   │                                    # 12 節参照）
+│   │                                    # 12 節参照）。イシュー #709（親 #708）で
+│   │                                    # `WebSocketConfig::with_outbound_capacity`
+│   │                                    # （0・上限 `MAX_OUTBOUND_CAPACITY` = 4096
+│   │                                    # 超は `OutboundCapacityError` で構築時に
+│   │                                    # 拒否、既定は変わらず 8）を追加し、
+│   │                                    # `WsSender` の送信キュー容量を接続ごとに
+│   │                                    # 指定可能にした。あわせて
+│   │                                    # `WsSender::try_send` を追加し、`send`
+│   │                                    # とは異なり待たずに「満杯
+│   │                                    # （`WsTrySendError::Full`）」と「セッション
+│   │                                    # 終了・close 確定済み
+│   │                                    # （`WsTrySendError::Closed`）」を区別して
+│   │                                    # 返すようにした（送れなかった `WsMessage`
+│   │                                    # を保持し再試行・破棄を選べる。順序保証・
+│   │                                    # push 消化契約は `send` と同一）。
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O

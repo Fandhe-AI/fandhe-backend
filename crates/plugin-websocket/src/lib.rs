@@ -123,7 +123,7 @@ use std::task::Poll;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
-pub use config::WebSocketConfig;
+pub use config::{MAX_OUTBOUND_CAPACITY, OutboundCapacityError, WebSocketConfig};
 pub use error::WsError;
 
 use fandhe_backend_http::request::RequestHead;
@@ -295,7 +295,12 @@ where
                 .collect()
         })
         .unwrap_or_default();
-    let (sender, outbound_rx) = handler::channel(handler::DEFAULT_OUTBOUND_CAPACITY);
+    // 送信キュー容量はイシュー #709 で利用者調整可能になった
+    // （`WebSocketConfig::with_outbound_capacity`、既定は
+    // `handler::DEFAULT_OUTBOUND_CAPACITY`）。`session::run_handler_with_outbound_drain`
+    // の排出回数上限（`config.outbound_capacity`）もこの値と一致させる契約
+    // （`crates/plugin-websocket/src/session.rs` の該当 doc を参照）。
+    let (sender, outbound_rx) = handler::channel(config.outbound_capacity);
 
     // イシュー #704（親 #702）: この接続専用の一意 ID を 1 回だけ発行する。
     // ハンドシェイク失敗・101 送出前キャンセルではこの行に到達しないため

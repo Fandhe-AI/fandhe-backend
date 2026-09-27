@@ -31,6 +31,23 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// （[`WebSocketConfig::with_close_grace`]）へ切り出した。
 const DEFAULT_CLOSE_GRACE: Duration = Duration::from_secs(10);
 
+/// [`WebSocketConfig::with_outbound_capacity`] が受け付ける送信キュー容量の
+/// 上限（イシュー #709）。
+///
+/// `tokio::sync::mpsc::channel` は内部の `Semaphore::MAX_PERMITS`
+/// （`usize::MAX >> 3` 相当）を超える容量で panic するため、`crate::handler::channel`
+/// が接続ごとに呼ぶ `mpsc::channel(capacity)` がライブラリ境界で panic しない
+/// よう、構築時（本モジュール）に有限の上限で弾く（`.claude/rules/coding-rust.md`
+/// の「panic はライブラリ境界を越えさせない」）。
+///
+/// 値は既定値（8）の 512 倍。送信キューは接続ごとに保持するため、実質的な
+/// メモリ上限は「本値 × メッセージサイズ × 同時接続数」で決まり、この上限を
+/// 有界に保つことは接続数に対するリソース枯渇 DoS 対策でもある
+/// （`.claude/rules/security.md`）。CDP 互換サーバーのような短時間バーストの
+/// 吸収には十分な余裕を持たせつつ、無制限に近い値は許可しない。将来値を
+/// 引き上げる場合は非破壊変更で行える。
+pub const MAX_OUTBOUND_CAPACITY: usize = 4096;
+
 /// WebSocket アップグレードを受け付けるパス・DoS 安全側のフレーム制限。
 ///
 /// `Default` はアップグレード対象パスを `/ws` とし、`max_message_size` /
@@ -104,6 +121,15 @@ pub struct WebSocketConfig {
     /// パターン（イシュー #675）。`None`（既定）のときは `path` との完全
     /// 一致で照合する（`crate::handshake::matches` を参照）。
     pub(crate) pattern: Option<crate::pattern::PathPattern>,
+    /// サーバー起点送信キュー（`crate::handler::WsSender`）の容量（イシュー
+    /// #709、既定 [`crate::handler::DEFAULT_OUTBOUND_CAPACITY`] = 8）。
+    ///
+    /// `pub` にせず [`with_outbound_capacity`][Self::with_outbound_capacity]
+    /// 経由でのみ設定させる（直接代入だと 0・`MAX_OUTBOUND_CAPACITY` 超の
+    /// 検証を迂回でき、`crate::handler::channel` の `mpsc::channel` 呼び出しで
+    /// panic する余地が残るため。`handler`/`pattern` と同じ非公開フィールド +
+    /// アクセサの方針）。
+    pub(crate) outbound_capacity: usize,
 }
 
 impl fmt::Debug for WebSocketConfig {
@@ -116,6 +142,7 @@ impl fmt::Debug for WebSocketConfig {
             .field("close_grace", &self.close_grace)
             .field("handler", &self.handler.name())
             .field("pattern", &self.pattern)
+            .field("outbound_capacity", &self.outbound_capacity)
             .finish()
     }
 }
@@ -130,9 +157,37 @@ impl Default for WebSocketConfig {
             close_grace: DEFAULT_CLOSE_GRACE,
             handler: default_handler(),
             pattern: None,
+            outbound_capacity: crate::handler::DEFAULT_OUTBOUND_CAPACITY,
         }
     }
 }
+
+/// [`WebSocketConfig::with_outbound_capacity`] が返す構築時検証エラー
+/// （イシュー #709）。
+///
+/// 将来 variant を追加しても非破壊変更として扱うため
+/// `#[non_exhaustive]` を付ける（`crate::handler::WsCloseError` と同一方針）。
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutboundCapacityError {
+    /// 容量に 0 を指定した（`tokio::sync::mpsc::channel(0)` は panic するため
+    /// 構築時に拒否する）。
+    Zero,
+    /// 容量が [`MAX_OUTBOUND_CAPACITY`] を超えている。
+    TooLarge,
+}
+
+impl fmt::Display for OutboundCapacityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let msg = match self {
+            Self::Zero => "websocket outbound capacity must be at least 1",
+            Self::TooLarge => "websocket outbound capacity exceeds maximum",
+        };
+        write!(f, "{msg}")
+    }
+}
+
+impl std::error::Error for OutboundCapacityError {}
 
 impl WebSocketConfig {
     /// アップグレード対象パスを指定した設定を作る（他フィールドは既定値）。
@@ -323,6 +378,78 @@ impl WebSocketConfig {
     pub fn handler_name(&self) -> &'static str {
         self.handler.name()
     }
+
+    /// サーバー起点送信キュー（[`crate::handler::WsSender`]）の容量を指定する
+    /// （イシュー #709）。
+    ///
+    /// 既定は 8（`crate::handler::DEFAULT_OUTBOUND_CAPACITY`、非公開定数）。
+    /// 満杯時、
+    /// [`WsSender::send`][crate::handler::WsSender::send] は空くまで待ち、
+    /// [`WsSender::try_send`][crate::handler::WsSender::try_send] は待たずに
+    /// `Full` エラーを返す。送信キューは接続ごとに保持するため、実質的な
+    /// メモリ上限の目安は「本値 × メッセージサイズ × 同時接続数」になる
+    /// （`.claude/rules/security.md`）。
+    ///
+    /// # Errors
+    ///
+    /// `capacity` が 0 の場合は
+    /// [`OutboundCapacityError::Zero`]、[`MAX_OUTBOUND_CAPACITY`] を超える
+    /// 場合は [`OutboundCapacityError::TooLarge`] を返す（いずれも panic
+    /// しない fail-closed 契約、`.claude/rules/coding-rust.md`）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_websocket::WebSocketConfig;
+    ///
+    /// let config = WebSocketConfig::default()
+    ///     .with_outbound_capacity(64)
+    ///     .unwrap();
+    /// assert_eq!(config.outbound_capacity(), 64);
+    /// ```
+    ///
+    /// 0 は拒否される:
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_websocket::{OutboundCapacityError, WebSocketConfig};
+    ///
+    /// let err = WebSocketConfig::default().with_outbound_capacity(0).unwrap_err();
+    /// assert_eq!(err, OutboundCapacityError::Zero);
+    /// ```
+    ///
+    /// 上限超も拒否される:
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_websocket::{
+    ///     MAX_OUTBOUND_CAPACITY, OutboundCapacityError, WebSocketConfig,
+    /// };
+    ///
+    /// let err = WebSocketConfig::default()
+    ///     .with_outbound_capacity(MAX_OUTBOUND_CAPACITY + 1)
+    ///     .unwrap_err();
+    /// assert_eq!(err, OutboundCapacityError::TooLarge);
+    /// ```
+    pub fn with_outbound_capacity(
+        mut self,
+        capacity: usize,
+    ) -> Result<Self, OutboundCapacityError> {
+        if capacity == 0 {
+            return Err(OutboundCapacityError::Zero);
+        }
+        if capacity > MAX_OUTBOUND_CAPACITY {
+            return Err(OutboundCapacityError::TooLarge);
+        }
+        self.outbound_capacity = capacity;
+        Ok(self)
+    }
+
+    /// 現在設定されている送信キュー容量（[`with_outbound_capacity`][Self::with_outbound_capacity]）。
+    /// `outbound_capacity` フィールドは
+    /// `pub(crate)` のため、外部から確認する手段として公開する。
+    #[must_use]
+    pub fn outbound_capacity(&self) -> usize {
+        self.outbound_capacity
+    }
 }
 
 #[cfg(test)]
@@ -354,5 +481,65 @@ mod tests {
             .with_path("/ws");
         assert!(config.pattern.is_none());
         assert_eq!(config.path, "/ws");
+    }
+
+    #[test]
+    fn default_outbound_capacity_is_8() {
+        assert_eq!(
+            WebSocketConfig::default().outbound_capacity(),
+            crate::handler::DEFAULT_OUTBOUND_CAPACITY
+        );
+        assert_eq!(WebSocketConfig::default().outbound_capacity(), 8);
+    }
+
+    #[test]
+    fn with_outbound_capacity_accepts_valid_values() {
+        for capacity in [1, 16, MAX_OUTBOUND_CAPACITY] {
+            let config = WebSocketConfig::default()
+                .with_outbound_capacity(capacity)
+                .unwrap();
+            assert_eq!(config.outbound_capacity(), capacity);
+        }
+    }
+
+    #[test]
+    fn with_outbound_capacity_rejects_zero() {
+        let err = WebSocketConfig::default()
+            .with_outbound_capacity(0)
+            .unwrap_err();
+        assert_eq!(err, OutboundCapacityError::Zero);
+    }
+
+    #[test]
+    fn with_outbound_capacity_rejects_over_max() {
+        let err = WebSocketConfig::default()
+            .with_outbound_capacity(MAX_OUTBOUND_CAPACITY + 1)
+            .unwrap_err();
+        assert_eq!(err, OutboundCapacityError::TooLarge);
+
+        let err = WebSocketConfig::default()
+            .with_outbound_capacity(usize::MAX)
+            .unwrap_err();
+        assert_eq!(err, OutboundCapacityError::TooLarge);
+    }
+
+    #[test]
+    fn debug_includes_outbound_capacity() {
+        let config = WebSocketConfig::default()
+            .with_outbound_capacity(32)
+            .unwrap();
+        assert!(format!("{config:?}").contains("outbound_capacity: 32"));
+    }
+
+    #[test]
+    fn outbound_capacity_error_display_is_fixed_text() {
+        assert_eq!(
+            OutboundCapacityError::Zero.to_string(),
+            "websocket outbound capacity must be at least 1"
+        );
+        assert_eq!(
+            OutboundCapacityError::TooLarge.to_string(),
+            "websocket outbound capacity exceeds maximum"
+        );
     }
 }
