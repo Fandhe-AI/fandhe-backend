@@ -78,6 +78,15 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   不定契約は `crates/plugin-websocket/src/session.rs` モジュール doc
   「ハンドラ実行中の送信キュー消化」節を参照。イシュー
   [#706](https://github.com/Fandhe-AI/fandhe-backend/issues/706)）
+- `fandhe-backend-plugin-websocket`: ハンドラが `Err` を返したとき、送信キューを
+  封鎖し、`close_grace` を上限にキュー済みの push を送出してから終了するように
+  しました（従来は排出せずに即時終了していました）。封鎖前に確定した
+  `WsSender::close` があれば、その Close を送り、`on_close` の理由は
+  `Failed(Handler)` ではなく `SenderClose` になります。封鎖と同時に、待機中・
+  以後の `send`/`close` は `Err` を返します（ほかの終了経路も受信側を手放す前に
+  封鎖し、`Ok` を返した値が捨てられることはなくなりました）。`WsOutcome::Reply`
+  を返した場合の排出は送信キュー容量回までに制限します。イシュー
+  [#710](https://github.com/Fandhe-AI/fandhe-backend/issues/710)
 
 ## [0.4.1] - 2026-09-26
 

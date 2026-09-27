@@ -1042,24 +1042,27 @@ pub(crate) fn default_handler() -> Arc<dyn WsMessageHandler> {
 /// 分けると、消費側でのマージ順序を別途保証する必要が生じる。`crate::session`
 /// の消費側は `OutboundItem` を分岐して処理する）。
 ///
-/// `closing`（`Arc<Mutex<bool>>`、全 clone で共有）は「close 済みかどうか」の
-/// 単一の真実源であり、`Self::commit` が enqueue 判定と同一ロック区間で
+/// `closing`（`Arc<Mutex<bool>>`、全 clone で共有）は「以後の enqueue を拒否
+/// するか（[`Self::close`] の確定済み、またはセッションの終了処理で送信キューを
+/// 封鎖済み）」の単一の真実源であり、`Self::commit` が enqueue 判定と同一ロック区間で
 /// 読み書きすることで、「フラグ確認 → enqueue」の間に別タスクの `close` が
 /// 割り込んで Close の後ろへメッセージが積まれる TOCTOU を排除する
 /// （`.claude/rules/coding-rust.md` の「ロック保持中の `.await` を避ける」を
 /// 守るため、ロックを取る前に `reserve()`/`try_reserve()` で `Permit` を
 /// 確保し、ロック内では同期的な `Permit::send` のみを行う）。
 ///
-/// # close 確定を待機中の呼び出しへ即時伝える仕組み（PR #736 レビュー指摘対応）
+/// # close 確定・封鎖を待機中の呼び出しへ即時伝える仕組み（PR #736 レビュー指摘対応）
 ///
 /// `reserve()` は送信キューが満杯だと Ready にならないため、キュー満杯時に
-/// 別 clone の [`Self::close`] が確定しても、キューが実際にドレインされる
+/// 別 clone の [`Self::close`] が確定しても（またはセッションが送信キューを
+/// 封鎖しても）、キューが実際にドレインされる
 /// （あるいは受信側 `Receiver` が drop される）まで、保留中の [`Self::send`]/
 /// [`Self::close`] は `WsSendError`/`WsCloseError::Closed` を返せない
 /// （満杯キュー上の無関係な push の実配送速度に応答時間が従属してしまう。
 /// `.claude/rules/security.md` のリソース枯渇対策上望ましくない）。
-/// `closed_signal`（`Arc<watch::Sender<bool>>`）で `Self::commit` が
-/// `closing` を true にした直後にブロードキャストし、`Self::reserve_or_closed`
+/// `closed_signal`（`Arc<watch::Sender<bool>>`）で `Self::commit`・
+/// `Self::seal_for_session` が `closing` を true にした直後にブロードキャストし、
+/// `Self::reserve_or_closed`
 /// が `reserve()` とこの信号を手動 race させることで、キューの実ドレインを
 /// 待たず即座に解放する。
 #[derive(Clone)]
@@ -1070,8 +1073,8 @@ pub struct WsSender {
     /// 封鎖した時（`Self::seal_for_session`）に true になる（`Self::commit`
     /// の doc を参照）。
     closing: Arc<Mutex<bool>>,
-    /// close 確定を待機中の呼び出しへ伝える watch シグナル（[`Self`] の
-    /// doc を参照）。`watch::Sender::send` は `&self` で呼べるため
+    /// close 確定・セッションの封鎖を待機中の呼び出しへ伝える watch シグナル
+    /// （[`Self`] の doc を参照）。`watch::Sender::send` は `&self` で呼べるため
     /// `Arc` 越しに全 clone から共有できる。
     closed_signal: Arc<watch::Sender<bool>>,
     /// `closed_signal` の受信側を最低 1 個生存させ続けるための保持専用
@@ -1392,9 +1395,10 @@ impl WsSender {
         Ok(())
     }
 
-    /// セッションが終了経路（ハンドラの `Err`・`WsOutcome::Close`）で送信
-    /// キューを封鎖する（`pub(crate)`、`crate::session::flush_outbound` 専用。
-    /// PR #736 レビュー指摘対応）。
+    /// セッションの終了処理で送信キューを封鎖する（`pub(crate)`、
+    /// `crate::session` 専用。PR #736 レビュー指摘対応）。`crate::session` は
+    /// 受信側を閉じる・drop する前に必ず本メソッドを呼ぶ（`flush_outbound` と
+    /// `release_outbound`、および `run_session_inner` を抜ける際の封鎖ガード）。
     ///
     /// `closing` を [`Self::commit`] と同じロック区間で true にし、以後の
     /// [`Self::send`]/[`Self::close`] を `Err` にする。ロック解放後に
@@ -1582,12 +1586,13 @@ impl WsSender {
     /// セッションが outbound push を受け付けなくなっているかを判定する
     /// （イシュー #727）。
     ///
-    /// [`WsSender::closed`] と同じ時点（受信側 `Receiver` の drop）、または
-    /// [`WsSender::close`] が確定した時点（イシュー #710 で追加）のいずれか
-    /// 早い方で `false` から `true` へ変わる。`close()` 確定後は「outbound
-    /// push を受け付けなくなっている」（[`Self::send`] が [`WsSendError`] を
-    /// 返す）状態に既に入っているため、[`Self::closed`]（受信側 drop まで
-    /// 完了しない）より先に `true` を返しうる。
+    /// [`WsSender::closed`] と同じ時点（受信側 `Receiver` の drop）、
+    /// [`WsSender::close`] が確定した時点（イシュー #710 で追加）、または
+    /// セッションの終了処理が送信キューを封鎖した時点のいずれか早い方で
+    /// `false` から `true` へ変わる。後 2 者の後は「outbound push を受け
+    /// 付けなくなっている」（[`Self::send`] が [`WsSendError`] を返す）状態に
+    /// 既に入っているため、[`Self::closed`]（受信側 drop まで完了しない）より
+    /// 先に `true` を返しうる。
     ///
     /// # 参考値であること（TOCTOU）
     ///
@@ -1724,8 +1729,8 @@ impl WsSender {
     }
 }
 
-/// [`WsSender::send`] が返すエラー（セッション終了後、または
-/// [`WsSender::close`] 確定後の送信試行）。
+/// [`WsSender::send`] が返すエラー（セッションの終了処理（送信キューの封鎖）
+/// 開始後、または [`WsSender::close`] 確定後の送信試行）。
 ///
 /// `Display` はペイロード・内部状態を含まない固定文言とする（ログ・診断
 /// 名に送信内容や内部状態を含めない、`.claude/rules/security.md`。既存
@@ -1762,9 +1767,9 @@ pub enum WsCloseError {
     /// 立たない。
     ReasonTooLong,
     /// 検証済みの `close` 呼び出しが、既に close 済み（2 回目以降の
-    /// 呼び出し）、またはセッションが既に終了している（受信側 drop 済み）
-    /// ために失敗した（フェイルクローズ、[`WsSendError`] の close 後の
-    /// 挙動と一貫させる）。
+    /// 呼び出し）、またはセッションの終了処理（送信キューの封鎖）が既に
+    /// 始まっているために失敗した（フェイルクローズ、[`WsSendError`] の
+    /// close 後の挙動と一貫させる）。
     Closed,
 }
 

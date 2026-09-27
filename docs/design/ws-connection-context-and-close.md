@@ -525,7 +525,9 @@ Err・Close・別タスク・スナップショット前後の派生ケースを
 - 排出中の `cancel` 発火: cancel 最優先を維持し、当該 `Future` を打ち切って
   `handle_cancellation`（`Cancelled`）へ分岐する（どの経路でも同じ）。
 - 終了経路の `close_grace` 超過: 残りを諦め、`Ok(WsOutcome::Close)` は Close フレームを
-  送らずに終了、`Err` は `Failed(FailureKind::Handler)` で終了する。
+  送らずに終了、`Err` は `Failed(FailureKind::Handler)` で終了する。排出中に Close 指示が
+  見つかった場合、その Close ハンドシェイクは排出と同じ期限を引き継ぐ（排出・Close 送出・
+  応答待ちの合計が `close_grace` 以内）。
 
 > **排出方式の改訂経緯（PR #736）**: 当初は両経路とも `try_recv()` を固定回数
 > （容量）行っていたが、満杯キューで `reserve()` 待ちだった `WsSender::close` が排出中に
@@ -876,6 +878,23 @@ tokio 1.x を解決しても成り立つ）:
   なる（送り続ける別タスクがいても終わる）。
 - セッション側は封鎖のロック保持中に `.await` せず、ほかのロックも取らないため、
   `commit` とのデッドロックは起こらない。
+
+### 封鎖しない終了経路の扱い（PR #736 レビュー指摘対応）
+
+cancel・idle timeout・クライアント Close・EOF・受信/送信エラーの各経路は排出を行わない
+（既存契約）が、受信側を drop する前に必ず封鎖する。
+
+手順（`session.rs`）:
+
+1. 途中で受信側を手放す箇所は `release_outbound`（封鎖 → drop）を使う。
+2. `run_session_inner` の先頭で `SealOnExit` ガードを `outbound` の後に宣言する。
+   ローカル変数は宣言の逆順に drop されるため、早期 return・future の drop を含む
+   すべての脱出で「封鎖 → 受信側の drop」の順になる。
+
+**保証**: 受信側が drop された後に `send`/`close` が `Ok` を返すことはない（permit 確保後・
+確定前に drop された場合も、確定は `Err` になる）。
+
+`on_close` の呼び出し回数（ちょうど 1 回）と `CloseReason` の分類は変えない。
 
 ### `is_closed()` の意味の変更
 
