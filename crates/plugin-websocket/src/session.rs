@@ -116,6 +116,7 @@ use crate::config::WebSocketConfig;
 use crate::error::WsError;
 use crate::handler::{
     CloseReason, FailureKind, OutboundItem, WsConnContext, WsHandlerError, WsMessage, WsOutcome,
+    WsSender,
 };
 use crate::race_cancel;
 
@@ -397,6 +398,7 @@ where
                             &mut ws,
                             cancel.as_mut(),
                             &mut outbound,
+                            conn_ctx.sender(),
                             handler_fut,
                             config.close_grace,
                         )
@@ -435,6 +437,7 @@ where
                             &mut ws,
                             cancel.as_mut(),
                             &mut outbound,
+                            conn_ctx.sender(),
                             handler_fut,
                             config.close_grace,
                         )
@@ -721,8 +724,8 @@ enum SessionFlow {
 /// （書き込み位置）は保たれ、後続の Close 送出が破損したバイト列を生まない
 /// （モジュール doc の「ワイヤ安全性」節を参照）。
 ///
-/// `outbound` は `WsOutcome::Close` 分岐でのみ使う（[`flush_outbound`] へ
-/// 委譲、イシュー #711）。`WsOutcome::Reply` ではセッションが継続するため
+/// `outbound`・`sender`（`outbound` と同じチャネルの送信側）は
+/// `WsOutcome::Close` 分岐でのみ使う（[`flush_outbound`] へ委譲、イシュー #711）。`WsOutcome::Reply` ではセッションが継続するため
 /// 送信キューを閉じない。`close_deadline` は Close ハンドシェイク全体
 /// （[`flush_outbound`] による排出 + 本関数の `ws.close(None)` 送出）が
 /// 共有する単一の期限（`tokio::time::Instant`）で、呼び出し元が
@@ -735,6 +738,7 @@ async fn apply_outcome<S, C>(
     ws: &mut WebSocketStream<S>,
     outcome: WsOutcome,
     outbound: &mut Option<mpsc::Receiver<OutboundItem>>,
+    sender: &WsSender,
     mut cancel: Pin<&mut C>,
     close_deadline: Instant,
 ) -> Result<SessionFlow, SessionFailure>
@@ -759,7 +763,7 @@ where
             // バッファ済み項目を排出する（手順・保証は [`flush_outbound`] の
             // doc を参照）。`close_deadline` を共有するため、排出に要した分だけ
             // 後続の `ws.close` に残る猶予は縮む。
-            match flush_outbound(ws, outbound, cancel.as_mut(), close_deadline).await? {
+            match flush_outbound(ws, outbound, sender, cancel.as_mut(), close_deadline).await? {
                 FlushOutcome::Cancelled => return Ok(SessionFlow::Cancelled),
                 // イシュー #711 Codex レビュー指摘対応: `close_deadline` 超過
                 // まで排出できなかった場合、クライアントが受信を止めている
@@ -770,7 +774,7 @@ where
                 // TCP 接続を終了する。モジュール doc「ワイヤ安全性」節が
                 // 述べる「打ち切り後の drop は安全」契約と同型）。
                 FlushOutcome::TimedOut => return Ok(SessionFlow::Closed),
-                // イシュー #710: 受信側を閉じる前に `WsSender::close` が確定
+                // イシュー #710: 送信キューの封鎖前に `WsSender::close` が確定
                 // させた Close 指示を排出中に見つけた場合。`close()` が `Ok` を
                 // 返した以上その code/reason を届ける契約（`handler.rs` の
                 // `commit` doc）を優先し、`ws.close(None)` 送出はスキップして
@@ -836,49 +840,48 @@ enum FlushOutcome {
 }
 
 /// セッションを終える経路（ハンドラの `Err`・`WsOutcome::Close`）で、送信
-/// キューを閉じてから閉鎖時点のバッファ済み項目を排出する（イシュー #711 で
+/// キューを封鎖してから封鎖時点のバッファ済み項目を排出する（イシュー #711 で
 /// 導入し、PR #736 で終了経路共通の排出に拡張。設計は
 /// `docs/design/ws-connection-context-and-close.md` 6 節・12 節）。
 ///
+/// `sender` は `outbound` と同じチャネルの送信側（呼び出し元の契約。
+/// [`run_session_inner`] は `conn_ctx.sender()` を渡す）。
+///
 /// # 手順
 ///
-/// 1. `outbound` が `None`（全 `WsSender` クローンが drop 済み）なら何もせず
-///    [`FlushOutcome::Done`] を返す。
-/// 2. [`mpsc::Receiver::close`] で受信側を閉じる。以後の
-///    [`crate::handler::WsSender::send`]/[`crate::handler::WsSender::close`] は
-///    新たな permit を得られず即座に失敗し、満杯キューで待機中の呼び出しも
-///    解放される（`ws.send()` の完了を待たない）。
-/// 3. `recv()` が `None` を返すまで取り出し、`Message` は到着順に `ws.send()`
-///    で送出する（待機・送出はいずれも `cancel` と race させる、イシュー #499）。
-///    `Close` を見つけたら [`FlushOutcome::SenderClose`] を返す
-///    （`WsSender::commit` の契約上、Close は常にキューの最後の要素）。
+/// 1. [`crate::handler::WsSender::seal_for_session`] で封鎖する。
+///    `WsSender::commit` と同じロック区間で封鎖状態を立てるため、以後の
+///    `WsSender::send`/`close` は `Err` になり、満杯キューで待機中の呼び出しも
+///    解放される。
+/// 2. `outbound` が `Some` なら [`mpsc::Receiver::close`] で受信側も閉じる
+///    （`WsSender::closed()` の完了と、`reserve()` 待ちの解放を確実にする）。
+/// 3. `try_recv()` が `Empty`/`Disconnected` を返すまで取り出し、`Message` は
+///    到着順に `ws.send()` で送出する（送出は `cancel` と race させる、
+///    イシュー #499）。`Close` を見つけたら [`FlushOutcome::SenderClose`] を
+///    返す（`WsSender::commit` の契約上、Close は常にキューの最後の要素）。
 /// 4. 手順 3 全体を `close_deadline`（呼び出し元が `close_grace` から 1 回だけ
 ///    計算し、後続の `ws.close(None)` と共有する単一期限、イシュー #711
 ///    PR #735）で有界化し、超過時は残りを諦めて [`FlushOutcome::TimedOut`] を
 ///    返す（クライアントが受信を止めた場合の DoS 対策）。
 ///
-/// **保証**: 手順 2 より前に `WsSender::send`/`close` が `Ok` を返した項目は、
-/// 期限超過・cancel で打ち切られない限り、本関数が返るまでに送出（Close 指示は
-/// `SenderClose` として返却）される。
+/// **保証**: 手順 1 より前に `WsSender::send`/`close` が `Ok` を返した項目は、
+/// `close_deadline` 超過・cancel・送出失敗（以後の項目と Close フレームも送出
+/// されない）で打ち切られない限り、本関数が返るまでに送出（Close 指示は
+/// `SenderClose` として返却）され、手順 1 より後の呼び出しは `Err` を返す。
 ///
-/// それ以外（手順 2 以後に `Err` を返した呼び出し）は送出されない。
+/// # 取りこぼしがなく有界である根拠（tokio のバージョンに依存しない）
 ///
-/// # 取りこぼしがなく有界である根拠（tokio 1.x の `mpsc` 実装）
-///
-/// - 受信側を閉じた後も、閉鎖前に確保済みの `Permit` による `send` は成功する
-///   （`Permit::send` の doc）。`try_recv()` はキューが空でも未返却の permit が
-///   あれば `Disconnected` ではなく `Empty` を返すため、`Empty` で打ち切ると
-///   確定直前の Close 指示を取りこぼす。`recv()` は「閉鎖済みかつ未返却
-///   permit ゼロ（semaphore が idle）」になるまで `None` を返さず、permit の
-///   確定・drop で起床するため、こちらを使う。
-/// - `WsSender` は permit の確保から `Permit::send` までを `.await` を挟まない
-///   同期区間で行う（`handler.rs` の `WsSender::commit` の doc）ため、permit
-///   保持者を待つ時間はその同期区間の残りだけで済む。
-/// - 閉鎖後は新たな permit が発行されないため、取り出せる件数は閉鎖時点の
-///   キュー内項目と未返却 permit の合計（チャネル容量以下）で構造的に有界。
+/// - 封鎖と `WsSender::commit` の `Permit::send` は同じ `Mutex` のロック区間で
+///   行われるため、封鎖より前に `Ok` を返した項目は手順 3 の開始時点ですでに
+///   キューに入っている。permit を確保済みでも確定前の送信者は封鎖後に
+///   `Err` になり、項目を積まない。したがって `try_recv()` の `Empty` で
+///   打ち切っても取りこぼさず、受信側の起床（`recv().await`）を待つ必要がない。
+/// - 封鎖後は新しい項目が積まれないため、取り出す件数はチャネル容量以下で
+///   構造的に有界になる（送り続ける別タスクがいても終わる）。
 async fn flush_outbound<S, C>(
     ws: &mut WebSocketStream<S>,
     outbound: &mut Option<mpsc::Receiver<OutboundItem>>,
+    sender: &WsSender,
     mut cancel: Pin<&mut C>,
     close_deadline: Instant,
 ) -> Result<FlushOutcome, SessionFailure>
@@ -886,6 +889,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     C: Future<Output = ()>,
 {
+    sender.seal_for_session();
     let Some(rx) = outbound.as_mut() else {
         return Ok(FlushOutcome::Done);
     };
@@ -895,10 +899,8 @@ where
     // まとめる（`ws`・`rx`・`cancel` は借用のみで、await の外へ持ち出さない）。
     let drain = async {
         loop {
-            match race_cancel(cancel.as_mut(), rx.recv()).await {
-                None => return Ok(FlushOutcome::Cancelled),
-                Some(None) => return Ok(FlushOutcome::Done),
-                Some(Some(OutboundItem::Message(msg))) => {
+            match rx.try_recv() {
+                Ok(OutboundItem::Message(msg)) => {
                     let frame = to_tungstenite_message(msg);
                     match race_cancel(cancel.as_mut(), ws.send(frame)).await {
                         None => return Ok(FlushOutcome::Cancelled),
@@ -906,8 +908,11 @@ where
                         Some(Err(err)) => return Err(SessionFailure::send(err)),
                     }
                 }
-                Some(Some(OutboundItem::Close { code, reason })) => {
+                Ok(OutboundItem::Close { code, reason }) => {
                     return Ok(FlushOutcome::SenderClose { code, reason });
+                }
+                Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                    return Ok(FlushOutcome::Done);
                 }
             }
         }
@@ -1009,8 +1014,8 @@ where
 ///      閉じずに容量（[`crate::handler::DEFAULT_OUTBOUND_CAPACITY`]）回まで
 ///      排出してから、[`apply_outcome`] で Reply を送出する。
 ///    - `Ok(WsOutcome::Close)`（終了経路）: [`apply_outcome`] が
-///      [`flush_outbound`]（受信側を閉じてから排出）を経て Close フレームを
-///      送出する。
+///      [`flush_outbound`]（送信キューを封鎖してから排出）を経て Close
+///      フレームを送出する。
 ///    - `Err`（終了経路）: [`flush_outbound`] で排出する。Close 指示が見つかれば
 ///      [`SessionFlow::SenderClose`]、cancel が発火すれば
 ///      [`SessionFlow::Cancelled`] を返し、それ以外（排出完了・期限超過・
@@ -1018,11 +1023,12 @@ where
 ///      して返す（送信失敗でハンドラエラーを上書きしない）。
 ///
 /// **保証**: 継続経路では排出開始時点で格納済みの push が Reply より先に送出
-/// され、終了経路では受信側を閉じる前に `WsSender::send`/`close` が `Ok` を
-/// 返した項目が（`close_grace` 超過・cancel で打ち切られない限り）すべて送出
-/// される。
+/// され、終了経路では封鎖より前に `WsSender::send`/`close` が `Ok` を返した
+/// 項目が（`close_grace` 超過・cancel・送出失敗（以後の項目と Close フレームも
+/// 送出されない）で打ち切られない限り）すべて送出され、封鎖より後の呼び出しは
+/// `Err` を返す。
 ///
-/// これ以外の push と Reply/Close の相対順序は不定。
+/// 継続経路で排出開始後に格納された push と Reply の相対順序のみ不定。
 ///
 /// outbound 到着時の `ws.send()` 失敗・cancel 発火時の扱いは
 /// [`run_session`] 外側ループの `InboundEvent::Outbound` 分岐と同一
@@ -1043,6 +1049,7 @@ async fn run_handler_with_outbound_drain<S, C>(
     ws: &mut WebSocketStream<S>,
     mut cancel: Pin<&mut C>,
     outbound: &mut Option<mpsc::Receiver<OutboundItem>>,
+    sender: &WsSender,
     handler_fut: futures_util::future::BoxFuture<'_, Result<WsOutcome, WsHandlerError>>,
     close_grace: Duration,
 ) -> Result<SessionFlow, SessionFailure>
@@ -1116,6 +1123,7 @@ where
                 ws,
                 WsOutcome::Reply(messages),
                 outbound,
+                sender,
                 cancel,
                 close_deadline,
             )
@@ -1123,14 +1131,22 @@ where
         }
         Ok(WsOutcome::Close) => {
             let close_deadline = Instant::now() + close_grace;
-            apply_outcome(ws, WsOutcome::Close, outbound, cancel, close_deadline).await
+            apply_outcome(
+                ws,
+                WsOutcome::Close,
+                outbound,
+                sender,
+                cancel,
+                close_deadline,
+            )
+            .await
         }
         Err(err) => {
             let close_deadline = Instant::now() + close_grace;
-            match flush_outbound(ws, outbound, cancel, close_deadline).await {
+            match flush_outbound(ws, outbound, sender, cancel, close_deadline).await {
                 Ok(FlushOutcome::Cancelled) => Ok(SessionFlow::Cancelled),
                 Ok(FlushOutcome::SenderClose { code, reason }) => {
-                    // 受信側を閉じる前に確定した `WsSender::close` を優先して
+                    // 送信キューの封鎖前に確定した `WsSender::close` を優先して
                     // 届ける（ハンドラエラーは破棄、設計 12 節）。
                     Ok(SessionFlow::SenderClose { code, reason })
                 }
@@ -2531,8 +2547,8 @@ mod tests {
     /// `reserve()` 待ちの再現ではなく、チャネル容量を大きく確保して
     /// enqueue をバックプレッシャなしで完了させることで「排出開始時点で
     /// 8 件を超える件数が既に格納済み」という状況を決定的に再現する。
-    /// 現行実装では `Err` は終了経路として受信側を閉じてから `recv()` が
-    /// `None` を返すまで排出するため、取り出す件数は固定値ではなくチャネル
+    /// 現行実装では `Err` は終了経路として送信キューを封鎖してから
+    /// `try_recv()` が空になるまで排出するため、取り出す件数は固定値ではなくチャネル
     /// 自身の容量で決まる（[`flush_outbound`] の doc を参照）。
     #[tokio::test]
     async fn drain_detects_close_beyond_default_outbound_capacity() {
@@ -3085,6 +3101,7 @@ mod tests {
                 &mut server_ws,
                 WsOutcome::Close,
                 &mut outbound,
+                &tx,
                 cancel.as_mut(),
                 close_deadline,
             )
@@ -3252,6 +3269,7 @@ mod tests {
                     &mut server_ws,
                     WsOutcome::Close,
                     &mut outbound,
+                    &tx,
                     cancel.as_mut(),
                     close_deadline,
                 ),
@@ -3296,6 +3314,7 @@ mod tests {
             // `FlushOutcome::Done`）させ、`ws.close(None)` 自体の有界化のみを
             // 検証する。
             let mut outbound: Option<mpsc::Receiver<OutboundItem>> = None;
+            let (tx, _rx) = handler::channel(1);
             // cancel は発火しないままにする。`ws.close(None)` の打ち切り手段が
             // `close_deadline` しかないことを保証する（cancel が打ち切りの
             // 唯一の手段だった旧実装ではこのテストはハングする）。
@@ -3311,6 +3330,7 @@ mod tests {
                     &mut server_ws,
                     WsOutcome::Close,
                     &mut outbound,
+                    &tx,
                     cancel.as_mut(),
                     close_deadline,
                 ),
@@ -3376,6 +3396,7 @@ mod tests {
             let outcome = flush_outbound(
                 &mut server_ws,
                 &mut outbound,
+                &tx,
                 cancel.as_mut(),
                 already_expired_deadline,
             )
@@ -3618,7 +3639,7 @@ mod tests {
         }
 
         /// codex P0（終了経路、`WsOutcome::Close`）: 送り続ける別タスク役が
-        /// いても、受信側を閉じてから排出するため補充は失敗し、格納済み push
+        /// いても、送信キューを封鎖してから排出するため補充は失敗し、格納済み push
         /// の直後に Close フレームが届くこと。
         #[tokio::test]
         async fn close_drain_is_bounded_while_another_task_keeps_sending() {
@@ -3738,13 +3759,16 @@ mod tests {
         }
 
         /// codex P1: `WsSender::close` が permit を確保した後・確定する前に
-        /// セッションがハンドラ `Err` で終了経路へ入り受信側を閉じても、
-        /// その後に確定した Close（`Ok` を返したもの）はクライアントへ届く
-        /// こと。マルチスレッドでは permit 確保と確定の同期区間の最中に別
-        /// スレッドが受信側を閉じうるため、テスト専用ヘルパーでその順序を
-        /// 決定的に再現する（`closed()` の完了を同期点に使う）。
+        /// セッションがハンドラ `Err` で終了経路へ入り送信キューを封鎖した
+        /// 場合、その後の確定は `Err(Closed)` になり、`Ok` を返したのに届かない
+        /// Close が生じないこと。マルチスレッドでは permit 確保と確定の間に
+        /// 別スレッドが封鎖しうるため、テスト専用ヘルパーでその順序を決定的に
+        /// 再現する（封鎖の後に完了する `closed()` を同期点に使う）。封鎖前に
+        /// 確定した Close が届くことは
+        /// `sender_close_then_handler_error_still_delivers_pending_push_and_close`
+        /// が検証する。
         #[tokio::test]
-        async fn close_committed_after_queue_closed_on_handler_error_is_delivered() {
+        async fn close_committed_after_termination_seal_is_rejected() {
             let (server_side, client_side) = tokio::io::duplex(1 << 16);
             let (tx, rx) = handler::channel(CAPACITY);
             let closer = tx.clone();
@@ -3766,9 +3790,6 @@ mod tests {
                 }
             }
 
-            // `close_grace` はテスト既定（300ms）のまま: クライアントは Close
-            // 応答を返さないため、セッションはその満了で `Ok(())` として終わる
-            // （既存の `sender_close_*` テストと同じ終わらせ方）。
             let mut config = test_config();
             config.handler = Arc::new(FailImmediately);
             let config: &'static WebSocketConfig = Box::leak(Box::new(config));
@@ -3794,43 +3815,80 @@ mod tests {
                 .await
                 .expect("client send should succeed");
 
-            // 受信側が閉じられる（またはセッションが終わって drop される）まで
-            // 待つ。この時点で新規の enqueue は失敗するが、確保済みの permit
-            // による確定は成功する（tokio の `Permit::send` の契約）。
+            // 受信側が閉じられるまで待つ（封鎖はその前に完了している）。
             tokio::time::timeout(Duration::from_secs(2), closer.closed())
                 .await
                 .expect("the session should close the outbound queue on handler error");
             let committed = closer.commit_close_for_test(permit, 4000, "late");
             assert_eq!(
                 committed,
-                Ok(()),
-                "a permit reserved before closure must commit"
+                Err(handler::WsCloseError::Closed),
+                "a commit after the termination seal must be rejected, not silently dropped"
             );
-
-            match next_frame(&mut client).await {
-                Some(Message::Close(Some(frame))) => {
-                    assert_eq!(u16::from(frame.code), 4000);
-                    assert_eq!(frame.reason.as_str(), "late");
-                }
-                other => panic!("a Close committed with Ok must reach the client, got {other:?}"),
-            }
 
             let (reason, result) = tokio::time::timeout(Duration::from_secs(2), session_handle)
                 .await
                 .expect("session should finish within timeout")
                 .expect("session task should not panic");
             assert!(
-                matches!(reason, CloseReason::SenderClose),
-                "expected SenderClose, got {reason:?}"
+                matches!(reason, CloseReason::Failed(FailureKind::Handler)),
+                "expected Failed(Handler), got {reason:?}"
             );
-            assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+            assert!(
+                matches!(result, Err(WsError::Handler(_))),
+                "expected Err(WsError::Handler(_)), got {result:?}"
+            );
+            assert_eq!(
+                next_frame(&mut client).await,
+                None,
+                "a rejected Close must not reach the client"
+            );
         }
 
         /// codex P1（`flush_outbound` 単体、`WsOutcome::Close` 経路と共通）:
-        /// 受信側を閉じた時点で permit 保持中の送信者がいれば、排出はその
-        /// 確定を待ち、確定した Close 指示を取りこぼさないこと。
+        /// 封鎖より前に確定した Close 指示は `try_recv()` だけで排出され、
+        /// 受信側の起床を待たずに即座に返ること（tokio のバージョンに依存しない）。
         #[tokio::test]
-        async fn flush_outbound_waits_for_outstanding_permit() {
+        async fn flush_outbound_drains_close_committed_before_seal() {
+            let (server_side, _client_side) = tokio::io::duplex(1 << 16);
+            let mut server_ws =
+                WebSocketStream::from_raw_socket(server_side, Role::Server, None).await;
+            let (tx, rx) = handler::channel(CAPACITY);
+            let permit = tx
+                .reserve_close_for_test()
+                .await
+                .expect("permit should be available");
+            tx.commit_close_for_test(permit, 4000, "late")
+                .expect("a commit before the seal must succeed");
+
+            let mut outbound = Some(rx);
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            let close_deadline = Instant::now() + Duration::from_secs(2);
+            let outcome = flush_outbound(
+                &mut server_ws,
+                &mut outbound,
+                &tx,
+                cancel.as_mut(),
+                close_deadline,
+            )
+            .now_or_never()
+            .expect("the drain must not wait for the receiver to be woken")
+            .unwrap_or_else(|_| panic!("flush_outbound should not fail"));
+            match outcome {
+                FlushOutcome::SenderClose { code, reason } => {
+                    assert_eq!(code, 4000);
+                    assert_eq!(reason, "late");
+                }
+                _ => panic!("expected the committed Close instruction to be drained"),
+            }
+        }
+
+        /// codex P1 / P2（`flush_outbound` 単体）: 封鎖時点で permit を保持して
+        /// いた送信者がいても排出はその確定を待たずに返り、封鎖後の確定は
+        /// `Err(Closed)` になること（`Ok` を返したのに届かない Close が生じない）。
+        #[tokio::test]
+        async fn flush_outbound_rejects_commit_after_seal_without_waiting() {
             let (server_side, _client_side) = tokio::io::duplex(1 << 16);
             let mut server_ws =
                 WebSocketStream::from_raw_socket(server_side, Role::Server, None).await;
@@ -3844,33 +3902,32 @@ mod tests {
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
             let close_deadline = Instant::now() + Duration::from_secs(2);
-            let mut flush = std::pin::pin!(flush_outbound(
+            let outcome = flush_outbound(
                 &mut server_ws,
                 &mut outbound,
+                &tx,
                 cancel.as_mut(),
                 close_deadline,
-            ));
-
-            // 1 回目のポーリングで受信側を閉じ、permit 保持中のため待機に入る。
+            )
+            .now_or_never()
+            .expect("the drain must not wait for an outstanding permit")
+            .unwrap_or_else(|_| panic!("flush_outbound should not fail"));
             assert!(
-                (&mut flush).now_or_never().is_none(),
-                "the drain must wait while a permit is still outstanding"
+                matches!(outcome, FlushOutcome::Done),
+                "nothing was committed before the seal"
             );
-            assert!(tx.is_closed(), "the drain must close the queue first");
+            assert!(tx.is_closed(), "the drain must seal the queue");
 
-            tx.commit_close_for_test(permit, 4000, "late")
-                .expect("a permit reserved before closure must commit");
-            let outcome = tokio::time::timeout(Duration::from_secs(2), flush)
-                .await
-                .expect("the drain should finish once the permit is committed")
-                .unwrap_or_else(|_| panic!("flush_outbound should not fail"));
-            match outcome {
-                FlushOutcome::SenderClose { code, reason } => {
-                    assert_eq!(code, 4000);
-                    assert_eq!(reason, "late");
-                }
-                _ => panic!("expected the committed Close instruction to be drained"),
-            }
+            assert_eq!(
+                tx.commit_close_for_test(permit, 4000, "late"),
+                Err(handler::WsCloseError::Closed),
+                "a commit after the seal must be rejected"
+            );
+            assert_eq!(
+                tx.send(WsMessage::Text("after-seal".to_string())).await,
+                Err(WsSendError),
+                "a send after the seal must be rejected"
+            );
         }
     }
 }

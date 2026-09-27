@@ -1065,7 +1065,9 @@ pub(crate) fn default_handler() -> Arc<dyn WsMessageHandler> {
 #[derive(Clone)]
 pub struct WsSender {
     tx: mpsc::Sender<OutboundItem>,
-    /// close 済みかどうかの単一の真実源（全 clone で共有、`Self::commit`
+    /// 以後の enqueue を拒否するかどうかの単一の真実源（全 clone で共有）。
+    /// [`Self::close`] の確定時、またはセッションが終了経路で送信キューを
+    /// 封鎖した時（`Self::seal_for_session`）に true になる（`Self::commit`
     /// の doc を参照）。
     closing: Arc<Mutex<bool>>,
     /// close 確定を待機中の呼び出しへ伝える watch シグナル（[`Self`] の
@@ -1127,18 +1129,17 @@ impl WsSender {
     /// doc を参照、PR #736 レビュー指摘対応）。
     ///
     /// `WsOutcome::Close`（イシュー #711）: ハンドラが `WsOutcome::Close`（または
-    /// `Err`）を返した時点で、`crate::session::flush_outbound` が受信側を
-    /// `close()`（drop ではなく）する。これにより、`ws.close()` の送出完了を
+    /// `Err`）を返した時点で、`crate::session::flush_outbound` が送信キューを
+    /// 封鎖し、受信側を `close()`（drop ではなく）する。これにより、`ws.close()` の送出完了を
     /// 待たず（応答を読まないクライアント相手では送出自体が長時間ブロック
     /// しうる）、ブロック中の本メソッド呼び出しも即座にこのエラーで
-    /// 解放される。閉鎖時点までに既にキュー済みだったメッセージ
-    /// （本メソッドの呼び出しが完了済みの分）は、**`WebSocketConfig::
-    /// close_grace`（既定 10 秒）の期限内に送出できた範囲で** 破棄されず
-    /// Close フレームより先に送出される。クライアントが受信を止めている等で
-    /// `close_grace` を超過した場合は、残りのキュー済みメッセージは送出
-    /// されずに破棄され、Close フレーム自体も送らずにセッションが即座に
-    /// 終了する（二次 DoS 対策。`crate::session::FlushOutcome::TimedOut` を
-    /// 参照。「破棄されず送出される」は無条件の保証ではない）。
+    /// 解放される。閉鎖より前に本メソッドが `Ok` を返したメッセージは、
+    /// `WebSocketConfig::close_grace`（既定 10 秒）の超過・世代キャンセル・
+    /// 排出中の送信失敗で打ち切られない限り、セッション終了前に送出される
+    /// （`WsOutcome::Close` の場合は Close フレームより先。ハンドラ `Err` の
+    /// 場合は Close フレームを送らずに終了する）。打ち切られた場合、残りの
+    /// メッセージと Close フレームは送出されない（二次 DoS 対策。
+    /// `crate::session::FlushOutcome::TimedOut` を参照）。
     pub async fn send(&self, msg: WsMessage) -> Result<(), WsSendError> {
         let permit = self.reserve_or_closed().await.map_err(|()| WsSendError)?;
         self.commit(permit, OutboundItem::Message(msg), false)
@@ -1162,11 +1163,11 @@ impl WsSender {
     /// （`Self::commit` が同一ロック区間で判定するため、「送信済みなのに
     /// Close の後ろへ積まれて破棄される」という静かなデータ欠落は起こらない）。
     ///
-    /// 本メソッドが `Ok` を返した Close 指示は、セッションがハンドラの
-    /// `Err`/`WsOutcome::Close` で送信キューを閉じる処理と競合した場合も
-    /// （`close_grace` 超過・世代キャンセルで打ち切られない限り）破棄されず
-    /// 処理される（閉じた後に確保しようとした場合は
-    /// [`WsCloseError::Closed`] を返す。`crate::session::flush_outbound` の
+    /// セッションがハンドラの `Err`/`WsOutcome::Close` で送信キューを封鎖する
+    /// 処理と競合した場合、本メソッドは封鎖より前に確定すれば `Ok` を返し、
+    /// その Close は `close_grace` 超過・世代キャンセル・排出中の送信失敗で
+    /// 打ち切られない限り送出される。封鎖より後なら
+    /// [`WsCloseError::Closed`] を返す（`crate::session::flush_outbound` の
     /// doc を参照）。
     ///
     /// # 検証（RFC 6455 7.4 節・5.5 節）
@@ -1353,15 +1354,13 @@ impl WsSender {
     /// 既に close 済みの場合は `permit` を drop して `Err(())` を返す
     /// （呼び出し元が [`WsSendError`]/[`WsCloseError::Closed`] へ変換する）。
     ///
-    /// **同期区間の前提（PR #736 レビュー指摘対応）**: [`Self::send`]/
-    /// [`Self::close`] は `Self::reserve_or_closed` が permit を返した後、
-    /// `.await` を挟まずに本メソッドを呼び、本メソッドも `.await` しない。
-    /// したがって permit の保持は「確保 → `Permit::send`（または drop）」の
-    /// 同期区間に限られる。`crate::session::flush_outbound` は受信側を閉じた
-    /// 後、この未返却 permit による確定を `recv()` で待ってから排出を終える
-    /// ため、閉鎖と競合した確定（`Ok` を返したもの）も取りこぼさない。この
-    /// 前提を崩す変更（permit を保持したまま `.await` する等）を加える場合は、
-    /// 同関数の有界性の根拠も見直すこと。
+    /// **セッション側の封鎖との関係（PR #736 レビュー指摘対応）**:
+    /// `crate::session::flush_outbound` は [`Self::seal_for_session`] で
+    /// 同じ `closing` ロックの区間内に封鎖状態を立てる。ロックの前後関係から、
+    /// 封鎖より前に本メソッドが `Ok` を返した項目は封鎖時点でキューに入って
+    /// おり、封鎖より後の呼び出しは `Err` になる。このため同関数は permit
+    /// 保持者の確定を待たず、`try_recv()` だけで排出を終えられる（tokio の
+    /// 受信側の起床挙動に依存しない）。
     ///
     /// `closing_after` で close 済みへ遷移させた場合は、ロック解放後に
     /// `closed_signal` へブロードキャストし、送信キュー満杯で
@@ -1393,6 +1392,22 @@ impl WsSender {
         Ok(())
     }
 
+    /// セッションが終了経路（ハンドラの `Err`・`WsOutcome::Close`）で送信
+    /// キューを封鎖する（`pub(crate)`、`crate::session::flush_outbound` 専用。
+    /// PR #736 レビュー指摘対応）。
+    ///
+    /// `closing` を [`Self::commit`] と同じロック区間で true にし、以後の
+    /// [`Self::send`]/[`Self::close`] を `Err` にする。ロック解放後に
+    /// `closed_signal` を送り、送信キュー満杯で待機中の呼び出しを解放する。
+    /// ロック保持中は `.await` せず、ほかのロックも取らない（デッドロックの
+    /// 余地がない）。何度呼んでもよい。
+    pub(crate) fn seal_for_session(&self) {
+        *self.closing.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        // 受信側は `_closed_signal_anchor` が最低 1 個生存を保証するため
+        // 送信は必ず成功する（戻り値は無視してよい）。
+        let _ = self.closed_signal.send(true);
+    }
+
     /// [`Self::send`]/[`Self::close`] が使う共通の `reserve()` ラッパー
     /// （PR #736 レビュー指摘対応。`crate::session::race2` と同型の手動
     /// race で、`tokio::select!`（`tokio` の `macros` feature を要求する）
@@ -1400,8 +1415,9 @@ impl WsSender {
     ///
     /// `self.tx.reserve()` を `closed_signal` の変化と race させ、送信
     /// キューが満杯で `reserve()` が保留中でも、別 clone の [`Self::close`]
-    /// が確定した時点で（キューの実ドレイン・受信側 `Receiver` の drop を
-    /// 待たず）即座に `Err(())` を返す。
+    /// が確定した時点、またはセッションが送信キューを封鎖した時点
+    /// （`Self::seal_for_session`）で（キューの実ドレイン・受信側 `Receiver`
+    /// の drop を待たず）即座に `Err(())` を返す。
     ///
     /// close 確定シグナルを `reserve()` より先にポーリングする bias を持つ
     /// （fail-closed。両方が同時に Ready でも close 側を勝たせる。逆でも
