@@ -39,7 +39,8 @@ RFC 6455 ハンドシェイク検証・101 応答・tokio-tungstenite へのフ�
 | メッセージハンドラ | `with_handler(impl WsMessageHandler)` で差し替え。既定は `EchoHandler`（後方互換） |
 | 接続コンテキスト | `WsMessageHandler::on_message_with_ctx`（provided、既定は既存の `on_message` へ委譲）で `WsConnContext`（`conn_id()` / `sender()` / `param()` / `params()`）を参照可能。`WsOpenContext::conn_id()` で `on_open` 時点からも同じ接続 ID を取得できる（`docs/design/ws-connection-context-and-close.md` 参照） |
 | 終了理由 | `handler::CloseReason` / `handler::FailureKind`（いずれも `#[non_exhaustive]`）でセッションの終了経路を種別化。`WsMessageHandler::on_close(&self, ctx: &WsConnContext, reason: CloseReason)`（既定 no-op）で `on_open` が呼ばれた接続についてのみ終了経路を問わずちょうど 1 回通知される（ハンドシェイク検証失敗・101 送出前キャンセルでは呼ばれない、`on_open` と対称のフェイルクローズ契約。`docs/design/ws-connection-context-and-close.md` 4 節参照） |
-| 送信ハンドル（切断待ち） | `WsSender::closed().await` で切断まで待つ（受信側 `Receiver` drop 時に完了。cancel-safe）、`WsSender::is_closed()` で同期判定（`send` の `Err` が正の判定基準、こちらは参考値）。clone 間で同じ時点を観測 |
+| 送信ハンドル（切断待ち） | `WsSender::closed().await` で切断まで待つ（受信側 `Receiver` drop 時に完了。cancel-safe）、`WsSender::is_closed()` で同期判定（`send` の `Err` が正の判定基準、こちらは参考値）。`close()` 呼び出し後、または受信側 drop 後のいずれか早い方で `true` になる（clone 間で同じ時点を観測。`close()` 確定時点も対象） |
+| サーバー起点の Close | `WsSender::close(code, reason)` で `on_message` の外（`on_open` 等から spawn したタスク）からも任意タイミングで Close ハンドシェイクを開始できる。呼び出し前に `send` が `Ok` を返した push は Close より前に送出される（順序保証）。`close()` を呼んだら、要求の観測から `close_grace` 以内に Close ハンドシェイクを終えるか接続を打ち切る（`close_grace` 超過・世代キャンセル・idle timeout・送出失敗で打ち切られた場合は残りの push と Close を送らない）。`code` は RFC 6455 7.4 節・IANA 登録に基づき `1000..=1003`・`1007..=1009`・`1011..=1014`・`3000..=4999` のみ許可（`1010` はクライアント専用のため拒否）、`reason` は 123 バイト以内でなければ `WsCloseError`（`InvalidCode`/`ReasonTooLong`/`Closed`、`#[non_exhaustive]`）を返す。close 後の `send`/2 回目以降の `close` は `Err` になる。終了理由は `CloseReason::SenderClose`（`docs/design/ws-connection-context-and-close.md` 参照） |
 
 - 注意: サイズ上限はメモリ枯渇 DoS 対策。アイドルタイムアウトは既定で有効（fail-safe）であり、無効化は `without_idle_timeout` の明示操作でのみ可能
 - 注意: `close_grace`（`with_close_grace`）はコアの世代キャンセル（最終 graceful
@@ -57,8 +58,10 @@ RFC 6455 ハンドシェイク検証・101 応答・tokio-tungstenite へのフ�
   の送信キュー（既定容量 8）を cancel（最優先）→ (ハンドラ完了 | outbound
   到着) の順で消化するため、ハンドラ内（`ctx.sender()` 経由）から容量を
   超える回数 `send(...).await` してもデッドロックしない。排出ステップ開始
-  時点で既に到着済みの push は、そのハンドラが返す `WsOutcome::Reply`/
-  `Close` より先に送出される保証つき（それ以外の push との相対順序は不定）。
+  時点で既に到着済みの push は、cancel・送出失敗・close 要求後の
+  `close_grace` 超過で打ち切られない限り、そのハンドラが返す
+  `WsOutcome::Reply`/`Close` より先に送出される（それ以外の push との相対
+  順序は不定）。
   詳細契約は `crates/plugin-websocket/src/session.rs` モジュール doc
   「ハンドラ実行中の送信キュー消化」節・`docs/design/
   ws-connection-context-and-close.md` 6 節を参照

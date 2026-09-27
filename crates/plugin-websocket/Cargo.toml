@@ -68,11 +68,13 @@ futures-util = { version = "0.3", default-features = false, features = [
 # feature は本体（[dependencies]）側で既にイシュー #670 により有効化
 # 済みのため、ここでの重複指定はしない（tests/cancellation.rs がキャンセル
 # トリガに使う `tokio::sync::oneshot` も本体の `sync` feature でカバー
-# される）。
+# される）。`test-util` は `#[tokio::test(start_paused = true)]`（仮想時間で
+# `close_grace` による打ち切りを決定的に検証する単体テスト）のためのみ。
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = [
   "io-util",
   "macros",
   "rt-multi-thread",
+  "test-util",
   "time",
 ] }

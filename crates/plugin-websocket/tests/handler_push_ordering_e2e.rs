@@ -395,7 +395,7 @@ impl WsMessageHandler for PushThenErrHandler {
 }
 
 #[tokio::test]
-async fn handler_err_after_non_blocking_pushes_discards_queued_pushes() {
+async fn handler_err_after_non_blocking_pushes_still_delivers_queued_pushes() {
     // 既定容量 (8) 以下に留め、送信がブロックしないことを保証する
     // （ブロックすれば `rx.recv()` がポーリングされ得るため決定性が崩れる）。
     const PUSH_COUNT: usize = DEFAULT_OUTBOUND_CAPACITY - 1;
@@ -411,11 +411,30 @@ async fn handler_err_after_non_blocking_pushes_discards_queued_pushes() {
         .await
         .expect("client send should succeed");
 
-    // ハンドラが Err で終わるため、セッションは他のフレームを送らずに
-    // 接続を終える（既存契約: `outcome?` がハンドラ Err を即座に伝播し、
-    // Close ハンドシェイクを経ずに `ws` を drop する。本イシューが変更した
-    // 範囲ではない、`apply_outcome` 呼び出し前の既存の早期 return と同型）。
-    // クライアント側はハンドシェイクなしの切断として EOF・接続断エラー
+    // PR #736 レビュー指摘対応（codex P1）: ハンドラが `Err` で終わっても、
+    // 排出ステップ（`run_handler_with_outbound_drain`）が `outcome` の
+    // `Ok`/`Err` に関わらず先行実行されるため、既に enqueue 済みの push は
+    // ワイヤへ送出される（`WsSender::send` が呼び出し元へ `Ok` を返した
+    // 時点で確定した「届ける」契約を、ハンドラ自身の以後の `Err` で覆さ
+    // ない）。旧実装（排出を丸ごと省略）に戻すと、本テストは push フレーム
+    // が届かず FAIL する。
+    for i in 0..PUSH_COUNT {
+        let msg = tokio::time::timeout(Duration::from_secs(5), client.next())
+            .await
+            .expect("push should arrive within timeout")
+            .expect("stream should not end before all pushes arrive")
+            .expect("frame should not error");
+        assert_eq!(
+            msg,
+            Message::Text(format!("push-{i}").into()),
+            "push-{i} should arrive in order despite the subsequent handler Err"
+        );
+    }
+
+    // 排出後、Close 指示が見つからなかったため既存契約どおりハンドラ Err を
+    // 即座に伝播する（Close ハンドシェイクを経ずに `ws` を drop する。
+    // `apply_outcome` 呼び出し前の既存の早期 return と同型）。クライアント
+    // 側はハンドシェイクなしの切断として EOF・接続断エラー
     // （`ResetWithoutClosingHandshake` 等）のいずれかを観測しうる。
     let next = tokio::time::timeout(Duration::from_secs(5), client.next())
         .await
@@ -424,7 +443,7 @@ async fn handler_err_after_non_blocking_pushes_discards_queued_pushes() {
         None => {}
         Some(Err(_)) => {}
         Some(Ok(frame)) => {
-            panic!("no push frame should have been sent before the handler error: {frame:?}")
+            panic!("no further frame should have been sent after all queued pushes: {frame:?}")
         }
     }
 

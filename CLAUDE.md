@@ -571,7 +571,33 @@ fandhe-backend/
 │   │                                    # 対称に呼ばれないフェイルクローズ契約。`crates/core`
 │   │                                    # は無変更のまま実装、
 │   │                                    # `docs/design/ws-connection-context-and-close.md`
-│   │                                    # 9 節参照）
+│   │                                    # 9 節参照）。イシュー #710（親 #708）で
+│   │                                    # `WsSender::close(code, reason)` を追加し、
+│   │                                    # `on_open` から spawn したタスク等、
+│   │                                    # `on_message` の外からも任意タイミングで
+│   │                                    # サーバー起点の Close ハンドシェイクを開始できる
+│   │                                    # ようにした。送信キューを流れる要素を内部表現
+│   │                                    # `OutboundItem`（`Message`/`Close` の 2 variant）へ
+│   │                                    # 統一し、`send`/`close` を単一の bounded mpsc へ
+│   │                                    # reserve + 共有 `Mutex`（close 状態）経由で直列
+│   │                                    # enqueue することで、「close 前にキュー済みの push は
+│   │                                    # Close より前に送出される」という順序保証を
+│   │                                    # 構造的に成立させた（TOCTOU なし。close の要求から
+│   │                                    # `close_grace` 超過・世代キャンセル・idle timeout・
+│   │                                    # 送出失敗で打ち切られた場合は残りと Close を送らない）。
+│   │                                    # close code は RFC 6455 7.4 節・IANA 登録に基づく
+│   │                                    # 自前の判定 `is_sendable_close_code`（`1014` を含む
+│   │                                    # `1000..=1003`・`1007..=1009`・`1011..=1014`・
+│   │                                    # `3000..=4999` のみ許可。`1010` はクライアント専用の
+│   │                                    # ため拒否）で検証、reason は 123 バイト
+│   │                                    # 上限で検証し、失敗時・2 回目以降の呼び出し・
+│   │                                    # セッション終了後の呼び出しは `WsCloseError`
+│   │                                    # （`#[non_exhaustive]`）を返す。終了理由に
+│   │                                    # `CloseReason::SenderClose` を追加（非破壊）、
+│   │                                    # `WsSender::is_closed()` は `close()` 確定時点も
+│   │                                    # `true` を返す対象に拡張した。設計は
+│   │                                    # `docs/design/ws-connection-context-and-close.md`
+│   │                                    # 12 節参照）
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O

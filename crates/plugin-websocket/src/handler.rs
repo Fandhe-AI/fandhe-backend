@@ -17,11 +17,13 @@
 
 use std::error::Error as StdError;
 use std::fmt;
-use std::sync::Arc;
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::task::Poll;
 
 use futures_util::future::BoxFuture;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 /// ユーザーコードとやり取りするメッセージ表現。
 ///
@@ -47,16 +49,13 @@ pub enum WsOutcome {
     ///
     /// 送信キューの flush（イシュー #711）: `on_message`（`on_message_with_ctx`）
     /// 内で本 variant を返す前に [`WsSender::send`] で push したメッセージは、
-    /// **`WebSocketConfig::close_grace`（既定 10 秒）の期限内に送出できた
-    /// 範囲で** Close フレームより先に送出される。Close 処理の開始時点で
-    /// 送信キューは閉じられ（`crate::session::flush_outbound`）、以後の
+    /// `WebSocketConfig::close_grace`（既定 10 秒）超過・世代キャンセル・送出
+    /// 失敗で打ち切られない限り、Close フレームより先に送出される。Close 処理の
+    /// 開始時点で送信キューは封鎖され（`crate::session::flush_outbound`）、以後の
     /// `WsSender::send` 呼び出しはすべて [`WsSendError`] で失敗する（同じ
-    /// クローンを保持する別タスクからの送信も対象）。クライアントが受信を
-    /// 止めている等で `close_grace` を超過した場合、残りのキュー済み
-    /// メッセージは送出されずに破棄され、Close フレーム自体も送らずに
-    /// セッションを即座に終了する（二次 DoS 対策、Codex レビュー指摘対応。
-    /// `crate::session::FlushOutcome::TimedOut` 参照）。「必ず先に送出」は
-    /// `close_grace` 内に収まる場合の契約であり、無条件の保証ではない。
+    /// クローンを保持する別タスクからの送信も対象）。打ち切られた場合、残りの
+    /// メッセージと Close フレームは送出されずにセッションが終了する（二次 DoS
+    /// 対策。`crate::session::FlushOutcome::TimedOut` 参照）。
     Close,
 }
 
@@ -230,6 +229,17 @@ pub enum CloseReason {
     /// ため。エラー詳細は `Result` 側（`crate::session::run_session_inner`
     /// の戻り値の第 2 要素）から取得する）。
     Failed(FailureKind),
+    /// [`WsSender::close`] によるサーバー起点の Close ハンドシェイク
+    /// （イシュー #710）。ハンドラの戻り値 `WsOutcome::Close`
+    /// （[`Self::HandlerClose`]）とは呼び出し経路が異なり、`on_open` 等から
+    /// 任意タイミングで（`on_message` の外からも）呼べる `WsSender::close`
+    /// によって開始された終了を表す。close 時点でキュー済みだった
+    /// [`WsSender::send`] の push は Close フレームより先に送出される（順序
+    /// 保証）。ただし close の要求から `close_grace` 超過・世代キャンセル・idle timeout・送出失敗で
+    /// 打ち切られた場合は、残りの push と Close フレームを送らずに終了する
+    /// （`close_grace` 超過のときも理由は本 variant。世代キャンセル・idle timeout
+    /// が先に発火したときはその理由になる。詳細は [`WsSender::close`] の doc）。
+    SenderClose,
 }
 
 /// [`CloseReason::Failed`] が運ぶ失敗の種別。
@@ -325,9 +335,10 @@ pub trait WsMessageHandler: Send + Sync + 'static {
     /// `Future` を単独 `await` せず、outbound 到着と race させて都度
     /// 消化するため（PR #725 レビュー指摘対応、設計は
     /// `docs/design/ws-connection-context-and-close.md` 6 節。排出開始
-    /// 時点で既に格納済みだった push は本メソッドが返す
-    /// `WsOutcome::Reply`/`Close` より先に送出される保証があり、それ以外の
-    /// 相対順序は不定）。
+    /// 時点で既に格納済みだった push は、cancel・送出失敗・close 要求後の
+    /// `close_grace` 超過で打ち切られない限り、本メソッドが返す
+    /// `WsOutcome::Reply`/`Close` より先に送出される。それ以外の相対順序は
+    /// 不定）。
     ///
     /// # Examples
     ///
@@ -1020,10 +1031,157 @@ pub(crate) fn default_handler() -> Arc<dyn WsMessageHandler> {
 ///
 /// clone 可能で、複数タスクから同時に `send` してよい（内部の
 /// `mpsc::Sender` がそのままクローン可能なことに由来する）。
+///
+/// # 送信キューを流れる内部表現（イシュー #710）
+///
+/// 公開 API 上はメッセージ（[`Self::send`]）と Close 指示（[`Self::close`]）の
+/// 2 系統に見えるが、内部の bounded mpsc（`tx`）は両方を単一の
+/// `OutboundItem` として同一キューへ直列に流す。これにより「close 時点で
+/// キュー済みだった push は Close より前に送出される（打ち切り条件は
+/// [`Self::close`] の doc）」という順序保証が、mpsc の FIFO 特性だけで構造的に
+/// 成り立つ（2 本の別チャネルに
+/// 分けると、消費側でのマージ順序を別途保証する必要が生じる。`crate::session`
+/// の消費側は `OutboundItem` を分岐して処理する）。
+///
+/// `closing`（`Arc<Mutex<CloseState>>` の `closing` フラグ、全 clone で共有）は「以後の enqueue を拒否
+/// するか（[`Self::close`] の確定済み、またはセッションの終了処理で送信キューを
+/// 封鎖済み）」の単一の真実源であり、`Self::commit` が enqueue 判定と同一ロック区間で
+/// 読み書きすることで、「フラグ確認 → enqueue」の間に別タスクの `close` が
+/// 割り込んで Close の後ろへメッセージが積まれる TOCTOU を排除する
+/// （`.claude/rules/coding-rust.md` の「ロック保持中の `.await` を避ける」を
+/// 守るため、ロックを取る前に `reserve()`/`try_reserve()` で `Permit` を
+/// 確保し、ロック内では同期的な `Permit::send` のみを行う）。
+///
+/// # close 確定・封鎖を待機中の呼び出しへ即時伝える仕組み（PR #736 レビュー指摘対応）
+///
+/// `reserve()` は送信キューが満杯だと Ready にならないため、キュー満杯時に
+/// 別 clone の [`Self::close`] が確定しても（またはセッションが送信キューを
+/// 封鎖しても）、キューが実際にドレインされる
+/// （あるいは受信側 `Receiver` が drop される）まで、保留中の [`Self::send`]/
+/// [`Self::close`] は `WsSendError`/`WsCloseError::Closed` を返せない
+/// （満杯キュー上の無関係な push の実配送速度に応答時間が従属してしまう。
+/// `.claude/rules/security.md` のリソース枯渇対策上望ましくない）。
+/// `closed_signal`（`Arc<watch::Sender<bool>>`）で `Self::commit`・
+/// `Self::seal_for_session` が `closing` を true にした直後にブロードキャストし、
+/// `Self::reserve_or_closed`
+/// が `reserve()` とこの信号を手動 race させることで、キューの実ドレインを
+/// 待たず即座に解放する。
 #[derive(Clone)]
 pub struct WsSender {
-    tx: mpsc::Sender<WsMessage>,
+    tx: mpsc::Sender<OutboundItem>,
+    /// close 状態（全 clone で共有）。`closing` は以後の enqueue を拒否する
+    /// かどうかの単一の真実源で、[`Self::close`] の確定時、またはセッションが
+    /// 終了経路で送信キューを封鎖した時（`Self::seal_for_session`）に true に
+    /// なる（`Self::commit` の doc を参照）。`pending_close_requests` は確定前の
+    /// close 要求の数（`CloseRequest` を参照）。
+    closing: Arc<Mutex<CloseState>>,
+    /// close 要求（確定前を含む）の有無を `crate::session::CloseBound` へ伝える
+    /// watch シグナル（Cursor Bugbot 指摘対応）。値は「確定前の要求がある、
+    /// または `closing`」で、`closing` と同じロック区間で計算してから送る。
+    /// `send_replace` で送るため受信側の生存を要しない。
+    close_request_signal: Arc<watch::Sender<bool>>,
+    /// close 確定・セッションの封鎖を待機中の呼び出しへ伝える watch シグナル
+    /// （[`Self`] の doc を参照）。`watch::Sender::send` は `&self` で呼べるため
+    /// `Arc` 越しに全 clone から共有できる。
+    closed_signal: Arc<watch::Sender<bool>>,
+    /// `closed_signal` の受信側を最低 1 個生存させ続けるための保持専用
+    /// clone（watch チャネルは全 `Receiver` が drop されると `send` が
+    /// 更新を伝えられなくなる。実際の待機は各呼び出しが
+    /// `closed_signal.subscribe()` で作る一時 `Receiver` が担うため、
+    /// 本フィールド自身の値は読まない）。
+    _closed_signal_anchor: watch::Receiver<bool>,
 }
+
+/// [`WsSender`] の close 状態（`closing` の `Mutex` で保護する）。
+#[derive(Debug, Default)]
+struct CloseState {
+    /// 以後の enqueue を拒否する（close 確定済み、またはセッションが封鎖済み）。
+    closing: bool,
+    /// `reserve` 待ちなど、確定前の [`WsSender::close`] 呼び出しの数。
+    pending_close_requests: usize,
+}
+
+/// [`WsSender::close`] の要求を、確定するまで（または呼び出しの future が
+/// drop されるまで）記録する RAII ガード（Cursor Bugbot 指摘対応）。
+///
+/// 送信キューが満杯だと `close()` は空きを待って確定できず、受信を止めた
+/// クライアント相手ではその間セッションが先行 push の送出で止まる。セッションが
+/// `close_grace` を数え始められるよう、`reserve` の前に要求を記録して
+/// `close_request_signal` を送る。drop 時に要求を取り下げ、「確定前の要求が
+/// 残っている、または `closing`」を送り直す（確定済みなら true のまま）。
+struct CloseRequest<'a>(&'a WsSender);
+
+// `close_request_signal` の送信は、要求数の更新と同じ `closing` のロック区間で
+// 行う（PR #736 レビュー指摘対応）。ロック解放後に送ると、並行する取り下げ
+// （false を計算 → 解放 → 遅れて送信）と新規要求（true）の送信順が逆転し、
+// 要求が残っているのに最終値が false になって期限が解除されうる。ロック区間内
+// なら送信順は要求数の更新順と一致する。受信側（`crate::session::CloseBound`）は
+// watch の `borrow`/`changed` だけを使い `closing` のロックを取らず、送信側も
+// watch の内部ロックを持ったまま `closing` のロックを取らないため、
+// デッドロックしない。
+impl<'a> CloseRequest<'a> {
+    fn new(sender: &'a WsSender) -> Self {
+        let mut state = sender
+            .closing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.pending_close_requests += 1;
+        sender.close_request_signal.send_replace(true);
+        drop(state);
+        Self(sender)
+    }
+}
+
+impl Drop for CloseRequest<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .0
+            .closing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.pending_close_requests = state.pending_close_requests.saturating_sub(1);
+        let active = state.pending_close_requests > 0 || state.closing;
+        self.0.close_request_signal.send_replace(active);
+    }
+}
+
+/// [`WsSender`] の送信キューを流れる内部アイテム（`pub(crate)`、イシュー
+/// #710）。[`WsMessageHandler`] 等の公開 API には出さず、`crate::session`
+/// からのみ分岐・消費される。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum OutboundItem {
+    /// [`WsSender::send`] が enqueue したユーザー起点の push メッセージ。
+    Message(WsMessage),
+    /// [`WsSender::close`] が enqueue したサーバー起点の Close 指示。
+    /// `code`/`reason` は [`WsSender::close`] の呼び出し時点で検証済み
+    /// （RFC 6455 で送信が許される code・123 バイト以内の reason）。
+    Close {
+        /// close code（検証済み）。
+        code: u16,
+        /// close reason（検証済み、123 バイト以内）。
+        reason: String,
+    },
+}
+
+/// [`WsSender::close`] で送信を許す close code か（RFC 6455 7.4 節・IANA
+/// WebSocket Close Code Number Registry）。
+///
+/// 許可するのは登録済みの `1000..=1003`・`1007..=1009`・`1011..=1014` と、
+/// ライブラリ・フレームワーク用の `3000..=3999`・私用の `4000..=4999`。
+/// `1004`（予約）・`1005`/`1006`/`1015`（フレームに載せてはならない）・`1010`
+/// （Mandatory Extension。クライアント専用で、サーバーは送らない。RFC 6455
+/// 7.4.1 節）・未割り当ての `1016..=2999`・範囲外（`<1000`・`>=5000`）は拒否する。tungstenite の
+/// `CloseCode::is_allowed()` は `1014`（Bad Gateway）を知らず拒否するため使わない
+/// （Cursor Bugbot 指摘対応。なお tungstenite 0.30 のクライアントは受信した
+/// `1014` に 1002 で応答する。相手側の実装の制限）。
+fn is_sendable_close_code(code: u16) -> bool {
+    matches!(code, 1000..=1003 | 1007..=1009 | 1011..=1014 | 3000..=4999)
+}
+
+/// [`WsSender::close`] が受け付ける close reason の最大バイト長（イシュー
+/// #710）。制御フレームの payload 上限（125 バイト）から close code 分の
+/// 2 バイトを引いた値（RFC 6455 5.5 節）。
+const MAX_CLOSE_REASON_BYTES: usize = 123;
 
 impl WsSender {
     /// `msg` をセッションの送信キューへ入れる。
@@ -1034,28 +1192,401 @@ impl WsSender {
     /// バックプレッシャ。無制限バッファ化を防ぐリソース枯渇 DoS 対策、
     /// `.claude/rules/security.md`）。
     ///
-    /// セッションが既に終了している場合（受信側が drop 済み、または
-    /// 閉じられ済み）は [`WsSendError`] を返す。セッションの世代キャンセル
-    /// （最終 graceful shutdown・rebind 世代 drain）発火時は、ブロック中の
-    /// 呼び出しも `WebSocketConfig::close_grace` の満了を待たず即座にこの
-    /// エラーで解放される（`crate::session` が cancel 発火時に受信側
-    /// `Receiver` を明示的に drop するため。イシュー #670 の受け入れ基準 3）。
+    /// セッションが既に終了している場合（受信側が drop 済み）、または
+    /// 既に [`Self::close`] が呼ばれている場合は [`WsSendError`] を返す
+    /// （イシュー #710 で追加。close 後の送信を一貫して拒否するフェイル
+    /// クローズ契約）。セッションの世代キャンセル（最終 graceful
+    /// shutdown・rebind 世代 drain）発火時は、ブロック中の呼び出しも
+    /// `WebSocketConfig::close_grace` の満了を待たず即座にこのエラーで
+    /// 解放される（`crate::session` が cancel 発火時に受信側 `Receiver` を
+    /// 明示的に drop するため。イシュー #670 の受け入れ基準 3）。
     ///
-    /// `WsOutcome::Close`（イシュー #711）: ハンドラが `WsOutcome::Close` を
-    /// 返した時点で、`crate::session::flush_outbound` が受信側を
-    /// `close()`（drop ではなく）する。これにより、`ws.close()` の送出完了を
+    /// 送信キューが満杯の状態で本呼び出しが `reserve()` 待ちに入っている
+    /// 間に別 clone の [`Self::close`] が確定した場合も、キューの実ドレインを
+    /// 待たず即座に [`WsSendError`] を返す（`Self::reserve_or_closed` の
+    /// doc を参照、PR #736 レビュー指摘対応）。
+    ///
+    /// `WsOutcome::Close`（イシュー #711）: ハンドラが `WsOutcome::Close`（または
+    /// `Err`）を返した時点で、`crate::session::flush_outbound` が送信キューを
+    /// 封鎖し、受信側を `close()`（drop ではなく）する。これにより、`ws.close()` の送出完了を
     /// 待たず（応答を読まないクライアント相手では送出自体が長時間ブロック
     /// しうる）、ブロック中の本メソッド呼び出しも即座にこのエラーで
-    /// 解放される。閉鎖時点までに既にキュー済みだったメッセージ
-    /// （本メソッドの呼び出しが完了済みの分）は、**`WebSocketConfig::
-    /// close_grace`（既定 10 秒）の期限内に送出できた範囲で** 破棄されず
-    /// Close フレームより先に送出される。クライアントが受信を止めている等で
-    /// `close_grace` を超過した場合は、残りのキュー済みメッセージは送出
-    /// されずに破棄され、Close フレーム自体も送らずにセッションが即座に
-    /// 終了する（二次 DoS 対策。`crate::session::FlushOutcome::TimedOut` を
-    /// 参照。「破棄されず送出される」は無条件の保証ではない）。
+    /// 解放される。閉鎖より前に本メソッドが `Ok` を返したメッセージは、
+    /// `WebSocketConfig::close_grace`（既定 10 秒）の超過・世代キャンセル・
+    /// 排出中の送信失敗で打ち切られない限り、セッション終了前に送出される
+    /// （`WsOutcome::Close` の場合は Close フレームより先。ハンドラ `Err` の
+    /// 場合は Close フレームを送らずに終了する）。打ち切られた場合、残りの
+    /// メッセージと Close フレームは送出されない（二次 DoS 対策。
+    /// `crate::session::FlushOutcome::TimedOut` を参照）。
     pub async fn send(&self, msg: WsMessage) -> Result<(), WsSendError> {
-        self.tx.send(msg).await.map_err(|_| WsSendError)
+        let permit = self.reserve_or_closed().await.map_err(|()| WsSendError)?;
+        self.commit(permit, OutboundItem::Message(msg), false)
+            .map_err(|()| WsSendError)
+    }
+
+    /// サーバー起点で Close ハンドシェイクを開始する（イシュー #710、親
+    /// #708「サーバー起点で任意タイミングに Close を送れる WebSocket
+    /// API」）。`on_message` の戻り値 `WsOutcome::Close`
+    /// （[`CloseReason::HandlerClose`]）と異なり、`on_open` から `spawn`
+    /// したタスク等、ハンドラの外からも任意のタイミングで呼べる。
+    ///
+    /// # 順序保証
+    ///
+    /// 本呼び出しより前に [`Self::send`] が `Ok` を返した push メッセージは、
+    /// Close フレームより先に送出される（[`Self`] の「送信キューを流れる内部
+    /// 表現」節を参照。単一の bounded mpsc を経由するため FIFO 順序が保たれる）。
+    /// ただし「完了タイミング」節の打ち切り条件（`close_grace` 超過・世代キャンセル・idle timeout・送出失敗）
+    /// に当たると、残りの push と Close フレームは送出されない。close の `reserve()` 待ち
+    /// 中に先に permit を得た `send` は Close より前に並ぶ。close が
+    /// 確定した**後**に enqueue しようとした `send` は必ず `Err` になる
+    /// （`Self::commit` が同一ロック区間で判定するため、「送信済みなのに
+    /// Close の後ろへ積まれて破棄される」という静かなデータ欠落は起こらない）。
+    ///
+    /// セッションがハンドラの `Err`/`WsOutcome::Close` で送信キューを封鎖する
+    /// 処理と競合した場合、本メソッドは封鎖より前に確定すれば `Ok` を返し、
+    /// その Close は `close_grace` 超過・世代キャンセル・排出中の送信失敗で
+    /// 打ち切られない限り送出される。封鎖より後なら
+    /// [`WsCloseError::Closed`] を返す（`crate::session::flush_outbound` の
+    /// doc を参照）。
+    ///
+    /// # 検証（RFC 6455 7.4 節・5.5 節）
+    ///
+    /// - `code`: RFC 6455 7.4 節と IANA WebSocket Close Code Number Registry
+    ///   に基づき、`1000..=1003`・`1007..=1009`・`1011..=1014`・`3000..=4999`
+    ///   のみを許可する。それ以外（`<1000`・`1004`・`1005`・`1006`・`1010`
+    ///   （クライアント専用）・`1015`・予約域 `1016..=2999`・`>=5000`）は
+    ///   [`WsCloseError::InvalidCode`] を返す。この検証で拒否した場合、close
+    ///   済みフラグは立たず、以後の `send`/`close` は通常どおり成功しうる（不正なフレームを実際には
+    ///   送出しない入力検証、`.claude/rules/security.md`）。
+    /// - `reason`: UTF-8 は `&str` の型で保証されるが、バイト長が
+    ///   `MAX_CLOSE_REASON_BYTES`（123 バイト、制御フレーム payload 上限
+    ///   125 バイトから close code 2 バイトを引いた値）を超える場合は
+    ///   [`WsCloseError::ReasonTooLong`] を返す（検証失敗時も close 済み
+    ///   フラグは立たない）。
+    ///
+    /// # 2 回目以降の呼び出し・セッション終了後の呼び出し
+    ///
+    /// 検証を通過した後、既に close 済み（2 回目以降の呼び出し）、または
+    /// セッションが既に終了している（受信側 drop 済み）場合は
+    /// [`WsCloseError::Closed`] を返す（フェイルクローズ、[`Self::send`] の
+    /// close 後の挙動と一貫させる）。
+    ///
+    /// # 完了タイミング
+    ///
+    /// `.await` から戻るのは Close 指示をキューへ enqueue した時点であり、
+    /// ワイヤ上の送出完了を待たない（[`Self::send`] と同型のバック
+    /// プレッシャ契約。チャネルが満杯なら受信側が消費するまで待機する）。
+    ///
+    /// 本メソッドを呼ぶと、検証を通った時点で close の要求が記録される
+    /// （送信キューが満杯で確定を待っている間も含む）。セッションは要求を
+    /// 観測した時点（通常は呼び出しの直後）から `WebSocketConfig::close_grace`
+    /// （既定 10 秒）以内に、先行する push の送出・Close フレームの送出・応答
+    /// 待ちを終えるか、接続を打ち切る（クライアントが受信を止めていても有界。
+    /// 打ち切った場合の終了理由も `CloseReason::SenderClose`）。ただし、その
+    /// 間に世代キャンセル・idle timeout が先に発火した場合は、その経路の契約
+    /// （発火時点から `close_grace`、終了理由 `Cancelled`/`IdleTimeout`）に従う。
+    /// close を要求していない間の push の送出には期限を設けない。
+    ///
+    /// 確定前に `close_grace` を超えてセッションが打ち切られた場合、本メソッドは
+    /// （呼び出しがまだ待機中なら）[`WsCloseError::Closed`] を返す（ハンドラの
+    /// 中から呼んだ場合はハンドラの future ごと drop される）。確定前に本メソッドの
+    /// future を drop すると要求は取り下げられ、ほかに要求がなければ期限も解除
+    /// される。
+    ///
+    /// ワイヤ上の完了（セッション終了）を待ちたい場合の代替として
+    /// [`Self::closed`] があるが、本メソッドが起こす `SenderClose` 経路
+    /// （`crate::session`）では、実際に Close フレームを書き込みピアの
+    /// 応答をドレインする処理（`close_and_drain`）より**前**に受信側
+    /// `Receiver` が drop される。そのため [`Self::closed`] は Close
+    /// フレームがワイヤへ送出される前、セッションが本当に終了するより
+    /// 早い時点で完了しうる（cancel・idle timeout 経路と同じ挙動。
+    /// 詳細・完了時点の一次情報は [`Self::closed`] の doc を参照）。
+    ///
+    /// # ハンドラ実行中に呼ぶ場合の注意（[`Self::closed`] とは異なる）
+    ///
+    /// [`Self::closed`] とは異なり、本メソッドを `on_message`/
+    /// `on_message_with_ctx` の実装の中でインライン `await` してもデッド
+    /// ロックしない（`crate::session::run_handler_with_outbound_drain` が
+    /// ハンドラ実行中も outbound チャネルを消化し続けるため）。ただし、
+    /// セッションがハンドラの戻り値の送出を始める直前に close の確定を判定する
+    /// 時点（`WsOutcome::Reply` は送信キューと同じロックでの確認、
+    /// `WsOutcome::Close` は送信キューの封鎖）より前に本メソッドが確定（同じ
+    /// ロック区間での close 済みフラグの更新）していれば、その戻り値は**破棄
+    /// され送出されない**（ハンドラの実行中か完了後の送信キュー排出中かを
+    /// 問わない。RFC 6455 5.5.1 節: Close フレームの後にデータフレームを送れない
+    /// ため）。判定より後に確定した場合、`Reply` は Close より先に送出されうる
+    /// （close 要求の観測から `close_grace` で打ち切る）。呼び出し後に返す値に意味を持たせ
+    /// たい場合は、本メソッドを `on_open` 等から `tokio::spawn` した別
+    /// タスクから呼ぶ構成にする（ハンドラ自身の戻り値と競合しない）。
+    ///
+    /// # Examples
+    ///
+    /// （`on_open` で spawn したタスクから push を数件送ったあと
+    /// `close(4000, "bye")` を呼ぶ。クライアントは push を順に受け取り、
+    /// 最後に code 4000・reason "bye" の Close を受け取る。クライアントが
+    /// 受信を止めていた場合も、セッションは close の要求から `close_grace`
+    /// 以内に終わる。）
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+    /// use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade};
+    /// use fandhe_backend_plugin_websocket::handler::{
+    ///     WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome,
+    /// };
+    /// use futures_util::future::BoxFuture;
+    /// use futures_util::{SinkExt, StreamExt};
+    /// use tokio::io::AsyncReadExt;
+    /// use tokio_tungstenite::WebSocketStream;
+    /// use tokio_tungstenite::tungstenite::protocol::Role;
+    ///
+    /// struct PushThenClose;
+    ///
+    /// impl WsMessageHandler for PushThenClose {
+    ///     fn name(&self) -> &'static str {
+    ///         "push-then-close"
+    ///     }
+    ///
+    ///     fn on_open(&self, ctx: WsOpenContext) {
+    ///         let sender = ctx.sender().clone();
+    ///         tokio::spawn(async move {
+    ///             for i in 0..3 {
+    ///                 let _ = sender.send(WsMessage::Text(format!("push-{i}"))).await;
+    ///             }
+    ///             let _ = sender.close(4000, "bye").await;
+    ///         });
+    ///     }
+    ///
+    ///     fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+    ///         Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+    ///     }
+    /// }
+    ///
+    /// # async fn read_http_response_line<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> String {
+    /// #     let mut buf = Vec::new();
+    /// #     let mut byte = [0u8; 1];
+    /// #     loop {
+    /// #         let n = stream.read(&mut byte).await.unwrap();
+    /// #         assert_ne!(n, 0);
+    /// #         buf.push(byte[0]);
+    /// #         if buf.ends_with(b"\r\n\r\n") { break; }
+    /// #     }
+    /// #     String::from_utf8(buf).unwrap()
+    /// # }
+    /// #
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// let buf = b"GET /ws HTTP/1.1\r\n\
+    ///     Upgrade: websocket\r\n\
+    ///     Connection: Upgrade\r\n\
+    ///     Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+    ///     Sec-WebSocket-Version: 13\r\n\
+    ///     \r\n";
+    /// let head = match parse_request_head(buf).unwrap() {
+    ///     ParseOutcome::Complete { head, .. } => head,
+    ///     ParseOutcome::Incomplete => unreachable!(),
+    /// };
+    /// let config = WebSocketConfig::default().with_handler(PushThenClose);
+    ///
+    /// let (server_side, mut client_side) = tokio::io::duplex(4096);
+    /// let server_task = tokio::spawn(async move {
+    ///     handle_upgrade(server_side, &head, Vec::new(), &config, std::future::pending::<()>()).await
+    /// });
+    ///
+    /// let response = read_http_response_line(&mut client_side).await;
+    /// assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    ///
+    /// let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+    ///
+    /// for i in 0..3 {
+    ///     let msg = tokio::time::timeout(Duration::from_secs(2), client.next())
+    ///         .await
+    ///         .expect("push should arrive within timeout")
+    ///         .expect("stream should not end")
+    ///         .expect("frame should not error");
+    ///     assert_eq!(msg.into_text().unwrap(), format!("push-{i}"));
+    /// }
+    ///
+    /// let close_frame = tokio::time::timeout(Duration::from_secs(2), client.next())
+    ///     .await
+    ///     .expect("close frame should arrive within timeout")
+    ///     .expect("stream should not end")
+    ///     .expect("frame should not error");
+    /// match close_frame {
+    ///     tokio_tungstenite::tungstenite::Message::Close(Some(frame)) => {
+    ///         assert_eq!(u16::from(frame.code), 4000);
+    ///         assert_eq!(frame.reason.as_str(), "bye");
+    ///     }
+    ///     other => panic!("expected a close frame, got {other:?}"),
+    /// }
+    ///
+    /// client.close(None).await.ok();
+    /// let _ = tokio::time::timeout(Duration::from_secs(2), server_task).await;
+    /// # }
+    /// ```
+    pub async fn close(&self, code: u16, reason: &str) -> Result<(), WsCloseError> {
+        if !is_sendable_close_code(code) {
+            return Err(WsCloseError::InvalidCode);
+        }
+        if reason.len() > MAX_CLOSE_REASON_BYTES {
+            return Err(WsCloseError::ReasonTooLong);
+        }
+        // 検証を通った要求を `reserve` の前に記録する（確定まで、または本
+        // future が drop されるまで。`CloseRequest` の doc を参照）。
+        let _request = CloseRequest::new(self);
+        let permit = self
+            .reserve_or_closed()
+            .await
+            .map_err(|()| WsCloseError::Closed)?;
+        self.commit(
+            permit,
+            OutboundItem::Close {
+                code,
+                reason: reason.to_string(),
+            },
+            true,
+        )
+        .map_err(|()| WsCloseError::Closed)
+    }
+
+    /// `permit` を使って `item` を確定送出する共通ヘルパー（イシュー #710）。
+    ///
+    /// close 済みフラグの確認 → （`closing_after` なら）フラグを立てる →
+    /// `permit.send`（同期）の 3 手順を [`Self::closing`] の同一ロック区間で
+    /// 行うことで、「フラグ確認と enqueue の間に別タスクの [`Self::close`]
+    /// が割り込んで Close の後ろへメッセージが積まれる」という TOCTOU を
+    /// 構造的に排除する（[`Self`] の doc を参照。ロック保持中は `.await`
+    /// しない、`.claude/rules/coding-rust.md`）。
+    ///
+    /// 既に close 済みの場合は `permit` を drop して `Err(())` を返す
+    /// （呼び出し元が [`WsSendError`]/[`WsCloseError::Closed`] へ変換する）。
+    ///
+    /// **セッション側の封鎖との関係（PR #736 レビュー指摘対応）**:
+    /// `crate::session::flush_outbound` は [`Self::seal_for_session`] で
+    /// 同じ `closing` ロックの区間内に封鎖状態を立てる。ロックの前後関係から、
+    /// 封鎖より前に本メソッドが `Ok` を返した項目は封鎖時点でキューに入って
+    /// おり、封鎖より後の呼び出しは `Err` になる。このため同関数は permit
+    /// 保持者の確定を待たず、`try_recv()` だけで排出を終えられる（tokio の
+    /// 受信側の起床挙動に依存しない）。
+    ///
+    /// `closing_after` で close 済みへ遷移させた場合は、ロック解放後に
+    /// `closed_signal` へブロードキャストし、送信キュー満杯で
+    /// `Self::reserve_or_closed` の中で保留中の他 clone を即時に解放する
+    /// （PR #736 レビュー指摘対応。`send` はロックを保持したまま行わない
+    /// ため `.claude/rules/coding-rust.md` の制約を破らない）。
+    fn commit(
+        &self,
+        permit: mpsc::Permit<'_, OutboundItem>,
+        item: OutboundItem,
+        closing_after: bool,
+    ) -> Result<(), ()> {
+        {
+            let mut state = self.closing.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.closing {
+                drop(permit);
+                return Err(());
+            }
+            if closing_after {
+                state.closing = true;
+            }
+            permit.send(item);
+        }
+        if closing_after {
+            // 受信側は `_closed_signal_anchor` が最低 1 個生存を保証するため
+            // 送信は必ず成功する（戻り値は無視してよい）。`closed_signal` は
+            // true にしか変わらない単調な値なので、ロック解放後に送って他の
+            // 送信と順序が入れ替わっても最終値は変わらない（無害）。
+            let _ = self.closed_signal.send(true);
+        }
+        Ok(())
+    }
+
+    /// セッションの終了処理で送信キューを封鎖する（`pub(crate)`、
+    /// `crate::session` 専用。PR #736 レビュー指摘対応）。`crate::session` は
+    /// 受信側を閉じる・drop する前に必ず本メソッドを呼ぶ（受信側を所有する
+    /// `OutboundGuard` の `seal`/`release`/`Drop` が呼ぶ）。
+    ///
+    /// `closing` を [`Self::commit`] と同じロック区間で true にし、以後の
+    /// [`Self::send`]/[`Self::close`] を `Err` にする。ロック解放後に
+    /// `closed_signal` を送り、送信キュー満杯で待機中の呼び出しを解放する。
+    /// ロック保持中は `.await` せず、ほかのロックも取らない（デッドロックの
+    /// 余地がない）。何度呼んでもよい。
+    pub(crate) fn seal_for_session(&self) {
+        self.closing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .closing = true;
+        // 受信側は `_closed_signal_anchor` が最低 1 個生存を保証するため
+        // 送信は必ず成功する（戻り値は無視してよい）。`closed_signal` は単調
+        // （true のみ）なので、ロック外で送っても順序の入れ替わりは無害。
+        let _ = self.closed_signal.send(true);
+    }
+
+    /// `closing` を [`Self::commit`] と同じロックで読み、[`Self::close`] の確定
+    /// （またはセッションの封鎖）の有無を返す（`pub(crate)`、`crate::session`
+    /// 専用。PR #736 codex P1 指摘対応）。
+    ///
+    /// セッションは Reply の送出を始める直前（間に `.await` を挟まない）に本
+    /// メソッドで判定し、`true` なら Reply を破棄して Close 指示の処理へ進む。
+    /// ロックの前後関係から、`true` を返したときは `close()` の Close 指示が
+    /// すでにキューにある。Reply を送る継続経路ではセッションは封鎖しない
+    /// （封鎖する防御分岐では受信側を無効化する）ため、`true` は `close()` の
+    /// 確定と判定してよい。
+    pub(crate) fn close_committed(&self) -> bool {
+        self.closing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .closing
+    }
+
+    /// close 要求（確定前を含む）の有無を観測する watch 受信側を返す
+    /// （`pub(crate)`、`crate::session` 専用。Cursor Bugbot 指摘対応）。
+    /// セッションは要求を観測した時点から `close_grace` 以内に Close
+    /// ハンドシェイクを終えるか接続を打ち切る（`crate::session::CloseBound`）。
+    /// 確定前の要求がすべて取り下げられる（`close()` の future が drop される）と
+    /// `false` に戻る。返り値は購読時点の値を既読扱いにするため、呼び出し側は
+    /// `borrow()` で現在値を確かめてから `changed()` を待つこと。
+    pub(crate) fn subscribe_close_request(&self) -> watch::Receiver<bool> {
+        self.close_request_signal.subscribe()
+    }
+
+    /// [`Self::send`]/[`Self::close`] が使う共通の `reserve()` ラッパー
+    /// （PR #736 レビュー指摘対応。`crate::session::race2` と同型の手動
+    /// race で、`tokio::select!`（`tokio` の `macros` feature を要求する）
+    /// は使わない）。
+    ///
+    /// `self.tx.reserve()` を `closed_signal` の変化と race させ、送信
+    /// キューが満杯で `reserve()` が保留中でも、別 clone の [`Self::close`]
+    /// が確定した時点、またはセッションが送信キューを封鎖した時点
+    /// （`Self::seal_for_session`）で（キューの実ドレイン・受信側 `Receiver`
+    /// の drop を待たず）即座に `Err(())` を返す。
+    ///
+    /// close 確定シグナルを `reserve()` より先にポーリングする bias を持つ
+    /// （fail-closed。両方が同時に Ready でも close 側を勝たせる。逆でも
+    /// `Self::commit` が同一ロック区間で再判定するため安全性上の実害はない）。
+    ///
+    /// `closed_signal.subscribe()` は `watch` のバージョン管理に基づくため、
+    /// subscribe から本メソッドの `.await` 完了までの間に `Self::commit` が
+    /// 値を更新しても見逃さない（`borrow()` は常に最新値を返し、
+    /// `changed()` は subscribe 時点のバージョンより新しい更新を必ず捉える。
+    /// `Self` の doc も参照）。
+    async fn reserve_or_closed(&self) -> Result<mpsc::Permit<'_, OutboundItem>, ()> {
+        let mut closed_rx = self.closed_signal.subscribe();
+        if *closed_rx.borrow() {
+            return Err(());
+        }
+        let mut reserve = std::pin::pin!(self.tx.reserve());
+        let mut changed = std::pin::pin!(closed_rx.changed());
+        std::future::poll_fn(|cx| {
+            if changed.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(Err(()));
+            }
+            if let Poll::Ready(result) = reserve.as_mut().poll(cx) {
+                return Poll::Ready(result.map_err(|_| ()));
+            }
+            Poll::Pending
+        })
+        .await
     }
 
     /// セッションが outbound push を受け付けなくなるまで待つ（イシュー #727。
@@ -1072,8 +1603,9 @@ impl WsSender {
     /// idle timeout 経路では、Close ハンドシェイクのドレインより**前**に
     /// drop されるため、`closed()` はその時点で完了する（[`WsSender::send`]
     /// の doc にある「`close_grace` の満了を待たず解放」と同じ時点）。
-    /// `WsOutcome::Close` 経路（イシュー #711）では、`ws.close()` の送出
-    /// **前**に受信側が `close()` されるため（drop ではないが `Sender::
+    /// `WsOutcome::Close` 経路（イシュー #711）・ハンドラ `Err` 経路では、
+    /// `ws.close()` の送出・セッション終了の**前**に受信側が `close()` される
+    /// ため（drop ではないが `Sender::
     /// closed()` は同様に完了する）、`closed()` も同じく `ws.close()` の
     /// 完了を待たずに完了する。
     ///
@@ -1192,8 +1724,13 @@ impl WsSender {
     /// セッションが outbound push を受け付けなくなっているかを判定する
     /// （イシュー #727）。
     ///
-    /// [`WsSender::closed`] と同じ時点（受信側 `Receiver` の drop）で
-    /// `false` から `true` へ変わる。
+    /// [`WsSender::closed`] と同じ時点（受信側 `Receiver` の drop）、
+    /// [`WsSender::close`] が確定した時点（イシュー #710 で追加）、または
+    /// セッションの終了処理が送信キューを封鎖した時点のいずれか早い方で
+    /// `false` から `true` へ変わる。後 2 者の後は「outbound push を受け
+    /// 付けなくなっている」（[`Self::send`] が [`WsSendError`] を返す）状態に
+    /// 既に入っているため、[`Self::closed`]（受信側 drop まで完了しない）より
+    /// 先に `true` を返しうる。
     ///
     /// # 参考値であること（TOCTOU）
     ///
@@ -1288,11 +1825,60 @@ impl WsSender {
     /// ```
     #[must_use]
     pub fn is_closed(&self) -> bool {
-        self.tx.is_closed()
+        self.closing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .closing
+            || self.tx.is_closed()
+    }
+
+    /// テスト専用: 送信キューの現在の空き容量（`mpsc::Sender::capacity`）。
+    #[cfg(test)]
+    pub(crate) fn capacity_for_test(&self) -> usize {
+        self.tx.capacity()
+    }
+
+    /// テスト専用: [`Self::close`] の permit 確保だけを行い、確定（`commit`）を
+    /// 呼び出し元へ委ねる（PR #736 レビュー指摘の回帰テスト用）。
+    ///
+    /// 本番の [`Self::close`] は permit 確保から `commit` までを同期的に
+    /// （間に `.await` を挟まず）行うが、マルチスレッドランタイムでは
+    /// その同期区間の最中に別スレッドのセッションが受信側を `close()`
+    /// しうる。本ヘルパーと [`Self::commit_close_for_test`] の 2 段に分けることで、
+    /// 「permit 保持中に受信側が閉じられ、その後に Close が確定する」
+    /// 順序を単一スレッドのテストで決定的に再現する。
+    #[cfg(test)]
+    pub(crate) async fn reserve_close_for_test(
+        &self,
+    ) -> Result<mpsc::Permit<'_, OutboundItem>, WsCloseError> {
+        self.reserve_or_closed()
+            .await
+            .map_err(|()| WsCloseError::Closed)
+    }
+
+    /// テスト専用: [`Self::reserve_close_for_test`] で確保した permit で
+    /// Close 指示を確定する（[`Self::close`] の後半と同一の処理）。
+    #[cfg(test)]
+    pub(crate) fn commit_close_for_test(
+        &self,
+        permit: mpsc::Permit<'_, OutboundItem>,
+        code: u16,
+        reason: &str,
+    ) -> Result<(), WsCloseError> {
+        self.commit(
+            permit,
+            OutboundItem::Close {
+                code,
+                reason: reason.to_string(),
+            },
+            true,
+        )
+        .map_err(|()| WsCloseError::Closed)
     }
 }
 
-/// [`WsSender::send`] が返すエラー（セッション終了後の送信試行）。
+/// [`WsSender::send`] が返すエラー（セッションの終了処理（送信キューの封鎖）
+/// 開始後、または [`WsSender::close`] 確定後の送信試行）。
 ///
 /// `Display` はペイロード・内部状態を含まない固定文言とする（ログ・診断
 /// 名に送信内容や内部状態を含めない、`.claude/rules/security.md`。既存
@@ -1308,12 +1894,53 @@ impl fmt::Display for WsSendError {
 
 impl StdError for WsSendError {}
 
+/// [`WsSender::close`] が返すエラー（イシュー #710）。
+///
+/// `Display` はペイロード・内部状態を含まない固定文言とする（[`WsSendError`]
+/// と同一の情報露出最小化方針、`.claude/rules/security.md`）。将来
+/// variant を追加してもこれは非破壊変更として扱う（0.4.2 以降のバージョン
+/// 方針）ため `#[non_exhaustive]` を付ける。
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WsCloseError {
+    /// `code` が RFC 6455 7.4 節・IANA WebSocket Close Code Number Registry の
+    /// 意味でサーバーが送信を許されない値だった（`<1000`・`1004`・`1005`・
+    /// `1006`・`1010`（クライアント専用）・`1015`・予約域 `1016..=2999`・`>=5000`）。
+    /// この検証は不正な Close フレームを実際には送出しないための入力検証
+    /// であり（`.claude/rules/security.md`）、[`WsSender::close`] は
+    /// close 済みフラグを立てずに拒否する。
+    InvalidCode,
+    /// `reason` のバイト長が制御フレームの payload 上限（125 バイト）から
+    /// close code 分の 2 バイトを引いた 123 バイトを超えていた。
+    /// [`InvalidCode`](Self::InvalidCode) と同様、close 済みフラグは
+    /// 立たない。
+    ReasonTooLong,
+    /// 検証済みの `close` 呼び出しが、既に close 済み（2 回目以降の
+    /// 呼び出し）、またはセッションの終了処理（送信キューの封鎖）が既に
+    /// 始まっているために失敗した（フェイルクローズ、[`WsSendError`] の
+    /// close 後の挙動と一貫させる）。
+    Closed,
+}
+
+impl fmt::Display for WsCloseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let msg = match self {
+            Self::InvalidCode => "invalid websocket close code",
+            Self::ReasonTooLong => "websocket close reason too long",
+            Self::Closed => "websocket session already closed",
+        };
+        write!(f, "{msg}")
+    }
+}
+
+impl StdError for WsCloseError {}
+
 /// [`WsSender`] と、`crate::session::run_session` が受け取る側の
-/// `mpsc::Receiver<WsMessage>` のペアを構築する（`pub(crate)`、内部配線
+/// `mpsc::Receiver<OutboundItem>` のペアを構築する（`pub(crate)`、内部配線
 /// 専用）。
 ///
-/// 外部へは [`WsSender::send`] のみを公開する非対称 API とし、受信側
-/// （`Receiver`）はクレート内部（`run_session`）にのみ渡す。
+/// 外部へは [`WsSender::send`]/[`WsSender::close`] のみを公開する非対称
+/// API とし、受信側（`Receiver`）はクレート内部（`run_session`）にのみ渡す。
 ///
 /// `capacity` は `1` に切り上げる（`mpsc::channel(0)` は panic するため、
 /// `crates/core/src/streaming.rs` の `StreamingResponse::channel` と同一の
@@ -1321,9 +1948,19 @@ impl StdError for WsSendError {}
 ///
 /// `crate::handle_upgrade` から呼ばれる（イシュー #671。101 応答送出成功後・
 /// `on_open` 呼び出し直前に毎接続 1 回呼ばれる）。
-pub(crate) fn channel(capacity: usize) -> (WsSender, mpsc::Receiver<WsMessage>) {
+pub(crate) fn channel(capacity: usize) -> (WsSender, mpsc::Receiver<OutboundItem>) {
     let (tx, rx) = mpsc::channel(capacity.max(1));
-    (WsSender { tx }, rx)
+    let (closed_tx, closed_rx) = watch::channel(false);
+    (
+        WsSender {
+            tx,
+            closing: Arc::new(Mutex::new(CloseState::default())),
+            close_request_signal: Arc::new(watch::channel(false).0),
+            closed_signal: Arc::new(closed_tx),
+            _closed_signal_anchor: closed_rx,
+        },
+        rx,
+    )
 }
 
 #[cfg(test)]
@@ -1405,7 +2042,10 @@ mod tests {
             .await
             .unwrap();
         let received = rx.recv().await.unwrap();
-        assert_eq!(received, WsMessage::Text("hi".to_string()));
+        assert_eq!(
+            received,
+            OutboundItem::Message(WsMessage::Text("hi".to_string()))
+        );
     }
 
     /// パラメータ未登録（`Vec::new()`）の `WsOpenContext` は `param`/`params`
@@ -1486,7 +2126,10 @@ mod tests {
             .await
             .unwrap();
         let received = rx.recv().await.unwrap();
-        assert_eq!(received, WsMessage::Text("via-ctx".to_string()));
+        assert_eq!(
+            received,
+            OutboundItem::Message(WsMessage::Text("via-ctx".to_string()))
+        );
     }
 
     /// 受け入れ基準（`Debug` の機密混入防止）: `WsConnContext`/`WsOpenContext`
@@ -1619,5 +2262,338 @@ mod tests {
             .await
             .expect("waiter should be woken within timeout")
             .unwrap();
+    }
+
+    /// Cursor Bugbot 指摘対応: `close()` は `reserve` の前に要求を記録し
+    /// （満杯キューで確定を待っている間も要求シグナルは true）、確定前に future が
+    /// drop されると要求を取り下げる。確定後は true のまま。
+    #[tokio::test]
+    async fn close_request_is_recorded_before_reserve_and_withdrawn_on_drop() {
+        use futures_util::FutureExt;
+
+        let (sender, mut rx) = channel(1);
+        let requested = sender.subscribe_close_request();
+        sender
+            .send(WsMessage::Text("fill".to_string()))
+            .await
+            .expect("send within capacity should succeed");
+        assert!(!*requested.borrow(), "no close has been requested yet");
+
+        {
+            let mut pending = Box::pin(sender.close(4000, "bye"));
+            assert!(
+                (&mut pending).now_or_never().is_none(),
+                "close() must wait for a free slot while the queue is full"
+            );
+            assert!(
+                *requested.borrow(),
+                "the request must be visible before close() is committed"
+            );
+        }
+        assert!(
+            !*requested.borrow(),
+            "dropping close() before it commits must withdraw the request"
+        );
+        assert!(
+            !sender.close_committed(),
+            "the withdrawn close must not commit"
+        );
+
+        rx.recv().await.expect("the queued push should be received");
+        sender
+            .close(4000, "bye")
+            .await
+            .expect("close should succeed");
+        assert!(
+            *requested.borrow(),
+            "a committed close keeps the request signal set"
+        );
+    }
+
+    /// 受け入れ基準（イシュー #710）: RFC 6455 7.4 節・IANA 登録でサーバーが
+    /// 送信を許される close code（`1014` Bad Gateway と各範囲の境界値を含む）は
+    /// `Ok`、許されない code（`<1000`・`1004`・`1005`・`1006`・`1010`（クライアント
+    /// 専用）・`1015`・予約域 `1016..=2999`・`>=5000`）は `InvalidCode` を返す。
+    /// 検証エラー後も
+    /// close 済みフラグが立たないこと（`send` が引き続き成功すること）も
+    /// 確認する。
+    #[tokio::test]
+    async fn close_validates_code_per_rfc6455() {
+        for code in [
+            1000u16, 1001, 1002, 1003, 1007, 1009, 1011, 1012, 1013, 1014, 3000, 3999, 4000, 4999,
+        ] {
+            let (sender, mut rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+            sender.close(code, "").await.unwrap_or_else(|err| {
+                panic!("code {code} should be accepted, got {err}");
+            });
+            assert_eq!(
+                rx.recv().await.unwrap(),
+                OutboundItem::Close {
+                    code,
+                    reason: String::new(),
+                }
+            );
+        }
+
+        for code in [
+            0u16, 999, 1004, 1005, 1006, 1010, 1015, 1016, 2999, 5000, 65535,
+        ] {
+            let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+            assert_eq!(
+                sender.close(code, "").await,
+                Err(WsCloseError::InvalidCode),
+                "code {code} should be rejected"
+            );
+            // 検証エラーは close 済みフラグを立てない: 直後の send が
+            // 成功すること。
+            assert!(!sender.is_closed());
+            sender
+                .send(WsMessage::Text("still open".to_string()))
+                .await
+                .expect("send should still succeed after a rejected close() call");
+        }
+    }
+
+    /// 受け入れ基準（イシュー #710）: reason は 123 バイト（制御フレーム
+    /// payload 上限 125 バイトから close code 2 バイトを引いた値）まで
+    /// 許容し、超過は `ReasonTooLong`。マルチバイト文字の境界も確認する。
+    #[tokio::test]
+    async fn close_validates_reason_length() {
+        let ascii_123 = "a".repeat(123);
+        let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        sender.close(1000, &ascii_123).await.unwrap();
+
+        let ascii_124 = "a".repeat(124);
+        let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        assert_eq!(
+            sender.close(1000, &ascii_124).await,
+            Err(WsCloseError::ReasonTooLong)
+        );
+
+        // "あ" は UTF-8 で 3 バイト。41 個 = 123 バイトはちょうど境界で許容。
+        let multibyte_123 = "あ".repeat(41);
+        assert_eq!(multibyte_123.len(), 123);
+        let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        sender.close(1000, &multibyte_123).await.unwrap();
+
+        // 123 バイトの境界に ASCII 1 文字を足すと 124 バイトになり拒否される。
+        let multibyte_124 = format!("{multibyte_123}a");
+        assert_eq!(multibyte_124.len(), 124);
+        let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        assert_eq!(
+            sender.close(1000, &multibyte_124).await,
+            Err(WsCloseError::ReasonTooLong)
+        );
+    }
+
+    /// 受け入れ基準 1・2（イシュー #710）: close 後の `send` は
+    /// `WsSendError`、2 回目の `close` は `WsCloseError::Closed` を返し、
+    /// `is_closed()` は `true` になる。clone した別の `WsSender` からも
+    /// 同じ結果になること。
+    #[tokio::test]
+    async fn close_then_send_and_second_close_are_rejected() {
+        let (sender, mut rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        let cloned = sender.clone();
+
+        sender.close(1000, "bye").await.unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            OutboundItem::Close {
+                code: 1000,
+                reason: "bye".to_string(),
+            }
+        );
+
+        assert!(sender.is_closed());
+        assert!(cloned.is_closed());
+
+        assert_eq!(
+            sender.send(WsMessage::Text("late".to_string())).await,
+            Err(WsSendError)
+        );
+        assert_eq!(cloned.close(1001, "again").await, Err(WsCloseError::Closed));
+        assert_eq!(sender.close(1001, "again").await, Err(WsCloseError::Closed));
+    }
+
+    /// 受け入れ基準（イシュー #710）: セッション終了後（受信側 drop 済み）の
+    /// `close` は `WsCloseError::Closed` を返す。
+    #[tokio::test]
+    async fn close_after_receiver_dropped_is_rejected() {
+        let (sender, rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        drop(rx);
+        assert_eq!(sender.close(1000, "bye").await, Err(WsCloseError::Closed));
+    }
+
+    /// 受け入れ基準（イシュー #710、順序保証）: 複数タスクが `send` を
+    /// 連打する中で 1 回 `close` を呼んだとき、`Ok` を返した全メッセージが
+    /// Close より前に並び、Close の後ろには何も積まれないこと。
+    #[tokio::test]
+    async fn concurrent_send_and_close_preserve_order() {
+        const CAPACITY: usize = 2;
+        const SENDERS: usize = 20;
+
+        let (sender, mut rx) = channel(CAPACITY);
+
+        let mut handles = Vec::with_capacity(SENDERS);
+        for i in 0..SENDERS {
+            let s = sender.clone();
+            handles.push(tokio::spawn(async move {
+                s.send(WsMessage::Text(format!("msg-{i}"))).await
+            }));
+        }
+        // close する側も同じキューを競合させる。
+        let closer = sender.clone();
+        let close_handle = tokio::spawn(async move { closer.close(1000, "done").await });
+        // テスト関数自身が持つ `sender` を明示的に drop する。生かしたままだと
+        // 送信側（`mpsc::Sender`）のクローンが 1 個残り続け、下の `rx.recv()`
+        // ループが `None` を観測できず無期限に `.await` してしまう
+        // （全 clone が drop されて初めてチャネルが閉じる mpsc の契約）。
+        drop(sender);
+
+        // 受信側は最後まで読み切る（送信側が有界回数で解放されるよう、
+        // 受信を並行して進める）。
+        let mut items = Vec::new();
+        while let Some(item) = rx.recv().await {
+            items.push(item);
+        }
+
+        let send_results: Vec<Result<(), WsSendError>> = {
+            let mut results = Vec::with_capacity(SENDERS);
+            for h in handles {
+                results.push(h.await.unwrap());
+            }
+            results
+        };
+        close_handle.await.unwrap().unwrap();
+
+        let ok_count = send_results.iter().filter(|r| r.is_ok()).count();
+        let close_pos = items
+            .iter()
+            .position(|item| matches!(item, OutboundItem::Close { .. }))
+            .expect("close item should be present");
+
+        // Close の後ろには何も積まれていない。
+        assert_eq!(close_pos, items.len() - 1);
+        // Close より前にある Message の件数と、Ok を返した send の件数が
+        // 一致する（Ok を返したメッセージはすべて Close より前にある）。
+        let messages_before_close = items[..close_pos]
+            .iter()
+            .filter(|item| matches!(item, OutboundItem::Message(_)))
+            .count();
+        assert_eq!(messages_before_close, ok_count);
+    }
+
+    /// 受け入れ基準（イシュー #710）: 容量を満杯にして `send` を待機させた
+    /// 状態で `close` を enqueue すると、受信側が消費を進めた時点で待機中の
+    /// `send` が有界時間内に解放される（無期限にブロックしない）。
+    #[tokio::test]
+    async fn close_releases_blocked_waiting_sender() {
+        let (sender, mut rx) = channel(1);
+        // 容量 1 を先に埋める。
+        sender
+            .send(WsMessage::Text("first".to_string()))
+            .await
+            .unwrap();
+
+        let blocked_sender = sender.clone();
+        let blocked = tokio::spawn(async move {
+            blocked_sender
+                .send(WsMessage::Text("blocked".to_string()))
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!blocked.is_finished());
+
+        let closer = sender.clone();
+        let close_handle = tokio::spawn(async move { closer.close(1000, "bye").await });
+
+        // 受信側を消費して、待機中の send/close が有界時間内に進むことを
+        // 確認する。
+        let mut items = Vec::new();
+        for _ in 0..3 {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await {
+                Ok(Some(item)) => items.push(item),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), close_handle)
+            .await
+            .expect("close() should complete within timeout")
+            .unwrap()
+            .unwrap();
+
+        // 待機していた blocked send は、Close より先に permit を得られれば
+        // Ok、後であれば Err になる。いずれにせよ有界時間内に解放される。
+        tokio::time::timeout(std::time::Duration::from_secs(2), blocked)
+            .await
+            .expect("blocked send should be released within timeout")
+            .unwrap()
+            .ok();
+    }
+
+    /// PR #736 レビュー指摘対応（codex P1・Cursor Bugbot Medium）: `close` が
+    /// 確定したあと、送信キューが満杯のまま**受信側が二度と消費しない**
+    /// （実セッションで言えば、Close より手前の項目を書き出すソケット I/O が
+    /// 停止したまま応答が返らない状況を模す）場合でも、`send` はキューの
+    /// 実ドレインを待たず即座に `WsSendError` を返す。
+    ///
+    /// [`close_releases_blocked_waiting_sender`] は受信側が `rx.recv()` を
+    /// 積極的に呼び続けることで解放されるケースを検証済みだが、それだけでは
+    /// 「`close` 確定後、キューが満杯かつ二度と消費されない」という本質的な
+    /// 危険シナリオを再現できない（受信側が消費を続ける限り、旧実装
+    /// （`reserve().await` の完了後に `closing` を確認するだけの実装）でも
+    /// 有界時間内に解放されてしまうため）。本テストは受信側の消費を
+    /// `close` の Close 項目が積まれた直後で完全に止め、`closing` フラグの
+    /// 確定を `reserve()` の実完了より先に検知できることを直接確認する。
+    #[tokio::test]
+    async fn send_after_close_on_permanently_full_queue_fails_fast() {
+        const CAPACITY: usize = 3;
+
+        let (sender, mut rx) = channel(CAPACITY);
+
+        // 1 件送って即座に受信側が引き取る（実セッションで言えば、ソケット
+        // I/O が停止する直前に消費済みの 1 件を模す）。以降 `rx` は一切
+        // 消費しない（ソケット書き込みが永久に完了しない状況を模す）。
+        sender
+            .send(WsMessage::Text("in-flight".to_string()))
+            .await
+            .unwrap();
+        rx.recv().await.unwrap();
+
+        // 残り容量（CAPACITY 件）のうち 1 件分を空けたまま埋める。
+        for i in 0..CAPACITY - 1 {
+            sender
+                .send(WsMessage::Text(format!("queued-{i}")))
+                .await
+                .unwrap();
+        }
+
+        // 空いている最後の 1 枠を `close` が取り、`closing` を確定させる。
+        // 受信側は以降呼ばないため、Close 項目はキューに残り続ける。
+        let closer = sender.clone();
+        tokio::time::timeout(std::time::Duration::from_secs(2), closer.close(1000, "bye"))
+            .await
+            .expect("close should acquire the last free slot promptly")
+            .unwrap();
+        assert!(sender.is_closed());
+
+        // ここでキューは満杯（CAPACITY/CAPACITY）かつ、テストが `rx` を
+        // 二度と消費しないため永久に満杯のまま。旧実装は `reserve().await`
+        // の完了を待つため無期限にブロックする。新実装は `closing` の
+        // 確定を検知して即座に `Err` を返すはずなので、十分に短い時間内に
+        // 完了することを要求する（`rx` を消費した場合に得られるはずの
+        // 解放とは無関係に、`closing` の確定だけで解放されることの証明）。
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            sender.send(WsMessage::Text("after-close".to_string())),
+        )
+        .await
+        .expect(
+            "send after close on a permanently-full, never-drained queue must not block \
+             indefinitely (PR #736 review finding)",
+        );
+        assert_eq!(outcome, Err(WsSendError));
     }
 }

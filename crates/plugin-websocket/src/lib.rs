@@ -88,7 +88,10 @@
 //! Stream/Sink 駆動用）に限定する（詳細は `Cargo.toml` のコメントを参照）。
 //! `sync` feature はイシュー #670 で追加した（`crate::handler::WsSender`
 //! が `crate::session::run_session` へ合流するための bounded mpsc 用。
-//! `tokio` の推移依存として新規クレートは増えない）。`websocket` feature
+//! イシュー #710 で `WsSender::close`（サーバー起点の Close 指示）も同一の
+//! チャネルへ内部表現 `OutboundItem` として流すようになったが、新規の
+//! チャネル・依存は増えない。`tokio` の推移依存として新規クレートは
+//! 増えない）。`websocket` feature
 //! 無効時はコア（`fandhe-backend-core`）の依存グラフから本クレート自体が
 //! 除外される（`cargo tree -p fandhe-backend-core` で確認可能）。イシュー
 //! #671 で `WsMessageHandler::on_open` を追加し、[`handle_upgrade`] が

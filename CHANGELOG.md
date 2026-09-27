@@ -50,6 +50,26 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   `tokio::spawn` した別タスクでのみ使う契約です（イシュー
   [#727](https://github.com/Fandhe-AI/fandhe-backend/issues/727)、親
   [#705](https://github.com/Fandhe-AI/fandhe-backend/issues/705)）
+- `fandhe-backend-plugin-websocket`: `WsSender::close(code, reason)` を
+  追加しました。`on_message` の戻り値 `WsOutcome::Close` とは異なり、
+  `on_open` から `spawn` したタスク等、ハンドラの外からも任意のタイミングで
+  サーバー起点の Close ハンドシェイクを開始できます。close 呼び出し前に
+  `send` が `Ok` を返した push メッセージは Close フレームより先に送出される
+  順序保証を持ちます（内部の送信キューへ単一の bounded mpsc として直列に流す
+  ことで FIFO 特性のみで保証。`close_grace` 超過・世代キャンセル・idle
+  timeout・送出失敗で打ち切られた場合は、残りの push と Close フレームを
+  送らずに終了します）。close 後の `send`/`WsSender::is_closed()` は他の
+  終了経路と同様の挙動を返します。close code の RFC 6455 7.4 節・IANA 登録に
+  基づく検証（`1000..=1003`・`1007..=1009`・`1011..=1014`・`3000..=4999` のみ
+  許可。`1010` はクライアント専用のため拒否）・reason の
+  123 バイト上限検証に
+  失敗した場合、または既に close 済み・セッション終了済みの場合は
+  `WsCloseError`（`InvalidCode` / `ReasonTooLong` / `Closed`、
+  `#[non_exhaustive]`）を返します。終了理由 `CloseReason` に variant
+  `SenderClose` を追加しました（非破壊。設計は
+  `docs/design/ws-connection-context-and-close.md`、イシュー
+  [#710](https://github.com/Fandhe-AI/fandhe-backend/issues/710)、親
+  [#708](https://github.com/Fandhe-AI/fandhe-backend/issues/708)）
 
 ### Fixed
 
@@ -62,6 +82,28 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   不定契約は `crates/plugin-websocket/src/session.rs` モジュール doc
   「ハンドラ実行中の送信キュー消化」節を参照。イシュー
   [#706](https://github.com/Fandhe-AI/fandhe-backend/issues/706)）
+- `fandhe-backend-plugin-websocket`: ハンドラが `Err` を返したとき、送信キューを
+  封鎖し、`close_grace` を上限にキュー済みの push を送出してから終了するように
+  しました（従来は排出せずに即時終了していました）。封鎖前に確定した
+  `WsSender::close` があれば、その Close を送り、`on_close` の理由は
+  `Failed(Handler)` ではなく `SenderClose` になります。封鎖と同時に、待機中・
+  以後の `send`/`close` は `Err` を返します。cancel・idle timeout・クライアント
+  Close・EOF・受信/送信エラーの経路でも、受信側を手放した後に `send`/`close` が
+  `Ok` を返す（値が黙って捨てられる）ことはなくなりました（これらの経路は
+  従来どおりキュー済みの push を送出しません）。`WsOutcome::Reply`
+  を返した場合の排出は送信キュー容量回までに制限します。また、`WsSender::close`
+  を呼ぶと、呼び出しを確定前に取り下げない限り、クライアントが受信を止めていても
+  （送信キューが満杯で close がまだ確定できない場合も）、要求の観測（通常は
+  呼び出しの直後）から `close_grace`
+  以内に Close ハンドシェイクを終えるか接続を打ち切ります。その間に世代
+  キャンセル・idle timeout が先に発火した場合は、その経路の契約（発火時点から
+  `close_grace`）に従います（close を要求していない間の push の送出には従来どおり
+  期限を設けません）。ハンドラの戻り値は、セッションが
+  その送出直前に送信キューと同じロックで close の確定を判定する時点より前に
+  `WsSender::close` が確定していれば、ハンドラの実行中か完了後の送信キュー排出中
+  かを問わず破棄します（判定より後に確定した場合、`Reply` は Close より先に
+  送出されえます）。イシュー
+  [#710](https://github.com/Fandhe-AI/fandhe-backend/issues/710)
 
 ## [0.4.1] - 2026-09-26
 
