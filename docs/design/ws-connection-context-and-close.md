@@ -235,6 +235,9 @@ pub enum CloseReason {
     Failed(FailureKind),
     // イシュー #710 で追加。12 節を参照。
     SenderClose,
+    // イシュー #713 で追加（`WebSocketConfig::with_ping_interval`
+    // の Pong 期限切れ、親 #712）。`#[non_exhaustive]` のため非破壊追加。
+    PongTimeout,
 }
 
 #[non_exhaustive]
@@ -322,6 +325,7 @@ Debug` と同一のログ・診断への機密混入防止方針）。
 | `apply_outcome(...).await?` が伝播する `apply_outcome` 内部の `ws.send`/`ws.close` 失敗（`apply_outcome` 内 451 行・459 行の `result?`、呼び出し元の `.await?` 経由。Text 分岐 266 行・Binary 分岐 285 行）: `Error::Io(_)` | `Failed(FailureKind::Io)` |
 | 同上: `Io` 以外 | `Failed(FailureKind::Protocol)` |
 | `WsSender::close` が enqueue した `OutboundItem::Close`（受信待ち中の `InboundEvent::Outbound` 分岐、またはハンドラ実行中の `run_handler_with_outbound_drain` の 2 経路のいずれかから検出。イシュー #710、12 節参照） | `SenderClose` |
+| `WebSocketConfig::with_ping_interval` の `pong_timeout` 期限切れ（受信待ち中の `InboundEvent::PongTimeout` 分岐、またはサーバー起点 Ping/push 送出中の生存期限超過（`send_bounded_with_liveness`）の 2 経路のいずれかから検出。イシュー #713、親 #712。既定は無効で、設定した場合のみこの行が発火する） | `PongTimeout` |
 
 #### `FailureKind::Io` の判別方法（`Error::Io(_)` を明示的に振り分ける）
 

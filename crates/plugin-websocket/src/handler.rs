@@ -240,6 +240,15 @@ pub enum CloseReason {
     /// （`close_grace` 超過のときも理由は本 variant。世代キャンセル・idle timeout
     /// が先に発火したときはその理由になる。詳細は [`WsSender::close`] の doc）。
     SenderClose,
+    /// `WebSocketConfig::with_ping_interval` の Ping keepalive（イシュー #713）で、
+    /// サーバー送出の Ping から `pong_timeout` 以内にクライアントの Pong が
+    /// 届かず、サーバー側から切断した。
+    ///
+    /// `idle_timeout`（[`Self::IdleTimeout`]）とは独立した死活監視で、
+    /// クライアントが受信専用（サーバー起点 push を受けているだけ）でも
+    /// 発火しうる（Ping 自体は `idle_timeout` をリセットしない契約、
+    /// `crate::session` モジュール doc を参照）。
+    PongTimeout,
 }
 
 /// [`CloseReason::Failed`] が運ぶ失敗の種別。

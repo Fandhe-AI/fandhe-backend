@@ -612,7 +612,15 @@ fandhe-backend/
 │   │                                    # （`WsTrySendError::Closed`）」を区別して
 │   │                                    # 返すようにした（送れなかった `WsMessage`
 │   │                                    # を保持し再試行・破棄を選べる。順序保証・
-│   │                                    # push 消化契約は `send` と同一）。
+│   │                                    # push 消化契約は `send` と同一）。イシュー #713
+│   │                                    # （親 #712）で `WebSocketConfig::with_ping_interval`
+│   │                                    # を追加し、サーバー起点で `interval` ごとに Ping を
+│   │                                    # 送出し `pong_timeout` 以内に Pong が届かない接続を
+│   │                                    # `CloseReason::PongTimeout` で切断する死活監視を
+│   │                                    # 追加した（既定は無効・後方互換。`idle_timeout` は
+│   │                                    # サーバー起点の送出ではリセットしないため、
+│   │                                    # push を受けているだけの受信専用クライアントの
+│   │                                    # 死活監視には本設定が必要）。
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O
