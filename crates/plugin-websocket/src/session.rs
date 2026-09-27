@@ -384,6 +384,7 @@ where
                             cancel.as_mut(),
                             &mut outbound,
                             handler_fut,
+                            config.close_grace,
                         )
                         .await
                         {
@@ -408,6 +409,7 @@ where
                             cancel.as_mut(),
                             &mut outbound,
                             handler_fut,
+                            config.close_grace,
                         )
                         .await
                         {
@@ -655,12 +657,14 @@ enum SessionFlow {
 ///
 /// `outbound` は `WsOutcome::Close` 分岐でのみ使う（[`flush_outbound`] へ
 /// 委譲、イシュー #711）。`WsOutcome::Reply` ではセッションが継続するため
-/// 送信キューを閉じない。
+/// 送信キューを閉じない。`close_grace` は `flush_outbound` の有界化に使う
+/// （`config.close_grace` をそのまま渡す、Codex レビュー指摘対応）。
 async fn apply_outcome<S, C>(
     ws: &mut WebSocketStream<S>,
     outcome: WsOutcome,
     outbound: &mut Option<mpsc::Receiver<WsMessage>>,
     mut cancel: Pin<&mut C>,
+    close_grace: Duration,
 ) -> Result<SessionFlow, SessionFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -690,8 +694,17 @@ where
             // だった残りのメッセージ（別タスクからの push 等）をすべて
             // 送出してから `ws.close()` へ進む（詳細・上限根拠は
             // [`flush_outbound`] の doc を参照）。
-            match flush_outbound(ws, outbound, cancel.as_mut()).await? {
+            match flush_outbound(ws, outbound, cancel.as_mut(), close_grace).await? {
                 FlushOutcome::Cancelled => return Ok(SessionFlow::Cancelled),
+                // イシュー #711 Codex レビュー指摘対応: `close_grace` 超過
+                // まで排出できなかった場合、クライアントが受信を止めている
+                // 可能性が高く、続く `ws.close(None)` の書き込みも同様に
+                // 長時間ブロックしうる（二次 DoS）。Close ハンドシェイクの
+                // 送出自体を諦め、`SessionFlow::Closed` を返して即座に
+                // セッションを終える（呼び出し元がストリームを drop し
+                // TCP 接続を終了する。モジュール doc「ワイヤ安全性」節が
+                // 述べる「打ち切り後の drop は安全」契約と同型）。
+                FlushOutcome::TimedOut => return Ok(SessionFlow::Closed),
                 FlushOutcome::Done => {}
             }
             match race_cancel(cancel.as_mut(), ws.close(None)).await {
@@ -714,6 +727,12 @@ enum FlushOutcome {
     /// 送出中にキャンセルが発火し、当該 `Future` を打ち切った。呼び出し元は
     /// [`SessionFlow::Cancelled`] へ分岐する。
     Cancelled,
+    /// `close_grace` の期限内に排出を完了できなかった（イシュー #711
+    /// Codex レビュー指摘対応）。クライアントが受信を止めている等で
+    /// `ws.send()` が長時間ブロックしている状態であり、呼び出し元は
+    /// 以後の Close 送出を試みず即座にセッションを終了させる
+    /// （[`apply_outcome`] の `FlushOutcome::TimedOut` 分岐を参照）。
+    TimedOut,
 }
 
 /// [`apply_outcome`] の `WsOutcome::Close` 分岐から呼ばれる、Close 送出前の
@@ -738,6 +757,18 @@ enum FlushOutcome {
 /// 3. `outbound` が `None`（全 `WsSender` クローンが drop 済み）の場合は
 ///    何もしない（捨てられるメッセージは存在しない）。
 ///
+/// # 有界化（イシュー #711 Codex P1 レビュー指摘対応）
+///
+/// 手順 2 の各 `ws.send()` はクライアントが受信を止めていると
+/// TCP 送信バッファが満杯のまま無期限にブロックしうる（`cancel` の発火は
+/// shutdown・rebind 世代 drain のみが起点であり、通常のリクエスト処理中は
+/// 発火しない）。排出ループ全体を `tokio::time::timeout` で
+/// `close_grace`（`WebSocketConfig::close_grace`、既定 10 秒。
+/// [`close_and_drain`] が Close 送出後のドレインに使う値と同じ設定値を
+/// 共用する）に有界化し、期限超過時は残りメッセージを送出済みでない
+/// ものも含めて諦め、[`FlushOutcome::TimedOut`] を返す（DoS 耐性、
+/// [`.claude/rules/security.md`] のリソース枯渇対策と整合）。
+///
 /// # 既知の限界（イシュー #711 スコープ外）
 ///
 /// `rx.close()` の瞬間と競合する `send`（別スレッドで直前に permit を
@@ -756,6 +787,7 @@ async fn flush_outbound<S, C>(
     ws: &mut WebSocketStream<S>,
     outbound: &mut Option<mpsc::Receiver<WsMessage>>,
     mut cancel: Pin<&mut C>,
+    close_grace: Duration,
 ) -> Result<FlushOutcome, SessionFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -765,19 +797,31 @@ where
         return Ok(FlushOutcome::Done);
     };
     rx.close();
-    loop {
-        match rx.try_recv() {
-            Ok(msg) => {
-                let frame = to_tungstenite_message(msg);
-                match race_cancel(cancel.as_mut(), ws.send(frame)).await {
-                    None => return Ok(FlushOutcome::Cancelled),
-                    Some(Ok(())) => {}
-                    Some(Err(err)) => return Err(SessionFailure::send(err)),
+
+    // 排出ループ本体。`close_grace` で有界化するため、`tokio::time::timeout`
+    // に渡す 1 個の `Future` へまとめる（`ws`・`rx`・`cancel` はいずれも
+    // 本関数のローカル変数への参照/所有権を借用するのみで、await の外へ
+    // 持ち出さないため通常の借用規則で完結する）。
+    let drain = async {
+        loop {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    let frame = to_tungstenite_message(msg);
+                    match race_cancel(cancel.as_mut(), ws.send(frame)).await {
+                        None => return Ok(FlushOutcome::Cancelled),
+                        Some(Ok(())) => {}
+                        Some(Err(err)) => return Err(SessionFailure::send(err)),
+                    }
                 }
+                Err(mpsc::error::TryRecvError::Empty)
+                | Err(mpsc::error::TryRecvError::Disconnected) => return Ok(FlushOutcome::Done),
             }
-            Err(mpsc::error::TryRecvError::Empty)
-            | Err(mpsc::error::TryRecvError::Disconnected) => return Ok(FlushOutcome::Done),
         }
+    };
+
+    match tokio::time::timeout(close_grace, drain).await {
+        Ok(result) => result,
+        Err(_timeout_elapsed) => Ok(FlushOutcome::TimedOut),
     }
 }
 
@@ -836,6 +880,7 @@ async fn run_handler_with_outbound_drain<S, C>(
     mut cancel: Pin<&mut C>,
     outbound: &mut Option<mpsc::Receiver<WsMessage>>,
     handler_fut: futures_util::future::BoxFuture<'_, Result<WsOutcome, WsHandlerError>>,
+    close_grace: Duration,
 ) -> Result<SessionFlow, SessionFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -922,7 +967,7 @@ where
         }
     }
 
-    apply_outcome(ws, outcome, outbound, cancel).await
+    apply_outcome(ws, outcome, outbound, cancel, close_grace).await
 }
 
 /// アイドルタイムアウト発火時の切断シーケンス（正常な Close ハンドシェイク、
@@ -2214,38 +2259,40 @@ mod tests {
 
         /// 受け入れ基準（設計 2.1 手順 1）: `on_open` で保持した `WsSender`
         /// クローンを別タスクが独立に保持し、満杯チャネルで `send` に
-        /// ブロックしている状態でハンドラが `WsOutcome::Close` を返した
-        /// とき、`flush_outbound` の `rx.close()` により待機中の `send` が
-        /// `close_grace`（本テストでは意図的に長め）の満了を待たず
+        /// ブロックしている状態で `WsOutcome::Close` が適用されたとき、
+        /// `flush_outbound` の `rx.close()` により待機中の `send` が
         /// 即座に [`WsSendError`] で解放されること。バッファ済みだった
         /// 1 件目 (`"first"`) はクライアントへ届くことも確認する
         /// （`rx.close()` は排出中のメッセージを破棄しない）。
+        ///
+        /// # レースの排除（Cursor Bugbot レビュー指摘対応）
+        ///
+        /// 旧実装は `run_session` 経由で駆動し、"first" を事前に
+        /// `outbound` チャネルへ積んだ**あとで** `run_session` を起動し
+        /// クライアントに `"trigger"` メッセージを送らせていた。しかし
+        /// `outbound` の `recv()` は既にキュー済みのため即座に `Ready` に
+        /// なる一方、クライアントの `"trigger"` は `io::duplex` 経由の
+        /// 実際の非同期往復を要するため、`run_session` 外側ループの
+        /// 最初の反復では通常ほぼ確実に outbound 側（`InboundEvent::
+        /// Outbound`）が先に選ばれる。この経路は `flush_outbound` を経由
+        /// せず素の `ws.send()` で "first" を送出してしまい、その時点で
+        /// 満杯チャネルの容量が空いて "second" が（Close を経由せず）
+        /// 成功してしまいうる。つまり旧テストは「Close 前に flush される
+        /// こと」ではなく「たまたま外側ループの通常経路がその前に容量を
+        /// 空けなかったこと」を検証してしまうレースを抱えていた
+        /// （PR #735 レビュー指摘、threadId 記録は PR 本文参照）。
+        ///
+        /// 本テストは `run_session` を経由せず、`apply_outcome`
+        /// （`flush_outbound` の唯一の呼び出し元）を直接呼ぶことで、
+        /// 外側ループの通常経路が介在する余地を構造的に排除する。
         #[tokio::test]
         async fn blocked_sender_is_released_when_close_flushes() {
-            struct CloseImmediatelyHandler;
-            impl handler::WsMessageHandler for CloseImmediatelyHandler {
-                fn name(&self) -> &'static str {
-                    "close-immediately"
-                }
-                fn on_message(
-                    &self,
-                    _msg: WsMessage,
-                ) -> futures_util::future::BoxFuture<'_, Result<WsOutcome, WsHandlerError>>
-                {
-                    Box::pin(async move { Ok(WsOutcome::Close) })
-                }
-            }
-
-            let mut config = test_config();
-            config.handler = std::sync::Arc::new(CloseImmediatelyHandler);
-            // ドレイン待ちを長めに取り、「即座に解放される」ことと
-            // 「close_grace 満了まで待たされる」ことを明確に区別できるように
-            // する（既存テスト `blocked_send_is_released_immediately_on_
-            // cancellation` と同じ構成）。
-            config.close_grace = Duration::from_secs(2);
-            let config: &'static WebSocketConfig = Box::leak(Box::new(config));
-
             let (server_side, client_side) = tokio::io::duplex(1 << 16);
+            let mut server_ws =
+                WebSocketStream::from_raw_socket(server_side, Role::Server, None).await;
+            let mut client_ws =
+                WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+
             let (tx, rx) = handler::channel(1);
             tx.send(WsMessage::Text("first".to_string()))
                 .await
@@ -2255,28 +2302,34 @@ mod tests {
             let blocked =
                 tokio::spawn(async move { tx2.send(WsMessage::Text("second".to_string())).await });
 
-            let conn_ctx = test_conn_ctx(tx);
+            // `blocked` タスクが満杯チャネルの permit 取得待ちとして実際に
+            // 登録されるまでスケジューラへ制御を明示的に譲る。
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
 
-            let session_handle = tokio::spawn(async move {
-                let cancel = std::future::pending::<()>();
-                let mut cancel = std::pin::pin!(cancel);
-                run_session(
-                    server_side,
-                    Vec::new(),
-                    config,
-                    cancel.as_mut(),
-                    Some(rx),
-                    &conn_ctx,
-                )
-                .await
-            });
+            let mut outbound = Some(rx);
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            // ドレイン待ちを長めに取り、「即座に解放される」ことと
+            // 「close_grace 満了まで待たされる」ことを明確に区別できるように
+            // する（既存テスト `blocked_send_is_released_immediately_on_
+            // cancellation` と同じ構成）。
+            let close_grace = Duration::from_secs(2);
 
-            let mut client =
-                WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
-            client
-                .send(Message::Text("trigger".into()))
-                .await
-                .expect("client send should succeed");
+            let flow = apply_outcome(
+                &mut server_ws,
+                WsOutcome::Close,
+                &mut outbound,
+                cancel.as_mut(),
+                close_grace,
+            )
+            .await
+            .unwrap_or_else(|_| panic!("apply_outcome should not fail"));
+            assert!(
+                matches!(flow, SessionFlow::Closed),
+                "WsOutcome::Close should end the session"
+            );
 
             let blocked_result = tokio::time::timeout(Duration::from_millis(500), blocked)
                 .await
@@ -2291,7 +2344,7 @@ mod tests {
                 "send should fail once flush_outbound closes the receiver"
             );
 
-            let first = tokio::time::timeout(Duration::from_secs(2), client.next())
+            let first = tokio::time::timeout(Duration::from_secs(2), client_ws.next())
                 .await
                 .expect("buffered first message should still be flushed")
                 .expect("stream should not end early")
@@ -2302,14 +2355,14 @@ mod tests {
                 "the message already buffered before close must not be dropped"
             );
 
-            drop(client);
-            let session_result = tokio::time::timeout(Duration::from_secs(5), session_handle)
+            let closing = tokio::time::timeout(Duration::from_secs(2), client_ws.next())
                 .await
-                .expect("run_session should finish within close_grace bound")
-                .expect("session task should not panic");
+                .expect("close frame should arrive after flush")
+                .expect("stream should not end early")
+                .expect("frame should not error");
             assert!(
-                session_result.is_ok(),
-                "session should end normally via HandlerClose: {session_result:?}"
+                matches!(closing, Message::Close(_)),
+                "expected a close frame after flush, got {closing:?}"
             );
         }
 
@@ -2389,6 +2442,71 @@ mod tests {
 
             let _ = tokio::time::timeout(Duration::from_secs(2), pusher).await;
             let _ = tokio::time::timeout(Duration::from_secs(2), drain_client).await;
+        }
+
+        /// 受け入れ基準（イシュー #711 Codex P1 レビュー指摘対応）: クライアント
+        /// が受信を止めている（`ws.send()` の書き込みが TCP バックプレッシャ
+        /// 相当で無期限にブロックする）場合でも、`flush_outbound` は
+        /// `close_grace` を上限に排出を諦め、`apply_outcome` が
+        /// [`SessionFlow::Closed`] で（`ws.close()` を試みずに）終わること。
+        /// [`continuous_pusher_does_not_prevent_close`] は push の継続に
+        /// 対する有界性を検証するが、クライアントが `client.next()` で
+        /// 受信を続けるため `ws.send()` 自体は一度もブロックしない。本テストは
+        /// 逆に、送出そのものが長時間ブロックする状況（P1 指摘の本体）を
+        /// 直接再現する。
+        #[tokio::test]
+        async fn flush_times_out_when_client_stops_reading() {
+            // duplex バッファを極小にし、クライアント側を一切読まないままに
+            // することで、`ws.send()` の書き込みが TCP 送信バッファ満杯相当で
+            // ブロックし続ける状況を再現する。
+            let (server_side, client_side) = tokio::io::duplex(8);
+            let mut server_ws =
+                WebSocketStream::from_raw_socket(server_side, Role::Server, None).await;
+            // クライアント側は接続を保持するが読み出さない（受信を止めた
+            // クライアント役）。drop すると即座に EOF/エラーになり
+            // 「無期限にブロックする」状況を再現できないため、明示的に
+            // 生存させる。
+            let _client_side = client_side;
+
+            let (tx, rx) = handler::channel(4);
+            for i in 0..4 {
+                tx.send(WsMessage::Text(format!("msg-{i}")))
+                    .await
+                    .expect("send should succeed while channel capacity remains");
+            }
+
+            let mut outbound = Some(rx);
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            let close_grace = Duration::from_millis(200);
+
+            let started = tokio::time::Instant::now();
+            let flow = tokio::time::timeout(
+                Duration::from_secs(5),
+                apply_outcome(
+                    &mut server_ws,
+                    WsOutcome::Close,
+                    &mut outbound,
+                    cancel.as_mut(),
+                    close_grace,
+                ),
+            )
+            .await
+            .expect(
+                "apply_outcome must not hang indefinitely when the client stops reading \
+                 (flush_outbound must be bounded by close_grace)",
+            )
+            .unwrap_or_else(|_| panic!("apply_outcome should not fail"));
+
+            assert!(
+                matches!(flow, SessionFlow::Closed),
+                "a flush timeout should still end the session"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "flush_outbound should give up around close_grace (200ms), took {:?}",
+                started.elapsed()
+            );
         }
     }
 }
