@@ -338,6 +338,11 @@ where
                     // 方式が変わった場合の安全網として、削除せず防御的
                     // コードのまま維持する（`docs/design/
                     // ws-connection-context-and-close.md` 5 節）。
+                    //
+                    // 注意: `release` の封鎖は close 確定シグナルも送るため、ここに
+                    // 到達すると close 未確定でも以後の送出が `close_grace` で
+                    // 打ち切られ `SenderClose` で終わる（[`CloseBound`]）。到達不能
+                    // のため許容する。
                     outbound.release();
                     continue;
                 }
@@ -1211,6 +1216,8 @@ where
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 // 全 `WsSender` クローンが drop 済み（`conn_ctx` がクローンを
                 // 保持するためセッション実行中は到達しない防御的コード）。
+                // 到達すると封鎖が close 確定シグナルも送るため、以後の送出は
+                // close 未確定でも `close_grace` で打ち切られる（[`CloseBound`]）。
                 outbound.release();
                 break;
             }
@@ -1336,7 +1343,9 @@ where
             Some(Either::Right(None)) => {
                 // 全 `WsSender` クローンが drop 済み（`run_session_inner` 外側
                 // ループの同種分岐と同じ防御的コード。`conn_ctx` がクローンを
-                // 保持し続けるためセッション実行中は到達不能）。
+                // 保持し続けるためセッション実行中は到達不能）。到達すると封鎖が
+                // close 確定シグナルも送るため、以後の送出は close 未確定でも
+                // `close_grace` で打ち切られる（[`CloseBound`]）。
                 outbound.release();
             }
         }
@@ -4334,6 +4343,15 @@ mod tests {
                 for _ in 0..8 {
                     tokio::task::yield_now().await;
                 }
+                // セッションが先頭の push を 1 件だけ取り出し、その送出で止まって
+                // いること（空き容量 = 容量 - 積んだ 3 件 + 取り出した 1 件）を
+                // 確かめる。yield が足りず「開始前 close」のケースに化けていれば
+                // ここで失敗する。
+                assert_eq!(
+                    closer.capacity_for_test(),
+                    CAPACITY - 2,
+                    "the session must be stalled sending the first push before close()"
+                );
                 closer
                     .close(4000, "bye")
                     .await

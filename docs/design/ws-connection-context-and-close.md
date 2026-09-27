@@ -916,8 +916,10 @@ cancel・idle timeout・クライアント Close・EOF・受信/送信エラー�
 3. Close 指示を取り出したら、同じ期限で `close_and_drain` を行う。終了経路の排出中に
    見つかった場合は、排出の期限と早い方を使う。
 
-**保証**: `close()` が `Ok` を返したら、セッションは close 確定の観測から `close_grace`
-以内に Close ハンドシェイクを終えるか接続を打ち切る。
+**保証**: `close()` が `Ok` を返したら、セッションは close 確定の観測（通常は close 確定の
+直後）から `close_grace` 以内に Close ハンドシェイクを終えるか接続を打ち切る。その間に
+世代キャンセル・idle timeout が先に発火した場合は、その経路の契約（発火時点から
+`close_grace`、終了理由 `Cancelled`/`IdleTimeout`）に従う。
 
 close 未確定時の push・返信の送出には期限を設けない（既存の挙動）。
 

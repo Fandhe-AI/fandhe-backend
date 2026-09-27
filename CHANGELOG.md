@@ -88,9 +88,11 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   `Ok` を返す（値が黙って捨てられる）ことはなくなりました（これらの経路は
   従来どおりキュー済みの push を送出しません）。`WsOutcome::Reply`
   を返した場合の排出は送信キュー容量回までに制限します。また、`WsSender::close`
-  が `Ok` を返した後は、クライアントが受信を止めていても、close 確定の観測から
-  `close_grace` 以内に Close ハンドシェイクを終えるか接続を打ち切ります（close
-  未確定時の push の送出には従来どおり期限を設けません）。イシュー
+  が `Ok` を返した後は、クライアントが受信を止めていても、close 確定の観測
+  （通常は close 確定の直後）から `close_grace` 以内に Close ハンドシェイクを
+  終えるか接続を打ち切ります。その間に世代キャンセル・idle timeout が先に発火した
+  場合は、その経路の契約（発火時点から `close_grace`）に従います（close 未確定時の
+  push の送出には従来どおり期限を設けません）。イシュー
   [#710](https://github.com/Fandhe-AI/fandhe-backend/issues/710)
 
 ## [0.4.1] - 2026-09-26

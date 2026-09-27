@@ -1200,11 +1200,13 @@ impl WsSender {
     /// プレッシャ契約。チャネルが満杯なら受信側が消費するまで待機する）。
     ///
     /// 本メソッドが `Ok` を返した後、セッションは close の確定を観測した
-    /// 時点から `WebSocketConfig::close_grace`（既定 10 秒）以内に、先行する
-    /// push の送出・Close フレームの送出・応答待ちを終えるか、接続を打ち切る
-    /// （クライアントが受信を止めていても有界。打ち切った場合の終了理由も
-    /// `CloseReason::SenderClose`）。close 未確定時の push の送出には期限を
-    /// 設けない。
+    /// 時点（通常は close 確定の直後）から `WebSocketConfig::close_grace`
+    /// （既定 10 秒）以内に、先行する push の送出・Close フレームの送出・応答
+    /// 待ちを終えるか、接続を打ち切る（クライアントが受信を止めていても有界。
+    /// 打ち切った場合の終了理由も `CloseReason::SenderClose`）。ただし、その
+    /// 間に世代キャンセル・idle timeout が先に発火した場合は、その経路の契約
+    /// （発火時点から `close_grace`、終了理由 `Cancelled`/`IdleTimeout`）に従う。
+    /// close 未確定時の push の送出には期限を設けない。
     ///
     /// ワイヤ上の完了（セッション終了）を待ちたい場合の代替として
     /// [`Self::closed`] があるが、本メソッドが起こす `SenderClose` 経路
@@ -1707,6 +1709,12 @@ impl WsSender {
     #[must_use]
     pub fn is_closed(&self) -> bool {
         *self.closing.lock().unwrap_or_else(PoisonError::into_inner) || self.tx.is_closed()
+    }
+
+    /// テスト専用: 送信キューの現在の空き容量（`mpsc::Sender::capacity`）。
+    #[cfg(test)]
+    pub(crate) fn capacity_for_test(&self) -> usize {
+        self.tx.capacity()
     }
 
     /// テスト専用: [`Self::close`] の permit 確保だけを行い、確定（`commit`）を
