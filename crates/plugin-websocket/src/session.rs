@@ -288,19 +288,21 @@ where
 /// され、ハンドラが `pong_timeout` より長く実行してもすぐ応答するクライアン
 /// トが誤って切断されることはない（偽陽性なし）。
 ///
-/// **既知の限界（2）**: `pong_deadline` の期限切れ検知は、下記の受信
-/// ループが (a) `race2(ws.next(), sleep_until(..))` のタイマー分岐（`ws.
-/// next()` が一度 Pending になった場合のみ選ばれうる）、または (b) Ping/
-/// outbound push 送出自体が生存期限で打ち切られる分岐
-/// （[`send_bounded_with_liveness`]）の 2 経路でしか発火しない。ループ
-/// 先頭の即時チェック（次段落）は `next_ping_at` のみを見て `pong_deadline`
-/// は直接判定しない（バッファ済みの Pong を先読みして誤検知させないための
-/// 意図的な非対称、上記の偽陽性なし契約を壊さないため）。そのため、Pong を
-/// 送らず他のフレームだけを `ws.next()` が一度も Pending にならない密度で
-/// 継続送信し、かつ自身の受信バッファが常時書き込み可能な対向に対しては、
-/// `pong_deadline` が切れても検知されずデータ流入が続く限り生存扱いとなる
-/// （#712 が動機とした「受信専用で push しか来ない」ケースは `ws.next()`
-/// が Pending になるため本限界の対象外。見直しは #714 のスコープ）。
+/// `pong_deadline` の期限切れ検知はループ反復先頭のハード判定
+/// （[`poll_once`] による待機なしの 1 回だけの非ブロッキング確認、PR #738
+/// レビュー指摘対応。外部レビュー codex/Bugbot 双方が「`race2(ws.next(),
+/// sleep_until(..))` は `ws.next()` を優先ポーリングするため、Pong を
+/// 送らず他のフレームだけを継続送信する対向に対して恒久的に飢餓する」旨を
+/// 指摘）で行う。既にバッファ済みの Pong は消費して解除し（
+/// `buffered_pong_after_slow_handler_prevents_false_positive_timeout`
+/// が固定する偽陽性なし契約を維持）、そうでなければ新規データの到着を
+/// 待たず即座に切断する。Ping/outbound push 送出自体が書き込みブロックで
+/// 生存期限に達した場合（[`send_bounded_with_liveness`]）も同じ
+/// [`poll_once`] 判定を経る。旧実装（ループ先頭では `next_ping_at` のみを
+/// 判定し `pong_deadline` は受信待ちの `race2` タイマー分岐にのみ委ねる
+/// 非対称設計）が持っていた恒久飢餓の穴はこれで解消済み（#712 が動機とした
+/// 「受信専用で push しか来ない」ケースはもとから対象外だった。両者を
+/// 組み合わせた推奨設定・doc は #714 のスコープ）。
 ///
 /// サーバー起点 Ping keepalive（[`WebSocketConfig::with_ping_interval`]、
 /// イシュー #713）の状態機械。[`run_session_inner`] の受信ループが 1 回の
@@ -410,6 +412,57 @@ where
     // 値なしの `break`・素の `?` はコンパイルエラーとなり、脱出点の
     // 網羅が型で保証される。
     let reason = loop {
+        // ループ反復先頭での `pong_deadline` ハード判定（イシュー #713
+        // レビュー指摘対応、P0/P1、外部レビュー codex/Bugbot 双方が同一
+        // メカニズムを指摘）。
+        //
+        // 旧実装は `pong_deadline` をここで直接判定せず、下記の
+        // `inbound`（`race2`、`ws.next()` 優先バイアス）にのみ委ねていた。
+        // しかし `race2` は `ws.next()` を必ず先にポーリングするため、
+        // Pong を送らず Text/Binary 等を送り続けるクライアントに対しては
+        // `ws.next()` が常にポーリング時点で Ready となり、タイマー分岐
+        // （`Either::Right`）が選ばれる機会自体が恒久的に失われ、
+        // `pong_timeout` 内に Pong がなければ切断するという死活監視契約
+        // （`with_ping_interval` の doc・イシュー #713 受け入れ基準）を
+        // 破っていた。
+        //
+        // 修正: `pong_deadline` が既に過去なら、新規データの到着を待たず
+        // [`poll_once`] で 1 回だけ非ブロッキングに次のフレームを確認する。
+        // 既にバッファ済みの Pong があれば消費して解除し（
+        // `buffered_pong_after_slow_handler_prevents_false_positive_timeout`
+        // が固定する偽陽性なし契約はこの 1 回きりの非ブロッキング確認で
+        // 引き続き成立する。ハンドラ実行完了直後の時点で Pong が既に
+        // フレーミングバッファに到着済みであれば、待機なしの poll でも
+        // 即座に読める）、そうでなければ（Pending・Pong 以外のフレーム
+        // が既に読める場合を含む）待たずに即座に切断する（新規データの
+        // 継続到着を待ち続けないため、継続送信クライアントによる恒久的な
+        // 飢餓は起こらない）。
+        if let Some(state) = keepalive.as_mut()
+            && let Some(deadline) = state.pong_deadline
+            && Instant::now() >= deadline
+        {
+            match poll_once(ws.next()).await {
+                Poll::Ready(Some(Ok(Message::Pong(_)))) => {
+                    state.on_pong();
+                    idle_deadline = config.idle_timeout.map(|d| Instant::now() + d);
+                }
+                Poll::Ready(Some(Err(err))) => {
+                    return SessionFailure::recv(err).into_parts();
+                }
+                Poll::Ready(None) => {
+                    outbound.release();
+                    break CloseReason::Eof;
+                }
+                Poll::Ready(Some(Ok(_))) | Poll::Pending => {
+                    outbound.release();
+                    return (
+                        CloseReason::PongTimeout,
+                        handle_pong_timeout(ws, config.close_grace).await,
+                    );
+                }
+            }
+        }
+
         // ループ反復先頭での即時 Ping 送出チェック（イシュー #713）。
         // クライアントが連続送信を続けると下記の `inbound` の `ws.next()` が
         // 常にポーリング時点で Ready となり得るため、`next_ping_at` の
@@ -417,15 +470,8 @@ where
         // doc「サーバー起点 Ping keepalive」節）。反復ごとに毎回ここで直接
         // 判定することで、受信が続いていても間隔どおり Ping を送出する。
         //
-        // 意図的に `pong_deadline` はここで直接判定しない（`next_ping_at`
-        // のみ）。`pong_deadline` はまだ未読の Pong で解除されうるため、
-        // ここで無条件に期限切れ判定すると `ws.next()` を一度もポーリング
-        // せずに切断してしまい、バッファ済みの Pong を先読みできず誤検知
-        // する（モジュール doc「既知の限界（2）」節、
-        // `buffered_pong_after_slow_handler_prevents_false_positive_timeout`
-        // が固定する偽陽性なし契約を壊さないため）。`pong_deadline` の
-        // 期限切れは必ず `ws.next()` を先にポーリングする下記の race
-        // （またはこの反復の送出処理自体の生存期限）経由でのみ検出する。
+        // 上記の `pong_deadline` ハード判定を通過済み（未到達、または
+        // 到達していたが Pong で解除済み）であることが前提。
         if let Some(state) = keepalive.as_mut() {
             let now = Instant::now();
             if state.next_ping_at.is_some_and(|next| now >= next) {
@@ -442,11 +488,40 @@ where
                 .await
                 {
                     Either::Right(()) => {
-                        outbound.release();
-                        return (
-                            CloseReason::PongTimeout,
-                            handle_pong_timeout(ws, config.close_grace).await,
-                        );
+                        // Ping フレーム自体の書き込みが生存期限まで完了しな
+                        // かった（書き込みブロック、PR #738 レビュー指摘
+                        // 対応。codex/Bugbot 双方が指摘した「書き込みブロック
+                        // 中に Pong が既にバッファ済みでも読まずに切断する」
+                        // 穴）。切断前に、待機せず 1 回だけ非ブロッキングに
+                        // 次のフレームを確認する（[`poll_once`]）。書き込み
+                        // 側の送出（`send_bounded`）は race2 の敗者として
+                        // 既に drop 済みで `ws` の排他所有権はこの時点で
+                        // 空いており、部分送出バイトが破損した形で流出する
+                        // こともない（ワイヤ安全性、モジュール doc「ハンドラ
+                        // Future の中断安全性契約」節）。既にバッファ済みの
+                        // Pong が見つかれば生存を確認できたとみなし、この
+                        // Ping 送出自体は打ち切ったまま通常のループへ戻る
+                        // （次回の反復で改めて Ping 送出・Pong 待ちを行う）。
+                        match poll_once(ws.next()).await {
+                            Poll::Ready(Some(Ok(Message::Pong(_)))) => {
+                                state.on_pong();
+                                idle_deadline = config.idle_timeout.map(|d| Instant::now() + d);
+                            }
+                            Poll::Ready(Some(Err(err))) => {
+                                return SessionFailure::recv(err).into_parts();
+                            }
+                            Poll::Ready(None) => {
+                                outbound.release();
+                                break CloseReason::Eof;
+                            }
+                            Poll::Ready(Some(Ok(_))) | Poll::Pending => {
+                                outbound.release();
+                                return (
+                                    CloseReason::PongTimeout,
+                                    handle_pong_timeout(ws, config.close_grace).await,
+                                );
+                            }
+                        }
                     }
                     Either::Left(SendOutcome::Sent) => {}
                     Either::Left(SendOutcome::Cancelled) => {
@@ -604,11 +679,39 @@ where
                 .await
                 {
                     Either::Right(()) => {
-                        outbound.release();
-                        return (
-                            CloseReason::PongTimeout,
-                            handle_pong_timeout(ws, config.close_grace).await,
-                        );
+                        // outbound push フレーム自体の書き込みが生存期限まで
+                        // 完了しなかった（書き込みブロック、PR #738 レビュー
+                        // 指摘対応。上記 Ping 送出側と同一の穴が outbound
+                        // push 経路にもあるという Bugbot 指摘に対応）。
+                        // 切断前に、待機せず 1 回だけ非ブロッキングに次の
+                        // フレームを確認する（[`poll_once`]。根拠・ワイヤ
+                        // 安全性は上記 Ping 送出側の同型コメントを参照）。
+                        // 見つかれば生存を確認できたとみなし、この push
+                        // 自体は打ち切ったまま通常のループへ戻る（`WsSender`
+                        // の順序保証は維持: 打ち切られた 1 件のみが失われ、
+                        // 後続の push は FIFO のまま次の反復で処理される）。
+                        match poll_once(ws.next()).await {
+                            Poll::Ready(Some(Ok(Message::Pong(_)))) => {
+                                if let Some(state) = keepalive.as_mut() {
+                                    state.on_pong();
+                                }
+                                idle_deadline = config.idle_timeout.map(|d| Instant::now() + d);
+                            }
+                            Poll::Ready(Some(Err(err))) => {
+                                return SessionFailure::recv(err).into_parts();
+                            }
+                            Poll::Ready(None) => {
+                                outbound.release();
+                                break CloseReason::Eof;
+                            }
+                            Poll::Ready(Some(Ok(_))) | Poll::Pending => {
+                                outbound.release();
+                                return (
+                                    CloseReason::PongTimeout,
+                                    handle_pong_timeout(ws, config.close_grace).await,
+                                );
+                            }
+                        }
                     }
                     Either::Left(SendOutcome::Cancelled) => {
                         outbound.release();
@@ -1052,6 +1155,25 @@ where
 enum Either<L, R> {
     Left(L),
     Right(R),
+}
+
+/// 与えられた `Future` を新規データの到着を待たず 1 回だけポーリングする
+/// （[`race2`] と同型の `poll_fn` + `pin!` 実装。クロージャは常に
+/// `Poll::Ready` を返すため、このラッパー自身の `.await` は実際には
+/// 中断しない）。
+///
+/// Pong 期限切れ（`pong_deadline`）判定に使う（イシュー #713 レビュー
+/// 指摘対応、P0/P1）。`race2(ws.next(), sleep_until(deadline))` のように
+/// `ws.next()` を優先ポーリングする通常の race に判定を委ねると、Pong を
+/// 送らず他のフレームを送り続けるクライアントに対して `ws.next()` が
+/// 常にポーリング時点で Ready となり、タイマー分岐が恒久的に選ばれず
+/// 死活監視が機能しない（`docs/api/plugin-config-api.md` の「既知の
+/// 限界」節が記録していた挙動。`with_ping_interval` の死活監視契約に
+/// 反するとの外部レビュー指摘を受け、`run_session_inner` はこの
+/// ヘルパーで「待機せず今の時点で判定する」ハード期限へ切り替えた）。
+async fn poll_once<F: Future>(fut: F) -> Poll<F::Output> {
+    let mut fut = std::pin::pin!(fut);
+    std::future::poll_fn(|cx| Poll::Ready(fut.as_mut().poll(cx))).await
 }
 
 /// [`race2`] の公平版。`prefer_b` で「両方の `Future` が同時に Ready な
@@ -5448,6 +5570,76 @@ mod tests {
             client.close(None).await.expect("close");
             session_handle.abort();
             let _ = session_handle.await;
+        }
+
+        /// 外部レビュー指摘（PR #738、codex/Bugbot 双方が同一メカニズムを
+        /// 指摘）の回帰テスト。Pong を一切返さず Text フレームだけを
+        /// 継続送信し続けるクライアントに対して、`ws.next()` が常に
+        /// ポーリング時点で Ready になり得る状況でも `pong_timeout` 経過後は
+        /// 必ず `PongTimeout` で切断されること（旧実装は `race2` の
+        /// `ws.next()` 優先バイアスによりこの検知が恒久的に飢餓し、
+        /// 死活監視契約に反していた）。
+        ///
+        /// `ping_is_not_starved_by_continuous_client_sends` と同型（実時間
+        /// 駆動、`start_paused` では「継続送信」自体を再現できないため）。
+        #[tokio::test]
+        async fn pong_timeout_still_fires_when_client_never_pongs_but_keeps_sending() {
+            let interval = Duration::from_millis(30);
+            let pong_timeout = Duration::from_millis(60);
+            let config: &'static WebSocketConfig =
+                Box::leak(Box::new(keepalive_config(interval, pong_timeout)));
+
+            let (server_side, client_side) = tokio::io::duplex(1 << 16);
+            let (tx, rx) = handler::channel(4);
+            let conn_ctx = test_conn_ctx(tx);
+
+            let session_handle = tokio::spawn(async move {
+                let cancel = std::future::pending::<()>();
+                let mut cancel = std::pin::pin!(cancel);
+                run_session_inner(
+                    server_side,
+                    Vec::new(),
+                    config,
+                    cancel.as_mut(),
+                    Some(rx),
+                    &conn_ctx,
+                )
+                .await
+            });
+
+            let mut client =
+                WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+
+            // Ping を受け取っても Pong を一切返さず、Text だけを間隙なく
+            // 送り続ける（サーバー側の `ws.next()` が常にポーリング時点で
+            // Ready になり得る状況を作る）。
+            let deadline = std::time::Instant::now() + interval * 60;
+            while std::time::Instant::now() < deadline {
+                if client.send(Message::Text("spam".into())).await.is_err() {
+                    // サーバーが Close ハンドシェイクへ入り接続が閉じた。
+                    break;
+                }
+                match tokio::time::timeout(Duration::from_millis(1), client.next()).await {
+                    Ok(Some(Ok(Message::Close(_)))) | Ok(None) => break,
+                    _ => {
+                        // Ping・Echo された Text 等。Pong は返さず送信を続ける。
+                    }
+                }
+            }
+
+            let (reason, result) = tokio::time::timeout(Duration::from_secs(5), session_handle)
+                .await
+                .expect(
+                    "session must terminate via PongTimeout even though the client kept \
+                     sending Text frames without ever replying Pong",
+                )
+                .expect("session task should not panic");
+            assert!(
+                matches!(reason, CloseReason::PongTimeout),
+                "expected PongTimeout, got {reason:?} (keepalive starved by continuous \
+                 non-Pong traffic?)"
+            );
+            assert!(result.is_ok(), "expected Ok(()), got {result:?}");
         }
 
         /// Issue #175 の契約回帰テスト: サーバー起点の Ping 送出自体は
