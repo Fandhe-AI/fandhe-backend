@@ -500,10 +500,11 @@ Err・Close・別タスク・スナップショット前後の派生ケースを
 2. `outcome` に応じて送信キューを排出する（**#710・PR #736 レビュー指摘対応で改訂**、
    後述の注記参照）。
    - **継続経路**（`Ok(WsOutcome::Reply(_))`、`drain_before_reply`）: 受信側は
-     閉じずに、`try_recv()` を最大でチャネル容量（`Receiver::max_capacity()`）回
-     行い、取り出した push を到着順に `ws.send()` で送出する。`Empty` で打ち切り、
-     残りはキューに残したまま外側ループに任せる。Close 指示が見つかれば `Reply` を
-     破棄して `SessionFlow::SenderClose` で終了する。
+     閉じずに、`try_recv()` を最大でチャネル容量（`DEFAULT_OUTBOUND_CAPACITY`。
+     `run_handler_with_outbound_drain` が引数で渡す 1 か所のみで、#709 で設定値
+     に置き換える）回行い、取り出した push を到着順に `ws.send()` で送出する。
+     `Empty` で打ち切り、残りはキューに残したまま外側ループに任せる。Close 指示が
+     見つかれば `Reply` を破棄して `SessionFlow::SenderClose` で終了する。
    - **終了経路**（`Ok(WsOutcome::Close)`・`Err(WsHandlerError)`、`flush_outbound`）:
      `Receiver::close()` で受信側を閉じてから、`recv()` が `None` を返すまで取り出して
      到着順に送出する。Close 指示が見つかれば `outcome`（`Err` を含む）を破棄して

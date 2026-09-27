@@ -924,9 +924,11 @@ where
 ///
 /// # 手順
 ///
-/// 1. 受信側は閉じずに、`try_recv()` を最大でチャネル容量
-///    （[`mpsc::Receiver::max_capacity`]。容量の値はチャネル自身から取り、
-///    容量を設定可能にする後続変更でもここは変えない）回だけ行う。
+/// 1. 受信側は閉じずに、`try_recv()` を最大 `capacity` 回だけ行う。
+///    `capacity` は呼び出し元が渡すチャネル容量で、`outbound` を生成した
+///    `handler::channel` に渡した値と一致させる（呼び出し元の契約。現状は
+///    [`run_handler_with_outbound_drain`] が
+///    [`crate::handler::DEFAULT_OUTBOUND_CAPACITY`] を渡す 1 か所のみ）。
 /// 2. `Message` は到着順に `ws.send()` で送出する（`cancel` と race させ、発火
 ///    したら `Some(SessionFlow::Cancelled)` を返す）。`Close` を見つけたら
 ///    `Some(SessionFlow::SenderClose)` を返す。`Empty` で打ち切り、
@@ -937,13 +939,14 @@ where
 ///
 /// **保証**: 本関数の開始時点でキューに格納済みだった push は Reply より先に
 /// 送出される（格納済み件数は容量以下で、FIFO の先頭に並ぶため手順 1 の回数で
-/// すべて取り出せる）。
+/// すべて取り出せる。`capacity` がチャネル容量より小さい場合はこの限りでない）。
 ///
 /// これ以外の push と Reply の相対順序は不定。
 async fn drain_before_reply<S, C>(
     ws: &mut WebSocketStream<S>,
     mut cancel: Pin<&mut C>,
     outbound: &mut Option<mpsc::Receiver<OutboundItem>>,
+    capacity: usize,
 ) -> Result<Option<SessionFlow>, SessionFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -952,7 +955,7 @@ where
     let Some(rx) = outbound.as_mut() else {
         return Ok(None);
     };
-    for _ in 0..rx.max_capacity() {
+    for _ in 0..capacity {
         match rx.try_recv() {
             Ok(OutboundItem::Message(msg)) => {
                 let frame = to_tungstenite_message(msg);
@@ -1003,7 +1006,8 @@ where
 ///    drop して [`SessionFlow::SenderClose`] を返す。
 /// 2. ハンドラの結果で排出方法を分ける（PR #736 codex P0/P1 レビュー指摘対応）。
 ///    - `Ok(WsOutcome::Reply)`（継続経路）: [`drain_before_reply`] で受信側を
-///      閉じずに容量回まで排出してから、[`apply_outcome`] で Reply を送出する。
+///      閉じずに容量（[`crate::handler::DEFAULT_OUTBOUND_CAPACITY`]）回まで
+///      排出してから、[`apply_outcome`] で Reply を送出する。
 ///    - `Ok(WsOutcome::Close)`（終了経路）: [`apply_outcome`] が
 ///      [`flush_outbound`]（受信側を閉じてから排出）を経て Close フレームを
 ///      送出する。
@@ -1100,7 +1104,11 @@ where
     // 各経路で 1 回だけ計算する（イシュー #711 PR #735 レビュー指摘 P1 #1）。
     match outcome {
         Ok(WsOutcome::Reply(messages)) => {
-            if let Some(flow) = drain_before_reply(ws, cancel.as_mut(), outbound).await? {
+            // 回数上限はチャネル生成（`crate::handle_upgrade` の
+            // `handler::channel(DEFAULT_OUTBOUND_CAPACITY)`）と同じ容量値。
+            // 容量を設定可能にする #709 ではここを設定値に置き換える。
+            let capacity = crate::handler::DEFAULT_OUTBOUND_CAPACITY;
+            if let Some(flow) = drain_before_reply(ws, cancel.as_mut(), outbound, capacity).await? {
                 return Ok(flow);
             }
             let close_deadline = Instant::now() + close_grace;
@@ -3404,8 +3412,10 @@ mod tests {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use tokio::io::{DuplexStream, ReadBuf};
 
-        /// 本モジュールのテストで使う送信キュー容量。
-        const CAPACITY: usize = 4;
+        /// 本モジュールのテストで使う送信キュー容量（継続経路の排出回数上限
+        /// `handler::DEFAULT_OUTBOUND_CAPACITY` と一致させる。本番の
+        /// `handle_upgrade` と同じ容量でチャネルを作るため）。
+        const CAPACITY: usize = handler::DEFAULT_OUTBOUND_CAPACITY;
         /// [`TestStream`] が補充する push の上限件数。旧実装（`Empty` まで
         /// 無制限に排出）ではこの件数ぶん補充 push が Reply/Close より先に
         /// 送出されるため、ハングではなく順序アサーションの失敗として検出
