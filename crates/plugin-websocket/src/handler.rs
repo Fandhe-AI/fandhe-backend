@@ -1397,8 +1397,8 @@ impl WsSender {
 
     /// セッションの終了処理で送信キューを封鎖する（`pub(crate)`、
     /// `crate::session` 専用。PR #736 レビュー指摘対応）。`crate::session` は
-    /// 受信側を閉じる・drop する前に必ず本メソッドを呼ぶ（`flush_outbound` と
-    /// `release_outbound`、および `run_session_inner` を抜ける際の封鎖ガード）。
+    /// 受信側を閉じる・drop する前に必ず本メソッドを呼ぶ（受信側を所有する
+    /// `OutboundGuard` の `seal`/`release`/`Drop` が呼ぶ）。
     ///
     /// `closing` を [`Self::commit`] と同じロック区間で true にし、以後の
     /// [`Self::send`]/[`Self::close`] を `Err` にする。ロック解放後に

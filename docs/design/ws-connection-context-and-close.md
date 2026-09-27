@@ -879,17 +879,19 @@ tokio 1.x を解決しても成り立つ）:
 - セッション側は封鎖のロック保持中に `.await` せず、ほかのロックも取らないため、
   `commit` とのデッドロックは起こらない。
 
-### 封鎖しない終了経路の扱い（PR #736 レビュー指摘対応）
+### 排出しない終了経路の扱い（PR #736 レビュー指摘対応）
 
 cancel・idle timeout・クライアント Close・EOF・受信/送信エラーの各経路は排出を行わない
 （既存契約）が、受信側を drop する前に必ず封鎖する。
 
 手順（`session.rs`）:
 
-1. 途中で受信側を手放す箇所は `release_outbound`（封鎖 → drop）を使う。
-2. `run_session_inner` の先頭で `SealOnExit` ガードを `outbound` の後に宣言する。
-   ローカル変数は宣言の逆順に drop されるため、早期 return・future の drop を含む
-   すべての脱出で「封鎖 → 受信側の drop」の順になる。
+1. `run_session_inner` は受信側を `OutboundGuard`（受信側と封鎖用の `WsSender` を
+   束ねる）に持たせ、下位の関数へは `&mut OutboundGuard` で渡す。
+2. 途中で受信側を手放す箇所は `OutboundGuard::release`（封鎖 → drop）を使う。
+3. ガードの `Drop::drop` で封鎖する。`Drop::drop` はフィールドの drop より先に実行
+   される（言語仕様）ため、早期 return・future の drop を含むすべての脱出で
+   「封鎖 → 受信側の drop」の順になる。
 
 **保証**: 受信側が drop された後に `send`/`close` が `Ok` を返すことはない（permit 確保後・
 確定前に drop された場合も、確定は `Err` になる）。

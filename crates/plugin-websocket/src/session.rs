@@ -259,14 +259,11 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     C: Future<Output = ()>,
 {
-    // 本関数を抜けるすべての経路（早期 return・future の drop を含む）で、
-    // 受信側を drop する前に送信キューを封鎖する（PR #736 レビュー指摘対応。
-    // [`SealOnExit`] の doc を参照）。ローカル変数は宣言の逆順に drop される
-    // ため、`outbound` をガードより先に宣言し、ガード（封鎖）→ `outbound`
-    // （受信側の drop）の順を構造的に保証する。途中で受信側を手放す箇所は
-    // [`release_outbound`] を使う。
-    let mut outbound = outbound;
-    let _seal_on_exit = SealOnExit(conn_ctx.sender());
+    // 受信側をガードに持たせ、本関数を抜けるすべての経路（早期 return・future
+    // の drop を含む）で「送信キューの封鎖 → 受信側の drop」の順を保証する
+    // （PR #736 レビュー指摘対応。[`OutboundGuard`] の doc を参照）。途中で受信側を
+    // 手放す箇所は [`OutboundGuard::release`] を使う。
+    let mut outbound = OutboundGuard::new(outbound, conn_ctx.sender());
 
     let ws_config = TungsteniteConfig::default()
         .max_message_size(Some(config.max_message_size))
@@ -307,7 +304,7 @@ where
             }
         };
 
-        let event = if let Some(rx) = outbound.as_mut() {
+        let event = if let Some(rx) = outbound.rx.as_mut() {
             // 反復ごとに優先順を反転する（交互化、モジュール doc を参照）。
             // 両方 Ready でない通常時はこの反転自体が結果へ影響しない
             // （どちらが先にポーリングされても Pending の側は素通りする
@@ -320,7 +317,7 @@ where
             .await
             {
                 None => {
-                    release_outbound(&mut outbound, conn_ctx.sender());
+                    outbound.release();
                     return (
                         CloseReason::Cancelled,
                         handle_cancellation(ws, config.close_grace).await,
@@ -341,7 +338,7 @@ where
                     // 方式が変わった場合の安全網として、削除せず防御的
                     // コードのまま維持する（`docs/design/
                     // ws-connection-context-and-close.md` 5 節）。
-                    release_outbound(&mut outbound, conn_ctx.sender());
+                    outbound.release();
                     continue;
                 }
             }
@@ -359,7 +356,7 @@ where
 
         match event {
             InboundEvent::Idle => {
-                release_outbound(&mut outbound, conn_ctx.sender());
+                outbound.release();
                 return (
                     CloseReason::IdleTimeout,
                     handle_idle_timeout(ws, config.close_grace).await,
@@ -369,7 +366,7 @@ where
                 let frame = to_tungstenite_message(msg);
                 match race_cancel(cancel.as_mut(), ws.send(frame)).await {
                     None => {
-                        release_outbound(&mut outbound, conn_ctx.sender());
+                        outbound.release();
                         return (
                             CloseReason::Cancelled,
                             handle_cancellation(ws, config.close_grace).await,
@@ -384,7 +381,7 @@ where
                 // Close ハンドシェイクへ分岐する。close 時点でキュー済み
                 // だった push は FIFO 順で本イベントより前に既に送出済み
                 // （`WsSender` の順序保証、`handler.rs` の doc を参照）。
-                release_outbound(&mut outbound, conn_ctx.sender());
+                outbound.release();
                 let frame = to_close_frame(code, reason);
                 return (
                     CloseReason::SenderClose,
@@ -407,7 +404,6 @@ where
                             &mut ws,
                             cancel.as_mut(),
                             &mut outbound,
-                            conn_ctx.sender(),
                             handler_fut,
                             config.close_grace,
                         )
@@ -416,7 +412,7 @@ where
                             Ok(SessionFlow::Continue) => {}
                             Ok(SessionFlow::Closed) => break CloseReason::HandlerClose,
                             Ok(SessionFlow::Cancelled) => {
-                                release_outbound(&mut outbound, conn_ctx.sender());
+                                outbound.release();
                                 return (
                                     CloseReason::Cancelled,
                                     handle_cancellation(ws, config.close_grace).await,
@@ -432,7 +428,7 @@ where
                                 // `run_handler_with_outbound_drain` が既に破棄済み
                                 // （Close フレームの後にデータフレームを送れない、
                                 // RFC 6455 5.5.1 節）。
-                                release_outbound(&mut outbound, conn_ctx.sender());
+                                outbound.release();
                                 let frame = to_close_frame(code, reason);
                                 return (
                                     CloseReason::SenderClose,
@@ -456,7 +452,6 @@ where
                             &mut ws,
                             cancel.as_mut(),
                             &mut outbound,
-                            conn_ctx.sender(),
                             handler_fut,
                             config.close_grace,
                         )
@@ -465,7 +460,7 @@ where
                             Ok(SessionFlow::Continue) => {}
                             Ok(SessionFlow::Closed) => break CloseReason::HandlerClose,
                             Ok(SessionFlow::Cancelled) => {
-                                release_outbound(&mut outbound, conn_ctx.sender());
+                                outbound.release();
                                 return (
                                     CloseReason::Cancelled,
                                     handle_cancellation(ws, config.close_grace).await,
@@ -479,7 +474,7 @@ where
                                 // `WsSender::close`（イシュー #710）がハンドラ実行中に
                                 // 呼ばれた場合。上の `Message::Text` 分岐と同一の理由
                                 // （RFC 6455 5.5.1 節）でハンドラの戻り値は破棄済み。
-                                release_outbound(&mut outbound, conn_ctx.sender());
+                                outbound.release();
                                 let frame = to_close_frame(code, reason);
                                 return (
                                     CloseReason::SenderClose,
@@ -521,29 +516,48 @@ where
     (reason, Ok(()))
 }
 
-/// [`run_session_inner`] を抜ける際に送信キューを封鎖するスコープガード
-/// （PR #736 レビュー指摘対応）。
+/// セッションの outbound 受信側と、その送信側（封鎖に使う）を束ねるガード
+/// （PR #736 レビュー指摘対応）。[`run_session_inner`] が所有し、下位の関数へは
+/// `&mut OutboundGuard` で渡す。
 ///
 /// `WsSender` は permit の確保と確定（`commit`）の間に `.await` を挟まないが、
 /// マルチスレッドではその間に受信側が drop されうる。封鎖せずに drop すると
 /// 確定は `Ok` を返しつつ値が捨てられるため、受信側を手放す前に必ず
-/// [`crate::handler::WsSender::seal_for_session`] を呼ぶ（封鎖後の確定は
-/// `Err`）。cancel・idle timeout・クライアント Close・EOF・受信/送信エラー・
-/// future の drop を含む全経路を、個別の呼び出し漏れなく覆うため `Drop` で
-/// 実装する。
-struct SealOnExit<'a>(&'a WsSender);
+/// [`crate::handler::WsSender::seal_for_session`] を呼ぶ（封鎖後の確定は `Err`）。
+///
+/// 順序は言語仕様で保証する: `Drop::drop`（封鎖）はフィールドの drop より先に
+/// 実行されるため、ガードがどの経路（早期 return・future の drop を含む）で
+/// drop されても、`rx` の drop は必ず封鎖の後になる。途中で受信側を手放す場合は
+/// [`Self::release`] を使う。
+struct OutboundGuard<'a> {
+    /// セッションの outbound 受信側（`None` は無効化済み）。
+    rx: Option<mpsc::Receiver<OutboundItem>>,
+    /// `rx` と同じチャネルの送信側（呼び出し元の契約）。封鎖にのみ使う。
+    sender: &'a WsSender,
+}
 
-impl Drop for SealOnExit<'_> {
-    fn drop(&mut self) {
-        self.0.seal_for_session();
+impl<'a> OutboundGuard<'a> {
+    fn new(rx: Option<mpsc::Receiver<OutboundItem>>, sender: &'a WsSender) -> Self {
+        Self { rx, sender }
+    }
+
+    /// 送信キューを封鎖する（受信側は保持したまま）。
+    fn seal(&self) {
+        self.sender.seal_for_session();
+    }
+
+    /// 送信キューを封鎖してから受信側を drop する。
+    fn release(&mut self) {
+        self.seal();
+        drop(self.rx.take());
     }
 }
 
-/// 送信キューを封鎖してから受信側を drop する（[`SealOnExit`] と同じ理由。
-/// セッション途中で受信側を手放す箇所はすべて本関数を使う）。
-fn release_outbound(outbound: &mut Option<mpsc::Receiver<OutboundItem>>, sender: &WsSender) {
-    sender.seal_for_session();
-    drop(outbound.take());
+impl Drop for OutboundGuard<'_> {
+    fn drop(&mut self) {
+        // フィールド `rx` はこの関数の後に drop される。
+        self.seal();
+    }
 }
 
 /// クライアント受信待ちの 1 イベント（[`run_session`] のループが処理する
@@ -784,7 +798,7 @@ enum SessionFlow {
 /// （書き込み位置）は保たれ、後続の Close 送出が破損したバイト列を生まない
 /// （モジュール doc の「ワイヤ安全性」節を参照）。
 ///
-/// `outbound`・`sender`（`outbound` と同じチャネルの送信側）は
+/// `outbound`（受信側と封鎖用の送信側を束ねた [`OutboundGuard`]）は
 /// `WsOutcome::Close` 分岐でのみ使う（[`flush_outbound`] へ委譲、
 /// イシュー #711）。`WsOutcome::Reply` ではセッションが継続するため送信キューを
 /// 閉じない。
@@ -800,8 +814,7 @@ enum SessionFlow {
 async fn apply_outcome<S, C>(
     ws: &mut WebSocketStream<S>,
     outcome: WsOutcome,
-    outbound: &mut Option<mpsc::Receiver<OutboundItem>>,
-    sender: &WsSender,
+    outbound: &mut OutboundGuard<'_>,
     mut cancel: Pin<&mut C>,
     close_deadline: Instant,
 ) -> Result<SessionFlow, SessionFailure>
@@ -826,7 +839,7 @@ where
             // バッファ済み項目を排出する（手順・保証は [`flush_outbound`] の
             // doc を参照）。`close_deadline` を共有するため、排出に要した分だけ
             // 後続の `ws.close` に残る猶予は縮む。
-            match flush_outbound(ws, outbound, sender, cancel.as_mut(), close_deadline).await? {
+            match flush_outbound(ws, outbound, cancel.as_mut(), close_deadline).await? {
                 FlushOutcome::Cancelled => return Ok(SessionFlow::Cancelled),
                 // イシュー #711 Codex レビュー指摘対応: `close_deadline` 超過
                 // まで排出できなかった場合、クライアントが受信を止めている
@@ -911,12 +924,10 @@ enum FlushOutcome {
 /// 導入し、PR #736 で終了経路共通の排出に拡張。設計は
 /// `docs/design/ws-connection-context-and-close.md` 6 節・12 節）。
 ///
-/// `sender` は `outbound` と同じチャネルの送信側（呼び出し元の契約。
-/// [`run_session_inner`] は `conn_ctx.sender()` を渡す）。
-///
 /// # 手順
 ///
-/// 1. [`crate::handler::WsSender::seal_for_session`] で封鎖する。
+/// 1. [`OutboundGuard::seal`]（[`crate::handler::WsSender::seal_for_session`]）で
+///    封鎖する。
 ///    `WsSender::commit` と同じロック区間で封鎖状態を立てるため、以後の
 ///    `WsSender::send`/`close` は `Err` になり、満杯キューで待機中の呼び出しも
 ///    解放される。
@@ -949,8 +960,7 @@ enum FlushOutcome {
 ///   送信者はおらず、`try_recv()` が書き込み完了を待って park することもない。
 async fn flush_outbound<S, C>(
     ws: &mut WebSocketStream<S>,
-    outbound: &mut Option<mpsc::Receiver<OutboundItem>>,
-    sender: &WsSender,
+    outbound: &mut OutboundGuard<'_>,
     mut cancel: Pin<&mut C>,
     close_deadline: Instant,
 ) -> Result<FlushOutcome, SessionFailure>
@@ -958,8 +968,8 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     C: Future<Output = ()>,
 {
-    sender.seal_for_session();
-    let Some(rx) = outbound.as_mut() else {
+    outbound.seal();
+    let Some(rx) = outbound.rx.as_mut() else {
         return Ok(FlushOutcome::Done);
     };
     rx.close();
@@ -1023,15 +1033,14 @@ where
 async fn drain_before_reply<S, C>(
     ws: &mut WebSocketStream<S>,
     mut cancel: Pin<&mut C>,
-    outbound: &mut Option<mpsc::Receiver<OutboundItem>>,
-    sender: &WsSender,
+    outbound: &mut OutboundGuard<'_>,
     capacity: usize,
 ) -> Result<Option<SessionFlow>, SessionFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin,
     C: Future<Output = ()>,
 {
-    let Some(rx) = outbound.as_mut() else {
+    let Some(rx) = outbound.rx.as_mut() else {
         return Ok(None);
     };
     for _ in 0..capacity {
@@ -1057,7 +1066,7 @@ where
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 // 全 `WsSender` クローンが drop 済み（`conn_ctx` がクローンを
                 // 保持するためセッション実行中は到達しない防御的コード）。
-                release_outbound(outbound, sender);
+                outbound.release();
                 break;
             }
         }
@@ -1126,8 +1135,7 @@ where
 async fn run_handler_with_outbound_drain<S, C>(
     ws: &mut WebSocketStream<S>,
     mut cancel: Pin<&mut C>,
-    outbound: &mut Option<mpsc::Receiver<OutboundItem>>,
-    sender: &WsSender,
+    outbound: &mut OutboundGuard<'_>,
     handler_fut: futures_util::future::BoxFuture<'_, Result<WsOutcome, WsHandlerError>>,
     close_grace: Duration,
 ) -> Result<SessionFlow, SessionFailure>
@@ -1143,7 +1151,7 @@ where
     // （`run_session_inner` 外側ループの `Right(None)` 分岐と同じ「無効化して
     // ビジーループ化を防ぐ」方針を踏襲）。
     let outcome = loop {
-        let progress = match outbound.as_mut() {
+        let progress = match outbound.rx.as_mut() {
             Some(rx) => race_cancel(cancel.as_mut(), race2(&mut handler_fut, rx.recv())).await,
             None => {
                 race_cancel(
@@ -1183,7 +1191,7 @@ where
                 // 全 `WsSender` クローンが drop 済み（`run_session_inner` 外側
                 // ループの同種分岐と同じ防御的コード。`conn_ctx` がクローンを
                 // 保持し続けるためセッション実行中は到達不能）。
-                release_outbound(outbound, sender);
+                outbound.release();
             }
         }
     };
@@ -1197,9 +1205,7 @@ where
             // `handler::channel(DEFAULT_OUTBOUND_CAPACITY)`）と同じ容量値。
             // 容量を設定可能にする #709 ではここを設定値に置き換える。
             let capacity = crate::handler::DEFAULT_OUTBOUND_CAPACITY;
-            if let Some(flow) =
-                drain_before_reply(ws, cancel.as_mut(), outbound, sender, capacity).await?
-            {
+            if let Some(flow) = drain_before_reply(ws, cancel.as_mut(), outbound, capacity).await? {
                 return Ok(flow);
             }
             let close_deadline = Instant::now() + close_grace;
@@ -1207,7 +1213,6 @@ where
                 ws,
                 WsOutcome::Reply(messages),
                 outbound,
-                sender,
                 cancel,
                 close_deadline,
             )
@@ -1215,19 +1220,11 @@ where
         }
         Ok(WsOutcome::Close) => {
             let close_deadline = Instant::now() + close_grace;
-            apply_outcome(
-                ws,
-                WsOutcome::Close,
-                outbound,
-                sender,
-                cancel,
-                close_deadline,
-            )
-            .await
+            apply_outcome(ws, WsOutcome::Close, outbound, cancel, close_deadline).await
         }
         Err(err) => {
             let close_deadline = Instant::now() + close_grace;
-            match flush_outbound(ws, outbound, sender, cancel, close_deadline).await {
+            match flush_outbound(ws, outbound, cancel, close_deadline).await {
                 Ok(FlushOutcome::Cancelled) => Ok(SessionFlow::Cancelled),
                 Ok(FlushOutcome::SenderClose { code, reason }) => {
                     // 送信キューの封鎖前に確定した `WsSender::close` を優先して
@@ -3178,7 +3175,7 @@ mod tests {
                 tokio::task::yield_now().await;
             }
 
-            let mut outbound = Some(rx);
+            let mut outbound = OutboundGuard::new(Some(rx), &tx);
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
             // ドレイン待ちを長めに取り、「即座に解放される」ことと
@@ -3192,7 +3189,6 @@ mod tests {
                 &mut server_ws,
                 WsOutcome::Close,
                 &mut outbound,
-                &tx,
                 cancel.as_mut(),
                 close_deadline,
             )
@@ -3347,7 +3343,7 @@ mod tests {
                     .expect("send should succeed while channel capacity remains");
             }
 
-            let mut outbound = Some(rx);
+            let mut outbound = OutboundGuard::new(Some(rx), &tx);
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
             let close_grace = Duration::from_millis(200);
@@ -3360,7 +3356,6 @@ mod tests {
                     &mut server_ws,
                     WsOutcome::Close,
                     &mut outbound,
-                    &tx,
                     cancel.as_mut(),
                     close_deadline,
                 ),
@@ -3404,8 +3399,8 @@ mod tests {
             // `outbound` を `None` にして `flush_outbound` を即完了（
             // `FlushOutcome::Done`）させ、`ws.close(None)` 自体の有界化のみを
             // 検証する。
-            let mut outbound: Option<mpsc::Receiver<OutboundItem>> = None;
             let (tx, _rx) = handler::channel(1);
+            let mut outbound = OutboundGuard::new(None, &tx);
             // cancel は発火しないままにする。`ws.close(None)` の打ち切り手段が
             // `close_deadline` しかないことを保証する（cancel が打ち切りの
             // 唯一の手段だった旧実装ではこのテストはハングする）。
@@ -3421,7 +3416,6 @@ mod tests {
                     &mut server_ws,
                     WsOutcome::Close,
                     &mut outbound,
-                    &tx,
                     cancel.as_mut(),
                     close_deadline,
                 ),
@@ -3475,7 +3469,7 @@ mod tests {
                 .await
                 .expect("send should succeed while channel capacity remains");
 
-            let mut outbound = Some(rx);
+            let mut outbound = OutboundGuard::new(Some(rx), &tx);
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
             // 他ステップが
@@ -3487,7 +3481,6 @@ mod tests {
             let outcome = flush_outbound(
                 &mut server_ws,
                 &mut outbound,
-                &tx,
                 cancel.as_mut(),
                 already_expired_deadline,
             )
@@ -3952,14 +3945,13 @@ mod tests {
             tx.commit_close_for_test(permit, 4000, "late")
                 .expect("a commit before the seal must succeed");
 
-            let mut outbound = Some(rx);
+            let mut outbound = OutboundGuard::new(Some(rx), &tx);
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
             let close_deadline = Instant::now() + Duration::from_secs(2);
             let outcome = flush_outbound(
                 &mut server_ws,
                 &mut outbound,
-                &tx,
                 cancel.as_mut(),
                 close_deadline,
             )
@@ -3989,14 +3981,13 @@ mod tests {
                 .await
                 .expect("permit should be available");
 
-            let mut outbound = Some(rx);
+            let mut outbound = OutboundGuard::new(Some(rx), &tx);
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
             let close_deadline = Instant::now() + Duration::from_secs(2);
             let outcome = flush_outbound(
                 &mut server_ws,
                 &mut outbound,
-                &tx,
                 cancel.as_mut(),
                 close_deadline,
             )
@@ -4021,10 +4012,10 @@ mod tests {
             );
         }
 
-        /// 封鎖しない終了経路（PR #736 レビュー指摘 P3-2）の回帰テスト本体:
+        /// 排出しない終了経路（PR #736 レビュー指摘 P3-2）の回帰テスト本体:
         /// permit を確保した送信者がいる状態で `cancel` を発火させるか
-        /// （`release_outbound` 経由）、クライアントを切断して EOF で抜けさせ
-        /// （`SealOnExit` ガード経由）、受信側が drop された後の確定が `Ok` ではなく
+        /// （`OutboundGuard::release` 経由）、クライアントを切断して EOF で抜けさせ
+        /// （`OutboundGuard` の `Drop` 経由）、受信側が drop された後の確定が `Ok` ではなく
         /// `Err(Closed)` になることを確かめる（封鎖前は `Ok` を返して値が捨てられて
         /// いた）。
         async fn assert_commit_rejected_after_exit(fire_cancel: bool) {
@@ -4091,13 +4082,13 @@ mod tests {
             }
         }
 
-        /// cancel 経路（`release_outbound`）で受信側を手放す前に封鎖されること。
+        /// cancel 経路（`OutboundGuard::release`）で受信側を手放す前に封鎖されること。
         #[tokio::test]
         async fn cancel_path_seals_before_releasing_outbound() {
             assert_commit_rejected_after_exit(true).await;
         }
 
-        /// EOF 経路（`run_session_inner` を抜ける際の `SealOnExit` ガード）で
+        /// EOF 経路（`run_session_inner` を抜ける際の `OutboundGuard` の `Drop`）で
         /// 受信側を drop する前に封鎖されること。
         #[tokio::test]
         async fn eof_path_seals_before_dropping_outbound() {
@@ -4115,7 +4106,7 @@ mod tests {
             let (tx, rx) = handler::channel(CAPACITY);
             tx.close(4000, "bye").await.expect("close should succeed");
 
-            let mut outbound = Some(rx);
+            let mut outbound = OutboundGuard::new(Some(rx), &tx);
             let cancel = std::future::pending::<()>();
             let mut cancel = std::pin::pin!(cancel);
             let close_deadline = Instant::now() + Duration::from_secs(2);
@@ -4123,7 +4114,6 @@ mod tests {
                 &mut server_ws,
                 WsOutcome::Close,
                 &mut outbound,
-                &tx,
                 cancel.as_mut(),
                 close_deadline,
             )
