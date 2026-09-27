@@ -5255,9 +5255,36 @@ mod tests {
         use super::*;
 
         fn keepalive_config(interval: Duration, pong_timeout: Duration) -> WebSocketConfig {
-            WebSocketConfig { ..test_config() }
+            test_config()
                 .with_ping_interval(interval, pong_timeout)
                 .unwrap()
+        }
+
+        /// `delay` だけ `sleep` してから受信メッセージをそのまま返す
+        /// トイハンドラ（`tests/idle_timeout.rs::SlowHandler` と同型）。
+        /// `buffered_pong_after_slow_handler_prevents_false_positive_timeout`
+        /// が、ハンドラ実行中は keepalive の期限評価が行われない（既知の
+        /// 限界）ことを利用して「偽陽性なし」契約を検証するために使う。
+        struct SlowEchoHandler {
+            delay: Duration,
+        }
+
+        impl handler::WsMessageHandler for SlowEchoHandler {
+            fn name(&self) -> &'static str {
+                "slow-echo"
+            }
+
+            fn on_message(
+                &self,
+                msg: WsMessage,
+            ) -> futures_util::future::BoxFuture<'_, Result<WsOutcome, handler::WsHandlerError>>
+            {
+                let delay = self.delay;
+                Box::pin(async move {
+                    tokio::time::sleep(delay).await;
+                    Ok(WsOutcome::Reply(vec![msg]))
+                })
+            }
         }
 
         /// 受け入れ基準 1・3: `interval` ごとに Ping が送出され、クライアント
@@ -5397,6 +5424,249 @@ mod tests {
             client.close(None).await.expect("close");
             session_handle.abort();
             let _ = session_handle.await;
+        }
+
+        /// Issue #175 の契約回帰テスト: サーバー起点の Ping 送出自体は
+        /// `idle_deadline` を更新しない（モジュール doc「Ping の送出自体は
+        /// `idle_deadline` を更新しない」節）。`idle_timeout` を Ping の
+        /// `interval` と同程度に設定し、クライアントが一切送受信しない
+        /// 状態で待つと、Ping が複数回送出されても `idle_timeout` どおり
+        /// `IdleTimeout` で終了すること（もし Ping 送出が誤って
+        /// `idle_deadline` をリセットしていれば、`idle_timeout` は無期限に
+        /// 延長され続け、代わりに `pong_timeout` 経由の `PongTimeout` に
+        /// なるか、有界時間内に終了しない）。
+        #[tokio::test(start_paused = true)]
+        async fn ping_send_does_not_reset_idle_deadline() {
+            let interval = Duration::from_millis(50);
+            let pong_timeout = Duration::from_secs(1);
+            let idle_timeout = Duration::from_millis(300);
+            let config: &'static WebSocketConfig = Box::leak(Box::new(
+                WebSocketConfig {
+                    idle_timeout: Some(idle_timeout),
+                    ..test_config()
+                }
+                .with_ping_interval(interval, pong_timeout)
+                .unwrap(),
+            ));
+
+            let (server_side, client_side) = tokio::io::duplex(8192);
+            // クライアントは接続を保持するだけで一切送受信しない
+            // （Ping への Pong 応答すらしない。`idle_timeout`（300ms）は
+            // `pong_timeout`（1 秒）より短いため、`idle_timeout` が誤って
+            // リセットされない限り `IdleTimeout` が先に発火するはず）。
+            let _client_side = client_side;
+            let (tx, rx) = handler::channel(4);
+            let conn_ctx = test_conn_ctx(tx);
+
+            let session_handle = tokio::spawn(async move {
+                let cancel = std::future::pending::<()>();
+                let mut cancel = std::pin::pin!(cancel);
+                run_session_inner(
+                    server_side,
+                    Vec::new(),
+                    config,
+                    cancel.as_mut(),
+                    Some(rx),
+                    &conn_ctx,
+                )
+                .await
+            });
+
+            let (reason, result) = tokio::time::timeout(Duration::from_secs(3), session_handle)
+                .await
+                .expect(
+                    "session must not hang: if ping incorrectly reset idle_deadline, idle \
+                     would never fire and the session would run past pong_timeout instead",
+                )
+                .expect("session task should not panic");
+            assert!(
+                matches!(reason, CloseReason::IdleTimeout),
+                "ping sends must not reset idle_deadline (expected IdleTimeout, got {reason:?})"
+            );
+            assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+        }
+
+        /// モジュール doc「既知の限界」節の「偽陽性なし」契約の回帰テスト。
+        ///
+        /// タイムライン（`interval` = 30ms・`pong_timeout` = 20ms・
+        /// ハンドラ delay = 100ms）:
+        /// 1. t=30ms: サーバーが Ping #1 を送出（`pong_deadline` = 50ms）。
+        /// 2. クライアントは Ping を受け取ったら、Text（ハンドラ起動用）→
+        ///    Pong の順に送る（この順で送ることで、サーバーが先に Text を
+        ///    読み、Pong はハンドラ実行中バッファに残り続ける）。
+        /// 3. サーバーは Text を読んでハンドラ（100ms sleep）を実行する
+        ///    （t=30ms〜130ms）。この間 Ping/Pong 期限は評価されない
+        ///    （既存の限界）。
+        /// 4. t=130ms、ハンドラ完了後のループ先頭即時チェックで
+        ///    `next_ping_at`（60ms）が既に過ぎているため Ping #2 を送出する。
+        ///    このとき `pong_deadline`（50ms）は既に過去だが、
+        ///    `send_bounded_with_liveness` は送出（`race2` で `a` を先に
+        ///    ポーリング）を優先するため送出自体は成功する。
+        /// 5. 続く受信待ちでも、`ws.next()` を先にポーリングする `race2` の
+        ///    bias により、ステップ 2 で送られ未読のまま残っていた Pong が
+        ///    （タイマー分岐の `pong_deadline` 期限切れより先に）読み取られ、
+        ///    `on_pong()` で解除される。`Instant::now() >= deadline` を
+        ///    バッファ済みメッセージの確認より先に評価する実装であれば、
+        ///    ここで誤って `PongTimeout` になるはずである。
+        #[tokio::test(start_paused = true)]
+        async fn buffered_pong_after_slow_handler_prevents_false_positive_timeout() {
+            let interval = Duration::from_millis(30);
+            let pong_timeout = Duration::from_millis(20);
+            let handler_delay = Duration::from_millis(100);
+            let mut config = keepalive_config(interval, pong_timeout);
+            config.handler = std::sync::Arc::new(SlowEchoHandler {
+                delay: handler_delay,
+            });
+            let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+            let (server_side, client_side) = tokio::io::duplex(8192);
+            let (tx, rx) = handler::channel(4);
+            let conn_ctx = test_conn_ctx(tx);
+
+            let session_handle = tokio::spawn(async move {
+                let cancel = std::future::pending::<()>();
+                let mut cancel = std::pin::pin!(cancel);
+                run_session_inner(
+                    server_side,
+                    Vec::new(),
+                    config,
+                    cancel.as_mut(),
+                    Some(rx),
+                    &conn_ctx,
+                )
+                .await
+            });
+
+            let mut client =
+                WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+
+            // 最初の Ping（t=30ms）を待つ。
+            let first_ping = tokio::time::timeout(interval * 10, client.next())
+                .await
+                .expect("first ping should arrive within 10x interval")
+                .expect("stream should yield a message")
+                .expect("no protocol error");
+            let payload = match first_ping {
+                Message::Ping(payload) => payload,
+                other => panic!("expected Ping, got {other:?}"),
+            };
+
+            // Text（ハンドラ起動）→ Pong の順で送る（バイト順を制御し、
+            // サーバーが Text を先に読むようにする）。
+            client
+                .send(Message::Text("trigger".into()))
+                .await
+                .expect("client text send should succeed");
+            client
+                .send(Message::Pong(payload))
+                .await
+                .expect("client pong send should succeed");
+
+            // ハンドラの delay（100ms）を大きく超える余裕（3 倍）の範囲内に、
+            // ハンドラの返信（エコーされた "trigger"）が届くこと。
+            // `PongTimeout` により先に `Close` が届いてしまえば、この
+            // アサーションが失敗して偽陽性の回帰を検知する。
+            let mut saw_reply = false;
+            for _ in 0..10 {
+                let received = tokio::time::timeout(handler_delay * 3, client.next())
+                    .await
+                    .expect("a frame should arrive within a generous margin")
+                    .expect("stream should yield a message")
+                    .expect("no protocol error");
+                match received {
+                    Message::Text(text) => {
+                        assert_eq!(text.as_str(), "trigger", "unexpected echoed text");
+                        saw_reply = true;
+                        break;
+                    }
+                    Message::Ping(payload) => {
+                        // 2 回目以降の Ping（keepalive は継続する）には
+                        // 素直に Pong を返しておく。
+                        client
+                            .send(Message::Pong(payload))
+                            .await
+                            .expect("pong send should succeed");
+                    }
+                    Message::Close(frame) => {
+                        panic!(
+                            "unexpected close before the handler's reply arrived \
+                             (false positive pong timeout?): {frame:?}"
+                        );
+                    }
+                    other => panic!("unexpected frame: {other:?}"),
+                }
+            }
+            assert!(
+                saw_reply,
+                "expected to see the handler's echoed reply before any close frame"
+            );
+
+            client.close(None).await.expect("close");
+            let (reason, result) = tokio::time::timeout(Duration::from_secs(5), session_handle)
+                .await
+                .expect("session should finish after client-initiated close")
+                .expect("session task should not panic");
+            assert!(
+                matches!(reason, CloseReason::ClientClose),
+                "expected ClientClose (not PongTimeout), got {reason:?}"
+            );
+            assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+        }
+
+        /// 生存期限（`liveness_deadline`）による外側ループの outbound push
+        /// 送出の有界化（モジュール doc「サーバー起点 Ping keepalive」節）。
+        /// 受信を止めたクライアント（duplex バッファを小さくして確実に
+        /// 満杯にする）への push 送出がブロックし続けても、生存期限
+        /// （ここでは Ping が未送出のため `next_ping_at + pong_timeout`）を
+        /// 超えたら `PongTimeout` として打ち切られること。
+        #[tokio::test(start_paused = true)]
+        async fn stalled_push_send_is_bounded_by_liveness_deadline() {
+            let interval = Duration::from_millis(50);
+            let pong_timeout = Duration::from_millis(100);
+            let config: &'static WebSocketConfig = Box::leak(Box::new(WebSocketConfig {
+                close_grace: Duration::from_millis(100),
+                ..keepalive_config(interval, pong_timeout)
+            }));
+
+            // 16 バイトという小さなバッファで、push フレーム 1 個の書き込みが
+            // ブロックしたまま解消しない状況を作る（クライアントは一切
+            // 読み取らない）。
+            let (server_side, client_side) = tokio::io::duplex(16);
+            let _client_side = client_side;
+            let (tx, rx) = handler::channel(4);
+            let conn_ctx = test_conn_ctx(tx.clone());
+
+            let session_handle = tokio::spawn(async move {
+                let cancel = std::future::pending::<()>();
+                let mut cancel = std::pin::pin!(cancel);
+                run_session_inner(
+                    server_side,
+                    Vec::new(),
+                    config,
+                    cancel.as_mut(),
+                    Some(rx),
+                    &conn_ctx,
+                )
+                .await
+            });
+
+            tx.send(WsMessage::Text("x".repeat(64)))
+                .await
+                .expect("outbound send should succeed (queue capacity, not the stalled socket)");
+
+            let (reason, result) = tokio::time::timeout(Duration::from_secs(5), session_handle)
+                .await
+                .expect(
+                    "server must not hang: the liveness deadline (next_ping_at + pong_timeout) \
+                     must bound the stalled write",
+                )
+                .expect("session task should not panic");
+            assert!(
+                matches!(reason, CloseReason::PongTimeout),
+                "expected PongTimeout (stalled write bounded by the liveness deadline), \
+                 got {reason:?}"
+            );
+            assert!(result.is_ok(), "expected Ok(()), got {result:?}");
         }
     }
 }
