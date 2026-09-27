@@ -1223,13 +1223,14 @@ impl WsSender {
     /// `on_message_with_ctx` の実装の中でインライン `await` してもデッド
     /// ロックしない（`crate::session::run_handler_with_outbound_drain` が
     /// ハンドラ実行中も outbound チャネルを消化し続けるため）。ただし、
-    /// ハンドラの戻り値の送出を始める前に close が確定していれば、その戻り値
-    /// （`WsOutcome::Reply`/`Close`）は**破棄され送出されない**（ハンドラの
-    /// 実行中か完了後の送信キュー排出中かを問わない。RFC 6455 5.5.1 節: Close
-    /// フレームの後にデータフレームを送れないため）。`Reply` の送出を始めた後に
-    /// 確定した場合は、`Reply` の残りが送出されうる（close 確定の観測から
-    /// `close_grace` で打ち切る）。ここでの「close が確定」は本メソッドが `Ok` を
-    /// 返す時点（確定シグナルの送信）を指す。呼び出し後に返す値に意味を持たせ
+    /// セッションがハンドラの戻り値の送出を始める直前に close の確定を判定する
+    /// 時点（`WsOutcome::Reply` は送信キューと同じロックでの確認、
+    /// `WsOutcome::Close` は送信キューの封鎖）より前に本メソッドが確定（同じ
+    /// ロック区間での close 済みフラグの更新）していれば、その戻り値は**破棄
+    /// され送出されない**（ハンドラの実行中か完了後の送信キュー排出中かを
+    /// 問わない。RFC 6455 5.5.1 節: Close フレームの後にデータフレームを送れない
+    /// ため）。判定より後に確定した場合、`Reply` は Close より先に送出されうる
+    /// （close 確定の観測から `close_grace` で打ち切る）。呼び出し後に返す値に意味を持たせ
     /// たい場合は、本メソッドを `on_open` 等から `tokio::spawn` した別
     /// タスクから呼ぶ構成にする（ハンドラ自身の戻り値と競合しない）。
     ///
@@ -1425,6 +1426,20 @@ impl WsSender {
         // 受信側は `_closed_signal_anchor` が最低 1 個生存を保証するため
         // 送信は必ず成功する（戻り値は無視してよい）。
         let _ = self.closed_signal.send(true);
+    }
+
+    /// `closing` を [`Self::commit`] と同じロックで読み、[`Self::close`] の確定
+    /// （またはセッションの封鎖）の有無を返す（`pub(crate)`、`crate::session`
+    /// 専用。PR #736 codex P1 指摘対応）。
+    ///
+    /// セッションは Reply の送出を始める直前（間に `.await` を挟まない）に本
+    /// メソッドで判定し、`true` なら Reply を破棄して Close 指示の処理へ進む。
+    /// ロックの前後関係から、`true` を返したときは `close()` の Close 指示が
+    /// すでにキューにある。Reply を送る継続経路ではセッションは封鎖しない
+    /// （封鎖する防御分岐では受信側を無効化する）ため、`true` は `close()` の
+    /// 確定と判定してよい。
+    pub(crate) fn close_committed(&self) -> bool {
+        *self.closing.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// close 確定（またはセッションの封鎖）を観測する watch 受信側を返す

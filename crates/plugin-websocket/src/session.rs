@@ -924,10 +924,12 @@ enum SessionFlow {
 /// （書き込み位置）は保たれ、後続の Close 送出が破損したバイト列を生まない
 /// （モジュール doc の「ワイヤ安全性」節を参照）。
 ///
-/// `outbound`（受信側と封鎖用の送信側を束ねた [`OutboundGuard`]）は
-/// `WsOutcome::Close` 分岐でのみ使う（[`flush_outbound`] へ委譲、
-/// イシュー #711）。`WsOutcome::Reply` ではセッションが継続するため送信キューを
-/// 閉じない。
+/// `outbound`（受信側と封鎖用の送信側を束ねた [`OutboundGuard`]）は、
+/// `WsOutcome::Close` 分岐では [`flush_outbound`] へ委譲して使う（イシュー
+/// #711）。`WsOutcome::Reply` ではセッションが継続するため送信キューを閉じず、
+/// 送出を始める直前（間に `.await` を挟まない）に `close()` の確定を
+/// `WsSender::close_committed` で判定する（Reply の判定点。確定済みなら Reply を
+/// 破棄して [`drain_to_close`] へ進む。PR #736 codex P1 指摘対応）。
 ///
 /// `close_deadline` は Close ハンドシェイク全体が共有する単一の期限
 /// （`tokio::time::Instant`）で、呼び出し元が `close_grace` から 1 回だけ計算して
@@ -950,6 +952,15 @@ where
 {
     match outcome {
         WsOutcome::Reply(messages) => {
+            // Reply 送出の判定点（PR #736 codex P1 指摘対応）: 送出を始める直前
+            // （この判定と最初の送出の間に `.await` を挟まない）に、`close()` の
+            // 確定フラグを `WsSender::commit` と同じロックで確認する。確定済みなら
+            // Reply を破棄し、Close 指示まで排出して `SenderClose` へ進む。
+            if outbound.sender.close_committed()
+                && let Some(flow) = drain_to_close(ws, cancel.as_mut(), outbound).await?
+            {
+                return Ok(flow);
+            }
             for msg in messages {
                 let frame = to_tungstenite_message(msg);
                 match send_bounded(ws, cancel.as_mut(), &mut outbound.close, frame).await {
@@ -1151,7 +1162,7 @@ where
 }
 
 /// セッションが続く経路（ハンドラが `WsOutcome::Reply` を返した）で、Reply
-/// 送出前に行う有界な排出（PR #736 codex P0/P1 レビュー指摘対応）。
+/// 送出前に行う有界な排出（PR #736 codex P0 レビュー指摘対応）。
 ///
 /// # 手順
 ///
@@ -1161,33 +1172,21 @@ where
 ///    [`run_handler_with_outbound_drain`] が
 ///    [`crate::handler::DEFAULT_OUTBOUND_CAPACITY`] を渡す 1 か所のみ）。
 /// 2. `Message` は到着順に送出する（[`send_bounded`]）。`Close` を見つけたら
-///    Reply を破棄して `Some(SessionFlow::SenderClose)` を返す。`Disconnected`
-///    なら `outbound` を無効化して打ち切る。
-/// 3. `capacity` 回を使い切った、または `Empty` になった時点で close の確定を
-///    確認する（[`CloseBound::observe`]）。確定済みなら Close 指示まで取り出し
-///    続け（手順 2）、未確定なら `None` を返して呼び出し元に Reply を送出させる。
-///    残りはキューに残ったまま外側ループが処理するため失われない。
+///    Reply を破棄して `Some(SessionFlow::SenderClose)` を返す。`Empty` で
+///    打ち切り、`Disconnected` なら `outbound` を無効化して打ち切る。
+/// 3. 打ち切ったら `None` を返す。残りはキューに残ったまま外側ループが処理する
+///    ため失われない。close が確定済みかどうか（Reply を送るか）は、呼び出し元
+///    [`apply_outcome`] が Reply 送出の直前に判定する。
 ///
 /// **保証**: 本関数の開始時点でキューに格納済みだった push は Reply より先に
-/// 送出され、`None` を返す直前の確認までに close が確定していれば Reply は
-/// 送出されない（`capacity` がチャネル容量より小さい場合は前者の限りでない）。
-/// ここでの「close 確定」は `close()` が `Ok` を返す時点（確定シグナルの送信）を
-/// 指す（`WsSender::commit` のロック区間でのフラグ更新ではない）。
+/// 送出される（格納済み件数は容量以下で FIFO の先頭に並ぶため、手順 1 の回数で
+/// すべて取り出せる。`capacity` がチャネル容量より小さい場合はこの限りでない）。
 ///
-/// これ以外の push と Reply の相対順序、および Reply の送出開始後に確定した
-/// close と Reply の関係は不定（後者の Reply 送出は close 確定の観測から
-/// `close_grace` で打ち切る）。
-///
-/// 手順 3 が有界である根拠: close 確定後は新しい enqueue が `Err` になるため、
-/// 取り出す件数はチャネル容量以下。また `WsSender::commit` は Close 指示の
-/// enqueue と close 確定フラグの更新を同じロック区間で行い、確定シグナルは
-/// その後に送るため、確定を観測した時点で Close 指示はキューにある
-/// （継続経路では封鎖しないので、確定シグナルは `close()` によるものと判定して
-/// よい。封鎖する防御分岐では `outbound` を無効化するため、ここで打ち切る）。
+/// これ以外の push と Reply の相対順序は不定。
 ///
 /// `try_recv()` は別送信者の書き込み途中（tokio 内部の `Busy`）に当たると、
 /// その書き込みが終わるまでワーカースレッドをごく短時間 park しうる（書き込みは
-/// 同期区間で完了するため有界）。
+/// 同期区間で完了するため有界で、回数も `capacity` 以下）。
 async fn drain_before_reply<S, C>(
     ws: &mut WebSocketStream<S>,
     mut cancel: Pin<&mut C>,
@@ -1198,15 +1197,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     C: Future<Output = ()>,
 {
-    let mut budget = capacity;
-    // close 確定後に `Empty` を見て取り出し直したか（下の `Empty` 分岐を参照）。
-    let mut retried_after_close = false;
-    loop {
-        // 手順 3: 容量回を使い切ったら、close 確定済みの場合に限り続ける。
-        if budget == 0 && outbound.close.observe().is_none() {
-            return Ok(None);
-        }
-        budget = budget.saturating_sub(1);
+    for _ in 0..capacity {
         let Some(rx) = outbound.rx.as_mut() else {
             return Ok(None);
         };
@@ -1231,33 +1222,80 @@ where
                     deadline: outbound.close.deadline(),
                 }));
             }
-            Err(mpsc::error::TryRecvError::Empty) => {
-                // 手順 3: 空の時点で close が確定していれば、その Close 指示は
-                // 空を観測した後に積まれている（確定を観測した時点でキューに
-                // ある）ので、もう一度取り出す。未確定なら Reply へ進む。
-                // 取り出し直しは 1 回まで（close 確定後の FIFO では Close 指示より
-                // 先に空になることはないため、2 回目の `Empty` は起こらない。
-                // 前提は debug ビルドで固定し、release ビルドでは `.await` のない
-                // 空回りにならないよう打ち切る）。
-                if outbound.close.observe().is_none() {
-                    return Ok(None);
-                }
-                debug_assert!(
-                    !retried_after_close,
-                    "close 確定を観測した後に送信キューが 2 回続けて空になった \
-                     （Close 指示は確定シグナルより前にキューへ積まれるはず）"
-                );
-                if retried_after_close {
-                    return Ok(None);
-                }
-                retried_after_close = true;
-                budget = budget.max(1);
-            }
+            Err(mpsc::error::TryRecvError::Empty) => return Ok(None),
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 // 全 `WsSender` クローンが drop 済み（`conn_ctx` がクローンを
                 // 保持するためセッション実行中は到達しない防御的コード）。
                 // 到達すると封鎖が close 確定シグナルも送るため、以後の送出は
                 // close 未確定でも `close_grace` で打ち切られる（[`CloseBound`]）。
+                outbound.release();
+                return Ok(None);
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// `close()` の確定を判定した後（[`apply_outcome`] の Reply 送出の判定点）、
+/// キューを Close 指示まで排出する（PR #736 codex P1 指摘対応）。
+///
+/// # 手順
+///
+/// 1. `try_recv()` で取り出し、`Message` は到着順に送出する（[`send_bounded`]。
+///    close 確定の観測から `close_grace` で打ち切る）。
+/// 2. `Close` を見つけたら `Some(SessionFlow::SenderClose)` を返す。
+///
+/// **保証**: 呼び出し元が `WsSender::close_committed` で確定を判定した時点で
+/// Close 指示はキューにあり（`commit` と同じロックの前後関係）、確定後は新規の
+/// enqueue が `Err` になるため、Close 指示までの件数はチャネル容量以下で必ず
+/// 見つかる。
+///
+/// 受信側が無効化済み・空・`Disconnected`（いずれも継続経路では到達しない
+/// 防御分岐）の場合は `None` を返し、呼び出し元は Reply の送出へ進む（以後の
+/// 送出は [`CloseBound`] の期限で打ち切られる）。
+async fn drain_to_close<S, C>(
+    ws: &mut WebSocketStream<S>,
+    mut cancel: Pin<&mut C>,
+    outbound: &mut OutboundGuard<'_>,
+) -> Result<Option<SessionFlow>, SessionFailure>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    C: Future<Output = ()>,
+{
+    loop {
+        let Some(rx) = outbound.rx.as_mut() else {
+            return Ok(None);
+        };
+        match rx.try_recv() {
+            Ok(OutboundItem::Message(msg)) => {
+                let frame = to_tungstenite_message(msg);
+                match send_bounded(ws, cancel.as_mut(), &mut outbound.close, frame).await {
+                    SendOutcome::Cancelled => return Ok(Some(SessionFlow::Cancelled)),
+                    SendOutcome::Sent => {}
+                    SendOutcome::CloseGraceExpired => {
+                        return Ok(Some(SessionFlow::CloseGraceExpired));
+                    }
+                    SendOutcome::Failed(err) => return Err(SessionFailure::send(err)),
+                }
+            }
+            Ok(OutboundItem::Close { code, reason }) => {
+                return Ok(Some(SessionFlow::SenderClose {
+                    code,
+                    reason,
+                    deadline: outbound.close.deadline(),
+                }));
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {
+                // Close 指示は確定フラグと同じロック区間でキューへ積まれるため、
+                // 確定後に Close 指示より先に空になることはない（到達不能の前提を
+                // debug ビルドで固定する）。
+                debug_assert!(
+                    !outbound.sender.close_committed(),
+                    "close() の確定を判定した後に Close 指示より先に送信キューが空になった"
+                );
+                return Ok(None);
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => {
                 outbound.release();
                 return Ok(None);
             }
@@ -1290,8 +1328,10 @@ where
 /// 2. ハンドラの結果で排出方法を分ける（PR #736 codex P0/P1 レビュー指摘対応）。
 ///    - `Ok(WsOutcome::Reply)`（継続経路）: [`drain_before_reply`] で受信側を
 ///      閉じずに容量（[`crate::handler::DEFAULT_OUTBOUND_CAPACITY`]）回まで
-///      排出する。その時点で close が確定済みなら Close 指示まで取り出して
-///      Reply を破棄し、未確定なら [`apply_outcome`] で Reply を送出する。
+///      排出してから [`apply_outcome`] へ進む。`apply_outcome` は Reply の送出を
+///      始める直前に `close()` の確定をロックで判定し（`WsSender::close_committed`）、
+///      確定済みなら Reply を破棄して Close 指示まで排出する
+///      （[`drain_to_close`]）。未確定なら Reply を送出する。
 ///    - `Ok(WsOutcome::Close)`（終了経路）: [`apply_outcome`] が
 ///      [`flush_outbound`]（送信キューを封鎖してから排出）を経て Close
 ///      フレームを送出する。
@@ -1302,15 +1342,16 @@ where
 ///      して返す（送信失敗でハンドラエラーを上書きしない）。
 ///
 /// **保証**: 継続経路では排出開始時点で格納済みの push が Reply より先に送出
-/// され、Reply の送出を始める前に close が確定していれば Reply は送出されず、
+/// され、Reply 送出直前の判定（`closing` のロックでの確認）より前に `close()` が
+/// 確定（同じロック区間でのフラグ更新）していれば Reply は送出されず、
 /// 終了経路では封鎖より前に `WsSender::send`/`close` が `Ok` を返した
 /// 項目が（`close_grace` 超過・cancel・送出失敗（以後の項目と Close フレームも
 /// 送出されない）で打ち切られない限り）すべて送出され、封鎖より後の呼び出しは
 /// `Err` を返す。
 ///
-/// 継続経路で排出開始後に格納された push と Reply の相対順序、および Reply の
-/// 送出開始後に確定した close と Reply の関係のみ不定（後者の Reply 送出は close
-/// 確定の観測から `close_grace` で打ち切る）。
+/// 継続経路で排出開始後に格納された push と Reply の相対順序のみ不定（判定より
+/// 後に確定した close では Reply が Close より先に送出されうるが、close 確定の
+/// 観測から `close_grace` で打ち切る）。
 ///
 /// outbound 到着時の `ws.send()` 失敗・cancel 発火時の扱いは
 /// [`run_session`] 外側ループの `InboundEvent::Outbound` 分岐と同一
@@ -4502,6 +4543,76 @@ mod tests {
                 "expected SenderClose, got {reason:?}"
             );
             assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+        }
+
+        /// codex P1（PR #736、2 回目）の回帰テスト: 継続経路の排出
+        /// （`drain_before_reply`）が close 未確定として戻った直後、Reply の送出を
+        /// 始める前に別タスクの `close()` が確定した場合でも、Reply は送出されず
+        /// Close 指示の処理へ進むこと。実運用では別スレッドとの競合でしか起きない
+        /// 順序なので、`drain_before_reply` → `close()` → `apply_outcome` を順に
+        /// 直接呼んで決定的に再現する。
+        #[tokio::test]
+        async fn close_committed_after_reply_drain_discards_reply() {
+            let (server_side, client_side) = tokio::io::duplex(1 << 16);
+            let mut server_ws =
+                WebSocketStream::from_raw_socket(server_side, Role::Server, None).await;
+            let mut client =
+                WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+            let (tx, rx) = handler::channel(CAPACITY);
+            tx.send(WsMessage::Text("push-0".to_string()))
+                .await
+                .expect("push should succeed");
+
+            let mut outbound = OutboundGuard::new(Some(rx), &tx, Duration::from_secs(10));
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+
+            let drained = drain_before_reply(
+                &mut server_ws,
+                cancel.as_mut(),
+                &mut outbound,
+                handler::DEFAULT_OUTBOUND_CAPACITY,
+            )
+            .await
+            .unwrap_or_else(|_| panic!("drain_before_reply should not fail"));
+            assert!(
+                drained.is_none(),
+                "close is not committed yet, so the drain must hand over to the Reply"
+            );
+
+            // 排出の後・Reply の送出前に close が確定する。
+            tx.close(4000, "bye").await.expect("close should succeed");
+
+            let close_deadline = Instant::now() + Duration::from_secs(2);
+            let flow = apply_outcome(
+                &mut server_ws,
+                WsOutcome::Reply(vec![WsMessage::Text("reply".to_string())]),
+                &mut outbound,
+                cancel.as_mut(),
+                close_deadline,
+            )
+            .await
+            .unwrap_or_else(|_| panic!("apply_outcome should not fail"));
+            match flow {
+                SessionFlow::SenderClose { code, reason, .. } => {
+                    assert_eq!(code, 4000);
+                    assert_eq!(reason, "bye");
+                }
+                _ => panic!("a Reply must not be sent once close() is committed before it starts"),
+            }
+
+            assert_eq!(
+                next_frame(&mut client).await,
+                Some(Message::Text("push-0".into())),
+                "the push queued before the Reply must still be delivered"
+            );
+            drop(outbound);
+            drop(server_ws);
+            let next = next_frame(&mut client).await;
+            assert!(
+                !matches!(&next, Some(Message::Text(text)) if text.as_str() == "reply"),
+                "the Reply must not reach the client, got {next:?}"
+            );
         }
     }
 }

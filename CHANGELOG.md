@@ -92,9 +92,11 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   （通常は close 確定の直後）から `close_grace` 以内に Close ハンドシェイクを
   終えるか接続を打ち切ります。その間に世代キャンセル・idle timeout が先に発火した
   場合は、その経路の契約（発火時点から `close_grace`）に従います（close 未確定時の
-  push の送出には従来どおり期限を設けません）。ハンドラの戻り値は、その送出を始める
-  前に `WsSender::close` が確定していれば（`close()` が `Ok` を返していれば）、
-  ハンドラの実行中か完了後の送信キュー排出中かを問わず破棄します。イシュー
+  push の送出には従来どおり期限を設けません）。ハンドラの戻り値は、セッションが
+  その送出直前に送信キューと同じロックで close の確定を判定する時点より前に
+  `WsSender::close` が確定していれば、ハンドラの実行中か完了後の送信キュー排出中
+  かを問わず破棄します（判定より後に確定した場合、`Reply` は Close より先に
+  送出されえます）。イシュー
   [#710](https://github.com/Fandhe-AI/fandhe-backend/issues/710)
 
 ## [0.4.1] - 2026-09-26
