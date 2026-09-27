@@ -447,7 +447,19 @@ Future 跨ぎで保持する挙動に依拠する）。
 `WsOutcome::Reply` の各 `ws.send`・`WsOutcome::Close` の `ws.close` を
 `race_cancel` で包む。既存の `handle_cancellation` → `close_and_drain`
 （`CLOSE_GRACE` 有界化・`ConnectionClosed`/`AlreadyClosed` 許容）は無変更で
-共有する。
+共有する。イシュー #711 で `WsOutcome::Close` の送出は「outbound の flush
+（`flush_outbound`。各送出は cancel と race）→ `ws.close`」の順に変更した
+（送信キューを閉じてから既存キュー分をすべて送出し、その後に Close
+フレームを送出する。cancel/idle 経路の drop のみ・flush なしという既存契約は
+変えない）。PR #735 の Codex レビュー指摘（P1）対応として、`flush_outbound`
+の排出ループ全体を `tokio::time::timeout` で `config.close_grace`（既存の
+`close_and_drain` が Close 送出後のドレインに使う値と同じ設定値を共用）に
+有界化した。クライアントが受信を止めている状態では `ws.send()` が
+cancel 以外の契機で無期限にブロックしうるため（通常のリクエスト処理中は
+cancel が発火しない）、期限超過時は残りメッセージの送出を諦め、後続の
+`ws.close(None)` も試みずに `SessionFlow::Closed` で即座にセッションを
+終える（呼び出し元がストリームを drop して TCP 接続を終了する。10.3 節が
+述べる「打ち切り後の drop は安全」契約と同型）。
 
 ## 11. WS 以外への水平展開（イシュー #498）
 
