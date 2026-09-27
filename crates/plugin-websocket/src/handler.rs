@@ -1133,14 +1133,17 @@ impl WsSender {
     /// ワイヤ上の完了（セッション終了）を待ちたい場合は [`Self::closed`]
     /// を併用する。
     ///
-    /// # ハンドラ実行中に呼ぶ場合の注意
+    /// # ハンドラ実行中に呼ぶ場合の注意（[`Self::closed`] とは異なる）
     ///
-    /// [`Self::closed`] の doc と同じデッドロック注意が適用される:
-    /// `on_message` / `on_message_with_ctx` の実装の中で本メソッドを
-    /// インラインで `await` してはならない（`crate::session::
-    /// run_handler_with_outbound_drain` が受信ループへ合流させて消化する
-    /// ため、通常はデッドロックしないが、`tokio::spawn` した別タスクから
-    /// 呼ぶ構成を推奨する）。
+    /// [`Self::closed`] とは異なり、本メソッドを `on_message`/
+    /// `on_message_with_ctx` の実装の中でインライン `await` してもデッド
+    /// ロックしない（`crate::session::run_handler_with_outbound_drain` が
+    /// ハンドラ実行中も outbound チャネルを消化し続けるため）。ただし、
+    /// close が確定した時点でハンドラの戻り値（`WsOutcome::Reply`/`Close`）
+    /// は**破棄され送出されない**（RFC 6455 5.5.1 節: Close フレームの後に
+    /// データフレームを送れないため）。呼び出し後に返す値に意味を持たせ
+    /// たい場合は、本メソッドを `on_open` 等から `tokio::spawn` した別
+    /// タスクから呼ぶ構成にする（ハンドラ自身の戻り値と競合しない）。
     ///
     /// # Examples
     ///

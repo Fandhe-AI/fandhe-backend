@@ -1930,6 +1930,236 @@ mod tests {
         assert!(result.is_ok(), "expected Ok(()), got {result:?}");
     }
 
+    /// イシュー #710（設計 12 節）: ハンドラ（`on_message_with_ctx`）が
+    /// `Future` 内で止まっている間に、外部タスクが `WsSender::close` を
+    /// 呼んだ場合。`run_handler_with_outbound_drain` のステップ 1
+    /// （ハンドラ完了前に outbound 到着を検出する経路）が Close を検出し、
+    /// ハンドラの `Future` を drop して即座に Close ハンドシェイクへ分岐する
+    /// こと（返信は送出されない）を確認する。
+    #[tokio::test]
+    async fn sender_close_during_pending_handler_drops_handler_future() {
+        use futures_util::future::BoxFuture;
+        use std::sync::Arc;
+        use tokio::sync::Notify;
+
+        /// `on_message_with_ctx` が `Notify` で通知するまで無期限に
+        /// ブロックするハンドラ。テストが `close` を確実に「ハンドラ実行中」
+        /// に呼べるよう、ブロック開始を `started` で外部へ知らせる。
+        struct BlockingHandler {
+            started: Arc<Notify>,
+        }
+
+        impl handler::WsMessageHandler for BlockingHandler {
+            fn name(&self) -> &'static str {
+                "blocking"
+            }
+
+            fn on_message(
+                &self,
+                msg: WsMessage,
+            ) -> BoxFuture<'_, Result<WsOutcome, handler::WsHandlerError>> {
+                // `on_message_with_ctx` をオーバーライドしているため実行時
+                // には呼ばれない（トレードオフ、`handler` モジュール doc 参照）。
+                Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+            }
+
+            fn on_message_with_ctx<'a>(
+                &'a self,
+                _ctx: &'a WsConnContext,
+                _msg: WsMessage,
+            ) -> BoxFuture<'a, Result<WsOutcome, handler::WsHandlerError>> {
+                let started = Arc::clone(&self.started);
+                Box::pin(async move {
+                    started.notify_one();
+                    // 世代キャンセル・`WsSender::close` のいずれかで打ち切ら
+                    // れるまで無期限に `Pending` を返す。
+                    std::future::pending().await
+                })
+            }
+        }
+
+        let started = Arc::new(Notify::new());
+        let mut config = test_config();
+        config.handler = std::sync::Arc::new(BlockingHandler {
+            started: Arc::clone(&started),
+        });
+        let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+        let (server_side, client_side) = tokio::io::duplex(4096);
+        let (tx, rx) = handler::channel(4);
+        let conn_ctx = test_conn_ctx(tx.clone());
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session_inner(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+        client
+            .send(Message::Text("trigger".into()))
+            .await
+            .expect("client send should succeed");
+
+        // ハンドラの `Future` が確実に `on_message_with_ctx` 内でブロック
+        // したことを待ってから close を呼ぶ（実行順序を保証し flaky を防ぐ。
+        // `Notify` は `notify_one` が先行しても後続の `notified().await` が
+        // 即座に完了する契約のため、多少の順序の揺れは問題にならない）。
+        started.notified().await;
+        tx.close(1001, "going").await.expect("close should succeed");
+
+        let (reason, result) = tokio::time::timeout(Duration::from_secs(2), session_handle)
+            .await
+            .expect("session should finish within timeout")
+            .expect("session task should not panic");
+        assert!(
+            matches!(reason, CloseReason::SenderClose),
+            "expected SenderClose, got {reason:?}"
+        );
+        assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+
+        // ハンドラの `Future` は drop され、返信は送出されない。届くのは
+        // 指定した code/reason の Close フレームのみ。
+        let close_frame = tokio::time::timeout(Duration::from_secs(2), client.next())
+            .await
+            .expect("close frame should arrive within timeout")
+            .expect("stream should not end before close frame")
+            .expect("frame should not error");
+        match close_frame {
+            Message::Close(Some(frame)) => {
+                assert_eq!(u16::from(frame.code), 1001);
+                assert_eq!(frame.reason.as_str(), "going");
+            }
+            other => panic!("expected a close frame with code/reason, got {other:?}"),
+        }
+    }
+
+    /// イシュー #710（設計 12 節）: ハンドラが `on_message_with_ctx` 実行中に
+    /// push を数件送ってから `WsSender::close` を呼び、その後
+    /// `WsOutcome::Reply` を返す場合。押送・close の enqueue がバック
+    /// プレッシャなしで完了する（十分な容量）ため、ハンドラの `Future` は
+    /// 単独ポーリングで完了し、`run_handler_with_outbound_drain` の
+    /// ステップ 3（排出開始時点で既に格納済みの項目を `try_recv()` で拾う
+    /// 経路）が Close を検出してハンドラの戻り値（`Reply`）を破棄すること
+    /// を確認する。
+    #[tokio::test]
+    async fn sender_close_after_handler_completes_discards_pending_reply() {
+        use futures_util::future::BoxFuture;
+
+        struct PushCloseReplyHandler;
+
+        impl handler::WsMessageHandler for PushCloseReplyHandler {
+            fn name(&self) -> &'static str {
+                "push-close-reply"
+            }
+
+            fn on_message(
+                &self,
+                msg: WsMessage,
+            ) -> BoxFuture<'_, Result<WsOutcome, handler::WsHandlerError>> {
+                Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+            }
+
+            fn on_message_with_ctx<'a>(
+                &'a self,
+                ctx: &'a WsConnContext,
+                _msg: WsMessage,
+            ) -> BoxFuture<'a, Result<WsOutcome, handler::WsHandlerError>> {
+                Box::pin(async move {
+                    for i in 0..2 {
+                        ctx.sender()
+                            .send(WsMessage::Text(format!("push-{i}")))
+                            .await
+                            .expect("push should succeed before close");
+                    }
+                    ctx.sender()
+                        .close(4000, "bye")
+                        .await
+                        .expect("close should succeed");
+                    Ok(WsOutcome::Reply(vec![WsMessage::Text(
+                        "should-not-arrive".to_string(),
+                    )]))
+                })
+            }
+        }
+
+        let mut config = test_config();
+        config.handler = std::sync::Arc::new(PushCloseReplyHandler);
+        let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+        let (server_side, client_side) = tokio::io::duplex(8192);
+        // 容量（8）は push 2 件 + close 1 件を余裕を持って収められる大きさに
+        // する。ハンドラ内の enqueue がバックプレッシャで止まらず単独ポーリ
+        // ングで完了することを保証し、検証対象をステップ 3 の経路に固定する
+        // （バックプレッシャが起きるとステップ 1 の経路（前テスト）に落ちる）。
+        let (tx, rx) = handler::channel(8);
+        let conn_ctx = test_conn_ctx(tx);
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session_inner(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+        client
+            .send(Message::Text("trigger".into()))
+            .await
+            .expect("client send should succeed");
+
+        for i in 0..2 {
+            let msg = tokio::time::timeout(Duration::from_secs(2), client.next())
+                .await
+                .expect("push should arrive within timeout")
+                .expect("stream should not end before all pushes arrive")
+                .expect("frame should not error");
+            assert_eq!(
+                msg,
+                Message::Text(format!("push-{i}").into()),
+                "push-{i} should arrive in order before the close frame"
+            );
+        }
+
+        let close_frame = tokio::time::timeout(Duration::from_secs(2), client.next())
+            .await
+            .expect("close frame should arrive within timeout")
+            .expect("stream should not end before close frame")
+            .expect("frame should not error");
+        match close_frame {
+            Message::Close(Some(frame)) => {
+                assert_eq!(u16::from(frame.code), 4000);
+                assert_eq!(frame.reason.as_str(), "bye");
+            }
+            other => panic!("expected a close frame with code/reason, got {other:?}"),
+        }
+
+        let (reason, result) = tokio::time::timeout(Duration::from_secs(2), session_handle)
+            .await
+            .expect("session should finish within timeout")
+            .expect("session task should not panic");
+        assert!(
+            matches!(reason, CloseReason::SenderClose),
+            "expected SenderClose, got {reason:?}"
+        );
+        assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+    }
+
     /// 脱出点対応表: ハンドラが `Err` →
     /// `(CloseReason::Failed(FailureKind::Handler), Err(WsError::Handler(_)))`。
     #[tokio::test]
