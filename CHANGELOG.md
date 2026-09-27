@@ -22,6 +22,9 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   サーバー起点の送出ではリセットしないため、サーバー起点 push を受けている
   だけの受信専用クライアント（例: CDP 互換サーバー相手の Playwright/Puppeteer）
   は `idle_timeout` だけでは死活監視できず、本設定が必要になります。
+  既知の限界として、Pong を送らず他のフレームだけを受信側が一度も Pending
+  にならない密度で送り続ける対向には切断が即座には発火しません
+  （`crate::session` モジュール doc 参照）。
   `without_ping_interval()` で明示的に無効へ戻せます。既存の設定・挙動は
   無変更のまま動作します（後方互換。設計は本ファイル・
   `docs/api/plugin-config-api.md`、イシュー

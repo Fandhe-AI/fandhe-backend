@@ -288,6 +288,20 @@ where
 /// され、ハンドラが `pong_timeout` より長く実行してもすぐ応答するクライアン
 /// トが誤って切断されることはない（偽陽性なし）。
 ///
+/// **既知の限界（2）**: `pong_deadline` の期限切れ検知は、下記の受信
+/// ループが (a) `race2(ws.next(), sleep_until(..))` のタイマー分岐（`ws.
+/// next()` が一度 Pending になった場合のみ選ばれうる）、または (b) Ping/
+/// outbound push 送出自体が生存期限で打ち切られる分岐
+/// （[`send_bounded_with_liveness`]）の 2 経路でしか発火しない。ループ
+/// 先頭の即時チェック（次段落）は `next_ping_at` のみを見て `pong_deadline`
+/// は直接判定しない（バッファ済みの Pong を先読みして誤検知させないための
+/// 意図的な非対称、上記の偽陽性なし契約を壊さないため）。そのため、Pong を
+/// 送らず他のフレームだけを `ws.next()` が一度も Pending にならない密度で
+/// 継続送信し、かつ自身の受信バッファが常時書き込み可能な対向に対しては、
+/// `pong_deadline` が切れても検知されずデータ流入が続く限り生存扱いとなる
+/// （#712 が動機とした「受信専用で push しか来ない」ケースは `ws.next()`
+/// が Pending になるため本限界の対象外。見直しは #714 のスコープ）。
+///
 /// サーバー起点 Ping keepalive（[`WebSocketConfig::with_ping_interval`]、
 /// イシュー #713）の状態機械。[`run_session_inner`] の受信ループが 1 回の
 /// 反復ごとに参照する。純粋な状態遷移のみを持ち I/O を行わない（単体
@@ -402,6 +416,16 @@ where
         // タイマーが下記の race で選ばれる機会自体が失われうる（モジュール
         // doc「サーバー起点 Ping keepalive」節）。反復ごとに毎回ここで直接
         // 判定することで、受信が続いていても間隔どおり Ping を送出する。
+        //
+        // 意図的に `pong_deadline` はここで直接判定しない（`next_ping_at`
+        // のみ）。`pong_deadline` はまだ未読の Pong で解除されうるため、
+        // ここで無条件に期限切れ判定すると `ws.next()` を一度もポーリング
+        // せずに切断してしまい、バッファ済みの Pong を先読みできず誤検知
+        // する（モジュール doc「既知の限界（2）」節、
+        // `buffered_pong_after_slow_handler_prevents_false_positive_timeout`
+        // が固定する偽陽性なし契約を壊さないため）。`pong_deadline` の
+        // 期限切れは必ず `ws.next()` を先にポーリングする下記の race
+        // （またはこの反復の送出処理自体の生存期限）経由でのみ検出する。
         if let Some(state) = keepalive.as_mut() {
             let now = Instant::now();
             if state.next_ping_at.is_some_and(|next| now >= next) {

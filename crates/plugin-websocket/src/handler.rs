@@ -248,6 +248,23 @@ pub enum CloseReason {
     /// クライアントが受信専用（サーバー起点 push を受けているだけ）でも
     /// 発火しうる（Ping 自体は `idle_timeout` をリセットしない契約、
     /// `crate::session` モジュール doc を参照）。
+    ///
+    /// 検出経路は次の 3 つがあり、いずれも「未応答の Pong 期限（送出済み
+    /// Ping があればその期限、なければ次回 Ping 予定時刻 + `pong_timeout`）」
+    /// を指す点で共通する:
+    ///
+    /// - 受信待ち中に期限切れになった（`ws.next()` が一度 Pending になった
+    ///   後にタイマー分岐が選ばれた場合のみ発火。`crate::session` モジュール
+    ///   doc「既知の限界（2）」節が示す通り、対向が `ws.next()` を Pending に
+    ///   させない密度でフレームを送り続ける限りこの経路は発火しない）。
+    /// - サーバーからの Ping 送出自体が、この期限を超えてブロックした
+    ///   （相手の受信バッファが詰まっている場合）。
+    /// - [`WsSender::send`] による outbound push の送出が、この期限を超えて
+    ///   ブロックした（`stalled_push_send_is_bounded_by_liveness_deadline` が
+    ///   固定する経路。**Ping が一度も送出されていない場合でも発火しうる**
+    ///   ——期限は「次回 Ping 予定時刻 + `pong_timeout`」にフォールバックする
+    ///   ため、送出済みの Ping への未応答という variant 名の直感とは異なり、
+    ///   まだ Ping を送っていない段階の push ブロックでも同じ variant になる）。
     PongTimeout,
 }
 

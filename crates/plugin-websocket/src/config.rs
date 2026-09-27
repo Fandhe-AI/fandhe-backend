@@ -505,6 +505,14 @@ impl WebSocketConfig {
     /// 届かなければアイドルタイムアウトと同型の正常な Close ハンドシェイクで
     /// 切断する（[`crate::handler::CloseReason::PongTimeout`]）。
     ///
+    /// **既知の限界**: この検知は受信側が一度でも Pending（読むフレームが
+    /// ない状態）になることに依存する。Pong を送らず他のフレーム
+    /// （Text/Binary 等）だけを、受信側が Pending にならない密度で継続送信
+    /// する対向に対しては、Pong 期限切れが即座には検知されない（`crate::
+    /// session` モジュール doc「既知の限界」節・`crate::handler::
+    /// CloseReason::PongTimeout` の doc を参照。データ流入が続く対向は
+    /// 生存扱いとみなす設計判断であり、見直しは #714 のスコープ）。
+    ///
     /// `idle_timeout`（既定で有効）はクライアントからの受信でのみリセット
     /// され、サーバー起点の Ping 送出ではリセットしない（`crate::session`
     /// モジュール doc の契約を維持）。そのため受信専用（サーバー起点 push を
