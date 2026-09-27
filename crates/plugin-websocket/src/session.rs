@@ -4410,7 +4410,7 @@ mod tests {
         /// Cursor Bugbot 指摘（PR #736、Medium）の回帰テスト本体:
         /// 受信を止めたクライアント（書き込みが Pending のまま進まない）に対し、
         /// push を積んだ後に `WsSender::close` が `Ok` を返したら、セッションは
-        /// close 確定の観測から `close_grace` 以内に終わること（修正前は先行 push の
+        /// close 要求の観測から `close_grace` 以内に終わること（修正前は先行 push の
         /// `ws.send` が期限なしで止まり、Close ハンドシェイクに到達しなかった）。
         /// 仮想時間（`start_paused`）で決定的に検証する。`close_before_start` が
         /// true なら、セッション開始前に close を確定させておく。

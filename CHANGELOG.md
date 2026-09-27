@@ -54,11 +54,14 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   追加しました。`on_message` の戻り値 `WsOutcome::Close` とは異なり、
   `on_open` から `spawn` したタスク等、ハンドラの外からも任意のタイミングで
   サーバー起点の Close ハンドシェイクを開始できます。close 呼び出し前に
-  `send` が `Ok` を返した push メッセージはすべてクライアントへ届いてから
-  Close フレームが送出される順序保証を持ち（内部の送信キューへ単一の
-  bounded mpsc として直列に流すことで FIFO 特性のみで保証）、close 後の
-  `send`/`WsSender::is_closed()` は他の終了経路と同様の挙動を返します。
-  close code の RFC 6455 7.4 節準拠検証・reason の 123 バイト上限検証に
+  `send` が `Ok` を返した push メッセージは Close フレームより先に送出される
+  順序保証を持ちます（内部の送信キューへ単一の bounded mpsc として直列に流す
+  ことで FIFO 特性のみで保証。`close_grace` 超過・世代キャンセル・idle
+  timeout・送出失敗で打ち切られた場合は、残りの push と Close フレームを
+  送らずに終了します）。close 後の `send`/`WsSender::is_closed()` は他の
+  終了経路と同様の挙動を返します。close code の RFC 6455 7.4 節・IANA 登録に
+  基づく検証（`1000..=1003`・`1007..=1014`・`3000..=4999` のみ許可）・reason の
+  123 バイト上限検証に
   失敗した場合、または既に close 済み・セッション終了済みの場合は
   `WsCloseError`（`InvalidCode` / `ReasonTooLong` / `Closed`、
   `#[non_exhaustive]`）を返します。終了理由 `CloseReason` に variant
@@ -89,7 +92,8 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   従来どおりキュー済みの push を送出しません）。`WsOutcome::Reply`
   を返した場合の排出は送信キュー容量回までに制限します。また、`WsSender::close`
   を呼ぶと、呼び出しを確定前に取り下げない限り、クライアントが受信を止めていても
-  （送信キューが満杯で close がまだ確定できない場合も）、要求の観測（通常は呼び出しの直後）から `close_grace`
+  （送信キューが満杯で close がまだ確定できない場合も）、要求の観測（通常は
+  呼び出しの直後）から `close_grace`
   以内に Close ハンドシェイクを終えるか接続を打ち切ります。その間に世代
   キャンセル・idle timeout が先に発火した場合は、その経路の契約（発火時点から
   `close_grace`）に従います（close を要求していない間の push の送出には従来どおり

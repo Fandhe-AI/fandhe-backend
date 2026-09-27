@@ -49,16 +49,13 @@ pub enum WsOutcome {
     ///
     /// 送信キューの flush（イシュー #711）: `on_message`（`on_message_with_ctx`）
     /// 内で本 variant を返す前に [`WsSender::send`] で push したメッセージは、
-    /// **`WebSocketConfig::close_grace`（既定 10 秒）の期限内に送出できた
-    /// 範囲で** Close フレームより先に送出される。Close 処理の開始時点で
-    /// 送信キューは閉じられ（`crate::session::flush_outbound`）、以後の
+    /// `WebSocketConfig::close_grace`（既定 10 秒）超過・世代キャンセル・送出
+    /// 失敗で打ち切られない限り、Close フレームより先に送出される。Close 処理の
+    /// 開始時点で送信キューは封鎖され（`crate::session::flush_outbound`）、以後の
     /// `WsSender::send` 呼び出しはすべて [`WsSendError`] で失敗する（同じ
-    /// クローンを保持する別タスクからの送信も対象）。クライアントが受信を
-    /// 止めている等で `close_grace` を超過した場合、残りのキュー済み
-    /// メッセージは送出されずに破棄され、Close フレーム自体も送らずに
-    /// セッションを即座に終了する（二次 DoS 対策、Codex レビュー指摘対応。
-    /// `crate::session::FlushOutcome::TimedOut` 参照）。「必ず先に送出」は
-    /// `close_grace` 内に収まる場合の契約であり、無条件の保証ではない。
+    /// クローンを保持する別タスクからの送信も対象）。打ち切られた場合、残りの
+    /// メッセージと Close フレームは送出されずにセッションが終了する（二次 DoS
+    /// 対策。`crate::session::FlushOutcome::TimedOut` 参照）。
     Close,
 }
 
@@ -237,8 +234,11 @@ pub enum CloseReason {
     /// （[`Self::HandlerClose`]）とは呼び出し経路が異なり、`on_open` 等から
     /// 任意タイミングで（`on_message` の外からも）呼べる `WsSender::close`
     /// によって開始された終了を表す。close 時点でキュー済みだった
-    /// [`WsSender::send`] の push はすべてクライアントへ届いてから Close
-    /// フレームが送出される（順序保証、[`WsSender::close`] の doc 参照）。
+    /// [`WsSender::send`] の push は Close フレームより先に送出される（順序
+    /// 保証）。ただし close の要求から `close_grace` 超過・世代キャンセル・idle timeout・送出失敗で
+    /// 打ち切られた場合は、残りの push と Close フレームを送らずに終了する
+    /// （`close_grace` 超過のときも理由は本 variant。世代キャンセル・idle timeout
+    /// が先に発火したときはその理由になる。詳細は [`WsSender::close`] の doc）。
     SenderClose,
 }
 
@@ -335,9 +335,10 @@ pub trait WsMessageHandler: Send + Sync + 'static {
     /// `Future` を単独 `await` せず、outbound 到着と race させて都度
     /// 消化するため（PR #725 レビュー指摘対応、設計は
     /// `docs/design/ws-connection-context-and-close.md` 6 節。排出開始
-    /// 時点で既に格納済みだった push は本メソッドが返す
-    /// `WsOutcome::Reply`/`Close` より先に送出される保証があり、それ以外の
-    /// 相対順序は不定）。
+    /// 時点で既に格納済みだった push は、cancel・送出失敗・close 要求後の
+    /// `close_grace` 超過で打ち切られない限り、本メソッドが返す
+    /// `WsOutcome::Reply`/`Close` より先に送出される。それ以外の相対順序は
+    /// 不定）。
     ///
     /// # Examples
     ///
@@ -1036,8 +1037,9 @@ pub(crate) fn default_handler() -> Arc<dyn WsMessageHandler> {
 /// 公開 API 上はメッセージ（[`Self::send`]）と Close 指示（[`Self::close`]）の
 /// 2 系統に見えるが、内部の bounded mpsc（`tx`）は両方を単一の
 /// `OutboundItem` として同一キューへ直列に流す。これにより「close 時点で
-/// キュー済みだった push はすべて Close より前にクライアントへ届く」という
-/// 順序保証が、mpsc の FIFO 特性だけで構造的に成り立つ（2 本の別チャネルに
+/// キュー済みだった push は Close より前に送出される（打ち切り条件は
+/// [`Self::close`] の doc）」という順序保証が、mpsc の FIFO 特性だけで構造的に
+/// 成り立つ（2 本の別チャネルに
 /// 分けると、消費側でのマージ順序を別途保証する必要が生じる。`crate::session`
 /// の消費側は `OutboundItem` を分岐して処理する）。
 ///
@@ -1230,9 +1232,10 @@ impl WsSender {
     /// # 順序保証
     ///
     /// 本呼び出しより前に [`Self::send`] が `Ok` を返した push メッセージは、
-    /// すべてクライアントへ届いてから Close フレームが送出される
-    /// （[`Self`] の「送信キューを流れる内部表現」節を参照。単一の bounded
-    /// mpsc を経由するため FIFO 順序が保たれる）。close の `reserve()` 待ち
+    /// Close フレームより先に送出される（[`Self`] の「送信キューを流れる内部
+    /// 表現」節を参照。単一の bounded mpsc を経由するため FIFO 順序が保たれる）。
+    /// ただし「完了タイミング」節の打ち切り条件（`close_grace` 超過・世代キャンセル・idle timeout・送出失敗）
+    /// に当たると、残りの push と Close フレームは送出されない。close の `reserve()` 待ち
     /// 中に先に permit を得た `send` は Close より前に並ぶ。close が
     /// 確定した**後**に enqueue しようとした `send` は必ず `Err` になる
     /// （`Self::commit` が同一ロック区間で判定するため、「送信済みなのに

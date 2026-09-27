@@ -934,8 +934,10 @@ cancel・idle timeout・クライアント Close・EOF・受信/送信エラー�
 
 1. `WsSender::close` は検証を通った時点で、`reserve` の前に `closing` と同じロックで
    確定前の要求数を増やし、同じロック区間で要求シグナル（`close_request_signal`、
-   `closed_signal` とは別）を送る（ロック外で送ると並行する取り下げと送信順が逆転しうる）。確定したら、または呼び出しの future が drop されたら要求数を減らし、
-   「確定前の要求が残っている、または `closing`」を送り直す（`CloseRequest` ガード）。
+   `closed_signal` とは別）を送る（ロック外で送ると並行する取り下げと送信順が
+   逆転しうる）。確定したら、または呼び出しの future が drop されたら要求数を
+   減らし、「確定前の要求が残っている、または `closing`」を送り直す
+   （`CloseRequest` ガード）。
    確定の定義・Reply の判定点・封鎖との関係は変えない。
 2. `CloseBound` が要求シグナルを購読し、要求を初めて観測した時刻から `close_grace` 後を
    期限とする（要求がすべて取り下げられたら期限を解除する）。
