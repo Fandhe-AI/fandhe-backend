@@ -1171,6 +1171,8 @@ where
 /// **保証**: 本関数の開始時点でキューに格納済みだった push は Reply より先に
 /// 送出され、`None` を返す直前の確認までに close が確定していれば Reply は
 /// 送出されない（`capacity` がチャネル容量より小さい場合は前者の限りでない）。
+/// ここでの「close 確定」は `close()` が `Ok` を返す時点（確定シグナルの送信）を
+/// 指す（`WsSender::commit` のロック区間でのフラグ更新ではない）。
 ///
 /// これ以外の push と Reply の相対順序、および Reply の送出開始後に確定した
 /// close と Reply の関係は不定（後者の Reply 送出は close 確定の観測から
@@ -1235,8 +1237,17 @@ where
                 // ある）ので、もう一度取り出す。未確定なら Reply へ進む。
                 // 取り出し直しは 1 回まで（close 確定後の FIFO では Close 指示より
                 // 先に空になることはないため、2 回目の `Empty` は起こらない。
-                // 防御として、`.await` のない空回りにならないよう打ち切る）。
-                if outbound.close.observe().is_none() || retried_after_close {
+                // 前提は debug ビルドで固定し、release ビルドでは `.await` のない
+                // 空回りにならないよう打ち切る）。
+                if outbound.close.observe().is_none() {
+                    return Ok(None);
+                }
+                debug_assert!(
+                    !retried_after_close,
+                    "close 確定を観測した後に送信キューが 2 回続けて空になった \
+                     （Close 指示は確定シグナルより前にキューへ積まれるはず）"
+                );
+                if retried_after_close {
                     return Ok(None);
                 }
                 retried_after_close = true;

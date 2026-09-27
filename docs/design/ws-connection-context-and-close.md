@@ -572,7 +572,9 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
 終了経路では封鎖より前に `WsSender::send`/`close` が `Ok` を返した
 項目が（`close_grace` 超過・cancel・排出中の送出失敗（以後の項目と Close フレームも
 送出されない）で打ち切られない限り）すべて Close 送出・終了より先に処理され、封鎖
-より後の呼び出しは `Err` を返す。**
+より後の呼び出しは `Err` を返す。** ここでの `Reply` に対する「close 確定」は
+`close()` が `Ok` を返す時点（確定シグナルの送信）を指す（12 節で使うロック区間での
+フラグ更新とは区別する）。
 
 継続経路で排出開始後に格納された push と `Reply` の相対順序、および `Reply` の送出
 開始後に確定した close と `Reply` の関係のみ不定とする（後者の `Reply` 送出は close
