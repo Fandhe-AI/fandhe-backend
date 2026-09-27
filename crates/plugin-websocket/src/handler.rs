@@ -17,11 +17,13 @@
 
 use std::error::Error as StdError;
 use std::fmt;
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::task::Poll;
 
 use futures_util::future::BoxFuture;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
 /// ユーザーコードとやり取りするメッセージ表現。
@@ -1034,12 +1036,35 @@ pub(crate) fn default_handler() -> Arc<dyn WsMessageHandler> {
 /// （`.claude/rules/coding-rust.md` の「ロック保持中の `.await` を避ける」を
 /// 守るため、ロックを取る前に `reserve()`/`try_reserve()` で `Permit` を
 /// 確保し、ロック内では同期的な `Permit::send` のみを行う）。
+///
+/// # close 確定を待機中の呼び出しへ即時伝える仕組み（PR #736 レビュー指摘対応）
+///
+/// `reserve()` は送信キューが満杯だと Ready にならないため、キュー満杯時に
+/// 別 clone の [`Self::close`] が確定しても、キューが実際にドレインされる
+/// （あるいは受信側 `Receiver` が drop される）まで、保留中の [`Self::send`]/
+/// [`Self::close`] は `WsSendError`/`WsCloseError::Closed` を返せない
+/// （満杯キュー上の無関係な push の実配送速度に応答時間が従属してしまう。
+/// `.claude/rules/security.md` のリソース枯渇対策上望ましくない）。
+/// `closed_signal`（`Arc<watch::Sender<bool>>`）で `Self::commit` が
+/// `closing` を true にした直後にブロードキャストし、`Self::reserve_or_closed`
+/// が `reserve()` とこの信号を手動 race させることで、キューの実ドレインを
+/// 待たず即座に解放する。
 #[derive(Clone)]
 pub struct WsSender {
     tx: mpsc::Sender<OutboundItem>,
     /// close 済みかどうかの単一の真実源（全 clone で共有、`Self::commit`
     /// の doc を参照）。
     closing: Arc<Mutex<bool>>,
+    /// close 確定を待機中の呼び出しへ伝える watch シグナル（[`Self`] の
+    /// doc を参照）。`watch::Sender::send` は `&self` で呼べるため
+    /// `Arc` 越しに全 clone から共有できる。
+    closed_signal: Arc<watch::Sender<bool>>,
+    /// `closed_signal` の受信側を最低 1 個生存させ続けるための保持専用
+    /// clone（watch チャネルは全 `Receiver` が drop されると `send` が
+    /// 更新を伝えられなくなる。実際の待機は各呼び出しが
+    /// `closed_signal.subscribe()` で作る一時 `Receiver` が担うため、
+    /// 本フィールド自身の値は読まない）。
+    _closed_signal_anchor: watch::Receiver<bool>,
 }
 
 /// [`WsSender`] の送信キューを流れる内部アイテム（`pub(crate)`、イシュー
@@ -1082,8 +1107,13 @@ impl WsSender {
     /// `WebSocketConfig::close_grace` の満了を待たず即座にこのエラーで
     /// 解放される（`crate::session` が cancel 発火時に受信側 `Receiver` を
     /// 明示的に drop するため。イシュー #670 の受け入れ基準 3）。
+    ///
+    /// 送信キューが満杯の状態で本呼び出しが `reserve()` 待ちに入っている
+    /// 間に別 clone の [`Self::close`] が確定した場合も、キューの実ドレインを
+    /// 待たず即座に [`WsSendError`] を返す（`Self::reserve_or_closed` の
+    /// doc を参照、PR #736 レビュー指摘対応）。
     pub async fn send(&self, msg: WsMessage) -> Result<(), WsSendError> {
-        let permit = self.tx.reserve().await.map_err(|_| WsSendError)?;
+        let permit = self.reserve_or_closed().await.map_err(|()| WsSendError)?;
         self.commit(permit, OutboundItem::Message(msg), false)
             .map_err(|()| WsSendError)
     }
@@ -1262,7 +1292,10 @@ impl WsSender {
         if reason.len() > MAX_CLOSE_REASON_BYTES {
             return Err(WsCloseError::ReasonTooLong);
         }
-        let permit = self.tx.reserve().await.map_err(|_| WsCloseError::Closed)?;
+        let permit = self
+            .reserve_or_closed()
+            .await
+            .map_err(|()| WsCloseError::Closed)?;
         self.commit(
             permit,
             OutboundItem::Close {
@@ -1285,22 +1318,73 @@ impl WsSender {
     ///
     /// 既に close 済みの場合は `permit` を drop して `Err(())` を返す
     /// （呼び出し元が [`WsSendError`]/[`WsCloseError::Closed`] へ変換する）。
+    ///
+    /// `closing_after` で close 済みへ遷移させた場合は、ロック解放後に
+    /// `closed_signal` へブロードキャストし、送信キュー満杯で
+    /// `Self::reserve_or_closed` の中で保留中の他 clone を即時に解放する
+    /// （PR #736 レビュー指摘対応。`send` はロックを保持したまま行わない
+    /// ため `.claude/rules/coding-rust.md` の制約を破らない）。
     fn commit(
         &self,
         permit: mpsc::Permit<'_, OutboundItem>,
         item: OutboundItem,
         closing_after: bool,
     ) -> Result<(), ()> {
-        let mut closed = self.closing.lock().unwrap_or_else(PoisonError::into_inner);
-        if *closed {
-            drop(permit);
-            return Err(());
+        {
+            let mut closed = self.closing.lock().unwrap_or_else(PoisonError::into_inner);
+            if *closed {
+                drop(permit);
+                return Err(());
+            }
+            if closing_after {
+                *closed = true;
+            }
+            permit.send(item);
         }
         if closing_after {
-            *closed = true;
+            // 受信側は `_closed_signal_anchor` が最低 1 個生存を保証するため
+            // 送信は必ず成功する（戻り値は無視してよい）。
+            let _ = self.closed_signal.send(true);
         }
-        permit.send(item);
         Ok(())
+    }
+
+    /// [`Self::send`]/[`Self::close`] が使う共通の `reserve()` ラッパー
+    /// （PR #736 レビュー指摘対応。`crate::session::race2` と同型の手動
+    /// race で、`tokio::select!`（`tokio` の `macros` feature を要求する）
+    /// は使わない）。
+    ///
+    /// `self.tx.reserve()` を `closed_signal` の変化と race させ、送信
+    /// キューが満杯で `reserve()` が保留中でも、別 clone の [`Self::close`]
+    /// が確定した時点で（キューの実ドレイン・受信側 `Receiver` の drop を
+    /// 待たず）即座に `Err(())` を返す。
+    ///
+    /// close 確定シグナルを `reserve()` より先にポーリングする bias を持つ
+    /// （fail-closed。両方が同時に Ready でも close 側を勝たせる。逆でも
+    /// `Self::commit` が同一ロック区間で再判定するため安全性上の実害はない）。
+    ///
+    /// `closed_signal.subscribe()` は `watch` のバージョン管理に基づくため、
+    /// subscribe から本メソッドの `.await` 完了までの間に `Self::commit` が
+    /// 値を更新しても見逃さない（`borrow()` は常に最新値を返し、
+    /// `changed()` は subscribe 時点のバージョンより新しい更新を必ず捉える。
+    /// `Self` の doc も参照）。
+    async fn reserve_or_closed(&self) -> Result<mpsc::Permit<'_, OutboundItem>, ()> {
+        let mut closed_rx = self.closed_signal.subscribe();
+        if *closed_rx.borrow() {
+            return Err(());
+        }
+        let mut reserve = std::pin::pin!(self.tx.reserve());
+        let mut changed = std::pin::pin!(closed_rx.changed());
+        std::future::poll_fn(|cx| {
+            if changed.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(Err(()));
+            }
+            if let Poll::Ready(result) = reserve.as_mut().poll(cx) {
+                return Poll::Ready(result.map_err(|_| ()));
+            }
+            Poll::Pending
+        })
+        .await
     }
 
     /// セッションが outbound push を受け付けなくなるまで待つ（イシュー #727。
@@ -1609,10 +1693,13 @@ impl StdError for WsCloseError {}
 /// `on_open` 呼び出し直前に毎接続 1 回呼ばれる）。
 pub(crate) fn channel(capacity: usize) -> (WsSender, mpsc::Receiver<OutboundItem>) {
     let (tx, rx) = mpsc::channel(capacity.max(1));
+    let (closed_tx, closed_rx) = watch::channel(false);
     (
         WsSender {
             tx,
             closing: Arc::new(Mutex::new(false)),
+            closed_signal: Arc::new(closed_tx),
+            _closed_signal_anchor: closed_rx,
         },
         rx,
     )
@@ -2134,5 +2221,69 @@ mod tests {
             .expect("blocked send should be released within timeout")
             .unwrap()
             .ok();
+    }
+
+    /// PR #736 レビュー指摘対応（codex P1・Cursor Bugbot Medium）: `close` が
+    /// 確定したあと、送信キューが満杯のまま**受信側が二度と消費しない**
+    /// （実セッションで言えば、Close より手前の項目を書き出すソケット I/O が
+    /// 停止したまま応答が返らない状況を模す）場合でも、`send` はキューの
+    /// 実ドレインを待たず即座に `WsSendError` を返す。
+    ///
+    /// [`close_releases_blocked_waiting_sender`] は受信側が `rx.recv()` を
+    /// 積極的に呼び続けることで解放されるケースを検証済みだが、それだけでは
+    /// 「`close` 確定後、キューが満杯かつ二度と消費されない」という本質的な
+    /// 危険シナリオを再現できない（受信側が消費を続ける限り、旧実装
+    /// （`reserve().await` の完了後に `closing` を確認するだけの実装）でも
+    /// 有界時間内に解放されてしまうため）。本テストは受信側の消費を
+    /// `close` の Close 項目が積まれた直後で完全に止め、`closing` フラグの
+    /// 確定を `reserve()` の実完了より先に検知できることを直接確認する。
+    #[tokio::test]
+    async fn send_after_close_on_permanently_full_queue_fails_fast() {
+        const CAPACITY: usize = 3;
+
+        let (sender, mut rx) = channel(CAPACITY);
+
+        // 1 件送って即座に受信側が引き取る（実セッションで言えば、ソケット
+        // I/O が停止する直前に消費済みの 1 件を模す）。以降 `rx` は一切
+        // 消費しない（ソケット書き込みが永久に完了しない状況を模す）。
+        sender
+            .send(WsMessage::Text("in-flight".to_string()))
+            .await
+            .unwrap();
+        rx.recv().await.unwrap();
+
+        // 残り容量（CAPACITY 件）のうち 1 件分を空けたまま埋める。
+        for i in 0..CAPACITY - 1 {
+            sender
+                .send(WsMessage::Text(format!("queued-{i}")))
+                .await
+                .unwrap();
+        }
+
+        // 空いている最後の 1 枠を `close` が取り、`closing` を確定させる。
+        // 受信側は以降呼ばないため、Close 項目はキューに残り続ける。
+        let closer = sender.clone();
+        tokio::time::timeout(std::time::Duration::from_secs(2), closer.close(1000, "bye"))
+            .await
+            .expect("close should acquire the last free slot promptly")
+            .unwrap();
+        assert!(sender.is_closed());
+
+        // ここでキューは満杯（CAPACITY/CAPACITY）かつ、テストが `rx` を
+        // 二度と消費しないため永久に満杯のまま。旧実装は `reserve().await`
+        // の完了を待つため無期限にブロックする。新実装は `closing` の
+        // 確定を検知して即座に `Err` を返すはずなので、十分に短い時間内に
+        // 完了することを要求する（`rx` を消費した場合に得られるはずの
+        // 解放とは無関係に、`closing` の確定だけで解放されることの証明）。
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            sender.send(WsMessage::Text("after-close".to_string())),
+        )
+        .await
+        .expect(
+            "send after close on a permanently-full, never-drained queue must not block \
+             indefinitely (PR #736 review finding)",
+        );
+        assert_eq!(outcome, Err(WsSendError));
     }
 }
