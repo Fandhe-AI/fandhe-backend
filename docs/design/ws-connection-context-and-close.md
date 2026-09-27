@@ -497,16 +497,33 @@ Err・Close・別タスク・スナップショット前後の派生ケースを
    到着を race する既存方針（後述）でポーリングを続ける。
 2. `outcome` の `Ok`/`Err` に関わらず（**#710・PR #736 レビュー指摘対応で
    ステップ順序を変更**、後述の注記参照）: outbound の `Receiver` から
-   `try_recv()` を呼び、`Empty`（キューが空）が返るまで、または
-   `DEFAULT_OUTBOUND_CAPACITY` 回（既定 8）に達するまで繰り返し、取り出せた
-   push を到着順に `ws.send()` で送出する。`Receiver::len()` のスナップショット
-   は使わない（チャネルは容量固定の bounded mpsc のため、
-   `DEFAULT_OUTBOUND_CAPACITY` 回で排出開始時点の格納分は全件取り出せる。
-   `len()` はチャネル実装によって同期精度が変わりうるのに対し `try_recv()`
-   の呼び出し回数上限は実装に依存しない。ワークスペースの tokio 依存指定が
-   `"1"`（`Cargo.toml`）であることも踏まえ、最低バージョン要求を増やさない
-   構成を優先する）。排出中に `OutboundItem::Close` が見つかった場合は
-   `outcome`（`Err` を含む）を破棄し `SessionFlow::SenderClose` で終了する。
+   `try_recv()` を呼び、`Empty`（キューが空）または `Disconnected`（全
+   `WsSender` クローン drop 済み）が返るまで**回数無制限**で繰り返し、
+   取り出せた push を到着順に `ws.send()` で送出する。`Receiver::len()` の
+   スナップショットは使わない（排出中に増える件数を数える意味がないため）。
+   排出中に `OutboundItem::Close` が見つかった場合は `outcome`（`Err` を
+   含む）を破棄し `SessionFlow::SenderClose` で終了する。
+   >
+   > **Cursor Bugbot 指摘対応（PR #736 #discussion_r4113894722）**: 当初の
+   > 実装は `try_recv()` を `DEFAULT_OUTBOUND_CAPACITY` 回（既定 8）に固定し、
+   > 「チャネルは容量固定の bounded mpsc のため、この回数で排出開始時点の
+   > 格納分は全件取り出せる」という前提で回数上限を導入していた。この前提
+   > は排出中に新規の commit が起こらないことを仮定しており、実際には
+   > 排出開始時点でキューが満杯かつ別 clone の `send`/`close` が `reserve()`
+   > 待ちでブロックされていた場合、本ステップが `Message` を `ws.send()` で
+   > 送出する `.await` の間にそのブロックが解消してキューへ追加で 1 件
+   > 積まれることがある（`handler::WsSender::commit` が `reserve()` 完了
+   > 直後に同期的に enqueue するため）。この追加分は固定回数の予算に含まれず、
+   > `close()` が既に `Ok` を返して確定させた Close 指示が排出されずに
+   > キューへ残ったまま `outbound` が drop され、静かに失われていた
+   > （`close()` の「届ける」契約に反する）。固定回数を撤廃し `Empty`/
+   > `Disconnected` まで無制限に取り出すことで、排出中に新たに確定した
+   > 項目も取り残さず捕捉するようにした。無制限ループでもキャンセル
+   > 応答性は後退しない（`Message` の送出は依然 `race_cancel` で cancel と
+   > 競合させ、`Close` を見つけた時点で即時終了するため）。反復のみ
+   > （`close`/エラーで終わらず無限に `Message` が供給され続ける）場合に
+   > 排出が長引く可能性は既知の限界とし、本関数の「既知の限界」節と同種の
+   > 受容済みリスクとして扱う。
 3. 排出で Close 指示が見つからなかった場合に限り `outcome` を評価する:
    `Err(err)` なら `Failed(FailureKind::Handler)` を `CloseReason` として確定
    し、`Err(WsError::Handler(err))` を返して終了する（4 節の対応表の該当行と

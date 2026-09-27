@@ -115,8 +115,7 @@ use futures_util::{SinkExt, StreamExt};
 use crate::config::WebSocketConfig;
 use crate::error::WsError;
 use crate::handler::{
-    CloseReason, DEFAULT_OUTBOUND_CAPACITY, FailureKind, OutboundItem, WsConnContext,
-    WsHandlerError, WsMessage, WsOutcome,
+    CloseReason, FailureKind, OutboundItem, WsConnContext, WsHandlerError, WsMessage, WsOutcome,
 };
 use crate::race_cancel;
 
@@ -761,7 +760,7 @@ where
 /// 旧実装はハンドラ Future を単独 `await` していたため、`on_message_with_ctx`
 /// 内で `ctx.sender().send(...).await` を呼んでも、その outbound チャネルを
 /// 消化する者（本関数自身）がハンドラ完了まで戻ってこず、容量
-/// （[`DEFAULT_OUTBOUND_CAPACITY`]、既定 8）を超えると送信側・受信側の両方が
+/// （[`crate::handler::DEFAULT_OUTBOUND_CAPACITY`]、既定 8）を超えると送信側・受信側の両方が
 /// 進めなくなっていた。本関数はハンドラ Future と outbound 到着を
 /// `race2`（cancel を最優先とした 3 者 race）し、到着ごとに即座に `ws.send()`
 /// で送出することでこれを解消する。
@@ -774,21 +773,24 @@ where
 ///    1 回しか完了しない単発イベントのため `race2_alternating` 型の交互化
 ///    は不要）。
 /// 2. ハンドラの `Ok`/`Err` に関わらず（PR #736 レビュー指摘対応）:
-///    `try_recv()` を [`DEFAULT_OUTBOUND_CAPACITY`] 回まで（`Empty` に
-///    達するまで）繰り返し、排出開始時点で既に溜まっていた push を到着順に
-///    送出する。Close 指示が見つかった場合はハンドラの結果（`Err` を含む）
-///    を破棄し [`SessionFlow::SenderClose`] を返す。
+///    `try_recv()` が `Empty`/`Disconnected` を返すまで回数無制限で繰り返し、
+///    排出開始時点で既に溜まっていた push、および排出中に新たに確定した
+///    push・Close 指示（[`Self`] 呼び出し元 `session.rs` の該当コメント、
+///    Cursor Bugbot 指摘対応・PR #736 #discussion_r4113894722 を参照）を
+///    到着順に送出する。Close 指示が見つかった場合はハンドラの結果
+///    （`Err` を含む）を破棄し [`SessionFlow::SenderClose`] を返す。
 /// 3. 排出で Close 指示が見つからなかった場合に限りハンドラの結果を評価する:
 ///    `Err` ならその場で `Err` を返す（既存の `outcome?` と同一の即時終了
 ///    契約）。`Ok(outcome)` なら [`apply_outcome`] へ委譲する。
 ///
-/// **保証**: 排出ステップ（2.）の開始時点で既にチャネルへ格納済みだった
-/// push・Close 指示は、そのハンドラが返す `WsOutcome::Reply`/`Close`・`Err`
-/// より必ず先に送出・優先される（`WsSender::send`/`close` が呼び出し元へ
+/// **保証**: 排出ステップ（2.）で `Empty`/`Disconnected` に達するまでに
+/// チャネルへ格納された push・Close 指示（排出開始時点で既に格納済みだった
+/// ものに限らず、排出中に別 clone の `reserve()` 待ちが解消して新たに
+/// 確定したものも含む）は、そのハンドラが返す `WsOutcome::Reply`/`Close`・
+/// `Err` より必ず先に送出・優先される（`WsSender::send`/`close` が呼び出し元へ
 /// `Ok` を返した時点で確定した「届ける」契約を、ハンドラ自身の以後の終了
-/// 結果で覆さない）。それ以外（排出開始後に格納された push・送出途中だった
-/// push）との相対順序は不定とする（設計 6 節「保証」を参照。対象外の順序を
-/// 新たに固定しない）。
+/// 結果で覆さない）。送出途中だった push との相対順序のみ不定とする（設計
+/// 6 節「保証」を参照）。
 ///
 /// outbound 到着時の `ws.send()` 失敗・cancel 発火時の扱いは
 /// [`run_session`] 外側ループの `InboundEvent::Outbound` 分岐と同一
@@ -864,11 +866,31 @@ where
         }
     };
 
-    // ステップ 2: 排出開始時点で既に格納済みだった push・Close 指示を、
-    // `DEFAULT_OUTBOUND_CAPACITY` 回（既定 8）まで `try_recv()` で取り出し、
-    // 到着順に送出する。`Receiver::len()` は使わない（bounded mpsc の
-    // 実装依存の同期精度に左右されず、呼び出し回数上限で足りるため。
-    // `handler.rs` の該当コメント・設計 6 節ステップ 3 を参照）。
+    // ステップ 2: 排出開始時点で既に格納済みだった push・Close 指示を
+    // `try_recv()` が `Empty`/`Disconnected` を返すまで取り出し、到着順に
+    // 送出する（Cursor Bugbot 指摘対応、PR #736 #discussion_r4113894722）。
+    //
+    // 固定回数（旧実装は `DEFAULT_OUTBOUND_CAPACITY` 回、既定 8）で打ち切ると
+    // 正しく排出できない: 排出開始時点でキューが満杯（8 件）かつ別 clone の
+    // `WsSender::close`/`send` が `reserve()` 待ちでブロックされていた場合、
+    // 本ループが `Message` を `ws.send()` で送出する `.await` の間にその
+    // ブロックが解消してキューへ追加で 1 件積まれることがある（`commit`
+    // が `reserve()` 完了直後に同期的に enqueue するため、`handler.rs` の
+    // `commit`/`reserve_or_closed` の doc を参照）。この追加分は固定 8 回の
+    // 予算に含まれておらず、`close()` が既に `Ok` を返して確定させた Close
+    // 指示が排出されずキューに残ったまま `outbound` が drop され、静かに
+    // 失われる（`WsSender::close` の「届ける」契約に反する）。`Empty` まで
+    // 回数無制限で取り出すことで、排出中に新たに確定した項目も取り残さず
+    // 捕捉できる（`Receiver::len()` の事前スナップショットは使わない。
+    // 排出中に増える件数を数える意味がないため）。
+    //
+    // 無制限ループでもキャンセル応答性は後退しない: `Message` の排出は
+    // 依然 `race_cancel` で cancel と競合させ、`Close` を見つけた時点で
+    // 即時 return する（下記分岐参照）。反復のみ（無限に Message が
+    // 供給され続け、`close`/エラーで終わらない）場合に排出が長引く可能性は
+    // 既知の限界とし、`run_handler_with_outbound_drain` の doc「既知の限界」
+    // 節と同種の受容済みリスクとして扱う（アイドルタイムアウトの評価対象
+    // 外という既存の制約と同じ理由）。
     //
     // ハンドラの終了結果（`outcome`、`Ok`/`Err` いずれも）より前に必ず実行する
     // （PR #736 レビュー指摘対応、session.rs:895 該当）。`WsSender::send`/
@@ -878,7 +900,7 @@ where
     // 省略していたため、`WsSender::close` が enqueue した Close 指示・先行する
     // push が即時終了経路で無言破棄されるケースがあった）。
     if let Some(rx) = outbound.as_mut() {
-        for _ in 0..DEFAULT_OUTBOUND_CAPACITY {
+        loop {
             match rx.try_recv() {
                 Ok(OutboundItem::Message(msg)) => {
                     let frame = to_tungstenite_message(msg);
@@ -2284,6 +2306,135 @@ mod tests {
         assert!(
             matches!(reason, CloseReason::SenderClose),
             "expected SenderClose (queued Close instruction takes priority over handler Err), got {reason:?}"
+        );
+        assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+    }
+
+    /// Cursor Bugbot 指摘対応の回帰テスト（PR #736 #discussion_r4113894722）:
+    /// 排出開始時点でキューへ [`handler::DEFAULT_OUTBOUND_CAPACITY`]（既定 8）
+    /// を超える件数の push・Close 指示が既に積まれていた場合でも、Close
+    /// 指示が排出漏れせず検出されること。
+    ///
+    /// 旧実装は `try_recv()` を `DEFAULT_OUTBOUND_CAPACITY` 回に固定して
+    /// いたため、9 件目以降（本テストでは 12 件目の Close）が排出されずに
+    /// 取り残され、ハンドラの `Err` が排出漏れを覆い隠して
+    /// `CloseReason::Failed(FailureKind::Handler)` になっていた（`close()`
+    /// 自身は `Ok` を返して確定済みにもかかわらず Close フレームが
+    /// ワイヤへ送出されない静かなデータ欠落）。本テストは実際の
+    /// `reserve()` 待ちの再現ではなく、チャネル容量を大きく確保して
+    /// enqueue をバックプレッシャなしで完了させることで「排出開始時点で
+    /// 8 件を超える件数が既に格納済み」という状況を決定的に再現する。
+    #[tokio::test]
+    async fn drain_detects_close_beyond_default_outbound_capacity() {
+        use futures_util::future::BoxFuture;
+
+        const PUSH_COUNT: usize = handler::DEFAULT_OUTBOUND_CAPACITY + 3;
+
+        struct ManyPushesThenErrorHandler;
+
+        impl handler::WsMessageHandler for ManyPushesThenErrorHandler {
+            fn name(&self) -> &'static str {
+                "many-pushes-then-error"
+            }
+
+            fn on_message(
+                &self,
+                _msg: WsMessage,
+            ) -> BoxFuture<'_, Result<WsOutcome, handler::WsHandlerError>> {
+                Box::pin(async move { Err(handler::WsHandlerError::new("boom")) })
+            }
+
+            fn on_message_with_ctx<'a>(
+                &'a self,
+                ctx: &'a WsConnContext,
+                _msg: WsMessage,
+            ) -> BoxFuture<'a, Result<WsOutcome, handler::WsHandlerError>> {
+                Box::pin(async move {
+                    for i in 0..PUSH_COUNT {
+                        ctx.sender()
+                            .send(WsMessage::Text(format!("push-{i}")))
+                            .await
+                            .expect("push should succeed before close");
+                    }
+                    ctx.sender()
+                        .close(4000, "bye")
+                        .await
+                        .expect("close should succeed");
+                    Err(handler::WsHandlerError::new("boom-after-close"))
+                })
+            }
+        }
+
+        let mut config = test_config();
+        config.handler = std::sync::Arc::new(ManyPushesThenErrorHandler);
+        let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+        let (server_side, client_side) = tokio::io::duplex(1 << 16);
+        // 容量は push（`PUSH_COUNT` 件）+ close（1 件）を余裕を持って収める
+        // 大きさにし、ハンドラ内の enqueue がバックプレッシャで止まらず
+        // 単独ポーリングで完了することを保証する（検証対象を「排出開始時点で
+        // 8 件を超える件数が既に格納済み」の状況に固定する）。
+        let (tx, rx) = handler::channel(PUSH_COUNT + 8);
+        let conn_ctx = test_conn_ctx(tx);
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session_inner(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+        client
+            .send(Message::Text("trigger".into()))
+            .await
+            .expect("client send should succeed");
+
+        for i in 0..PUSH_COUNT {
+            let msg = tokio::time::timeout(Duration::from_secs(2), client.next())
+                .await
+                .expect("push should arrive within timeout")
+                .expect("stream should not end before all pushes arrive")
+                .expect("frame should not error");
+            assert_eq!(
+                msg,
+                Message::Text(format!("push-{i}").into()),
+                "push-{i} should arrive in order before the close frame"
+            );
+        }
+
+        let close_frame = tokio::time::timeout(Duration::from_secs(2), client.next())
+            .await
+            .expect(
+                "close frame should arrive within timeout even though the queue held more \
+                 than DEFAULT_OUTBOUND_CAPACITY items at drain start (regression: PR #736 \
+                 Cursor Bugbot #discussion_r4113894722)",
+            )
+            .expect("stream should not end before close frame")
+            .expect("frame should not error");
+        match close_frame {
+            Message::Close(Some(frame)) => {
+                assert_eq!(u16::from(frame.code), 4000);
+                assert_eq!(frame.reason.as_str(), "bye");
+            }
+            other => panic!("expected a close frame with code/reason, got {other:?}"),
+        }
+
+        let (reason, result) = tokio::time::timeout(Duration::from_secs(2), session_handle)
+            .await
+            .expect("session should finish within timeout")
+            .expect("session task should not panic");
+        assert!(
+            matches!(reason, CloseReason::SenderClose),
+            "expected SenderClose even though the queue held more than \
+             DEFAULT_OUTBOUND_CAPACITY items at drain start, got {reason:?}"
         );
         assert!(result.is_ok(), "expected Ok(()), got {result:?}");
     }
