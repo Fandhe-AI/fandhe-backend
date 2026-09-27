@@ -505,13 +505,20 @@ impl WebSocketConfig {
     /// 届かなければアイドルタイムアウトと同型の正常な Close ハンドシェイクで
     /// 切断する（[`crate::handler::CloseReason::PongTimeout`]）。
     ///
-    /// **既知の限界**: この検知は受信側が一度でも Pending（読むフレームが
-    /// ない状態）になることに依存する。Pong を送らず他のフレーム
-    /// （Text/Binary 等）だけを、受信側が Pending にならない密度で継続送信
-    /// する対向に対しては、Pong 期限切れが即座には検知されない（`crate::
-    /// session` モジュール doc「既知の限界」節・`crate::handler::
-    /// CloseReason::PongTimeout` の doc を参照。データ流入が続く対向は
-    /// 生存扱いとみなす設計判断であり、見直しは #714 のスコープ）。
+    /// Pong を送らず他のフレーム（Text/Binary 等）だけを継続送信する対向
+    /// に対しても、`interval` + `pong_timeout` の期限どおりに切断する
+    /// （反復先頭のハード判定・`send_bounded_with_liveness` への水平展開
+    /// により、受信側が Pending になることには依存しない、PR #738 続報
+    /// レビュー指摘対応。`crate::session` モジュール doc「サーバー起点
+    /// Ping keepalive」節を参照）。
+    ///
+    /// **既知の限界**: 返信送出等でクライアントが受信を止めている間、
+    /// 単発の高速な連続送信で `crate::session::PONG_DRAIN_CAP`（メモリ・
+    /// CPU 安全性の保険としての上限）を超える量が一括到着していた場合に
+    /// 限り、期限内に届いていた正当な Pong を誤って `PongTimeout` にする
+    /// 可能性が理論上残る（`crate::session` モジュール doc「PR #738
+    /// 続報レビュー指摘対応」節を参照。実運用上想定される最大バックログ
+    /// より十分大きい上限により発生確率を実質的にゼロへ近づけている）。
     ///
     /// `idle_timeout`（既定で有効）はクライアントからの受信でのみリセット
     /// され、サーバー起点の Ping 送出ではリセットしない（`crate::session`
