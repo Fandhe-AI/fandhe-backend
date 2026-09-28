@@ -122,9 +122,13 @@ async fn rejecting_hook_returns_specified_response_without_upgrading() {
 
     let response = read_to_eof(&mut client_side).await;
     let text = String::from_utf8(response).unwrap();
+    // ステータス行・ヘッダ（`Connection: close`・カスタムヘッダ・
+    // `Content-Length`）・ボディをすべて検証する（AGENTS.md
+    // 「アサーション網羅性」規約、イシュー #716 P2 レビュー指摘）。
     assert!(text.starts_with("HTTP/1.1 404"));
     assert!(text.contains("Connection: close"));
     assert!(text.contains("X-Reject-Reason: not-found"));
+    assert!(text.contains("Content-Length: 12\r\n"));
     assert!(text.ends_with("no such page"));
     assert!(!text.contains("101 Switching Protocols"));
 
@@ -237,7 +241,17 @@ async fn hook_observes_path_parameter_and_rejects_unknown_id() {
     });
 
     let response_head = read_http_response_head(&mut client_side).await;
+    // ステータス行だけでなく、RFC 6455 4.2.2 が要求する 101 応答の必須ヘッダ
+    // （`Upgrade`/`Connection`/`Sec-WebSocket-Accept`。値は固定 nonce
+    // `dGhlIHNhbXBsZSBub25jZQ==` に対する既知ベクタ、`handshake_e2e.rs` /
+    // `conn_request_info_e2e.rs` の `EXPECTED_101_RESPONSE` と同一値）も
+    // 検証する（AGENTS.md「アサーション網羅性」規約、イシュー #716 P2 レビュー
+    // 指摘。フックが `Ok(())` を返した場合に通常どおりの 101 応答が組み立て
+    // られることの証跡）。
     assert!(response_head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert!(response_head.contains("Upgrade: websocket\r\n"));
+    assert!(response_head.contains("Connection: Upgrade\r\n"));
+    assert!(response_head.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"));
 
     let mut client: WebSocketStream<_> =
         WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
@@ -387,7 +401,15 @@ async fn hook_observes_injected_peer_addr() {
     });
 
     let response_head = read_http_response_head(&mut client_side).await;
+    // ステータス行だけでなく、フックが `Ok(())` を返した際に通常どおりの
+    // 101 応答（RFC 6455 4.2.2 必須ヘッダ）が組み立てられることも検証する
+    // （AGENTS.md「アサーション網羅性」規約、イシュー #716 P2 レビュー指摘。
+    // 既知ベクタは `hook_observes_path_parameter_and_rejects_unknown_id` と
+    // 同一）。
     assert!(response_head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert!(response_head.contains("Upgrade: websocket\r\n"));
+    assert!(response_head.contains("Connection: Upgrade\r\n"));
+    assert!(response_head.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"));
 
     let mut client: WebSocketStream<_> =
         WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
@@ -434,7 +456,23 @@ async fn rfc_violation_is_rejected_before_handshake_check_runs() {
     });
 
     let text = String::from_utf8(read_to_eof(&mut client_side).await).unwrap();
-    assert!(text.starts_with("HTTP/1.1 426 Upgrade Required"));
+    // ステータス行だけでなく、`handshake::serialize_426` が固定で組み立てる
+    // ヘッダ（`Sec-WebSocket-Version: 13`・`Connection: close`・
+    // `Content-Length: 0`）と空ボディも検証する（AGENTS.md
+    // 「アサーション網羅性」規約、イシュー #716 P2 レビュー指摘）。
+    assert!(text.starts_with("HTTP/1.1 426 Upgrade Required\r\n"));
+    assert!(text.contains("Sec-WebSocket-Version: 13\r\n"));
+    assert!(text.contains("Connection: close\r\n"));
+    assert!(text.contains("Content-Length: 0\r\n"));
+    let head_end = text
+        .find("\r\n\r\n")
+        .expect("response must have header terminator")
+        + 4;
+    assert!(
+        text[head_end..].is_empty(),
+        "426 応答はボディを送出しないはず: {:?}",
+        &text[head_end..]
+    );
 
     let result = tokio::time::timeout(Duration::from_secs(2), server_task)
         .await
@@ -509,7 +547,13 @@ async fn no_handshake_check_registered_upgrades_as_before() {
     });
 
     let response_head = read_http_response_head(&mut client_side).await;
+    // ステータス行だけでなく、フック未登録時も従来どおりの 101 応答
+    // （RFC 6455 4.2.2 必須ヘッダ）が組み立てられることも検証する
+    // （AGENTS.md「アサーション網羅性」規約、イシュー #716 P2 レビュー指摘）。
     assert!(response_head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert!(response_head.contains("Upgrade: websocket\r\n"));
+    assert!(response_head.contains("Connection: Upgrade\r\n"));
+    assert!(response_head.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"));
 
     let mut client: WebSocketStream<_> =
         WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
