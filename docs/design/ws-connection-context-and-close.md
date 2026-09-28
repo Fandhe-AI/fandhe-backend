@@ -1153,3 +1153,122 @@ Upgrade 委譲経路（`crates/core/src/plugin.rs` の `try_handle_upgrade` →
 判断を優先した。`GateContext` との扱いの違いは意図的であり、`GateContext`
 側の見直しは本イシューの範囲外（必要であれば別途
 [[out-of-scope-tracking]] に従い起票を検討する）。
+
+## 16. #716: ハンドシェイクの受理判定フック
+
+依存イシュー #728（15 節）完了後の水平展開。現状、WebSocket のアップグレード
+要求は `matches()`（パス・`GET`・`Upgrade: websocket` の粗い判定）に一致すると
+無条件で `handle_upgrade_with_peer_addr` へ委譲され、RFC 6455 検証さえ通れば
+無条件で 101 を返して upgrade する。存在しない `{id}` への接続を 404 で拒否
+する、`Host`/`Origin` を検査して DNS rebinding を防ぐ、といったアプリケー
+ション定義の認可判定をユーザーに提供する拡張点がなかった。
+
+### 16.1 API の形（trait + `#[non_exhaustive]` コンテキスト）を選んだ理由
+
+イシュー本文の例は 3 引数のクロージャ（`|head, params, peer| -> Result<(),
+Response>`）だが、既存の `WsMessageHandler` / `GateContext` / `WsOpenContext`
+と同じ「trait + 借用コンテキスト（非公開フィールド + アクセサ）」の形を
+採用した。理由:
+
+- コンテキストを `#[non_exhaustive]` にすることで、将来 query・ヘッダ上限
+  付きビュー等を追加しても非破壊のままにできる（3 引数の素のクロージャ型
+  では引数を増やすと即座に破壊的変更になる）。
+- `Fn(&WsHandshakeContext<'_>) -> Result<(), Response>` への blanket impl
+  を用意したため、利用者は引き続きクロージャで登録できる
+  （`with_handshake_check` の doc test 参照）。
+
+### 16.2 評価位置と順序
+
+`handle_upgrade_with_peer_addr` 内の処理順序を次のとおりにした
+（`crates/plugin-websocket/src/lib.rs` 参照）:
+
+1. キャンセル確認（既存）。発火済みなら 101 もフックも評価しない。
+2. `handshake::validate`（既存の RFC 6455 4.2.1 検証）。違反は 400/426 を
+   返して終了し、**フックは呼ばない**。ユーザーコードに届くのは RFC 上
+   妥当な upgrade 要求だけにする（信頼境界の外側で弾く）。
+3. `handshake::match_config_path` を 101 応答の前で 1 回だけ計算する
+   （`WsHandshakeContext` へ借用のまま渡し、101 応答送出後の
+   `WsOpenContext` 用コピーもこの結果を再利用して二重計算を避ける）。
+4. `config.handshake_check` が `Some` なら `WsHandshakeContext` を組み立てて
+   `check()` を同期で 1 回呼ぶ。`Err(response)` なら 16.4 節の正規化を経て
+   送出し、`conn_id`・`WsSender` の生成、`on_open`/`on_close` の呼び出しを
+   一切行わずに `Ok(())` で終了する（フェイルクローズの対称性は
+   ハンドシェイク検証失敗・101 送出前キャンセルの既存契約と同一）。
+5. 101 応答書き込み（既存）。
+6. 手順 3 の結果を所有 `Vec<(String, String)>` へコピーし、以降は既存どおり
+   `channel` → `conn_id` → `WsConnContext`/`on_open` → `run_session`。
+
+`RequestGate`（コアの 3 拡張点の 1 つ）はパスパラメータを持たないため代用
+できない。本フックは `RequestGate` を置き換えるものではなく、それが表現
+できない領域（パスパラメータを要する認可判定）を埋める
+`plugin-websocket` 内蔵の拒否経路として設計した。コア（`crates/core`）の
+拡張点・`matches()`/`server.rs`/`plugin.rs` は変更しない。
+
+### 16.3 `WsError` に variant を追加しない判断
+
+`WsError` は `#[non_exhaustive]` ではない（`crates/plugin-websocket/src/
+error.rs`）。ここへ `Rejected` 等の variant を追加すると、網羅的な `match`
+をしている利用者にとって破壊的変更になり 0.5.0 が必要になる。そのため
+variant を追加せず、**拒否時も `Ok(())`**（拒否応答を送出済み・接続を正常に
+閉じた、の意味）を返す設計にした。`handle_upgrade`/`handle_upgrade_with_peer_addr`
+の doc に、戻り値 `Ok(())` には受理判定フックによる拒否も含まれることを
+明記した。将来 `WsError` 自体を `#[non_exhaustive]` にする検討は別途（19 節
+「スコープ外」参照）。
+
+### 16.4 拒否レスポンスのフェイルクローズな正規化
+
+フックが 1xx（特に 101）を返すと、クライアントは upgrade が成功したと
+誤認する一方でプラグインは接続を閉じてしまう。これを防ぐため
+`handshake::normalize_rejection` で次のとおり正規化する:
+
+- **1xx**（`100..=199`）: `400 Bad Request`（body なし）に置き換える。
+- **2xx**（`200..=299`）: 「拒否」の意味に反するため、同じく `400 Bad
+  Request` に置き換える。
+- **3xx/4xx/5xx**: 指定どおりそのまま返す（RFC 6455 4.2.2 はリダイレクト
+  応答を許容している）。
+
+直列化は常に `keep_alive: false` とし（`Response::serialize(false)`）、
+`Connection: close` を必ず付けて拒否後の同一接続にバイトが紛れ込む余地を
+なくす。ヘッダ値の検証は `Response::with_header` の既存フェイルクローズ
+機構に委ねる（プラグイン側はリクエストヘッダを応答へエコーしない）。
+
+### 16.5 同期・非ブロッキング・panic の契約
+
+`WsHandshakeCheck::check` は `RequestGate::check` / `WsMessageHandler` と
+同じく同期関数とし、doc で「同期ブロッキング I/O を行わない」契約を明記
+した。評価は core が `tokio::spawn` したタスク内で行われるため panic は
+タスク境界で隔離されるが、契約としては `Err` を返すことを求める
+（`.claude/rules/coding-rust.md`「panic はライブラリ境界を越えさせない」）。
+
+### 16.6 `Debug` と PII
+
+`WsHandshakeContext` の `Debug` 実装は `WsOpenContext`（15.3 節）と同じ
+判断で、ヘッダ値・パスパラメータ・接続元アドレスを一切出力しない
+（`finish_non_exhaustive()`）。パスパラメータ・ヘッダは攻撃者が URL・
+リクエストとして自由に制御できる入力であり、接続元アドレスは偽装できない
+が PII に近い情報のため、いずれもログ・診断出力への機密混入防止
+（`.claude/rules/security.md`）の対象とする。`WebSocketConfig` の `Debug`
+はフックの有無（bool）のみを出力し、クロージャ本体は出力しない
+（`handler` フィールドと同型の判断）。
+
+### 16.7 #717 との棲み分け
+
+兄弟イシュー #717（`WsOpenContext`/`WsConnContext` へのヘッダ・query 展開）
+とは独立に実装できるよう、`handler.rs`/`session.rs` は変更していない。
+`WsHandshakeContext` はハンドシェイク時点限定の借用コンテキストであり、
+接続確立後も保持する `WsOpenContext`/`WsConnContext` とは別の型・別の
+ライフサイクルである（ヘッダ・query を接続コンテキストへ展開する設計は
+引き続き #717 の範囲）。
+
+### 16.8 `RequestGate` との使い分け（まとめ）
+
+| 観点 | `RequestGate` | 本フック（`WsHandshakeCheck`） |
+|------|---------------|-------------------------------|
+| 対象 | 全リクエスト（accept 直後） | WebSocket upgrade 要求のみ |
+| パスパラメータ | 参照不可 | 参照可（`{name}` パターン由来） |
+| 評価タイミング | ルーティング・プラグイン評価前 | RFC 6455 検証後・101 応答送出前 |
+| 実装場所 | コア拡張点（`crates/core`） | プラグイン内蔵（`plugin-websocket`） |
+
+パスパラメータを要さない全リクエスト共通の認可判定は引き続き
+`RequestGate` を使う。WebSocket 固有かつパスパラメータを要する判定は本
+フックを使う。

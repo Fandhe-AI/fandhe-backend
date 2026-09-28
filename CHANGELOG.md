@@ -12,6 +12,21 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
 
 ### Added
 
+- `fandhe-backend-plugin-websocket`: ハンドシェイクの受理判定フック
+  `WebSocketConfig::with_handshake_check`（新規 trait `WsHandshakeCheck`・
+  コンテキスト型 `WsHandshakeContext`）を追加しました。RFC 6455 検証を通過した
+  upgrade 要求について 101 応答の送出前に一度だけ同期で評価し、`{name}` パス
+  パラメータ（`with_path_pattern` 由来）・リクエストヘッダ・接続元アドレス
+  （`handle_upgrade_with_peer_addr` 由来、イシュー
+  [#728](https://github.com/Fandhe-AI/fandhe-backend/issues/728)）を参照できます。
+  拒否する場合はフックが返す `Response` を（1xx/2xx はフェイルクローズに
+  `400 Bad Request` へ正規化した上で）送出し upgrade しません。`RequestGate`
+  拡張点はパスパラメータを持たないため、それを代替する
+  `plugin-websocket` 内蔵の拒否経路として設計しました（コア拡張点は増やさない。
+  `WsError` への variant 追加は破壊的変更になるため行わず、戻り値は拒否時も
+  `Ok(())`）。未登録時（既定）は挙動が変わりません（後方互換追加。設計は
+  `docs/design/ws-connection-context-and-close.md` 16 節、イシュー
+  [#716](https://github.com/Fandhe-AI/fandhe-backend/issues/716)）。
 - `fandhe-backend-plugin-websocket`: `on_open` から接続元の実 peer address を
   参照できるようにしました。新関数 `handle_upgrade_with_peer_addr`
   （`handle_upgrade` の 5 引数に `peer_addr: Option<std::net::SocketAddr>` を
