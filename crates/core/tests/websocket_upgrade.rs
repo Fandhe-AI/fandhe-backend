@@ -151,6 +151,64 @@ async fn upgrade_succeeds_and_echoes_text_frame() {
     let _ = stream.read_to_end(&mut trailing).await;
 }
 
+/// イシュー #719 の実 TCP 回帰: 受信フレームサイズ上限
+/// （`WebSocketConfig::max_frame_size`）を超えるフレームを送ると、コア経由の
+/// 実接続でも close code 1009（Message Too Big）が届いてから接続が閉じる
+/// こと。`crates/plugin-websocket/tests/message_too_big.rs` は
+/// `tokio::io::duplex` 越しの単体クレートテストだが、本テストは
+/// `crates/core` の `UpgradeHandler` 拡張点配線（`try_handle_upgrade`）を
+/// 経由した実ソケット上でも同じ挙動になることを確認する（生ソケットの
+/// 半閉鎖・読み捨てが `tokio::net::TcpStream` に対しても機能することの
+/// 回帰防止。`crates/plugin-websocket` 側は `tokio::io::duplex` でしか
+/// 検証していないため）。
+#[tokio::test]
+async fn oversized_frame_closes_with_1009_over_real_tcp() {
+    let server = Server::new()
+        .websocket(WebSocketConfig::default().with_max_frame_size(16))
+        .handler(NotCalledHandler);
+    let addr = spawn_server(server).await;
+
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream.write_all(VALID_HANDSHAKE_REQUEST).await.unwrap();
+
+    let response_head = read_response_head(&mut stream).await;
+    assert!(response_head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+
+    // max_frame_size(16) を超える 32 バイトの Text フレームを単一フレームで
+    // 送る（ペイロードは 125 バイト未満のため拡張長ヘッダは不要）。
+    stream
+        .write_all(&masked_text_frame(&[b'a'; 32]))
+        .await
+        .unwrap();
+
+    let (opcode, payload) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        read_server_frame(&mut stream),
+    )
+    .await
+    .expect("server should send close before test timeout");
+    assert_eq!(opcode, 0x8, "expected Close opcode (1009)");
+    assert!(
+        payload.len() >= 2,
+        "close frame payload must carry a 2-byte code"
+    );
+    let code = u16::from_be_bytes([payload[0], payload[1]]);
+    assert_eq!(code, 1009, "expected close code 1009 (Message Too Big)");
+    assert_eq!(&payload[2..], b"message too big");
+
+    // サーバーは Close 送出後、生ソケットを半閉鎖してから有界に読み捨てる
+    // （`docs/design/plugin-boundary.md`・`crates/plugin-websocket/src/
+    // session.rs` の `handle_message_too_big` を参照）。クライアント側は
+    // 追加のフレームを送らずに EOF まで読み切れることを確認する。
+    let mut trailing = Vec::new();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stream.read_to_end(&mut trailing),
+    )
+    .await
+    .expect("connection should close within close_grace");
+}
+
 #[tokio::test]
 async fn missing_sec_websocket_key_is_rejected_with_400() {
     let server = Server::new()

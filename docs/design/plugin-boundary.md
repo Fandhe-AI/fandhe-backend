@@ -374,7 +374,26 @@ Upgrade 型パターン確立後もアプリケーションロジックを差し
   tungstenite 側でハンドラ呼び出し**前**に強制され続ける（上限超過メッセージは
   ハンドラへ到達しない）。ハンドラの `Err` は既存の `WsError` へ
   `Handler(...)` variant として合流させ、コア境界を越えて panic させない
-  契約を維持する
+  契約を維持する。上限超過時の切断挙動はイシュー #719 で修正した:
+  以前は Close フレームを送らずに接続を drop していたため、利用側
+  （CDP 互換サーバー等）には理由のない異常切断としか見えなかった。
+  現在は RFC 6455 7.4.1 節の close code 1009（Message Too Big）・固定
+  reason `"message too big"` を送出してから閉じる
+  （`crates/plugin-websocket/src/session.rs` の `handle_message_too_big`。
+  frame 上限経路では送信途中の巨大 payload がソケットに残りうるため、
+  Close 送出後に生ストリームの半閉鎖（FIN）+ 有界な読み捨て
+  （lingering close、固定長バッファで蓄積しない）を行い、カーネルの
+  RST で Close 1009 が失われるのを避ける。全体を `close_grace`
+  単一の期限で有界化し、DoS 上限自体（判定基準・ハンドラ非到達）は
+  変えない非破壊のバグ修正。読み捨てループ自体は `LINGER_IDLE`
+  （2 秒）単位の無通信タイムアウトで打ち切るが、`LINGER_IDLE` 未満の
+  間隔で送信を続けて無通信を作らない相手（トリクラー）に対しては
+  `LINGER_IDLE` だけでは上限にならないため、PR #744 の codex/review
+  指摘（P0）を受けてループ突入時に一度だけ固定する総上限
+  `LINGER_TOTAL`（3 秒、`close_grace` の既定値 10 秒より十分小さい）を
+  追加した。継続送信の有無によらず読み捨てループは
+  `min(close_grace 相当の残り期限, 突入時刻 + LINGER_TOTAL)` を
+  超えない）
 
 本節の設計判断（Issue #179）を継続し、イシュー #703（親 #702）で接続単位ハンドラ
 （`on_message_with_ctx`）・切断通知（`on_close(ctx, CloseReason)`）・送信キュー
