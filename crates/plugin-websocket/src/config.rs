@@ -723,7 +723,7 @@ impl WebSocketConfig {
     ///
     /// `check` は RFC 6455 検証（`crate::handshake::validate`）を通過した
     /// upgrade 要求について、101 応答を送出する直前に一度だけ同期で呼ばれる。
-    /// `Err(response)` を返すと `response` を（[`crate::handshake::normalize_rejection`]
+    /// `Err(response)` を返すと `response` を（`crate::handshake::normalize_rejection`
     /// による正規化を経て）クライアントへ送出し、upgrade しない。
     /// [`crate::handshake::WsHandshakeCheck`] の doc に契約（同期・
     /// 非ブロッキング・panic しない）を記載しているので必ず確認すること。

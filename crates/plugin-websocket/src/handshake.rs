@@ -185,7 +185,7 @@ pub(crate) fn serialize_426() -> Vec<u8> {
 
 /// アプリケーション定義の受理判定フック（イシュー #716）。
 ///
-/// RFC 6455 検証（[`validate`]）を通過した upgrade 要求について、
+/// RFC 6455 検証（`validate`）を通過した upgrade 要求について、
 /// [`crate::handle_upgrade_with_peer_addr`] が 101 応答を送出する直前に
 /// 一度だけ同期で呼ばれる。`{name}` パスパラメータ・リクエストヘッダ・
 /// 接続元アドレスを参照して独自の認可判定（例: 存在しない `{id}` への
@@ -207,7 +207,7 @@ pub(crate) fn serialize_426() -> Vec<u8> {
 ///   （`.claude/rules/coding-rust.md`「panic はライブラリ境界を越えさせ
 ///   ない」）。
 /// - **拒否時の応答**: `Err(response)` を返すと `handle_upgrade_with_peer_addr`
-///   は upgrade を行わず、[`normalize_rejection`] で正規化した後の
+///   は upgrade を行わず、`normalize_rejection` で正規化した後の
 ///   `response` を送出して接続を閉じる（101 応答は送出しない）。
 pub trait WsHandshakeCheck: Send + Sync + 'static {
     /// `ctx` を検査し、受理する場合は `Ok(())`、拒否する場合はクライアントへ
@@ -216,7 +216,7 @@ pub trait WsHandshakeCheck: Send + Sync + 'static {
     /// # Errors
     ///
     /// 接続を拒否する場合、返す [`Response`] を正規化した上でクライアントへ
-    /// 送出する（[`normalize_rejection`] の doc を参照）。
+    /// 送出する（`normalize_rejection` の doc を参照）。
     fn check(&self, ctx: &WsHandshakeContext<'_>) -> Result<(), Response>;
 }
 
