@@ -443,7 +443,11 @@ fandhe-backend/
 │   │                                    # `RequestHead::target()`（`&str` 返却）のアクセサ
 │   │                                    # 経由でのみ取得させる（**BREAKING CHANGE**、旧
 │   │                                    # `pub method: String` / `pub target: String` は廃止、
-│   │                                    # 移行手順は `CHANGELOG.md` 参照）
+│   │                                    # 移行手順は `CHANGELOG.md` 参照）。`Router::merge`
+│   │                                    # で複数クレートが公開する `Router` を 1 つに合成
+│   │                                    # できるようにし、重複するルート登録・両方への
+│   │                                    # fallback/options_fallback 登録は `RouterMergeError`
+│   │                                    # でフェイルクローズに検出する（イシュー #722）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
@@ -688,7 +692,45 @@ fandhe-backend/
 │   │                                    # 1 接続 1 回のみ。新規値はいずれも
 │   │                                    # `Debug` 出力に含めない（`docs/design/
 │   │                                    # ws-connection-context-and-close.md` 17 節
-│   │                                    # 参照）。イシュー #723 で
+│   │                                    # 参照）。
+│   │                                    # イシュー #719 で、受信メッセージ/フレームが
+│   │                                    # `max_message_size`/`max_frame_size` を超えた
+│   │                                    # ときに Close フレームを送らず drop していた
+│   │                                    # 不具合を修正した。close code 1009（Message Too
+│   │                                    # Big）を送出後、生ストリームの半閉鎖 + 有界な
+│   │                                    # 読み捨てを行い、frame 上限超過時に送信途中の
+│   │                                    # 巨大 payload が残ったままの close で Close 1009
+│   │                                    # が RST によって失われるのを防ぐ（`session::
+│   │                                    # handle_message_too_big`。戻り値は従来どおり
+│   │                                    # `Err(WsError::Protocol(Capacity(_)))` のままの
+│   │                                    # 非破壊修正、`docs/design/plugin-boundary.md`
+│   │                                    # 5 節参照）。PR #744 の codex/review 指摘 2 件に
+│   │                                    # 対応し、(1) 読み捨て全体の期限は
+│   │                                    # `WsSender::close` の要求を既に観測済みなら
+│   │                                    # その要求時点 + `close_grace`（[`CloseBound`]）を
+│   │                                    # 引き継ぎ、検出時点から新たに `close_grace` を
+│   │                                    # 与え直さないようにし、(2) 読み捨てループ自体は
+│   │                                    # `LINGER_IDLE`（2 秒固定）単位の無通信タイムアウトで
+│   │                                    # 打ち切るようにした（Apache httpd の lingering
+│   │                                    # close と同型。Close 応答を返して TCP を
+│   │                                    # 開けたままにする協調的なクライアントや、
+│   │                                    # 応答しない相手が `close_grace` 一杯まで接続・
+│   │                                    # タスク・メモリを占有できないようにする DoS 対策）。
+│   │                                    # 極小フレームを送り続けて無通信を作らない相手
+│   │                                    # （トリクラー）は `LINGER_IDLE` の無通信検知が
+│   │                                    # 一度も働かないため、(2) だけでは `close_grace`
+│   │                                    # （要求済みならその継承先の期限）一杯まで読み捨て
+│   │                                    # ループが延長され続けうる。PR #744 の codex/review
+│   │                                    # 再指摘に対応し、読み捨てループへ入る直前に
+│   │                                    # `LINGER_TOTAL`（3 秒固定）を用いて
+│   │                                    # `min(deadline, now + LINGER_TOTAL)` を 1 回だけ
+│   │                                    # 計算した `linger_deadline` へ以後の全 read を
+│   │                                    # 固定し、無通信タイムアウト（(2)）とは独立に
+│   │                                    # トリクラーを含む全相手を総上限
+│   │                                    # `min(close_grace 相当の残り期限, LINGER_TOTAL)`
+│   │                                    # で終了させる契約へ更新した（`close_and_drain`
+│   │                                    # の他の終了経路は本総上限の対象外で従来どおり）。
+│   │                                    # イシュー #723 で
 │   │                                    # `on_message` の戻り値型 `BoxFuture` を
 │   │                                    # 独自の型エイリアスとして公開し
 │   │                                    # （`futures_util::future::BoxFuture` と
