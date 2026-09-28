@@ -109,10 +109,10 @@
 //! 2. **Pong 期限**: Ping 送出時刻 + `pong_timeout`。判定は受信待ちの race の
 //!    中だけで行い（[`TimerKind::PongDeadline`]）、ws の読み取りを優先する
 //!    ため、バッファ済みの Pong があれば先に読んで期限を解除する（Pong を
-//!    読んだ時点で期限解除、payload の照合はしない）。フレームが途切れず
-//!    届き続ける対向は `ws.next()` が常に Ready になるためこの経路に至らず、
-//!    Pong を返さず他のフレームだけを送り続ける対向は切断しない
-//!    （`idle_timeout` と同じ「受信し続ける限り生存扱い」という契約）。
+//!    読んだ時点で期限解除、payload の照合はしない）。期限を過ぎても読める
+//!    フレームが残っている間は判定に至らず、受信待ちで読めるフレームが
+//!    なくなった時点で切断が確定する（Pong を返さない対向も、フレームが
+//!    途切れず届いている間は切断しない）。
 //! 3. **送出詰まり**: keepalive 有効時、[`send_bounded`] を経由する 1 回の
 //!    送出（Ping・Reply・outbound push・`drain_before_reply`/
 //!    `drain_to_close` 中の送出）がその送出の**開始時刻**から
@@ -5309,6 +5309,7 @@ mod tests {
             let (tx, rx) = handler::channel(4);
             let conn_ctx = test_conn_ctx(tx);
 
+            let started = tokio::time::Instant::now();
             let (reason, result) = tokio::time::timeout(Duration::from_secs(5), async move {
                 let cancel = std::future::pending::<()>();
                 let mut cancel = std::pin::pin!(cancel);
@@ -5330,6 +5331,16 @@ mod tests {
                 "expected IdleTimeout (ping send must not reset it), got {reason:?}"
             );
             assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+            // Pong を返さないため Ping は t=40ms の 1 回しか送られない。Ping 送出で
+            // idle 期限がリセットされるバグがあると idle 期限は 190ms へずれるので、
+            // 終了時刻（idle 期限 + Close 応答待ちの close_grace）で検出する。
+            let elapsed = started.elapsed();
+            let expected = Duration::from_millis(150) + config.close_grace;
+            assert!(
+                elapsed >= Duration::from_millis(150)
+                    && elapsed < expected + Duration::from_millis(40),
+                "session must end at idle_timeout (+ close_grace), not later: elapsed {elapsed:?}"
+            );
         }
     }
 }

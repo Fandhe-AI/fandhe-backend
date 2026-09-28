@@ -503,11 +503,11 @@ impl WebSocketConfig {
     /// `interval` ごとにサーバーから `Message::Ping`（固定の空ペイロード）を
     /// 送出し、送出時点から `pong_timeout` 以内にクライアントの Pong が
     /// 届かなければアイドルタイムアウトと同型の正常な Close ハンドシェイクで
-    /// 切断する（[`crate::handler::CloseReason::PongTimeout`]）。判定は
-    /// 受信待ちで何も読めない状態のときのみ行うため、Pong を送らず他の
-    /// フレームだけを継続送信する対向は切断しない（`idle_timeout` と同じ
-    /// 「受信し続ける限り生存扱い」という契約、`crate::session` モジュール
-    /// doc「サーバー起点 Ping keepalive」節を参照）。1 回の送出
+    /// 切断する（[`crate::handler::CloseReason::PongTimeout`]）。期限切れは
+    /// 受信待ちで読めるフレームがなくなった時点で判定し、それまでに届いて
+    /// いるフレームは先に読んで処理する（Pong を返さない対向も、フレームが
+    /// 途切れず届いている間は切断しない。`crate::session` モジュール doc
+    /// 「サーバー起点 Ping keepalive」節を参照）。1 回の送出
     /// （Ping・Reply・outbound push 等）が `pong_timeout` を超えてブロック
     /// した場合も同じ `PongTimeout` で終了する。
     ///

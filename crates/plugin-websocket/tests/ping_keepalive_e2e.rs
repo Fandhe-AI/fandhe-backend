@@ -434,10 +434,10 @@ async fn slow_handler_does_not_lose_pong_buffered_during_handler_execution() {
 /// （Pong 期限）が立った状態でも、Pong を送らず Text だけを送り続ける限り
 /// クライアントは切断されないこと。
 ///
-/// `ws.next()` が常に Ready になる（フレームが途切れず届く）限り Pong 期限
-/// の判定自体が受信待ちの race に至らないため、`idle_timeout` と同じ
-/// 「受信し続ける限り生存扱い」という契約になる（意図した挙動、
-/// `crate::session` モジュール doc を参照）。
+/// 期限を過ぎても読めるフレームが残っている間は判定に至らず、受信待ちで
+/// 読めるフレームがなくなった時点で切断が確定する契約のため、Text を
+/// 途切れず届けている間は切断されない（意図した挙動、`crate::session`
+/// モジュール doc を参照）。
 ///
 /// tokio-tungstenite のクライアント（`WebSocketStream`）は Ping を読むと
 /// 自動で Pong を返してしまうため、「Pong を返さない対向」を検証するには

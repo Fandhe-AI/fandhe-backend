@@ -22,9 +22,10 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   サーバー起点の送出ではリセットしないため、サーバー起点 push を受けている
   だけの受信専用クライアント（例: CDP 互換サーバー相手の Playwright/Puppeteer）
   は `idle_timeout` だけでは死活監視できず、本設定が必要になります。
-  判定は受信待ちで何も読めない状態のときのみ行うため、Pong を送らず他の
-  フレームだけを継続送信する対向に対しては切断しません（`idle_timeout` と
-  同じ「受信し続ける限り生存扱い」という契約）。1 回の送出（Ping・Reply・
+  期限切れの判定は受信待ちで読めるフレームがなくなった時点で行うため、
+  期限を過ぎても届いているフレームは先に読んで処理し、その中の Pong も
+  有効として扱います（Pong を返さない対向も、フレームが途切れず届いている
+  間は切断しません）。1 回の送出（Ping・Reply・
   outbound push 等）がその開始時刻から `pong_timeout` を超えてブロックした
   場合も同じ `CloseReason::PongTimeout` で終了します。
   `without_ping_interval()` で明示的に無効へ戻せます。既存の設定・挙動は
