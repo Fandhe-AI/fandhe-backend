@@ -249,6 +249,34 @@ impl Server {
   出力先は不変。`crates/core/tests/diagnostics.rs` の子プロセス方式による
   検証（8 節）は、通知が detached タスクから行われる前提を既に踏まえている
   ため追加変更は不要
+- **対応（再訂正、PR #748 codex/review P1 指摘対応）**: OS スレッドへの
+  切り離しで tokio ランタイムのポーリング依存は解消したが、別の喪失経路が
+  残っていた。`run_until` の呼び出し元が返却直後にプロセスを終了させる
+  典型的な使い方（`main` の最後の文として `run_until` を呼び、`Ok(())` を
+  受けたら即 `main` を抜ける等）では、Rust の `std::thread::spawn` した
+  スレッドは自動で join されないため、プロセス終了時に未実行のまま道連れに
+  破棄されうる。これは通知（既定シンクの `eprintln!` を含む）が届かない
+  ことを意味し、「返却前に `eprintln!` が実行されていた」旧挙動との
+  互換性を破る。対応として、通知スレッドの完了を
+  `SHUTDOWN_NOTIFY_FLUSH_WAIT`（`crates/core/src/server.rs`、200ms）
+  だけ待ってから `run_until` を返すようにした（完了通知は
+  `tokio::sync::oneshot` チャネルで受け取る）。既定シンク（同期
+  `eprintln!` 1 行）や大半の妥当なカスタムシンクはこの待機時間内に確実に
+  完了するため、実質的に「返却前に通知済み」という旧挙動と同等の結果を
+  回復する。契約違反（ブロッキング I/O・停止）のシンクは待機時間内に
+  完了しないことがあるが、その場合は待機を打ち切って fire-and-forget へ
+  フォールバックする（受信側 drop 後の送信 `Err` は無視してよい）ため、
+  `run_until` 自体の「`shutdown_grace_period` + ε 以内に必ず戻る」契約は
+  破らない（regression テスト
+  `crates/core/tests/diagnostics.rs::
+  shutdown_grace_exceeded_sink_blocking_does_not_delay_run_until_return`
+  で検証、`block_for=2s` のブロッキングシンクでも
+  `elapsed < grace + 700ms` を満たすことを確認）。副次効果として、
+  `crates/core/tests/diagnostics.rs::
+  default_sink_prints_to_stderr_when_unregistered` が macOS/Windows CI
+  （遅いランナーで OS スレッドのスケジューリングが子プロセスの終了に
+  間に合わないことがあった）で不安定だった原因も解消した（子プロセスの
+  終了前に通知の完了を待つようになったため）
 
 ## 10. スコープ外・将来案
 

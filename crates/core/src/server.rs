@@ -211,6 +211,24 @@ const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(10);
 /// [`Server::shutdown_grace_period`] で行う。
 const DEFAULT_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(30);
 
+/// grace 超過強制クローズ（`ShutdownGraceExceeded`）通知の OS スレッド
+/// 切り離し後、`run_until` がその完了を待つ有界時間（PR #748 レビュー指摘
+/// P1 対応）。
+///
+/// 通知は `std::thread::spawn` された OS スレッドで行われる
+/// fire-and-forget だが、これを一切待たずに `run_until` が返ると、
+/// 呼び出し元が返却直後にプロセスを終了させる使い方では通知スレッドが
+/// 1 度もスケジュールされずに失われうる（旧 `eprintln!` 直書きは返却前に
+/// 同期実行されていたため、この喪失は既定出力の互換性を破る）。既定シンク
+/// （同期 `eprintln!` 1 行）を含む大半の妥当なシンクはこの時間内に確実に
+/// 完了するため、実質的に「返却前に通知済み」という旧挙動と同等の結果を
+/// 得られる。契約違反（ブロッキング I/O）のシンクがこの時間内に完了しない
+/// 場合は待機を打ち切って fire-and-forget へフォールバックするため、
+/// `run_until` 自体の「`shutdown_grace_period` + ε 以内に必ず戻る」契約
+/// （`docs/design/graceful-shutdown.md`）は破らない。値は上記契約の ε の
+/// 一部として十分小さく取る（`docs/design/diagnostics-sink.md` 9 節参照）。
+const SHUTDOWN_NOTIFY_FLUSH_WAIT: Duration = Duration::from_millis(200);
+
 /// rebind（イシュー #485）時に旧 listener の accept backlog から drain する
 /// 接続件数の上限（イシュー #501）。
 ///
@@ -2204,17 +2222,45 @@ impl BoundServer {
                 // （通知が確実に失われる）。`emit` 自体は同期関数で `.await`
                 // 点を持たないため、tokio タスクとして実行する必要はない。
                 // OS スレッドへ切り離せば tokio ランタイムの継続ポーリングに
-                // 依存せず独立に実行されるため、この欠落を避けられる
-                // （実行完了を待たない fire-and-forget である点、上記の
-                // フェイルクローズ根拠は不変）。
+                // 依存せず独立に実行されるため、この欠落を避けられる。
+                //
+                // OS スレッドへの切り離しは tokio ランタイムのポーリング
+                // には依存しなくなるが、別の喪失経路が残っていた（PR #748
+                // レビュー指摘 P1）: `run_until` の呼び出し元がプロセスを
+                // 即座に終了させる典型的な使い方（`main` の最後の文として
+                // `run_until` を呼び、返り値を受けたら即 `main` を抜ける等）
+                // では、OS スレッドが 1 度もスケジュールされないまま
+                // プロセスごと消滅し、通知（既定シンクの `eprintln!` を
+                // 含む）が届かないことがある。この喪失は「返却前に
+                // `eprintln!` が実行されていた」旧挙動との互換性を破る。
+                // 対応として、通知スレッドの完了を有界時間
+                // （`SHUTDOWN_NOTIFY_FLUSH_WAIT`）だけ待ってから `run_until`
+                // を返す。既定シンク（同期 `eprintln!` 1 行）や大半の
+                // 妥当なカスタムシンクはこの待機時間内に確実に完了し、
+                // 旧 `eprintln!` 直書きと同等に「返却前に通知済み」という
+                // 実質同期の挙動を回復する。契約違反（ブロッキング I/O）の
+                // シンクは待機時間内に完了しないことがあるが、その場合も
+                // 待機を打ち切って `run_until` を返す（fire-and-forget へ
+                // フォールバック）ため、上記「grace + ε 以内に必ず戻る」
+                // 契約は破らない（`shutdown_grace_exceeded_sink_blocking_
+                // does_not_delay_run_until_return` で検証）。スレッド完了は
+                // `tokio::sync::oneshot` で通知する（`std::thread::spawn` の
+                // クロージャ内から同期 `Sender::send` を呼ぶだけで完結し、
+                // 受信側のみ非同期に待てるため、この切り離しパターンに最小
+                // 追加で組み込める）。
                 let diagnostics = Arc::clone(&server.diagnostics);
                 let grace = server.shutdown_grace_period;
+                let (notified_tx, notified_rx) = oneshot::channel::<()>();
                 std::thread::spawn(move || {
                     crate::diagnostics::emit(
                         &*diagnostics,
                         crate::diagnostics::DiagnosticEvent::ShutdownGraceExceeded { grace },
                     );
+                    // 受信側が待機を打ち切って drop 済みでも `send` は
+                    // エラーを返すだけで panic しない（無視してよい）。
+                    let _ = notified_tx.send(());
                 });
+                let _ = tokio::time::timeout(SHUTDOWN_NOTIFY_FLUSH_WAIT, notified_rx).await;
             }
         }
 
