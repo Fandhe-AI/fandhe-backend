@@ -51,8 +51,13 @@ impl BoundServer {
    `DEFAULT_SHUTDOWN_GRACE_PERIOD` = 30 秒）を上限に、`connection_limit`
    セマフォの全 permit（`permit_total` 個）が解放されるのを待つ
 3. **上限超過時は強制クローズ**: 上限内に全 permit が解放されなければ、
-   警告ログを 1 行出した上で残存コネクションタスクを `JoinSet::shutdown`
-   で abort する（受け入れ条件 2）
+   残存コネクションタスクを `JoinSet::shutdown` で abort したのち、
+   `Server::diagnostics`（イシュー #720、`docs/design/diagnostics-sink.md`）で
+   登録したシンクへ `DiagnosticEvent::ShutdownGraceExceeded` を通知する
+   （既定は `StderrDiagnostics` による警告ログ 1 行、現行互換の文言・
+   出力先）。強制クローズの確定を通知より先に行うのは、利用側シンクの
+   異常・遅延がフェイルクローズ（有界時間でのクローズ）を妨げないため
+   （受け入れ条件 2）
 
 どちらの経路でも `run_until` は `shutdown_grace_period` + ε 以内に必ず
 `Ok(())` で戻る。

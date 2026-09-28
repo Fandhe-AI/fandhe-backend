@@ -12,6 +12,24 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
 
 ### Added
 
+- `fandhe-backend-core`: ライブラリ内部の実行時診断（accept 失敗・
+  TCP_NODELAY 設定失敗・graceful shutdown / rebind の grace 超過強制クローズの
+  4 箇所）を、利用側で差し替え可能な診断シンクへ移行しました。新規 trait
+  `Diagnostics`・イベント型 `DiagnosticEvent`（`#[non_exhaustive]`）・既定
+  シンク `StderrDiagnostics` を追加し、`Server::diagnostics(sink)` で登録
+  できます。未登録時（既定）は `StderrDiagnostics` が使われ、現行の
+  `eprintln!` 出力と文言・接頭辞・出力先（stderr）が完全互換です。クロージャを
+  そのまま登録できる blanket impl があるため、`Server::new().diagnostics(|_|
+  {})` の 1 行で出力を抑止したり、`tracing::warn!` 等へ転送する独自シンクを
+  書いたりできます（新規外部依存の追加なし、`tracing` feature とは無関係。
+  設計は
+  [`docs/design/diagnostics-sink.md`](docs/design/diagnostics-sink.md)、
+  イシュー [#720](https://github.com/Fandhe-AI/fandhe-backend/issues/720)）。
+  挙動変更として、最終 graceful shutdown・rebind 旧世代 drain の grace 超過
+  強制クローズ 2 箇所は、通知（診断シンクへの `report` 呼び出し）を強制
+  クローズの完了**後**に行うよう順序を入れ替えています（利用側シンクの異常・
+  遅延がフェイルクローズを妨げないため。既定シンクでは出力順序が反転しても
+  外部から観測可能な違いはほぼありません）。
 - `fandhe-backend-plugin-websocket`: ハンドシェイクの受理判定フック
   `WebSocketConfig::with_handshake_check`（新規 trait `WsHandshakeCheck`・
   コンテキスト型 `WsHandshakeContext`）を追加しました。RFC 6455 検証を通過した

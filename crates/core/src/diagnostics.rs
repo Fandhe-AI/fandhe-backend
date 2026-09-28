@@ -1,0 +1,296 @@
+//! ライブラリ内部の実行時診断を利用側で差し替え可能にする診断シンク
+//! （イシュー #720）。
+//!
+//! # 背景
+//!
+//! `crates/core` は accept 失敗・TCP_NODELAY 設定失敗・graceful shutdown /
+//! rebind の grace 超過強制クローズの 4 箇所で、従来 `eprintln!` により
+//! 固定の日本語文言を直接 stderr へ出力していた。`fandhe-backend-core` は
+//! ライブラリであり、利用側（CLI・ログ集約基盤等）が出力先・書式・抑止を
+//! 制御できないのは pay-for-what-you-use・可観測性双方の観点で望ましくない
+//! （`.claude/rules/security.md` の可観測性節）。
+//!
+//! # 採用方式（設計比較は `docs/design/diagnostics-sink.md` を参照）
+//!
+//! `tracing` / `log` 等の外部クレートへコアから直接依存する案ではなく、
+//! 利用側が実装する [`Diagnostics`] trait の登録口（[`crate::server::Server::diagnostics`]）
+//! を追加した。新規依存はゼロで、feature ゲートも不要
+//! （[`crate::interceptor::Interceptor`] と同じ「外部依存ゼロの純コア機能」の
+//! 位置づけ）。利用側が `tracing::warn!` 等へ転送する実装を書けば、事実上
+//! `tracing` 連携も実現できる。
+//!
+//! # 契約
+//!
+//! [`Diagnostics::report`] は同期 API（dyn 互換のため、`crate::extension` の
+//! 3 拡張点と同じ設計判断）。accept ループ・rebind の背景 drain タスク上で
+//! 直接呼ばれるため、以下を必ず守る:
+//!
+//! - **ブロッキング I/O を行わない**（`crate::extension::Middleware` と同じ
+//!   規約。実装が I/O を必要とする場合は非同期チャネルへの送信に留め、実際の
+//!   I/O は別タスクで行う）
+//! - **panic しない**。コア側は [`std::panic::catch_unwind`] で境界を守るが
+//!   （`emit` の doc を参照）、`panic = "abort"` ビルドでは捕捉できないため
+//!   契約として明記する
+//!
+//! 既定シンク [`StderrDiagnostics`] は現行の `eprintln!` 出力と完全互換
+//! （文言・接頭辞・出力先が一致する）。[`DiagnosticEvent`] の
+//! [`Display`][fmt::Display] 実装が返す本文には接頭辞を含めない。
+
+use std::fmt;
+use std::io;
+use std::panic::AssertUnwindSafe;
+use std::time::Duration;
+
+/// ライブラリ内部の実行時診断（accept 失敗・grace 超過強制クローズ等）を
+/// 受け取るシンク。
+///
+/// [`crate::server::Server::diagnostics`] で登録する。未登録時の既定は
+/// [`StderrDiagnostics`]（現行の `eprintln!` 出力と完全互換）。
+///
+/// # 契約（モジュール doc も参照）
+///
+/// - `report` はブロッキング I/O を行ってはならない（accept ループ・rebind
+///   drain タスク上で同期的に呼ばれるため）
+/// - `report` は panic してはならない（コア側は `catch_unwind` で境界を
+///   守るが、フェイルクローズの保証にはしない）
+///
+/// # Examples
+///
+/// クロージャで登録し、独自ログへ転送する:
+///
+/// ```
+/// use fandhe_backend_core::{Diagnostics, DiagnosticEvent};
+/// use fandhe_backend_core::server::Server;
+///
+/// let server = Server::new().diagnostics(|event: &DiagnosticEvent<'_>| {
+///     // 実運用では tracing::warn!(%event, "fandhe_backend_core diagnostic") 等へ転送する。
+///     eprintln!("custom-sink: {event}");
+/// });
+/// let _ = server;
+/// ```
+///
+/// 出力を抑止したい場合は no-op クロージャを登録する:
+///
+/// ```
+/// use fandhe_backend_core::DiagnosticEvent;
+/// use fandhe_backend_core::server::Server;
+///
+/// let server = Server::new().diagnostics(|_event: &DiagnosticEvent<'_>| {});
+/// let _ = server;
+/// ```
+pub trait Diagnostics: Send + Sync + 'static {
+    /// 1 件の診断イベントを受け取る。契約はトレイト doc を参照。
+    fn report(&self, event: &DiagnosticEvent<'_>);
+}
+
+/// [`Diagnostics::report`] が受け取る診断イベント。
+///
+/// `crates/core/src/server.rs` の実行時診断 4 箇所に 1 対 1 で対応する。
+/// 将来イベントを追加しても breaking change にしないため `#[non_exhaustive]`
+/// とする。
+///
+/// # 機密情報の非混入（`.claude/rules/security.md`）
+///
+/// 運搬する値は [`io::Error`] と [`Duration`] のみに限定し、peer address・
+/// リクエスト内容・ヘッダ等は含めない（現在も将来も含めない方針）。
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum DiagnosticEvent<'a> {
+    /// `listener.accept()` が失敗した（`BoundServer::run_until` の主 accept
+    /// ループ）。バックオフ後に再試行する。
+    AcceptFailed {
+        /// accept が返したエラー。
+        error: &'a io::Error,
+    },
+    /// accept 直後のソケットへの TCP_NODELAY 設定が失敗した
+    /// （`configure_accepted_stream`）。フェイルオープンで接続は継続する。
+    TcpNodelayFailed {
+        /// `configure_stream` が返したエラー。
+        error: &'a io::Error,
+    },
+    /// 最終 graceful shutdown（`BoundServer::run_until`）で in-flight 完了待ちが
+    /// `grace` を超過し、残存接続を強制クローズする。
+    ShutdownGraceExceeded {
+        /// `Server::shutdown_grace_period` で設定された猶予期間。
+        grace: Duration,
+    },
+    /// rebind（`RebindHandle::rebind`）による旧世代接続の drain が `grace` を
+    /// 超過し、残存接続を強制クローズする。
+    RebindDrainGraceExceeded {
+        /// `Server::shutdown_grace_period` で設定された猶予期間。
+        grace: Duration,
+    },
+}
+
+impl fmt::Display for DiagnosticEvent<'_> {
+    /// 現行 `eprintln!` 引数から接頭辞（`fandhe_backend_core::server: `）を
+    /// 除いた本文をそのまま出力する。既定シンク [`StderrDiagnostics`] のみが
+    /// この接頭辞を付け足す（モジュール doc を参照）。
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DiagnosticEvent::AcceptFailed { error } => {
+                write!(f, "accept に失敗しました: {error}")
+            }
+            DiagnosticEvent::TcpNodelayFailed { error } => {
+                write!(
+                    f,
+                    "TCP_NODELAY の設定に失敗しました（接続は継続します）: {error}"
+                )
+            }
+            DiagnosticEvent::ShutdownGraceExceeded { grace } => {
+                write!(
+                    f,
+                    "graceful shutdown の猶予期間（{grace:?}）を超過したため残存接続を強制クローズします"
+                )
+            }
+            DiagnosticEvent::RebindDrainGraceExceeded { grace } => {
+                write!(
+                    f,
+                    "rebind による旧世代接続の drain が猶予期間（{grace:?}）を超過したため強制クローズします"
+                )
+            }
+        }
+    }
+}
+
+/// 既定の診断シンク。現行の `eprintln!` 出力と完全互換（文言・接頭辞・
+/// 出力先が一致する）。
+///
+/// [`crate::server::Server::diagnostics`] を一度も呼ばない場合、`Server` は
+/// 本シンクを使う。
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_core::StderrDiagnostics;
+/// use fandhe_backend_core::server::Server;
+///
+/// let server = Server::new().diagnostics(StderrDiagnostics);
+/// let _ = server;
+/// ```
+#[derive(Debug, Default, Clone, Copy)]
+pub struct StderrDiagnostics;
+
+impl StderrDiagnostics {
+    /// 実際に stderr へ書き出す行を組み立てる（接頭辞付き）。単体テストで
+    /// 現行文言との一致を検証しやすいよう整形処理のみを切り出している。
+    fn format_line(event: &DiagnosticEvent<'_>) -> String {
+        format!("fandhe_backend_core::server: {event}")
+    }
+}
+
+impl Diagnostics for StderrDiagnostics {
+    fn report(&self, event: &DiagnosticEvent<'_>) {
+        eprintln!("{}", Self::format_line(event));
+    }
+}
+
+// クロージャをそのまま `Diagnostics` として登録できるようにする便利 impl。
+// `Server::new().diagnostics(|_| {})` で出力を抑止できる（利用者は独自
+// struct を書かずに済む）。
+impl<F> Diagnostics for F
+where
+    F: Fn(&DiagnosticEvent<'_>) + Send + Sync + 'static,
+{
+    fn report(&self, event: &DiagnosticEvent<'_>) {
+        self(event);
+    }
+}
+
+/// `sink.report(event)` を panic 境界の内側で呼ぶ非公開ヘルパ。
+///
+/// 利用者が登録した [`Diagnostics`] 実装が panic しても、accept ループ
+/// （`BoundServer::run_until`）や rebind の背景 drain タスク
+/// （`spawn_generation_drain`）へ伝播させない（`.claude/rules/coding-rust.md`
+/// 「panic はライブラリ境界を越えさせない」）。`panic = "abort"` ビルドでは
+/// `catch_unwind` が捕捉できないため、この保護は `unwind` パニック戦略限定の
+/// 多層防御であり、[`Diagnostics::report`] の「panic しない」契約を代替
+/// しない。
+pub(crate) fn emit(sink: &dyn Diagnostics, event: DiagnosticEvent<'_>) {
+    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| sink.report(&event)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn accept_failed_display_matches_legacy_wording() {
+        let err = io::Error::other("boom");
+        let event = DiagnosticEvent::AcceptFailed { error: &err };
+        assert_eq!(event.to_string(), "accept に失敗しました: boom");
+    }
+
+    #[test]
+    fn tcp_nodelay_failed_display_matches_legacy_wording() {
+        let err = io::Error::other("nodelay boom");
+        let event = DiagnosticEvent::TcpNodelayFailed { error: &err };
+        assert_eq!(
+            event.to_string(),
+            "TCP_NODELAY の設定に失敗しました（接続は継続します）: nodelay boom"
+        );
+    }
+
+    #[test]
+    fn shutdown_grace_exceeded_display_matches_legacy_wording() {
+        let event = DiagnosticEvent::ShutdownGraceExceeded {
+            grace: Duration::from_millis(100),
+        };
+        assert_eq!(
+            event.to_string(),
+            "graceful shutdown の猶予期間（100ms）を超過したため残存接続を強制クローズします"
+        );
+    }
+
+    #[test]
+    fn rebind_drain_grace_exceeded_display_matches_legacy_wording() {
+        let event = DiagnosticEvent::RebindDrainGraceExceeded {
+            grace: Duration::from_millis(250),
+        };
+        assert_eq!(
+            event.to_string(),
+            "rebind による旧世代接続の drain が猶予期間（250ms）を超過したため強制クローズします"
+        );
+    }
+
+    #[test]
+    fn stderr_diagnostics_format_line_has_fixed_prefix() {
+        let event = DiagnosticEvent::ShutdownGraceExceeded {
+            grace: Duration::from_secs(1),
+        };
+        assert_eq!(
+            StderrDiagnostics::format_line(&event),
+            "fandhe_backend_core::server: graceful shutdown の猶予期間（1s）を超過したため残存接続を強制クローズします"
+        );
+    }
+
+    #[test]
+    fn closure_sink_receives_events() {
+        let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let received_for_closure = Arc::clone(&received);
+        let sink: Box<dyn Diagnostics> = Box::new(move |event: &DiagnosticEvent<'_>| {
+            received_for_closure.lock().unwrap().push(event.to_string());
+        });
+
+        let err = io::Error::other("x");
+        emit(&*sink, DiagnosticEvent::AcceptFailed { error: &err });
+
+        assert_eq!(received.lock().unwrap().len(), 1);
+        assert_eq!(received.lock().unwrap()[0], "accept に失敗しました: x");
+    }
+
+    #[test]
+    fn emit_does_not_propagate_panicking_sink() {
+        struct PanicSink;
+        impl Diagnostics for PanicSink {
+            fn report(&self, _event: &DiagnosticEvent<'_>) {
+                panic!("sink panicked");
+            }
+        }
+
+        let err = io::Error::other("y");
+        // panic がここまで伝播しなければ成功（`catch_unwind` が境界を守っている）。
+        emit(&PanicSink, DiagnosticEvent::AcceptFailed { error: &err });
+    }
+}

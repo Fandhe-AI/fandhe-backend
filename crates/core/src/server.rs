@@ -409,6 +409,12 @@ pub struct Server {
     /// graceful shutdown（[`BoundServer::run_until`]）の in-flight 完了待ち
     /// 上限（イシュー #313）。既定は `DEFAULT_SHUTDOWN_GRACE_PERIOD`。
     shutdown_grace_period: Duration,
+    /// ライブラリ内部の実行時診断（accept 失敗・grace 超過強制クローズ等）の
+    /// 送信先（イシュー #720）。既定は [`crate::diagnostics::StderrDiagnostics`]
+    /// （現行の `eprintln!` 出力と完全互換）。`Arc` で保持するのは、
+    /// `spawn_generation_drain`（detached `tokio::spawn` タスク）へ `Server`
+    /// 全体ではなくシンクだけを安価に `clone` して渡すため。
+    diagnostics: std::sync::Arc<dyn crate::diagnostics::Diagnostics>,
     /// `webrtc-proxy` feature（TASK-2.1 / #18）有効時のみ意味を持つ設定。
     /// `crate::plugin::try_intercept` がこのフィールドを参照して `POST
     /// /rtc/offer` を上流へ中継するかどうかを判定する。feature 無効時は
@@ -507,6 +513,7 @@ impl Default for Server {
             read_timeout: DEFAULT_READ_TIMEOUT,
             keep_alive_enabled: true,
             shutdown_grace_period: DEFAULT_SHUTDOWN_GRACE_PERIOD,
+            diagnostics: std::sync::Arc::new(crate::diagnostics::StderrDiagnostics),
             #[cfg(feature = "webrtc-proxy")]
             webrtc_proxy_config: None,
             #[cfg(feature = "webrtc")]
@@ -697,6 +704,35 @@ impl Server {
     #[must_use]
     pub fn shutdown_grace_period(mut self, grace: Duration) -> Self {
         self.shutdown_grace_period = grace;
+        self
+    }
+
+    /// ライブラリ内部の実行時診断（accept 失敗・TCP_NODELAY 設定失敗・
+    /// graceful shutdown / rebind の grace 超過強制クローズ）の送信先を
+    /// 差し替える（イシュー #720）。
+    ///
+    /// 未登録時（既定）は [`crate::diagnostics::StderrDiagnostics`] が使われ、
+    /// 現行の `eprintln!` 出力と完全互換の文言・接頭辞・出力先（stderr）を
+    /// 維持する。複数回呼ぶと最後の登録が有効になる（置き換え式、単一
+    /// シンクのみ保持）。
+    ///
+    /// 対象イベントの一覧・呼ばれるスレッド・タスクの文脈は
+    /// [`crate::diagnostics::DiagnosticEvent`] を参照。`sink` の `report` は
+    /// [`BoundServer::run_until`] の accept ループ・rebind の背景 drain タスク
+    /// 上で同期的に呼ばれるため、ブロッキング I/O を行ってはならない
+    /// （[`crate::diagnostics::Diagnostics`] の契約）。
+    ///
+    /// ```
+    /// use fandhe_backend_core::DiagnosticEvent;
+    /// use fandhe_backend_core::server::Server;
+    ///
+    /// // 出力を抑止する。
+    /// let server = Server::new().diagnostics(|_event: &DiagnosticEvent<'_>| {});
+    /// let _ = server;
+    /// ```
+    #[must_use]
+    pub fn diagnostics(mut self, sink: impl crate::diagnostics::Diagnostics) -> Self {
+        self.diagnostics = std::sync::Arc::new(sink);
         self
     }
 
@@ -1569,6 +1605,7 @@ fn spawn_generation_drain(
     old_cancel: crate::plugin::GenerationCancel,
     session_drain: crate::plugin::SessionDrain,
     grace: Duration,
+    diagnostics: std::sync::Arc<dyn crate::diagnostics::Diagnostics>,
 ) {
     tokio::spawn(async move {
         old_cancel.fire();
@@ -1578,10 +1615,14 @@ fn spawn_generation_drain(
         })
         .await;
         if drained.is_err() {
-            eprintln!(
-                "fandhe_backend_core::server: rebind による旧世代接続の drain が猶予期間（{grace:?}）を超過したため強制クローズします"
-            );
+            // 強制クローズ（フェイルクローズ）を確定させてから通知する
+            // （イシュー #720。利用側シンクの異常・遅延が有界時間での
+            // クローズを妨げないようにする）。
             old_join_set.shutdown().await;
+            crate::diagnostics::emit(
+                &*diagnostics,
+                crate::diagnostics::DiagnosticEvent::RebindDrainGraceExceeded { grace },
+            );
         }
     });
 }
@@ -1616,6 +1657,7 @@ async fn drain_listener_backlog(
     listener: &TcpListener,
     connection_limit: &Arc<Semaphore>,
     max: usize,
+    diagnostics: &dyn crate::diagnostics::Diagnostics,
 ) -> Vec<(TcpStream, SocketAddr, OwnedSemaphorePermit)> {
     let mut drained = Vec::new();
     for _ in 0..max {
@@ -1629,7 +1671,7 @@ async fn drain_listener_backlog(
                 // 旧世代（rebind 前）バックログ経由の接続も、通常 accept 経路
                 // （`run_until` の主ループ）と同一の TCP_NODELAY 契約を適用する
                 // （イシュー #587、`configure_accepted_stream` の doc を参照）。
-                configure_accepted_stream(&stream);
+                configure_accepted_stream(&stream, diagnostics);
                 drained.push((stream, peer_addr, permit));
             }
             // Pending = backlog 空。Err（ECONNABORTED 等）も fail-closed で
@@ -1652,10 +1694,14 @@ async fn drain_listener_backlog(
 /// フェイルオープン方針を採る（`.claude/rules/security.md` の「安全性に関わる
 /// 判定はフェイルクローズ、最適化はフェイルオープン」に整合。既存の同時接続数
 /// 上限・accept エラーバックオフは本関数の影響を受けない）。
-fn configure_accepted_stream(stream: &TcpStream) {
+fn configure_accepted_stream(
+    stream: &TcpStream,
+    diagnostics: &dyn crate::diagnostics::Diagnostics,
+) {
     if let Err(err) = fandhe_backend_http::socket::configure_stream(stream) {
-        eprintln!(
-            "fandhe_backend_core::server: TCP_NODELAY の設定に失敗しました（接続は継続します）: {err}"
+        crate::diagnostics::emit(
+            diagnostics,
+            crate::diagnostics::DiagnosticEvent::TcpNodelayFailed { error: &err },
         );
     }
 }
@@ -1958,14 +2004,17 @@ impl BoundServer {
                     Ok((stream, peer_addr)) => {
                         // 主 accept 経路（イシュー #587。`configure_accepted_stream`
                         // の doc・rebind backlog 経路の同種呼び出しを参照）。
-                        configure_accepted_stream(&stream);
+                        configure_accepted_stream(&stream, &*server.diagnostics);
                         Some((stream, peer_addr, permit))
                     }
                     Err(err) => {
                         // permit はここで（スコープを抜けると同時に）解放され、
                         // 次のループ先頭で再取得される。`run_until` の doc を参照。
                         drop(permit);
-                        eprintln!("fandhe_backend_core::server: accept に失敗しました: {err}");
+                        crate::diagnostics::emit(
+                            &*server.diagnostics,
+                            crate::diagnostics::DiagnosticEvent::AcceptFailed { error: &err },
+                        );
                         tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                         None
                     }
@@ -2008,6 +2057,7 @@ impl BoundServer {
                         &listener,
                         &connection_limit,
                         REBIND_BACKLOG_DRAIN_LIMIT,
+                        &*server.diagnostics,
                     )
                     .await
                     {
@@ -2044,6 +2094,7 @@ impl BoundServer {
                         old_cancel,
                         session_drain.clone(),
                         server.shutdown_grace_period,
+                        Arc::clone(&server.diagnostics),
                     );
                     // 4. 新世代用のフラグを用意する。
                     current_shutdown_flag = Arc::new(AtomicBool::new(false));
@@ -2120,12 +2171,16 @@ impl BoundServer {
                 // grace 超過、またはセマフォ側の異常（`close()` 経路がなく
                 // 通常発生しない）。いずれもハング防止のため強制クローズへ
                 // 倒す（フェイルクローズ、受け入れ条件「上限時間・超過時
-                // 強制クローズ」）。
-                eprintln!(
-                    "fandhe_backend_core::server: graceful shutdown の猶予期間（{:?}）を超過したため残存接続を強制クローズします",
-                    server.shutdown_grace_period
-                );
+                // 強制クローズ」）。強制クローズを先に確定させてから通知する
+                // （イシュー #720。利用側シンクの異常・遅延が有界時間での
+                // クローズを妨げないようにする）。
                 join_set.shutdown().await;
+                crate::diagnostics::emit(
+                    &*server.diagnostics,
+                    crate::diagnostics::DiagnosticEvent::ShutdownGraceExceeded {
+                        grace: server.shutdown_grace_period,
+                    },
+                );
             }
         }
 
@@ -4807,7 +4862,13 @@ GET /c HTTP/1.1\r\n\r\n",
         let listener = listener_with_backlog(3).await;
         let connection_limit = Arc::new(Semaphore::new(10));
 
-        let drained = drain_listener_backlog(&listener, &connection_limit, 10).await;
+        let drained = drain_listener_backlog(
+            &listener,
+            &connection_limit,
+            10,
+            &crate::diagnostics::StderrDiagnostics,
+        )
+        .await;
 
         assert_eq!(drained.len(), 3);
         // 3 件分の permit が消費されたまま drained 側が保持している
@@ -4833,7 +4894,13 @@ GET /c HTTP/1.1\r\n\r\n",
         // （同時接続数上限を迂回しない fail-closed 契約）。
         let connection_limit = Arc::new(Semaphore::new(1));
 
-        let drained = drain_listener_backlog(&listener, &connection_limit, 10).await;
+        let drained = drain_listener_backlog(
+            &listener,
+            &connection_limit,
+            10,
+            &crate::diagnostics::StderrDiagnostics,
+        )
+        .await;
 
         assert_eq!(drained.len(), 1);
         assert_eq!(connection_limit.available_permits(), 0);
@@ -4846,7 +4913,13 @@ GET /c HTTP/1.1\r\n\r\n",
 
         // `max=1` により 2 件目の滞留接続は回収されない（件数上限による
         // 有界性、`REBIND_BACKLOG_DRAIN_LIMIT` の doc を参照）。
-        let drained = drain_listener_backlog(&listener, &connection_limit, 1).await;
+        let drained = drain_listener_backlog(
+            &listener,
+            &connection_limit,
+            1,
+            &crate::diagnostics::StderrDiagnostics,
+        )
+        .await;
 
         assert_eq!(drained.len(), 1);
         assert_eq!(connection_limit.available_permits(), 9);
@@ -4864,7 +4937,12 @@ GET /c HTTP/1.1\r\n\r\n",
         // 契約、`drain_listener_backlog` の doc「有界性」を参照）。
         let drained = tokio::time::timeout(
             Duration::from_millis(200),
-            drain_listener_backlog(&listener, &connection_limit, 10),
+            drain_listener_backlog(
+                &listener,
+                &connection_limit,
+                10,
+                &crate::diagnostics::StderrDiagnostics,
+            ),
         )
         .await
         .expect("backlog 空でもタイムアウトせず即座に返る");
@@ -4887,7 +4965,7 @@ GET /c HTTP/1.1\r\n\r\n",
 
         let accept_task = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept は成功する");
-            configure_accepted_stream(&stream);
+            configure_accepted_stream(&stream, &crate::diagnostics::StderrDiagnostics);
             assert!(
                 stream.nodelay().expect("nodelay() は成功する"),
                 "configure_accepted_stream 適用後は TCP_NODELAY が有効であるべき"

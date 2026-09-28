@@ -226,3 +226,10 @@
   記述。バージョン方針は非破壊追加のみのため 0.4.2（先例: #671/#675/#676）。設計
   のみでコード変更なし、実装は #704（接続コンテキスト）・#705（`CloseReason`/
   `on_close`）・#706（送信キュー消化）・#707（e2e）へ引き渡す）
+- [`diagnostics-sink.md`](./diagnostics-sink.md): ライブラリ内部の実行時診断
+  （accept 失敗・TCP_NODELAY 設定失敗・graceful shutdown / rebind の grace
+  超過強制クローズの 4 箇所）を `eprintln!` 直書きから利用側で差し替え可能な
+  診断シンク `Server::diagnostics` へ移行した設計（イシュー #720。`tracing` /
+  `log` への外部依存追加案と比較し、新規依存ゼロの trait 登録口方式を採用した
+  理由・panic 境界・grace 超過 2 箇所での通知順序変更（強制クローズ確定後に
+  通知）・将来の `tracing` 転送シンク同梱案を記述）
