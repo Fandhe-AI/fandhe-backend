@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::Poll;
 
+use fandhe_backend_http::request::RequestHead;
 use futures_util::future::BoxFuture;
 use tokio::sync::{mpsc, watch};
 
@@ -728,6 +729,86 @@ pub trait WsMessageHandler: Send + Sync + 'static {
     }
 }
 
+/// 接続コンテキストへ保持するヘッダ値 1 件あたりの上限バイト数
+/// （イシュー #717、親 #715）。`Host` / `Origin` / `User-Agent` の
+/// いずれにも適用する。上限超過の値は**切り詰めずに `None`** にする
+/// （フェイルクローズ）。切り詰めた場合、後段で `Host` / `Origin` を
+/// 許可リスト照合する利用者コードが部分一致でバイパスされうるため
+/// （`docs/design/ws-connection-context-and-close.md` 16 節参照）。
+///
+/// 許可リスト（接続単位の付随情報が保持する固定 5 項目）と本上限の
+/// 組み合わせにより、1 接続あたりの保持量は最大で本定数 3 個分 +
+/// [`MAX_CONTEXT_QUERY_BYTES`] 程度（約 5 KiB）に有界化される。
+/// `fandhe_backend_http::request::MAX_HEADER_BYTES`（ヘッダ全体のパーサ
+/// 上限、16 KiB）より十分小さく、長寿命接続が多数あっても常駐メモリを
+/// 有界に保つ。
+pub const MAX_CONTEXT_HEADER_VALUE_BYTES: usize = 1024;
+
+/// 接続コンテキストへ保持する query 文字列の上限バイト数（イシュー #717）。
+/// 契約は [`MAX_CONTEXT_HEADER_VALUE_BYTES`] と同一（超過時は切り詰めず
+/// `None`）。
+pub const MAX_CONTEXT_QUERY_BYTES: usize = 2048;
+
+/// `RequestHead` から抽出した接続単位の付随情報（イシュー #717、親 #715）。
+///
+/// 固定の許可リスト方式で次の 5 項目のみを保持する。任意の名前でヘッダを
+/// 引ける汎用アクセサは意図的に設けない（保持量の上限を構造で担保する
+/// ため）。
+///
+/// - `peer_addr`: 接続元の実 peer address
+/// - `host` / `origin` / `user_agent`: 対応するヘッダ値（大文字小文字を
+///   無視した [`RequestHead::header`] と同一の検索意味論。重複ヘッダは
+///   先頭値のみを保持する）
+/// - `query`: [`RequestHead::query`] の値をそのまま複製した非デコード文字列
+///
+/// `crate::handle_upgrade_with_peer_addr` が 101 応答送出成功後に一度だけ
+/// [`Self::from_head`] で構築し、`Arc` として [`WsOpenContext`] /
+/// [`WsConnContext`] の双方へ共有する（2 回コピーしない）。ハンドシェイク
+/// 失敗・101 送出前キャンセルの経路では構築されない（`on_open` と同じ
+/// フェイルクローズ対称性）。
+///
+/// `pub(crate)`: 本イシュー #717 と将来のハンドシェイク受理判定フック
+/// （イシュー #716）の双方から再利用する内部表現であり、公開 API 面には
+/// 出さない。利用者は [`WsOpenContext`] / [`WsConnContext`] のアクセサ
+/// 経由でのみ値を参照する。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ConnRequestInfo {
+    peer_addr: Option<SocketAddr>,
+    host: Option<Box<str>>,
+    origin: Option<Box<str>>,
+    user_agent: Option<Box<str>>,
+    query: Option<Box<str>>,
+}
+
+impl ConnRequestInfo {
+    /// `head`・`peer_addr` から許可リスト 5 項目を抽出する。
+    ///
+    /// 上限（[`MAX_CONTEXT_HEADER_VALUE_BYTES`] / [`MAX_CONTEXT_QUERY_BYTES`]）
+    /// を超える値は切り詰めずに `None` にする（フェイルクローズ、型 doc
+    /// 参照）。ヘッダが存在しない・query が無い（`?` なし）場合も `None`。
+    pub(crate) fn from_head(head: &RequestHead, peer_addr: Option<SocketAddr>) -> Self {
+        Self {
+            peer_addr,
+            host: bounded_header_value(head, "host"),
+            origin: bounded_header_value(head, "origin"),
+            user_agent: bounded_header_value(head, "user-agent"),
+            query: head
+                .query()
+                .filter(|q| q.len() <= MAX_CONTEXT_QUERY_BYTES)
+                .map(Box::from),
+        }
+    }
+}
+
+/// `name` ヘッダの値を [`MAX_CONTEXT_HEADER_VALUE_BYTES`] 以内でのみ複製する
+/// （[`ConnRequestInfo::from_head`] の 3 項目（Host/Origin/User-Agent）で
+/// 共有するヘルパ）。
+fn bounded_header_value(head: &RequestHead, name: &str) -> Option<Box<str>> {
+    head.header(name)
+        .filter(|v| v.len() <= MAX_CONTEXT_HEADER_VALUE_BYTES)
+        .map(Box::from)
+}
+
 /// `on_open` に渡す接続確立コンテキスト（イシュー #671、親 #669）。
 ///
 /// 非公開フィールド + アクセサという構成（`crates/core/src/extension.rs` の
@@ -740,7 +821,10 @@ pub trait WsMessageHandler: Send + Sync + 'static {
 /// と同一の接続識別子を `on_open` の時点から観測できるようにした。イシュー
 /// #728 で [`Self::peer_addr`] を追加し、コアが accept したソケットの実
 /// peer address（`crate::handle_upgrade_with_peer_addr` 経由）を `on_open`
-/// から観測できるようにした。
+/// から観測できるようにした。イシュー #717 で `peer_addr` フィールドを
+/// 接続単位の付随情報（内部型 `ConnRequestInfo`）へ展開し、
+/// [`Self::host`] / [`Self::origin`] / [`Self::user_agent`] /
+/// [`Self::query`] を追加した（[`WsConnContext`] と `Arc` 共有）。
 #[non_exhaustive]
 pub struct WsOpenContext {
     conn_id: WsConnId,
@@ -756,32 +840,33 @@ pub struct WsOpenContext {
     /// `crate::pattern::MAX_SEGMENT_BYTES` で有界、新たな DoS 懸念には
     /// ならない）。
     params: Vec<(String, String)>,
-    /// 接続元の実 peer address（イシュー #728）。コア
-    /// （`fandhe-backend-core`）が accept したソケットから取得した値を
-    /// `crate::handle_upgrade_with_peer_addr` 経由でそのまま運ぶ。
-    /// `tokio::io::duplex` 等の非ソケット経路、または旧 API
-    /// `crate::handle_upgrade`（`None` 固定で委譲）からの呼び出しでは
+    /// 接続元アドレス・主要リクエストヘッダ・query（イシュー #717）。
+    /// `crate::handle_upgrade_with_peer_addr` が 101 応答送出成功後に
+    /// 一度だけ構築し、[`WsConnContext`] と共有する。`tokio::io::duplex`
+    /// 等の非ソケット経路、または旧 API `crate::handle_upgrade`（`None`
+    /// 固定で委譲）からの呼び出しでは
     /// 常に `None`（`crates/core/src/extension.rs` の `GateContext::
     /// peer_addr` と同じフェイルクローズ契約、`docs/design/
     /// gate-peer-addr.md` 参照）。
-    peer_addr: Option<SocketAddr>,
+    info: Arc<ConnRequestInfo>,
 }
 
 impl WsOpenContext {
-    /// `conn_id`・`sender`・抽出済みパスパラメータ・接続元アドレスを
+    /// `conn_id`・`sender`・抽出済みパスパラメータ・接続単位の付随情報を
     /// 包んだコンテキストを構築する（`pub(crate)`、`crate::handle_upgrade_with_peer_addr`
-    /// からのみ呼ばれる）。
+    /// からのみ呼ばれる）。`info` は [`WsConnContext`] と共有する同一の
+    /// `Arc`（イシュー #717、2 回コピーしないための契約）。
     pub(crate) fn new(
         conn_id: WsConnId,
         sender: WsSender,
         params: Vec<(String, String)>,
-        peer_addr: Option<SocketAddr>,
+        info: Arc<ConnRequestInfo>,
     ) -> Self {
         Self {
             conn_id,
             sender,
             params,
-            peer_addr,
+            info,
         }
     }
 
@@ -926,18 +1011,71 @@ impl WsOpenContext {
     /// 拒否側に倒すこと）。
     #[must_use]
     pub fn peer_addr(&self) -> Option<SocketAddr> {
-        self.peer_addr
+        self.info.peer_addr
+    }
+
+    /// `Host` ヘッダの値を返す（イシュー #717）。
+    ///
+    /// 大文字小文字を無視した [`fandhe_backend_http::request::RequestHead::header`]
+    /// と同一の意味論で検索し、重複ヘッダは先頭値のみを返す（重複 `Host`
+    /// の受理・拒否判定はハンドシェイク受理判定フック側（イシュー #716）の
+    /// 責務であり、本アクセサは観測用の値を返すのみ）。
+    ///
+    /// # セキュリティに関する注意
+    ///
+    /// `Host` はクライアントの申告値であり、ブラウザ以外のクライアントなら
+    /// 任意の値に偽装できる。認可判定の唯一の根拠にしないこと。
+    /// [`MAX_CONTEXT_HEADER_VALUE_BYTES`] 超過時・ヘッダ非送信時は `None`
+    /// になる（切り詰めない。フェイルクローズ側へ倒すこと）。
+    #[must_use]
+    pub fn host(&self) -> Option<&str> {
+        self.info.host.as_deref()
+    }
+
+    /// `Origin` ヘッダの値を返す（イシュー #717）。検索意味論・上限・
+    /// 切り詰めない契約は [`Self::host`] と同一。
+    ///
+    /// # セキュリティに関する注意
+    ///
+    /// `Origin` はクライアントの申告値であり偽装できる。CORS 相当の
+    /// 許可リスト照合に使う場合、値が `None` のときは拒否側に倒すこと。
+    #[must_use]
+    pub fn origin(&self) -> Option<&str> {
+        self.info.origin.as_deref()
+    }
+
+    /// `User-Agent` ヘッダの値を返す（イシュー #717）。検索意味論・上限・
+    /// 切り詰めない契約は [`Self::host`] と同一。クライアントの申告値で
+    /// あり偽装できるため、認可判定の根拠にしないこと。
+    #[must_use]
+    pub fn user_agent(&self) -> Option<&str> {
+        self.info.user_agent.as_deref()
+    }
+
+    /// リクエストの query 文字列を返す（イシュー #717）。
+    ///
+    /// [`fandhe_backend_http::request::RequestHead::query`] と同一の
+    /// 非デコード契約（% デコード・key-value 分解を行わない生文字列）で、
+    /// `?` が無ければ `None`、`?` のみ（値が空）なら `Some("")` を返す。
+    /// [`MAX_CONTEXT_QUERY_BYTES`] 超過時は切り詰めず `None` になる。
+    ///
+    /// query はトークン等の機密情報を含みうる。ログへ出力する場合は
+    /// 利用者側でマスクすること（`.claude/rules/security.md`）。
+    #[must_use]
+    pub fn query(&self) -> Option<&str> {
+        self.info.query.as_deref()
     }
 }
 
 impl fmt::Debug for WsOpenContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // パスパラメータ・接続元アドレスは Debug 出力に含めない
-        // （`.claude/rules/security.md`「ログに PII を出さない」）。
-        // パスパラメータは攻撃者が URL セグメントとして自由に制御できる
+        // パスパラメータ・`info`（接続元アドレス・Host/Origin/User-Agent・
+        // query）は Debug 出力に含めない（`.claude/rules/security.md`
+        // 「ログに PII を出さない」）。パスパラメータ・Host・Origin・
+        // User-Agent・query は攻撃者（クライアント）が自由に制御できる
         // 入力であり、接続元アドレスは偽装できないが PII に近い情報の
         // ため、いずれもログ・診断出力への機密混入防止の対象とする
-        // （イシュー #728。`crates/core/src/extension.rs` の
+        // （イシュー #728・#717。`crates/core/src/extension.rs` の
         // `GateContext`（`derive(Debug)` で peer_addr を出力）とは異なる
         // 判断だが、本型は用途がログ出力に近い診断目的のため安全側に倒す）。
         // conn_id はサーバー側の単調カウンタ発行でありクライアント入力に
@@ -968,6 +1106,11 @@ impl fmt::Debug for WsOpenContext {
 /// しても、セッションが終了するまで outbound チャネルの送信側は閉じない
 /// （`crate::session` モジュール doc・
 /// `docs/design/ws-connection-context-and-close.md` 5 節を参照）。
+///
+/// イシュー #717 で `info: Arc<ConnRequestInfo>` を追加し、`on_open` 側の
+/// [`WsOpenContext`] と同一の接続元アドレス・主要リクエストヘッダ・query を
+/// `on_message_with_ctx` / `on_close` からも参照可能にした（同じ `Arc` を
+/// 共有、2 回コピーしない）。
 #[non_exhaustive]
 pub struct WsConnContext {
     conn_id: WsConnId,
@@ -976,16 +1119,27 @@ pub struct WsConnContext {
     /// 非デコード契約・DoS 上限（`crate::pattern::MAX_PATTERN_SEGMENTS` ×
     /// `crate::pattern::MAX_SEGMENT_BYTES`）を共有する。
     params: Vec<(String, String)>,
+    /// 接続元アドレス・主要リクエストヘッダ・query（イシュー #717）。
+    /// [`WsOpenContext`] と同一の `Arc<ConnRequestInfo>` を共有する。
+    info: Arc<ConnRequestInfo>,
 }
 
 impl WsConnContext {
-    /// `conn_id`・`sender`・抽出済みパスパラメータを包んだコンテキストを
-    /// 構築する（`pub(crate)`、`crate::handle_upgrade` からのみ呼ばれる）。
-    pub(crate) fn new(conn_id: WsConnId, sender: WsSender, params: Vec<(String, String)>) -> Self {
+    /// `conn_id`・`sender`・抽出済みパスパラメータ・接続単位の付随情報を
+    /// 包んだコンテキストを構築する（`pub(crate)`、`crate::handle_upgrade`
+    /// からのみ呼ばれる）。`info` は [`WsOpenContext`] と共有する同一の
+    /// `Arc`（イシュー #717）。
+    pub(crate) fn new(
+        conn_id: WsConnId,
+        sender: WsSender,
+        params: Vec<(String, String)>,
+        info: Arc<ConnRequestInfo>,
+    ) -> Self {
         Self {
             conn_id,
             sender,
             params,
+            info,
         }
     }
 
@@ -1020,13 +1174,50 @@ impl WsConnContext {
     pub fn params(&self) -> impl Iterator<Item = (&str, &str)> {
         self.params.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
+
+    /// 接続元の実 peer address を返す（イシュー #717）。契約は
+    /// [`WsOpenContext::peer_addr`] と同一（同じ `Arc` を共有するため常に
+    /// 同じ値になる）。
+    #[must_use]
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        self.info.peer_addr
+    }
+
+    /// `Host` ヘッダの値を返す（イシュー #717）。契約は
+    /// [`WsOpenContext::host`] と同一。
+    #[must_use]
+    pub fn host(&self) -> Option<&str> {
+        self.info.host.as_deref()
+    }
+
+    /// `Origin` ヘッダの値を返す（イシュー #717）。契約は
+    /// [`WsOpenContext::origin`] と同一。
+    #[must_use]
+    pub fn origin(&self) -> Option<&str> {
+        self.info.origin.as_deref()
+    }
+
+    /// `User-Agent` ヘッダの値を返す（イシュー #717）。契約は
+    /// [`WsOpenContext::user_agent`] と同一。
+    #[must_use]
+    pub fn user_agent(&self) -> Option<&str> {
+        self.info.user_agent.as_deref()
+    }
+
+    /// リクエストの query 文字列を返す（イシュー #717）。契約は
+    /// [`WsOpenContext::query`] と同一。
+    #[must_use]
+    pub fn query(&self) -> Option<&str> {
+        self.info.query.as_deref()
+    }
 }
 
 impl fmt::Debug for WsConnContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // WsOpenContext::Debug と同一のセキュリティ根拠: パスパラメータは
-        // 攻撃者制御下の URL セグメントのため出力しない。conn_id はサーバー
-        // 側発行のため出力する。
+        // WsOpenContext::Debug と同一のセキュリティ根拠: パスパラメータ・
+        // `info`（接続元アドレス・Host/Origin/User-Agent・query）は
+        // 出力しない（イシュー #717）。conn_id はサーバー側発行のため
+        // 出力する。
         f.debug_struct("WsConnContext")
             .field("conn_id", &self.conn_id)
             .finish_non_exhaustive()
@@ -2293,7 +2484,7 @@ mod tests {
             WsConnId::next(),
             sender,
             Vec::new(),
-            None,
+            Arc::new(ConnRequestInfo::default()),
         ));
     }
 
@@ -2305,7 +2496,12 @@ mod tests {
     async fn default_on_close_is_noop() {
         let handler = UppercaseHandler;
         let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
-        let ctx = WsConnContext::new(WsConnId::next(), sender, Vec::new());
+        let ctx = WsConnContext::new(
+            WsConnId::next(),
+            sender,
+            Vec::new(),
+            Arc::new(ConnRequestInfo::default()),
+        );
         // no-op であることの確認は「panic しないこと」のみで、戻り値もない。
         handler.on_close(&ctx, CloseReason::ClientClose);
     }
@@ -2316,7 +2512,12 @@ mod tests {
     #[tokio::test]
     async fn open_context_sender_clone_delivers_message() {
         let (sender, mut rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
-        let ctx = WsOpenContext::new(WsConnId::next(), sender, Vec::new(), None);
+        let ctx = WsOpenContext::new(
+            WsConnId::next(),
+            sender,
+            Vec::new(),
+            Arc::new(ConnRequestInfo::default()),
+        );
         let cloned = ctx.sender().clone();
         cloned
             .send(WsMessage::Text("hi".to_string()))
@@ -2335,7 +2536,12 @@ mod tests {
     #[tokio::test]
     async fn open_context_without_params_returns_none_and_empty_iter() {
         let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
-        let ctx = WsOpenContext::new(WsConnId::next(), sender, Vec::new(), None);
+        let ctx = WsOpenContext::new(
+            WsConnId::next(),
+            sender,
+            Vec::new(),
+            Arc::new(ConnRequestInfo::default()),
+        );
         assert_eq!(ctx.param("id"), None);
         assert_eq!(ctx.params().count(), 0);
     }
@@ -2349,7 +2555,12 @@ mod tests {
             ("id".to_string(), "XYZ".to_string()),
             ("post_id".to_string(), "42".to_string()),
         ];
-        let ctx = WsOpenContext::new(WsConnId::next(), sender, params, None);
+        let ctx = WsOpenContext::new(
+            WsConnId::next(),
+            sender,
+            params,
+            Arc::new(ConnRequestInfo::default()),
+        );
         assert_eq!(ctx.param("id"), Some("XYZ"));
         assert_eq!(ctx.param("post_id"), Some("42"));
         assert_eq!(ctx.param("missing"), None);
@@ -2393,7 +2604,12 @@ mod tests {
         let (sender, mut rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
         let conn_id = WsConnId::next();
         let params = vec![("id".to_string(), "XYZ".to_string())];
-        let ctx = WsConnContext::new(conn_id, sender, params);
+        let ctx = WsConnContext::new(
+            conn_id,
+            sender,
+            params,
+            Arc::new(ConnRequestInfo::default()),
+        );
 
         assert_eq!(ctx.conn_id(), conn_id);
         assert_eq!(ctx.param("id"), Some("XYZ"));
@@ -2425,6 +2641,7 @@ mod tests {
             WsConnId::next(),
             sender,
             vec![("token".to_string(), SECRET.to_string())],
+            Arc::new(ConnRequestInfo::default()),
         );
         let conn_debug = format!("{conn_ctx:?}");
         assert!(
@@ -2437,7 +2654,7 @@ mod tests {
             WsConnId::next(),
             sender2,
             vec![("token".to_string(), SECRET.to_string())],
-            None,
+            Arc::new(ConnRequestInfo::default()),
         );
         let open_debug = format!("{open_ctx:?}");
         assert!(
@@ -2453,7 +2670,11 @@ mod tests {
     async fn open_context_debug_redacts_peer_addr() {
         let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
         let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
-        let open_ctx = WsOpenContext::new(WsConnId::next(), sender, Vec::new(), Some(addr));
+        let info = Arc::new(ConnRequestInfo {
+            peer_addr: Some(addr),
+            ..Default::default()
+        });
+        let open_ctx = WsOpenContext::new(WsConnId::next(), sender, Vec::new(), info);
         let open_debug = format!("{open_ctx:?}");
         assert!(
             !open_debug.contains("12345"),
@@ -2468,7 +2689,12 @@ mod tests {
     async fn default_on_message_with_ctx_delegates_to_on_message() {
         let handler = UppercaseHandler;
         let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
-        let ctx = WsConnContext::new(WsConnId::next(), sender, Vec::new());
+        let ctx = WsConnContext::new(
+            WsConnId::next(),
+            sender,
+            Vec::new(),
+            Arc::new(ConnRequestInfo::default()),
+        );
 
         let via_ctx = handler
             .on_message_with_ctx(&ctx, WsMessage::Text("hi".to_string()))
@@ -3071,5 +3297,219 @@ mod tests {
              indefinitely (PR #736 review finding)",
         );
         assert_eq!(outcome, Err(WsSendError));
+    }
+
+    // --- イシュー #717: ConnRequestInfo / 接続コンテキストへのリクエスト
+    // --- 情報展開のユニットテスト ---
+
+    /// テスト用に `RequestHead` を構築する（`buf` は完全なリクエストヘッド
+    /// である前提。`parse_request_head` は `ParseOutcome::Complete` を返す
+    /// 前提で `unreachable!()` する）。
+    fn head_from(buf: &[u8]) -> RequestHead {
+        use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+        match parse_request_head(buf).unwrap() {
+            ParseOutcome::Complete { head, .. } => head,
+            ParseOutcome::Incomplete => unreachable!("test fixture must be a complete head"),
+        }
+    }
+
+    /// 受け入れ基準 1: Host / Origin / User-Agent / query がすべて揃った
+    /// リクエストから正しく抽出できること。
+    #[tokio::test]
+    async fn from_head_extracts_all_present_fields() {
+        let head = head_from(
+            b"GET /ws?token=abc HTTP/1.1\r\n\
+              Host: example.com\r\n\
+              Origin: https://example.com\r\n\
+              User-Agent: test-agent/1.0\r\n\
+              \r\n",
+        );
+        let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let info = ConnRequestInfo::from_head(&head, Some(addr));
+        assert_eq!(info.peer_addr, Some(addr));
+        assert_eq!(info.host.as_deref(), Some("example.com"));
+        assert_eq!(info.origin.as_deref(), Some("https://example.com"));
+        assert_eq!(info.user_agent.as_deref(), Some("test-agent/1.0"));
+        assert_eq!(info.query.as_deref(), Some("token=abc"));
+    }
+
+    /// ヘッダ・query いずれも無いリクエストでは全項目が `None` になること。
+    #[tokio::test]
+    async fn from_head_returns_none_for_absent_fields() {
+        let head = head_from(b"GET /ws HTTP/1.1\r\n\r\n");
+        let info = ConnRequestInfo::from_head(&head, None);
+        assert_eq!(info.peer_addr, None);
+        assert_eq!(info.host, None);
+        assert_eq!(info.origin, None);
+        assert_eq!(info.user_agent, None);
+        assert_eq!(info.query, None);
+    }
+
+    /// `?` のみ（値が空）の query は `Some("")` になり、`?` が無い場合の
+    /// `None` と区別できること（`RequestHead::query` と同一契約）。
+    #[tokio::test]
+    async fn from_head_query_only_separator_is_some_empty() {
+        let head = head_from(b"GET /ws? HTTP/1.1\r\n\r\n");
+        let info = ConnRequestInfo::from_head(&head, None);
+        assert_eq!(info.query.as_deref(), Some(""));
+    }
+
+    /// ヘッダ検索は大文字小文字を無視すること（`RequestHead::header` と
+    /// 同一意味論）。
+    #[tokio::test]
+    async fn from_head_header_lookup_is_case_insensitive() {
+        let head = head_from(b"GET /ws HTTP/1.1\r\norigin: https://lower.example\r\n\r\n");
+        let info = ConnRequestInfo::from_head(&head, None);
+        assert_eq!(info.origin.as_deref(), Some("https://lower.example"));
+    }
+
+    /// 重複ヘッダでは先頭値のみを保持すること（`RequestHead::header` と
+    /// 同一契約。受理・拒否判定は #716 の責務であり、本抽出は観測用の値を
+    /// 返すのみ）。
+    #[tokio::test]
+    async fn from_head_duplicate_header_returns_first_value() {
+        let head =
+            head_from(b"GET /ws HTTP/1.1\r\nHost: first.example\r\nHost: second.example\r\n\r\n");
+        let info = ConnRequestInfo::from_head(&head, None);
+        assert_eq!(info.host.as_deref(), Some("first.example"));
+    }
+
+    /// 上限ちょうど（`MAX_CONTEXT_HEADER_VALUE_BYTES`）は保持され、
+    /// 上限 + 1 バイトは切り詰めずに `None` になること（フェイルクローズ、
+    /// 型 doc の契約）。
+    #[tokio::test]
+    async fn from_head_header_value_at_limit_is_kept_over_limit_is_none() {
+        let at_limit = "a".repeat(MAX_CONTEXT_HEADER_VALUE_BYTES);
+        let over_limit = "a".repeat(MAX_CONTEXT_HEADER_VALUE_BYTES + 1);
+
+        let buf_at_limit = format!("GET /ws HTTP/1.1\r\nOrigin: {at_limit}\r\n\r\n");
+        let head_at_limit = head_from(buf_at_limit.as_bytes());
+        let info_at_limit = ConnRequestInfo::from_head(&head_at_limit, None);
+        assert_eq!(info_at_limit.origin.as_deref(), Some(at_limit.as_str()));
+
+        let buf_over_limit = format!("GET /ws HTTP/1.1\r\nOrigin: {over_limit}\r\n\r\n");
+        let head_over_limit = head_from(buf_over_limit.as_bytes());
+        let info_over_limit = ConnRequestInfo::from_head(&head_over_limit, None);
+        assert_eq!(
+            info_over_limit.origin, None,
+            "over-limit header value must become None, not be truncated"
+        );
+    }
+
+    /// query についても同一の上限・非切り詰め契約（`MAX_CONTEXT_QUERY_BYTES`）
+    /// が成立すること。
+    #[tokio::test]
+    async fn from_head_query_at_limit_is_kept_over_limit_is_none() {
+        let at_limit = "a".repeat(MAX_CONTEXT_QUERY_BYTES);
+        let over_limit = "a".repeat(MAX_CONTEXT_QUERY_BYTES + 1);
+
+        let buf_at_limit = format!("GET /ws?{at_limit} HTTP/1.1\r\n\r\n");
+        let head_at_limit = head_from(buf_at_limit.as_bytes());
+        let info_at_limit = ConnRequestInfo::from_head(&head_at_limit, None);
+        assert_eq!(info_at_limit.query.as_deref(), Some(at_limit.as_str()));
+
+        let buf_over_limit = format!("GET /ws?{over_limit} HTTP/1.1\r\n\r\n");
+        let head_over_limit = head_from(buf_over_limit.as_bytes());
+        let info_over_limit = ConnRequestInfo::from_head(&head_over_limit, None);
+        assert_eq!(
+            info_over_limit.query, None,
+            "over-limit query must become None, not be truncated"
+        );
+    }
+
+    /// 受け入れ基準 2（保持するヘッダの量に上限がある）: 許可リスト外の
+    /// ヘッダ（`Cookie` / `Authorization` / 多数の `X-Custom-*`）を大量に
+    /// 送っても、`ConnRequestInfo` の保持量は許可リスト 5 項目分にしか
+    /// 増えないこと。型に汎用アクセサが無いこと自体が構造的な保証だが、
+    /// ここでは実際に多数の余剰ヘッダを送って挙動面でも確認する。
+    #[tokio::test]
+    async fn from_head_ignores_headers_outside_allowlist() {
+        let mut buf = String::from(
+            "GET /ws HTTP/1.1\r\n\
+             Host: example.com\r\n\
+             Cookie: session=SECRET-COOKIE\r\n\
+             Authorization: Bearer SECRET-TOKEN\r\n",
+        );
+        for i in 0..50 {
+            buf.push_str(&format!("X-Custom-{i}: value-{i}\r\n"));
+        }
+        buf.push_str("\r\n");
+        let head = head_from(buf.as_bytes());
+        let info = ConnRequestInfo::from_head(&head, None);
+
+        // 許可リストの Host のみ観測できる。
+        assert_eq!(info.host.as_deref(), Some("example.com"));
+        assert_eq!(info.origin, None);
+        assert_eq!(info.user_agent, None);
+
+        // `RequestHead::header` を直接叩けば `Cookie`/`Authorization`/
+        // `X-Custom-*` は取得できてしまう（パーサ自体は全ヘッダを保持
+        // する）が、`ConnRequestInfo` にはそれらを取得する経路が存在
+        // しない（コンパイル時に保証される構造的な上限）。
+        assert_eq!(head.header("cookie"), Some("session=SECRET-COOKIE"));
+    }
+
+    /// 両コンテキストのアクセサが同一の `Arc<ConnRequestInfo>` を共有し、
+    /// 同じ値を返すこと（受け入れ基準 1、2 回コピーしない設計の裏取り）。
+    #[tokio::test]
+    async fn open_and_conn_context_share_same_info_values() {
+        let head = head_from(
+            b"GET /ws?x=1 HTTP/1.1\r\n\
+              Host: shared.example\r\n\
+              Origin: https://shared.example\r\n\
+              User-Agent: shared-agent\r\n\
+              \r\n",
+        );
+        let addr: SocketAddr = "203.0.113.7:4000".parse().unwrap();
+        let info = Arc::new(ConnRequestInfo::from_head(&head, Some(addr)));
+
+        let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        let conn_id = WsConnId::next();
+        let open_ctx = WsOpenContext::new(conn_id, sender.clone(), Vec::new(), info.clone());
+        let conn_ctx = WsConnContext::new(conn_id, sender, Vec::new(), info);
+
+        assert_eq!(open_ctx.peer_addr(), conn_ctx.peer_addr());
+        assert_eq!(open_ctx.peer_addr(), Some(addr));
+        assert_eq!(open_ctx.host(), conn_ctx.host());
+        assert_eq!(open_ctx.host(), Some("shared.example"));
+        assert_eq!(open_ctx.origin(), conn_ctx.origin());
+        assert_eq!(open_ctx.user_agent(), conn_ctx.user_agent());
+        assert_eq!(open_ctx.query(), conn_ctx.query());
+        assert_eq!(open_ctx.query(), Some("x=1"));
+    }
+
+    /// 受け入れ基準（`Debug` の機密混入防止）: `WsConnContext` の `Debug`
+    /// 出力に Host / Origin / User-Agent / query / peer_addr のいずれも
+    /// 含まれないこと（`WsOpenContext` 側は既存の
+    /// `open_context_debug_redacts_peer_addr` 等で検証済み。イシュー #717
+    /// で `WsConnContext` に追加された `info` フィールドについても同じ
+    /// 保証を取る）。
+    #[tokio::test]
+    async fn conn_context_debug_redacts_request_info() {
+        let head = head_from(
+            b"GET /ws?token=SECRET-QUERY HTTP/1.1\r\n\
+              Host: secret-host.example\r\n\
+              Origin: https://secret-origin.example\r\n\
+              User-Agent: secret-agent\r\n\
+              \r\n",
+        );
+        let addr: SocketAddr = "198.51.100.9:5555".parse().unwrap();
+        let info = Arc::new(ConnRequestInfo::from_head(&head, Some(addr)));
+        let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        let ctx = WsConnContext::new(WsConnId::next(), sender, Vec::new(), info);
+
+        let debug = format!("{ctx:?}");
+        for leaked in [
+            "secret-host.example",
+            "secret-origin.example",
+            "secret-agent",
+            "SECRET-QUERY",
+            "5555",
+        ] {
+            assert!(
+                !debug.contains(leaked),
+                "WsConnContext::Debug leaked {leaked:?}: {debug}"
+            );
+        }
     }
 }

@@ -12,6 +12,24 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
 
 ### Added
 
+- `fandhe-backend-plugin-websocket`: 接続コンテキスト（`WsOpenContext` /
+  `WsConnContext`）から、接続元アドレス・主要リクエストヘッダ（`Host` /
+  `Origin` / `User-Agent`）・query 文字列を参照できるようにしました。両型へ
+  `host()` / `origin()` / `user_agent()` / `query()` アクセサを追加し、
+  `WsConnContext` には新たに `peer_addr()` も追加しています（`WsOpenContext::
+  peer_addr()` と同じ値を返す）。固定 5 項目（`peer_addr`/`host`/`origin`/
+  `user_agent`/`query`）のみを保持する許可リスト方式で、任意のヘッダを
+  取得する汎用アクセサは設けていません。ヘッダ値は 1024 バイト、query は
+  2048 バイトを上限とし、**超過した値は切り詰めずに `None`** にします
+  （フェイルクローズ。切り詰めると `Host`/`Origin` の許可リスト照合が
+  部分一致でバイパスされうるため）。2 つのコンテキストは同一の内部値を
+  `Arc` 共有するため、値の抽出は 1 接続あたり 1 回だけです。新しい値は
+  いずれもクライアントの申告値（`peer_addr` を除く）または機密混入の懸念が
+  あるため `Debug` 出力には含めません（`WsOpenContext`/`WsConnContext`
+  いずれも既存の `finish_non_exhaustive()` を維持）。非破壊追加（既存の
+  `on_open`/`on_message_with_ctx`/`on_close` 実装は無変更で動作します）。
+  設計は `docs/design/ws-connection-context-and-close.md` 16 節、イシュー
+  [#717](https://github.com/Fandhe-AI/fandhe-backend/issues/717)。
 - `fandhe-backend-plugin-websocket`: `on_open` から接続元の実 peer address を
   参照できるようにしました。新関数 `handle_upgrade_with_peer_addr`
   （`handle_upgrade` の 5 引数に `peer_addr: Option<std::net::SocketAddr>` を

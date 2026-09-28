@@ -645,6 +645,21 @@ fandhe-backend/
 │   │                                    # PII に近いため `WsOpenContext::Debug` には
 │   │                                    # 含めない。`docs/design/
 │   │                                    # ws-connection-context-and-close.md` 15 節参照）。
+│   │                                    # イシュー #717 で `WsOpenContext`/
+│   │                                    # `WsConnContext` の双方へ `host()`/
+│   │                                    # `origin()`/`user_agent()`/`query()`
+│   │                                    # （`WsConnContext` は `peer_addr()` も）を
+│   │                                    # 追加した。固定 5 項目のみを保持する許可
+│   │                                    # リスト方式（任意ヘッダを取得する汎用
+│   │                                    # アクセサは無い）で、ヘッダ値 1024 バイト・
+│   │                                    # query 2048 バイトの上限超過は切り詰めず
+│   │                                    # `None`（フェイルクローズ、部分一致
+│   │                                    # バイパス防止）。両コンテキストは内部型
+│   │                                    # `ConnRequestInfo` を `Arc` 共有し抽出は
+│   │                                    # 1 接続 1 回のみ。新規値はいずれも
+│   │                                    # `Debug` 出力に含めない（`docs/design/
+│   │                                    # ws-connection-context-and-close.md` 16 節
+│   │                                    # 参照）。
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O
