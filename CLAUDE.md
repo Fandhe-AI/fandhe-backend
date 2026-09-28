@@ -124,17 +124,26 @@ fandhe-backend/
 │   │   │                        # Phase 3 実装 issue（#590〜#593）の受け入れ基準確定
 │   │   │                        # まで含む、ドラフト・PR レビューで最終承認、コード
 │   │   │                        # 変更は Phase 3（ユーザー承認後）が担う）
-│   │   └── deterministic-microbench.md  # 決定的マイクロベンチ（per-request alloc カウンタ）
-│   │                            # の方式選定・カデンツ確定（イシュー #615、
-│   │                            # `docs/design/bench-hosted-runner.md` Phase 1 が
-│   │                            # 「方式 3」として導入を指定した引き渡し事項への対応）。
-│   │                            # `stats_alloc`（`crates/http/tests/alloc_count.rs` の
-│   │                            # 先例、PR #602 レビュー指摘 P0 対応）を採用し
-│   │                            # `benches/microbench/` を `#![forbid(unsafe_code)]` に
-│   │                            # できた経緯・iai-callgrind 見送り根拠・`crates/core`
-│   │                            # 非同期経路を対象外とする既知の限界・toolchain 差異時の
-│   │                            # ベースライン更新運用・カデンツ「ci.yml で PR/push
-│   │                            # 毎回実行」の確定を記録
+│   │   ├── deterministic-microbench.md  # 決定的マイクロベンチ（per-request alloc カウンタ）
+│   │   │                        # の方式選定・カデンツ確定（イシュー #615、
+│   │   │                        # `docs/design/bench-hosted-runner.md` Phase 1 が
+│   │   │                        # 「方式 3」として導入を指定した引き渡し事項への対応）。
+│   │   │                        # `stats_alloc`（`crates/http/tests/alloc_count.rs` の
+│   │   │                        # 先例、PR #602 レビュー指摘 P0 対応）を採用し
+│   │   │                        # `benches/microbench/` を `#![forbid(unsafe_code)]` に
+│   │   │                        # できた経緯・iai-callgrind 見送り根拠・`crates/core`
+│   │   │                        # 非同期経路を対象外とする既知の限界・toolchain 差異時の
+│   │   │                        # ベースライン更新運用・カデンツ「ci.yml で PR/push
+│   │   │                        # 毎回実行」の確定を記録
+│   │   └── diagnostics-sink.md  # ライブラリ内部の実行時診断（accept 失敗・
+│   │                            # TCP_NODELAY 設定失敗・graceful shutdown / rebind の
+│   │                            # grace 超過強制クローズの 4 箇所）を `eprintln!` 直書きから
+│   │                            # 利用側で差し替え可能な診断シンク `Server::diagnostics` へ
+│   │                            # 移行した設計（イシュー #720。`tracing` / `log` への外部
+│   │                            # 依存追加案と比較し、新規依存ゼロの trait 登録口方式を
+│   │                            # 採用した理由・panic 境界・grace 超過 2 箇所での通知順序
+│   │                            # 変更（強制クローズ確定後に通知）・将来の `tracing` 転送
+│   │                            # シンク同梱案を記録）
 │   ├── guide/              # 利用者向けガイド（Getting Started・feature 構成別サンプル・
 │   │                        # チュートリアル、TASK-11.5 / #95）。「どう作るか」の docs/design/ とは
 │   │                        # 責務分離、「どう使うか」を扱う
@@ -324,7 +333,24 @@ fandhe-backend/
 │   │                                    # 委譲、既存 `handle_upgrade` は無変更のまま
 │   │                                    # `None` で委譲する後方互換ラッパー。
 │   │                                    # `docs/design/ws-connection-context-and-close.md`
-│   │                                    # 15 節参照）。イシュー #721 で `Middleware` に
+│   │                                    # 15 節参照）。イシュー #720 で、accept 失敗・
+│   │                                    # TCP_NODELAY 設定失敗・graceful shutdown /
+│   │                                    # rebind の grace 超過強制クローズの 4 箇所に
+│   │                                    # あった `eprintln!` 直書きを、利用側で差し替え
+│   │                                    # 可能な診断シンクへ移行した（新規モジュール
+│   │                                    # `diagnostics`。trait `Diagnostics`・イベント型
+│   │                                    # `DiagnosticEvent`（`#[non_exhaustive]`）・既定
+│   │                                    # シンク `StderrDiagnostics` を追加し、
+│   │                                    # `Server::diagnostics(sink)` で登録する。未登録時
+│   │                                    # （既定）は `StderrDiagnostics` が現行の
+│   │                                    # `eprintln!` 出力と文言・接頭辞・出力先が完全
+│   │                                    # 互換。新規外部依存の追加なし、feature ゲート
+│   │                                    # 不要（`Interceptor` と同じ「外部依存ゼロの純
+│   │                                    # コア機能」の位置づけ）。grace 超過 2 箇所は
+│   │                                    # 強制クローズの完了後に通知する順序へ変更した
+│   │                                    # （利用側シンクの異常・遅延がフェイルクローズを
+│   │                                    # 妨げないため）。設計は
+│   │                                    # `docs/design/diagnostics-sink.md` 参照）。イシュー #721 で `Middleware` に
 │   │                                    # `on_response_with_status`（送出ステータス付き
 │   │                                    # 観測フック）を追加した。既定実装が既存
 │   │                                    # `on_response`（同じく既定 no-op を新設）へ

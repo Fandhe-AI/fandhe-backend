@@ -140,6 +140,7 @@
 //! `crates/core/examples/graceful_shutdown.rs`、設計判断は
 //! `docs/design/graceful-shutdown.md` を参照。
 
+pub mod diagnostics;
 pub mod extension;
 pub mod interceptor;
 pub(crate) mod plugin;
@@ -156,6 +157,11 @@ pub use extension::{GateContext, GateOutcome, Middleware, RequestGate, UpgradeHa
 // 既存 3 拡張点（Middleware/RequestGate/UpgradeHandler）で表現できないリダイレクト・
 // レスポンス改変ユースケースの受け皿。詳細契約は `interceptor` モジュール doc を参照。
 pub use interceptor::Interceptor;
+
+// ライブラリ内部の実行時診断（accept 失敗・grace 超過強制クローズ等）を
+// 利用側で差し替え可能にする診断シンク（イシュー #720）。`Server::diagnostics`
+// で登録する。詳細契約は `diagnostics` モジュール doc を参照。
+pub use diagnostics::{DiagnosticEvent, Diagnostics, StderrDiagnostics};
 
 // コアループの主要 API もクレート直下から参照できるよう re-export する。
 // `handle_connection_with_peer_addr` は `RequestGate::check` へ実 peer address

@@ -212,6 +212,24 @@ const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(10);
 /// [`Server::shutdown_grace_period`] で行う。
 const DEFAULT_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(30);
 
+/// grace 超過強制クローズ（`ShutdownGraceExceeded`）通知の OS スレッド
+/// 切り離し後、`run_until` がその完了を待つ有界時間（PR #748 レビュー指摘
+/// P1 対応）。
+///
+/// 通知は `std::thread::Builder::spawn` で生成した OS スレッドで行われる
+/// fire-and-forget だが、これを一切待たずに `run_until` が返ると、
+/// 呼び出し元が返却直後にプロセスを終了させる使い方では通知スレッドが
+/// 1 度もスケジュールされずに失われうる（旧 `eprintln!` 直書きは返却前に
+/// 同期実行されていたため、この喪失は既定出力の互換性を破る）。既定シンク
+/// （同期 `eprintln!` 1 行）を含む大半の妥当なシンクはこの時間内に確実に
+/// 完了するため、実質的に「返却前に通知済み」という旧挙動と同等の結果を
+/// 得られる。契約違反（ブロッキング I/O）のシンクがこの時間内に完了しない
+/// 場合は待機を打ち切って fire-and-forget へフォールバックするため、
+/// `run_until` 自体の「`shutdown_grace_period` + ε 以内に必ず戻る」契約
+/// （`docs/design/graceful-shutdown.md`）は破らない。値は上記契約の ε の
+/// 一部として十分小さく取る（`docs/design/diagnostics-sink.md` 9 節参照）。
+const SHUTDOWN_NOTIFY_FLUSH_WAIT: Duration = Duration::from_millis(200);
+
 /// rebind（イシュー #485）時に旧 listener の accept backlog から drain する
 /// 接続件数の上限（イシュー #501）。
 ///
@@ -410,6 +428,26 @@ pub struct Server {
     /// graceful shutdown（[`BoundServer::run_until`]）の in-flight 完了待ち
     /// 上限（イシュー #313）。既定は `DEFAULT_SHUTDOWN_GRACE_PERIOD`。
     shutdown_grace_period: Duration,
+    /// ライブラリ内部の実行時診断（accept 失敗・grace 超過強制クローズ等）の
+    /// 送信先（イシュー #720）。既定は [`crate::diagnostics::StderrDiagnostics`]
+    /// （現行の `eprintln!` 出力と完全互換）。`Arc` で保持するのは、
+    /// `spawn_generation_drain`（detached `tokio::spawn` タスク）へ `Server`
+    /// 全体ではなくシンクだけを安価に `clone` して渡すため。
+    diagnostics: std::sync::Arc<dyn crate::diagnostics::Diagnostics>,
+    /// `diagnostics` が既定シンク（[`crate::diagnostics::StderrDiagnostics`]、
+    /// `Server::diagnostics` 未呼び出し）のままかどうか（PR #748
+    /// codex/review 指摘対応）。`Server::diagnostics` 呼び出しで `false` に
+    /// 固定する（一度カスタムシンクへ差し替えたら、以後 `StderrDiagnostics`
+    /// を明示的に再登録しても「既定」とは扱わない。利用者が明示的に選んだ
+    /// シンクである以上、既定シンクに許される「非ブロッキング契約の対象
+    /// 外」という意図的な例外を暗黙に適用しないため）。
+    ///
+    /// `run_until` の grace 超過通知（`ShutdownGraceExceeded`）で、既定
+    /// シンク向けの「返却前に必ず完了させる」経路とカスタムシンク向けの
+    /// 「有界時間だけ待って fire-and-forget へフォールバックする」経路を
+    /// 分岐するために使う（`docs/design/diagnostics-sink.md` 9 節・該当
+    /// 箇所の doc コメントを参照）。
+    diagnostics_is_default: bool,
     /// `webrtc-proxy` feature（TASK-2.1 / #18）有効時のみ意味を持つ設定。
     /// `crate::plugin::try_intercept` がこのフィールドを参照して `POST
     /// /rtc/offer` を上流へ中継するかどうかを判定する。feature 無効時は
@@ -508,6 +546,8 @@ impl Default for Server {
             read_timeout: DEFAULT_READ_TIMEOUT,
             keep_alive_enabled: true,
             shutdown_grace_period: DEFAULT_SHUTDOWN_GRACE_PERIOD,
+            diagnostics: std::sync::Arc::new(crate::diagnostics::StderrDiagnostics),
+            diagnostics_is_default: true,
             #[cfg(feature = "webrtc-proxy")]
             webrtc_proxy_config: None,
             #[cfg(feature = "webrtc")]
@@ -698,6 +738,42 @@ impl Server {
     #[must_use]
     pub fn shutdown_grace_period(mut self, grace: Duration) -> Self {
         self.shutdown_grace_period = grace;
+        self
+    }
+
+    /// ライブラリ内部の実行時診断（accept 失敗・TCP_NODELAY 設定失敗・
+    /// graceful shutdown / rebind の grace 超過強制クローズ）の送信先を
+    /// 差し替える（イシュー #720）。
+    ///
+    /// 未登録時（既定）は [`crate::diagnostics::StderrDiagnostics`] が使われ、
+    /// 現行の `eprintln!` 出力と完全互換の文言・接頭辞・出力先（stderr）を
+    /// 維持する。複数回呼ぶと最後の登録が有効になる（置き換え式、単一
+    /// シンクのみ保持）。
+    ///
+    /// 対象イベントの一覧・呼ばれるスレッド・タスクの文脈は
+    /// [`crate::diagnostics::DiagnosticEvent`] を参照。`sink` の `report` は
+    /// [`BoundServer::run_until`] の accept ループ・rebind の背景 drain タスク
+    /// 上で同期的に呼ばれるため、ブロッキング I/O を行ってはならない
+    /// （[`crate::diagnostics::Diagnostics`] の契約。既定シンク
+    /// [`crate::diagnostics::StderrDiagnostics`] はこの契約の意図的な例外
+    /// であり、前提・影響・緩和策は `crate::diagnostics` モジュール doc を
+    /// 参照）。
+    ///
+    /// ```
+    /// use fandhe_backend_core::DiagnosticEvent;
+    /// use fandhe_backend_core::server::Server;
+    ///
+    /// // 出力を抑止する。
+    /// let server = Server::new().diagnostics(|_event: &DiagnosticEvent<'_>| {});
+    /// let _ = server;
+    /// ```
+    #[must_use]
+    pub fn diagnostics(mut self, sink: impl crate::diagnostics::Diagnostics) -> Self {
+        self.diagnostics = std::sync::Arc::new(sink);
+        // 利用者が明示的にシンクを登録した時点で「既定シンク」扱いを外す
+        // （`StderrDiagnostics` を明示的に再登録した場合も含む。`diagnostics_is_default`
+        // の doc を参照）。
+        self.diagnostics_is_default = false;
         self
     }
 
@@ -1572,6 +1648,7 @@ fn spawn_generation_drain(
     old_cancel: crate::plugin::GenerationCancel,
     session_drain: crate::plugin::SessionDrain,
     grace: Duration,
+    diagnostics: std::sync::Arc<dyn crate::diagnostics::Diagnostics>,
 ) {
     tokio::spawn(async move {
         old_cancel.fire();
@@ -1581,10 +1658,14 @@ fn spawn_generation_drain(
         })
         .await;
         if drained.is_err() {
-            eprintln!(
-                "fandhe_backend_core::server: rebind による旧世代接続の drain が猶予期間（{grace:?}）を超過したため強制クローズします"
-            );
+            // 強制クローズ（フェイルクローズ）を確定させてから通知する
+            // （イシュー #720。利用側シンクの異常・遅延が有界時間での
+            // クローズを妨げないようにする）。
             old_join_set.shutdown().await;
+            crate::diagnostics::emit(
+                &*diagnostics,
+                crate::diagnostics::DiagnosticEvent::RebindDrainGraceExceeded { grace },
+            );
         }
     });
 }
@@ -1619,6 +1700,7 @@ async fn drain_listener_backlog(
     listener: &TcpListener,
     connection_limit: &Arc<Semaphore>,
     max: usize,
+    diagnostics: &dyn crate::diagnostics::Diagnostics,
 ) -> Vec<(TcpStream, SocketAddr, OwnedSemaphorePermit)> {
     let mut drained = Vec::new();
     for _ in 0..max {
@@ -1632,7 +1714,7 @@ async fn drain_listener_backlog(
                 // 旧世代（rebind 前）バックログ経由の接続も、通常 accept 経路
                 // （`run_until` の主ループ）と同一の TCP_NODELAY 契約を適用する
                 // （イシュー #587、`configure_accepted_stream` の doc を参照）。
-                configure_accepted_stream(&stream);
+                configure_accepted_stream(&stream, diagnostics);
                 drained.push((stream, peer_addr, permit));
             }
             // Pending = backlog 空。Err（ECONNABORTED 等）も fail-closed で
@@ -1655,10 +1737,14 @@ async fn drain_listener_backlog(
 /// フェイルオープン方針を採る（`.claude/rules/security.md` の「安全性に関わる
 /// 判定はフェイルクローズ、最適化はフェイルオープン」に整合。既存の同時接続数
 /// 上限・accept エラーバックオフは本関数の影響を受けない）。
-fn configure_accepted_stream(stream: &TcpStream) {
+fn configure_accepted_stream(
+    stream: &TcpStream,
+    diagnostics: &dyn crate::diagnostics::Diagnostics,
+) {
     if let Err(err) = fandhe_backend_http::socket::configure_stream(stream) {
-        eprintln!(
-            "fandhe_backend_core::server: TCP_NODELAY の設定に失敗しました（接続は継続します）: {err}"
+        crate::diagnostics::emit(
+            diagnostics,
+            crate::diagnostics::DiagnosticEvent::TcpNodelayFailed { error: &err },
         );
     }
 }
@@ -1760,10 +1846,13 @@ impl BoundServer {
     ///    漏れなく待てる（`crate::plugin::try_handle_upgrade` の doc
     ///    「permit の契約」を参照）
     /// 3. **上限超過時は強制クローズ**: 上限内に全 permit が解放されなければ、
-    ///    警告ログを 1 行出した上で残存コネクションタスクを `JoinSet::shutdown`
-    ///    で abort する（`TcpStream` が drop されソケットは即時クローズされる。
-    ///    ハング防止のフェイルクローズ、受け入れ条件「上限時間・超過時強制
-    ///    クローズ」）
+    ///    残存コネクションタスクを `JoinSet::shutdown` で abort し
+    ///    （`TcpStream` が drop されソケットは即時クローズされる。ハング防止の
+    ///    フェイルクローズ、受け入れ条件「上限時間・超過時強制クローズ」）、
+    ///    その後 [`Server::diagnostics`] のシンクへ
+    ///    `DiagnosticEvent::ShutdownGraceExceeded` を通知する（既定は stderr
+    ///    への警告 1 行）。通知の完了は最大 200ms だけ待ち、それを超えると
+    ///    待たずに返る（通知が届く前にプロセスが終了すると失われうる）
     ///
     /// どちらの経路でも `run_until` は `Server::shutdown_grace_period` + ε
     /// 以内に必ず `Ok(())` で戻る。
@@ -1961,14 +2050,17 @@ impl BoundServer {
                     Ok((stream, peer_addr)) => {
                         // 主 accept 経路（イシュー #587。`configure_accepted_stream`
                         // の doc・rebind backlog 経路の同種呼び出しを参照）。
-                        configure_accepted_stream(&stream);
+                        configure_accepted_stream(&stream, &*server.diagnostics);
                         Some((stream, peer_addr, permit))
                     }
                     Err(err) => {
                         // permit はここで（スコープを抜けると同時に）解放され、
                         // 次のループ先頭で再取得される。`run_until` の doc を参照。
                         drop(permit);
-                        eprintln!("fandhe_backend_core::server: accept に失敗しました: {err}");
+                        crate::diagnostics::emit(
+                            &*server.diagnostics,
+                            crate::diagnostics::DiagnosticEvent::AcceptFailed { error: &err },
+                        );
                         tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                         None
                     }
@@ -2011,6 +2103,7 @@ impl BoundServer {
                         &listener,
                         &connection_limit,
                         REBIND_BACKLOG_DRAIN_LIMIT,
+                        &*server.diagnostics,
                     )
                     .await
                     {
@@ -2047,6 +2140,7 @@ impl BoundServer {
                         old_cancel,
                         session_drain.clone(),
                         server.shutdown_grace_period,
+                        Arc::clone(&server.diagnostics),
                     );
                     // 4. 新世代用のフラグを用意する。
                     current_shutdown_flag = Arc::new(AtomicBool::new(false));
@@ -2123,12 +2217,109 @@ impl BoundServer {
                 // grace 超過、またはセマフォ側の異常（`close()` 経路がなく
                 // 通常発生しない）。いずれもハング防止のため強制クローズへ
                 // 倒す（フェイルクローズ、受け入れ条件「上限時間・超過時
-                // 強制クローズ」）。
-                eprintln!(
-                    "fandhe_backend_core::server: graceful shutdown の猶予期間（{:?}）を超過したため残存接続を強制クローズします",
-                    server.shutdown_grace_period
-                );
+                // 強制クローズ」）。強制クローズを先に確定させてから通知する
+                // （イシュー #720。利用側シンクの異常・遅延が有界時間での
+                // クローズを妨げないようにする）。
                 join_set.shutdown().await;
+                // 既定シンク（`StderrDiagnostics`、同期 `eprintln!` 1 行）と
+                // カスタムシンクとで通知の確定経路を分ける（PR #748
+                // codex/review 指摘対応、`docs/design/diagnostics-sink.md` 9
+                // 節）。
+                //
+                // - **既定シンク**: `run_until` の返却前に**必ず**
+                //   `emit`（同期呼び出し）を完了させてから返す。
+                //   `StderrDiagnostics::report` は非ブロッキング契約の対象外
+                //   （`crate::diagnostics` モジュール doc）であり、事実上
+                //   一瞬で完了する同期 `eprintln!` のため、ここで直接呼んでも
+                //   「shutdown_grace_period + ε 以内に必ず戻る」という
+                //   `run_until` の契約は破らない。これにより「返却前に
+                //   `eprintln!` が実行されていた」旧挙動と完全に一致する
+                //   （下記カスタムシンク経路が採用する有界待機のような
+                //   確率的な保証ではなく、確定的な保証にする）。
+                // - **カスタムシンク**: 非ブロッキング契約を利用者が負う
+                //   （`crate::diagnostics::Diagnostics` の契約）が、契約
+                //   違反（`report` 内で停止・長時間ブロックする実装）が
+                //   `run_until` 自体をハングさせないよう、通知を
+                //   `std::thread::spawn`（OS スレッド）へ切り離し、完了を
+                //   有界時間（`SHUTDOWN_NOTIFY_FLUSH_WAIT`）だけ待ってから
+                //   `run_until` を返す（超過時は fire-and-forget へ
+                //   フォールバック）。`tokio::spawn` ではなく OS スレッドを
+                //   使う理由・待機を挟む理由は下記コメント・
+                //   `docs/design/diagnostics-sink.md` 9 節を参照。
+                //
+                // 強制クローズは上記 `join_set.shutdown().await` で既に
+                // 確定済みのため、通知（ログ出力）の確定方式をどちらに
+                // 分岐してもフェイルクローズの安全性は損なわれない
+                // （`spawn_generation_drain` の `RebindDrainGraceExceeded`
+                // 通知とは独立した経路のまま、両者とも不変）。
+                let grace = server.shutdown_grace_period;
+                if server.diagnostics_is_default {
+                    crate::diagnostics::emit(
+                        &*server.diagnostics,
+                        crate::diagnostics::DiagnosticEvent::ShutdownGraceExceeded { grace },
+                    );
+                } else {
+                    // 切り離し先は `tokio::spawn`（tokio タスク）ではなく
+                    // `std::thread::spawn`（OS スレッド）を使う（PR #748
+                    // Bugbot 指摘対応）。`tokio::spawn` した detached タスクは
+                    // tokio ランタイムが以後もポーリングし続けて初めて実行
+                    // される。`run_until` を最後の await として呼び出す典型的
+                    // な使い方（公式 `graceful_shutdown` サンプルを含む）
+                    // では、`run_until` が `Ok(())` を返した直後にランタイム
+                    // が shutdown することがあり、特に `current_thread`
+                    // ランタイムでは他にポーリングを進める主体が存在しない
+                    // ため、この detached タスクは 1 度もポーリングされずに
+                    // 破棄される（通知が確実に失われる）。`emit` 自体は
+                    // 同期関数で `.await` 点を持たないため、tokio タスクと
+                    // して実行する必要はない。OS スレッドへ切り離せば tokio
+                    // ランタイムの継続ポーリングに依存せず独立に実行される
+                    // ため、この欠落を避けられる。
+                    //
+                    // OS スレッドへの切り離しはランタイムのポーリングには
+                    // 依存しなくなるが、別の喪失経路が残っていた（PR #748
+                    // レビュー指摘 P1）: `run_until` の呼び出し元がプロセスを
+                    // 即座に終了させる典型的な使い方（`main` の最後の文として
+                    // `run_until` を呼び、返り値を受けたら即 `main` を抜ける
+                    // 等）では、OS スレッドが 1 度もスケジュールされないまま
+                    // プロセスごと消滅し、通知が届かないことがある。対応と
+                    // して、通知スレッドの完了を有界時間
+                    // （`SHUTDOWN_NOTIFY_FLUSH_WAIT`）だけ待ってから
+                    // `run_until` を返す。契約違反（ブロッキング I/O）の
+                    // シンクは待機時間内に完了しないことがあるが、その場合も
+                    // 待機を打ち切って `run_until` を返す（fire-and-forget
+                    // へフォールバック）ため、上記「grace + ε 以内に必ず
+                    // 戻る」契約は破らない（`shutdown_grace_exceeded_sink_
+                    // blocking_does_not_delay_run_until_return` で検証）。
+                    // スレッド完了は `tokio::sync::oneshot` で通知する
+                    // （`std::thread::spawn` のクロージャ内から同期
+                    // `Sender::send` を呼ぶだけで完結し、受信側のみ非同期に
+                    // 待てるため、この切り離しパターンに最小追加で組み込める）。
+                    let diagnostics = Arc::clone(&server.diagnostics);
+                    let (notified_tx, notified_rx) = oneshot::channel::<()>();
+                    // `std::thread::spawn` はスレッド生成失敗時に panic する
+                    // ため `Builder::spawn` の `Result` を使う（panic を
+                    // ライブラリ境界の外へ漏らさない）。生成に失敗した場合は
+                    // クロージャごと `notified_tx` が drop されて下の待機は
+                    // 即座に終わり、通知は行わずに `Ok(())` を返す。インライン
+                    // 実行へフォールバックしないのは、停止したシンクで
+                    // `run_until` の返却を遅らせないため（リソース枯渇時に
+                    // 1 行の通知を諦めるほうを選ぶ）。
+                    let _spawned = std::thread::Builder::new()
+                        .name("fandhe-shutdown-diagnostics".to_owned())
+                        .spawn(move || {
+                            crate::diagnostics::emit(
+                                &*diagnostics,
+                                crate::diagnostics::DiagnosticEvent::ShutdownGraceExceeded {
+                                    grace,
+                                },
+                            );
+                            // 受信側が待機を打ち切って drop 済みでも `send`
+                            // はエラーを返すだけで panic しない（無視して
+                            // よい）。
+                            let _ = notified_tx.send(());
+                        });
+                    let _ = tokio::time::timeout(SHUTDOWN_NOTIFY_FLUSH_WAIT, notified_rx).await;
+                }
             }
         }
 
@@ -4893,7 +5084,13 @@ GET /c HTTP/1.1\r\n\r\n",
         let listener = listener_with_backlog(3).await;
         let connection_limit = Arc::new(Semaphore::new(10));
 
-        let drained = drain_listener_backlog(&listener, &connection_limit, 10).await;
+        let drained = drain_listener_backlog(
+            &listener,
+            &connection_limit,
+            10,
+            &crate::diagnostics::StderrDiagnostics,
+        )
+        .await;
 
         assert_eq!(drained.len(), 3);
         // 3 件分の permit が消費されたまま drained 側が保持している
@@ -4919,7 +5116,13 @@ GET /c HTTP/1.1\r\n\r\n",
         // （同時接続数上限を迂回しない fail-closed 契約）。
         let connection_limit = Arc::new(Semaphore::new(1));
 
-        let drained = drain_listener_backlog(&listener, &connection_limit, 10).await;
+        let drained = drain_listener_backlog(
+            &listener,
+            &connection_limit,
+            10,
+            &crate::diagnostics::StderrDiagnostics,
+        )
+        .await;
 
         assert_eq!(drained.len(), 1);
         assert_eq!(connection_limit.available_permits(), 0);
@@ -4932,7 +5135,13 @@ GET /c HTTP/1.1\r\n\r\n",
 
         // `max=1` により 2 件目の滞留接続は回収されない（件数上限による
         // 有界性、`REBIND_BACKLOG_DRAIN_LIMIT` の doc を参照）。
-        let drained = drain_listener_backlog(&listener, &connection_limit, 1).await;
+        let drained = drain_listener_backlog(
+            &listener,
+            &connection_limit,
+            1,
+            &crate::diagnostics::StderrDiagnostics,
+        )
+        .await;
 
         assert_eq!(drained.len(), 1);
         assert_eq!(connection_limit.available_permits(), 9);
@@ -4950,7 +5159,12 @@ GET /c HTTP/1.1\r\n\r\n",
         // 契約、`drain_listener_backlog` の doc「有界性」を参照）。
         let drained = tokio::time::timeout(
             Duration::from_millis(200),
-            drain_listener_backlog(&listener, &connection_limit, 10),
+            drain_listener_backlog(
+                &listener,
+                &connection_limit,
+                10,
+                &crate::diagnostics::StderrDiagnostics,
+            ),
         )
         .await
         .expect("backlog 空でもタイムアウトせず即座に返る");
@@ -4973,7 +5187,7 @@ GET /c HTTP/1.1\r\n\r\n",
 
         let accept_task = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept は成功する");
-            configure_accepted_stream(&stream);
+            configure_accepted_stream(&stream, &crate::diagnostics::StderrDiagnostics);
             assert!(
                 stream.nodelay().expect("nodelay() は成功する"),
                 "configure_accepted_stream 適用後は TCP_NODELAY が有効であるべき"
