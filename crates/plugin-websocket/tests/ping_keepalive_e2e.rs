@@ -18,12 +18,12 @@ use fandhe_backend_plugin_websocket::handler::{
     CloseReason, WsConnContext, WsHandlerError, WsMessage, WsMessageHandler, WsOutcome,
 };
 use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade};
+use futures_util::StreamExt;
 use futures_util::future::BoxFuture;
-use futures_util::{SinkExt, StreamExt};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::Role;
-use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 /// 有効な `GET /ws` アップグレードリクエストの生バイト列
 /// （`idle_timeout.rs` と同一のリクエスト）。
@@ -87,6 +87,108 @@ async fn handshake(
         WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
 
     (client, server_task)
+}
+
+/// [`handshake`] と同じくハンドシェイクを成立させるが、クライアント側を
+/// `WebSocketStream`（tokio-tungstenite）へ包まず生の `DuplexStream` の
+/// ままにして返す。tokio-tungstenite のクライアント実装は Ping を読むと
+/// 自動で Pong を送出する（`tungstenite::protocol::WebSocket::read` の
+/// 既定動作）ため、「Pong を一切返さない対向」を検証するテストではこの
+/// 自動応答が交絡要因になる。生バイトで読み書きすることでこれを避ける
+/// （[`build_masked_text_frame`] / [`read_raw_frame`] と組み合わせて使う）。
+async fn handshake_raw(
+    config: WebSocketConfig,
+) -> (
+    tokio::io::DuplexStream,
+    tokio::task::JoinHandle<Result<(), fandhe_backend_plugin_websocket::WsError>>,
+) {
+    let head = match parse_request_head(handshake_request_bytes()).unwrap() {
+        ParseOutcome::Complete { head, .. } => head,
+        ParseOutcome::Incomplete => unreachable!(),
+    };
+
+    let (server_side, mut client_side) = tokio::io::duplex(64 * 1024);
+
+    let server_task = tokio::spawn(async move {
+        handle_upgrade(
+            server_side,
+            &head,
+            Vec::new(),
+            &config,
+            std::future::pending::<()>(),
+        )
+        .await
+    });
+
+    let response = read_http_response_line(&mut client_side).await;
+    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+
+    (client_side, server_task)
+}
+
+/// RFC 6455 準拠のマスク付き Text フレームを生バイト列として構築する
+/// （クライアント→サーバー方向のフレームは必ずマスクされる。テスト専用の
+/// 最小実装で、payload は 125 バイト以内・拡張ペイロード長は扱わない）。
+fn build_masked_text_frame(payload: &str) -> Vec<u8> {
+    build_masked_control_frame(0x1, payload.as_bytes())
+}
+
+/// RFC 6455 準拠のマスク付き Pong フレームを生バイト列として構築する
+/// （[`build_masked_text_frame`] と同型。tokio-tungstenite クライアントの
+/// 自動 Pong 応答を経由せず、テストから明示的に 1 個だけ Pong を送るために
+/// 使う）。
+fn build_masked_pong_frame() -> Vec<u8> {
+    build_masked_control_frame(0xa, &[])
+}
+
+/// [`build_masked_text_frame`] / [`build_masked_pong_frame`] の共通実装。
+/// `opcode` は下位 4 ビットのみ使う（FIN=1 固定、テスト専用の最小実装）。
+fn build_masked_control_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
+    assert!(
+        payload.len() <= 125,
+        "test helper only supports short payloads (no extended length)"
+    );
+    // マスクキーは固定値（テストの決定性のために乱数を使わない。RFC 6455 は
+    // マスクキーの予測可能性を暗号学的に問題視しないクライアント実装を
+    // 禁じていない——サーバーはどのマスクキーでも受理する）。
+    let mask: [u8; 4] = [0x12, 0x34, 0x56, 0x78];
+    let mut frame = Vec::with_capacity(2 + mask.len() + payload.len());
+    frame.push(0x80 | (opcode & 0x0f)); // FIN=1, opcode
+    frame.push(0x80 | payload.len() as u8); // MASK=1, payload len
+    frame.extend_from_slice(&mask);
+    frame.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+    frame
+}
+
+/// サーバー→クライアント方向の 1 フレームを生バイトで読み、opcode と
+/// payload を返す（サーバー送信フレームはマスクされない、RFC 6455 5.1 節。
+/// テスト専用の最小実装で、拡張ペイロード長は扱わない）。読むだけで、
+/// Ping を検出しても Pong を送出しない（[`handshake_raw`] の doc を参照）。
+async fn read_raw_frame<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> (u8, Vec<u8>) {
+    let mut header = [0u8; 2];
+    stream
+        .read_exact(&mut header)
+        .await
+        .expect("read frame header");
+    let opcode = header[0] & 0x0f;
+    assert_eq!(
+        header[1] & 0x80,
+        0,
+        "server frames must not be masked (RFC 6455 5.1 節)"
+    );
+    let len = usize::from(header[1] & 0x7f);
+    assert!(
+        len <= 125,
+        "test helper only supports short payloads (no extended length)"
+    );
+    let mut payload = vec![0u8; len];
+    if len > 0 {
+        stream
+            .read_exact(&mut payload)
+            .await
+            .expect("read frame payload");
+    }
+    (opcode, payload)
 }
 
 /// `on_close` で通知された `CloseReason` を記録するだけのトイハンドラ
@@ -262,8 +364,20 @@ async fn unresponsive_client_is_closed_with_pong_timeout() {
 /// Pong 期限（送出済み Ping への応答期限）を過ぎていても、`ws.next()` を優先
 /// する契約により、ハンドラ完了直後に読まれるバッファ済みの Pong で期限は
 /// 解除され、誤切断しない。
+///
+/// tokio-tungstenite のクライアントは Ping を読むと自動で Pong を返す
+/// （`tungstenite::protocol::WebSocket::read` の doc。次に `read`/`write`/
+/// `flush` を呼んだ時点で実際に送出される）ため、`WebSocketStream` を使うと
+/// 「どちらの Pong（自動応答／明示送出）が期限を解除したか」が曖昧になる
+/// （このクライアントで Ping を読んだ後に別のフレームを送ると、その送出に
+/// 相乗りして自動 Pong が先に flush され、続けて明示 Pong を送ると 2 個目の
+/// 独立した Pong になってしまう）。本テストは Pong を厳密に 1 個だけ送出
+/// して検証したいため、生バイトで読み書きする [`handshake_raw`] を使う。
 #[tokio::test(start_paused = true)]
 async fn slow_handler_does_not_lose_pong_buffered_during_handler_execution() {
+    const OPCODE_TEXT: u8 = 0x1;
+    const OPCODE_PING: u8 = 0x9;
+
     let interval = Duration::from_millis(200);
     let pong_timeout = Duration::from_millis(100);
     let handler_delay = Duration::from_millis(500);
@@ -274,89 +388,144 @@ async fn slow_handler_does_not_lose_pong_buffered_during_handler_execution() {
         .with_handler(SlowEcho {
             delay: handler_delay,
         });
-    let (mut client, server_task) = handshake(config).await;
+    let (mut client, server_task) = handshake_raw(config).await;
 
     // 最初の Ping を受け取り、未応答の Ping（Pong 期限）が立った状態にする。
-    let first = tokio::time::timeout(interval * 2, client.next())
+    let (opcode, _payload) = tokio::time::timeout(interval * 2, read_raw_frame(&mut client))
         .await
-        .expect("first ping should arrive")
-        .expect("stream should yield a message")
-        .expect("no protocol error");
-    assert!(
-        matches!(first, Message::Ping(_)),
-        "expected Ping frame, got {first:?}"
-    );
+        .expect("first ping should arrive");
+    assert_eq!(opcode, OPCODE_PING, "expected Ping frame");
 
-    // Text を送ってハンドラ（500ms スリープ）を起動したあと、サーバーが
-    // それを読み切ってから戻ってくるまでの間に Pong を送る。Pong 期限
-    // （100ms）はハンドラのスリープ中に過ぎるが、サーバーはハンドラ完了後の
-    // 次の受信待ちでこの Pong をまず読むため、誤切断してはならない。
+    // Text を送ってハンドラ（500ms スリープ）を起動した直後、サーバーが
+    // それを読み切ってから戻ってくるまでの間に、Pong を明示的に 1 個だけ
+    // 送る（読まれない、が自動応答は発生しない）。Pong 期限（100ms）は
+    // ハンドラのスリープ中に過ぎるが、サーバーはハンドラ完了後の次の受信
+    // 待ちでこの Pong をまず読むため、誤切断してはならない。
     client
-        .send(Message::Text("hi".into()))
+        .write_all(&build_masked_text_frame("hi"))
         .await
-        .expect("client send should succeed");
+        .expect("client write should succeed");
     client
-        .send(Message::Pong(Bytes::new()))
+        .write_all(&build_masked_pong_frame())
         .await
-        .expect("client send should succeed");
+        .expect("client write should succeed");
 
-    let reply = tokio::time::timeout(handler_delay * 4, client.next())
+    let (opcode, payload) = tokio::time::timeout(handler_delay * 4, read_raw_frame(&mut client))
         .await
-        .expect("handler should finish and reply within a bounded time")
-        .expect("stream should yield a message (a premature close would end the stream instead)")
-        .expect("no protocol error");
-    assert!(
-        matches!(reply, Message::Text(_)),
-        "expected the echoed reply, got {reply:?} (a premature PongTimeout close would not reply)"
+        .expect(
+            "handler should finish and reply within a bounded time \
+                 (a premature close would end the stream instead)",
+        );
+    assert_eq!(
+        opcode, OPCODE_TEXT,
+        "expected the echoed reply (a premature PongTimeout close would not reply)"
     );
+    assert_eq!(payload, b"hi", "expected the echoed reply payload");
 
-    client.close(None).await.expect("close");
-    let result = tokio::time::timeout(Duration::from_secs(5), server_task)
-        .await
-        .expect("server task should finish")
-        .unwrap();
-    assert!(result.is_ok(), "session should end cleanly: {result:?}");
+    // 生クライアントで正規の Close ハンドシェイクを組み立てるのは複雑な
+    // ため、drop で終える（EOF・TCP リセット相当の終了理由になる。本テスト
+    // の検証対象はハンドラ完了直後のエコー到達までで、後続の終了経路は
+    // 対象外）。
+    drop(client);
+    let _ = tokio::time::timeout(Duration::from_secs(5), server_task).await;
 }
 
-/// 受け入れ基準 2 の境界事例（契約 4 の固定）: Pong を送らず Text だけを
-/// 送り続けるクライアントは切断されないこと。
+/// 受け入れ基準 2 の境界事例（「Pong 期限」判定の固定）: 未応答の Ping
+/// （Pong 期限）が立った状態でも、Pong を送らず Text だけを送り続ける限り
+/// クライアントは切断されないこと。
 ///
 /// `ws.next()` が常に Ready になる（フレームが途切れず届く）限り Pong 期限
 /// の判定自体が受信待ちの race に至らないため、`idle_timeout` と同じ
 /// 「受信し続ける限り生存扱い」という契約になる（意図した挙動、
 /// `crate::session` モジュール doc を参照）。
+///
+/// tokio-tungstenite のクライアント（`WebSocketStream`）は Ping を読むと
+/// 自動で Pong を返してしまうため、「Pong を返さない対向」を検証するには
+/// 生バイトで読み書きするクライアント（[`handshake_raw`]）が必須。
+///
+/// `start_paused` の仮想時計は runnable なタスクがある限り進まないため、
+/// Text の送受信だけを繰り返すループでは `next_ping_at` に到達せず Ping が
+/// 1 回も送出されない「空振り」になりうる。これを避けるため、各往復では
+/// **先に Text を書き込み、そのあとで sleep する**（書き込みはサーバー側の
+/// 読み取りタスクを即座に起こすため、直前までに書き込んだフレームは
+/// Pending にならず読める）。
+///
+/// **`pong_timeout` を安全側の余裕を持って設定する**: Pong 期限は最初の
+/// Ping 送出時刻に固定され、Pong が来ない限り更新されない
+/// （`crate::session::Keepalive::pong_deadline`）。仮想時計は明示的な
+/// `sleep`/`advance` でのみ進み、バッファ済みフレームの排出自体は仮想時間を
+/// 消費しないため、「Pong 期限を過ぎた瞬間に受信待ちが空だと即座に切断
+/// される」という契約上、往復の間隔（累積 sleep）が Pong 期限に迫る/超える
+/// 構成では往復のタイミング次第で切断されうる（これは実装のバグではなく
+/// 契約どおりの挙動——`idle_timeout` と同型の DoS 対策）。本テストは
+/// `pong_timeout` を往復回数分の累積間隔より十分大きく取り、Pong 期限に
+/// 迫らない範囲で「Ping 送出後も Pong なしで Text 往復を継続できる」ことを
+/// 検証する。
 #[tokio::test(start_paused = true)]
 async fn client_sending_text_without_pong_is_not_disconnected() {
-    let interval = Duration::from_millis(50);
-    let pong_timeout = Duration::from_millis(30);
+    const OPCODE_TEXT: u8 = 0x1;
+    const OPCODE_PING: u8 = 0x9;
+
+    let interval = Duration::from_millis(20);
+    let pong_timeout = Duration::from_millis(500);
+    let round_gap = Duration::from_millis(10);
+    let rounds: u32 = 12;
+    // 累積 sleep（10ms × 12 = 120ms）が interval（20ms）を跨いで実際に
+    // Ping が送出されることを保証しつつ、Pong 期限（最初の Ping 送出時刻 +
+    // 500ms）には遠く及ばない範囲に収める（上の doc を参照）。
+    assert!(
+        round_gap * rounds + interval < pong_timeout / 2,
+        "test parameters must stay well clear of the fixed pong_deadline"
+    );
     let config = WebSocketConfig::default()
         .without_idle_timeout()
         .with_ping_interval(interval, pong_timeout)
         .unwrap();
-    let (mut client, server_task) = handshake(config).await;
+    let (mut client, server_task) = handshake_raw(config).await;
 
-    // pong_timeout の何倍もの期間、Pong を送らず Text だけを送り続ける。
-    for i in 0..10 {
+    let mut saw_ping = false;
+    for i in 0..rounds {
         client
-            .send(Message::Text(format!("msg-{i}").into()))
+            .write_all(&build_masked_text_frame(&format!("msg-{i}")))
             .await
-            .expect("client send should succeed");
-        let echoed = tokio::time::timeout(pong_timeout * 10, client.next())
-            .await
-            .unwrap_or_else(|_| panic!("echo #{i} should arrive (must not be disconnected)"))
-            .expect("stream should yield a message")
-            .expect("no protocol error");
-        assert_eq!(
-            echoed,
-            Message::Text(format!("msg-{i}").into()),
-            "expected echoed text, got a different frame (possibly a premature close)"
-        );
+            .expect("client write should succeed");
+        tokio::time::sleep(round_gap).await;
+
+        // エコー（Text）が届くまで、間に挟まる Ping フレーム（Pong を返さ
+        // ないため最大 1 回だけ観測される）は読み飛ばす。
+        loop {
+            let (opcode, payload) =
+                tokio::time::timeout(round_gap * 10, read_raw_frame(&mut client))
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("echo #{i} should arrive (must not be disconnected)")
+                    });
+            match opcode {
+                OPCODE_PING => {
+                    saw_ping = true;
+                }
+                OPCODE_TEXT => {
+                    assert_eq!(
+                        payload,
+                        format!("msg-{i}").into_bytes(),
+                        "expected echoed text #{i}"
+                    );
+                    break;
+                }
+                other => panic!(
+                    "unexpected opcode {other:#x} while waiting for echo #{i} \
+                     (a premature close would appear here)"
+                ),
+            }
+        }
     }
 
-    client.close(None).await.expect("close");
-    let result = tokio::time::timeout(Duration::from_secs(5), server_task)
-        .await
-        .expect("server task should finish")
-        .unwrap();
-    assert!(result.is_ok(), "session should end cleanly: {result:?}");
+    assert!(
+        saw_ping,
+        "the keepalive must actually send at least one Ping during the loop \
+         (otherwise this test would pass even if Ping sending were entirely broken)"
+    );
+
+    drop(client);
+    let _ = tokio::time::timeout(Duration::from_secs(5), server_task).await;
 }

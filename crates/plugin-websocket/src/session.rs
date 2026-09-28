@@ -252,7 +252,7 @@ where
 /// この分岐はセッション実行中は到達不能になった。将来の保持方式変更に
 /// 備えた防御的コードとして維持する）。
 /// cancel 発火時・アイドルタイムアウト発火時は、[`handle_cancellation`] /
-/// [`handle_idle_timeout`] を呼ぶ**前**に `outbound` を drop し、満杯
+/// [`close_normally`] を呼ぶ**前**に `outbound` を drop し、満杯
 /// チャネルでブロック中の [`crate::handler::WsSender::send`] 呼び出しを
 /// `close_grace` の満了を待たず即座に解放する。
 ///
@@ -315,8 +315,9 @@ where
     let mut keepalive: Option<Keepalive> = config.ping.map(Keepalive::new);
 
     // keepalive 有効時、送出 1 回あたりの詰まり検知に使う期限の長さ
-    // （`pong_timeout`、モジュール doc の 3 番目の仕組み）。[`send_bounded`] の
-    // 呼び出しごとに素通しするだけの値で、ループ中は変化しない。
+    // （`pong_timeout`、モジュール doc「サーバー起点 Ping keepalive」節の
+    // 「送出詰まり」）。[`send_bounded`] の呼び出しごとに素通しするだけの値で、
+    // ループ中は変化しない。
     let stall_timeout: Option<Duration> = config.ping.map(|p| p.pong_timeout);
 
     // inbound（クライアント受信 + アイドル期限）と outbound（サーバー起点
@@ -332,7 +333,8 @@ where
     // 値なしの `break`・素の `?` はコンパイルエラーとなり、脱出点の
     // 網羅が型で保証される。
     let reason = loop {
-        // Ping keepalive の送出判定（モジュール doc の仕組み 1）。受信待ちに
+        // Ping keepalive の送出判定（モジュール doc「サーバー起点 Ping
+        // keepalive」節の「Ping 送出」）。受信待ちに
         // 入る**前**、反復の先頭でのみ判定する（ハンドラ実行中は送らない）。
         // 未応答の Ping（`pong_deadline.is_some()`）がある間は送らない。
         if let Some(ka) = keepalive.as_mut()
@@ -379,7 +381,7 @@ where
         //
         // idle 期限と keepalive のタイマーの両方が有効な場合、早い方だけを
         // 使う（`ws.next()` が優先される点は変わらない。モジュール doc
-        // 「サーバー起点 Ping keepalive」節の仕組み 2 を参照）。同時刻なら
+        // 「サーバー起点 Ping keepalive」節の「Pong 期限」を参照）。同時刻なら
         // `Idle` を優先する（どちらでもポリシー上の差はない、決定的な順序の
         // ためだけの選択）。
         let idle_leg = idle_deadline.map(|d| (d, TimerKind::Idle));
@@ -462,7 +464,8 @@ where
                 );
             }
             InboundEvent::Timer(TimerKind::PongDeadline) => {
-                // 未応答の Ping の期限切れ（モジュール doc の仕組み 2）。
+                // 未応答の Ping の期限切れ（モジュール doc「サーバー起点 Ping
+                // keepalive」節の「Pong 期限」）。
                 // `idle_timeout` と同じ正常な Close ハンドシェイクで終える。
                 outbound.release();
                 return (
@@ -640,7 +643,7 @@ where
                         // Pong を読んだ時点で未応答の Ping の期限を解除する
                         // （payload の照合はしない。unsolicited な Pong でも
                         // 解除する。モジュール doc「サーバー起点 Ping
-                        // keepalive」節の仕組み 2 を参照）。
+                        // keepalive」節の「Pong 期限」を参照）。
                         if let Some(ka) = keepalive.as_mut() {
                             ka.pong_deadline = None;
                         }
@@ -810,8 +813,8 @@ enum SendOutcome {
     /// [`close_grace_expired`] で終了する）。
     CloseGraceExpired,
     /// `stall_timeout` の開始時刻から期限が経過した（呼び出し元は
-    /// [`pong_timeout_expired`] で終了する。Ping keepalive の送出詰まり
-    /// 検知、モジュール doc の仕組み 3 を参照）。
+    /// [`pong_timeout_expired`] で終了する。Ping keepalive の「送出詰まり」
+    /// 検知、モジュール doc「サーバー起点 Ping keepalive」節を参照）。
     Stalled,
     /// 送出に失敗した。
     Failed(tokio_tungstenite::tungstenite::Error),
@@ -825,7 +828,7 @@ enum SendOutcome {
 /// 開始時刻**からの期限として毎回新規に計算するため、呼び出し元が
 /// Pong 期限をどう管理しているかとは無関係に、1 回の送出そのものが
 /// `pong_timeout` を超えてブロックしないことだけを保証する（モジュール doc
-/// 「サーバー起点 Ping keepalive」節の仕組み 3 を参照）。
+/// 「サーバー起点 Ping keepalive」節の「送出詰まり」を参照）。
 ///
 /// 期限超過・cancel で送出中の `ws.send` の future を drop しても安全である:
 /// tokio-tungstenite 0.30 の `Sink::start_send` はフレームを丸ごと tungstenite
@@ -870,7 +873,7 @@ fn close_grace_expired() -> (CloseReason, Result<(), WsError>) {
 /// 超えてブロックしたときのセッション結果。書き込み途中で終わるため
 /// Close ハンドシェイクは送らずに `ws` を drop する（送出失敗・
 /// `close_grace` 超過と同じ「無理に送らない」流儀、モジュール doc
-/// 「サーバー起点 Ping keepalive」節の仕組み 3 を参照）。
+/// 「サーバー起点 Ping keepalive」節の「送出詰まり」を参照）。
 fn pong_timeout_expired() -> (CloseReason, Result<(), WsError>) {
     (CloseReason::PongTimeout, Ok(()))
 }
@@ -1809,7 +1812,7 @@ where
 /// キャンセル `Future`（`crate::handle_upgrade` 経由でコアの世代キャンセル
 /// シグナルへ接続、イシュー #492）発火時の切断シーケンス。
 ///
-/// `handle_idle_timeout` と同型だが、close code は 1001 Going Away
+/// `close_normally` と同型だが、close code は 1001 Going Away
 /// （サーバ側都合による切断であることを示す）を使い、reason は固定文字列
 /// のみで内部状態・エラー詳細・機密を含めない
 /// （`docs/design/ws-cancellation-propagation.md` 8 節）。呼び出し元
@@ -1829,7 +1832,7 @@ where
 }
 
 /// Close フレーム送出 → クライアント応答（または EOF・エラー）のドレインを
-/// `deadline` で有界化する共通ヘルパー（[`handle_idle_timeout`] /
+/// `deadline` で有界化する共通ヘルパー（[`close_normally`] /
 /// [`handle_cancellation`] / `WsSender::close` 経路で共有）。呼び出し元は
 /// 通常その時点から `close_grace`（`WebSocketConfig::close_grace`、既定 10 秒）
 /// 後を渡し、終了経路の排出中に見つかった Close 指示では排出と共有する残りの
@@ -5136,7 +5139,7 @@ mod tests {
     mod keepalive_tests {
         use super::*;
 
-        /// 契約 5（送出詰まり）: `stall_timeout` を超えてブロックした送出は
+        /// 「送出詰まり」: `stall_timeout` を超えてブロックした送出は
         /// `SendOutcome::Stalled` になり、`stall_timeout` 程度で有界に打ち切
         /// られること（cancel が発火しない構成でも打ち切れることを確認する）。
         #[tokio::test]
@@ -5184,7 +5187,7 @@ mod tests {
             );
         }
 
-        /// 契約 5 の end-to-end 固定: 送出詰まりが `run_session_inner` を実際に
+        /// 「送出詰まり」の end-to-end 固定: 送出詰まりが `run_session_inner` を実際に
         /// `CloseReason::PongTimeout` で終わらせること（上の
         /// `send_bounded_stalled_send_is_bounded_by_stall_timeout` は
         /// `send_bounded` 単体の白箱テストで、`run_session_inner` 側の分岐
@@ -5237,7 +5240,7 @@ mod tests {
             assert!(result.is_ok(), "expected Ok(()), got {result:?}");
         }
 
-        /// 契約 5 の期限起点（送出**開始時刻**から数える）: 呼び出し前に
+        /// 「送出詰まり」の期限起点（送出**開始時刻**から数える）: 呼び出し前に
         /// どれだけ時間が経っていても、送出自体が `stall_timeout` 以内に
         /// 完了すれば `Stalled` にならないこと。
         #[tokio::test]
@@ -5280,7 +5283,7 @@ mod tests {
             assert!(matches!(received, Ok(Message::Ping(_))));
         }
 
-        /// 契約 1・8: `WebSocketConfig::with_ping_interval` が送出する Ping は
+        /// 「Ping 送出」: `WebSocketConfig::with_ping_interval` が送出する Ping は
         /// `idle_timeout` をリセットしない（既存の outbound push と同じ契約、
         /// `outbound_push_does_not_reset_idle_timeout` と同型）。仮想時間
         /// （`start_paused`）で駆動し、Ping が idle_timeout をリセットする
