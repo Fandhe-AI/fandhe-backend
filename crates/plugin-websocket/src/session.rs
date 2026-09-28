@@ -2067,12 +2067,32 @@ where
 ///   依存しない有界化を採用する: Close 応答を返して TCP は開けたままにする
 ///   協調的なクライアントは無通信になった時点で `LINGER_IDLE` 以内に
 ///   終了し、応答しない・ヘッダのみ送って沈黙する相手も同じく
-///   `LINGER_IDLE` で終了する。極小フレームを送り続けて無通信を作らない
-///   相手（トリクラー）だけが `deadline` まで到達しうるが、これは
-///   [`close_and_drain`] が bounded な他の全終了経路（idle timeout・
-///   キャンセル・`WsSender::close`）で元々許容している残存リスクと同型
-///   であり、本経路固有の後退ではない。
+///   `LINGER_IDLE` で終了する。
+/// - `LINGER_IDLE` は無通信を検知したときの打ち切りにすぎず、`read_until`
+///   は毎回の read 直前に `Instant::now() + LINGER_IDLE` を計算し直すため、
+///   これだけでは上限にならない。攻撃者が `LINGER_IDLE` 未満の間隔で
+///   1 バイトずつ送り続ける（トリクラー）と、無通信状態が一度も生じず、
+///   読み捨てループは `deadline`（`close_grace`、既定 10 秒）一杯まで
+///   延長され続けてしまう（codex/review 指摘、PR #744。攻撃者が安価に
+///   持続できる接続・タスク占有として AGENTS.md の DoS 上限の後退に
+///   該当する）。これを防ぐため、読み捨てループへ入る直前に一度だけ
+///   `linger_deadline = min(deadline, Instant::now() + LINGER_TOTAL)` を
+///   計算し、以後の全 `read_until` をこの `linger_deadline` で上書きする
+///   （`Instant::now()` を都度足し直さない固定値）。`LINGER_TOTAL` は
+///   既定 `close_grace`（10 秒）より十分小さく、トリクラーが無通信を
+///   作らなくても `linger_deadline` を過ぎた時点で必ず打ち切られる。
+///   正当な cooperative クライアント（Close 応答を返してすぐ TCP を
+///   閉じる、または単に無通信になる）は `LINGER_IDLE` 程度で終了するため
+///   `LINGER_TOTAL` の短縮による実害はない。
 const LINGER_IDLE: Duration = Duration::from_secs(2);
+
+/// [`handle_message_too_big`] の読み捨てループ全体（lingering close）の
+/// 総上限。上記 doc の「トリクラー」対策本体。`LINGER_IDLE` の無通信検知を
+/// 補完し、相手が送信を継続し続けても読み捨てループがこの上限を超えて
+/// 延長されないことを保証する（`Instant::now()` 起点で固定 1 回だけ計算し、
+/// 個々の read が成功するたびに伸びる `LINGER_IDLE` とは異なり延長されない）。
+/// `close_grace` の既定値（10 秒）より十分小さい値とする。
+const LINGER_TOTAL: Duration = Duration::from_secs(3);
 
 async fn handle_message_too_big<S>(mut ws: WebSocketStream<S>, deadline: Instant)
 where
@@ -2098,15 +2118,29 @@ where
         let _ = raw.shutdown().await;
 
         // 有界の読み捨て（lingering close）。上の doc「読み捨てループ自体は
-        // 〜」を参照。1 回の read を `LINGER_IDLE`（全体の残り期限が短ければ
-        // それ）で区切り、無通信（タイムアウト）・EOF・エラーのいずれかで
-        // 終了する。
+        // 〜」「`LINGER_IDLE` は無通信を検知したときの〜」を参照。
+        //
+        // `linger_deadline` はループへ入る直前に一度だけ固定する
+        // （`Instant::now()` を都度足し直さない）。これにより、相手が
+        // `LINGER_IDLE` 未満の間隔で送信を続けて無通信を作らなくても、
+        // 読み捨てループは `linger_deadline` を超えて延長されない
+        // （トリクラー対策、上記 doc 参照）。
+        let linger_deadline = std::cmp::min(deadline, Instant::now() + LINGER_TOTAL);
+
+        // 1 回の read を `LINGER_IDLE`（`linger_deadline` までの残りが
+        // 短ければそれ）で区切り、無通信（タイムアウト）・EOF・エラー・
+        // `linger_deadline` 到達のいずれかで終了する。
         let mut buf = [0u8; 8192];
         loop {
-            let read_until = std::cmp::min(Instant::now() + LINGER_IDLE, deadline);
+            let read_until = std::cmp::min(Instant::now() + LINGER_IDLE, linger_deadline);
             match tokio::time::timeout_at(read_until, raw.read(&mut buf)).await {
                 Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
-                Ok(Ok(_)) => continue,
+                Ok(Ok(_)) => {
+                    if Instant::now() >= linger_deadline {
+                        break;
+                    }
+                    continue;
+                }
             }
         }
     };
@@ -3220,6 +3254,95 @@ mod tests {
              ({CLOSE_GRACE:?}); expected termination around LINGER_IDLE, took {elapsed:?}"
         );
         drop(client);
+    }
+
+    /// codex/review 指摘（PR #744、P0）の回帰テスト: 受信上限超過後の読み捨て
+    /// ループ（`handle_message_too_big`）は、相手が `LINGER_IDLE` 未満の間隔で
+    /// 送信を続けて無通信を作らない（トリクラー）場合でも、`LINGER_TOTAL` を
+    /// 超えて延長されずに終了すること。
+    ///
+    /// `close_grace` を `LINGER_TOTAL` より十分大きく設定し、無通信を作らない
+    /// 相手に対しても、セッション終了が `close_grace` 全量ではなく
+    /// `LINGER_TOTAL` 程度で起きることを確認する（`LINGER_IDLE` 単位の無通信
+    /// タイムアウトだけでは `read_until` が読み取り成功のたびに
+    /// `Instant::now() + LINGER_IDLE` へ延長され続け、トリクラーに対して
+    /// 上限にならない、という #719 の回帰そのものを検証する）。
+    #[tokio::test(start_paused = true)]
+    async fn message_too_big_ends_promptly_even_when_peer_trickles() {
+        const CLOSE_GRACE: Duration = Duration::from_secs(30);
+        // `LINGER_IDLE`（2 秒）未満の間隔で送り続け、無通信を作らない。
+        const TRICKLE_INTERVAL: Duration = Duration::from_millis(500);
+        // `LINGER_TOTAL`（3 秒）を大きく超えるまでトリクルを継続する。
+        const TRICKLE_ROUNDS: u32 = 40; // 40 * 500ms = 20 秒分
+
+        let mut config = test_config();
+        config.close_grace = CLOSE_GRACE;
+        config.max_message_size = 64;
+        config.max_frame_size = 64;
+        let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+        let (server_side, client_side) = tokio::io::duplex(1 << 16);
+        let (tx, rx) = handler::channel(handler::DEFAULT_OUTBOUND_CAPACITY);
+        let conn_ctx = test_conn_ctx(tx);
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session_inner(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+        let oversized = "x".repeat(256);
+        client
+            .send(Message::Text(oversized.into()))
+            .await
+            .expect("client send should succeed at the transport layer");
+        let triggered_at = Instant::now();
+
+        // クライアントは Close 1009 を受け取っても応答せず、代わりに生の
+        // ストリームへ `TRICKLE_INTERVAL` 間隔で 1 バイトずつ書き込み続ける
+        // （tungstenite の Close ハンドシェイクには参加しない、最も安価な
+        // トリクラー。有効なフレームである必要はない。読み捨てループは
+        // 生バイト列をそのまま破棄するだけのため）。
+        let raw_client = client.get_mut();
+        for _ in 0..TRICKLE_ROUNDS {
+            if raw_client.write_all(&[0u8]).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(TRICKLE_INTERVAL).await;
+        }
+        drop(client);
+
+        let (reason, result) = tokio::time::timeout(Duration::from_secs(600), session_handle)
+            .await
+            .expect("session should finish within timeout")
+            .expect("session task should not panic");
+        assert!(
+            matches!(reason, CloseReason::MessageTooLarge),
+            "expected MessageTooLarge, got {reason:?}"
+        );
+        assert!(result.is_err(), "expected Err(..), got {result:?}");
+
+        let elapsed = triggered_at.elapsed();
+        assert!(
+            elapsed < CLOSE_GRACE,
+            "a trickling peer must not hold the session open for the full close_grace \
+             ({CLOSE_GRACE:?}) by avoiding LINGER_IDLE-based idle detection; \
+             expected termination around LINGER_TOTAL, took {elapsed:?}"
+        );
+        assert!(
+            elapsed < LINGER_TOTAL * 2,
+            "termination must be bounded by LINGER_TOTAL ({LINGER_TOTAL:?}) regardless of \
+             continued trickling; took {elapsed:?}"
+        );
     }
 
     /// 脱出点対応表: ハンドラが `WsOutcome::Close` →
