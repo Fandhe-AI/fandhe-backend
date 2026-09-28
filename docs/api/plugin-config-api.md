@@ -73,6 +73,20 @@ RFC 6455 ハンドシェイク検証・101 応答・tokio-tungstenite へのフ�
   受信側 `Receiver` はハンドラが返るまで drop されず自己デッドロックになる
   （世代キャンセル発火時のみ解除される）。`on_open` 等から `tokio::spawn`
   した別タスクでのみ使うこと
+- 注意（`idle_timeout` と Ping keepalive の併用。設計判断は
+  `docs/design/ws-connection-context-and-close.md` 14 節参照）:
+  `idle_timeout` はクライアントからのフレーム受信でのみリセットされ、
+  `WsSender::send`/`try_send` による push・`with_ping_interval` によるサーバー
+  起点 Ping 送出では延長されない。push だけを受けている受信専用クライアント
+  も死活監視したい場合は `with_ping_interval` を併用し、**`interval +
+  pong_timeout` を `idle_timeout` より小さく**設定することを推奨する（例:
+  既定 60 秒に対し `with_ping_interval(30s, 10s)`）。Pong の受信は他の全
+  フレーム種別と同じく `idle_timeout` もリセットするため、生存クライアント
+  は Ping への Pong で切断されず、Pong を返さない対向は `idle_timeout` より
+  先に `CloseReason::PongTimeout` で切断される（早い方のタイマーが勝つ契約）。
+  逆に `interval` を `idle_timeout` 以上にすると、最初の Ping が送られる前に
+  `idle_timeout` が発火してしまう誤設定になるため避ける。検証は
+  `crates/plugin-websocket/tests/idle_keepalive_e2e.rs`
 
 ### 2.2 plugin-graphql（`graphql`）
 

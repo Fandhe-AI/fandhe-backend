@@ -224,7 +224,11 @@ where
 /// Ok(()))` で終了する（ポリシー駆動の正常終了。プロトコル違反ではないため
 /// `WsError` の新規 variant は追加しない）。
 /// `idle_timeout` が `None`（`without_idle_timeout` による明示的無効化）の
-/// 場合は従来どおり無期限に受信を待つ。
+/// 場合は従来どおり無期限に受信を待つ。サーバー起点の送出（outbound push・
+/// Ping keepalive の送出・`WsOutcome::Reply` 等）はこの期限を延長しない
+/// （リセット条件・Ping keepalive 併用時の推奨設定はイシュー #714、
+/// [`crate::config::WebSocketConfig::idle_timeout`] フィールドの doc を
+/// 参照）。
 ///
 /// # サイズ上限とハンドラ呼び出し順序（DoS 対策の維持、Issue #179 セキュリティ考慮）
 ///

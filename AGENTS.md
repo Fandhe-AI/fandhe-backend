@@ -447,6 +447,32 @@ Issue #175 対応。`crates/plugin-websocket` のセッション処理
 への `close_grace` 適用は `crates/plugin-websocket/tests/idle_timeout.rs` の統合
 テストで検証する。
 
+### リセット条件と Ping keepalive との併用（イシュー #714）
+
+アイドル期限はクライアントからのフレーム受信（Text/Binary/Ping/Pong の全種別）
+でのみリセットされ、`WsSender::send`/`try_send` による push・
+`WebSocketConfig::with_ping_interval`（イシュー #713）によるサーバー起点 Ping
+送出・`WsOutcome::Reply` の送出のいずれでも延長されない。そのため CDP 互換
+サーバーのような「サーバーが push するだけでクライアントは受信専用」の用途では、
+`idle_timeout` 単体では生存クライアントを維持できない。
+
+死活監視したい場合は `with_ping_interval` を併用し、**`interval +
+pong_timeout` を `idle_timeout` より小さく**設定することを推奨する（例: 既定
+60 秒に対し `with_ping_interval(30s, 10s)`）。Pong の受信は他の全フレーム種別と
+同じくアイドル期限もリセットするため、生存クライアントは Ping への自動 Pong で
+`idle_timeout` の発火前に期限が延長され続け、Pong を返さない対向は
+`idle_timeout` より先に Pong 期限（`CloseReason::PongTimeout`、早い方のタイマー
+が勝つ契約）で切断される。逆に `interval` を `idle_timeout` 以上にする誤設定は、
+最初の Ping が送られる前に `idle_timeout` が発火してしまい、生存クライアント
+でも切断されるため避ける。
+
+推奨設定・誤設定双方の挙動は `crates/plugin-websocket/tests/
+idle_keepalive_e2e.rs` の e2e テスト 4 本で固定する（push-only トラフィックでの
+`idle_timeout` 発火・keepalive 併用時の生存維持・死活検出・
+`interval >= idle_timeout` 誤設定の固定）。doc は
+`WebSocketConfig::idle_timeout` フィールド・`with_idle_timeout`・
+`with_ping_interval` の各 doc comment を参照。
+
 ## 規約: `WsMessageHandler::on_open` フック（サーバー起点 push、イシュー #671）
 
 親 #669「サーバー起点で任意タイミングに push できる WebSocket API」の第 2 段。

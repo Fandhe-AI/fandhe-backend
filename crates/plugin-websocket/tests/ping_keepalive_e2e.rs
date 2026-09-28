@@ -5,7 +5,7 @@
 //! `WebSocketConfig::with_ping_interval` は `idle_timeout` とは独立した
 //! 死活監視のため、`idle_timeout` を無効化した構成で Ping keepalive 単体の
 //! 挙動を検証する（両者を組み合わせた場合の推奨設定・doc・組み合わせ
-//! テストは #714 のスコープ）。
+//! テストは `tests/idle_keepalive_e2e.rs`（イシュー #714）を参照）。
 //!
 //! 実時間ではなく仮想時間（`#[tokio::test(start_paused = true)]`）で駆動し、
 //! テスト自体が実時間で待たずに決定的に終わることを保証する。
