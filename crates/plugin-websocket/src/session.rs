@@ -108,11 +108,15 @@
 //!    送らない（次の反復まで遅れる）。
 //! 2. **Pong 期限**: Ping 送出時刻 + `pong_timeout`。判定は受信待ちの race の
 //!    中だけで行い（[`TimerKind::PongDeadline`]）、ws の読み取りを優先する
-//!    ため、バッファ済みの Pong があれば先に読んで期限を解除する（Pong を
-//!    読んだ時点で期限解除、payload の照合はしない）。期限を過ぎても読める
-//!    フレームが残っている間は判定に至らず、受信待ちで読めるフレームが
-//!    なくなった時点で切断が確定する（Pong を返さない対向も、フレームが
-//!    途切れず届いている間は切断しない）。
+//!    ため、バッファ済みの Pong があれば先に読んで期限を解除する。各 Ping には
+//!    単調増加する 8 バイトの識別用ペイロードを付与し（[`Keepalive::
+//!    next_payload`]、対向による予測耐性は要求しない死活監視用途のため乱数は
+//!    使わない）、Pong の payload が送出中の Ping のものと一致した場合のみ
+//!    期限を解除する（一致しない Pong は無視して継続、レビュー指摘対応。
+//!    対向が Ping に応答せず任意の Pong を送り続けても期限は解除されない）。
+//!    期限を過ぎても読めるフレームが残っている間は判定に至らず、受信待ちで
+//!    読めるフレームがなくなった時点で切断が確定する（Pong を返さない対向も、
+//!    フレームが途切れず届いている間は切断しない）。
 //! 3. **送出詰まり**: keepalive 有効時、[`send_bounded`] を経由する 1 回の
 //!    送出（Ping・Reply・outbound push・`drain_before_reply`/
 //!    `drain_to_close` 中の送出）がその送出の**開始時刻**から
@@ -336,23 +340,30 @@ where
         // Ping keepalive の送出判定（モジュール doc「サーバー起点 Ping
         // keepalive」節の「Ping 送出」）。受信待ちに
         // 入る**前**、反復の先頭でのみ判定する（ハンドラ実行中は送らない）。
-        // 未応答の Ping（`pong_deadline.is_some()`）がある間は送らない。
+        // 未応答の Ping（`pending.is_some()`）がある間は送らない。
         if let Some(ka) = keepalive.as_mut()
-            && ka.pong_deadline.is_none()
+            && ka.pending.is_none()
             && Instant::now() >= ka.next_ping_at
         {
+            // 一致確認用の識別ペイロードを Ping ごとに新規発行する
+            // （レビュー指摘対応: unsolicited な Pong で誤って期限解除
+            // されないようにする、モジュール doc「Pong 期限」節を参照）。
+            let payload = ka.next_payload();
             match send_bounded(
                 &mut ws,
                 cancel.as_mut(),
                 &mut outbound.close,
-                Message::Ping(Bytes::new()),
+                Message::Ping(payload.clone()),
                 stall_timeout,
             )
             .await
             {
                 SendOutcome::Sent => {
                     let now = Instant::now();
-                    ka.pong_deadline = Some(now + ka.pong_timeout);
+                    ka.pending = Some(PendingPing {
+                        deadline: now + ka.pong_timeout,
+                        payload,
+                    });
                     ka.next_ping_at = now + ka.interval;
                 }
                 SendOutcome::Cancelled => {
@@ -639,13 +650,16 @@ where
                     // 委譲しない（ハンドラ契約は Text/Binary のみを扱う、
                     // `handler` モジュールの doc を参照）。
                     Message::Ping(_) | Message::Frame(_) => {}
-                    Message::Pong(_) => {
-                        // Pong を読んだ時点で未応答の Ping の期限を解除する
-                        // （payload の照合はしない。unsolicited な Pong でも
-                        // 解除する。モジュール doc「サーバー起点 Ping
-                        // keepalive」節の「Pong 期限」を参照）。
-                        if let Some(ka) = keepalive.as_mut() {
-                            ka.pong_deadline = None;
+                    Message::Pong(payload) => {
+                        // 送出中の Ping の識別ペイロードと一致した場合のみ
+                        // 期限を解除する（レビュー指摘対応。一致しない
+                        // Pong——unsolicited なものや古い Ping への遅延応答
+                        // ——は無視して継続する。モジュール doc「サーバー
+                        // 起点 Ping keepalive」節の「Pong 期限」を参照）。
+                        if let Some(ka) = keepalive.as_mut()
+                            && ka.pending.as_ref().is_some_and(|p| p.payload == payload)
+                        {
+                            ka.pending = None;
                         }
                     }
                 }
@@ -891,6 +905,18 @@ enum TimerKind {
     PingDue,
 }
 
+/// 未応答の Ping 1 個の状態（Pong 期限 + 一致確認用の識別ペイロード、
+/// レビュー指摘対応）。両フィールドは常に対で立つ・外れる
+/// （[`Keepalive::pending`] を参照）。
+struct PendingPing {
+    /// この Ping への Pong 期限。
+    deadline: Instant,
+    /// この Ping に付与した識別ペイロード。対応する Pong の payload と
+    /// 一致した場合のみ期限を解除する（モジュール doc「サーバー起点 Ping
+    /// keepalive」節の「Pong 期限」を参照）。
+    payload: Bytes,
+}
+
 /// Ping keepalive（`WebSocketConfig::with_ping_interval`）のランタイム状態。
 /// `run_session_inner` が `config.ping` から構築し、ループの先頭でのみ送出を
 /// 判定する（モジュール doc「サーバー起点 Ping keepalive」節を参照）。
@@ -902,8 +928,11 @@ struct Keepalive {
     /// 次に Ping を送出すべき時刻（前回送出時刻 + `interval`。未応答の
     /// Ping がある間は参照されない）。
     next_ping_at: Instant,
-    /// 未応答の Ping の Pong 期限（`None` は未送出、または Pong 受信済み）。
-    pong_deadline: Option<Instant>,
+    /// 未応答の Ping（`None` は未送出、または一致する Pong 受信済み）。
+    pending: Option<PendingPing>,
+    /// 次に送出する Ping へ付与する識別ペイロードの単調増加シーケンス
+    /// 番号（[`Keepalive::next_payload`] が消費する）。
+    next_seq: u64,
 }
 
 impl Keepalive {
@@ -912,7 +941,8 @@ impl Keepalive {
             interval: config.interval,
             pong_timeout: config.pong_timeout,
             next_ping_at: Instant::now() + config.interval,
-            pong_deadline: None,
+            pending: None,
+            next_seq: 0,
         }
     }
 
@@ -920,10 +950,21 @@ impl Keepalive {
     /// 未応答の Ping があればその Pong 期限、なければ次回 Ping 予定時刻
     /// （反復先頭のハード判定へ戻すだけの覚醒）を返す。
     fn timer_leg(&self) -> (Instant, TimerKind) {
-        match self.pong_deadline {
-            Some(deadline) => (deadline, TimerKind::PongDeadline),
+        match &self.pending {
+            Some(pending) => (pending.deadline, TimerKind::PongDeadline),
             None => (self.next_ping_at, TimerKind::PingDue),
         }
+    }
+
+    /// 次に送出する Ping へ付与する識別ペイロードを発行する（8 バイト
+    /// big-endian の単調増加シーケンス番号）。呼び出しごとに異なる値を
+    /// 返し、対応する Pong の一致確認（[`Keepalive::pending`]）に使う。
+    /// 死活監視用の照合が目的で対向による予測耐性は要求しないため、乱数
+    /// 依存は追加しない（pay-for-what-you-use、レビュー指摘対応）。
+    fn next_payload(&mut self) -> Bytes {
+        let payload = Bytes::copy_from_slice(&self.next_seq.to_be_bytes());
+        self.next_seq = self.next_seq.wrapping_add(1);
+        payload
     }
 }
 

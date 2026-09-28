@@ -136,9 +136,11 @@ fn build_masked_text_frame(payload: &str) -> Vec<u8> {
 /// RFC 6455 準拠のマスク付き Pong フレームを生バイト列として構築する
 /// （[`build_masked_text_frame`] と同型。tokio-tungstenite クライアントの
 /// 自動 Pong 応答を経由せず、テストから明示的に 1 個だけ Pong を送るために
-/// 使う）。
-fn build_masked_pong_frame() -> Vec<u8> {
-    build_masked_control_frame(0xa, &[])
+/// 使う）。`payload` はサーバーが Pong 期限解除の一致確認に使う識別
+/// ペイロード（イシュー #713 レビュー指摘対応）で、一致させたい対象の
+/// Ping フレームから読み取った値をそのまま渡す。
+fn build_masked_pong_frame(payload: &[u8]) -> Vec<u8> {
+    build_masked_control_frame(0xa, payload)
 }
 
 /// [`build_masked_text_frame`] / [`build_masked_pong_frame`] の共通実装。
@@ -354,6 +356,75 @@ async fn unresponsive_client_is_closed_with_pong_timeout() {
     );
 }
 
+/// PR #738 レビュー指摘（イシュー #713）の固定: 送出中の Ping と一致しない
+/// payload の Pong は無視され、Pong 期限が解除されないこと。対向が
+/// サーバーの Ping に一切応答せず、任意の（詐称した）Pong を送り続けても
+/// `CloseReason::PongTimeout` で切断される契約を検証する
+/// （`crate::session` モジュール doc「サーバー起点 Ping keepalive」節の
+/// 「Pong 期限」を参照）。
+///
+/// tokio-tungstenite のクライアント（`WebSocketStream`）は Ping を読むと
+/// 正しい payload で自動的に Pong を返してしまうため、任意の（間違った）
+/// payload を送出するには生バイトで読み書きするクライアント
+/// （[`handshake_raw`]）が必須。
+#[tokio::test(start_paused = true)]
+async fn pong_with_mismatched_payload_does_not_clear_pong_timeout() {
+    const OPCODE_PING: u8 = 0x9;
+
+    let interval = Duration::from_millis(200);
+    let pong_timeout = Duration::from_millis(100);
+    let close_grace = Duration::from_millis(100);
+    let reason = Arc::new(Mutex::new(None));
+    let config = WebSocketConfig::default()
+        .without_idle_timeout()
+        .with_ping_interval(interval, pong_timeout)
+        .unwrap()
+        .with_close_grace(close_grace)
+        .with_handler(RecordClose {
+            reason: reason.clone(),
+        });
+    let (mut client, server_task) = handshake_raw(config).await;
+
+    // 送出された Ping の payload を読み取り、それとは異なる payload の
+    // Pong を組み立てる（unsolicited・詐称の再現）。
+    let (opcode, ping_payload) = tokio::time::timeout(interval * 2, read_raw_frame(&mut client))
+        .await
+        .expect("first ping should arrive");
+    assert_eq!(opcode, OPCODE_PING, "expected Ping frame");
+
+    let mut wrong_payload = ping_payload.clone();
+    if wrong_payload.is_empty() {
+        wrong_payload.push(0);
+    } else {
+        wrong_payload[0] ^= 0xff;
+    }
+    assert_ne!(
+        wrong_payload, ping_payload,
+        "test payload must actually differ from the real ping payload"
+    );
+
+    client
+        .write_all(&build_masked_pong_frame(&wrong_payload))
+        .await
+        .expect("client write should succeed");
+
+    let result = tokio::time::timeout(interval + pong_timeout + close_grace * 4, server_task)
+        .await
+        .expect("server must not hang: pong timeout + close_grace bound the wait")
+        .unwrap();
+    assert!(
+        result.is_ok(),
+        "pong timeout is policy-driven, not a protocol error: {result:?}"
+    );
+    assert_eq!(
+        *reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        Some(CloseReason::PongTimeout),
+        "a Pong with a mismatched payload must not clear the pong deadline"
+    );
+}
+
 /// 受け入れ基準 2・3 の境界事例: `pong_timeout` より長く実行されるハンドラの
 /// 実行中に Text → Pong の順で届いていた場合でも、誤って `PongTimeout` に
 /// しないこと。
@@ -391,7 +462,10 @@ async fn slow_handler_does_not_lose_pong_buffered_during_handler_execution() {
     let (mut client, server_task) = handshake_raw(config).await;
 
     // 最初の Ping を受け取り、未応答の Ping（Pong 期限）が立った状態にする。
-    let (opcode, _payload) = tokio::time::timeout(interval * 2, read_raw_frame(&mut client))
+    // payload はサーバーが Pong 期限解除の一致確認に使う識別ペイロード
+    // （イシュー #713 レビュー指摘対応）で、この Ping への正当な応答として
+    // 認識させるため後続の明示 Pong にそのまま使う。
+    let (opcode, payload) = tokio::time::timeout(interval * 2, read_raw_frame(&mut client))
         .await
         .expect("first ping should arrive");
     assert_eq!(opcode, OPCODE_PING, "expected Ping frame");
@@ -406,7 +480,7 @@ async fn slow_handler_does_not_lose_pong_buffered_during_handler_execution() {
         .await
         .expect("client write should succeed");
     client
-        .write_all(&build_masked_pong_frame())
+        .write_all(&build_masked_pong_frame(&payload))
         .await
         .expect("client write should succeed");
 
@@ -452,7 +526,7 @@ async fn slow_handler_does_not_lose_pong_buffered_during_handler_execution() {
 ///
 /// **`pong_timeout` を安全側の余裕を持って設定する**: Pong 期限は最初の
 /// Ping 送出時刻に固定され、Pong が来ない限り更新されない
-/// （`crate::session::Keepalive::pong_deadline`）。仮想時計は明示的な
+/// （`crate::session::Keepalive::pending`）。仮想時計は明示的な
 /// `sleep`/`advance` でのみ進み、バッファ済みフレームの排出自体は仮想時間を
 /// 消費しないため、「Pong 期限を過ぎた瞬間に受信待ちが空だと即座に切断
 /// される」という契約上、往復の間隔（累積 sleep）が Pong 期限に迫る/超える
