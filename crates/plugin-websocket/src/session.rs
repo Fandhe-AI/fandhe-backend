@@ -361,10 +361,10 @@ where
                 SendOutcome::Sent => {
                     let now = Instant::now();
                     ka.pending = Some(PendingPing {
-                        deadline: now + ka.pong_timeout,
+                        deadline: checked_deadline(now, ka.pong_timeout),
                         payload,
                     });
-                    ka.next_ping_at = now + ka.interval;
+                    ka.next_ping_at = checked_deadline(now, ka.interval);
                 }
                 SendOutcome::Cancelled => {
                     outbound.release();
@@ -905,6 +905,34 @@ enum TimerKind {
     PingDue,
 }
 
+/// `now + duration` を panic させずに計算する（ライブラリ境界を越えて
+/// panic させない契約、`.claude/rules/coding-rust.md`）。`with_ping_interval`
+/// は `interval` / `pong_timeout` に任意の `Duration`（`Duration::MAX` 等）を
+/// 構築時検証なしで受け付けるため、[`Keepalive::new`] の初回期限計算・
+/// Ping 送出ごとの Pong 期限/次回送出時刻の再計算のいずれも `Instant` の
+/// 加算がオーバーフローしうる（コードレビュー指摘対応、PR #738）。
+///
+/// `Instant::checked_add` が失敗した場合は二分探索で `now` から加算可能な
+/// 最大の `Duration` を求めて返す（実質的に「表現可能な最遠の将来」になり、
+/// 死活監視としては Pong を待ち続ける安全側の挙動になる。探索は
+/// `duration` の秒数の対数回で終わる有界ループで `unsafe` は使わない）。
+fn checked_deadline(now: Instant, duration: Duration) -> Instant {
+    if let Some(deadline) = now.checked_add(duration) {
+        return deadline;
+    }
+    let mut lo = Duration::ZERO;
+    let mut hi = duration;
+    while hi - lo > Duration::from_secs(1) {
+        let mid = lo + (hi - lo) / 2;
+        if now.checked_add(mid).is_some() {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    now.checked_add(lo).unwrap_or(now)
+}
+
 /// 未応答の Ping 1 個の状態（Pong 期限 + 一致確認用の識別ペイロード、
 /// レビュー指摘対応）。両フィールドは常に対で立つ・外れる
 /// （[`Keepalive::pending`] を参照）。
@@ -940,7 +968,7 @@ impl Keepalive {
         Self {
             interval: config.interval,
             pong_timeout: config.pong_timeout,
-            next_ping_at: Instant::now() + config.interval,
+            next_ping_at: checked_deadline(Instant::now(), config.interval),
             pending: None,
             next_seq: 0,
         }
@@ -5382,6 +5410,43 @@ mod tests {
                     && elapsed < expected + Duration::from_millis(40),
                 "session must end at idle_timeout (+ close_grace), not later: elapsed {elapsed:?}"
             );
+        }
+
+        /// PR #738 レビュー指摘（P1）の回帰テスト: `checked_deadline` は
+        /// `Instant::checked_add` がオーバーフローする極端な `Duration`
+        /// （`Duration::MAX`）でも panic せず、`now` 以降の `Instant` を返す。
+        /// `with_ping_interval` は構築時に `interval`/`pong_timeout` の
+        /// 上限を検証しないため、`Keepalive::new`・Ping 送出ごとの期限再計算
+        /// のいずれもこの経路を通ることを確認する。
+        #[test]
+        fn checked_deadline_does_not_panic_on_overflowing_duration() {
+            let now = Instant::now();
+            let deadline = checked_deadline(now, Duration::MAX);
+            assert!(deadline >= now);
+        }
+
+        /// `checked_deadline` はオーバーフローしない通常の `Duration` では
+        /// `now + duration` と同じ結果を返す（フォールバック経路が通常経路の
+        /// 挙動を変えないことの確認）。
+        #[test]
+        fn checked_deadline_matches_plain_addition_when_representable() {
+            let now = Instant::now();
+            let duration = Duration::from_secs(30);
+            assert_eq!(checked_deadline(now, duration), now + duration);
+        }
+
+        /// PR #738 レビュー指摘（P1）の回帰テスト: `with_ping_interval` に
+        /// `Duration::MAX` を渡した設定で `Keepalive::new` を呼んでも panic
+        /// しない（`with_ping_interval` 自体は構築時にゼロ以外の任意の
+        /// `Duration` を受け付けるため、`Keepalive::new` 側で吸収する契約）。
+        #[test]
+        fn keepalive_new_does_not_panic_on_overflowing_config() {
+            let config = PingKeepalive {
+                interval: Duration::MAX,
+                pong_timeout: Duration::MAX,
+            };
+            let keepalive = Keepalive::new(config);
+            assert!(keepalive.pending.is_none());
         }
     }
 }

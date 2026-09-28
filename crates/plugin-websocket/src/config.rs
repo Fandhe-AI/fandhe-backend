@@ -500,16 +500,21 @@ impl WebSocketConfig {
 
     /// サーバー起点 Ping による死活監視を有効化する（イシュー #713）。
     ///
-    /// `interval` ごとにサーバーから `Message::Ping`（固定の空ペイロード）を
-    /// 送出し、送出時点から `pong_timeout` 以内にクライアントの Pong が
-    /// 届かなければアイドルタイムアウトと同型の正常な Close ハンドシェイクで
-    /// 切断する（[`crate::handler::CloseReason::PongTimeout`]）。期限切れは
-    /// 受信待ちで読めるフレームがなくなった時点で判定し、それまでに届いて
-    /// いるフレームは先に読んで処理する（Pong を返さない対向も、フレームが
-    /// 途切れず届いている間は切断しない。`crate::session` モジュール doc
-    /// 「サーバー起点 Ping keepalive」節を参照）。1 回の送出
-    /// （Ping・Reply・outbound push 等）が `pong_timeout` を超えてブロック
-    /// した場合も同じ `PongTimeout` で終了する。
+    /// `interval` ごとにサーバーから `Message::Ping` を送出し、送出時点から
+    /// `pong_timeout` 以内にクライアントの Pong が届かなければアイドル
+    /// タイムアウトと同型の正常な Close ハンドシェイクで切断する
+    /// （[`crate::handler::CloseReason::PongTimeout`]）。各 Ping には
+    /// 8 バイト big-endian の単調増加シーケンス番号を識別ペイロードとして
+    /// 付与し、Pong はこのペイロードが一致した場合にのみ Pong 期限を解除
+    /// する（一致しない Pong は無視して待機を継続する。レビュー指摘対応、
+    /// PR #738。`crate::session` の `Keepalive::next_payload` を参照）。
+    /// 期限切れは受信待ちで読めるフレームがなくなった時点で判定し、それ
+    /// までに届いているフレームは先に読んで処理する（一致する Pong を
+    /// 返さない対向も、フレームが途切れず届いている間は切断しない。
+    /// `crate::session` モジュール doc「サーバー起点 Ping keepalive」節を
+    /// 参照）。1 回の送出（Ping・Reply・outbound push 等）が
+    /// `pong_timeout` を超えてブロックした場合も同じ `PongTimeout` で
+    /// 終了する。
     ///
     /// `idle_timeout`（既定で有効）はクライアントからの受信でのみリセット
     /// され、サーバー起点の Ping 送出ではリセットしない。そのため受信専用

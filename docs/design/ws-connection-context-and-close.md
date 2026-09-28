@@ -1004,9 +1004,12 @@ drop されていなくても `true` を返しうる点が、`closed()`（受信
 1. **Ping 送出**: ループ先頭（受信待ちに入る前）でのみ判定する。前回送出から
    `interval` 経過し、かつ未応答の Ping がなければ送る。ハンドラ実行中は
    送らない（次の反復まで遅れる）。未応答の Ping は同時に 1 個まで。
-2. **Pong 期限**: Ping 送出時刻 + `pong_timeout`。Pong を読んだ時点で解除する
-   （`crate::session::Keepalive::pong_deadline`。unsolicited な Pong でも
-   解除する、payload の照合はしない）。
+2. **Pong 期限**: Ping 送出時刻 + `pong_timeout`。Pong を読んだ時点で、その
+   payload が送出済みの Ping の識別ペイロード（8 バイト big-endian の
+   単調増加シーケンス番号、`crate::session::Keepalive::next_payload`）と
+   一致した場合にのみ解除する（`crate::session::PendingPing`。一致しない
+   Pong（unsolicited・古い Ping への遅延応答等）は無視して待機を継続する。
+   レビュー指摘対応、PR #738 で本記述を実装に合わせて更新）。
 3. **期限切れ判定**: 受信待ちの race（`crate::session::TimerKind`）の中だけで
    行い、`ws.next()` を優先する。バッファ済みフレームがあれば先に読んで通常
    処理するため、バッファ済みの Pong で誤って切断しない。
