@@ -130,6 +130,7 @@ mod session;
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::Poll;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -428,13 +429,22 @@ where
     // `conn_id` は発行されない（`on_open`/`on_close` のフェイルクローズ対称性、
     // `docs/design/ws-connection-context-and-close.md` 4 節を参照）。
     let conn_id = handler::WsConnId::next();
+    // イシュー #717: 接続元アドレス・主要リクエストヘッダ（Host/Origin/
+    // User-Agent）・query を許可リスト方式で 1 回だけ抽出し、`WsOpenContext`
+    // と `WsConnContext` の双方へ同一の `Arc` として共有する（2 回コピー
+    // しない契約、`handler::ConnRequestInfo` の型 doc 参照）。この行に
+    // 到達するのは 101 応答送出が成功した接続のみ（ハンドシェイク失敗・
+    // 101 送出前キャンセルでは構築されないフェイルクローズ契約は `on_open`
+    // と対称）。
+    let info = Arc::new(handler::ConnRequestInfo::from_head(head, peer_addr));
     // `on_message_with_ctx` へ渡す `WsConnContext` は `on_open` の呼び出し前に
     // 構築する（`WsSender` のクローンを保持するため、セッション終了まで
     // outbound チャネルの送信側が閉じなくなる副作用がある。設計 5 節を参照）。
-    let conn_ctx = handler::WsConnContext::new(conn_id, sender.clone(), params.clone());
-    config.handler.on_open(handler::WsOpenContext::new(
-        conn_id, sender, params, peer_addr,
-    ));
+    let conn_ctx =
+        handler::WsConnContext::new(conn_id, sender.clone(), params.clone(), info.clone());
+    config
+        .handler
+        .on_open(handler::WsOpenContext::new(conn_id, sender, params, info));
     session::run_session(
         stream,
         leftover,
