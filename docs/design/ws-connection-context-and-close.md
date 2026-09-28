@@ -634,7 +634,7 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
 - #717 で `WsOpenContext`/`WsConnContext` へ `host()`/`origin()`/
   `user_agent()`/`query()`（`WsConnContext` は `peer_addr()` も）を追加
   （いずれも `#[non_exhaustive]` 型への非公開フィールド + アクセサ追加、
-  16 節参照）
+  17 節参照）
 
 **直接の先例**: `on_open`/`WsOpenContext`/`with_path_pattern`（#671/#675/#676）は
 同じ「provided メソッド追加・`#[non_exhaustive]` 型への追加」パターンで、
@@ -1143,10 +1143,10 @@ Upgrade 委譲経路（`crates/core/src/plugin.rs` の `try_handle_upgrade` →
 - `WsConnContext`（`on_message_with_ctx` / `on_close` 向け）には
   `peer_addr` を追加しない。接続コンテキストへの展開はイシュー #717 の
   範囲とする（`on_open` 時点で必要な利用者は `WsOpenContext::peer_addr()`
-  を自前で `on_open` 内に保持すればよい）。**#717 で実装済み（16 節）**。
+  を自前で `on_open` 内に保持すればよい）。**#717 で実装済み（17 節）**。
 - ヘッダ・query の保持、受理判定フック（イシュー #716）も本イシューでは
-  扱わない。ヘッダ・query の保持は #717 で実装済み（16 節）。受理判定
-  フック（#716）は引き続き未着手のスコープ外。
+  扱わない。ヘッダ・query の保持は #717（17 節）、受理判定フックは #716
+  （16 節）で実装済み。
 
 ### 15.3 `Debug` 出力からの除外
 
@@ -1159,13 +1159,134 @@ Upgrade 委譲経路（`crates/core/src/plugin.rs` の `try_handle_upgrade` →
 側の見直しは本イシューの範囲外（必要であれば別途
 [[out-of-scope-tracking]] に従い起票を検討する）。
 
-## 16. #717: 接続コンテキストへのリクエスト情報の展開
+## 16. #716: ハンドシェイクの受理判定フック
+
+依存イシュー #728（15 節）完了後の水平展開。現状、WebSocket のアップグレード
+要求は `matches()`（パス・`GET`・`Upgrade: websocket` の粗い判定）に一致すると
+無条件で `handle_upgrade_with_peer_addr` へ委譲され、RFC 6455 検証さえ通れば
+無条件で 101 を返して upgrade する。存在しない `{id}` への接続を 404 で拒否
+する、`Host`/`Origin` を検査して DNS rebinding を防ぐ、といったアプリケー
+ション定義の認可判定をユーザーに提供する拡張点がなかった。
+
+### 16.1 API の形（trait + `#[non_exhaustive]` コンテキスト）を選んだ理由
+
+イシュー本文の例は 3 引数のクロージャ（`|head, params, peer| -> Result<(),
+Response>`）だが、既存の `WsMessageHandler` / `GateContext` / `WsOpenContext`
+と同じ「trait + 借用コンテキスト（非公開フィールド + アクセサ）」の形を
+採用した。理由:
+
+- コンテキストを `#[non_exhaustive]` にすることで、将来 query・ヘッダ上限
+  付きビュー等を追加しても非破壊のままにできる（3 引数の素のクロージャ型
+  では引数を増やすと即座に破壊的変更になる）。
+- `Fn(&WsHandshakeContext<'_>) -> Result<(), Response>` への blanket impl
+  を用意したため、利用者は引き続きクロージャで登録できる
+  （`with_handshake_check` の doc test 参照）。
+
+### 16.2 評価位置と順序
+
+`handle_upgrade_with_peer_addr` 内の処理順序を次のとおりにした
+（`crates/plugin-websocket/src/lib.rs` 参照）:
+
+1. キャンセル確認（既存）。発火済みなら 101 もフックも評価しない。
+2. `handshake::validate`（既存の RFC 6455 4.2.1 検証）。違反は 400/426 を
+   返して終了し、**フックは呼ばない**。ユーザーコードに届くのは RFC 上
+   妥当な upgrade 要求だけにする（信頼境界の外側で弾く）。
+3. `handshake::match_config_path` を 101 応答の前で 1 回だけ計算する
+   （`WsHandshakeContext` へ借用のまま渡し、101 応答送出後の
+   `WsOpenContext` 用コピーもこの結果を再利用して二重計算を避ける）。
+4. `config.handshake_check` が `Some` なら `WsHandshakeContext` を組み立てて
+   `check()` を同期で 1 回呼ぶ。`Err(response)` なら 16.4 節の正規化を経て
+   送出し、`conn_id`・`WsSender` の生成、`on_open`/`on_close` の呼び出しを
+   一切行わずに `Ok(())` で終了する（フェイルクローズの対称性は
+   ハンドシェイク検証失敗・101 送出前キャンセルの既存契約と同一）。
+5. 101 応答書き込み（既存）。
+6. 手順 3 の結果を所有 `Vec<(String, String)>` へコピーし、以降は既存どおり
+   `channel` → `conn_id` → `WsConnContext`/`on_open` → `run_session`。
+
+`RequestGate`（コアの 3 拡張点の 1 つ）はパスパラメータを持たないため代用
+できない。本フックは `RequestGate` を置き換えるものではなく、それが表現
+できない領域（パスパラメータを要する認可判定）を埋める
+`plugin-websocket` 内蔵の拒否経路として設計した。コア（`crates/core`）の
+拡張点・`matches()`/`server.rs`/`plugin.rs` は変更しない。
+
+### 16.3 `WsError` に variant を追加しない判断
+
+`WsError` は `#[non_exhaustive]` ではない（`crates/plugin-websocket/src/
+error.rs`）。ここへ `Rejected` 等の variant を追加すると、網羅的な `match`
+をしている利用者にとって破壊的変更になり 0.5.0 が必要になる。そのため
+variant を追加せず、**拒否時も `Ok(())`**（拒否応答を送出済み・接続を正常に
+閉じた、の意味）を返す設計にした。`handle_upgrade`/`handle_upgrade_with_peer_addr`
+の doc に、戻り値 `Ok(())` には受理判定フックによる拒否も含まれることを
+明記した。将来 `WsError` 自体を `#[non_exhaustive]` にする検討は別途（19 節
+「スコープ外」参照）。
+
+### 16.4 拒否レスポンスのフェイルクローズな正規化
+
+フックが 1xx（特に 101）を返すと、クライアントは upgrade が成功したと
+誤認する一方でプラグインは接続を閉じてしまう。これを防ぐため
+`handshake::normalize_rejection` で次のとおり正規化する:
+
+- **1xx**（`100..=199`）: `400 Bad Request`（body なし）に置き換える。
+- **2xx**（`200..=299`）: 「拒否」の意味に反するため、同じく `400 Bad
+  Request` に置き換える。
+- **3xx/4xx/5xx**: 指定どおりそのまま返す（RFC 6455 4.2.2 はリダイレクト
+  応答を許容している）。ただし 304 はボディも正しい `Content-Length` も
+  付けられないため `400 Bad Request` に置き換える。
+- **それ以外の値**（`0..=99`・`600` 以上）: `400 Bad Request` に置き換える。
+
+直列化は常に `keep_alive: false` とし（`Response::serialize(false)`）、
+`Connection: close` を必ず付けて拒否後の同一接続にバイトが紛れ込む余地を
+なくす。ヘッダ値の検証は `Response::with_header` の既存フェイルクローズ
+機構に委ねる（プラグイン側はリクエストヘッダを応答へエコーしない）。
+
+### 16.5 同期・非ブロッキング・panic の契約
+
+`WsHandshakeCheck::check` は `RequestGate::check` / `WsMessageHandler` と
+同じく同期関数とし、doc で「同期ブロッキング I/O を行わない」契約を明記
+した。評価は core が `tokio::spawn` したタスク内で行われるため panic は
+タスク境界で隔離されるが、契約としては `Err` を返すことを求める
+（`.claude/rules/coding-rust.md`「panic はライブラリ境界を越えさせない」）。
+
+### 16.6 `Debug` と PII
+
+`WsHandshakeContext` の `Debug` 実装は `WsOpenContext`（15.3 節）と同じ
+判断で、ヘッダ値・パスパラメータ・接続元アドレスを一切出力しない
+（`finish_non_exhaustive()`）。パスパラメータ・ヘッダは攻撃者が URL・
+リクエストとして自由に制御できる入力であり、接続元アドレスは偽装できない
+が PII に近い情報のため、いずれもログ・診断出力への機密混入防止
+（`.claude/rules/security.md`）の対象とする。`WebSocketConfig` の `Debug`
+はフックの有無（bool）のみを出力し、クロージャ本体は出力しない
+（`handler` フィールドと同型の判断）。
+
+### 16.7 #717 との棲み分け
+
+兄弟イシュー #717（`WsOpenContext`/`WsConnContext` へのヘッダ・query 展開）
+とは独立に実装できるよう、`handler.rs`/`session.rs` は変更していない。
+`WsHandshakeContext` はハンドシェイク時点限定の借用コンテキストであり、
+接続確立後も保持する `WsOpenContext`/`WsConnContext` とは別の型・別の
+ライフサイクルである（ヘッダ・query を接続コンテキストへ展開する設計は
+引き続き #717 の範囲）。
+
+### 16.8 `RequestGate` との使い分け（まとめ）
+
+| 観点 | `RequestGate` | 本フック（`WsHandshakeCheck`） |
+|------|---------------|-------------------------------|
+| 対象 | 全リクエスト（accept 直後） | WebSocket upgrade 要求のみ |
+| パスパラメータ | 参照不可 | 参照可（`{name}` パターン由来） |
+| 評価タイミング | ルーティング・プラグイン評価前 | RFC 6455 検証後・101 応答送出前 |
+| 実装場所 | コア拡張点（`crates/core`） | プラグイン内蔵（`plugin-websocket`） |
+
+パスパラメータを要さない全リクエスト共通の認可判定は引き続き
+`RequestGate` を使う。WebSocket 固有かつパスパラメータを要する判定は本
+フックを使う。
+
+## 17. #717: 接続コンテキストへのリクエスト情報の展開
 
 15.2 節が「#717 の範囲」と引き渡した内容の実装。CDP 互換サーバー
 （fandhe-browser）等の利用者から、接続単位でログ・監査目的に接続元
 アドレス・主要リクエストヘッダ・query を参照したいという要望に対応する。
 
-### 16.1 許可リスト方式（固定 5 項目）
+### 17.1 許可リスト方式（固定 5 項目）
 
 `RequestHead` を丸ごと保持したり、任意の名前でヘッダを引ける汎用アクセサを
 公開したりはしない。保持するのは次の 5 項目のみ:
@@ -1187,7 +1308,7 @@ Upgrade 委譲経路（`crates/core/src/plugin.rs` の `try_handle_upgrade` →
 （`crates/plugin-websocket/src/handler.rs` の
 `from_head_ignores_headers_outside_allowlist` で検証）。
 
-### 16.2 値ごとの上限（二次防御）・非切り詰め契約
+### 17.2 値ごとの上限（二次防御）・非切り詰め契約
 
 一次防御（許可リスト）に加え、値ごとの上限を設ける:
 
@@ -1209,7 +1330,7 @@ Upgrade 委譲経路（`crates/core/src/plugin.rs` の `try_handle_upgrade` →
 16 KiB）より十分小さく、長寿命接続が多数あっても常駐メモリを有界に保つ。
 値を変更する場合は本節を再検討条件として扱う。
 
-### 16.3 型構成・`Arc` 共有
+### 17.3 型構成・`Arc` 共有
 
 `crates/plugin-websocket/src/handler.rs` に `pub(crate)` のバンドル型
 `ConnRequestInfo`（`peer_addr`/`host`/`origin`/`user_agent`/`query` の 5
@@ -1231,7 +1352,7 @@ SocketAddr>`（`WsOpenContext` のみ）を `info: Arc<ConnRequestInfo>` に
 置き換える形の変更だが、いずれも `pub(crate)` のため公開 API への影響はない
 （7 節参照）。
 
-### 16.4 非破壊判定
+### 17.4 非破壊判定
 
 - `WsOpenContext`・`WsConnContext` はいずれも `#[non_exhaustive]` + 非公開
   フィールドのため、フィールドの内部表現変更（`peer_addr` 単体 →
@@ -1245,7 +1366,7 @@ SocketAddr>`（`WsOpenContext` のみ）を `info: Arc<ConnRequestInfo>` に
 - 以上より 7 節の非破壊追加パターンに合致し、0.4.2 の lockstep バンプ判定は
   変わらない
 
-### 16.5 `Debug` 出力からの除外
+### 17.5 `Debug` 出力からの除外
 
 `host`/`origin`/`user_agent`/`query`/`peer_addr` はいずれも
 `WsOpenContext`/`WsConnContext` の `Debug` 出力に含めない
@@ -1256,7 +1377,7 @@ SocketAddr>`（`WsOpenContext` のみ）を `info: Arc<ConnRequestInfo>` に
 security.md`）で除外する。`conn_context_debug_redacts_request_info` テスト
 で固定する。
 
-### 16.6 セキュリティに関する注意（アクセサ doc に明記）
+### 17.6 セキュリティに関する注意（アクセサ doc に明記）
 
 - `Host`/`Origin`/`User-Agent` はクライアントの申告値であり、ブラウザ以外
   のクライアントなら任意に偽装できる。認可判定の唯一の根拠にしないこと。
@@ -1266,7 +1387,7 @@ security.md`）で除外する。`conn_context_debug_redacts_request_info` テ�
 - `query` は非デコードの生文字列で、トークン等の機密情報を含みうる。ログに
   出す場合は利用者側でマスクすること
 
-### 16.7 スコープ外
+### 17.7 スコープ外
 
 - ハンドシェイク受理判定フック（イシュー #716）: 本イシューが用意した
   `ConnRequestInfo::from_head` を再利用できる形にはしたが、受理・拒否の

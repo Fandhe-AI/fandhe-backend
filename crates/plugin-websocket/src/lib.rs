@@ -34,7 +34,16 @@
 //!    後、残余バイト列とともに [`handle_upgrade`] へ完全委譲される
 //! 3. [`handle_upgrade`] は RFC 6455 4.2.1 の詳細検証（`handshake::validate`）
 //!    を行い、成功時は 101 応答、失敗時は 400/426 応答を送出する
-//! 4. 101 応答成功が確定した接続についてのみ、一意な接続識別子
+//! 4. RFC 6455 検証を通過した要求について、[`WebSocketConfig::with_handshake_check`]
+//!    （イシュー #716）でアプリケーション定義の受理判定フックが登録済みなら
+//!    101 応答の送出前に一度だけ同期で評価する。フックは
+//!    [`WsHandshakeContext`]（`{name}` パスパラメータ・リクエストヘッダ・
+//!    接続元アドレスを参照可能）を受け取り、拒否する場合は指定した
+//!    レスポンスを（`handshake::normalize_rejection` によるフェイルクローズ
+//!    な正規化を経て）送出して upgrade しない（`conn_id`・`WsSender`・
+//!    `on_open`/`on_close` はいずれも呼ばれない）。未登録時は既存の挙動
+//!    （無条件で 101 応答）のまま変わらない（後方互換）
+//! 5. 101 応答成功が確定した接続についてのみ、一意な接続識別子
 //!    [`handler::WsConnId`]（イシュー #704）を発行し、送信ハンドル
 //!    [`handler::WsSender`]（イシュー #670）を生成する。`config.pattern`
 //!    （[`WebSocketConfig::with_path_pattern`]、イシュー #675）由来の
@@ -60,7 +69,7 @@
 //!    [`handler::CloseReason`] 付きでちょうど 1 回呼ばれる（`on_open` が
 //!    呼ばれた接続についてのみ。フェイルクローズの対称性は
 //!    [`handler::WsMessageHandler::on_close`] の doc を参照）
-//! 5. コア（`run_until`）から渡されるキャンセル `Future`（`handle_upgrade`
+//! 6. コア（`run_until`）から渡されるキャンセル `Future`（`handle_upgrade`
 //!    第 5 引数、イシュー #492）が発火した場合も、アイドルタイムアウトと
 //!    同型の正常な Close ハンドシェイク（close code 1001 Going Away）で
 //!    切断する。ハンドシェイク開始前に既に発火済みなら 101 応答自体を
@@ -120,6 +129,22 @@
 //! `on_open` が観測できるようにする。既存 [`handle_upgrade`]（5 引数）は
 //! `peer_addr: None` で本関数へ委譲する薄いラッパーとして残り、公開
 //! シグネチャは無変更（非破壊追加）。
+//!
+//! # ハンドシェイクの受理判定フック（イシュー #716）
+//!
+//! [`WebSocketConfig::with_handshake_check`] で登録する
+//! [`WsHandshakeCheck`] は、RFC 6455 検証を通過した upgrade 要求について
+//! アプリケーション定義の認可判定（存在しない `{id}` への接続を 404 で
+//! 拒否する、`Host`/`Origin` を検査して DNS rebinding を防ぐ、等）を行う
+//! ための拡張点。コアの `RequestGate` 拡張点はパスパラメータを持たない
+//! ため、それを代替する `plugin-websocket` 内蔵の拒否経路として設計した
+//! （コア拡張点は増やさない、`docs/design/ws-connection-context-and-close.md`
+//! 16 節参照）。フックは [`WsHandshakeContext`] 経由で `{name}` パス
+//! パラメータ（`config.pattern` 由来、イシュー #675/#676 と同一の非デコード
+//! 契約）・`RequestHead`（ヘッダ検査用）・接続元アドレス（イシュー #728 と
+//! 同一由来）を参照でき、拒否する場合は返す [`fandhe_backend_http::response::Response`]
+//! を送出して upgrade を行わない。未登録時（既定）は挙動が変わらない
+//! （後方互換追加）。
 
 mod config;
 mod error;
@@ -139,6 +164,7 @@ pub use config::{
     MAX_OUTBOUND_CAPACITY, OutboundCapacityError, PingIntervalError, WebSocketConfig,
 };
 pub use error::WsError;
+pub use handshake::{WsHandshakeCheck, WsHandshakeContext};
 
 use fandhe_backend_http::request::RequestHead;
 
@@ -161,6 +187,12 @@ pub fn matches(head: &RequestHead, config: &WebSocketConfig) -> bool {
 ///
 /// 戻り値 `Ok(())` は接続が正常に終了した（Close フレーム受信・EOF・
 /// キャンセル発火に伴う正常な Close ハンドシェイク完了等）ことを意味する。
+/// [`WebSocketConfig::with_handshake_check`]（イシュー #716）で登録した
+/// 受理判定フックが接続を拒否した場合（拒否応答は送出済み・upgrade は
+/// 行わなかった）も `Ok(())` に含まれる（`WsError` に専用の variant は
+/// 追加しない。`#[non_exhaustive]` でない `WsError` に variant を追加すると
+/// 網羅的な `match` をしている利用者にとって破壊的変更になるため、
+/// `docs/design/ws-connection-context-and-close.md` 16 節の判断を参照）。
 /// `Err` はハンドシェイク検証違反（400/426 応答は送出済み）またはフレーミング
 /// 処理中の I/O・プロトコルエラーを意味する。呼び出し元（`crates/core`）は
 /// このエラーを panic に変換せず、接続クローズとして扱う契約とする
@@ -186,9 +218,10 @@ pub fn matches(head: &RequestHead, config: &WebSocketConfig) -> bool {
 ///
 /// 101 応答送出が成功した（＝セッションが確立した）接続についてのみ
 /// [`handler::WsMessageHandler::on_open`] を一度呼ぶ（イシュー #671）。
-/// ハンドシェイク検証失敗（400/426 応答）や、101 応答送出前に `cancel` が
-/// 発火していた場合は呼ばれない（フェイルクローズ: 確立していない
-/// セッションへ [`handler::WsSender`] を渡さない）。
+/// ハンドシェイク検証失敗（400/426 応答）・101 応答送出前に `cancel` が
+/// 発火していた場合・受理判定フック（イシュー #716）による拒否のいずれも
+/// 呼ばれない（フェイルクローズ: 確立していないセッションへ
+/// [`handler::WsSender`] を渡さない）。
 ///
 /// `on_open` が呼ばれた接続については、終了経路を問わず
 /// [`handler::WsMessageHandler::on_close`]（イシュー #729）が
@@ -384,6 +417,37 @@ where
         Err(err) => return Err(err),
     };
 
+    // イシュー #716: `config.pattern` 由来のパスパラメータを 101 応答の前に
+    // 一度だけ計算する（`WsHandshakeContext` へ借用のまま渡すため。
+    // パターン未登録・不一致（後者は理論上到達しないはずの防御的
+    // フォールバック）ではいずれも空 `PathParams` になる）。101 応答送出後の
+    // `WsOpenContext` 用コピーは、下記でこの値を再利用する（二重計算しない）。
+    let matched_params = handshake::match_config_path(head, config).unwrap_or_default();
+
+    // イシュー #716: ハンドシェイクの受理判定フック。RFC 6455 検証
+    // （上記 `handshake::validate`）を通過した要求のみを対象とし、101 応答の
+    // 送出前に一度だけ同期で評価する。`RequestGate` はパスパラメータを
+    // 持たないため、これを代替する `plugin-websocket` 内蔵の拒否経路として
+    // 設計した（`docs/design/ws-connection-context-and-close.md` 16 節）。
+    if let Some(check) = &config.handshake_check {
+        let ctx = handshake::WsHandshakeContext::new(head, &matched_params, peer_addr);
+        if let Err(rejection) = check.check(&ctx) {
+            // 1xx/2xx はフェイルクローズに正規化する（upgrade が成功したと
+            // クライアントに誤認させる応答・「拒否」の意味に反する応答を
+            // 送出しない、`handshake::normalize_rejection` の doc 参照）。
+            // `keep_alive: false` 固定で `Connection: close` を必ず付け、
+            // 拒否後の同一接続にバイトが紛れ込む余地をなくす
+            // （`.claude/rules/security.md` インジェクション対策）。
+            let bytes = handshake::normalize_rejection(rejection).serialize(false);
+            write_racing_cancel(&mut stream, cancel.as_mut(), &bytes).await?;
+            // `conn_id` の発行・`WsSender` の生成・`on_open`/`on_close` の
+            // 呼び出しは行わない（フェイルクローズ: 確立していないセッション
+            // へ渡さない。ハンドシェイク検証失敗・101 送出前キャンセルと
+            // 同じ対称性、`handle_upgrade` の doc を参照）。
+            return Ok(());
+        }
+    }
+
     // 101 応答の書き込み自体も cancel と race させる。停滞した slow client
     // （書き込みバッファが埋まり `write_all` が進まない）に対しても有界時間
     // で解放できるようにするため（上記関数 doc「BREAKING CHANGE」節を参照）。
@@ -399,24 +463,19 @@ where
 
     // イシュー #671: `WsSender` をハンドラへ渡す公開経路。101 応答送出が
     // 成功した（＝セッションが確立した）接続についてのみチャネルを作り
-    // `on_open` を呼ぶ（ハンドシェイク失敗・101 送出前キャンセルでは
-    // 呼ばれない。フェイルクローズ: 確立していないセッションへ
-    // `WsSender` を渡さない）。
+    // `on_open` を呼ぶ（ハンドシェイク失敗・101 送出前キャンセル・受理判定
+    // フックによる拒否では呼ばれない。フェイルクローズ: 確立していない
+    // セッションへ `WsSender` を渡さない）。
     //
     // イシュー #676: `config.pattern` 由来のパスパラメータを
-    // `WsOpenContext` へ渡す。`match_config_path` が返す `PathParams<'_>`
-    // は `head`（本関数のスタックフレーム内でのみ生存）への借用のため、
+    // `WsOpenContext` へ渡す。`matched_params`（`PathParams<'_>`）は
+    // `head`（本関数のスタックフレーム内でのみ生存）への借用のため、
     // `on_open` へ渡す前に所有 `Vec<(String, String)>` へコピーする
-    // （`handler::WsOpenContext` の doc 参照。パターン未登録・不一致
-    // （後者は理論上到達しないはずの防御的フォールバック）ではいずれも
-    // 空 `Vec` になる）。
-    let params: Vec<(String, String)> = handshake::match_config_path(head, config)
-        .map(|p| {
-            p.iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
+    // （`handler::WsOpenContext` の doc 参照）。
+    let params: Vec<(String, String)> = matched_params
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
     // 送信キュー容量はイシュー #709 で利用者調整可能になった
     // （`WebSocketConfig::with_outbound_capacity`、既定は
     // `handler::DEFAULT_OUTBOUND_CAPACITY`）。`session::run_handler_with_outbound_drain`

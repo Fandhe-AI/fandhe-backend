@@ -193,6 +193,15 @@ pub struct WebSocketConfig {
     /// 変えない）。[`with_ping_interval`][Self::with_ping_interval] で
     /// 有効化する。
     pub(crate) ping: Option<PingKeepalive>,
+    /// ハンドシェイクの受理判定フック（イシュー #716）。`None`（既定）は
+    /// 無効で、RFC 6455 検証（`crate::handshake::validate`）を通過した
+    /// 要求はそのまま 101 応答を送出する（後方互換、既存の挙動は変わらない）。
+    ///
+    /// `dyn WsHandshakeCheck` の直接構築を許すと将来の表現変更の余地を
+    /// 狭めるため、`handler`/`pattern` と同じく `pub(crate)` にとどめ
+    /// [`with_handshake_check`][Self::with_handshake_check] 経由でのみ
+    /// 設定させる。
+    pub(crate) handshake_check: Option<Arc<dyn crate::handshake::WsHandshakeCheck>>,
 }
 
 impl fmt::Debug for WebSocketConfig {
@@ -207,6 +216,10 @@ impl fmt::Debug for WebSocketConfig {
             .field("pattern", &self.pattern)
             .field("outbound_capacity", &self.outbound_capacity)
             .field("ping", &self.ping)
+            // クロージャ本体・キャプチャした値は出力せず、登録有無のみを
+            // 示す（`.claude/rules/security.md`「ログに機密を出さない」。
+            // `handler` フィールドと同型の判断）。
+            .field("handshake_check", &self.handshake_check.is_some())
             .finish()
     }
 }
@@ -223,6 +236,7 @@ impl Default for WebSocketConfig {
             pattern: None,
             outbound_capacity: crate::handler::DEFAULT_OUTBOUND_CAPACITY,
             ping: None,
+            handshake_check: None,
         }
     }
 }
@@ -704,6 +718,67 @@ impl WebSocketConfig {
     pub fn pong_timeout(&self) -> Option<Duration> {
         self.ping.map(|p| p.pong_timeout)
     }
+
+    /// ハンドシェイクの受理判定フックを登録する（イシュー #716）。
+    ///
+    /// `check` は RFC 6455 検証（`crate::handshake::validate`）を通過した
+    /// upgrade 要求について、101 応答を送出する直前に一度だけ同期で呼ばれる。
+    /// `Err(response)` を返すと `response` を（`crate::handshake::normalize_rejection`
+    /// による正規化を経て）クライアントへ送出し、upgrade しない。
+    /// [`crate::handshake::WsHandshakeCheck`] の doc に契約（同期・
+    /// 非ブロッキング・panic しない）を記載しているので必ず確認すること。
+    ///
+    /// 後から呼んだものが有効（複数回呼ぶと最後の登録のみが残る）。
+    ///
+    /// # Examples
+    ///
+    /// `Origin` ヘッダを検査し、許可されていない場合は `403` で拒否する例:
+    ///
+    /// ```
+    /// use fandhe_backend_http::response::Response;
+    /// use fandhe_backend_plugin_websocket::{WebSocketConfig, WsHandshakeContext};
+    ///
+    /// let config = WebSocketConfig::default().with_handshake_check(
+    ///     |ctx: &WsHandshakeContext<'_>| match ctx.header("origin") {
+    ///         Some("https://example.com") => Ok(()),
+    ///         _ => Err(Response::empty(403)),
+    ///     },
+    /// );
+    /// assert!(config.has_handshake_check());
+    /// ```
+    #[must_use]
+    pub fn with_handshake_check<C>(mut self, check: C) -> Self
+    where
+        C: crate::handshake::WsHandshakeCheck,
+    {
+        self.handshake_check = Some(Arc::new(check));
+        self
+    }
+
+    /// ハンドシェイクの受理判定フックが登録済みかを返す（診断・テスト用）。
+    #[must_use]
+    pub fn has_handshake_check(&self) -> bool {
+        self.handshake_check.is_some()
+    }
+
+    /// ハンドシェイクの受理判定フックの登録を解除する（既定の状態に戻す）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_http::response::Response;
+    /// use fandhe_backend_plugin_websocket::{WebSocketConfig, WsHandshakeContext};
+    ///
+    /// let config = WebSocketConfig::default()
+    ///     .with_handshake_check(|_ctx: &WsHandshakeContext<'_>| Err(Response::empty(403)))
+    ///     .without_handshake_check();
+    /// assert!(!config.has_handshake_check());
+    /// ```
+    #[must_use]
+    pub fn without_handshake_check(mut self) -> Self {
+        self.handshake_check = None;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -868,5 +943,48 @@ mod tests {
             PingIntervalError::ZeroPongTimeout.to_string(),
             "websocket pong timeout must not be zero"
         );
+    }
+
+    #[test]
+    fn has_handshake_check_defaults_to_false() {
+        // 未登録時は既存の挙動（RFC 6455 検証通過で無条件 101）を変えない
+        // （イシュー #716、後方互換）。
+        assert!(!WebSocketConfig::default().has_handshake_check());
+    }
+
+    #[test]
+    fn with_handshake_check_registers_hook() {
+        let config = WebSocketConfig::default()
+            .with_handshake_check(|_ctx: &crate::handshake::WsHandshakeContext<'_>| Ok(()));
+        assert!(config.has_handshake_check());
+    }
+
+    #[test]
+    fn without_handshake_check_clears_hook() {
+        let config = WebSocketConfig::default()
+            .with_handshake_check(|_ctx: &crate::handshake::WsHandshakeContext<'_>| Ok(()))
+            .without_handshake_check();
+        assert!(!config.has_handshake_check());
+    }
+
+    #[test]
+    fn clone_shares_handshake_check() {
+        // `Arc` 経由の共有のため、clone 後も同じフックが有効であること
+        // （`handler`/`pattern` と同型の契約）。
+        let config = WebSocketConfig::default()
+            .with_handshake_check(|_ctx: &crate::handshake::WsHandshakeContext<'_>| Ok(()));
+        let cloned = config.clone();
+        assert!(cloned.has_handshake_check());
+    }
+
+    #[test]
+    fn debug_does_not_leak_handshake_check_closure_and_shows_registration_bool() {
+        let config = WebSocketConfig::default().with_handshake_check(
+            |_ctx: &crate::handshake::WsHandshakeContext<'_>| -> Result<(), fandhe_backend_http::response::Response> {
+                unreachable!()
+            },
+        );
+        let debug = format!("{config:?}");
+        assert!(debug.contains("handshake_check: true"));
     }
 }

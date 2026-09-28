@@ -2007,6 +2007,7 @@ mod tests {
             pattern: None,
             outbound_capacity: handler::DEFAULT_OUTBOUND_CAPACITY,
             ping: None,
+            handshake_check: None,
         }
     }
 

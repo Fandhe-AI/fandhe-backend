@@ -645,6 +645,29 @@ fandhe-backend/
 │   │                                    # PII に近いため `WsOpenContext::Debug` には
 │   │                                    # 含めない。`docs/design/
 │   │                                    # ws-connection-context-and-close.md` 15 節参照）。
+│   │                                    # イシュー #716 で `WebSocketConfig::
+│   │                                    # with_handshake_check`（新規 trait
+│   │                                    # `WsHandshakeCheck`・コンテキスト型
+│   │                                    # `WsHandshakeContext`）を追加し、RFC 6455 検証
+│   │                                    # （`handshake::validate`）を通過した upgrade 要求を
+│   │                                    # `handle_upgrade_with_peer_addr` が 101 応答を
+│   │                                    # 送出する直前に一度だけ同期で評価するハンドシェイクの
+│   │                                    # 受理判定フックを追加した。フックからは `{name}` パス
+│   │                                    # パラメータ（`with_path_pattern` 由来）・リクエスト
+│   │                                    # ヘッダ・接続元アドレス（イシュー #728 の
+│   │                                    # `handle_upgrade_with_peer_addr` 経由）を参照でき、
+│   │                                    # 拒否時はフックが返す `Response` を送出して upgrade
+│   │                                    # しない（1xx/2xx はクライアントが upgrade 成功と
+│   │                                    # 誤認しないよう `normalize_rejection` で
+│   │                                    # `400 Bad Request` へフェイルクローズに正規化、
+│   │                                    # 3xx/4xx/5xx はそのまま送出。304・範囲外の値も
+│   │                                    # `400` へ正規化）。`RequestGate`
+│   │                                    # 拡張点はパスパラメータを持たないためそれを代替する
+│   │                                    # `plugin-websocket` 内蔵の拒否経路として設計した
+│   │                                    # （コア拡張点は増やさない）。未登録時（既定）は
+│   │                                    # 挙動が変わらない後方互換追加。設計は
+│   │                                    # `docs/design/ws-connection-context-and-close.md`
+│   │                                    # 16 節参照。
 │   │                                    # イシュー #717 で `WsOpenContext`/
 │   │                                    # `WsConnContext` の双方へ `host()`/
 │   │                                    # `origin()`/`user_agent()`/`query()`
@@ -658,7 +681,7 @@ fandhe-backend/
 │   │                                    # `ConnRequestInfo` を `Arc` 共有し抽出は
 │   │                                    # 1 接続 1 回のみ。新規値はいずれも
 │   │                                    # `Debug` 出力に含めない（`docs/design/
-│   │                                    # ws-connection-context-and-close.md` 16 節
+│   │                                    # ws-connection-context-and-close.md` 17 節
 │   │                                    # 参照）。
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、

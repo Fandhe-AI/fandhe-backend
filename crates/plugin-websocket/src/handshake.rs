@@ -6,7 +6,11 @@
 //! 立てる。外部入力（`Sec-WebSocket-Key` 等）を応答ヘッダへ一切エコーしない
 //! ことで、レスポンス分割・ヘッダインジェクション経路を構造的に排除する。
 
+use std::fmt;
+use std::net::SocketAddr;
+
 use fandhe_backend_http::request::RequestHead;
+use fandhe_backend_http::response::Response;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 
 use crate::config::WebSocketConfig;
@@ -177,6 +181,189 @@ pub(crate) fn serialize_400() -> Vec<u8> {
 #[must_use]
 pub(crate) fn serialize_426() -> Vec<u8> {
     b"HTTP/1.1 426 Upgrade Required\r\nSec-WebSocket-Version: 13\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".to_vec()
+}
+
+/// アプリケーション定義の受理判定フック（イシュー #716）。
+///
+/// RFC 6455 検証（`validate`）を通過した upgrade 要求について、
+/// [`crate::handle_upgrade_with_peer_addr`] が 101 応答を送出する直前に
+/// 一度だけ同期で呼ばれる。`{name}` パスパラメータ・リクエストヘッダ・
+/// 接続元アドレスを参照して独自の認可判定（例: 存在しない `{id}` への
+/// 接続を 404 で拒否する、`Origin`/`Host` を検査して DNS rebinding を
+/// 防ぐ）を行いたいユーザー向けの拡張点。
+///
+/// `RequestGate`（`crates/core` の 3 拡張点の 1 つ）はパスパラメータを
+/// 持たないため、本フックはそれを代替する `plugin-websocket` 内蔵の
+/// 受理判定手段として設計した（コア拡張点は増やさない。
+/// `docs/design/ws-connection-context-and-close.md` 16 節参照）。
+///
+/// # 契約
+///
+/// - **同期・非ブロッキング**: `crate::handler::WsMessageHandler` と同様、
+///   実装は同期ブロッキング I/O を行わない（`.claude/rules/coding-rust.md`）。
+///   非同期 I/O が必要な判定（DB 参照等）は事前にキャッシュしておくこと。
+/// - **panic しない**: 評価は core が `tokio::spawn` したタスク内で行われ
+///   panic はタスク境界で隔離されるが、契約としては `Err` を返すこと
+///   （`.claude/rules/coding-rust.md`「panic はライブラリ境界を越えさせ
+///   ない」）。
+/// - **拒否時の応答**: `Err(response)` を返すと `handle_upgrade_with_peer_addr`
+///   は upgrade を行わず、`response` を送出して接続を閉じる（101 応答は
+///   送出しない）。ステータスが 3xx/4xx/5xx（304 を除く）以外の場合は
+///   `400 Bad Request`（body なし）に置き換えて送出する。
+pub trait WsHandshakeCheck: Send + Sync + 'static {
+    /// `ctx` を検査し、受理する場合は `Ok(())`、拒否する場合はクライアントへ
+    /// 返すレスポンスを `Err` で返す。
+    ///
+    /// # Errors
+    ///
+    /// 接続を拒否する場合、返す [`Response`] をクライアントへ送出する
+    /// （ステータスの置き換え規則はトレイト doc を参照）。
+    fn check(&self, ctx: &WsHandshakeContext<'_>) -> Result<(), Response>;
+}
+
+impl<F> WsHandshakeCheck for F
+where
+    F: Fn(&WsHandshakeContext<'_>) -> Result<(), Response> + Send + Sync + 'static,
+{
+    fn check(&self, ctx: &WsHandshakeContext<'_>) -> Result<(), Response> {
+        self(ctx)
+    }
+}
+
+/// [`WsHandshakeCheck::check`] へ渡す借用コンテキスト（イシュー #716）。
+///
+/// `crate::handler::WsOpenContext` と同じく非公開フィールド + アクセサの
+/// 構成とし、`#[non_exhaustive]` を付けて将来のフィールド追加を非破壊に
+/// する。`head` / `params` は 101 応答送出前・`handle_upgrade_with_peer_addr`
+/// のスタックフレーム内でのみ生存するため、`WsOpenContext`（所有 `Vec` へ
+/// コピー済み）とは異なり借用のまま渡す（フック呼び出しは同期・1 回限りで
+/// 完結するため、コピーの必要がない）。
+#[non_exhaustive]
+pub struct WsHandshakeContext<'a> {
+    head: &'a RequestHead,
+    params: &'a PathParams<'a>,
+    peer_addr: Option<SocketAddr>,
+}
+
+impl<'a> WsHandshakeContext<'a> {
+    /// コンテキストを構築する（`pub(crate)`、`crate::handle_upgrade_with_peer_addr`
+    /// からのみ呼ばれる）。
+    pub(crate) fn new(
+        head: &'a RequestHead,
+        params: &'a PathParams<'a>,
+        peer_addr: Option<SocketAddr>,
+    ) -> Self {
+        Self {
+            head,
+            params,
+            peer_addr,
+        }
+    }
+
+    /// アップグレード要求の `RequestHead` を返す。`Host` / `Origin` 等の
+    /// ヘッダ検査（DNS rebinding 対策）に使う。
+    #[must_use]
+    pub fn head(&self) -> &'a RequestHead {
+        self.head
+    }
+
+    /// `name`（大小無視）のヘッダ値を返す。
+    ///
+    /// [`RequestHead::header`] とは異なり、同名ヘッダが複数出現する場合は
+    /// **`None`**（判定不能・拒否側）を返す（イシュー #716 P1 レビュー指摘の
+    /// フェイルクローズ対応）。`RequestHead::header` は先頭 1 件のみを返す
+    /// 契約のため、本フックの典型用途である `Origin` / `Host` 等の認可判断に
+    /// 使うヘッダが重複指定されたリクエストでは、本フックが見る値と、別の値
+    /// を採用する中継先（リバースプロキシ等）の判断が食い違い、認可判定を
+    /// 迂回されうる（RFC 9110 5.3 節はヘッダの重複解釈を規定しておらず実装
+    /// 依存）。重複は「値を一意に決定できない」ため拒否側（`None`）に倒し、
+    /// 呼び出し側の `match` の `_` 分岐（拒否）へフォールバックさせる設計と
+    /// する（`.claude/rules/security.md`「認証・認可」）。
+    ///
+    /// 重複そのものを許容し全出現値を確認したい呼び出し元は、
+    /// [`WsHandshakeContext::head`] 経由で [`RequestHead::headers`] を使うこと。
+    #[must_use]
+    pub fn header(&self, name: &str) -> Option<&'a str> {
+        let mut matches = self
+            .head
+            .headers()
+            .filter(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v);
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            // 同名ヘッダが 2 件以上存在する = 値を一意に決定できない。
+            // 先頭値を採用すると中継先との判定食い違いによる認可迂回を
+            // 招くため、フェイルクローズで「なし」として扱う。
+            None
+        } else {
+            Some(first)
+        }
+    }
+
+    /// `name` に対応する `{name}` パスパラメータの値を返す（非デコード
+    /// 契約、`crate::pattern::PathParams` と同一）。
+    /// `WebSocketConfig::with_path_pattern` 未登録（完全一致パス）の場合は
+    /// 常に `None`。
+    #[must_use]
+    pub fn param(&self, name: &str) -> Option<&str> {
+        self.params.get(name)
+    }
+
+    /// マッチしたパスパラメータ全件を登録順に返す。
+    pub fn params(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.params.iter()
+    }
+
+    /// 接続元の実 peer address を返す（`crate::handler::WsOpenContext::
+    /// peer_addr` と同一の由来・フェイルクローズ契約）。
+    ///
+    /// リバースプロキシ配下ではプロキシ自身のアドレスになる。`None`
+    /// （非ソケット経路、または `crate::handle_upgrade`（5 引数の旧 API）
+    /// 経由）は IP ベースの認可判定では拒否側に倒すべきことに注意する。
+    #[must_use]
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        self.peer_addr
+    }
+}
+
+impl fmt::Debug for WsHandshakeContext<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `WsOpenContext` と同じ理由でヘッダ値・パスパラメータ・接続元
+        // アドレスを出力しない（`.claude/rules/security.md`「ログに PII を
+        // 出さない」。ヘッダ・パスパラメータは攻撃者が自由に制御できる
+        // 入力でもある）。
+        f.debug_struct("WsHandshakeContext").finish_non_exhaustive()
+    }
+}
+
+/// [`WsHandshakeCheck::check`] が返す拒否レスポンスを、upgrade 未成立の
+/// 状態と矛盾しない形へフェイルクローズに正規化する（イシュー #716）。
+///
+/// - **1xx**（`100..=199`、101 を含む）: クライアントが「upgrade が成功
+///   した」と誤認する一方でプラグインは接続を閉じるため、`400 Bad Request`
+///   （body なし）に置き換える。
+/// - **2xx**（`200..=299`）: 「拒否」の意味に反するため、同じく
+///   `400 Bad Request` に置き換える。
+/// - **3xx/4xx/5xx**（`300..=599`）: 指定どおりそのまま返す。ただし
+///   [`Response::is_bodyless_status`] が真のステータス（304 Not Modified）は
+///   ボディも正しい `Content-Length` も付けられない（RFC 9110 §8.6・
+///   RFC 9112 §6.3）ため、`400 Bad Request` に置き換える。
+/// - **上記いずれにも属さない値**（`0..=99`・`600` 以上。`u16` の型レベルの
+///   契約はあるが HTTP ステータスコードとして未定義の範囲、フックの実装
+///   ミスや `Response::empty(0)` 等の誤用を想定）: 設計文書（本 doc）が
+///   許容する応答以外を送出しないよう、同じく `400 Bad Request` に正規化
+///   する（イシュー #716 P2 レビュー指摘）。
+///
+/// 直列化時の `keep_alive` は常に `false` とする契約は呼び出し元
+/// （`crate::handle_upgrade_with_peer_addr`）が担う（拒否後の接続を再利用
+/// しない）。
+#[must_use]
+pub(crate) fn normalize_rejection(response: Response) -> Response {
+    if (300..600).contains(&response.status) && !Response::is_bodyless_status(response.status) {
+        response
+    } else {
+        Response::empty(400)
+    }
 }
 
 #[cfg(test)]
@@ -436,5 +623,156 @@ mod tests {
         let text = String::from_utf8(serialize_426()).unwrap();
         assert!(text.starts_with("HTTP/1.1 426 Upgrade Required\r\n"));
         assert!(text.contains("Sec-WebSocket-Version: 13\r\n"));
+    }
+
+    #[test]
+    fn normalize_rejection_replaces_1xx_with_400() {
+        // 101 を返すフックがあっても、クライアントには upgrade 成功と
+        // 誤認させる応答を送出してはならない（イシュー #716 受け入れ基準 1）。
+        let normalized = normalize_rejection(Response::empty(101));
+        assert_eq!(normalized.status, 400);
+    }
+
+    #[test]
+    fn normalize_rejection_replaces_2xx_with_400() {
+        let normalized = normalize_rejection(Response::empty(200));
+        assert_eq!(normalized.status, 400);
+    }
+
+    #[test]
+    fn normalize_rejection_preserves_3xx_4xx_5xx() {
+        for status in [301, 403, 404, 503] {
+            let normalized = normalize_rejection(Response::empty(status));
+            assert_eq!(normalized.status, status);
+        }
+    }
+
+    #[test]
+    fn normalize_rejection_replaces_304_with_400() {
+        // 304 はボディも正しい Content-Length も付けられないため、拒否応答
+        // としては送出せず 400 へ正規化する（直列化結果まで確認する）。
+        let response = Response::new(304, b"should not be sent".to_vec());
+        let normalized = normalize_rejection(response);
+        assert_eq!(normalized.status, 400);
+        assert!(normalized.body.is_empty());
+        let text = String::from_utf8(normalized.serialize(false)).unwrap();
+        assert!(text.starts_with("HTTP/1.1 400 "), "{text}");
+        assert!(!text.contains("304"), "{text}");
+    }
+
+    #[test]
+    fn normalize_rejection_preserves_body_and_headers_for_non_1xx_2xx() {
+        let response = Response::new(404, b"no such page".to_vec())
+            .with_header("X-Reason", "not-found")
+            .unwrap();
+        let normalized = normalize_rejection(response);
+        assert_eq!(normalized.status, 404);
+        assert_eq!(normalized.body, b"no such page");
+    }
+
+    #[test]
+    fn normalize_rejection_replaces_out_of_range_status_with_400() {
+        // フックの実装ミス（`Response::empty(0)`）や `600` 以上の非標準値は
+        // 3xx/4xx/5xx のいずれでもなく設計文書が想定しない応答のため、
+        // 無条件通過させず 400 へ正規化する（イシュー #716 P2 レビュー指摘）。
+        for status in [0, 1, 99, 600, 999] {
+            let normalized = normalize_rejection(Response::empty(status));
+            assert_eq!(
+                normalized.status, 400,
+                "status={status} が正規化されていない"
+            );
+        }
+    }
+
+    fn handshake_check_head() -> RequestHead {
+        head_from(
+            b"GET /devtools/page/XYZ HTTP/1.1\r\n\
+              Host: example.com\r\n\
+              Origin: https://example.com\r\n\
+              Upgrade: websocket\r\n\
+              Connection: Upgrade\r\n\
+              Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+              Sec-WebSocket-Version: 13\r\n\
+              \r\n",
+        )
+    }
+
+    #[test]
+    fn handshake_context_exposes_head_header_and_peer_addr() {
+        let head = handshake_check_head();
+        let params = PathParams::default();
+        let addr: std::net::SocketAddr = "127.0.0.1:54321".parse().unwrap();
+        let ctx = WsHandshakeContext::new(&head, &params, Some(addr));
+
+        assert_eq!(ctx.header("origin"), Some("https://example.com"));
+        assert_eq!(ctx.head().target(), "/devtools/page/XYZ");
+        assert_eq!(ctx.peer_addr(), Some(addr));
+        assert!(ctx.params().next().is_none());
+    }
+
+    #[test]
+    fn handshake_context_exposes_path_params() {
+        let config = WebSocketConfig::default()
+            .with_path_pattern("/devtools/page/{id}")
+            .unwrap();
+        let head = handshake_check_head();
+        let params = match_config_path(&head, &config).expect("pattern should match");
+        let ctx = WsHandshakeContext::new(&head, &params, None);
+
+        assert_eq!(ctx.param("id"), Some("XYZ"));
+        assert_eq!(ctx.peer_addr(), None);
+    }
+
+    #[test]
+    fn handshake_context_debug_redacts_head_params_and_peer_addr() {
+        let head = handshake_check_head();
+        let params = PathParams::default();
+        let addr: std::net::SocketAddr = "127.0.0.1:54321".parse().unwrap();
+        let ctx = WsHandshakeContext::new(&head, &params, Some(addr));
+        let debug = format!("{ctx:?}");
+        assert!(!debug.contains("example.com"));
+        assert!(!debug.contains("54321"));
+    }
+
+    #[test]
+    fn handshake_context_header_returns_none_for_duplicate_header() {
+        // 重複した `Origin` ヘッダを含むリクエストでは、先頭値を採用すると
+        // 別の値を採用する中継先（リバースプロキシ等）と認可判定が食い違い
+        // うるため、判定不能として拒否側（`None`）に倒す（イシュー #716 P1
+        // レビュー指摘）。
+        let head = head_from(
+            b"GET /ws HTTP/1.1\r\n\
+              Origin: https://allowed.example\r\n\
+              Origin: https://evil.example\r\n\
+              Upgrade: websocket\r\n\
+              Connection: Upgrade\r\n\
+              Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+              Sec-WebSocket-Version: 13\r\n\
+              \r\n",
+        );
+        let params = PathParams::default();
+        let ctx = WsHandshakeContext::new(&head, &params, None);
+        assert_eq!(ctx.header("origin"), None);
+    }
+
+    #[test]
+    fn handshake_context_header_returns_value_for_single_header() {
+        let head = handshake_check_head();
+        let params = PathParams::default();
+        let ctx = WsHandshakeContext::new(&head, &params, None);
+        assert_eq!(ctx.header("origin"), Some("https://example.com"));
+    }
+
+    #[test]
+    fn closure_implements_handshake_check() {
+        // `Fn` への blanket impl 経由でクロージャをそのまま登録できることの
+        // 回帰。`WebSocketConfig::with_handshake_check` の受け入れ型が
+        // trait オブジェクトへ変換可能であることを固定する。
+        let check: std::sync::Arc<dyn WsHandshakeCheck> =
+            std::sync::Arc::new(|_ctx: &WsHandshakeContext<'_>| Ok(()));
+        let head = handshake_check_head();
+        let params = PathParams::default();
+        let ctx = WsHandshakeContext::new(&head, &params, None);
+        assert!(check.check(&ctx).is_ok());
     }
 }

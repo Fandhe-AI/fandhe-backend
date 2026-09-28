@@ -527,6 +527,44 @@ idle_keepalive_e2e.rs` の e2e テスト 4 本で固定する（push-only トラ
 - `crates/plugin-websocket/src/lib.rs`（`handle_upgrade` の呼び出し箇所・doc）
 - `docs/design/ws-cancellation-propagation.md`（世代キャンセル機構全体の設計）
 
+## 規約: `WsHandshakeCheck` フック（ハンドシェイク受理判定、イシュー #716）
+
+`crates/plugin-websocket/src/handshake.rs` が定義する `WsHandshakeCheck` trait
+（`WebSocketConfig::with_handshake_check` で登録）は、`on_open` フックと同様、
+3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）・`Interceptor` の
+いずれにも属さない、`plugin-websocket` クレート内で完結する新規公開フックである
+（コア拡張点は増やさない。`RequestGate` はパスパラメータを持たないため代替に
+使えず、本フックがそれを補う専用拒否経路として設計した）。
+
+### 位置づけ・呼び出し順序
+
+- RFC 6455 検証（`handshake::validate`）を通過した upgrade 要求について、
+  `handle_upgrade_with_peer_addr`（`crates/plugin-websocket/src/lib.rs`）が
+  101 応答を送出する**直前**に、接続ごとに一度だけ同期呼び出しする
+- `{name}` パスパラメータ（`with_path_pattern` 由来）・リクエストヘッダ・接続元
+  アドレス（イシュー #728 の `handle_upgrade_with_peer_addr` 経由）を
+  `WsHandshakeContext` 経由で参照できる
+
+### 同期契約・拒否時の応答
+
+- 本フックは**同期**（非 `async`）。`.claude/rules/coding-rust.md` の
+  「同期・非ブロッキング」原則に従い、非同期 I/O が必要な判定は事前キャッシュで
+  対応する契約（`WsHandshakeCheck` trait doc 参照）
+- `Err(response)` を返すと upgrade を行わず、`handshake::normalize_rejection`
+  で正規化した後の `response` を送出して接続を閉じる（1xx/2xx はクライアントが
+  upgrade 成功と誤認しないよう `400 Bad Request` へフェイルクローズに正規化、
+  3xx/4xx/5xx はそのまま送出。ただし 304・`0..=99`・`600` 以上も `400` へ
+  正規化）
+- 未登録時（既定）は挙動が変わらない後方互換追加
+
+### 参照
+
+- `crates/plugin-websocket/src/handshake.rs`（`WsHandshakeCheck` trait・
+  `WsHandshakeContext`・`normalize_rejection` の doc comment）
+- `crates/plugin-websocket/src/config.rs`（`WebSocketConfig::
+  with_handshake_check` の doc comment、doc test 付き）
+- `docs/design/ws-connection-context-and-close.md` 16 節（設計判断の記録）
+
 ## 規約: `WsMessageHandler::on_message_with_ctx` / `WsConnContext`（接続コンテキスト、イシュー #704）
 
 親 #702「接続単位のハンドラ状態と切断通知に対応する」の第 1 段（設計は #703、
