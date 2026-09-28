@@ -32,6 +32,16 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   クローズの完了**後**に行うよう順序を入れ替えています（利用側シンクの異常・
   遅延がフェイルクローズを妨げないため。既定シンクでは出力順序が反転しても
   外部から観測可能な違いはほぼありません）。
+- `fandhe-backend-core`: `Middleware` に新規メソッド `on_response_with_status`
+  を追加しました。レスポンス送出後の観測フックからクライアントへ**実際に
+  送出したステータスコード**（`Interceptor::map_response` 等のレスポンス
+  改変シーム適用後の最終値）を参照できます。既定実装は `on_response` へ
+  委譲するため、`on_response` だけを実装した既存コードは変更なしにそのまま
+  動作します（コアは新フックのみを呼び出す非破壊追加。既存の必須メソッド
+  `on_response` にも既定実装（no-op）を付与しました）。ステータス付き
+  アクセスログ（`GET /path 200 3ms` 等）が必要な実装は本メソッドを override
+  してください（イシュー
+  [#721](https://github.com/Fandhe-AI/fandhe-backend/issues/721)）。
 - `fandhe-backend-routes`: 独立に組み立てた複数の `Router` を 1 つに合成する
   `Router::merge` を追加しました。重複するルート登録（静的ルートの
   `(method, path)` 完全一致、パラメータルートの method 一致 + セグメント形状

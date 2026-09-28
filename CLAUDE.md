@@ -350,7 +350,13 @@ fandhe-backend/
 │   │                                    # 強制クローズの完了後に通知する順序へ変更した
 │   │                                    # （利用側シンクの異常・遅延がフェイルクローズを
 │   │                                    # 妨げないため）。設計は
-│   │                                    # `docs/design/diagnostics-sink.md` 参照）。
+│   │                                    # `docs/design/diagnostics-sink.md` 参照）。イシュー #721 で `Middleware` に
+│   │                                    # `on_response_with_status`（送出ステータス付き
+│   │                                    # 観測フック）を追加した。既定実装が既存
+│   │                                    # `on_response`（同じく既定 no-op を新設）へ
+│   │                                    # 委譲するため、`on_response` だけを実装した
+│   │                                    # 既存コードは無変更で動作する（コアは新フックの
+│   │                                    # みを呼び出す非破壊追加）。
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む
