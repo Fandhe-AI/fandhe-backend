@@ -137,7 +137,7 @@ use std::pin::Pin;
 use std::task::Poll;
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 use tokio_tungstenite::WebSocketStream;
@@ -540,7 +540,22 @@ where
             InboundEvent::Message(Some(message)) => {
                 let message = match message {
                     Ok(message) => message,
-                    Err(err) => return SessionFailure::recv(err).into_parts(),
+                    Err(err) => {
+                        let failure = SessionFailure::recv(err);
+                        if failure.reason == CloseReason::MessageTooLarge {
+                            // 受信上限（`max_message_size`/`max_frame_size`）超過。
+                            // Close フレームを送らずに drop すると、利用側
+                            // （CDP 互換サーバー等）には理由のない異常切断
+                            // （1006 相当）としか見えない。RFC 6455 7.4.1 節の
+                            // close code 1009 (Message Too Big) を送出してから
+                            // 閉じる（イシュー #719）。根本原因は `failure` の
+                            // `Capacity` エラーのまま呼び出し元へ返す
+                            // （Close 送出自体の失敗で上書きしない）。
+                            outbound.release();
+                            handle_message_too_big(ws, config.close_grace).await;
+                        }
+                        return failure.into_parts();
+                    }
                 };
                 match message {
                     Message::Text(text) => {
@@ -1977,6 +1992,83 @@ where
         Err(_timeout_elapsed) => Ok(()),
         Ok(Err(err)) => Err(err.into()),
     }
+}
+
+/// 受信メッセージ/フレームサイズ上限超過（`tungstenite::Error::Capacity`、
+/// [`CloseReason::MessageTooLarge`]）時の切断シーケンス（イシュー #719）。
+///
+/// 呼び出し元 [`run_session_inner`] は `ws.next()` が返した `Capacity`
+/// エラーを `SessionFailure::recv` で分類した直後、`ws` の所有権を本関数へ
+/// 渡す（[`handle_cancellation`] と同型）。内部の Close 送出・半閉鎖・
+/// 読み捨てはいずれも失敗を無視する（戻り値を持たない理由。根本原因の
+/// `Capacity` エラーは呼び出し元が別途保持しており、Close 送出自体の
+/// 失敗で上書きしない）。
+///
+/// # 非自明な安全性・DoS 上限の根拠
+///
+/// - tungstenite の上限検査は 2 箇所で走る。frame 上限はフレームヘッダを
+///   解析した直後・巨大 payload 用バッファの `reserve` 前に `Err` を返す
+///   ため、この時点で巨大 payload 分の受信バッファ確保は起きていないが、
+///   payload 本体はソケット上をまだ転送中（in flight）でありうる。message
+///   上限はフレームを読み終えた後に判定するため、この問題は起きない。
+/// - `Err(Capacity(_))` を返した後も tungstenite の内部状態は `Active` の
+///   まま変わらないため、`ws.close()` で Close フレームを送出できる。
+/// - tokio-tungstenite の `Stream::poll_next` は読み取りエラーを返すと
+///   内部 `ended` フラグを立てる。以後 `ws.next()` は常に `None` を
+///   即座に返すため、tungstenite 経由の読み取りで巨大 payload を読み込んで
+///   メモリが増え続けることは構造的に起きない。
+/// - frame 上限経路では、未読の巨大 payload がソケットの受信キューに
+///   残ったままになりうる。これを読み捨てずに接続を閉じると、カーネルが
+///   RST を送出し、クライアントが直前の Close 1009 を受け取れなくなる
+///   可能性がある。そのため Close 送出後に生ストリームの半閉鎖
+///   （`AsyncWriteExt::shutdown`）と、固定長バッファによる有界な読み捨て
+///   （lingering close。`Ok(0)`/エラーまで読み続けるだけでデータは保持
+///   ・蓄積しない）を行う。`ws.next()` 経由のドレイン（tungstenite の
+///   パース状態）は使わず生ストリームを直接読むため、frame 上限経路の
+///   「ヘッダ解析済み・payload 未読」というパース状態の不整合には
+///   影響されない。
+/// - Close 送出・半閉鎖・読み捨ての全体を `close_grace` 単一の期限で
+///   有界化する。Close 応答を返さない、または送り続けるクライアントにも
+///   接続を無期限には保持させない（Issue #175 の DoS 対策を後退させない）。
+async fn handle_message_too_big<S>(mut ws: WebSocketStream<S>, close_grace: Duration)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let deadline = Instant::now() + close_grace;
+
+    let sequence = async {
+        // Close の reason は固定文字列のみとし、受信サイズ・上限値・内部
+        // 状態を含めない（情報露出の最小化、`.claude/rules/security.md`・
+        // `CloseReason` doc の「情報露出の最小化」節と同一方針）。
+        let close_frame = CloseFrame {
+            code: CloseCode::Size,
+            reason: Utf8Bytes::from_static("message too big"),
+        };
+        // Close 送出の失敗（相手が既に切断済み等）は無視して次へ進む。
+        // 「切断する」という目的は達成済みのため。
+        let _ = ws.close(Some(close_frame)).await;
+
+        let raw = ws.get_mut();
+
+        // FIN による半閉鎖。クライアントは Close フレームに続いて EOF を
+        // 受け取るため、サーバーの TCP close を待たずに自分の側をすぐ
+        // 閉じられる。エラーは無視する。
+        let _ = raw.shutdown().await;
+
+        // 有界の読み捨て（lingering close）。上のコメント「frame 上限経路
+        // では〜」を参照。
+        let mut buf = [0u8; 8192];
+        loop {
+            match raw.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => continue,
+            }
+        }
+    };
+
+    // `close_grace` 満了（タイムアウト）も、切断という目的自体は既に
+    // Close 送出・半閉鎖で試み済みのため、特別扱いせず単に打ち切る。
+    let _ = tokio::time::timeout_at(deadline, sequence).await;
 }
 
 /// `run_session` の outbound 合流経路（イシュー #670）の単体テスト。

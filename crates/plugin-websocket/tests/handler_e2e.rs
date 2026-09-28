@@ -452,8 +452,9 @@ async fn default_config_still_echoes() {
 /// ケース 7（回帰）: サイズ上限超過メッセージがハンドラへ届く前に拒否される
 /// （既存 DoS 上限の維持）。ハンドラが呼ばれていれば `WsOutcome::Reply` で
 /// 巨大メッセージがそのまま返るはずだが、上限超過はプロトコルエラーとして
-/// tungstenite 側で拒否されるため、クライアントはエコーではなくエラー/
-/// 切断を観測する。
+/// tungstenite 側で拒否されるため、クライアントはエコーではなく Close
+/// 1009（イシュー #719。詳細な検証は `tests/message_too_big.rs` を参照）を
+/// 観測する。
 #[tokio::test]
 async fn oversized_message_is_rejected_before_reaching_handler() {
     let config = WebSocketConfig::default()
@@ -470,16 +471,31 @@ async fn oversized_message_is_rejected_before_reaching_handler() {
 
     // ReverseHandler が呼ばれていれば逆順文字列がエコーされるはずだが、
     // 上限超過はハンドラ到達前に拒否されるため、そのメッセージ内容の
-    // エコーは届かない（エラーまたは接続終了を観測する）。
+    // エコーは届かず Close 1009 を観測する。
     let next = client.next().await;
     let reversed: String = oversized.chars().rev().collect();
-    if let Some(Ok(Message::Text(text))) = next {
-        assert_ne!(
-            text.as_str(),
-            reversed,
-            "oversized message must not reach the handler"
-        );
+    match next {
+        Some(Ok(Message::Close(Some(frame)))) => {
+            assert_eq!(
+                frame.code,
+                tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Size,
+                "oversized message must be rejected with close code 1009"
+            );
+        }
+        Some(Ok(Message::Text(text))) => {
+            assert_ne!(
+                text.as_str(),
+                reversed,
+                "oversized message must not reach the handler"
+            );
+        }
+        _ => {}
     }
+    // クライアント側を drop し、サーバーの有界読み捨て（lingering close）が
+    // `close_grace`（既定 10 秒）満了を待たず即座に EOF を観測できるように
+    // する（本テストは `server_task.await` を無期限に待つため、drop なしだと
+    // 常にテストが 10 秒かかってしまう）。
+    drop(client);
 
     let result = server_task.await.unwrap();
     assert!(

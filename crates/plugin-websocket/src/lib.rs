@@ -197,6 +197,11 @@ pub fn matches(head: &RequestHead, config: &WebSocketConfig) -> bool {
 /// 処理中の I/O・プロトコルエラーを意味する。呼び出し元（`crates/core`）は
 /// このエラーを panic に変換せず、接続クローズとして扱う契約とする
 /// （コア境界を越えて panic させない、`.claude/rules/coding-rust.md`）。
+/// 受信メッセージ/フレームが `WebSocketConfig::max_message_size`/
+/// `max_frame_size` を超えた場合、RFC 6455 7.4.1 節の close code 1009
+/// （Message Too Big）を送出したうえで
+/// `Err(WsError::Protocol(tungstenite::Error::Capacity(_)))` を返す
+/// （イシュー #719。以前は Close を送らずに接続を drop していた）。
 ///
 /// `cancel` はコアの世代キャンセルシグナル（最終 graceful shutdown・rebind
 /// 世代 drain、イシュー #490〜#492）が発火したときに解決する `Future`。

@@ -683,6 +683,19 @@ fandhe-backend/
 │   │                                    # `Debug` 出力に含めない（`docs/design/
 │   │                                    # ws-connection-context-and-close.md` 17 節
 │   │                                    # 参照）。
+│   │                                    # イシュー #719 で、受信メッセージ/フレームが
+│   │                                    # `max_message_size`/`max_frame_size` を超えた
+│   │                                    # ときに Close フレームを送らず drop していた
+│   │                                    # 不具合を修正した。close code 1009（Message Too
+│   │                                    # Big）を送出後、生ストリームの半閉鎖 + 有界な
+│   │                                    # 読み捨て（`close_grace` で有界化）を行い、
+│   │                                    # frame 上限超過時に送信途中の巨大 payload が
+│   │                                    # 残ったままの close で Close 1009 が RST に
+│   │                                    # よって失われるのを防ぐ（`session::
+│   │                                    # handle_message_too_big`。戻り値は従来どおり
+│   │                                    # `Err(WsError::Protocol(Capacity(_)))` のままの
+│   │                                    # 非破壊修正、`docs/design/plugin-boundary.md`
+│   │                                    # 5 節参照）。
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O

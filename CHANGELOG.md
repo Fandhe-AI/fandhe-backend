@@ -157,6 +157,20 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
 
 ### Fixed
 
+- `fandhe-backend-plugin-websocket`: 受信メッセージ/フレームが
+  `WebSocketConfig::max_message_size` / `max_frame_size` を超えたとき、
+  Close フレームを送らずに接続を drop していた不具合を修正しました。
+  現在は RFC 6455 7.4.1 節の close code 1009（Message Too Big）・固定
+  reason `"message too big"` を送出してから閉じます（利用側は理由のない
+  異常切断ではなく 1009 を観測できます）。frame サイズ上限超過時は
+  送信途中の巨大 payload がソケットに残りうるため、Close 送出後に生
+  ストリームの半閉鎖（FIN）+ 有界な読み捨て（`close_grace` で有界化、
+  固定長バッファで蓄積しない）を行い、カーネルの RST で Close 1009 が
+  失われるのを避けます。上限超過メッセージがハンドラへ到達しない
+  既存の DoS 対策・サーバー側の戻り値
+  （`Err(WsError::Protocol(tungstenite::Error::Capacity(_)))`）は
+  変わりません（イシュー
+  [#719](https://github.com/Fandhe-AI/fandhe-backend/issues/719)）
 - `fandhe-backend-plugin-websocket`: `WsMessageHandler::on_message`（および
   `on_message_with_ctx`）実行中に `WsSender::send` を送信キュー容量
   （`DEFAULT_OUTBOUND_CAPACITY = 8`）を超える回数呼ぶとデッドロックする不具合を
