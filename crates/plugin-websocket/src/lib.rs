@@ -123,7 +123,9 @@ use std::task::Poll;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
-pub use config::{MAX_OUTBOUND_CAPACITY, OutboundCapacityError, WebSocketConfig};
+pub use config::{
+    MAX_OUTBOUND_CAPACITY, OutboundCapacityError, PingIntervalError, WebSocketConfig,
+};
 pub use error::WsError;
 
 use fandhe_backend_http::request::RequestHead;

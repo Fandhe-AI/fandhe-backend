@@ -240,6 +240,21 @@ pub enum CloseReason {
     /// （`close_grace` 超過のときも理由は本 variant。世代キャンセル・idle timeout
     /// が先に発火したときはその理由になる。詳細は [`WsSender::close`] の doc）。
     SenderClose,
+    /// `WebSocketConfig::with_ping_interval` の Ping keepalive（イシュー #713）で、
+    /// サーバー側から切断した。
+    ///
+    /// `idle_timeout`（[`Self::IdleTimeout`]）とは独立した死活監視で、
+    /// クライアントが受信専用（サーバー起点 push を受けているだけ）でも
+    /// 発火しうる（Ping 送出自体は `idle_timeout` をリセットしない契約、
+    /// `crate::session` モジュール doc を参照）。検出経路は次の 2 つ:
+    ///
+    /// - 送出済みの Ping から `pong_timeout` 以内に Pong が届かなかった
+    ///   （期限後、受信待ちで読めるフレームがなくなった時点で判定する。
+    ///   フレームが途切れず届いている間は発火しない）。
+    /// - Ping・Reply・outbound push 等の 1 回の送出が、その送出の開始時刻
+    ///   から `pong_timeout` を超えてブロックした（相手の受信バッファが
+    ///   詰まっている場合）。
+    PongTimeout,
 }
 
 /// [`CloseReason::Failed`] が運ぶ失敗の種別。
@@ -1374,7 +1389,8 @@ impl WsSender {
     /// 本呼び出しより前に [`Self::send`] が `Ok` を返した push メッセージは、
     /// Close フレームより先に送出される（[`Self`] の「送信キューを流れる内部
     /// 表現」節を参照。単一の bounded mpsc を経由するため FIFO 順序が保たれる）。
-    /// ただし「完了タイミング」節の打ち切り条件（`close_grace` 超過・世代キャンセル・idle timeout・送出失敗）
+    /// ただし「完了タイミング」節の打ち切り条件（`close_grace` 超過・世代キャンセル・
+    /// idle timeout・Ping keepalive の pong timeout（イシュー #713）・送出失敗）
     /// に当たると、残りの push と Close フレームは送出されない。close の `reserve()` 待ち
     /// 中に先に permit を得た `send` は Close より前に並ぶ。close が
     /// 確定した**後**に enqueue しようとした `send` は必ず `Err` になる
@@ -1422,8 +1438,9 @@ impl WsSender {
     /// （既定 10 秒）以内に、先行する push の送出・Close フレームの送出・応答
     /// 待ちを終えるか、接続を打ち切る（クライアントが受信を止めていても有界。
     /// 打ち切った場合の終了理由も `CloseReason::SenderClose`）。ただし、その
-    /// 間に世代キャンセル・idle timeout が先に発火した場合は、その経路の契約
-    /// （発火時点から `close_grace`、終了理由 `Cancelled`/`IdleTimeout`）に従う。
+    /// 間に世代キャンセル・idle timeout・Ping keepalive の pong timeout
+    /// （イシュー #713）が先に発火した場合は、その経路の契約（発火時点から
+    /// `close_grace`、終了理由 `Cancelled`/`IdleTimeout`/`PongTimeout`）に従う。
     /// close を要求していない間の push の送出には期限を設けない。
     ///
     /// 確定前に `close_grace` を超えてセッションが打ち切られた場合、本メソッドは
@@ -1748,7 +1765,8 @@ impl WsSender {
     /// `crate::session` のすべての終了経路（正常終了・ハンドラエラー・
     /// `WsOutcome::Close`・プロトコルエラー・future の drop）でこの
     /// `Receiver` は最終的に drop される。cancel（世代キャンセル）経路・
-    /// idle timeout 経路では、Close ハンドシェイクのドレインより**前**に
+    /// idle timeout 経路・Ping keepalive の pong timeout 経路（イシュー
+    /// #713）では、Close ハンドシェイクのドレインより**前**に
     /// drop されるため、`closed()` はその時点で完了する（[`WsSender::send`]
     /// の doc にある「`close_grace` の満了を待たず解放」と同じ時点）。
     /// `WsOutcome::Close` 経路（イシュー #711）・ハンドラ `Err` 経路では、

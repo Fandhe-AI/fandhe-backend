@@ -48,6 +48,19 @@ const DEFAULT_CLOSE_GRACE: Duration = Duration::from_secs(10);
 /// 引き上げる場合は非破壊変更で行える。
 pub const MAX_OUTBOUND_CAPACITY: usize = 4096;
 
+/// サーバー起点 Ping keepalive の設定（イシュー #713）。
+///
+/// `WebSocketConfig::ping` に保持し、`crate::session::run_session_inner` が
+/// `interval` ごとに Ping を送出し `pong_timeout` 以内に Pong が届かない
+/// 接続を切断する死活監視の入力になる。`outbound_capacity` と同じ理由
+/// （直接代入による構築時検証の迂回防止）で `WebSocketConfig::ping` 自体も
+/// `pub(crate)` にとどめ、`with_ping_interval` 経由でのみ設定させる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PingKeepalive {
+    pub(crate) interval: Duration,
+    pub(crate) pong_timeout: Duration,
+}
+
 /// WebSocket アップグレードを受け付けるパス・DoS 安全側のフレーム制限。
 ///
 /// `Default` はアップグレード対象パスを `/ws` とし、`max_message_size` /
@@ -130,6 +143,11 @@ pub struct WebSocketConfig {
     /// panic する余地が残るため。`handler`/`pattern` と同じ非公開フィールド +
     /// アクセサの方針）。
     pub(crate) outbound_capacity: usize,
+    /// サーバー起点 Ping keepalive（イシュー #713）。`None`（既定）は無効
+    /// （後方互換。既存の `idle_timeout` のみによる死活監視から挙動を
+    /// 変えない）。[`with_ping_interval`][Self::with_ping_interval] で
+    /// 有効化する。
+    pub(crate) ping: Option<PingKeepalive>,
 }
 
 impl fmt::Debug for WebSocketConfig {
@@ -143,6 +161,7 @@ impl fmt::Debug for WebSocketConfig {
             .field("handler", &self.handler.name())
             .field("pattern", &self.pattern)
             .field("outbound_capacity", &self.outbound_capacity)
+            .field("ping", &self.ping)
             .finish()
     }
 }
@@ -158,6 +177,7 @@ impl Default for WebSocketConfig {
             handler: default_handler(),
             pattern: None,
             outbound_capacity: crate::handler::DEFAULT_OUTBOUND_CAPACITY,
+            ping: None,
         }
     }
 }
@@ -188,6 +208,33 @@ impl fmt::Display for OutboundCapacityError {
 }
 
 impl std::error::Error for OutboundCapacityError {}
+
+/// [`WebSocketConfig::with_ping_interval`] が返す構築時検証エラー
+/// （イシュー #713）。`OutboundCapacityError` と同一方針（`#[non_exhaustive]`・
+/// panic しない fail-closed 契約）。
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PingIntervalError {
+    /// `interval` に `Duration::ZERO` を指定した。Ping を送り続けるビジー
+    /// ループ（サーバー自身への DoS）になるため構築時に拒否する。
+    ZeroInterval,
+    /// `pong_timeout` に `Duration::ZERO` を指定した。最初に送出した Ping の
+    /// 応答を待つ間もなく即座に全接続が切断される誤設定になるため構築時に
+    /// 拒否する。
+    ZeroPongTimeout,
+}
+
+impl fmt::Display for PingIntervalError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let msg = match self {
+            Self::ZeroInterval => "websocket ping interval must not be zero",
+            Self::ZeroPongTimeout => "websocket pong timeout must not be zero",
+        };
+        write!(f, "{msg}")
+    }
+}
+
+impl std::error::Error for PingIntervalError {}
 
 impl WebSocketConfig {
     /// アップグレード対象パスを指定した設定を作る（他フィールドは既定値）。
@@ -450,6 +497,135 @@ impl WebSocketConfig {
     pub fn outbound_capacity(&self) -> usize {
         self.outbound_capacity
     }
+
+    /// サーバー起点 Ping による死活監視を有効化する（イシュー #713）。
+    ///
+    /// `interval` ごとにサーバーから `Message::Ping` を送出し、送出時点から
+    /// `pong_timeout` 以内にクライアントの Pong が届かなければアイドル
+    /// タイムアウトと同型の正常な Close ハンドシェイクで切断する
+    /// （[`crate::handler::CloseReason::PongTimeout`]）。各 Ping には
+    /// 8 バイト big-endian の単調増加シーケンス番号を識別ペイロードとして
+    /// 付与し、Pong はこのペイロードが一致した場合にのみ Pong 期限を解除
+    /// する（一致しない Pong は無視して待機を継続する。レビュー指摘対応、
+    /// PR #738。`crate::session` の `Keepalive::next_payload` を参照）。
+    /// 期限切れは受信待ちで読めるフレームがなくなった時点で判定し、それ
+    /// までに届いているフレームは先に読んで処理する（一致する Pong を
+    /// 返さない対向も、フレームが途切れず届いている間は切断しない。
+    /// `crate::session` モジュール doc「サーバー起点 Ping keepalive」節を
+    /// 参照）。1 回の送出（Ping・Reply・outbound push 等）が
+    /// `pong_timeout` を超えてブロックした場合も同じ `PongTimeout` で
+    /// 終了する。
+    ///
+    /// `idle_timeout`（既定で有効）はクライアントからの受信でのみリセット
+    /// され、サーバー起点の Ping 送出ではリセットしない。そのため受信専用
+    /// （サーバー起点 push を受けているだけ）のクライアントは
+    /// `idle_timeout` だけでは死活監視できず、本設定が必要になる（親
+    /// #712）。Pong の受信自体は他の全フレーム種別と同じく `idle_timeout`
+    /// もリセットする（既存挙動）。
+    ///
+    /// 既定（未呼び出し時）は無効（後方互換。既存の `idle_timeout` のみに
+    /// よる死活監視から挙動を変えない）。
+    ///
+    /// # Errors
+    ///
+    /// `interval` が `Duration::ZERO` の場合は
+    /// [`PingIntervalError::ZeroInterval`]（Ping を送り続けるビジーループを
+    /// 防ぐ）、`pong_timeout` が `Duration::ZERO` の場合は
+    /// [`PingIntervalError::ZeroPongTimeout`]（最初の Ping で全接続が切れる
+    /// 誤設定を防ぐ）を返す（panic しない fail-closed 契約、
+    /// `.claude/rules/coding-rust.md`）。`pong_timeout >= interval` は拒否
+    /// しない（未応答の Ping が続いても期限は延長されない契約）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use fandhe_backend_plugin_websocket::WebSocketConfig;
+    ///
+    /// let config = WebSocketConfig::default()
+    ///     .with_ping_interval(Duration::from_secs(30), Duration::from_secs(10))
+    ///     .unwrap();
+    /// assert_eq!(config.ping_interval(), Some(Duration::from_secs(30)));
+    /// assert_eq!(config.pong_timeout(), Some(Duration::from_secs(10)));
+    /// ```
+    ///
+    /// `interval` に 0 を指定すると拒否される:
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use fandhe_backend_plugin_websocket::{PingIntervalError, WebSocketConfig};
+    ///
+    /// let err = WebSocketConfig::default()
+    ///     .with_ping_interval(Duration::ZERO, Duration::from_secs(10))
+    ///     .unwrap_err();
+    /// assert_eq!(err, PingIntervalError::ZeroInterval);
+    /// ```
+    ///
+    /// `pong_timeout` に 0 を指定すると拒否される:
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use fandhe_backend_plugin_websocket::{PingIntervalError, WebSocketConfig};
+    ///
+    /// let err = WebSocketConfig::default()
+    ///     .with_ping_interval(Duration::from_secs(30), Duration::ZERO)
+    ///     .unwrap_err();
+    /// assert_eq!(err, PingIntervalError::ZeroPongTimeout);
+    /// ```
+    pub fn with_ping_interval(
+        mut self,
+        interval: Duration,
+        pong_timeout: Duration,
+    ) -> Result<Self, PingIntervalError> {
+        if interval == Duration::ZERO {
+            return Err(PingIntervalError::ZeroInterval);
+        }
+        if pong_timeout == Duration::ZERO {
+            return Err(PingIntervalError::ZeroPongTimeout);
+        }
+        self.ping = Some(PingKeepalive {
+            interval,
+            pong_timeout,
+        });
+        Ok(self)
+    }
+
+    /// サーバー起点 Ping による死活監視を明示的に無効化する
+    /// （[`without_idle_timeout`][Self::without_idle_timeout] と対称、
+    /// イシュー #713）。既定も無効のため通常は呼ぶ必要はない。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use fandhe_backend_plugin_websocket::WebSocketConfig;
+    ///
+    /// let config = WebSocketConfig::default()
+    ///     .with_ping_interval(Duration::from_secs(30), Duration::from_secs(10))
+    ///     .unwrap()
+    ///     .without_ping_interval();
+    /// assert_eq!(config.ping_interval(), None);
+    /// ```
+    #[must_use]
+    pub fn without_ping_interval(mut self) -> Self {
+        self.ping = None;
+        self
+    }
+
+    /// 現在設定されている Ping keepalive の送出間隔
+    /// （[`with_ping_interval`][Self::with_ping_interval]）。`ping` フィールドは
+    /// `pub(crate)` のため、外部から確認する手段として公開する。
+    #[must_use]
+    pub fn ping_interval(&self) -> Option<Duration> {
+        self.ping.map(|p| p.interval)
+    }
+
+    /// 現在設定されている Ping keepalive の Pong 待機上限
+    /// （[`with_ping_interval`][Self::with_ping_interval]）。
+    #[must_use]
+    pub fn pong_timeout(&self) -> Option<Duration> {
+        self.ping.map(|p| p.pong_timeout)
+    }
 }
 
 #[cfg(test)]
@@ -540,6 +716,79 @@ mod tests {
         assert_eq!(
             OutboundCapacityError::TooLarge.to_string(),
             "websocket outbound capacity exceeds maximum"
+        );
+    }
+
+    #[test]
+    fn default_ping_interval_is_disabled() {
+        let config = WebSocketConfig::default();
+        assert_eq!(config.ping_interval(), None);
+        assert_eq!(config.pong_timeout(), None);
+    }
+
+    #[test]
+    fn with_ping_interval_accepts_valid_values() {
+        let config = WebSocketConfig::default()
+            .with_ping_interval(Duration::from_secs(30), Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(config.ping_interval(), Some(Duration::from_secs(30)));
+        assert_eq!(config.pong_timeout(), Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn with_ping_interval_rejects_zero_interval() {
+        let err = WebSocketConfig::default()
+            .with_ping_interval(Duration::ZERO, Duration::from_secs(10))
+            .unwrap_err();
+        assert_eq!(err, PingIntervalError::ZeroInterval);
+    }
+
+    #[test]
+    fn with_ping_interval_rejects_zero_pong_timeout() {
+        let err = WebSocketConfig::default()
+            .with_ping_interval(Duration::from_secs(30), Duration::ZERO)
+            .unwrap_err();
+        assert_eq!(err, PingIntervalError::ZeroPongTimeout);
+    }
+
+    #[test]
+    fn with_ping_interval_allows_pong_timeout_ge_interval() {
+        // pong_timeout >= interval は拒否しない（設計上「延長しない」で意味を
+        // 定める。構築時検証としては値の大小関係を制約しない）。
+        let config = WebSocketConfig::default()
+            .with_ping_interval(Duration::from_secs(5), Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(config.ping_interval(), Some(Duration::from_secs(5)));
+        assert_eq!(config.pong_timeout(), Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn without_ping_interval_resets_to_disabled() {
+        let config = WebSocketConfig::default()
+            .with_ping_interval(Duration::from_secs(30), Duration::from_secs(10))
+            .unwrap()
+            .without_ping_interval();
+        assert_eq!(config.ping_interval(), None);
+    }
+
+    #[test]
+    fn debug_includes_ping() {
+        let config = WebSocketConfig::default()
+            .with_ping_interval(Duration::from_secs(30), Duration::from_secs(10))
+            .unwrap();
+        let debug = format!("{config:?}");
+        assert!(debug.contains("ping"));
+    }
+
+    #[test]
+    fn ping_interval_error_display_is_fixed_text() {
+        assert_eq!(
+            PingIntervalError::ZeroInterval.to_string(),
+            "websocket ping interval must not be zero"
+        );
+        assert_eq!(
+            PingIntervalError::ZeroPongTimeout.to_string(),
+            "websocket pong timeout must not be zero"
         );
     }
 }

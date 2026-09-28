@@ -12,6 +12,27 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
 
 ### Added
 
+- `fandhe-backend-plugin-websocket`: サーバー起点の Ping と Pong 期限による死活監視
+  `WebSocketConfig::with_ping_interval(interval, pong_timeout)`（既定は無効、
+  `interval`/`pong_timeout` に `Duration::ZERO` を指定すると `PingIntervalError`
+  で構築時に拒否）を追加しました。有効化すると `interval` ごとにサーバーから
+  `Message::Ping` を送出し、送出時点から `pong_timeout` 以内にクライアントの
+  Pong が届かない接続を `CloseReason::PongTimeout`（非破壊追加の新規 variant）
+  で切断します。`idle_timeout` はクライアントからの受信でのみリセットされ
+  サーバー起点の送出ではリセットしないため、サーバー起点 push を受けている
+  だけの受信専用クライアント（例: CDP 互換サーバー相手の Playwright/Puppeteer）
+  は `idle_timeout` だけでは死活監視できず、本設定が必要になります。
+  期限切れの判定は受信待ちで読めるフレームがなくなった時点で行うため、
+  期限を過ぎても届いているフレームは先に読んで処理し、その中の Pong も
+  有効として扱います（Pong を返さない対向も、フレームが途切れず届いている
+  間は切断しません）。1 回の送出（Ping・Reply・
+  outbound push 等）がその開始時刻から `pong_timeout` を超えてブロックした
+  場合も同じ `CloseReason::PongTimeout` で終了します。
+  `without_ping_interval()` で明示的に無効へ戻せます。既存の設定・挙動は
+  無変更のまま動作します（後方互換。設計は本ファイル・
+  `docs/api/plugin-config-api.md`、イシュー
+  [#713](https://github.com/Fandhe-AI/fandhe-backend/issues/713)、親
+  [#712](https://github.com/Fandhe-AI/fandhe-backend/issues/712)）。
 - `fandhe-backend-plugin-websocket`: `on_message` 処理中に接続 ID・接続コンテキスト
   を参照できるようにしました。プロセス内で一意な接続識別子 `WsConnId`、接続単位の
   コンテキスト `WsConnContext`（`conn_id()` / `sender()` / `param()` / `params()`）、
