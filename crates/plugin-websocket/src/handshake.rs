@@ -266,11 +266,37 @@ impl<'a> WsHandshakeContext<'a> {
         self.head
     }
 
-    /// `name`（大小無視）のヘッダ値を返す（[`RequestHead::header`] への
-    /// 薄い委譲）。複数出現する場合は最初の 1 件のみ。
+    /// `name`（大小無視）のヘッダ値を返す。
+    ///
+    /// [`RequestHead::header`] とは異なり、同名ヘッダが複数出現する場合は
+    /// **`None`**（判定不能・拒否側）を返す（イシュー #716 P1 レビュー指摘の
+    /// フェイルクローズ対応）。`RequestHead::header` は先頭 1 件のみを返す
+    /// 契約のため、本フックの典型用途である `Origin` / `Host` 等の認可判断に
+    /// 使うヘッダが重複指定されたリクエストでは、本フックが見る値と、別の値
+    /// を採用する中継先（リバースプロキシ等）の判断が食い違い、認可判定を
+    /// 迂回されうる（RFC 9110 5.3 節はヘッダの重複解釈を規定しておらず実装
+    /// 依存）。重複は「値を一意に決定できない」ため拒否側（`None`）に倒し、
+    /// 呼び出し側の `match` の `_` 分岐（拒否）へフォールバックさせる設計と
+    /// する（`.claude/rules/security.md`「認証・認可」）。
+    ///
+    /// 重複そのものを許容し全出現値を確認したい呼び出し元は、
+    /// [`WsHandshakeContext::head`] 経由で [`RequestHead::headers`] を使うこと。
     #[must_use]
     pub fn header(&self, name: &str) -> Option<&'a str> {
-        self.head.header(name)
+        let mut matches = self
+            .head
+            .headers()
+            .filter(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v);
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            // 同名ヘッダが 2 件以上存在する = 値を一意に決定できない。
+            // 先頭値を採用すると中継先との判定食い違いによる認可迂回を
+            // 招くため、フェイルクローズで「なし」として扱う。
+            None
+        } else {
+            Some(first)
+        }
     }
 
     /// `name` に対応する `{name}` パスパラメータの値を返す（非デコード
@@ -317,18 +343,23 @@ impl fmt::Debug for WsHandshakeContext<'_> {
 ///   （body なし）に置き換える。
 /// - **2xx**（`200..=299`）: 「拒否」の意味に反するため、同じく
 ///   `400 Bad Request` に置き換える。
-/// - **3xx/4xx/5xx**: 指定どおりそのまま返す（RFC 6455 4.2.2 はリダイレクト
-///   応答を許容している）。
+/// - **3xx/4xx/5xx**（`300..=599`）: 指定どおりそのまま返す（RFC 6455 4.2.2
+///   はリダイレクト応答を許容している）。
+/// - **上記いずれにも属さない値**（`0..=99`・`600` 以上。`u16` の型レベルの
+///   契約はあるが HTTP ステータスコードとして未定義の範囲、フックの実装
+///   ミスや `Response::empty(0)` 等の誤用を想定）: 設計文書（本 doc）が
+///   許容する応答以外を送出しないよう、同じく `400 Bad Request` に正規化
+///   する（イシュー #716 P2 レビュー指摘）。
 ///
 /// 直列化時の `keep_alive` は常に `false` とする契約は呼び出し元
 /// （`crate::handle_upgrade_with_peer_addr`）が担う（拒否後の接続を再利用
 /// しない）。
 #[must_use]
 pub(crate) fn normalize_rejection(response: Response) -> Response {
-    if (100..300).contains(&response.status) {
-        Response::empty(400)
-    } else {
+    if (300..600).contains(&response.status) {
         response
+    } else {
+        Response::empty(400)
     }
 }
 
@@ -623,6 +654,20 @@ mod tests {
         assert_eq!(normalized.body, b"no such page");
     }
 
+    #[test]
+    fn normalize_rejection_replaces_out_of_range_status_with_400() {
+        // フックの実装ミス（`Response::empty(0)`）や `600` 以上の非標準値は
+        // 3xx/4xx/5xx のいずれでもなく設計文書が想定しない応答のため、
+        // 無条件通過させず 400 へ正規化する（イシュー #716 P2 レビュー指摘）。
+        for status in [0, 1, 99, 600, 999] {
+            let normalized = normalize_rejection(Response::empty(status));
+            assert_eq!(
+                normalized.status, 400,
+                "status={status} が正規化されていない"
+            );
+        }
+    }
+
     fn handshake_check_head() -> RequestHead {
         head_from(
             b"GET /devtools/page/XYZ HTTP/1.1\r\n\
@@ -671,6 +716,35 @@ mod tests {
         let debug = format!("{ctx:?}");
         assert!(!debug.contains("example.com"));
         assert!(!debug.contains("54321"));
+    }
+
+    #[test]
+    fn handshake_context_header_returns_none_for_duplicate_header() {
+        // 重複した `Origin` ヘッダを含むリクエストでは、先頭値を採用すると
+        // 別の値を採用する中継先（リバースプロキシ等）と認可判定が食い違い
+        // うるため、判定不能として拒否側（`None`）に倒す（イシュー #716 P1
+        // レビュー指摘）。
+        let head = head_from(
+            b"GET /ws HTTP/1.1\r\n\
+              Origin: https://allowed.example\r\n\
+              Origin: https://evil.example\r\n\
+              Upgrade: websocket\r\n\
+              Connection: Upgrade\r\n\
+              Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+              Sec-WebSocket-Version: 13\r\n\
+              \r\n",
+        );
+        let params = PathParams::default();
+        let ctx = WsHandshakeContext::new(&head, &params, None);
+        assert_eq!(ctx.header("origin"), None);
+    }
+
+    #[test]
+    fn handshake_context_header_returns_value_for_single_header() {
+        let head = handshake_check_head();
+        let params = PathParams::default();
+        let ctx = WsHandshakeContext::new(&head, &params, None);
+        assert_eq!(ctx.header("origin"), Some("https://example.com"));
     }
 
     #[test]
