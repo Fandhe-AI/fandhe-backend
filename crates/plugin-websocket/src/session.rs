@@ -2017,7 +2017,12 @@ mod tests {
     /// `sender` は呼び出し元が渡した `WsSender`（本番の `handle_upgrade`
     /// と同様、outbound チャネルの送信側クローンを 1 個保持する）。
     fn test_conn_ctx(sender: handler::WsSender) -> WsConnContext {
-        WsConnContext::new(handler::WsConnId::next(), sender, Vec::new())
+        WsConnContext::new(
+            handler::WsConnId::next(),
+            sender,
+            Vec::new(),
+            std::sync::Arc::new(handler::ConnRequestInfo::default()),
+        )
     }
 
     /// 受け入れ基準 1: `WsSender` からの push とクライアント宛の返信

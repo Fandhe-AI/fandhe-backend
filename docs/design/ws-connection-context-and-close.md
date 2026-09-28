@@ -631,6 +631,10 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
   `handle_upgrade_with_peer_addr` を追加、既存シグネチャは無変更。15 節参照）
 - `session.rs`（非公開モジュール）の内部リファクタリング（デッドロック修正、
   6 節・#706）はそもそも公開 API 面の変更ではない
+- #717 で `WsOpenContext`/`WsConnContext` へ `host()`/`origin()`/
+  `user_agent()`/`query()`（`WsConnContext` は `peer_addr()` も）を追加
+  （いずれも `#[non_exhaustive]` 型への非公開フィールド + アクセサ追加、
+  17 節参照）
 
 **直接の先例**: `on_open`/`WsOpenContext`/`with_path_pattern`（#671/#675/#676）は
 同じ「provided メソッド追加・`#[non_exhaustive]` 型への追加」パターンで、
@@ -1139,9 +1143,10 @@ Upgrade 委譲経路（`crates/core/src/plugin.rs` の `try_handle_upgrade` →
 - `WsConnContext`（`on_message_with_ctx` / `on_close` 向け）には
   `peer_addr` を追加しない。接続コンテキストへの展開はイシュー #717 の
   範囲とする（`on_open` 時点で必要な利用者は `WsOpenContext::peer_addr()`
-  を自前で `on_open` 内に保持すればよい）。
+  を自前で `on_open` 内に保持すればよい）。**#717 で実装済み（17 節）**。
 - ヘッダ・query の保持、受理判定フック（イシュー #716）も本イシューでは
-  扱わない。
+  扱わない。ヘッダ・query の保持は #717 で実装済み（17 節）。受理判定
+  フック（#716）は引き続き未着手のスコープ外。
 
 ### 15.3 `Debug` 出力からの除外
 
@@ -1272,3 +1277,121 @@ variant を追加せず、**拒否時も `Ok(())`**（拒否応答を送出済�
 パスパラメータを要さない全リクエスト共通の認可判定は引き続き
 `RequestGate` を使う。WebSocket 固有かつパスパラメータを要する判定は本
 フックを使う。
+
+## 17. #717: 接続コンテキストへのリクエスト情報の展開
+
+15.2 節が「#717 の範囲」と引き渡した内容の実装。CDP 互換サーバー
+（fandhe-browser）等の利用者から、接続単位でログ・監査目的に接続元
+アドレス・主要リクエストヘッダ・query を参照したいという要望に対応する。
+
+### 17.1 許可リスト方式（固定 5 項目）
+
+`RequestHead` を丸ごと保持したり、任意の名前でヘッダを引ける汎用アクセサを
+公開したりはしない。保持するのは次の 5 項目のみ:
+
+- `peer_addr`（#728 で `WsOpenContext` に既存。本イシューで `WsConnContext`
+  にも追加し両型で対称にした）
+- `host` / `origin` / `user_agent`（`RequestHead::header` と同一の大文字
+  小文字無視・重複時は先頭値のみという検索意味論）
+- `query`（`RequestHead::query` の値をそのまま複製した非デコード文字列。
+  `?` なしは `None`、`?` のみは `Some("")`）
+
+重複ヘッダの受理・拒否判定（例: 重複 `Host` の拒否）は本イシューの対象外で
+あり、ハンドシェイク受理判定フック（イシュー #716）の責務とする。本イシュー
+が追加するアクセサは観測用の値を返すのみ。
+
+許可リストであること自体が「保持するヘッダの量に上限がある」という受け入れ
+基準の一次的な根拠になる。任意ヘッダを取得する経路が型に存在しないため、
+`Cookie`/`Authorization`/大量の `X-Custom-*` を送っても保持量は増えない
+（`crates/plugin-websocket/src/handler.rs` の
+`from_head_ignores_headers_outside_allowlist` で検証）。
+
+### 17.2 値ごとの上限（二次防御）・非切り詰め契約
+
+一次防御（許可リスト）に加え、値ごとの上限を設ける:
+
+- `MAX_CONTEXT_HEADER_VALUE_BYTES = 1024`（`host`/`origin`/`user_agent`
+  共通）
+- `MAX_CONTEXT_QUERY_BYTES = 2048`（`query`）
+
+上限を超えた値は**切り詰めずに `None`** にする（フェイルクローズ）。切り
+詰めた場合、後段で `Host`/`Origin` を許可リスト照合する利用者コード（例:
+`Origin` が特定ドメインで始まるかの判定）が部分一致でバイパスされうるため
+（例: 1024 バイトに切り詰めた結果がたまたま許可ドメインの prefix と一致する
+攻撃）。この非切り詰め契約は両定数の doc・
+`from_head_header_value_at_limit_is_kept_over_limit_is_none` /
+`from_head_query_at_limit_is_kept_over_limit_is_none` の各テストで固定する。
+
+数値の根拠: 許可リスト（5 項目、うち文字列 4 項目）× 上限の組み合わせで
+1 接続あたりの保持量は最大で約 5 KiB（1024 × 3 + 2048）に有界化される。
+`fandhe_backend_http::request::MAX_HEADER_BYTES`（ヘッダ全体のパーサ上限、
+16 KiB）より十分小さく、長寿命接続が多数あっても常駐メモリを有界に保つ。
+値を変更する場合は本節を再検討条件として扱う。
+
+### 17.3 型構成・`Arc` 共有
+
+`crates/plugin-websocket/src/handler.rs` に `pub(crate)` のバンドル型
+`ConnRequestInfo`（`peer_addr`/`host`/`origin`/`user_agent`/`query` の 5
+フィールド、`Debug`/`Clone`/`Default` を derive）を新設し、抽出関数
+`ConnRequestInfo::from_head(head: &RequestHead, peer_addr: Option<SocketAddr>)`
+を持たせた。`pub(crate)` としたのは、ハンドシェイク受理判定フック（#716）
+からも同じ抽出結果を再利用できるようにするため（公開 API 面には出さない）。
+
+`WsOpenContext`・`WsConnContext` はいずれも `info: Arc<ConnRequestInfo>` を
+保持する。`crate::handle_upgrade_with_peer_addr` が 101 応答送出成功後に
+`ConnRequestInfo::from_head` を**1 回だけ**呼んで `Arc` 化し、両コンテキスト
+のコンストラクタへ渡す（`Arc::clone` のみで値のコピーは発生しない、5 節の
+「`WsConnContext` が `WsSender` を保持する」設計と同じ「1 回構築・複数箇所で
+共有」方針）。ハンドシェイク失敗・101 送出前キャンセルの経路では構築されず、
+`on_open`/`on_close` 双方のフェイルクローズ対称性（4 節）と整合する。
+
+`WsOpenContext::new`/`WsConnContext::new` は既存の `peer_addr: Option<
+SocketAddr>`（`WsOpenContext` のみ）を `info: Arc<ConnRequestInfo>` に
+置き換える形の変更だが、いずれも `pub(crate)` のため公開 API への影響はない
+（7 節参照）。
+
+### 17.4 非破壊判定
+
+- `WsOpenContext`・`WsConnContext` はいずれも `#[non_exhaustive]` + 非公開
+  フィールドのため、フィールドの内部表現変更（`peer_addr` 単体 →
+  `info: Arc<ConnRequestInfo>`）・新規アクセサ追加は非破壊
+- `WsConnContext::new`・`WsOpenContext::new` は `pub(crate)` のため引数変更も
+  公開 API に影響しない
+- `crates/core` は無変更（`head` と `peer_addr` は #728 で既にコアから渡って
+  いる。本イシューはプラグイン内部での使い方の拡張のみ）
+- 新規外部依存はゼロ。`fandhe_backend_http::request::RequestHead` は既存の
+  workspace path 依存（`fandhe-backend-http`）の型
+- 以上より 7 節の非破壊追加パターンに合致し、0.4.2 の lockstep バンプ判定は
+  変わらない
+
+### 17.5 `Debug` 出力からの除外
+
+`host`/`origin`/`user_agent`/`query`/`peer_addr` はいずれも
+`WsOpenContext`/`WsConnContext` の `Debug` 出力に含めない
+（`finish_non_exhaustive()` のまま）。`peer_addr` は #728 と同じ判断（偽装
+できないが PII に近い情報）。`host`/`origin`/`user_agent`/`query` はさらに
+クライアントが完全に制御できる申告値であり、パスパラメータと同様の理由
+（攻撃者制御下の入力をログ・診断出力へ漏らさない、`.claude/rules/
+security.md`）で除外する。`conn_context_debug_redacts_request_info` テスト
+で固定する。
+
+### 17.6 セキュリティに関する注意（アクセサ doc に明記）
+
+- `Host`/`Origin`/`User-Agent` はクライアントの申告値であり、ブラウザ以外
+  のクライアントなら任意に偽装できる。認可判定の唯一の根拠にしないこと。
+  値が `None` のときは拒否側に倒すこと（fail-closed）
+- `peer_addr` はリバースプロキシ・ロードバランサ配下ではプロキシ自身の
+  アドレスになる（#728 の doc と同一の注意）
+- `query` は非デコードの生文字列で、トークン等の機密情報を含みうる。ログに
+  出す場合は利用者側でマスクすること
+
+### 17.7 スコープ外
+
+- ハンドシェイク受理判定フック（イシュー #716）: 本イシューが用意した
+  `ConnRequestInfo::from_head` を再利用できる形にはしたが、受理・拒否の
+  判定ロジック自体は実装しない
+- 任意ヘッダを取得する汎用 API（許可リスト方式が本イシューの一次防御その
+  ものであり、意図的に設けない）
+- `X-Forwarded-For` の解釈（`peer_addr` は accept したソケットの実アドレス
+  のみを扱う契約、#728 と同じ）
+- `GateContext` の `Debug` 方針の見直し（15.3 節と同じくスコープ外）
