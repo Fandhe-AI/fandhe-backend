@@ -78,7 +78,41 @@
 //! [`Router::fallback_with`] を登録しない限りこの挙動は完全に維持され、fallback
 //! 登録済みでも既定ポリシー（[`FallbackPolicy::NotFoundOnly`]）は 405 を fallback へ
 //! 流さない安全側（情報量の少ない `Allow` 開示を維持する側）に倒す。
+//!
+//! # ルータ合成（イシュー #722）
+//!
+//! 独立に組み立てた複数の [`Router`] は [`Router::merge`] で 1 つに合成できる
+//! （クレートをまたいでそれぞれ `Router` を公開し、呼び出し側がまとめて 1 つの
+//! `Server::handler` に登録する構成を想定。個々の `Router` 同士は互いを知らずに
+//! 組み立てられる）。
+//!
+//! 重複するルート登録は **エラー（フェイルクローズ）** で検出する。`route`/
+//! `route_param` 単体の「同一 `Router` 内での再登録は後勝ち」という既存意味論は
+//! 変えないが、`merge` は「別々に作られたルータの合成」であるため、黙って
+//! 一方を上書きすると意図しないハンドラの差し替え（OWASP A01、
+//! `.claude/rules/security.md`）につながる。衝突として検出するのは次の 4 種で、
+//! いずれも self（`merge` を呼ぶ側）と other（引数側）の間でのみ判定する:
+//!
+//! - 静的ルート: `(method, path)` の完全一致（method の大文字小文字は区別する）
+//! - パラメータルート: method が一致し、セグメント形状が「等価」（`Literal` は
+//!   文字列一致、`Param` 同士・`Wildcard` 同士は名前を問わず種別一致、セグメント数も
+//!   一致。`/a/{id}` と `/a/{name}` は衝突、`/a/{x}` と `/a/{*rest}` は種別が
+//!   異なるため衝突ではない）
+//! - [`Router::fallback`][] / [`Router::fallback_with`][]: 両方に登録されていれば衝突
+//! - [`Router::options_fallback`][]: 両方に登録されていれば衝突
+//!
+//! 衝突しない部分的な重なり（`/a/{x}` と `/a/{*rest}`、静的 `/a/b` とパラメータ
+//! `/a/{x}` 等）は既存の優先順位（静的 → パラメータ、パラメータは登録順）が
+//! そのまま適用される。合成後のパラメータルートの登録順は **self が先、other が後**
+//! （`Vec::extend`）。
+//!
+//! fallback は接頭辞に限定されず**合成後のルータ全体**に適用される。サブルータに
+//! 付けた fallback（例: `/ai/*` 専用の 404）は、合成後は他のサブルータの未マッチにも
+//! 効く。接頭辞単位の fallback や `nest` はスコープ外で、fallback は合成後の
+//! 最上位ルータで登録することを推奨する（[`Router::merge`] の doc comment 参照）。
 
+use std::error::Error;
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -157,6 +191,68 @@ pub enum FallbackPolicy {
     /// `Allow` ヘッダは付与されない（method 開示の有無がハンドラ側の責務に移る）。
     IncludeMethodNotAllowed,
 }
+
+/// [`Router::merge`] が検出する合成時の衝突（イシュー #722）。
+///
+/// いずれのバリアントも「self（`merge` を呼ぶ側）と other（引数側）の間で
+/// 同じ URL・method 集合を奪い合う登録が両方に存在する」ことを表す
+/// （同一 `Router` 内での既存の後勝ち・先勝ち意味論は変えない、モジュール doc
+/// 「ルータ合成」節参照）。`method`/`path`/`pattern` は開発者が起動時に登録した
+/// 値であり、リクエスト由来ではないためログ出力してもインジェクション・情報
+/// 漏洩の懸念は小さい（`.claude/rules/security.md`）。将来のバリアント追加に
+/// 備え `#[non_exhaustive]` を付ける。
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RouterMergeError {
+    /// 静的ルート（[`Router::route`] / [`Router::route_async`]）の
+    /// `(method, path)` が self と other の両方に登録されていた。
+    DuplicateRoute {
+        /// 衝突した method（大文字小文字はそのまま、登録時の表記）。
+        method: String,
+        /// 衝突した path。
+        path: String,
+    },
+    /// パラメータルート（[`Router::route_param`] / [`Router::route_param_async`]）が
+    /// method 一致・セグメント形状等価（`pattern::segments_equivalent`）で
+    /// self と other の両方に登録されていた。
+    DuplicateParamRoute {
+        /// 衝突した method。
+        method: String,
+        /// 衝突したパターンの復元表記（`{name}` / `{*name}` 形式、
+        /// `pattern::render_segments` で再構成。self 側の表記を採用する）。
+        pattern: String,
+    },
+    /// [`Router::fallback`] / [`Router::fallback_with`] が self と other の
+    /// 両方に登録されていた。
+    ConflictingFallback,
+    /// [`Router::options_fallback`] が self と other の両方に登録されていた。
+    ConflictingOptionsFallback,
+}
+
+impl fmt::Display for RouterMergeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateRoute { method, path } => write!(
+                f,
+                "合成対象の両方の Router に同じ静的ルートが登録されています: {method} {path}"
+            ),
+            Self::DuplicateParamRoute { method, pattern } => write!(
+                f,
+                "合成対象の両方の Router に同じ形状のパラメータルートが登録されています: {method} {pattern}"
+            ),
+            Self::ConflictingFallback => write!(
+                f,
+                "合成対象の両方の Router に fallback ハンドラが登録されています"
+            ),
+            Self::ConflictingOptionsFallback => write!(
+                f,
+                "合成対象の両方の Router に options_fallback ハンドラが登録されています"
+            ),
+        }
+    }
+}
+
+impl Error for RouterMergeError {}
 
 /// method + `target` の完全一致、および `{name}` パスパラメータ（TASK-176、#176）
 /// でハンドラを解決する最小ルータ。
@@ -648,6 +744,172 @@ impl Router {
         self
     }
 
+    /// `self` と `other` を 1 つの [`Router`] に合成する（イシュー #722）。
+    ///
+    /// クレートをまたいで独立に組み立てた複数の `Router` をまとめる用途を想定する
+    /// （モジュール doc「ルータ合成」節）。`other` の所有権を受け取ってムーブする
+    /// （ハンドラは `Box<dyn Fn>` で `Clone` できないため）。`route_param` と同じく
+    /// `Result` を返すビルダー形式で、`Router::new().route(..).merge(a)?.merge(b)?`
+    /// のように `?` で連鎖できる。
+    ///
+    /// # 衝突判定（フェイルクローズ）
+    ///
+    /// 変更を加える前に全件の衝突を検査し、最初に見つかった衝突を `Err` で返す
+    /// （`Err` の場合 `self` と `other` はいずれも破棄される）。衝突として検出する
+    /// のは次の 4 種のみで、いずれも self と other の間でのみ判定する（同一
+    /// `Router` 内の既存の後勝ち・先勝ち意味論は変えない）:
+    ///
+    /// - 静的ルートの `(method, path)` 完全一致 → [`RouterMergeError::DuplicateRoute`]
+    /// - パラメータルートの method 一致 + セグメント形状等価
+    ///   （`/a/{id}` と `/a/{name}` のように名前だけが違うものも衝突とみなす。
+    ///   `/a/{x}` と `/a/{*rest}` のように種別が異なるものは衝突ではない）
+    ///   → [`RouterMergeError::DuplicateParamRoute`]
+    /// - 両方に `fallback` が登録済み → [`RouterMergeError::ConflictingFallback`]
+    /// - 両方に `options_fallback` が登録済み → [`RouterMergeError::ConflictingOptionsFallback`]
+    ///
+    /// 衝突としない部分的な重なり（`/a/{x}` と `/a/{*rest}`、静的 `/a/b` と
+    /// パラメータ `/a/{x}` 等）・method が異なる同一パスは、既存の優先順位
+    /// （静的 → パラメータ、登録順）でそのまま解決される。
+    ///
+    /// # 引き継ぎの意味論
+    ///
+    /// - 静的ルートは path ごとに method の集合を合併し、405 の `Allow` にも
+    ///   両方の method が集約される。
+    /// - パラメータルートは **self のものが先、other のものが後**
+    ///   （`Vec::extend`、登録順で線形走査する既存意味論への影響を明示する）。
+    /// - `fallback` / `options_fallback` は片方にのみ登録されていればそれを
+    ///   引き継ぐ（`FallbackPolicy` もそのまま引き継ぐ）。どちらにもなければ
+    ///   `None` のまま（既定の 404 / 405 + `Allow` を維持）。
+    /// - `fallback` は接頭辞に限定されず、合成後のルータ全体に適用される
+    ///   （モジュール doc「ルータ合成」節参照）。
+    ///
+    /// ```
+    /// use fandhe_backend_routes::Router;
+    /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// fn head(buf: &[u8]) -> fandhe_backend_http::request::RequestHead {
+    ///     match parse_request_head(buf).unwrap() {
+    ///         ParseOutcome::Complete { head, .. } => head,
+    ///         ParseOutcome::Incomplete => unreachable!(),
+    ///     }
+    /// }
+    ///
+    /// let todos = Router::new().route("GET", "/todos", |_h, _b| {
+    ///     Response::new(200, b"todos".to_vec())
+    /// });
+    /// let users = Router::new().route("GET", "/users", |_h, _b| {
+    ///     Response::new(200, b"users".to_vec())
+    /// });
+    /// let router = todos.merge(users).unwrap();
+    ///
+    /// let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    /// assert_eq!(
+    ///     rt.block_on(router.dispatch(&head(b"GET /todos HTTP/1.1\r\n\r\n"), &[])).body,
+    ///     b"todos".to_vec()
+    /// );
+    /// assert_eq!(
+    ///     rt.block_on(router.dispatch(&head(b"GET /users HTTP/1.1\r\n\r\n"), &[])).body,
+    ///     b"users".to_vec()
+    /// );
+    /// ```
+    ///
+    /// 重複するルート登録はエラーになる:
+    ///
+    /// ```
+    /// use fandhe_backend_routes::{Router, RouterMergeError};
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// let a = Router::new().route("GET", "/x", |_h, _b| Response::empty(200));
+    /// let b = Router::new().route("GET", "/x", |_h, _b| Response::empty(200));
+    /// let err = match a.merge(b) {
+    ///     Ok(_) => panic!("expected merge to fail"),
+    ///     Err(e) => e,
+    /// };
+    /// assert!(matches!(
+    ///     err,
+    ///     RouterMergeError::DuplicateRoute { ref method, ref path }
+    ///         if method == "GET" && path == "/x"
+    /// ));
+    /// ```
+    ///
+    /// 片方にのみ登録された fallback は合成後も引き継がれる:
+    ///
+    /// ```
+    /// use fandhe_backend_routes::Router;
+    /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// fn head(buf: &[u8]) -> fandhe_backend_http::request::RequestHead {
+    ///     match parse_request_head(buf).unwrap() {
+    ///         ParseOutcome::Complete { head, .. } => head,
+    ///         ParseOutcome::Incomplete => unreachable!(),
+    ///     }
+    /// }
+    ///
+    /// let with_fallback = Router::new()
+    ///     .route("GET", "/a", |_h, _b| Response::empty(200))
+    ///     .fallback(|_h, _b| Response::new(404, b"custom-not-found".to_vec()));
+    /// let plain = Router::new().route("GET", "/b", |_h, _b| Response::empty(200));
+    /// let router = with_fallback.merge(plain).unwrap();
+    ///
+    /// let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    /// // `/b` 側のサブルータにしか無いパスの未マッチでも、引き継いだ fallback が
+    /// // 合成後のルータ全体に適用される。
+    /// let res = rt.block_on(router.dispatch(&head(b"GET /missing HTTP/1.1\r\n\r\n"), &[]));
+    /// assert_eq!(res.body, b"custom-not-found".to_vec());
+    /// ```
+    pub fn merge(mut self, other: Router) -> Result<Self, RouterMergeError> {
+        // (a) 衝突検査（変更を加える前に全件検査してから統合する 2 段階方式）。
+
+        // 静的ルート: other の各 (path, method) が self に既に存在しないか。
+        for (path, methods) in &other.routes {
+            if let Some(self_methods) = self.routes.get(path) {
+                for method in methods.keys() {
+                    if self_methods.contains_key(method) {
+                        return Err(RouterMergeError::DuplicateRoute {
+                            method: method.to_string(),
+                            path: path.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // パラメータルート: other の各ルートが method 一致・形状等価で self に
+        // 既に存在しないか（総当たり。件数は起動時登録の小規模集合のため問題ない）。
+        for other_route in &other.param_routes {
+            for self_route in &self.param_routes {
+                if self_route.method == other_route.method
+                    && pattern::segments_equivalent(&self_route.segments, &other_route.segments)
+                {
+                    return Err(RouterMergeError::DuplicateParamRoute {
+                        method: self_route.method.clone(),
+                        pattern: pattern::render_segments(&self_route.segments),
+                    });
+                }
+            }
+        }
+
+        // fallback / options_fallback: 両方に登録されていれば衝突。
+        if self.fallback.is_some() && other.fallback.is_some() {
+            return Err(RouterMergeError::ConflictingFallback);
+        }
+        if self.options_fallback.is_some() && other.options_fallback.is_some() {
+            return Err(RouterMergeError::ConflictingOptionsFallback);
+        }
+
+        // (b) 統合。
+        for (path, methods) in other.routes {
+            self.routes.entry(path).or_default().extend(methods);
+        }
+        self.param_routes.extend(other.param_routes);
+        self.fallback = self.fallback.or(other.fallback);
+        self.options_fallback = self.options_fallback.or(other.options_fallback);
+
+        Ok(self)
+    }
+
     /// `head` の method + `target` に一致するハンドラへ委譲し、[`HandlerFuture`] を
     /// 返す（イシュー #315。旧契約は同期関数で `Response` を直接返していたが、
     /// ルーティング解決（優先順位判定・404/405/`Allow` 集約・OPTIONS フォールバック・
@@ -832,6 +1094,16 @@ impl Router {
 mod tests {
     use super::*;
     use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+
+    // `Router` は `Debug` を実装しないため（内部にトレイトオブジェクトを保持）、
+    // `Result<Router, RouterMergeError>::unwrap_err()` は使えない。テスト専用の
+    // 手動抽出ヘルパで代替する（Router::merge 系テストのみが使う）。
+    fn expect_merge_err(result: Result<Router, RouterMergeError>) -> RouterMergeError {
+        match result {
+            Ok(_) => panic!("expected merge to fail"),
+            Err(e) => e,
+        }
+    }
 
     // `RequestHead` は非公開フィールドを持ち構造体リテラルで直接組み立てられない
     // ため、パーサ（`parse_request_head`）経由で生成する。他クレートのテスト
@@ -1397,5 +1669,280 @@ mod tests {
         let res = router.dispatch(&head("GET", "/static"), &[]).await;
         assert_eq!(res.status, 404);
         assert_eq!(res.body, b"fallback".to_vec());
+    }
+
+    // --- Router::merge（イシュー #722） ---
+
+    #[tokio::test]
+    async fn merge_combines_disjoint_static_routes() {
+        let a = Router::new().route("GET", "/a", |_h, _b| Response::new(200, b"a".to_vec()));
+        let b = Router::new().route("GET", "/b", |_h, _b| Response::new(200, b"b".to_vec()));
+        let router = a.merge(b).unwrap();
+
+        assert_eq!(router.dispatch(&head("GET", "/a"), &[]).await.body, b"a");
+        assert_eq!(router.dispatch(&head("GET", "/b"), &[]).await.body, b"b");
+    }
+
+    #[tokio::test]
+    async fn merge_is_identity_with_empty_router_either_side() {
+        let r = Router::new().route("GET", "/x", |_h, _b| Response::empty(200));
+
+        let left_empty = Router::new().merge(r).unwrap();
+        assert_eq!(
+            left_empty.dispatch(&head("GET", "/x"), &[]).await.status,
+            200
+        );
+
+        let r2 = Router::new().route("GET", "/x", |_h, _b| Response::empty(200));
+        let right_empty = r2.merge(Router::new()).unwrap();
+        assert_eq!(
+            right_empty.dispatch(&head("GET", "/x"), &[]).await.status,
+            200
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_aggregates_methods_for_same_path_into_allow() {
+        let a = Router::new().route("GET", "/todos", |_h, _b| Response::empty(200));
+        let b = Router::new().route("POST", "/todos", |_h, _b| Response::empty(201));
+        let router = a.merge(b).unwrap();
+
+        assert_eq!(
+            router.dispatch(&head("GET", "/todos"), &[]).await.status,
+            200
+        );
+        assert_eq!(
+            router.dispatch(&head("POST", "/todos"), &[]).await.status,
+            201
+        );
+        let res = router.dispatch(&head("DELETE", "/todos"), &[]).await;
+        assert_eq!(res.status, 405);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(text.contains("Allow: GET, POST\r\n"));
+    }
+
+    #[tokio::test]
+    async fn merge_duplicate_static_route_returns_err_with_fields() {
+        let a = Router::new().route("GET", "/x", |_h, _b| Response::empty(200));
+        let b = Router::new().route("GET", "/x", |_h, _b| Response::empty(201));
+
+        let err = expect_merge_err(a.merge(b));
+        assert_eq!(
+            err,
+            RouterMergeError::DuplicateRoute {
+                method: "GET".to_string(),
+                path: "/x".to_string(),
+            }
+        );
+        assert!(!err.to_string().is_empty());
+        let boxed: Box<dyn std::error::Error> = Box::new(err);
+        assert!(boxed.to_string().contains("GET"));
+    }
+
+    #[tokio::test]
+    async fn merge_different_method_case_is_not_a_duplicate() {
+        // method は大文字小文字を区別する既存意味論（本モジュール doc）を merge にも固定化。
+        let a = Router::new().route("get", "/x", |_h, _b| Response::new(200, b"lower".to_vec()));
+        let b = Router::new().route("GET", "/x", |_h, _b| Response::new(200, b"upper".to_vec()));
+        let router = a.merge(b).unwrap();
+
+        assert_eq!(
+            router.dispatch(&head("get", "/x"), &[]).await.body,
+            b"lower"
+        );
+        assert_eq!(
+            router.dispatch(&head("GET", "/x"), &[]).await.body,
+            b"upper"
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_detects_param_route_conflict_with_different_names() {
+        let a = Router::new()
+            .route_param("GET", "/a/{id}", |_h, _p, _b| Response::empty(200))
+            .unwrap();
+        let b = Router::new()
+            .route_param("GET", "/a/{name}", |_h, _p, _b| Response::empty(200))
+            .unwrap();
+
+        let err = expect_merge_err(a.merge(b));
+        assert!(matches!(
+            err,
+            RouterMergeError::DuplicateParamRoute { ref method, ref pattern }
+                if method == "GET" && pattern == "/a/{id}"
+        ));
+    }
+
+    #[tokio::test]
+    async fn merge_param_and_wildcard_partial_overlap_succeeds_with_self_first_order() {
+        let single = Router::new()
+            .route_param("GET", "/static/{x}", |_h, _p, _b| {
+                Response::new(200, b"single".to_vec())
+            })
+            .unwrap();
+        let wildcard = Router::new()
+            .route_param("GET", "/static/{*rest}", |_h, params, _b| {
+                let rest = params.get("rest").unwrap_or("");
+                Response::new(200, format!("wildcard:{rest}").into_bytes())
+            })
+            .unwrap();
+        let router = single.merge(wildcard).unwrap();
+
+        assert_eq!(
+            router.dispatch(&head("GET", "/static/a"), &[]).await.body,
+            b"single"
+        );
+        assert_eq!(
+            router.dispatch(&head("GET", "/static/a/b"), &[]).await.body,
+            b"wildcard:a/b"
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_static_and_param_partial_overlap_prefers_static() {
+        let param = Router::new()
+            .route_param("GET", "/a/{x}", |_h, _p, _b| {
+                Response::new(200, b"param".to_vec())
+            })
+            .unwrap();
+        let static_router = Router::new().route("GET", "/a/b", |_h, _b| {
+            Response::new(200, b"static".to_vec())
+        });
+        let router = param.merge(static_router).unwrap();
+
+        assert_eq!(
+            router.dispatch(&head("GET", "/a/b"), &[]).await.body,
+            b"static"
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_router_merge_error_display_is_not_empty_for_all_variants() {
+        let variants = [
+            RouterMergeError::DuplicateRoute {
+                method: "GET".to_string(),
+                path: "/x".to_string(),
+            },
+            RouterMergeError::DuplicateParamRoute {
+                method: "GET".to_string(),
+                pattern: "/a/{id}".to_string(),
+            },
+            RouterMergeError::ConflictingFallback,
+            RouterMergeError::ConflictingOptionsFallback,
+        ];
+        for variant in variants {
+            assert!(!variant.to_string().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn merge_fallback_only_on_self_is_kept() {
+        let a = Router::new()
+            .route("GET", "/a", |_h, _b| Response::empty(200))
+            .fallback(|_h, _b| Response::new(404, b"from-a".to_vec()));
+        let b = Router::new().route("GET", "/b", |_h, _b| Response::empty(200));
+        let router = a.merge(b).unwrap();
+
+        let res = router.dispatch(&head("GET", "/missing"), &[]).await;
+        assert_eq!(res.body, b"from-a");
+    }
+
+    #[tokio::test]
+    async fn merge_fallback_only_on_other_is_kept_and_applies_to_whole_router() {
+        let a = Router::new().route("GET", "/a", |_h, _b| Response::empty(200));
+        let b = Router::new()
+            .route("GET", "/b", |_h, _b| Response::empty(200))
+            .fallback(|_h, _b| Response::new(404, b"from-b".to_vec()));
+        let router = a.merge(b).unwrap();
+
+        // fallback は接頭辞に限定されず、合成後のルータ全体（a 由来の未マッチにも）適用される。
+        let res = router.dispatch(&head("GET", "/missing"), &[]).await;
+        assert_eq!(res.body, b"from-b");
+    }
+
+    #[tokio::test]
+    async fn merge_fallback_include_method_not_allowed_policy_is_preserved() {
+        let a = Router::new().route("GET", "/x", |_h, _b| Response::empty(200));
+        let b = Router::new().fallback_with(FallbackPolicy::IncludeMethodNotAllowed, |_h, _b| {
+            Response::new(404, b"catch-all".to_vec())
+        });
+        let router = a.merge(b).unwrap();
+
+        let res = router.dispatch(&head("POST", "/x"), &[]).await;
+        assert_eq!(res.status, 404);
+        assert_eq!(res.body, b"catch-all");
+    }
+
+    #[tokio::test]
+    async fn merge_both_fallback_registered_returns_conflicting_fallback_err() {
+        let a = Router::new().fallback(|_h, _b| Response::new(404, b"a".to_vec()));
+        let b = Router::new().fallback(|_h, _b| Response::new(404, b"b".to_vec()));
+
+        let err = expect_merge_err(a.merge(b));
+        assert_eq!(err, RouterMergeError::ConflictingFallback);
+    }
+
+    #[tokio::test]
+    async fn merge_options_fallback_only_on_self_is_kept() {
+        let a = Router::new()
+            .route("GET", "/todos", |_h, _b| Response::empty(200))
+            .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
+        let b = Router::new().route("POST", "/todos", |_h, _b| Response::empty(201));
+        let router = a.merge(b).unwrap();
+
+        let res = router.dispatch(&head("OPTIONS", "/todos"), &[]).await;
+        assert_eq!(res.status, 204);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(text.contains("Allow: GET, POST\r\n"));
+    }
+
+    #[tokio::test]
+    async fn merge_both_options_fallback_registered_returns_conflicting_options_fallback_err() {
+        let a = Router::new()
+            .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
+        let b = Router::new()
+            .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
+
+        let err = expect_merge_err(a.merge(b));
+        assert_eq!(err, RouterMergeError::ConflictingOptionsFallback);
+    }
+
+    #[tokio::test]
+    async fn merge_neither_fallback_registered_keeps_default_404_405() {
+        let a = Router::new().route("GET", "/a", |_h, _b| Response::empty(200));
+        let b = Router::new().route("GET", "/b", |_h, _b| Response::empty(200));
+        let router = a.merge(b).unwrap();
+
+        assert_eq!(
+            router.dispatch(&head("GET", "/missing"), &[]).await.status,
+            404
+        );
+        assert_eq!(router.dispatch(&head("POST", "/a"), &[]).await.status, 405);
+    }
+
+    #[tokio::test]
+    async fn merge_async_handlers_work_after_merge() {
+        let a = Router::new().route_async("GET", "/slow", |_h, _b| async {
+            Response::new(200, b"slow-ok".to_vec())
+        });
+        let b = Router::new()
+            .route_param_async("GET", "/hello/{name}", |_h, params, _b| {
+                let name = params.get("name").unwrap_or("world").to_string();
+                async move { Response::new(200, format!("hello, {name}").into_bytes()) }
+            })
+            .unwrap();
+        let router = a.merge(b).unwrap();
+
+        assert_eq!(
+            router.dispatch(&head("GET", "/slow"), &[]).await.body,
+            b"slow-ok"
+        );
+        assert_eq!(
+            router
+                .dispatch(&head("GET", "/hello/alice"), &[])
+                .await
+                .body,
+            b"hello, alice"
+        );
     }
 }
