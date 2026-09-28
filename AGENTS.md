@@ -23,7 +23,8 @@ TASK-2.3（`docs/spec/05-tasks.md`、Phase 1 / MS-1、親 Issue #4、前提 TASK
 ### 規約本文
 
 全リクエストに介入する `Middleware` 実装（`crates/core/src/extension.rs` の
-`Middleware` trait、`on_request` / `on_response`）は**非同期・バッファ済み I/O を
+`Middleware` trait、`on_request` / `on_response` / `on_response_with_status`
+（送出ステータス付き、イシュー #721）は**非同期・バッファ済み I/O を
 既定**とする。同期ブロッキング I/O 実装（同期 `eprintln!`・同期ファイル書き込み・
 `std::net` 直接利用等）は**不採用**とする。
 
@@ -35,8 +36,9 @@ TASK-2.3（`docs/spec/05-tasks.md`、Phase 1 / MS-1、親 Issue #4、前提 TASK
 
 ### 実装パターン
 
-I/O が必要な実装は、フック（`on_request` / `on_response`）内では非同期チャネルへの
-送信、またはアトミックカウンタの更新等の**非ブロッキング操作に留め**、実際の I/O
+I/O が必要な実装は、フック（`on_request` / `on_response` /
+`on_response_with_status`）内では非同期チャネルへの送信、またはアトミックカウンタ
+の更新等の**非ブロッキング操作に留め**、実際の I/O
 （ファイル書き込み・ネットワーク送信等）は別タスク（バックグラウンドタスク・
 `tracing-appender` の non-blocking writer 等）に委譲する。
 
@@ -218,7 +220,8 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
 [pay-for-what-you-use.md](.claude/rules/pay-for-what-you-use.md) と
 [feature-modification-flow.md](docs/design/feature-modification-flow.md) に従う。
 **3 種 trait のいずれにも載らない場合**（例: CORS のようにレスポンス内容自体を
-書き換える必要があり `Middleware::on_response` の観測専用契約に収まらないケース）
+書き換える必要があり `Middleware::on_response` / `on_response_with_status`
+（送出ステータスの数値のみ参照可、イシュー #721）の観測専用契約に収まらないケース）
 は、`crates/core/src/plugin.rs` に `try_intercept` / `try_handle_upgrade` と
 同型の固定シグネチャ・cfg-gated な新シームを追加できるか検討する
 （`docs/design/plugin-boundary.md` 5.9 節「レスポンス後処理型パターン」を参照。
@@ -689,7 +692,9 @@ Codex は本ファイルを自動読込する。Codex code review は既定で P
   `scripts/dep-direction-check.sh`）: **P1**
 - **拡張点契約の逸脱**: 3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）・
   `Interceptor` の同期契約を `docs/design/async-handler.md` の再評価条件（8 節）を
-  経ずに async 化する差分、`Middleware::on_response` の観測専用契約への違反: **P1**
+  経ずに async 化する差分、`Middleware::on_response` /
+  `on_response_with_status`（イシュー #721。ステータスの数値のみで body・
+  レスポンス全体への参照は持たない）の観測専用契約への違反: **P1**
 - **安易な新シーム・新拡張点の追加**: 既存の 3 拡張点・`Interceptor`・
   `finalize_response` 系シームで表現できないことの確認（「変更手順」節・
   `docs/design/plugin-boundary.md`）なしに新パターンを導入する差分: **P1**

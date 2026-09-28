@@ -6,7 +6,8 @@
 //! 返す」「確定済みレスポンスの body を差し替える」ユースケースを表現できない:
 //!
 //! - [`crate::extension::Middleware`][]: 観測専用契約。`on_request` は `&RequestHead`
-//!   しか受け取らず、`on_response` もレスポンスへの参照を持たない
+//!   しか受け取らず、`on_response` / `on_response_with_status`（送出ステータスの
+//!   数値のみ、イシュー #721）もレスポンスへの参照を持たない
 //! - [`crate::extension::RequestGate`][]: `GateOutcome::Allow` / `Reject { status,
 //!   body }` の二択で、`Reject` はヘッダを運べないため 301 + `Location` を表現
 //!   できない
@@ -44,7 +45,9 @@
 //!      plugin::finalize_streaming_head（CORS のみ、圧縮は対象外）が
 //!      `write_streaming_response` のヘッド確定時に適用される、イシュー #451。
 //!      下の「ストリーミング応答への適用」節を参照）
-//! 6. レスポンス書き込み → Middleware::on_response
+//! 6. レスポンス書き込み → Middleware::on_response_with_status（既定実装が
+//!    `on_response` へ委譲するため、後者だけを実装する既存コードも動作する。
+//!    イシュー #721）
 //! ```
 //!
 //! - **`RequestGate` より後**: ゲートの既定拒否（フェイルクローズ）をユーザー

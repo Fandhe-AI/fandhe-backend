@@ -31,9 +31,10 @@
 //! 3 trait とも同期 API として定義する。`async fn` を trait に持ち込むと
 //! `Box<dyn Middleware>` 等の trait object としてコアループが拡張点を保持する
 //! 構成（dyn 互換性）が壊れるためである。ただし [`Middleware::on_request`] /
-//! [`Middleware::on_response`] の実装は同期ブロッキング I/O を行ってはならない
-//! （PoC-3 実測でスループットが最大 25% 劣化する）。ロギング等で I/O が必要な
-//! 実装は非同期チャネルへの送信に留め、実際の I/O は別タスクで行う契約とする
+//! [`Middleware::on_response`] / [`Middleware::on_response_with_status`] の
+//! 実装は同期ブロッキング I/O を行ってはならない（PoC-3 実測でスループットが
+//! 最大 25% 劣化する）。ロギング等で I/O が必要な実装は非同期チャネルへの
+//! 送信に留め、実際の I/O は別タスクで行う契約とする
 //! （詳細規約は TASK-2.3 で `AGENTS.md` に整備済み）。
 
 use fandhe_backend_http::request::RequestHead;
@@ -83,6 +84,51 @@ use std::time::Duration;
 /// mw.on_request(&head);
 /// assert_eq!(mw.requests.load(std::sync::atomic::Ordering::Relaxed), 1);
 /// ```
+///
+/// # ステータス付きアクセスログの例（イシュー #721）
+///
+/// `on_response` はステータスを受け取らないため、ステータス付きの
+/// アクセスログ（`GET /path 200 3ms` 等）が必要な実装は
+/// [`Middleware::on_response_with_status`] を override する。`on_response`
+/// 自体を実装する必要はない（既定実装が no-op のため）。
+///
+/// ```
+/// use fandhe_backend_core::extension::Middleware;
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+/// use std::sync::Mutex;
+/// use std::time::Duration;
+///
+/// /// 送出ステータスだけを記録するトイ実装。
+/// struct StatusLoggingMiddleware {
+///     statuses: Mutex<Vec<u16>>,
+/// }
+///
+/// impl Middleware for StatusLoggingMiddleware {
+///     fn name(&self) -> &'static str {
+///         "status-logging-middleware"
+///     }
+///
+///     fn on_request(&self, _head: &fandhe_backend_http::request::RequestHead) {}
+///
+///     fn on_response_with_status(
+///         &self,
+///         _head: &fandhe_backend_http::request::RequestHead,
+///         status: u16,
+///         _elapsed: Duration,
+///     ) {
+///         self.statuses.lock().unwrap().push(status);
+///     }
+/// }
+///
+/// let mw = StatusLoggingMiddleware { statuses: Mutex::new(Vec::new()) };
+/// let buf = b"GET / HTTP/1.1\r\n\r\n";
+/// let head = match parse_request_head(buf).unwrap() {
+///     ParseOutcome::Complete { head, .. } => head,
+///     ParseOutcome::Incomplete => unreachable!(),
+/// };
+/// mw.on_response_with_status(&head, 200, Duration::from_millis(3));
+/// assert_eq!(*mw.statuses.lock().unwrap(), vec![200]);
+/// ```
 pub trait Middleware: Send + Sync {
     /// 診断・ログ表示用の静的識別名。リクエスト内容（トークン・PII）を
     /// 含めてはならない。
@@ -93,7 +139,36 @@ pub trait Middleware: Send + Sync {
 
     /// レスポンス送出後に呼ばれる観測フック。`elapsed` はリクエスト受理から
     /// レスポンス送出までの経過時間。
-    fn on_response(&self, head: &RequestHead, elapsed: Duration);
+    ///
+    /// 既定実装は no-op（イシュー #721）。コアは
+    /// [`Middleware::on_response_with_status`] のみを呼び出す契約であり、
+    /// 同メソッドを override しない既存実装ではその既定実装がここへ委譲する
+    /// ことで、本メソッドがこれまでどおり呼ばれる（後方互換）。
+    fn on_response(&self, head: &RequestHead, elapsed: Duration) {
+        let _ = (head, elapsed);
+    }
+
+    /// レスポンス送出後に呼ばれる観測フック（送出ステータス付き、イシュー
+    /// #721）。`status` はクライアントへ**実際に送出した**ステータスコード
+    /// （[`crate::interceptor::Interceptor::map_response`] 等のレスポンス
+    /// 改変シームを適用した後の最終値）。`elapsed` は
+    /// [`Middleware::on_response`] と同じくリクエスト受理からレスポンス
+    /// 送出までの経過時間。
+    ///
+    /// コアはこの新フックのみを呼び出す。既定実装は `status` を無視して
+    /// [`Middleware::on_response`] へ委譲するため、`on_response` だけを
+    /// 実装した既存コードは本メソッドを override しなくてもそのまま動作する
+    /// （非破壊、trait への既定実装付きメソッド追加は semver 上 minor）。
+    /// 両方を override した実装では `on_response` はコアから呼ばれなくなる
+    /// （本メソッドの override が委譲を置き換えるため）。
+    ///
+    /// 呼ばれる条件は [`Middleware::on_response`] と同じく「応答が完走した
+    /// 場合」に限る。Upgrade 委譲・委譲失敗時の 501・write 失敗・
+    /// ストリーミング打ち切り/タイムアウト・パースエラー応答では呼ばれない。
+    fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
+        let _ = status;
+        self.on_response(head, elapsed);
+    }
 }
 
 /// 長時間接続（WebSocket・WebRTC シグナリング等）への**委譲判定のみ**を
@@ -432,6 +507,44 @@ mod tests {
 
         assert_eq!(*mw.calls.lock().unwrap(), vec!["on_request", "on_response"]);
         assert_eq!(mw.name(), "recording-middleware");
+    }
+
+    /// `on_response` だけを実装する既存スタイルの実装で、コアが新フック
+    /// `on_response_with_status` のみを呼び出しても `on_response` がこれまで
+    /// どおり呼ばれることを固定する（イシュー #721、受入基準 2 の非破壊性）。
+    #[test]
+    fn on_response_with_status_default_delegates_to_on_response() {
+        let mw = RecordingMiddleware {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
+
+        mw.on_response_with_status(&head, 404, Duration::from_millis(1));
+
+        assert_eq!(*mw.calls.lock().unwrap(), vec!["on_response"]);
+    }
+
+    /// `name` と `on_request` だけを実装する最小実装がコンパイルでき、
+    /// `on_response` / `on_response_with_status` の既定実装（no-op /
+    /// `on_response` への委譲）を呼んでも panic しないことを固定する
+    /// （イシュー #721）。
+    struct MinimalMiddleware;
+
+    impl Middleware for MinimalMiddleware {
+        fn name(&self) -> &'static str {
+            "minimal-middleware"
+        }
+
+        fn on_request(&self, _head: &RequestHead) {}
+    }
+
+    #[test]
+    fn on_response_default_is_noop() {
+        let mw = MinimalMiddleware;
+        let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
+
+        mw.on_response(&head, Duration::from_millis(1));
+        mw.on_response_with_status(&head, 200, Duration::from_millis(1));
     }
 
     struct AlwaysMatchUpgrade;

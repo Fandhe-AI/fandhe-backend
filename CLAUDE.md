@@ -324,7 +324,13 @@ fandhe-backend/
 │   │                                    # 委譲、既存 `handle_upgrade` は無変更のまま
 │   │                                    # `None` で委譲する後方互換ラッパー。
 │   │                                    # `docs/design/ws-connection-context-and-close.md`
-│   │                                    # 15 節参照）。
+│   │                                    # 15 節参照）。イシュー #721 で `Middleware` に
+│   │                                    # `on_response_with_status`（送出ステータス付き
+│   │                                    # 観測フック）を追加した。既定実装が既存
+│   │                                    # `on_response`（同じく既定 no-op を新設）へ
+│   │                                    # 委譲するため、`on_response` だけを実装した
+│   │                                    # 既存コードは無変更で動作する（コアは新フックの
+│   │                                    # みを呼び出す非破壊追加）。
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む
