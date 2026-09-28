@@ -2178,12 +2178,26 @@ impl BoundServer {
                 // （イシュー #720。利用側シンクの異常・遅延が有界時間での
                 // クローズを妨げないようにする）。
                 join_set.shutdown().await;
-                crate::diagnostics::emit(
-                    &*server.diagnostics,
-                    crate::diagnostics::DiagnosticEvent::ShutdownGraceExceeded {
-                        grace: server.shutdown_grace_period,
-                    },
-                );
+                // `emit`（内部で `Diagnostics::report` を同期呼び出しする）を
+                // `run_until` の返却経路から切り離す（PR #748 レビュー指摘
+                // P1 対応）。カスタムシンクは非ブロッキング契約
+                // （`crate::diagnostics` モジュール doc）を負うが、契約違反の
+                // シンクが `report` 内で停止・長時間ブロックした場合に
+                // `run_until` 自体が「shutdown_grace_period + ε 以内に必ず
+                // 戻る」という既存契約（`docs/design/graceful-shutdown.md`・
+                // `docs/design/rebind.md`）を破ってしまう。強制クローズは
+                // 上記 `join_set.shutdown().await` で既に確定済みのため、
+                // 通知（ログ出力）だけを detached タスクへ切り離しても
+                // フェイルクローズの安全性は損なわれない（`spawn_generation_drain`
+                // の `RebindDrainGraceExceeded` 通知と同じ非同期化パターン）。
+                let diagnostics = Arc::clone(&server.diagnostics);
+                let grace = server.shutdown_grace_period;
+                tokio::spawn(async move {
+                    crate::diagnostics::emit(
+                        &*diagnostics,
+                        crate::diagnostics::DiagnosticEvent::ShutdownGraceExceeded { grace },
+                    );
+                });
             }
         }
 

@@ -94,15 +94,23 @@ use std::time::Duration;
 ///
 /// # Examples
 ///
-/// クロージャで登録し、独自ログへ転送する:
+/// クロージャで登録し、有界チャネルへ非ブロッキングに転送する（PR #748
+/// レビュー指摘 P2 対応。`report` 内で同期 `eprintln!` 等のブロッキング
+/// I/O を直接行う例は上記「ブロッキング I/O を行わない」契約に反するため
+/// 使わない。実際の I/O は受信側を持つ別スレッド/タスクへ委ねる）:
 ///
 /// ```
 /// use fandhe_backend_core::{Diagnostics, DiagnosticEvent};
 /// use fandhe_backend_core::server::Server;
+/// use std::sync::mpsc;
 ///
-/// let server = Server::new().diagnostics(|event: &DiagnosticEvent<'_>| {
-///     // 実運用では tracing::warn!(%event, "fandhe_backend_core diagnostic") 等へ転送する。
-///     eprintln!("custom-sink: {event}");
+/// // 実運用では `_rx` を別スレッド/タスクで受信し、そこで初めて実際の
+/// // I/O（ログ出力・`tracing::warn!` への転送等）を行う。
+/// let (tx, _rx) = mpsc::sync_channel::<String>(1024);
+/// let server = Server::new().diagnostics(move |event: &DiagnosticEvent<'_>| {
+///     // `try_send` は満杯時に待機せず即座に失敗を返す（非ブロッキング）。
+///     // 診断イベントは低頻度だが、取りこぼしを許容する前提で扱う。
+///     let _ = tx.try_send(event.to_string());
 /// });
 /// let _ = server;
 /// ```

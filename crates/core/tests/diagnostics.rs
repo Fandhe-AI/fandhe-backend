@@ -15,6 +15,10 @@
 //!   in-process では判定できない。`std::process::Command::new(current_exe())`
 //!   で自分自身を再実行し、対象テストのみを `--exact --nocapture` 指定で
 //!   走らせて子プロセスの stderr を観測する）
+//! - `shutdown_grace_exceeded_sink_blocking_does_not_delay_run_until_return`:
+//!   PR #748 レビュー P1 対応の回帰テスト。契約違反（ブロッキング I/O）の
+//!   シンクを登録しても `run_until` が `shutdown_grace_period + ε` 以内に
+//!   戻ること（`docs/design/diagnostics-sink.md` 9 節参照）
 
 use fandhe_backend_core::{DiagnosticEvent, Handler, Server};
 use fandhe_backend_http::request::RequestHead;
@@ -88,6 +92,23 @@ async fn shutdown_grace_exceeded_reaches_custom_sink() {
         .expect("run_until タスクが panic しないこと")
         .expect("run_until は Ok(()) を返すはず");
 
+    // `ShutdownGraceExceeded` の通知は PR #748 レビュー P1 対応で `run_until`
+    // の返却経路から detached タスク（`tokio::spawn`）へ切り離されたため、
+    // `run_until` が `Ok(())` を返した時点でシンクへ届いている保証はない
+    // （`RebindDrainGraceExceeded` と同じく非同期に届く。9 節参照）。
+    // `rebind_drain_grace_exceeded_reaches_custom_sink` と同型の有界ポーリングで待つ。
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if !sink.events.lock().unwrap().is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "ShutdownGraceExceeded は有界時間内に届くはず"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
     let events = sink.events.lock().unwrap();
     assert_eq!(
         events.len(),
@@ -97,6 +118,75 @@ async fn shutdown_grace_exceeded_reaches_custom_sink() {
     assert!(
         events[0].contains("graceful shutdown の猶予期間"),
         "登録済みシンクに ShutdownGraceExceeded の本文が届くはず（実際: {events:?}）"
+    );
+}
+
+/// PR #748 レビュー P1 対応の回帰テスト: `Diagnostics::report` の
+/// 「ブロッキング I/O を行わない」契約に違反するシンク（同期的に長時間
+/// ブロックする）を登録しても、`ShutdownGraceExceeded` の通知が `run_until`
+/// の返却経路から detached タスクへ切り離されているため、`run_until` 自体は
+/// `shutdown_grace_period + ε` 以内に戻ること
+/// （`docs/design/diagnostics-sink.md` 9 節・`docs/design/graceful-shutdown.md`
+/// の「grace + ε 以内に必ず戻る」契約）。ブロックしたシンクを別スレッドで
+/// 実行させて `run_until` 側の待機に影響させないため
+/// `flavor = "multi_thread"` を使う。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_grace_exceeded_sink_blocking_does_not_delay_run_until_return() {
+    let grace = Duration::from_millis(100);
+    // grace より十分長い（この時間内に run_until が戻れば、通知の完了を
+    // 待たずに戻っている証拠になる）。
+    let block_for = Duration::from_secs(2);
+
+    /// `report` 内で同期的にスリープし続ける契約違反シンク。
+    struct BlockingSink {
+        block_for: Duration,
+    }
+    impl fandhe_backend_core::Diagnostics for BlockingSink {
+        fn report(&self, _event: &DiagnosticEvent<'_>) {
+            std::thread::sleep(self.block_for);
+        }
+    }
+
+    let server = Server::new()
+        .handler(FixedHandler)
+        .shutdown_grace_period(grace)
+        .diagnostics(BlockingSink { block_for });
+    let bound = server.bind("127.0.0.1:0").await.unwrap();
+    let addr = bound.local_addr().unwrap();
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let run_task = tokio::spawn(async move {
+        bound
+            .run_until(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+
+    let _idle_stream = TcpStream::connect(addr).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    shutdown_tx.send(()).unwrap();
+
+    // 実測の壁時計時間で判定する（`tokio::time::timeout` の内部タイマーは
+    // 同一ワーカースレッドが `std::thread::sleep` で専有されている間、
+    // 別スレッドの driver に委譲されず有効に働かないことがあるため、
+    // タイマー競合ではなく `run_task` 実完了までの実経過時間を直接測る）。
+    // `block_for`（2 秒）+ 十分なマージンをハング検知の安全弁として
+    // `timeout` に設定しつつ、実際の合否判定は `elapsed` で行う。
+    let start = std::time::Instant::now();
+    let joined = timeout(block_for + Duration::from_secs(5), run_task)
+        .await
+        .expect("run_until タスクは有界時間内に完了するはず（ハング検知の安全弁）");
+    let elapsed = start.elapsed();
+    joined
+        .expect("run_until タスクが panic しないこと")
+        .expect("run_until は Ok(()) を返すはず");
+
+    assert!(
+        elapsed < grace + Duration::from_millis(700),
+        "契約違反シンクが `report` 内でブロックしていても、run_until は \
+         shutdown_grace_period + ε 以内に戻るはず\
+         （実測: {elapsed:?}、block_for: {block_for:?}）"
     );
 }
 

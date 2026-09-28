@@ -178,7 +178,7 @@ impl Server {
   登録できる
 - **再検討トリガ**: 将来 `DiagnosticEvent` に per-request 相当の高頻度
   イベントが追加される場合、または実運用で stderr 詰まりによる停止が
-  観測された場合は、既定シンクの非ブロッキング化（9 節）を再検討する
+  観測された場合は、既定シンクの非ブロッキング化（10 節）を再検討する
 
 この整理はドキュメント（doc comment・本書）の明確化のみであり、既定シンクの
 実装・挙動（現行 `eprintln!` 出力との完全互換）は変更しない。
@@ -203,7 +203,38 @@ impl Server {
     既定の接頭辞付き出力が **一切含まれない**ことと、未登録時に既定文言が
     含まれることの両方を確認する（陰性・陽性対照のペア）
 
-## 9. スコープ外・将来案
+## 9. `ShutdownGraceExceeded` 通知の detached 化（PR #748 レビュー P1 対応）
+
+6 節・7 節は「`join_set.shutdown().await` → 通知」の順に入れ替えたことで
+**強制クローズ自体の完了**は利用側シンクの遅延に妨げられないと説明したが、
+最終 graceful shutdown の `run_until` 側（`ShutdownGraceExceeded`）は通知
+（`crate::diagnostics::emit`）自体を `run_until` の返却経路上で**同期的に**
+呼んでいたため、契約違反のシンク（`report` がブロッキング I/O を行う、
+または停止する）が登録されていた場合、`emit` の呼び出しが完了するまで
+`run_until` 自体が返らない可能性が残っていた。これは
+`docs/design/graceful-shutdown.md`・`docs/design/rebind.md` が明記する
+「`shutdown_grace_period + ε` 以内に必ず戻る」という `run_until` 自体の
+公開契約に抵触しうる（`catch_unwind` は panic のみ捕捉し、ブロッキング・
+ハングは防げない）。
+
+- **対応**: `ShutdownGraceExceeded` の通知を `tokio::spawn` した detached
+  タスクへ切り離し、`run_until` はこのタスクの完了を待たずに `Ok(())` を
+  返す。強制クローズ自体（`join_set.shutdown().await`）は従来どおり
+  `run_until` 側で同期的に完了を確定させてから通知タスクを起動するため、
+  6 節が述べた「強制クローズの完了は妨げられない」という性質は不変
+- **`RebindDrainGraceExceeded` は元から対象外**: rebind 旧世代 drain の
+  通知（`spawn_generation_drain` 内の `emit` 呼び出し）は、
+  `spawn_generation_drain` 関数自体が呼び出し時点で `tokio::spawn` して
+  返る設計（`run_until` の `Raced::Rebind` 分岐はこの spawn 呼び出しを
+  待機しない）のため、今回の変更前から既に `run_until` の返却経路とは
+  独立しており、同種の問題を抱えていなかった
+- **既定シンクへの影響なし**: `StderrDiagnostics::report` は同期
+  `eprintln!` 1 行のみで、detached タスクの中で呼ばれても文言・接頭辞・
+  出力先は不変。`crates/core/tests/diagnostics.rs` の子プロセス方式による
+  検証（8 節）は、通知が detached タスクから行われる前提を既に踏まえている
+  ため追加変更は不要
+
+## 10. スコープ外・将来案
 
 - **accept 失敗・TCP_NODELAY 失敗のエンドツーエンド統合テストは追加しない**:
   `EMFILE` 等の環境依存条件でしか再現できないため、単体テスト（`Display` の
