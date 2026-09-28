@@ -355,6 +355,21 @@ async fn closes_on_protocol_error() {
         .await
         .expect("send oversized text");
 
+    // イシュー #719: 受信上限超過時、サーバーは Close 1009 を送ってから
+    // 閉じるようになった。クライアント側で受信・drop しないと、サーバーの
+    // 有界読み捨てが `close_grace`（既定 10 秒）満了までブロックし、本
+    // テストの 2 秒タイムアウトを超過する。
+    let received = tokio::time::timeout(Duration::from_secs(2), client.next())
+        .await
+        .expect("server should send close before test timeout")
+        .expect("stream should yield a message")
+        .expect("no protocol error reading the close frame");
+    assert!(
+        matches!(received, Message::Close(Some(_))),
+        "expected Close(Some(1009)) frame, got {received:?}"
+    );
+    drop(client);
+
     let result = tokio::time::timeout(Duration::from_secs(2), server_task)
         .await
         .expect("server task should finish within timeout")

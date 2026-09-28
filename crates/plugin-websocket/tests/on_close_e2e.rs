@@ -559,6 +559,26 @@ async fn on_close_message_too_large_called_once() {
         .await
         .expect("client-side send does not enforce the server's max_frame_size");
 
+    // イシュー #719: 受信上限超過時、サーバーは Close 1009 を送ってから
+    // 閉じるようになった。クライアント側で受信・drop しないと、サーバーの
+    // 有界読み捨て（lingering close）が `close_grace`（既定 10 秒）満了まで
+    // 応答を待ち続けてしまい、本テストの 2 秒タイムアウトを超過する。
+    let received = tokio::time::timeout(Duration::from_secs(2), client.next())
+        .await
+        .expect("server should send close before test timeout")
+        .expect("stream should yield a message")
+        .expect("no protocol error reading the close frame");
+    match received {
+        Message::Close(Some(frame)) => {
+            assert_eq!(
+                frame.code,
+                tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Size
+            );
+        }
+        other => panic!("expected Close(Some(1009)) frame, got {other:?}"),
+    }
+    drop(client);
+
     let result = tokio::time::timeout(Duration::from_secs(2), server_task)
         .await
         .expect("server task should finish before test timeout")
