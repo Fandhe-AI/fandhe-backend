@@ -314,7 +314,17 @@ fandhe-backend/
 │   │                                    # 途中でも abort されうる）・Upgrade は 503
 │   │                                    # 拒否・grace + ε 以内に必ず閉じる、の 4 点。
 │   │                                    # `docs/design/graceful-shutdown.md` 7.2 節・
-│   │                                    # `docs/design/rebind.md` 5.6 節参照）。
+│   │                                    # `docs/design/rebind.md` 5.6 節参照）。イシュー
+│   │                                    # #728 で、WebSocket の Upgrade 委譲経路
+│   │                                    # （`plugin::try_handle_upgrade`）へ accept した
+│   │                                    # ソケットの実 peer address（`GateContext::
+│   │                                    # peer_addr` と同一由来、イシュー #486）を渡す
+│   │                                    # ようにした（新関数 `fandhe_backend_plugin_
+│   │                                    # websocket::handle_upgrade_with_peer_addr` へ
+│   │                                    # 委譲、既存 `handle_upgrade` は無変更のまま
+│   │                                    # `None` で委譲する後方互換ラッパー。
+│   │                                    # `docs/design/ws-connection-context-and-close.md`
+│   │                                    # 15 節参照）。
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む
@@ -620,7 +630,21 @@ fandhe-backend/
 │   │                                    # 追加した（既定は無効・後方互換。`idle_timeout` は
 │   │                                    # サーバー起点の送出ではリセットしないため、
 │   │                                    # push を受けているだけの受信専用クライアントの
-│   │                                    # 死活監視には本設定が必要）。
+│   │                                    # 死活監視には本設定が必要）。イシュー #728 で
+│   │                                    # `handle_upgrade_with_peer_addr`（既存
+│   │                                    # `handle_upgrade` の 5 引数 + `peer_addr:
+│   │                                    # Option<SocketAddr>`、既存関数は無変更のまま
+│   │                                    # `None` で委譲する後方互換ラッパー）と
+│   │                                    # `WsOpenContext::peer_addr()` を追加し、
+│   │                                    # コアが accept したソケットの実 peer
+│   │                                    # address（`GateContext::peer_addr` と同一由来、
+│   │                                    # イシュー #486）を `on_open` から参照可能に
+│   │                                    # した（`tokio::io::duplex` 等の非ソケット
+│   │                                    # 経路・旧 API 経由では常に `None` のフェイル
+│   │                                    # クローズ契約。接続元 IP は偽装できないが
+│   │                                    # PII に近いため `WsOpenContext::Debug` には
+│   │                                    # 含めない。`docs/design/
+│   │                                    # ws-connection-context-and-close.md` 15 節参照）。
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O

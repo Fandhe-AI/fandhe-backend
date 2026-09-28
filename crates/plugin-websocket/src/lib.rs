@@ -109,6 +109,17 @@
 //! の bounded mpsc 用途であり、キャンセル `Future` の受け渡し方式とは
 //! 無関係（統合テスト `tests/cancellation.rs` は引き続きキャンセル
 //! トリガに `tokio::sync::oneshot` を使う）。
+//!
+//! # 接続元アドレスの受け渡し（イシュー #728）
+//!
+//! [`handle_upgrade_with_peer_addr`] は [`handle_upgrade`] に接続元の実
+//! peer address（`Option<std::net::SocketAddr>`）を追加で渡せる版。コア
+//! （`crates/core/src/plugin.rs` の `try_handle_upgrade`）は accept した
+//! ソケットの実 peer address（`GateContext::peer_addr` と同じ由来、イシュー
+//! #486）を本関数経由で渡し、`handler::WsOpenContext::peer_addr` から
+//! `on_open` が観測できるようにする。既存 [`handle_upgrade`]（5 引数）は
+//! `peer_addr: None` で本関数へ委譲する薄いラッパーとして残り、公開
+//! シグネチャは無変更（非破壊追加）。
 
 mod config;
 mod error;
@@ -228,11 +239,119 @@ pub fn matches(head: &RequestHead, config: &WebSocketConfig) -> bool {
 /// # }
 /// ```
 pub async fn handle_upgrade<S, C>(
+    stream: S,
+    head: &RequestHead,
+    leftover: Vec<u8>,
+    config: &WebSocketConfig,
+    cancel: C,
+) -> Result<(), WsError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    C: Future<Output = ()>,
+{
+    // 接続元アドレスを渡さない後方互換の薄い委譲（イシュー #728）。
+    // `tokio::io::duplex` 等の非ソケット呼び出し元は本関数を使い続けられる
+    // （`WsOpenContext::peer_addr()` は常に `None` になる、下記関数 doc
+    // 参照）。
+    handle_upgrade_with_peer_addr(stream, head, leftover, config, cancel, None).await
+}
+
+/// [`handle_upgrade`] に接続元の実 peer address を追加で渡せる版
+/// （イシュー #728）。
+///
+/// コア（`crates/core/src/plugin.rs` の `try_handle_upgrade`）は accept した
+/// ソケットの実 peer address（`crates/core/src/server.rs` の
+/// `handle_connection_with_permit` が保持する `Option<SocketAddr>`）を
+/// `peer_addr` としてそのまま渡す。値は検証せずに運び、確立したセッションの
+/// [`handler::WsOpenContext::peer_addr`] から `on_open` が観測できるように
+/// する（`GateContext::peer_addr`（`crates/core/src/extension.rs`、
+/// イシュー #486）と同型のフェイルクローズ契約: `tokio::io::duplex` 等の
+/// 非ソケット経路、または呼び出し元が値を持たない場合は `None` を渡す）。
+///
+/// 引数の順序・意味は [`handle_upgrade`] の先頭 5 引数と同一で、6 番目に
+/// `peer_addr` を追加しただけの非破壊追加（`handle_upgrade` の公開
+/// シグネチャは無変更、`docs/design/ws-connection-context-and-close.md`
+/// 15 節参照）。戻り値・エラー契約・キャンセル伝播（イシュー #492・#499）・
+/// `on_open`/`on_close` の呼び出し契約は [`handle_upgrade`] と完全に同一。
+///
+/// # プロキシ配下の注意
+///
+/// リバースプロキシ・ロードバランサ配下では `peer_addr` はプロキシ自身の
+/// アドレスになる（TLS 終端をプロキシに任せる v1 スコープ方針、
+/// `docs/design/v1-scope-tls-multipart.md`）。クライアントの申告値
+/// （`X-Forwarded-For` 等）とは異なり偽装できない値だが、プロキシ配下では
+/// 直接クライアントの IP を表さない点に注意する。
+///
+/// # Examples
+///
+/// ```
+/// use std::net::SocketAddr;
+/// use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+/// use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade_with_peer_addr};
+/// use fandhe_backend_plugin_websocket::handler::{
+///     WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome,
+/// };
+/// use futures_util::future::BoxFuture;
+/// use std::sync::{Arc, Mutex};
+///
+/// struct RecordPeerAddr(Arc<Mutex<Option<SocketAddr>>>);
+///
+/// impl WsMessageHandler for RecordPeerAddr {
+///     fn name(&self) -> &'static str {
+///         "record-peer-addr"
+///     }
+///
+///     fn on_open(&self, ctx: WsOpenContext) {
+///         *self.0.lock().unwrap() = ctx.peer_addr();
+///     }
+///
+///     fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+///         Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+///     }
+/// }
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() {
+/// let buf = b"GET /ws HTTP/1.1\r\n\
+///     Upgrade: websocket\r\n\
+///     Connection: Upgrade\r\n\
+///     Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+///     Sec-WebSocket-Version: 13\r\n\
+///     \r\n";
+/// let head = match parse_request_head(buf).unwrap() {
+///     ParseOutcome::Complete { head, .. } => head,
+///     ParseOutcome::Incomplete => unreachable!(),
+/// };
+/// let observed = Arc::new(Mutex::new(None));
+/// let config = WebSocketConfig::default().with_handler(RecordPeerAddr(observed.clone()));
+/// let peer_addr: SocketAddr = "127.0.0.1:54321".parse().unwrap();
+///
+/// let (server_side, mut client_side) = tokio::io::duplex(4096);
+/// use tokio::io::AsyncWriteExt;
+/// tokio::spawn(async move {
+///     client_side.write_all(&[0x88, 0x80, 0, 0, 0, 0]).await.unwrap();
+/// });
+///
+/// let result = handle_upgrade_with_peer_addr(
+///     server_side,
+///     &head,
+///     Vec::new(),
+///     &config,
+///     std::future::pending::<()>(),
+///     Some(peer_addr),
+/// )
+/// .await;
+/// assert!(result.is_ok());
+/// assert_eq!(*observed.lock().unwrap(), Some(peer_addr));
+/// # }
+/// ```
+pub async fn handle_upgrade_with_peer_addr<S, C>(
     mut stream: S,
     head: &RequestHead,
     leftover: Vec<u8>,
     config: &WebSocketConfig,
     cancel: C,
+    peer_addr: Option<std::net::SocketAddr>,
 ) -> Result<(), WsError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -313,9 +432,9 @@ where
     // 構築する（`WsSender` のクローンを保持するため、セッション終了まで
     // outbound チャネルの送信側が閉じなくなる副作用がある。設計 5 節を参照）。
     let conn_ctx = handler::WsConnContext::new(conn_id, sender.clone(), params.clone());
-    config
-        .handler
-        .on_open(handler::WsOpenContext::new(conn_id, sender, params));
+    config.handler.on_open(handler::WsOpenContext::new(
+        conn_id, sender, params, peer_addr,
+    ));
     session::run_session(
         stream,
         leftover,

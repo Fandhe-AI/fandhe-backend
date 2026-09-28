@@ -627,7 +627,8 @@ outbound 到着)」の race 自体は既存方針（`race2_alternating` 型の�
 - 既存 `#[non_exhaustive]` 型 `WsOpenContext` へのフィールド・アクセサ追加
   （非公開フィールドのため非破壊）
 - `WsSender` への新規メソッド（`closed()`/`is_closed()`）追加
-- `handle_upgrade`・`WebSocketConfig` の公開シグネチャは無変更
+- `handle_upgrade`・`WebSocketConfig` の公開シグネチャは無変更（#728 で新関数
+  `handle_upgrade_with_peer_addr` を追加、既存シグネチャは無変更。15 節参照）
 - `session.rs`（非公開モジュール）の内部リファクタリング（デッドロック修正、
   6 節・#706）はそもそも公開 API 面の変更ではない
 
@@ -1108,3 +1109,47 @@ Ping/Pong の全種別、outbound push では更新しない）、Pong の受信
 [`apply_outcome`]: ../../crates/plugin-websocket/src/session.rs
 [`close_normally`]: ../../crates/plugin-websocket/src/session.rs
 [`handle_cancellation`]: ../../crates/plugin-websocket/src/session.rs
+
+## 15. #728: Upgrade 経路への接続元アドレス受け渡し
+
+依存イシュー #704（本設計・接続コンテキスト）完了後の水平展開。コアは
+accept したソケットの実 peer address を `RequestGate::check` へ渡す
+`GateContext::peer_addr`（イシュー #486）としてのみ使っていたが、WebSocket の
+Upgrade 委譲経路（`crates/core/src/plugin.rs` の `try_handle_upgrade` →
+`fandhe_backend_plugin_websocket::handle_upgrade`）には渡していなかった。
+
+### 15.1 API の形・非破壊判定
+
+- 新設: `fandhe_backend_plugin_websocket::handle_upgrade_with_peer_addr`
+  （既存 `handle_upgrade` の 5 引数に 6 番目として
+  `peer_addr: Option<std::net::SocketAddr>` を追加。trait bound は同一）。
+  既存 `handle_upgrade` は `peer_addr: None` で本関数へ委譲する薄いラッパー
+  として残す。
+- `WsOpenContext` は `#[non_exhaustive]` + 非公開フィールドのため、
+  `peer_addr` フィールドと `peer_addr()` アクセサの追加は非破壊
+  （`WsOpenContext::new` は `pub(crate)` のため引数追加も公開 API に影響
+  しない）。
+- コア側 `try_handle_upgrade`（`pub(crate)`）のシグネチャ変更も公開 API に
+  当たらない。
+- 以上より 7 節の非破壊追加パターンに合致し、0.4.2 の lockstep バンプ判定
+  （7 節）は変わらない。
+
+### 15.2 範囲
+
+- `WsConnContext`（`on_message_with_ctx` / `on_close` 向け）には
+  `peer_addr` を追加しない。接続コンテキストへの展開はイシュー #717 の
+  範囲とする（`on_open` 時点で必要な利用者は `WsOpenContext::peer_addr()`
+  を自前で `on_open` 内に保持すればよい）。
+- ヘッダ・query の保持、受理判定フック（イシュー #716）も本イシューでは
+  扱わない。
+
+### 15.3 `Debug` 出力からの除外
+
+`GateContext`（`crates/core/src/extension.rs`）は `derive(Debug)` で
+`peer_addr` を出力する。一方 `WsOpenContext::peer_addr` は `Debug` 出力に
+**含めない**（`finish_non_exhaustive()` のまま）。接続元 IP は偽装できない
+値だが PII に近い情報であり、`WsOpenContext` は既存のパスパラメータと同様に
+ログ・診断出力への機密混入防止（`.claude/rules/security.md`）の対象とする
+判断を優先した。`GateContext` との扱いの違いは意図的であり、`GateContext`
+側の見直しは本イシューの範囲外（必要であれば別途
+[[out-of-scope-tracking]] に従い起票を検討する）。

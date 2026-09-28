@@ -2158,8 +2158,10 @@ impl BoundServer {
 ///
 /// `tokio::io::duplex` 等の非ソケット経路であるため、`RequestGate::check` へ
 /// 渡す [`GateContext::peer_addr`] は常に `None` になる（イシュー #486）。
-/// 実 peer address を注入したい呼び出し元は [`handle_connection_with_peer_addr`]
-/// を使う。
+/// `websocket` feature 有効時、Upgrade 委譲が確定した接続の
+/// `WsOpenContext::peer_addr`（イシュー #728）も同じ理由で常に `None` に
+/// なる。実 peer address を注入したい呼び出し元は
+/// [`handle_connection_with_peer_addr`] を使う。
 pub async fn handle_connection<S>(server: &Server, stream: S)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -2186,6 +2188,8 @@ where
 /// [`RequestGate::check`] へ実 peer address を伝搬させたい呼び出し元向けの
 /// 公開 API。`BoundServer::run_until` が内部で呼ぶ経路（実 TCP accept）とは
 /// 独立しており、両者は同じ `handle_connection_with_permit` に収斂する。
+/// `websocket` feature 有効時、`peer_addr` は Upgrade 委譲が確定した接続の
+/// `WsOpenContext::peer_addr`（イシュー #728）へも同時に伝搬する。
 ///
 /// # Examples
 ///
@@ -2243,7 +2247,10 @@ pub async fn handle_connection_with_peer_addr<S>(
 /// `peer_addr` は accept したソケットの実 peer address（イシュー #486）。
 /// 接続の生存期間中は不変のため、ループ先頭で 1 回だけ [`GateContext`] を
 /// 構築し（`Copy` 型のためコピーコストは無視できる）、以降の
-/// `RequestGate::check` 呼び出しへ都度渡す。
+/// `RequestGate::check` 呼び出しへ都度渡す。`websocket` feature 有効時は
+/// Upgrade 委譲が確定した接続について `crate::plugin::try_handle_upgrade`
+/// へも同じ値をそのまま渡し、`WsOpenContext::peer_addr`（イシュー #728）
+/// から観測可能にする。
 ///
 /// `cancel`（[`crate::plugin::UpgradeCancel`]、イシュー #491）は接続が
 /// 属する世代のキャンセルハンドル。Upgrade 委譲が確定した場合のみ
@@ -2473,6 +2480,7 @@ pub(crate) async fn handle_connection_with_permit<S>(
                 server,
                 &mut permit,
                 cancel,
+                peer_addr,
             )
             .await
             {

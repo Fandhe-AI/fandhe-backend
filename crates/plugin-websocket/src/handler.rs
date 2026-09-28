@@ -18,6 +18,7 @@
 use std::error::Error as StdError;
 use std::fmt;
 use std::future::Future;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::Poll;
@@ -736,7 +737,10 @@ pub trait WsMessageHandler: Send + Sync + 'static {
 /// 由来のパスパラメータを保持する `params` フィールドを追加した
 /// （[`Self::param`] / [`Self::params`] 参照）。イシュー #704（親 #702）で
 /// [`Self::conn_id`] を追加し、`on_message_with_ctx`（[`WsConnContext::conn_id`]）
-/// と同一の接続識別子を `on_open` の時点から観測できるようにした。
+/// と同一の接続識別子を `on_open` の時点から観測できるようにした。イシュー
+/// #728 で [`Self::peer_addr`] を追加し、コアが accept したソケットの実
+/// peer address（`crate::handle_upgrade_with_peer_addr` 経由）を `on_open`
+/// から観測できるようにした。
 #[non_exhaustive]
 pub struct WsOpenContext {
     conn_id: WsConnId,
@@ -752,16 +756,32 @@ pub struct WsOpenContext {
     /// `crate::pattern::MAX_SEGMENT_BYTES` で有界、新たな DoS 懸念には
     /// ならない）。
     params: Vec<(String, String)>,
+    /// 接続元の実 peer address（イシュー #728）。コア
+    /// （`fandhe-backend-core`）が accept したソケットから取得した値を
+    /// `crate::handle_upgrade_with_peer_addr` 経由でそのまま運ぶ。
+    /// `tokio::io::duplex` 等の非ソケット経路、または旧 API
+    /// `crate::handle_upgrade`（`None` 固定で委譲）からの呼び出しでは
+    /// 常に `None`（`crates/core/src/extension.rs` の `GateContext::
+    /// peer_addr` と同じフェイルクローズ契約、`docs/design/
+    /// gate-peer-addr.md` 参照）。
+    peer_addr: Option<SocketAddr>,
 }
 
 impl WsOpenContext {
-    /// `conn_id`・`sender`・抽出済みパスパラメータを包んだコンテキストを
-    /// 構築する（`pub(crate)`、`crate::handle_upgrade` からのみ呼ばれる）。
-    pub(crate) fn new(conn_id: WsConnId, sender: WsSender, params: Vec<(String, String)>) -> Self {
+    /// `conn_id`・`sender`・抽出済みパスパラメータ・接続元アドレスを
+    /// 包んだコンテキストを構築する（`pub(crate)`、`crate::handle_upgrade_with_peer_addr`
+    /// からのみ呼ばれる）。
+    pub(crate) fn new(
+        conn_id: WsConnId,
+        sender: WsSender,
+        params: Vec<(String, String)>,
+        peer_addr: Option<SocketAddr>,
+    ) -> Self {
         Self {
             conn_id,
             sender,
             params,
+            peer_addr,
         }
     }
 
@@ -891,15 +911,37 @@ impl WsOpenContext {
     pub fn params(&self) -> impl Iterator<Item = (&str, &str)> {
         self.params.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
+
+    /// 接続元の実 peer address を返す（イシュー #728）。
+    ///
+    /// コアが `accept()` したソケットから取得した値であり、クライアントが
+    /// 申告できる `X-Forwarded-For` 等のヘッダとは異なり偽装できない。
+    /// リバースプロキシ・ロードバランサ配下では、プロキシ自身のアドレスに
+    /// なる点に注意（TLS 終端はプロキシ前提の v1 スコープ、
+    /// `docs/design/v1-scope-tls-multipart.md`）。
+    ///
+    /// `tokio::io::duplex` 等の非ソケット経路、または `peer_addr` を渡さない
+    /// 旧 API [`crate::handle_upgrade`] からの呼び出しでは常に `None`
+    /// （フェイルクローズ契約。IP ベースの認可判定に使う場合は `None` を
+    /// 拒否側に倒すこと）。
+    #[must_use]
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        self.peer_addr
+    }
 }
 
 impl fmt::Debug for WsOpenContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // パスパラメータ・接続元アドレスは Debug 出力に含めない
+        // （`.claude/rules/security.md`「ログに PII を出さない」）。
         // パスパラメータは攻撃者が URL セグメントとして自由に制御できる
-        // 入力のため、Debug 出力には含めない（ログ・診断出力への機密混入
-        // 防止、`.claude/rules/security.md`）。conn_id はサーバー側の
-        // 単調カウンタ発行でありクライアント入力に由来しないため出力する
-        // （イシュー #704）。
+        // 入力であり、接続元アドレスは偽装できないが PII に近い情報の
+        // ため、いずれもログ・診断出力への機密混入防止の対象とする
+        // （イシュー #728。`crates/core/src/extension.rs` の
+        // `GateContext`（`derive(Debug)` で peer_addr を出力）とは異なる
+        // 判断だが、本型は用途がログ出力に近い診断目的のため安全側に倒す）。
+        // conn_id はサーバー側の単調カウンタ発行でありクライアント入力に
+        // 由来しないため出力する（イシュー #704）。
         f.debug_struct("WsOpenContext")
             .field("conn_id", &self.conn_id)
             .finish_non_exhaustive()
@@ -2247,7 +2289,12 @@ mod tests {
         let handler = UppercaseHandler;
         let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
         // no-op であることの確認は「panic しないこと」のみで、戻り値もない。
-        handler.on_open(WsOpenContext::new(WsConnId::next(), sender, Vec::new()));
+        handler.on_open(WsOpenContext::new(
+            WsConnId::next(),
+            sender,
+            Vec::new(),
+            None,
+        ));
     }
 
     /// 既定 `on_close` が no-op（`ctx`・`reason` を無視するのみ）であることを
@@ -2269,7 +2316,7 @@ mod tests {
     #[tokio::test]
     async fn open_context_sender_clone_delivers_message() {
         let (sender, mut rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
-        let ctx = WsOpenContext::new(WsConnId::next(), sender, Vec::new());
+        let ctx = WsOpenContext::new(WsConnId::next(), sender, Vec::new(), None);
         let cloned = ctx.sender().clone();
         cloned
             .send(WsMessage::Text("hi".to_string()))
@@ -2288,7 +2335,7 @@ mod tests {
     #[tokio::test]
     async fn open_context_without_params_returns_none_and_empty_iter() {
         let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
-        let ctx = WsOpenContext::new(WsConnId::next(), sender, Vec::new());
+        let ctx = WsOpenContext::new(WsConnId::next(), sender, Vec::new(), None);
         assert_eq!(ctx.param("id"), None);
         assert_eq!(ctx.params().count(), 0);
     }
@@ -2302,7 +2349,7 @@ mod tests {
             ("id".to_string(), "XYZ".to_string()),
             ("post_id".to_string(), "42".to_string()),
         ];
-        let ctx = WsOpenContext::new(WsConnId::next(), sender, params);
+        let ctx = WsOpenContext::new(WsConnId::next(), sender, params, None);
         assert_eq!(ctx.param("id"), Some("XYZ"));
         assert_eq!(ctx.param("post_id"), Some("42"));
         assert_eq!(ctx.param("missing"), None);
@@ -2390,11 +2437,27 @@ mod tests {
             WsConnId::next(),
             sender2,
             vec![("token".to_string(), SECRET.to_string())],
+            None,
         );
         let open_debug = format!("{open_ctx:?}");
         assert!(
             !open_debug.contains(SECRET),
             "WsOpenContext::Debug leaked a path parameter value: {open_debug}"
+        );
+    }
+
+    /// 受け入れ基準（イシュー #728、T7）: `WsOpenContext` の `Debug` 出力に
+    /// 接続元アドレスの値が含まれないこと（PII に近い情報のログ混入防止、
+    /// `.claude/rules/security.md`）。
+    #[tokio::test]
+    async fn open_context_debug_redacts_peer_addr() {
+        let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        let open_ctx = WsOpenContext::new(WsConnId::next(), sender, Vec::new(), Some(addr));
+        let open_debug = format!("{open_ctx:?}");
+        assert!(
+            !open_debug.contains("12345"),
+            "WsOpenContext::Debug leaked peer_addr: {open_debug}"
         );
     }
 

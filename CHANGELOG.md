@@ -12,6 +12,21 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
 
 ### Added
 
+- `fandhe-backend-plugin-websocket`: `on_open` から接続元の実 peer address を
+  参照できるようにしました。新関数 `handle_upgrade_with_peer_addr`
+  （`handle_upgrade` の 5 引数に `peer_addr: Option<std::net::SocketAddr>` を
+  追加した非破壊追加）と `WsOpenContext::peer_addr()` アクセサを追加し、
+  コア（`fandhe-backend-core`）は accept したソケットの実 peer address
+  （`RequestGate::check` へ渡す `GateContext::peer_addr` と同一由来、イシュー
+  [#486](https://github.com/Fandhe-AI/fandhe-backend/issues/486)）を Upgrade
+  委譲経路へもそのまま渡すようになりました。既存 `handle_upgrade`（5 引数）は
+  `peer_addr: None` で本関数へ委譲する薄いラッパーとして残り、公開シグネチャは
+  無変更です。`tokio::io::duplex` 等の非ソケット経路、または `peer_addr` を
+  渡さない旧 API からの呼び出しでは常に `None`（`GateContext::peer_addr` と
+  同型のフェイルクローズ契約）。接続元アドレスは偽装できない値ですが PII に
+  近い情報のため、`WsOpenContext` の `Debug` 出力には含めません
+  （設計は `docs/design/ws-connection-context-and-close.md` 15 節、イシュー
+  [#728](https://github.com/Fandhe-AI/fandhe-backend/issues/728)）。
 - `fandhe-backend-plugin-websocket`: サーバー起点の Ping と Pong 期限による死活監視
   `WebSocketConfig::with_ping_interval(interval, pong_timeout)`（既定は無効、
   `interval`/`pong_timeout` に `Duration::ZERO` を指定すると `PingIntervalError`

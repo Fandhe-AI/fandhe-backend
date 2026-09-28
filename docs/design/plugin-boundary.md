@@ -222,6 +222,15 @@ where
 `Server::websocket` が内部登録）が `fandhe_backend_plugin_websocket::matches` へ委譲する
 薄いラッパーとして担う。
 
+イシュー #728 で `try_handle_upgrade` は `fandhe_backend_plugin_websocket::
+handle_upgrade` ではなく新関数 `handle_upgrade_with_peer_addr`（既存
+`handle_upgrade` の 5 引数 + `peer_addr: Option<std::net::SocketAddr>`）へ
+委譲するようになった。既存 `handle_upgrade` は `peer_addr: None` で本関数へ
+委譲する後方互換の薄いラッパーとして残るため、上記の委譲パターン自体は
+変わらない（`peer_addr` は `handle_connection_with_permit` が保持する実
+peer address をそのまま運ぶだけ。設計は
+`docs/design/ws-connection-context-and-close.md` 15 節）。
+
 ### 5.2 循環依存の回避
 
 `fandhe-backend-plugin-websocket` は `fandhe-backend-core` に依存しない（`crates/plugin-websocket/src/lib.rs`
