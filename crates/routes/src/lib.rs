@@ -1117,6 +1117,18 @@ mod tests {
         }
     }
 
+    // AGENTS.md「アサーション網羅性」節（PoC-9 教訓: ボディのみ・ステータスのみの
+    // 検証はレスポンス劣化を見逃す）に従い、ステータス行・`Content-Length`・
+    // ボディの 3 点を 1 回で検証するヘルパ。`Router::merge`（イシュー #722）の
+    // 統合テスト群専用（他のテストは既存の個別 assert パターンを維持する）。
+    fn assert_response(res: &Response, status: u16, body: &[u8]) {
+        assert_eq!(res.status, status);
+        assert_eq!(res.body, body);
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        assert!(text.starts_with(&format!("HTTP/1.1 {status} ")));
+        assert!(text.contains(&format!("Content-Length: {}\r\n", body.len())));
+    }
+
     #[tokio::test]
     async fn exact_match_dispatches_to_registered_handler() {
         let router = Router::new().route("GET", "/", |_h, _b| Response::new(200, b"root".to_vec()));
@@ -1680,44 +1692,52 @@ mod tests {
         let b = Router::new().route("GET", "/b", |_h, _b| Response::new(200, b"b".to_vec()));
         let router = a.merge(b).unwrap();
 
-        assert_eq!(router.dispatch(&head("GET", "/a"), &[]).await.body, b"a");
-        assert_eq!(router.dispatch(&head("GET", "/b"), &[]).await.body, b"b");
+        assert_response(&router.dispatch(&head("GET", "/a"), &[]).await, 200, b"a");
+        assert_response(&router.dispatch(&head("GET", "/b"), &[]).await, 200, b"b");
     }
 
     #[tokio::test]
     async fn merge_is_identity_with_empty_router_either_side() {
-        let r = Router::new().route("GET", "/x", |_h, _b| Response::empty(200));
+        let r = Router::new().route("GET", "/x", |_h, _b| Response::new(200, b"x".to_vec()));
 
         let left_empty = Router::new().merge(r).unwrap();
-        assert_eq!(
-            left_empty.dispatch(&head("GET", "/x"), &[]).await.status,
-            200
+        assert_response(
+            &left_empty.dispatch(&head("GET", "/x"), &[]).await,
+            200,
+            b"x",
         );
 
-        let r2 = Router::new().route("GET", "/x", |_h, _b| Response::empty(200));
+        let r2 = Router::new().route("GET", "/x", |_h, _b| Response::new(200, b"x".to_vec()));
         let right_empty = r2.merge(Router::new()).unwrap();
-        assert_eq!(
-            right_empty.dispatch(&head("GET", "/x"), &[]).await.status,
-            200
+        assert_response(
+            &right_empty.dispatch(&head("GET", "/x"), &[]).await,
+            200,
+            b"x",
         );
     }
 
     #[tokio::test]
     async fn merge_aggregates_methods_for_same_path_into_allow() {
-        let a = Router::new().route("GET", "/todos", |_h, _b| Response::empty(200));
-        let b = Router::new().route("POST", "/todos", |_h, _b| Response::empty(201));
+        let a = Router::new().route("GET", "/todos", |_h, _b| {
+            Response::new(200, b"reads".to_vec())
+        });
+        let b = Router::new().route("POST", "/todos", |_h, _b| {
+            Response::new(201, b"writes".to_vec())
+        });
         let router = a.merge(b).unwrap();
 
-        assert_eq!(
-            router.dispatch(&head("GET", "/todos"), &[]).await.status,
-            200
+        assert_response(
+            &router.dispatch(&head("GET", "/todos"), &[]).await,
+            200,
+            b"reads",
         );
-        assert_eq!(
-            router.dispatch(&head("POST", "/todos"), &[]).await.status,
-            201
+        assert_response(
+            &router.dispatch(&head("POST", "/todos"), &[]).await,
+            201,
+            b"writes",
         );
         let res = router.dispatch(&head("DELETE", "/todos"), &[]).await;
-        assert_eq!(res.status, 405);
+        assert_response(&res, 405, b"");
         let text = String::from_utf8(res.serialize(false)).unwrap();
         assert!(text.contains("Allow: GET, POST\r\n"));
     }
@@ -1747,13 +1767,15 @@ mod tests {
         let b = Router::new().route("GET", "/x", |_h, _b| Response::new(200, b"upper".to_vec()));
         let router = a.merge(b).unwrap();
 
-        assert_eq!(
-            router.dispatch(&head("get", "/x"), &[]).await.body,
-            b"lower"
+        assert_response(
+            &router.dispatch(&head("get", "/x"), &[]).await,
+            200,
+            b"lower",
         );
-        assert_eq!(
-            router.dispatch(&head("GET", "/x"), &[]).await.body,
-            b"upper"
+        assert_response(
+            &router.dispatch(&head("GET", "/x"), &[]).await,
+            200,
+            b"upper",
         );
     }
 
@@ -1789,13 +1811,15 @@ mod tests {
             .unwrap();
         let router = single.merge(wildcard).unwrap();
 
-        assert_eq!(
-            router.dispatch(&head("GET", "/static/a"), &[]).await.body,
-            b"single"
+        assert_response(
+            &router.dispatch(&head("GET", "/static/a"), &[]).await,
+            200,
+            b"single",
         );
-        assert_eq!(
-            router.dispatch(&head("GET", "/static/a/b"), &[]).await.body,
-            b"wildcard:a/b"
+        assert_response(
+            &router.dispatch(&head("GET", "/static/a/b"), &[]).await,
+            200,
+            b"wildcard:a/b",
         );
     }
 
@@ -1811,9 +1835,10 @@ mod tests {
         });
         let router = param.merge(static_router).unwrap();
 
-        assert_eq!(
-            router.dispatch(&head("GET", "/a/b"), &[]).await.body,
-            b"static"
+        assert_response(
+            &router.dispatch(&head("GET", "/a/b"), &[]).await,
+            200,
+            b"static",
         );
     }
 
@@ -1845,7 +1870,7 @@ mod tests {
         let router = a.merge(b).unwrap();
 
         let res = router.dispatch(&head("GET", "/missing"), &[]).await;
-        assert_eq!(res.body, b"from-a");
+        assert_response(&res, 404, b"from-a");
     }
 
     #[tokio::test]
@@ -1858,7 +1883,7 @@ mod tests {
 
         // fallback は接頭辞に限定されず、合成後のルータ全体（a 由来の未マッチにも）適用される。
         let res = router.dispatch(&head("GET", "/missing"), &[]).await;
-        assert_eq!(res.body, b"from-b");
+        assert_response(&res, 404, b"from-b");
     }
 
     #[tokio::test]
@@ -1870,8 +1895,7 @@ mod tests {
         let router = a.merge(b).unwrap();
 
         let res = router.dispatch(&head("POST", "/x"), &[]).await;
-        assert_eq!(res.status, 404);
-        assert_eq!(res.body, b"catch-all");
+        assert_response(&res, 404, b"catch-all");
     }
 
     #[tokio::test]
@@ -1892,7 +1916,7 @@ mod tests {
         let router = a.merge(b).unwrap();
 
         let res = router.dispatch(&head("OPTIONS", "/todos"), &[]).await;
-        assert_eq!(res.status, 204);
+        assert_response(&res, 204, b"");
         let text = String::from_utf8(res.serialize(false)).unwrap();
         assert!(text.contains("Allow: GET, POST\r\n"));
     }
@@ -1914,11 +1938,12 @@ mod tests {
         let b = Router::new().route("GET", "/b", |_h, _b| Response::empty(200));
         let router = a.merge(b).unwrap();
 
-        assert_eq!(
-            router.dispatch(&head("GET", "/missing"), &[]).await.status,
-            404
+        assert_response(
+            &router.dispatch(&head("GET", "/missing"), &[]).await,
+            404,
+            b"",
         );
-        assert_eq!(router.dispatch(&head("POST", "/a"), &[]).await.status, 405);
+        assert_response(&router.dispatch(&head("POST", "/a"), &[]).await, 405, b"");
     }
 
     #[tokio::test]
@@ -1934,16 +1959,15 @@ mod tests {
             .unwrap();
         let router = a.merge(b).unwrap();
 
-        assert_eq!(
-            router.dispatch(&head("GET", "/slow"), &[]).await.body,
-            b"slow-ok"
+        assert_response(
+            &router.dispatch(&head("GET", "/slow"), &[]).await,
+            200,
+            b"slow-ok",
         );
-        assert_eq!(
-            router
-                .dispatch(&head("GET", "/hello/alice"), &[])
-                .await
-                .body,
-            b"hello, alice"
+        assert_response(
+            &router.dispatch(&head("GET", "/hello/alice"), &[]).await,
+            200,
+            b"hello, alice",
         );
     }
 }

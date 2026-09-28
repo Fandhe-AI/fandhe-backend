@@ -26,6 +26,17 @@ fn expect_merge_err(result: Result<Router, RouterMergeError>) -> RouterMergeErro
     }
 }
 
+// AGENTS.md「アサーション網羅性」節（PoC-9 教訓: ボディのみ・ステータスのみの
+// 検証はレスポンス劣化を見逃す）に従い、ステータス行・`Content-Length`・ボディの
+// 3 点を 1 回で検証するヘルパ。
+fn assert_response(res: &Response, status: u16, body: &[u8]) {
+    assert_eq!(res.status, status);
+    assert_eq!(res.body, body);
+    let text = String::from_utf8(res.serialize(false)).unwrap();
+    assert!(text.starts_with(&format!("HTTP/1.1 {status} ")));
+    assert!(text.contains(&format!("Content-Length: {}\r\n", body.len())));
+}
+
 /// AC1: 静的ルートとパラメータルートが混在する 2 つのサブルータを合成し、
 /// どちらも解決できる（複数クレートがそれぞれ `Router` を公開する想定の
 /// end-to-end シナリオ）。
@@ -46,22 +57,26 @@ async fn merge_resolves_mixed_static_and_param_routes_from_both_sides() {
 
     let router = todos.merge(users).unwrap();
 
-    assert_eq!(
-        router.dispatch(&head("GET", "/todos"), &[]).await.body,
-        b"todos".to_vec()
+    assert_response(
+        &router.dispatch(&head("GET", "/todos"), &[]).await,
+        200,
+        b"todos",
     );
-    assert_eq!(
-        router.dispatch(&head("GET", "/todos/42"), &[]).await.body,
-        b"todo:42".to_vec()
+    assert_response(
+        &router.dispatch(&head("GET", "/todos/42"), &[]).await,
+        200,
+        b"todo:42",
     );
-    assert_eq!(
-        router.dispatch(&head("GET", "/users"), &[]).await.body,
-        b"users".to_vec()
+    assert_response(
+        &router.dispatch(&head("GET", "/users"), &[]).await,
+        200,
+        b"users",
     );
     // 未登録パスは合成後も 404 のまま（フェイルクローズ）。
-    assert_eq!(
-        router.dispatch(&head("GET", "/missing"), &[]).await.status,
-        404
+    assert_response(
+        &router.dispatch(&head("GET", "/missing"), &[]).await,
+        404,
+        b"",
     );
 }
 
@@ -70,37 +85,37 @@ async fn merge_resolves_mixed_static_and_param_routes_from_both_sides() {
 async fn merge_with_empty_router_is_identity_both_directions() {
     let a = Router::new().route("GET", "/x", |_h, _b| Response::new(200, b"x".to_vec()));
     let left = Router::new().merge(a).unwrap();
-    assert_eq!(
-        left.dispatch(&head("GET", "/x"), &[]).await.body,
-        b"x".to_vec()
-    );
+    assert_response(&left.dispatch(&head("GET", "/x"), &[]).await, 200, b"x");
 
     let b = Router::new().route("GET", "/y", |_h, _b| Response::new(200, b"y".to_vec()));
     let right = b.merge(Router::new()).unwrap();
-    assert_eq!(
-        right.dispatch(&head("GET", "/y"), &[]).await.body,
-        b"y".to_vec()
-    );
+    assert_response(&right.dispatch(&head("GET", "/y"), &[]).await, 200, b"y");
 }
 
 /// AC1: 同じパスで method が異なる 2 つのサブルータを合成すると、両方が
 /// 動作し、未登録 method は 405 + 集約された `Allow` を返す。
 #[tokio::test]
 async fn merge_same_path_different_methods_both_work_and_allow_is_aggregated() {
-    let reads = Router::new().route("GET", "/todos", |_h, _b| Response::empty(200));
-    let writes = Router::new().route("POST", "/todos", |_h, _b| Response::empty(201));
+    let reads = Router::new().route("GET", "/todos", |_h, _b| {
+        Response::new(200, b"reads".to_vec())
+    });
+    let writes = Router::new().route("POST", "/todos", |_h, _b| {
+        Response::new(201, b"writes".to_vec())
+    });
     let router = reads.merge(writes).unwrap();
 
-    assert_eq!(
-        router.dispatch(&head("GET", "/todos"), &[]).await.status,
-        200
+    assert_response(
+        &router.dispatch(&head("GET", "/todos"), &[]).await,
+        200,
+        b"reads",
     );
-    assert_eq!(
-        router.dispatch(&head("POST", "/todos"), &[]).await.status,
-        201
+    assert_response(
+        &router.dispatch(&head("POST", "/todos"), &[]).await,
+        201,
+        b"writes",
     );
     let res = router.dispatch(&head("DELETE", "/todos"), &[]).await;
-    assert_eq!(res.status, 405);
+    assert_response(&res, 405, b"");
     let text = String::from_utf8(res.serialize(false)).unwrap();
     assert!(text.contains("Allow: GET, POST\r\n"));
 }
@@ -157,13 +172,15 @@ async fn merge_partial_overlap_param_and_wildcard_succeeds_with_registration_ord
         .unwrap();
     let router = single.merge(wildcard).unwrap();
 
-    assert_eq!(
-        router.dispatch(&head("GET", "/a/b"), &[]).await.body,
-        b"single".to_vec()
+    assert_response(
+        &router.dispatch(&head("GET", "/a/b"), &[]).await,
+        200,
+        b"single",
     );
-    assert_eq!(
-        router.dispatch(&head("GET", "/a/b/c"), &[]).await.body,
-        b"wildcard:b/c".to_vec()
+    assert_response(
+        &router.dispatch(&head("GET", "/a/b/c"), &[]).await,
+        200,
+        b"wildcard:b/c",
     );
 }
 
@@ -181,13 +198,15 @@ async fn merge_self_param_and_other_static_overlap_prefers_static() {
     });
     let router = param.merge(static_router).unwrap();
 
-    assert_eq!(
-        router.dispatch(&head("GET", "/a/b"), &[]).await.body,
-        b"static".to_vec()
+    assert_response(
+        &router.dispatch(&head("GET", "/a/b"), &[]).await,
+        200,
+        b"static",
     );
-    assert_eq!(
-        router.dispatch(&head("GET", "/a/c"), &[]).await.body,
-        b"param".to_vec()
+    assert_response(
+        &router.dispatch(&head("GET", "/a/c"), &[]).await,
+        200,
+        b"param",
     );
 }
 
@@ -217,9 +236,10 @@ async fn merge_fallback_only_on_either_side_is_inherited() {
         .fallback(|_h, _b| Response::new(404, b"from-a".to_vec()));
     let plain = Router::new().route("GET", "/b", |_h, _b| Response::empty(200));
     let router = with_fallback.merge(plain).unwrap();
-    assert_eq!(
-        router.dispatch(&head("GET", "/missing"), &[]).await.body,
-        b"from-a".to_vec()
+    assert_response(
+        &router.dispatch(&head("GET", "/missing"), &[]).await,
+        404,
+        b"from-a",
     );
 
     let plain2 = Router::new().route("GET", "/a", |_h, _b| Response::empty(200));
@@ -231,8 +251,7 @@ async fn merge_fallback_only_on_either_side_is_inherited() {
     let router2 = plain2.merge(with_fallback2).unwrap();
     // 405 相当のリクエストも IncludeMethodNotAllowed のまま fallback に流れる。
     let res = router2.dispatch(&head("POST", "/a"), &[]).await;
-    assert_eq!(res.status, 404);
-    assert_eq!(res.body, b"from-b".to_vec());
+    assert_response(&res, 404, b"from-b");
 }
 
 /// AC3: 両方に fallback があると `ConflictingFallback` エラーになる。
@@ -255,7 +274,7 @@ async fn merge_options_fallback_three_patterns() {
     let b = Router::new().route("POST", "/todos", |_h, _b| Response::empty(201));
     let router = a.merge(b).unwrap();
     let res = router.dispatch(&head("OPTIONS", "/todos"), &[]).await;
-    assert_eq!(res.status, 204);
+    assert_response(&res, 204, b"");
     let text = String::from_utf8(res.serialize(false)).unwrap();
     assert!(text.contains("Allow: GET, POST\r\n"));
 
@@ -265,7 +284,9 @@ async fn merge_options_fallback_three_patterns() {
         .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
     let router2 = c.merge(d).unwrap();
     let res2 = router2.dispatch(&head("OPTIONS", "/x"), &[]).await;
-    assert_eq!(res2.status, 204);
+    assert_response(&res2, 204, b"");
+    let text2 = String::from_utf8(res2.serialize(false)).unwrap();
+    assert!(text2.contains("Allow: GET, POST\r\n"));
 
     let e = Router::new()
         .options_fallback(|_head, allow, _body| Response::empty(204).with_allow(allow.clone()));
@@ -282,12 +303,13 @@ async fn merge_neither_side_has_fallback_default_behavior_is_preserved() {
     let b = Router::new().route("GET", "/b", |_h, _b| Response::empty(200));
     let router = a.merge(b).unwrap();
 
-    assert_eq!(
-        router.dispatch(&head("GET", "/missing"), &[]).await.status,
-        404
+    assert_response(
+        &router.dispatch(&head("GET", "/missing"), &[]).await,
+        404,
+        b"",
     );
     let res = router.dispatch(&head("POST", "/a"), &[]).await;
-    assert_eq!(res.status, 405);
+    assert_response(&res, 405, b"");
     let text = String::from_utf8(res.serialize(false)).unwrap();
     assert!(text.contains("Allow: GET\r\n"));
 }
@@ -304,7 +326,7 @@ async fn merge_fallback_from_one_subrouter_applies_to_other_subrouter_unmatched_
 
     // cdp 側にしか存在しないはずのパスの未マッチも、ai 由来の fallback に流れる。
     let res = router.dispatch(&head("GET", "/cdp/missing"), &[]).await;
-    assert_eq!(res.body, b"ai-not-found".to_vec());
+    assert_response(&res, 404, b"ai-not-found");
 }
 
 /// async ハンドラ（`route_async` / `route_param_async`）も合成後に動作する。
@@ -321,15 +343,14 @@ async fn merge_preserves_async_handlers() {
         .unwrap();
     let router = a.merge(b).unwrap();
 
-    assert_eq!(
-        router.dispatch(&head("GET", "/slow"), &[]).await.body,
-        b"slow-ok".to_vec()
+    assert_response(
+        &router.dispatch(&head("GET", "/slow"), &[]).await,
+        200,
+        b"slow-ok",
     );
-    assert_eq!(
-        router
-            .dispatch(&head("GET", "/hello/alice"), &[])
-            .await
-            .body,
-        b"hello, alice".to_vec()
+    assert_response(
+        &router.dispatch(&head("GET", "/hello/alice"), &[]).await,
+        200,
+        b"hello, alice",
     );
 }
