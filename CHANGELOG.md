@@ -32,6 +32,17 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   クローズの完了**後**に行うよう順序を入れ替えています（利用側シンクの異常・
   遅延がフェイルクローズを妨げないため。既定シンクでは出力順序が反転しても
   外部から観測可能な違いはほぼありません）。
+- `fandhe-backend-routes`: 独立に組み立てた複数の `Router` を 1 つに合成する
+  `Router::merge` を追加しました。重複するルート登録（静的ルートの
+  `(method, path)` 完全一致、パラメータルートの method 一致 + セグメント形状
+  等価、両方への `fallback`/`fallback_with`・`options_fallback` 登録）は
+  黙って上書きせず `RouterMergeError` でフェイルクローズに検出します
+  （意図しないハンドラの差し替え防止、OWASP A01）。合成後のパラメータルートの
+  登録順は self が先・other が後（`Vec::extend`）。衝突しない部分的な重なりは
+  既存の優先順位（静的 → パラメータ、パラメータは登録順）がそのまま適用され、
+  `route`/`route_param` 単体の「同一 `Router` 内での再登録」の既存意味論
+  （`route` は後勝ち、`route_param` は登録順の先勝ち）は変わりません
+  （イシュー [#722](https://github.com/Fandhe-AI/fandhe-backend/issues/722)）。
 - `fandhe-backend-plugin-websocket`: ハンドシェイクの受理判定フック
   `WebSocketConfig::with_handshake_check`（新規 trait `WsHandshakeCheck`・
   コンテキスト型 `WsHandshakeContext`）を追加しました。RFC 6455 検証を通過した

@@ -463,7 +463,11 @@ fandhe-backend/
 │   │                                    # `RequestHead::target()`（`&str` 返却）のアクセサ
 │   │                                    # 経由でのみ取得させる（**BREAKING CHANGE**、旧
 │   │                                    # `pub method: String` / `pub target: String` は廃止、
-│   │                                    # 移行手順は `CHANGELOG.md` 参照）
+│   │                                    # 移行手順は `CHANGELOG.md` 参照）。`Router::merge`
+│   │                                    # で複数クレートが公開する `Router` を 1 つに合成
+│   │                                    # できるようにし、重複するルート登録・両方への
+│   │                                    # fallback/options_fallback 登録は `RouterMergeError`
+│   │                                    # でフェイルクローズに検出する（イシュー #722）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
