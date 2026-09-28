@@ -660,7 +660,8 @@ fandhe-backend/
 │   │                                    # しない（1xx/2xx はクライアントが upgrade 成功と
 │   │                                    # 誤認しないよう `normalize_rejection` で
 │   │                                    # `400 Bad Request` へフェイルクローズに正規化、
-│   │                                    # 3xx/4xx/5xx はそのまま送出）。`RequestGate`
+│   │                                    # 3xx/4xx/5xx はそのまま送出。304・範囲外の値も
+│   │                                    # `400` へ正規化）。`RequestGate`
 │   │                                    # 拡張点はパスパラメータを持たないためそれを代替する
 │   │                                    # `plugin-websocket` 内蔵の拒否経路として設計した
 │   │                                    # （コア拡張点は増やさない）。未登録時（既定）は

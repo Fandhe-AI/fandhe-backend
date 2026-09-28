@@ -553,7 +553,8 @@ idle_keepalive_e2e.rs` の e2e テスト 4 本で固定する（push-only トラ
 - `Err(response)` を返すと upgrade を行わず、`handshake::normalize_rejection`
   で正規化した後の `response` を送出して接続を閉じる（1xx/2xx はクライアントが
   upgrade 成功と誤認しないよう `400 Bad Request` へフェイルクローズに正規化、
-  3xx/4xx/5xx はそのまま送出）
+  3xx/4xx/5xx はそのまま送出。ただし 304・`0..=99`・`600` 以上も `400` へ
+  正規化）
 - 未登録時（既定）は挙動が変わらない後方互換追加
 
 ### 参照

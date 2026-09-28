@@ -19,8 +19,9 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   パラメータ（`with_path_pattern` 由来）・リクエストヘッダ・接続元アドレス
   （`handle_upgrade_with_peer_addr` 由来、イシュー
   [#728](https://github.com/Fandhe-AI/fandhe-backend/issues/728)）を参照できます。
-  拒否する場合はフックが返す `Response` を（1xx/2xx はフェイルクローズに
-  `400 Bad Request` へ正規化した上で）送出し upgrade しません。`RequestGate`
+  拒否する場合はフックが返す `Response` を送出し upgrade しません（1xx/2xx・
+  304・`0..=99`/`600` 以上のステータスはフェイルクローズに `400 Bad Request`
+  へ正規化します）。`RequestGate`
   拡張点はパスパラメータを持たないため、それを代替する
   `plugin-websocket` 内蔵の拒否経路として設計しました（コア拡張点は増やさない。
   `WsError` への variant 追加は破壊的変更になるため行わず、戻り値は拒否時も
