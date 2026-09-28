@@ -343,8 +343,11 @@ impl fmt::Debug for WsHandshakeContext<'_> {
 ///   （body なし）に置き換える。
 /// - **2xx**（`200..=299`）: 「拒否」の意味に反するため、同じく
 ///   `400 Bad Request` に置き換える。
-/// - **3xx/4xx/5xx**（`300..=599`）: 指定どおりそのまま返す（RFC 6455 4.2.2
-///   はリダイレクト応答を許容している）。
+/// - **3xx/4xx/5xx**（`300..=599`）: 指定どおりそのまま返すが、
+///   [`Response::is_bodyless_status`] が真のステータス（304 Not Modified）
+///   は RFC 9112 §6.3 によりボディを持ち得ないため、`body` を空にして
+///   送出する（イシュー #716 P2 レビュー指摘。`Content-Length: 0` は出力
+///   されるが、ボディを持てない応答という制約自体には抵触しない）。
 /// - **上記いずれにも属さない値**（`0..=99`・`600` 以上。`u16` の型レベルの
 ///   契約はあるが HTTP ステータスコードとして未定義の範囲、フックの実装
 ///   ミスや `Response::empty(0)` 等の誤用を想定）: 設計文書（本 doc）が
@@ -355,8 +358,11 @@ impl fmt::Debug for WsHandshakeContext<'_> {
 /// （`crate::handle_upgrade_with_peer_addr`）が担う（拒否後の接続を再利用
 /// しない）。
 #[must_use]
-pub(crate) fn normalize_rejection(response: Response) -> Response {
+pub(crate) fn normalize_rejection(mut response: Response) -> Response {
     if (300..600).contains(&response.status) {
+        if Response::is_bodyless_status(response.status) {
+            response.body.clear();
+        }
         response
     } else {
         Response::empty(400)
@@ -642,6 +648,18 @@ mod tests {
             let normalized = normalize_rejection(Response::empty(status));
             assert_eq!(normalized.status, status);
         }
+    }
+
+    #[test]
+    fn normalize_rejection_strips_body_for_304() {
+        // 304 Not Modified は RFC 9112 §6.3 によりボディを持ち得ないため、
+        // フックが誤って body 付きで返しても正規化時に除去する
+        // （イシュー #716 P2 レビュー指摘）。ステータス自体は 3xx として
+        // そのまま透過する。
+        let response = Response::new(304, b"should not be sent".to_vec());
+        let normalized = normalize_rejection(response);
+        assert_eq!(normalized.status, 304);
+        assert!(normalized.body.is_empty());
     }
 
     #[test]

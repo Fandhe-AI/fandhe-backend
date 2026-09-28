@@ -180,8 +180,23 @@ async fn rejecting_hook_returning_101_is_normalized_to_400() {
     });
 
     let text = String::from_utf8(read_to_eof(&mut client_side).await).unwrap();
-    assert!(text.starts_with("HTTP/1.1 400 Bad Request"));
+    // ステータス行だけでなく、拒否後の接続を再利用しない契約
+    // （`Connection: close`）と `normalize_rejection` が 400 正規化時に
+    // `Response::empty(400)` を使う（空ボディ）ことも検証する
+    // （AGENTS.md「アサーション網羅性」規約、イシュー #716 P2 レビュー指摘）。
+    assert!(text.starts_with("HTTP/1.1 400 Bad Request\r\n"));
     assert!(!text.contains("101 Switching Protocols"));
+    assert!(text.contains("Connection: close\r\n"));
+    assert!(text.contains("Content-Length: 0\r\n"));
+    let head_end = text
+        .find("\r\n\r\n")
+        .expect("response must have header terminator")
+        + 4;
+    assert!(
+        text[head_end..].is_empty(),
+        "400 正規化応答はボディを送出しないはず: {:?}",
+        &text[head_end..]
+    );
 
     let result = tokio::time::timeout(Duration::from_secs(2), server_task)
         .await
@@ -266,7 +281,21 @@ async fn hook_rejects_unknown_path_parameter() {
     });
 
     let text = String::from_utf8(read_to_eof(&mut client_side).await).unwrap();
-    assert!(text.starts_with("HTTP/1.1 404"));
+    // ステータス行だけでなく `Connection: close`・空ボディ
+    // （`Response::empty(404)` 由来）も検証する（AGENTS.md
+    // 「アサーション網羅性」規約、イシュー #716 P2 レビュー指摘）。
+    assert!(text.starts_with("HTTP/1.1 404 Not Found\r\n"));
+    assert!(text.contains("Connection: close\r\n"));
+    assert!(text.contains("Content-Length: 0\r\n"));
+    let head_end = text
+        .find("\r\n\r\n")
+        .expect("response must have header terminator")
+        + 4;
+    assert!(
+        text[head_end..].is_empty(),
+        "拒否応答はボディを送出しないはず: {:?}",
+        &text[head_end..]
+    );
 
     let result = tokio::time::timeout(Duration::from_secs(2), server_task)
         .await
@@ -307,7 +336,21 @@ async fn hook_observes_origin_header_and_rejects_disallowed_origin() {
     });
 
     let text = String::from_utf8(read_to_eof(&mut client_side).await).unwrap();
-    assert!(text.starts_with("HTTP/1.1 403"));
+    // ステータス行だけでなく `Connection: close`・空ボディ
+    // （`Response::empty(403)` 由来）も検証する（AGENTS.md
+    // 「アサーション網羅性」規約、イシュー #716 P2 レビュー指摘）。
+    assert!(text.starts_with("HTTP/1.1 403 Forbidden\r\n"));
+    assert!(text.contains("Connection: close\r\n"));
+    assert!(text.contains("Content-Length: 0\r\n"));
+    let head_end = text
+        .find("\r\n\r\n")
+        .expect("response must have header terminator")
+        + 4;
+    assert!(
+        text[head_end..].is_empty(),
+        "拒否応答はボディを送出しないはず: {:?}",
+        &text[head_end..]
+    );
 
     let result = tokio::time::timeout(Duration::from_secs(2), server_task)
         .await

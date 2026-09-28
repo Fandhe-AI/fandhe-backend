@@ -120,6 +120,22 @@ async fn real_bound_server_run_returns_rejection_response_from_hook() {
     stream.write_all(VALID_HANDSHAKE_REQUEST).await.unwrap();
 
     let text = String::from_utf8(read_to_eof(&mut stream).await).unwrap();
-    assert!(text.starts_with("HTTP/1.1 404"));
+    // ステータス行だけでなく、拒否後の接続を再利用しない契約
+    // （`normalize_rejection` doc・`handle_upgrade_with_peer_addr`）の
+    // `Connection: close` ヘッダと、`Response::empty(404)` に由来する
+    // 空ボディ（`Content-Length: 0`・ヘッダ終端後にバイトなし）も検証する
+    // （AGENTS.md「アサーション網羅性」規約、イシュー #716 P2 レビュー指摘）。
+    assert!(text.starts_with("HTTP/1.1 404 Not Found\r\n"));
     assert!(!text.contains("101 Switching Protocols"));
+    assert!(text.contains("Connection: close\r\n"));
+    assert!(text.contains("Content-Length: 0\r\n"));
+    let head_end = text
+        .find("\r\n\r\n")
+        .expect("response must have header terminator")
+        + 4;
+    assert!(
+        text[head_end..].is_empty(),
+        "拒否応答はボディを送出しないはず: {:?}",
+        &text[head_end..]
+    );
 }
