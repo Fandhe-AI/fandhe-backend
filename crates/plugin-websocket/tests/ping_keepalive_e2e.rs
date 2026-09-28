@@ -18,12 +18,12 @@ use fandhe_backend_plugin_websocket::handler::{
     CloseReason, WsConnContext, WsHandlerError, WsMessage, WsMessageHandler, WsOutcome,
 };
 use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade};
-use futures_util::StreamExt;
 use futures_util::future::BoxFuture;
+use futures_util::{SinkExt, StreamExt};
 use tokio::io::AsyncReadExt;
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 /// 有効な `GET /ws` アップグレードリクエストの生バイト列
 /// （`idle_timeout.rs` と同一のリクエスト）。
@@ -114,6 +114,28 @@ impl WsMessageHandler for RecordClose {
             .reason
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
+    }
+}
+
+/// Text 受信ごとに `delay` だけ `await` してから同じ内容を返送するハンドラ。
+/// ハンドラ実行中に届いたフレームは、ハンドラが完了して次の受信待ちに戻る
+/// までサーバーが読まないことを検証するために使う（`crate::session` モジュール
+/// doc「サーバー起点 Ping keepalive」節）。
+struct SlowEcho {
+    delay: Duration,
+}
+
+impl WsMessageHandler for SlowEcho {
+    fn name(&self) -> &'static str {
+        "slow-echo"
+    }
+
+    fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+        let delay = self.delay;
+        Box::pin(async move {
+            tokio::time::sleep(delay).await;
+            Ok(WsOutcome::Reply(vec![msg]))
+        })
     }
 }
 
@@ -228,4 +250,113 @@ async fn unresponsive_client_is_closed_with_pong_timeout() {
         Some(CloseReason::PongTimeout),
         "on_close must report PongTimeout exactly once"
     );
+}
+
+/// 受け入れ基準 2・3 の境界事例: `pong_timeout` より長く実行されるハンドラの
+/// 実行中に Text → Pong の順で届いていた場合でも、誤って `PongTimeout` に
+/// しないこと。
+///
+/// `crate::session` モジュール doc「サーバー起点 Ping keepalive」節が述べる
+/// とおり、受信は本モジュール内の 1 か所で逐次処理するため、ハンドラ実行中に
+/// 届いた Pong はハンドラが完了して次の受信待ちに戻るまで読まれない。この間
+/// Pong 期限（送出済み Ping への応答期限）を過ぎていても、`ws.next()` を優先
+/// する契約により、ハンドラ完了直後に読まれるバッファ済みの Pong で期限は
+/// 解除され、誤切断しない。
+#[tokio::test(start_paused = true)]
+async fn slow_handler_does_not_lose_pong_buffered_during_handler_execution() {
+    let interval = Duration::from_millis(200);
+    let pong_timeout = Duration::from_millis(100);
+    let handler_delay = Duration::from_millis(500);
+    let config = WebSocketConfig::default()
+        .without_idle_timeout()
+        .with_ping_interval(interval, pong_timeout)
+        .unwrap()
+        .with_handler(SlowEcho {
+            delay: handler_delay,
+        });
+    let (mut client, server_task) = handshake(config).await;
+
+    // 最初の Ping を受け取り、未応答の Ping（Pong 期限）が立った状態にする。
+    let first = tokio::time::timeout(interval * 2, client.next())
+        .await
+        .expect("first ping should arrive")
+        .expect("stream should yield a message")
+        .expect("no protocol error");
+    assert!(
+        matches!(first, Message::Ping(_)),
+        "expected Ping frame, got {first:?}"
+    );
+
+    // Text を送ってハンドラ（500ms スリープ）を起動したあと、サーバーが
+    // それを読み切ってから戻ってくるまでの間に Pong を送る。Pong 期限
+    // （100ms）はハンドラのスリープ中に過ぎるが、サーバーはハンドラ完了後の
+    // 次の受信待ちでこの Pong をまず読むため、誤切断してはならない。
+    client
+        .send(Message::Text("hi".into()))
+        .await
+        .expect("client send should succeed");
+    client
+        .send(Message::Pong(Bytes::new()))
+        .await
+        .expect("client send should succeed");
+
+    let reply = tokio::time::timeout(handler_delay * 4, client.next())
+        .await
+        .expect("handler should finish and reply within a bounded time")
+        .expect("stream should yield a message (a premature close would end the stream instead)")
+        .expect("no protocol error");
+    assert!(
+        matches!(reply, Message::Text(_)),
+        "expected the echoed reply, got {reply:?} (a premature PongTimeout close would not reply)"
+    );
+
+    client.close(None).await.expect("close");
+    let result = tokio::time::timeout(Duration::from_secs(5), server_task)
+        .await
+        .expect("server task should finish")
+        .unwrap();
+    assert!(result.is_ok(), "session should end cleanly: {result:?}");
+}
+
+/// 受け入れ基準 2 の境界事例（契約 4 の固定）: Pong を送らず Text だけを
+/// 送り続けるクライアントは切断されないこと。
+///
+/// `ws.next()` が常に Ready になる（フレームが途切れず届く）限り Pong 期限
+/// の判定自体が受信待ちの race に至らないため、`idle_timeout` と同じ
+/// 「受信し続ける限り生存扱い」という契約になる（意図した挙動、
+/// `crate::session` モジュール doc を参照）。
+#[tokio::test(start_paused = true)]
+async fn client_sending_text_without_pong_is_not_disconnected() {
+    let interval = Duration::from_millis(50);
+    let pong_timeout = Duration::from_millis(30);
+    let config = WebSocketConfig::default()
+        .without_idle_timeout()
+        .with_ping_interval(interval, pong_timeout)
+        .unwrap();
+    let (mut client, server_task) = handshake(config).await;
+
+    // pong_timeout の何倍もの期間、Pong を送らず Text だけを送り続ける。
+    for i in 0..10 {
+        client
+            .send(Message::Text(format!("msg-{i}").into()))
+            .await
+            .expect("client send should succeed");
+        let echoed = tokio::time::timeout(pong_timeout * 10, client.next())
+            .await
+            .unwrap_or_else(|_| panic!("echo #{i} should arrive (must not be disconnected)"))
+            .expect("stream should yield a message")
+            .expect("no protocol error");
+        assert_eq!(
+            echoed,
+            Message::Text(format!("msg-{i}").into()),
+            "expected echoed text, got a different frame (possibly a premature close)"
+        );
+    }
+
+    client.close(None).await.expect("close");
+    let result = tokio::time::timeout(Duration::from_secs(5), server_task)
+        .await
+        .expect("server task should finish")
+        .unwrap();
+    assert!(result.is_ok(), "session should end cleanly: {result:?}");
 }

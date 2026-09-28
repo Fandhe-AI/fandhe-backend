@@ -241,30 +241,19 @@ pub enum CloseReason {
     /// が先に発火したときはその理由になる。詳細は [`WsSender::close`] の doc）。
     SenderClose,
     /// `WebSocketConfig::with_ping_interval` の Ping keepalive（イシュー #713）で、
-    /// サーバー送出の Ping から `pong_timeout` 以内にクライアントの Pong が
-    /// 届かず、サーバー側から切断した。
+    /// サーバー側から切断した。
     ///
     /// `idle_timeout`（[`Self::IdleTimeout`]）とは独立した死活監視で、
     /// クライアントが受信専用（サーバー起点 push を受けているだけ）でも
-    /// 発火しうる（Ping 自体は `idle_timeout` をリセットしない契約、
-    /// `crate::session` モジュール doc を参照）。
+    /// 発火しうる（Ping 送出自体は `idle_timeout` をリセットしない契約、
+    /// `crate::session` モジュール doc を参照）。検出経路は次の 2 つ:
     ///
-    /// 検出経路は次の 3 つがあり、いずれも「未応答の Pong 期限（送出済み
-    /// Ping があればその期限、なければ次回 Ping 予定時刻 + `pong_timeout`）」
-    /// を指す点で共通する:
-    ///
-    /// - 受信待ち中に期限切れになった（`ws.next()` が一度 Pending になった
-    ///   後にタイマー分岐が選ばれた場合のみ発火。`crate::session` モジュール
-    ///   doc「既知の限界（2）」節が示す通り、対向が `ws.next()` を Pending に
-    ///   させない密度でフレームを送り続ける限りこの経路は発火しない）。
-    /// - サーバーからの Ping 送出自体が、この期限を超えてブロックした
-    ///   （相手の受信バッファが詰まっている場合）。
-    /// - [`WsSender::send`] による outbound push の送出が、この期限を超えて
-    ///   ブロックした（`stalled_push_send_is_bounded_by_liveness_deadline` が
-    ///   固定する経路。**Ping が一度も送出されていない場合でも発火しうる**
-    ///   ——期限は「次回 Ping 予定時刻 + `pong_timeout`」にフォールバックする
-    ///   ため、送出済みの Ping への未応答という variant 名の直感とは異なり、
-    ///   まだ Ping を送っていない段階の push ブロックでも同じ variant になる）。
+    /// - 送出済みの Ping から `pong_timeout` 以内に Pong が届かなかった
+    ///   （受信待ちで何も読めない状態が続いた場合のみ判定する。フレームを
+    ///   途切れず受信し続ける対向では発火しない）。
+    /// - Ping・Reply・outbound push 等の 1 回の送出が、その送出の開始時刻
+    ///   から `pong_timeout` を超えてブロックした（相手の受信バッファが
+    ///   詰まっている場合）。
     PongTimeout,
 }
 

@@ -22,13 +22,11 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   サーバー起点の送出ではリセットしないため、サーバー起点 push を受けている
   だけの受信専用クライアント（例: CDP 互換サーバー相手の Playwright/Puppeteer）
   は `idle_timeout` だけでは死活監視できず、本設定が必要になります。
-  Pong を送らず他のフレームだけを継続送信する対向に対しても `interval` +
-  `pong_timeout` の期限どおりに切断します（PR #738 続報レビュー指摘対応で
-  反復先頭のハード判定・送出経路への水平展開により受信側の Pending 依存を
-  解消済み）。既知の限界として、返信送出等で受信を止めている間に単発の
-  高速な連続送信でメモリ・CPU 安全性の保険としての読み取り上限を超える量が
-  一括到着していた場合に限り、期限内の Pong を誤ってタイムアウト扱いする
-  可能性が理論上残ります（`crate::session` モジュール doc 参照）。
+  判定は受信待ちで何も読めない状態のときのみ行うため、Pong を送らず他の
+  フレームだけを継続送信する対向に対しては切断しません（`idle_timeout` と
+  同じ「受信し続ける限り生存扱い」という契約）。1 回の送出（Ping・Reply・
+  outbound push 等）がその開始時刻から `pong_timeout` を超えてブロックした
+  場合も同じ `CloseReason::PongTimeout` で終了します。
   `without_ping_interval()` で明示的に無効へ戻せます。既存の設定・挙動は
   無変更のまま動作します（後方互換。設計は本ファイル・
   `docs/api/plugin-config-api.md`、イシュー

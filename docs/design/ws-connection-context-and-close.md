@@ -312,7 +312,7 @@ Debug` と同一のログ・診断への機密混入防止方針）。
 |---|---|
 | `Message::Close(_) => break;`（294-296 行） | `ClientClose` |
 | `InboundEvent::Message(None) => break;`（250 行、EOF） | `Eof` |
-| `InboundEvent::Idle => { ...; return handle_idle_timeout(...); }`（235-238 行） | `IdleTimeout` |
+| `InboundEvent::Timer(TimerKind::Idle) => { ...; return close_normally(...); }`（235-238 行） | `IdleTimeout` |
 | `race_cancel` が `None` → `handle_cancellation`（215 行・229 行: 受信ループ先頭、outbound 有無で分岐する 2 箇所／244 行: `InboundEvent::Outbound` 分岐内の `ws.send` 送出中／264 行・283 行: `on_message` 実行中（Text/Binary 各分岐）／269-271 行・288-290 行: `apply_outcome` が返した `SessionFlow::Cancelled` を受けて Text/Binary 各分岐から再度 `handle_cancellation` へ分岐） | `Cancelled` |
 | `apply_outcome` が返す `SessionFlow::Closed`（`WsOutcome::Close`、268 行・287 行） | `HandlerClose` |
 | `outcome?` の `Err(WsHandlerError)`（`on_message` の戻り値、266 行・285 行。現状 `outcome?` で即時 `Err` 化） | `Failed(FailureKind::Handler)` |
@@ -325,7 +325,7 @@ Debug` と同一のログ・診断への機密混入防止方針）。
 | `apply_outcome(...).await?` が伝播する `apply_outcome` 内部の `ws.send`/`ws.close` 失敗（`apply_outcome` 内 451 行・459 行の `result?`、呼び出し元の `.await?` 経由。Text 分岐 266 行・Binary 分岐 285 行）: `Error::Io(_)` | `Failed(FailureKind::Io)` |
 | 同上: `Io` 以外 | `Failed(FailureKind::Protocol)` |
 | `WsSender::close` が enqueue した `OutboundItem::Close`（受信待ち中の `InboundEvent::Outbound` 分岐、またはハンドラ実行中の `run_handler_with_outbound_drain` の 2 経路のいずれかから検出。イシュー #710、12 節参照） | `SenderClose` |
-| `WebSocketConfig::with_ping_interval` の `pong_timeout` 期限切れ（受信待ち中の `InboundEvent::PongTimeout` 分岐、またはサーバー起点 Ping/push 送出中の生存期限超過（`send_bounded_with_liveness`）の 2 経路のいずれかから検出。イシュー #713、親 #712。既定は無効で、設定した場合のみこの行が発火する） | `PongTimeout` |
+| `WebSocketConfig::with_ping_interval` の `pong_timeout` 期限切れ（受信待ち中の `InboundEvent::Timer(TimerKind::PongDeadline)` 分岐、または Ping/Reply/outbound push 送出が `send_bounded` の `stall_timeout` を超えた場合の 2 経路のいずれかから検出。イシュー #713、親 #712。既定は無効で、設定した場合のみこの行が発火する） | `PongTimeout` |
 
 #### `FailureKind::Io` の判別方法（`Error::Io(_)` を明示的に振り分ける）
 
@@ -391,7 +391,7 @@ WsError>` を薄い外側ラッパーとして置き、`run_session_inner` の�
 `on_close(conn_ctx, reason)` を**一度だけ**呼んだ後、`Result` 部分のみを返す。
 `handle_upgrade` の呼び出し方は `conn_ctx` 引数追加以外変更しない。
 
-`close_and_drain`（[`handle_idle_timeout`]/[`handle_cancellation`] の共通ヘルパー）
+`close_and_drain`（[`close_normally`]/[`handle_cancellation`] の共通ヘルパー）
 内で発生する二次的なエラー・タイムアウトは、既に確定した `CloseReason`
 （トリガとなった条件、`IdleTimeout` または `Cancelled`）を上書きしない。理由は
 「トリガ」で確定させ、ドレイン自体の成否は既存どおり `Result<(), WsError>` 側に
@@ -984,10 +984,63 @@ drop されていなくても `true` を返しうる点が、`closed()`（受信
 - 送信キューの容量設定・`try_send`（#709）は本イシューの対象外。`OutboundItem`・
   `commit` は `try_reserve()` を使う `try_send` をそのまま載せられる形にしてある。
 
+## 13. #713: サーバー起点 Ping keepalive
+
+`WebSocketConfig::with_ping_interval(interval, pong_timeout)`（既定は無効）の
+設計判断。受け入れ基準は「設定すると `interval` ごとに Ping が送られる」
+「`pong_timeout` 以内に Pong がなければ切断する」「Pong が返る限り接続が
+維持される」「既定は無効」の 4 点。
+
+### 前提となる制約（受信の逐次性）
+
+`run_session` は受信を 1 か所（ループ先頭）で逐次処理する。ハンドラ実行中・
+送出ブロック中に届いたフレームの到着時刻は本モジュールからは観測できない。
+このため「期限内 Pong の取りこぼしなし」「期限後 Pong は許可しない」
+「メモリが有界」の 3 点を同時に満たす厳密な到着時刻判定はできない
+（受信の並行化が必要になり、本イシューのスコープを超える）。
+
+### 採用した契約（「読んだ時点」と「受信待ちで何も読めない状態」のみで判定）
+
+1. **Ping 送出**: ループ先頭（受信待ちに入る前）でのみ判定する。前回送出から
+   `interval` 経過し、かつ未応答の Ping がなければ送る。ハンドラ実行中は
+   送らない（次の反復まで遅れる）。未応答の Ping は同時に 1 個まで。
+2. **Pong 期限**: Ping 送出時刻 + `pong_timeout`。Pong を読んだ時点で解除する
+   （`crate::session::Keepalive::pong_deadline`。unsolicited な Pong でも
+   解除する、payload の照合はしない）。
+3. **期限切れ判定**: 受信待ちの race（`crate::session::TimerKind`）の中だけで
+   行い、`ws.next()` を優先する。バッファ済みフレームがあれば先に読んで通常
+   処理するため、バッファ済みの Pong で誤って切断しない。
+4. **送出詰まり**: 1 回の送出（Ping・Reply・outbound push・Close 以外の
+   drain 中の送出）が、その送出の**開始時刻**から `pong_timeout` を超えて
+   ブロックしたら `CloseReason::PongTimeout` で終える
+   （`crate::session::send_bounded` の `stall_timeout` 引数）。書き込み途中で
+   終わるため Close ハンドシェイクは送らない（送出失敗・`close_grace` 超過と
+   同じ「無理に送らない」流儀）。
+
+契約 3 の結果、フレームが途切れず届き続ける対向は `ws.next()` が常に Ready
+になるためこの経路に至らず、**Pong を返さず他のフレームだけを送り続ける
+対向は切断しない**（`idle_timeout` と同じ「受信し続ける限り生存扱い」という
+契約。意図した挙動として固定し、テストで検証する）。
+
+### 実装上の分離点
+
+- `interval`/`pong_timeout` を持つ状態は `crate::session::Keepalive`
+  （`run_session_inner` の局所変数、`config.ping` から構築）。
+- 受信待ちのタイマー leg は既存の `idle_deadline` と
+  `Keepalive::timer_leg()`（`TimerKind::Idle`/`PongDeadline`/`PingDue`）の
+  早い方を選ぶだけで、`idle_timeout` 無効・keepalive 無効の場合は単一の
+  `sleep_until` になる既存構造のまま変わらない。
+- 契約 4 は既存の `send_bounded`（cancel 最優先 → 送出 → close 要求後の期限）
+  に `stall_timeout: Option<Duration>` を追加するだけで、Ping・Reply・
+  outbound push・`drain_before_reply`・`drain_to_close` の全呼び出し箇所に
+  水平展開できる（並行する専用送出機構は作らない）。`flush_outbound`
+  （`WsOutcome::Close` 確定後の終端排出）は対象外のままとする。すでに
+  `close_deadline` で全体が有界であり、Close 経路であることが理由。
+
 [`WsOpenContext`]: ../../crates/plugin-websocket/src/handler.rs
 [`WsSendError`]: ../../crates/plugin-websocket/src/handler.rs
 [`DEFAULT_OUTBOUND_CAPACITY`]: ../../crates/plugin-websocket/src/handler.rs
 [`race2_alternating`]: ../../crates/plugin-websocket/src/session.rs
 [`apply_outcome`]: ../../crates/plugin-websocket/src/session.rs
-[`handle_idle_timeout`]: ../../crates/plugin-websocket/src/session.rs
+[`close_normally`]: ../../crates/plugin-websocket/src/session.rs
 [`handle_cancellation`]: ../../crates/plugin-websocket/src/session.rs

@@ -503,29 +503,20 @@ impl WebSocketConfig {
     /// `interval` ごとにサーバーから `Message::Ping`（固定の空ペイロード）を
     /// 送出し、送出時点から `pong_timeout` 以内にクライアントの Pong が
     /// 届かなければアイドルタイムアウトと同型の正常な Close ハンドシェイクで
-    /// 切断する（[`crate::handler::CloseReason::PongTimeout`]）。
-    ///
-    /// Pong を送らず他のフレーム（Text/Binary 等）だけを継続送信する対向
-    /// に対しても、`interval` + `pong_timeout` の期限どおりに切断する
-    /// （反復先頭のハード判定・`send_bounded_with_liveness` への水平展開
-    /// により、受信側が Pending になることには依存しない、PR #738 続報
-    /// レビュー指摘対応。`crate::session` モジュール doc「サーバー起点
-    /// Ping keepalive」節を参照）。
-    ///
-    /// **既知の限界**: 返信送出等でクライアントが受信を止めている間、
-    /// 単発の高速な連続送信で `crate::session::PONG_DRAIN_CAP`（メモリ・
-    /// CPU 安全性の保険としての上限）を超える量が一括到着していた場合に
-    /// 限り、期限内に届いていた正当な Pong を誤って `PongTimeout` にする
-    /// 可能性が理論上残る（`crate::session` モジュール doc「PR #738
-    /// 続報レビュー指摘対応」節を参照。実運用上想定される最大バックログ
-    /// より十分大きい上限により発生確率を実質的にゼロへ近づけている）。
+    /// 切断する（[`crate::handler::CloseReason::PongTimeout`]）。判定は
+    /// 受信待ちで何も読めない状態のときのみ行うため、Pong を送らず他の
+    /// フレームだけを継続送信する対向は切断しない（`idle_timeout` と同じ
+    /// 「受信し続ける限り生存扱い」という契約、`crate::session` モジュール
+    /// doc「サーバー起点 Ping keepalive」節を参照）。1 回の送出
+    /// （Ping・Reply・outbound push 等）が `pong_timeout` を超えてブロック
+    /// した場合も同じ `PongTimeout` で終了する。
     ///
     /// `idle_timeout`（既定で有効）はクライアントからの受信でのみリセット
-    /// され、サーバー起点の Ping 送出ではリセットしない（`crate::session`
-    /// モジュール doc の契約を維持）。そのため受信専用（サーバー起点 push を
-    /// 受けているだけ）のクライアントは `idle_timeout` だけでは死活監視
-    /// できず、本設定が必要になる（親 #712）。Pong の受信自体は他の全フレーム
-    /// 種別と同じく `idle_timeout` もリセットする（既存挙動、詳細は #714）。
+    /// され、サーバー起点の Ping 送出ではリセットしない。そのため受信専用
+    /// （サーバー起点 push を受けているだけ）のクライアントは
+    /// `idle_timeout` だけでは死活監視できず、本設定が必要になる（親
+    /// #712）。Pong の受信自体は他の全フレーム種別と同じく `idle_timeout`
+    /// もリセットする（既存挙動）。
     ///
     /// 既定（未呼び出し時）は無効（後方互換。既存の `idle_timeout` のみに
     /// よる死活監視から挙動を変えない）。
@@ -538,8 +529,7 @@ impl WebSocketConfig {
     /// [`PingIntervalError::ZeroPongTimeout`]（最初の Ping で全接続が切れる
     /// 誤設定を防ぐ）を返す（panic しない fail-closed 契約、
     /// `.claude/rules/coding-rust.md`）。`pong_timeout >= interval` は拒否
-    /// しない（未応答の Ping が続いても期限は延長されない契約、
-    /// `crate::session::KeepaliveState` の doc を参照）。
+    /// しない（未応答の Ping が続いても期限は延長されない契約）。
     ///
     /// # Examples
     ///
