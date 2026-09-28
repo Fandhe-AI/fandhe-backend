@@ -465,10 +465,13 @@ impl WebSocketConfig {
     ///
     /// # Examples
     ///
+    /// `futures-util` を一切 import せずに実装できる（イシュー #723。
+    /// [`BoxFuture`][crate::BoxFuture] は `futures_util::future::BoxFuture`
+    /// と同一の型を持つ本クレート独自の型エイリアス）。
+    ///
     /// ```
-    /// use fandhe_backend_plugin_websocket::WebSocketConfig;
+    /// use fandhe_backend_plugin_websocket::{BoxFuture, WebSocketConfig};
     /// use fandhe_backend_plugin_websocket::handler::{WsMessage, WsMessageHandler, WsOutcome};
-    /// use futures_util::future::BoxFuture;
     ///
     /// struct Uppercase;
     ///
