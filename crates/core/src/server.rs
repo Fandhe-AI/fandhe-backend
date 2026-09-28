@@ -3137,6 +3137,21 @@ mod tests {
         }
     }
 
+    /// `Server::middleware` が所有権を取るため、共有 `Arc<StatusRecordingMiddleware>`
+    /// をテストから観測し続けられるように委譲する薄いプロキシ（イシュー #721）。
+    /// `middleware_observes_*` 系テストで共通利用し、同一定義の重複を避ける
+    /// （レビュー指摘対応）。
+    struct StatusProxy(Arc<StatusRecordingMiddleware>);
+    impl Middleware for StatusProxy {
+        fn name(&self) -> &'static str {
+            "status-proxy"
+        }
+        fn on_request(&self, _head: &RequestHead) {}
+        fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
+            self.0.on_response_with_status(head, status, elapsed);
+        }
+    }
+
     /// `Authorization` ヘッダ必須のフェイルクローズ `RequestGate`。
     struct RequireAuthGate;
     impl RequestGate for RequireAuthGate {
@@ -4983,19 +4998,9 @@ GET /c HTTP/1.1\r\n\r\n",
         let mw = Arc::new(StatusRecordingMiddleware {
             statuses: Mutex::new(Vec::new()),
         });
-        struct MwProxy(Arc<StatusRecordingMiddleware>);
-        impl Middleware for MwProxy {
-            fn name(&self) -> &'static str {
-                "status-proxy"
-            }
-            fn on_request(&self, _head: &RequestHead) {}
-            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
-                self.0.on_response_with_status(head, status, elapsed);
-            }
-        }
         let server = Server::new()
             .handler(handler)
-            .middleware(MwProxy(Arc::clone(&mw)));
+            .middleware(StatusProxy(Arc::clone(&mw)));
 
         let _ = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
 
@@ -5009,17 +5014,7 @@ GET /c HTTP/1.1\r\n\r\n",
         let mw = Arc::new(StatusRecordingMiddleware {
             statuses: Mutex::new(Vec::new()),
         });
-        struct MwProxy(Arc<StatusRecordingMiddleware>);
-        impl Middleware for MwProxy {
-            fn name(&self) -> &'static str {
-                "status-proxy"
-            }
-            fn on_request(&self, _head: &RequestHead) {}
-            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
-                self.0.on_response_with_status(head, status, elapsed);
-            }
-        }
-        let server = Server::new().middleware(MwProxy(Arc::clone(&mw)));
+        let server = Server::new().middleware(StatusProxy(Arc::clone(&mw)));
 
         let _ = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
 
@@ -5033,19 +5028,9 @@ GET /c HTTP/1.1\r\n\r\n",
         let mw = Arc::new(StatusRecordingMiddleware {
             statuses: Mutex::new(Vec::new()),
         });
-        struct MwProxy(Arc<StatusRecordingMiddleware>);
-        impl Middleware for MwProxy {
-            fn name(&self) -> &'static str {
-                "status-proxy"
-            }
-            fn on_request(&self, _head: &RequestHead) {}
-            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
-                self.0.on_response_with_status(head, status, elapsed);
-            }
-        }
         let server = Server::new()
             .gate(RequireAuthGate)
-            .middleware(MwProxy(Arc::clone(&mw)));
+            .middleware(StatusProxy(Arc::clone(&mw)));
 
         let _ = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
 
@@ -5074,20 +5059,10 @@ GET /c HTTP/1.1\r\n\r\n",
         let mw = Arc::new(StatusRecordingMiddleware {
             statuses: Mutex::new(Vec::new()),
         });
-        struct MwProxy(Arc<StatusRecordingMiddleware>);
-        impl Middleware for MwProxy {
-            fn name(&self) -> &'static str {
-                "status-proxy"
-            }
-            fn on_request(&self, _head: &RequestHead) {}
-            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
-                self.0.on_response_with_status(head, status, elapsed);
-            }
-        }
         let server = Server::new()
             .handler(handler)
             .interceptor(RewriteTo418)
-            .middleware(MwProxy(Arc::clone(&mw)));
+            .middleware(StatusProxy(Arc::clone(&mw)));
 
         let _ = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
 
@@ -5106,19 +5081,9 @@ GET /c HTTP/1.1\r\n\r\n",
         let mw = Arc::new(StatusRecordingMiddleware {
             statuses: Mutex::new(Vec::new()),
         });
-        struct MwProxy(Arc<StatusRecordingMiddleware>);
-        impl Middleware for MwProxy {
-            fn name(&self) -> &'static str {
-                "status-proxy"
-            }
-            fn on_request(&self, _head: &RequestHead) {}
-            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
-                self.0.on_response_with_status(head, status, elapsed);
-            }
-        }
         let server = Server::new()
             .handler(handler)
-            .middleware(MwProxy(Arc::clone(&mw)));
+            .middleware(StatusProxy(Arc::clone(&mw)));
 
         let _ = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
 
@@ -5137,19 +5102,9 @@ GET /c HTTP/1.1\r\n\r\n",
         let mw = Arc::new(StatusRecordingMiddleware {
             statuses: Mutex::new(Vec::new()),
         });
-        struct MwProxy(Arc<StatusRecordingMiddleware>);
-        impl Middleware for MwProxy {
-            fn name(&self) -> &'static str {
-                "status-proxy"
-            }
-            fn on_request(&self, _head: &RequestHead) {}
-            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
-                self.0.on_response_with_status(head, status, elapsed);
-            }
-        }
         let server = Server::new()
             .handler(handler)
-            .middleware(MwProxy(Arc::clone(&mw)));
+            .middleware(StatusProxy(Arc::clone(&mw)));
 
         let _ = roundtrip(&server, b"GET / HTTP/1.0\r\n\r\n").await;
 
@@ -5168,19 +5123,9 @@ GET /c HTTP/1.1\r\n\r\n",
         let mw = Arc::new(StatusRecordingMiddleware {
             statuses: Mutex::new(Vec::new()),
         });
-        struct MwProxy(Arc<StatusRecordingMiddleware>);
-        impl Middleware for MwProxy {
-            fn name(&self) -> &'static str {
-                "status-proxy"
-            }
-            fn on_request(&self, _head: &RequestHead) {}
-            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
-                self.0.on_response_with_status(head, status, elapsed);
-            }
-        }
         let server = Server::new()
             .handler(handler)
-            .middleware(MwProxy(Arc::clone(&mw)));
+            .middleware(StatusProxy(Arc::clone(&mw)));
 
         let _ = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
 
@@ -5199,19 +5144,9 @@ GET /c HTTP/1.1\r\n\r\n",
         let mw = Arc::new(StatusRecordingMiddleware {
             statuses: Mutex::new(Vec::new()),
         });
-        struct MwProxy(Arc<StatusRecordingMiddleware>);
-        impl Middleware for MwProxy {
-            fn name(&self) -> &'static str {
-                "status-proxy"
-            }
-            fn on_request(&self, _head: &RequestHead) {}
-            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
-                self.0.on_response_with_status(head, status, elapsed);
-            }
-        }
         let server = Server::new()
             .handler(handler)
-            .middleware(MwProxy(Arc::clone(&mw)));
+            .middleware(StatusProxy(Arc::clone(&mw)));
 
         let _ = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n").await;
 
