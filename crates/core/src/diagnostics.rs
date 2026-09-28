@@ -23,7 +23,8 @@
 //!
 //! [`Diagnostics::report`] は同期 API（dyn 互換のため、`crate::extension` の
 //! 3 拡張点と同じ設計判断）。accept ループ・rebind の背景 drain タスク上で
-//! 直接呼ばれるため、以下を必ず守る:
+//! 直接呼ばれるため、[`Server::diagnostics`][crate::server::Server::diagnostics]
+//! で**利用者が登録するシンク実装**は以下を必ず守る:
 //!
 //! - **ブロッキング I/O を行わない**（`crate::extension::Middleware` と同じ
 //!   規約。実装が I/O を必要とする場合は非同期チャネルへの送信に留め、実際の
@@ -32,9 +33,42 @@
 //!   （`emit` の doc を参照）、`panic = "abort"` ビルドでは捕捉できないため
 //!   契約として明記する
 //!
+//! ## 既定シンクは上記の非ブロッキング契約の対象外（意図的な例外）
+//!
 //! 既定シンク [`StderrDiagnostics`] は現行の `eprintln!` 出力と完全互換
-//! （文言・接頭辞・出力先が一致する）。[`DiagnosticEvent`] の
-//! [`Display`][fmt::Display] 実装が返す本文には接頭辞を含めない。
+//! （文言・接頭辞・出力先が一致する）であることを最優先し、**同期 `eprintln!`
+//! をそのまま使う**。上記「ブロッキング I/O を行わない」はカスタムシンクへの
+//! 要求であり、既定シンクはこの契約の対象外という意図的な例外である
+//! （`crates/plugin-tracing` のように毎リクエスト発火する
+//! `Middleware`（PoC-3・PoC-10 実測で同期 I/O が RPS を著しく劣化させることが
+//! 判明、`AGENTS.md`「規約: ミドルウェア非同期 I/O 必須化」参照）とは異なり、
+//! [`DiagnosticEvent`] の 4 種はいずれも accept 失敗・grace 超過等の
+//! **低頻度なエラー・シャットダウン経路限定のイベント**であり、per-request の
+//! ホットパスではないため PoC-3/10 の性能劣化根拠はそのまま適用されない）。
+//!
+//! - **前提とする配置**: stderr が端末・ファイル、または受信側が生きている
+//!   パイプであること（一般的な運用環境）
+//! - **前提が崩れた場合の影響**: stderr が詰まる（受信側が読まない・壊れた
+//!   パイプ等）と `eprintln!` がブロックしうる。影響範囲はイベントごとに
+//!   異なる: `AcceptFailed`（`crates/core/src/server.rs` の主 accept
+//!   ループ）はバックオフ前に呼ばれるため次回 accept 再試行が遅延する。
+//!   `TcpNodelayFailed` は該当 1 接続の処理が遅延する（フェイルオープン方針は
+//!   不変）。`ShutdownGraceExceeded` / `RebindDrainGraceExceeded` は**強制
+//!   クローズの完了を確定させた後**に通知する順序（`docs/design/
+//!   diagnostics-sink.md` 6 節）のため、詰まっても強制クローズ自体の完了は
+//!   妨げられず、遅延は通知（ログ出力）1 行に限られる
+//! - **緩和策**: 上記の影響を許容できない場合は
+//!   [`crate::server::Server::diagnostics`]
+//!   でチャネル経由の非ブロッキングシンク（例: 有界チャネルへ `try_send` し、
+//!   別スレッド/タスクが実際の書き込みを行う）を明示的に登録する。
+//!   `tracing-appender` の non-blocking writer へ転送する実装も同様に有効
+//! - **再検討トリガ**: 将来 `DiagnosticEvent` に per-request 相当の高頻度
+//!   イベントが追加される場合、または実運用で stderr 詰まりによる停止が
+//!   観測された場合は、既定シンクの非ブロッキング化（`docs/design/
+//!   diagnostics-sink.md` 8 節の将来案）を再検討する
+//!
+//! [`DiagnosticEvent`] の [`Display`][fmt::Display] 実装が返す本文には接頭辞を
+//! 含めない（接頭辞は既定シンクのみが付与する）。
 
 use std::fmt;
 use std::io;
@@ -50,7 +84,11 @@ use std::time::Duration;
 /// # 契約（モジュール doc も参照）
 ///
 /// - `report` はブロッキング I/O を行ってはならない（accept ループ・rebind
-///   drain タスク上で同期的に呼ばれるため）
+///   drain タスク上で同期的に呼ばれるため）。**この契約は
+///   [`Server::diagnostics`][crate::server::Server::diagnostics] で利用者が
+///   登録するシンク実装に対するもので、既定シンク [`StderrDiagnostics`] は
+///   後方互換のため意図的に対象外**（モジュール doc「既定シンクは上記の
+///   非ブロッキング契約の対象外」節を参照）
 /// - `report` は panic してはならない（コア側は `catch_unwind` で境界を
 ///   守るが、フェイルクローズの保証にはしない）
 ///
@@ -158,6 +196,13 @@ impl fmt::Display for DiagnosticEvent<'_> {
 ///
 /// [`crate::server::Server::diagnostics`] を一度も呼ばない場合、`Server` は
 /// 本シンクを使う。
+///
+/// **`report` は同期 `eprintln!` を実行し、[`Diagnostics`] trait の
+/// 「ブロッキング I/O を行わない」契約の対象外**（モジュール doc「既定
+/// シンクは上記の非ブロッキング契約の対象外」節に前提・影響・緩和策を記載）。
+/// stderr の詰まりが許容できない環境では、独自シンク（有界チャネル +
+/// 別タスクでの書き込み等）を [`crate::server::Server::diagnostics`] で
+/// 登録すること。
 ///
 /// # Examples
 ///

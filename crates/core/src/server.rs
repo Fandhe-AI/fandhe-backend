@@ -720,7 +720,10 @@ impl Server {
     /// [`crate::diagnostics::DiagnosticEvent`] を参照。`sink` の `report` は
     /// [`BoundServer::run_until`] の accept ループ・rebind の背景 drain タスク
     /// 上で同期的に呼ばれるため、ブロッキング I/O を行ってはならない
-    /// （[`crate::diagnostics::Diagnostics`] の契約）。
+    /// （[`crate::diagnostics::Diagnostics`] の契約。既定シンク
+    /// [`crate::diagnostics::StderrDiagnostics`] はこの契約の意図的な例外
+    /// であり、前提・影響・緩和策は `crate::diagnostics` モジュール doc を
+    /// 参照）。
     ///
     /// ```
     /// use fandhe_backend_core::DiagnosticEvent;
