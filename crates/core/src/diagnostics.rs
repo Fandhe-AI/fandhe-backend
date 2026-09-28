@@ -56,7 +56,10 @@
 //!   不変）。`ShutdownGraceExceeded` / `RebindDrainGraceExceeded` は**強制
 //!   クローズの完了を確定させた後**に通知する順序（`docs/design/
 //!   diagnostics-sink.md` 6 節）のため、詰まっても強制クローズ自体の完了は
-//!   妨げられず、遅延は通知（ログ出力）1 行に限られる
+//!   妨げられない。ただし通知そのものは届かないことがある
+//!   （`ShutdownGraceExceeded` は通知の完了を最大 200ms だけ待って
+//!   `run_until` から返るため、その後すぐプロセスが終了すると失われうる。
+//!   `docs/design/diagnostics-sink.md` 9 節）
 //! - **緩和策**: 上記の影響を許容できない場合は
 //!   [`crate::server::Server::diagnostics`]
 //!   でチャネル経由の非ブロッキングシンク（例: 有界チャネルへ `try_send` し、

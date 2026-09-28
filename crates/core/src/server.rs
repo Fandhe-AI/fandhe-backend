@@ -215,7 +215,7 @@ const DEFAULT_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(30);
 /// 切り離し後、`run_until` がその完了を待つ有界時間（PR #748 レビュー指摘
 /// P1 対応）。
 ///
-/// 通知は `std::thread::spawn` された OS スレッドで行われる
+/// 通知は `std::thread::Builder::spawn` で生成した OS スレッドで行われる
 /// fire-and-forget だが、これを一切待たずに `run_until` が返ると、
 /// 呼び出し元が返却直後にプロセスを終了させる使い方では通知スレッドが
 /// 1 度もスケジュールされずに失われうる（旧 `eprintln!` 直書きは返却前に
@@ -1824,10 +1824,13 @@ impl BoundServer {
     ///    漏れなく待てる（`crate::plugin::try_handle_upgrade` の doc
     ///    「permit の契約」を参照）
     /// 3. **上限超過時は強制クローズ**: 上限内に全 permit が解放されなければ、
-    ///    警告ログを 1 行出した上で残存コネクションタスクを `JoinSet::shutdown`
-    ///    で abort する（`TcpStream` が drop されソケットは即時クローズされる。
-    ///    ハング防止のフェイルクローズ、受け入れ条件「上限時間・超過時強制
-    ///    クローズ」）
+    ///    残存コネクションタスクを `JoinSet::shutdown` で abort し
+    ///    （`TcpStream` が drop されソケットは即時クローズされる。ハング防止の
+    ///    フェイルクローズ、受け入れ条件「上限時間・超過時強制クローズ」）、
+    ///    その後 [`Server::diagnostics`] のシンクへ
+    ///    `DiagnosticEvent::ShutdownGraceExceeded` を通知する（既定は stderr
+    ///    への警告 1 行）。通知の完了は最大 200ms だけ待ち、それを超えると
+    ///    待たずに返る（通知が届く前にプロセスが終了すると失われうる）
     ///
     /// どちらの経路でも `run_until` は `Server::shutdown_grace_period` + ε
     /// 以内に必ず `Ok(())` で戻る。
@@ -2251,15 +2254,24 @@ impl BoundServer {
                 let diagnostics = Arc::clone(&server.diagnostics);
                 let grace = server.shutdown_grace_period;
                 let (notified_tx, notified_rx) = oneshot::channel::<()>();
-                std::thread::spawn(move || {
-                    crate::diagnostics::emit(
-                        &*diagnostics,
-                        crate::diagnostics::DiagnosticEvent::ShutdownGraceExceeded { grace },
-                    );
-                    // 受信側が待機を打ち切って drop 済みでも `send` は
-                    // エラーを返すだけで panic しない（無視してよい）。
-                    let _ = notified_tx.send(());
-                });
+                // `std::thread::spawn` はスレッド生成失敗時に panic するため
+                // `Builder::spawn` の `Result` を使う（panic をライブラリ境界の
+                // 外へ漏らさない）。生成に失敗した場合はクロージャごと
+                // `notified_tx` が drop されて下の待機は即座に終わり、通知は
+                // 行わずに `Ok(())` を返す。インライン実行へフォールバック
+                // しないのは、停止したシンクで `run_until` の返却を遅らせない
+                // ため（リソース枯渇時に 1 行の通知を諦めるほうを選ぶ）。
+                let _spawned = std::thread::Builder::new()
+                    .name("fandhe-shutdown-diagnostics".to_owned())
+                    .spawn(move || {
+                        crate::diagnostics::emit(
+                            &*diagnostics,
+                            crate::diagnostics::DiagnosticEvent::ShutdownGraceExceeded { grace },
+                        );
+                        // 受信側が待機を打ち切って drop 済みでも `send` は
+                        // エラーを返すだけで panic しない（無視してよい）。
+                        let _ = notified_tx.send(());
+                    });
                 let _ = tokio::time::timeout(SHUTDOWN_NOTIFY_FLUSH_WAIT, notified_rx).await;
             }
         }

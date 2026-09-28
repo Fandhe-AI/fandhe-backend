@@ -98,8 +98,8 @@ async fn shutdown_grace_exceeded_reaches_custom_sink() {
         .expect("run_until タスクが panic しないこと")
         .expect("run_until は Ok(()) を返すはず");
 
-    // `ShutdownGraceExceeded` の通知は PR #748 レビュー P1 対応で `run_until`
-    // の返却経路から detached タスク（`tokio::spawn`）へ切り離されたため、
+    // `ShutdownGraceExceeded` の通知は `run_until` の返却経路から OS スレッド
+    // （`std::thread::Builder::spawn`）へ切り離され、完了は有界時間しか待たないため、
     // `run_until` が `Ok(())` を返した時点でシンクへ届いている保証はない
     // （`RebindDrainGraceExceeded` と同じく非同期に届く。9 節参照）。
     // `rebind_drain_grace_exceeded_reaches_custom_sink` と同型の有界ポーリングで待つ。
@@ -173,10 +173,9 @@ async fn shutdown_grace_exceeded_sink_blocking_does_not_delay_run_until_return()
     tokio::time::sleep(Duration::from_millis(20)).await;
     shutdown_tx.send(()).unwrap();
 
-    // 実測の壁時計時間で判定する（`tokio::time::timeout` の内部タイマーは
-    // 同一ワーカースレッドが `std::thread::sleep` で専有されている間、
-    // 別スレッドの driver に委譲されず有効に働かないことがあるため、
-    // タイマー競合ではなく `run_task` 実完了までの実経過時間を直接測る）。
+    // 実測の壁時計時間で判定する（通知は OS スレッドへ切り離されているため
+    // tokio のタイマーには影響しないはずだが、ブロッキングシンクが返却を
+    // 遅らせないことを tokio 外の時計で直接確かめる）。
     // `block_for`（2 秒）+ 十分なマージンをハング検知の安全弁として
     // `timeout` に設定しつつ、実際の合否判定は `elapsed` で行う。
     let start = std::time::Instant::now();
