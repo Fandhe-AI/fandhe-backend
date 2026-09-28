@@ -2187,12 +2187,29 @@ impl BoundServer {
                 // 戻る」という既存契約（`docs/design/graceful-shutdown.md`・
                 // `docs/design/rebind.md`）を破ってしまう。強制クローズは
                 // 上記 `join_set.shutdown().await` で既に確定済みのため、
-                // 通知（ログ出力）だけを detached タスクへ切り離しても
+                // 通知（ログ出力）だけを切り離しても
                 // フェイルクローズの安全性は損なわれない（`spawn_generation_drain`
                 // の `RebindDrainGraceExceeded` 通知と同じ非同期化パターン）。
+                //
+                // 切り離し先は `tokio::spawn`（tokio タスク）ではなく
+                // `std::thread::spawn`（OS スレッド）を使う（PR #748 Bugbot
+                // 指摘対応）。`tokio::spawn` した detached タスクは tokio
+                // ランタイムが以後もポーリングし続けて初めて実行される。
+                // `run_until` を最後の await として呼び出す典型的な使い方
+                // （公式 `graceful_shutdown` サンプルを含む）では、
+                // `run_until` が `Ok(())` を返した直後にランタイムが
+                // shutdown することがあり、特に `current_thread` ランタイム
+                // では他にポーリングを進める主体が存在しないため、この
+                // detached タスクは 1 度もポーリングされずに破棄される
+                // （通知が確実に失われる）。`emit` 自体は同期関数で `.await`
+                // 点を持たないため、tokio タスクとして実行する必要はない。
+                // OS スレッドへ切り離せば tokio ランタイムの継続ポーリングに
+                // 依存せず独立に実行されるため、この欠落を避けられる
+                // （実行完了を待たない fire-and-forget である点、上記の
+                // フェイルクローズ根拠は不変）。
                 let diagnostics = Arc::clone(&server.diagnostics);
                 let grace = server.shutdown_grace_period;
-                tokio::spawn(async move {
+                std::thread::spawn(move || {
                     crate::diagnostics::emit(
                         &*diagnostics,
                         crate::diagnostics::DiagnosticEvent::ShutdownGraceExceeded { grace },

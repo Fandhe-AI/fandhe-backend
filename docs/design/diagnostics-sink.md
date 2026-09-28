@@ -217,11 +217,27 @@ impl Server {
 公開契約に抵触しうる（`catch_unwind` は panic のみ捕捉し、ブロッキング・
 ハングは防げない）。
 
-- **対応**: `ShutdownGraceExceeded` の通知を `tokio::spawn` した detached
-  タスクへ切り離し、`run_until` はこのタスクの完了を待たずに `Ok(())` を
-  返す。強制クローズ自体（`join_set.shutdown().await`）は従来どおり
-  `run_until` 側で同期的に完了を確定させてから通知タスクを起動するため、
-  6 節が述べた「強制クローズの完了は妨げられない」という性質は不変
+- **対応（初版）**: `ShutdownGraceExceeded` の通知を `tokio::spawn` した
+  detached タスクへ切り離し、`run_until` はこのタスクの完了を待たずに
+  `Ok(())` を返す。強制クローズ自体（`join_set.shutdown().await`）は従来
+  どおり `run_until` 側で同期的に完了を確定させてから通知タスクを起動する
+  ため、6 節が述べた「強制クローズの完了は妨げられない」という性質は不変
+- **対応（訂正、PR #748 Bugbot 指摘対応）**: 上記の `tokio::spawn` には
+  別の欠落があった。detached タスクは tokio ランタイムが以後もそれを
+  ポーリングして初めて実行されるが、`run_until` を `current_thread`
+  ランタイムの `block_on` へ渡す**最後の await**として呼び出す典型的な
+  使い方（公式 `graceful_shutdown` サンプルを含む）では、`run_until` が
+  `Ok(())` を返した時点で `block_on` 自体が完了し即座に戻るため、以後
+  ランタイムは何もポーリングしない。この場合 detached タスクは 1 度も
+  実行されずに破棄され、通知が確実に失われる（regression テスト
+  `crates/core/tests/diagnostics.rs::
+  shutdown_grace_exceeded_notified_even_when_run_until_is_last_await_on_current_thread_runtime`
+  で再現・検証済み）。`emit` は同期関数で `.await` 点を持たないため tokio
+  タスクとして実行する必要はなく、切り離し先を `tokio::spawn` ではなく
+  `std::thread::spawn`（OS スレッド）へ変更した。OS スレッドは tokio
+  ランタイムの継続ポーリングに一切依存せず独立に実行されるため、上記の
+  欠落を避けられる（実行完了を待たない fire-and-forget である点・強制
+  クローズの完了は妨げられないという性質は不変）
 - **`RebindDrainGraceExceeded` は元から対象外**: rebind 旧世代 drain の
   通知（`spawn_generation_drain` 内の `emit` 呼び出し）は、
   `spawn_generation_drain` 関数自体が呼び出し時点で `tokio::spawn` して

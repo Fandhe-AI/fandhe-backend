@@ -19,6 +19,12 @@
 //!   PR #748 レビュー P1 対応の回帰テスト。契約違反（ブロッキング I/O）の
 //!   シンクを登録しても `run_until` が `shutdown_grace_period + ε` 以内に
 //!   戻ること（`docs/design/diagnostics-sink.md` 9 節参照）
+//! - `shutdown_grace_exceeded_notified_even_when_run_until_is_last_await_on_current_thread_runtime`:
+//!   PR #748 Bugbot 指摘の回帰テスト。`run_until` を `current_thread`
+//!   ランタイムの `block_on` へ渡す最後の await として呼び出し（典型的な
+//!   `graceful_shutdown` サンプルの使い方）、`block_on` から戻った直後に
+//!   ランタイムがそれ以上何もポーリングしない状況でも、通知が失われず
+//!   届くこと
 
 use fandhe_backend_core::{DiagnosticEvent, Handler, Server};
 use fandhe_backend_http::request::RequestHead;
@@ -187,6 +193,109 @@ async fn shutdown_grace_exceeded_sink_blocking_does_not_delay_run_until_return()
         "契約違反シンクが `report` 内でブロックしていても、run_until は \
          shutdown_grace_period + ε 以内に戻るはず\
          （実測: {elapsed:?}、block_for: {block_for:?}）"
+    );
+}
+
+/// PR #748 Bugbot 指摘の回帰テスト:
+/// <https://github.com/Fandhe-AI/fandhe-backend/pull/748>（Cursor Bugbot
+/// "Shutdown diagnostic dropped on current_thread"）。
+///
+/// 修正前は `ShutdownGraceExceeded` の通知を `tokio::spawn` した detached
+/// タスクへ切り離していたため、tokio ランタイムが以後もそのタスクを
+/// ポーリングして初めて実行された。`run_until` を `current_thread`
+/// ランタイムの `block_on` へ渡す**最後の await**として呼び出す典型的な
+/// 使い方（公式 `graceful_shutdown` サンプルを含む）では、`run_until` が
+/// `Ok(())` を返した時点で `block_on` 自体が完了して即座に戻り、他に
+/// ポーリングする主体が存在しないため detached タスクは 1 度も実行されずに
+/// 破棄され、通知が確実に失われていた。
+///
+/// 本テストはこの状況を直接再現する: 手動で `current_thread` ランタイムを
+/// 構築し、`run_until` を `block_on` の中で最後に await した直後に
+/// `block_on` を抜ける。修正後は通知が `std::thread::spawn`（OS スレッド）へ
+/// 切り離され、tokio ランタイムの継続ポーリングに依存しなくなったため、
+/// ランタイムを drop した後でも有界時間内に届くはず。
+#[test]
+fn shutdown_grace_exceeded_notified_even_when_run_until_is_last_await_on_current_thread_runtime() {
+    let grace = Duration::from_millis(100);
+    let sink = RecordingSink::default();
+    let sink_for_rt = sink.clone();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current_thread ランタイムの構築に成功するはず");
+
+    rt.block_on(async move {
+        let server = Server::new()
+            .handler(FixedHandler)
+            .shutdown_grace_period(grace)
+            .diagnostics(sink_for_rt);
+        let bound = server.bind("127.0.0.1:0").await.unwrap();
+        let addr = bound.local_addr().unwrap();
+
+        // アイドル接続（リクエストは送らず張ったままにする）で permit を
+        // 占有させ、grace 超過の強制クローズを確実に起こす
+        // （`shutdown_grace_exceeded_reaches_custom_sink` と同一手法）。
+        let _idle_stream = TcpStream::connect(addr).await.unwrap();
+
+        // shutdown シグナルは `run_until` を直接（spawn せず）呼び出す
+        // *前* に用意しない: `oneshot::Receiver` を即座に ready にしてしまうと
+        // `run_until` 内部の select が「新規接続の accept」と「shutdown」の
+        // どちらを先に処理するかは保証されず（両方 ready になりうる）、上記
+        // アイドル接続が一度も accept されないまま shutdown 分岐へ進んで
+        // しまう場合がある（本テストが検証したい grace 超過分岐に届かない）。
+        // ここでは shutdown の送出自体を別タスクへ 20ms 遅延させることで、
+        // `run_until` 本体（このルート future 内で直接 await する）が先に
+        // 上記接続を accept して permit を確保できるようにする
+        // （`shutdown_grace_exceeded_reaches_custom_sink` の「接続 → sleep(20ms)
+        // → shutdown 送出」という時間分離と同じ狙いを、`run_until` を spawn
+        // しない構成でも成立させるための書き換え）。
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = shutdown_tx.send(());
+        });
+
+        // `run_until` をこの `async move` ブロック（= `block_on` へ渡す
+        // ルート future）内で最後に await する。ここで `Ok(())` が返れば
+        // `block_on` は直ちにこの呼び出し元へ戻り、以後このランタイムは
+        // 何もポーリングしない（Bugbot 指摘の再現条件そのもの）。
+        bound
+            .run_until(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("run_until は Ok(()) を返すはず");
+    });
+    // `block_on` から戻った時点でランタイムは停止しており、以後
+    // 明示的に drop してもポーリングは一切発生しない。
+    drop(rt);
+
+    // ランタイムのポーリングには一切依存せず（`rt` は既に drop 済み）、
+    // OS スレッドへ切り離された通知が届くのを有界時間だけ待つ。
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if !sink.events.lock().unwrap().is_empty() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "current_thread ランタイムで run_until が block_on の最後の \
+             await であっても、ShutdownGraceExceeded は有界時間内に届く \
+             はず（PR #748 Bugbot 指摘の回帰）"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let events = sink.events.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "ShutdownGraceExceeded がちょうど 1 件届くはず（実際: {events:?}）"
+    );
+    assert!(
+        events[0].contains("graceful shutdown の猶予期間"),
+        "登録済みシンクに ShutdownGraceExceeded の本文が届くはず（実際: {events:?}）"
     );
 }
 
