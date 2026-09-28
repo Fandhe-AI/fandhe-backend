@@ -240,7 +240,12 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
    `Router::fallback()` / `Router::fallback_with()`（イシュー #316）を使う。405
    （メソッド不一致）も fallback へ流すかは `FallbackPolicy` で個別選択でき、既定
    （`FallbackPolicy::NotFoundOnly`）は 404 のみを委譲し 405 + `Allow` を維持する
-   安全側
+   安全側。複数クレートがそれぞれ公開する `Router` をまとめる場合は
+   `Router::merge()`（イシュー #722）を使う。重複するルート登録（静的・
+   パラメータいずれも）や両方への `fallback`/`options_fallback` 登録は
+   `RouterMergeError` でエラーになる（フェイルクローズ、黙った上書きはしない）。
+   fallback は接頭辞に限定されず合成後のルータ全体に適用されるため、fallback は
+   最上位の合成後ルータで登録することを推奨する
 2. ハンドラ実装（対象クレートは「モジュール境界」節の crates 一覧・
    [delegation-impl.md](.claude/rules/delegation-impl.md) のパスベース委譲に従い判断する）
 3. doc コメント + doc test（`# Examples`）を付与する

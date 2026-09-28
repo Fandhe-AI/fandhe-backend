@@ -379,6 +379,52 @@ pub(crate) fn match_segments<'a>(
     Some(PathParams { params })
 }
 
+/// 2 つのパラメータルートが「同じ形状」（衝突とみなすべき）かを判定する
+/// （[`super::Router::merge`]、イシュー #722）。
+///
+/// `Literal` 同士は文字列が一致すること、`Param` 同士・`Wildcard` 同士は
+/// パラメータ名を問わず種別が一致することのみを要求する（`/a/{id}` と
+/// `/a/{name}` は名前が違うだけで同じ URL 集合を奪い合うため衝突、
+/// [`super::Router::merge`] doc comment 参照）。種別が異なる
+/// （`Param` と `Wildcard` 等）・セグメント数が異なる場合は非等価（衝突ではない）。
+/// 衝突としない部分的な重なり（`/a/{x}` と `/a/{*rest}` 等）は `Router::dispatch`
+/// の既存優先順位（登録順の線形走査）に委ねる、モジュール doc「マッチング方針」節参照。
+pub(crate) fn segments_equivalent(a: &[Segment], b: &[Segment]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).all(|(x, y)| match (x, y) {
+        (Segment::Literal(lx), Segment::Literal(ly)) => lx == ly,
+        (Segment::Param(_), Segment::Param(_)) => true,
+        (Segment::Wildcard(_), Segment::Wildcard(_)) => true,
+        _ => false,
+    })
+}
+
+/// パース済み [`Segment`] 列をパターン文字列表現へ復元する（[`RouterMergeError`]
+/// のメッセージ用、[`super::Router::merge`] 参照）。`route_param` が受理する
+/// 元表記（`{name}` / `{*name}`）へ 1 対 1 で戻せる（`parse_pattern` の逆変換）。
+pub(crate) fn render_segments(segments: &[Segment]) -> String {
+    let mut out = String::new();
+    for segment in segments {
+        out.push('/');
+        match segment {
+            Segment::Literal(lit) => out.push_str(lit),
+            Segment::Param(name) => {
+                out.push('{');
+                out.push_str(name);
+                out.push('}');
+            }
+            Segment::Wildcard(name) => {
+                out.push_str("{*");
+                out.push_str(name);
+                out.push('}');
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,5 +691,50 @@ mod tests {
         let segments = parse_pattern("/static/{*path}").unwrap();
         let params = match_segments(&segments, &["static", "%2e%2e"], "/static/%2e%2e").unwrap();
         assert_eq!(params.get("path"), Some("%2e%2e"));
+    }
+
+    // --- segments_equivalent / render_segments（Router::merge、イシュー #722） ---
+
+    #[test]
+    fn segments_equivalent_ignores_param_names() {
+        let a = parse_pattern("/a/{id}").unwrap();
+        let b = parse_pattern("/a/{name}").unwrap();
+        assert!(segments_equivalent(&a, &b));
+    }
+
+    #[test]
+    fn segments_equivalent_ignores_wildcard_names() {
+        let a = parse_pattern("/static/{*path}").unwrap();
+        let b = parse_pattern("/static/{*rest}").unwrap();
+        assert!(segments_equivalent(&a, &b));
+    }
+
+    #[test]
+    fn segments_equivalent_distinguishes_param_and_wildcard() {
+        // 種別が異なれば名前を問わず非等価（`/a/{x}` と `/a/{*rest}` は
+        // 衝突ではなく既存優先順位（登録順）に委ねる対象、モジュール doc参照）。
+        let param = parse_pattern("/a/{x}").unwrap();
+        let wildcard = parse_pattern("/a/{*rest}").unwrap();
+        assert!(!segments_equivalent(&param, &wildcard));
+    }
+
+    #[test]
+    fn segments_equivalent_detects_literal_difference() {
+        let a = parse_pattern("/a/{id}").unwrap();
+        let b = parse_pattern("/b/{id}").unwrap();
+        assert!(!segments_equivalent(&a, &b));
+    }
+
+    #[test]
+    fn segments_equivalent_detects_length_difference() {
+        let a = parse_pattern("/a/{id}").unwrap();
+        let b = parse_pattern("/a/{id}/{sub}").unwrap();
+        assert!(!segments_equivalent(&a, &b));
+    }
+
+    #[test]
+    fn render_segments_reconstructs_pattern_string() {
+        let segments = parse_pattern("/a/{id}/{*rest}").unwrap();
+        assert_eq!(render_segments(&segments), "/a/{id}/{*rest}");
     }
 }
