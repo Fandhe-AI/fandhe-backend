@@ -231,6 +231,21 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
   fail-closed 除外・「3 拡張点で表現できない」根拠を明記済み。安易な追加拡張点の
   増設は避け、既存の `Interceptor`（intercept / map_response の 2 フック）で
   表現できないか先に確認すること
+- **`Diagnostics`（`crates/core/src/diagnostics.rs`、イシュー #720）は
+  3 拡張点（`Middleware` / `UpgradeHandler` / `RequestGate`）・`Interceptor`
+  に並ぶ拡張点ではない**。ライブラリ内部の実行時診断
+  （accept 失敗・TCP_NODELAY 設定失敗・graceful shutdown / rebind の grace 超過
+  強制クローズ）を `eprintln!` 直書きから利用側で差し替え可能にする**出力差し替え
+  口**として位置づける。未登録時（既定）は `StderrDiagnostics` が現行の
+  `eprintln!` 出力と文言・接頭辞・出力先が完全互換。`Interceptor` と同じく
+  feature ゲート不要・外部依存ゼロの純コア機能だが、リクエスト処理フローには
+  一切関与しない点で拡張点とは性質が異なる。`scripts/accept/
+  core-deps-unsafe-audit.sh` 基準 E（3 拡張点 trait 名の grep）はこの区別を
+  前提に `Diagnostics` を対象外とする。`Diagnostics::report` は accept ループ・
+  drain タスク（tokio ワーカ）から**同期的に**呼ばれる契約のため、実装は
+  `Middleware`（[coding-rust.md](.claude/rules/coding-rust.md) 並行性節）と
+  同様にブロッキング I/O・panic を行ってはならない（重い処理はチャネル送信等で
+  別タスクへ逃がす）。設計判断・根拠は `docs/design/diagnostics-sink.md` を参照
 
 #### 新規エンドポイント追加手順
 
