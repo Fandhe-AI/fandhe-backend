@@ -9,9 +9,15 @@
 //! `fandhe-backend-core` に依存しない制約は不変）。
 //!
 //! `async fn` はトレイトオブジェクトと非互換のため、`crates/plugin-graphql`
-//! の先例（`BoxExecuteFn`）に倣い、追加の依存を増やさず既存の `futures-util`
-//! （`std` feature、`Cargo.toml` 参照）が提供する
-//! [`futures_util::future::BoxFuture`] で型消去する（pay-for-what-you-use、
+//! の先例（`BoxExecuteFn`）に倣い型消去する。型消去先は本クレート独自の
+//! 型エイリアス [`BoxFuture`] で、`futures_util::future::BoxFuture` と
+//! 定義（`Pin<Box<dyn Future<Output = T> + Send + 'a>>`）が完全に同一のため
+//! 既存実装（`futures_util::future::BoxFuture` で書かれたもの）はそのまま
+//! コンパイルが通る（イシュー #723、非破壊）。外部クレートの項目を
+//! 再公開せず本クレート自身が型を定義するのは、`futures-util` を利用者の
+//! 公開依存にしない（バージョン更新から絶縁する）ため。利用者は
+//! [`BoxFuture`] を使えば `futures-util` を直接の依存に加えずに
+//! [`WsMessageHandler`] を実装できる（pay-for-what-you-use、
 //! `.claude/rules/pay-for-what-you-use.md`。async-trait 等の新規依存は
 //! 追加しない）。
 
@@ -19,13 +25,56 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::Poll;
 
 use fandhe_backend_http::request::RequestHead;
-use futures_util::future::BoxFuture;
 use tokio::sync::{mpsc, watch};
+
+/// [`WsMessageHandler::on_message`] 等が返す型消去済み非同期処理
+/// （イシュー #723）。
+///
+/// `futures_util::future::BoxFuture<'a, T>` と完全に同一の型
+/// （`Pin<Box<dyn Future<Output = T> + Send + 'a>>`）を本クレートが独自に
+/// 定義したもの。同一の型であるため、既存実装が
+/// `futures_util::future::BoxFuture` を書いていてもそのままコンパイルが
+/// 通る（後方互換、型は区別されない）。利用者はどちらの名前で書いても
+/// 構わないが、本エイリアス経由なら `futures-util` を直接の依存に加える
+/// 必要がない（外部クレートの項目を再公開せず本クレートが型を定義して
+/// いるため、`futures-util` のバージョン更新から利用者の公開 API を
+/// 絶縁できる）。
+///
+/// `Send` 境界は、ハンドラの `Future` が tokio のマルチスレッドランタイム
+/// 上でセッションタスクを越えて駆動されるために必要。`'a` は多くの場合
+/// `&self`（またはそれを含むコンテキスト引数）の借用に結びつく。
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_plugin_websocket::BoxFuture;
+/// use fandhe_backend_plugin_websocket::handler::{
+///     WsMessage, WsMessageHandler, WsOutcome, WsHandlerError,
+/// };
+///
+/// // `futures-util` を一切 import せずにハンドラを実装できる。
+/// struct Echo;
+///
+/// impl WsMessageHandler for Echo {
+///     fn name(&self) -> &'static str {
+///         "echo"
+///     }
+///
+///     fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+///         Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+///     }
+/// }
+///
+/// let config = fandhe_backend_plugin_websocket::WebSocketConfig::default().with_handler(Echo);
+/// assert_eq!(config.handler_name(), "echo");
+/// ```
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// ユーザーコードとやり取りするメッセージ表現。
 ///
@@ -372,7 +421,7 @@ pub trait WsMessageHandler: Send + Sync + 'static {
     /// use fandhe_backend_plugin_websocket::handler::{
     ///     WsConnContext, WsHandlerError, WsMessage, WsMessageHandler, WsOutcome,
     /// };
-    /// use futures_util::future::BoxFuture;
+    /// use fandhe_backend_plugin_websocket::BoxFuture;
     /// use futures_util::{SinkExt, StreamExt};
     /// use tokio::io::AsyncReadExt;
     /// use tokio_tungstenite::WebSocketStream;
@@ -507,7 +556,7 @@ pub trait WsMessageHandler: Send + Sync + 'static {
     /// use fandhe_backend_plugin_websocket::handler::{
     ///     WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome,
     /// };
-    /// use futures_util::future::BoxFuture;
+    /// use fandhe_backend_plugin_websocket::BoxFuture;
     /// use futures_util::StreamExt;
     /// use tokio::io::AsyncReadExt;
     /// use tokio_tungstenite::WebSocketStream;
@@ -656,7 +705,7 @@ pub trait WsMessageHandler: Send + Sync + 'static {
     /// use fandhe_backend_plugin_websocket::handler::{
     ///     CloseReason, WsConnContext, WsHandlerError, WsMessage, WsMessageHandler, WsOutcome,
     /// };
-    /// use futures_util::future::BoxFuture;
+    /// use fandhe_backend_plugin_websocket::BoxFuture;
     /// use futures_util::SinkExt;
     /// use tokio::io::AsyncReadExt;
     /// use tokio_tungstenite::WebSocketStream;
@@ -907,7 +956,7 @@ impl WsOpenContext {
     /// use fandhe_backend_plugin_websocket::handler::{
     ///     WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome,
     /// };
-    /// use futures_util::future::BoxFuture;
+    /// use fandhe_backend_plugin_websocket::BoxFuture;
     /// use futures_util::StreamExt;
     /// use tokio::io::AsyncReadExt;
     /// use tokio_tungstenite::WebSocketStream;
@@ -1041,7 +1090,7 @@ impl WsOpenContext {
     /// use fandhe_backend_plugin_websocket::handler::{
     ///     WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome,
     /// };
-    /// use futures_util::future::BoxFuture;
+    /// use fandhe_backend_plugin_websocket::BoxFuture;
     /// use std::sync::{Arc, Mutex};
     ///
     /// #[derive(Default)]
@@ -1605,7 +1654,7 @@ impl WsSender {
     /// use fandhe_backend_plugin_websocket::handler::{
     ///     WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome,
     /// };
-    /// use futures_util::future::BoxFuture;
+    /// use fandhe_backend_plugin_websocket::BoxFuture;
     /// use futures_util::StreamExt;
     /// use tokio::io::AsyncReadExt;
     /// use tokio_tungstenite::WebSocketStream;
@@ -1813,7 +1862,7 @@ impl WsSender {
     /// use fandhe_backend_plugin_websocket::handler::{
     ///     WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome,
     /// };
-    /// use futures_util::future::BoxFuture;
+    /// use fandhe_backend_plugin_websocket::BoxFuture;
     /// use futures_util::{SinkExt, StreamExt};
     /// use tokio::io::AsyncReadExt;
     /// use tokio_tungstenite::WebSocketStream;
@@ -2127,7 +2176,7 @@ impl WsSender {
     /// use fandhe_backend_plugin_websocket::handler::{
     ///     WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome, WsSender,
     /// };
-    /// use futures_util::future::BoxFuture;
+    /// use fandhe_backend_plugin_websocket::BoxFuture;
     /// use futures_util::{SinkExt, StreamExt};
     /// use tokio::io::AsyncReadExt;
     /// use tokio_tungstenite::WebSocketStream;
@@ -2236,7 +2285,7 @@ impl WsSender {
     /// use fandhe_backend_plugin_websocket::handler::{
     ///     WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome, WsSender,
     /// };
-    /// use futures_util::future::BoxFuture;
+    /// use fandhe_backend_plugin_websocket::BoxFuture;
     /// use futures_util::{SinkExt, StreamExt};
     /// use tokio::io::AsyncReadExt;
     /// use tokio_tungstenite::WebSocketStream;
@@ -3601,5 +3650,24 @@ mod tests {
                 "WsConnContext::Debug leaked {leaked:?}: {debug}"
             );
         }
+    }
+
+    /// [`BoxFuture`] が `futures_util::future::BoxFuture` と同一の型で
+    /// あることをコンパイル時に確かめる（イシュー #723）。相互に代入できる
+    /// なら同一の型である証拠になる（Rust の型システム上、別の型なら
+    /// このコードはコンパイルが通らない）。実行時には両方向の値を
+    /// `.await` し、値そのものも入れ替え可能であることまで確認する。
+    #[tokio::test]
+    async fn box_future_is_identical_to_futures_util_box_future() {
+        let ours: BoxFuture<'static, u8> = Box::pin(async { 1u8 });
+        // `super::BoxFuture` の値を `futures_util::future::BoxFuture` 型の
+        // 変数へ代入できる（型が同一であることの検査）。
+        let as_futures_util: futures_util::future::BoxFuture<'static, u8> = ours;
+        assert_eq!(as_futures_util.await, 1u8);
+
+        let theirs: futures_util::future::BoxFuture<'static, u8> = Box::pin(async { 2u8 });
+        // 逆方向の代入も同様に通る。
+        let as_ours: BoxFuture<'static, u8> = theirs;
+        assert_eq!(as_ours.await, 2u8);
     }
 }
