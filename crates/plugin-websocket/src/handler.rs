@@ -1027,13 +1027,101 @@ impl WsOpenContext {
     /// 任意の値に偽装できる。認可判定の唯一の根拠にしないこと。
     /// [`MAX_CONTEXT_HEADER_VALUE_BYTES`] 超過時・ヘッダ非送信時は `None`
     /// になる（切り詰めない。フェイルクローズ側へ倒すこと）。
+    ///
+    /// # Examples
+    ///
+    /// （実ハンドシェイクを `tokio::io::duplex` 上で駆動し、`on_open` から
+    /// [`Self::host`] / [`Self::origin`] / [`Self::user_agent`] /
+    /// [`Self::query`] を読み取って記録する最小形。[`Self::param`] の
+    /// 例と同じ手順で、対象を接続単位の付随情報 5 項目に広げたもの。）
+    ///
+    /// ```
+    /// use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+    /// use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade};
+    /// use fandhe_backend_plugin_websocket::handler::{
+    ///     WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome,
+    /// };
+    /// use futures_util::future::BoxFuture;
+    /// use std::sync::{Arc, Mutex};
+    ///
+    /// #[derive(Default)]
+    /// struct Recorded {
+    ///     host: Option<String>,
+    ///     origin: Option<String>,
+    ///     user_agent: Option<String>,
+    ///     query: Option<String>,
+    /// }
+    ///
+    /// struct RecordRequestInfo(Arc<Mutex<Recorded>>);
+    ///
+    /// impl WsMessageHandler for RecordRequestInfo {
+    ///     fn name(&self) -> &'static str {
+    ///         "record-request-info"
+    ///     }
+    ///
+    ///     fn on_open(&self, ctx: WsOpenContext) {
+    ///         let mut recorded = self.0.lock().unwrap();
+    ///         recorded.host = ctx.host().map(str::to_owned);
+    ///         recorded.origin = ctx.origin().map(str::to_owned);
+    ///         recorded.user_agent = ctx.user_agent().map(str::to_owned);
+    ///         recorded.query = ctx.query().map(str::to_owned);
+    ///     }
+    ///
+    ///     fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+    ///         Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+    ///     }
+    /// }
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// let buf = b"GET /ws?room=lobby HTTP/1.1\r\n\
+    ///     Host: example.test\r\n\
+    ///     Origin: https://example.test\r\n\
+    ///     User-Agent: fandhe-doctest/1.0\r\n\
+    ///     Upgrade: websocket\r\n\
+    ///     Connection: Upgrade\r\n\
+    ///     Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+    ///     Sec-WebSocket-Version: 13\r\n\
+    ///     \r\n";
+    /// let head = match parse_request_head(buf).unwrap() {
+    ///     ParseOutcome::Complete { head, .. } => head,
+    ///     ParseOutcome::Incomplete => unreachable!(),
+    /// };
+    /// let recorded = Arc::new(Mutex::new(Recorded::default()));
+    /// let config = WebSocketConfig::default().with_handler(RecordRequestInfo(recorded.clone()));
+    ///
+    /// let (server_side, mut client_side) = tokio::io::duplex(4096);
+    /// use tokio::io::AsyncWriteExt;
+    /// tokio::spawn(async move {
+    ///     // Close フレーム（マスク付き、payload なし）を送ってセッションを閉じる。
+    ///     client_side.write_all(&[0x88, 0x80, 0, 0, 0, 0]).await.unwrap();
+    /// });
+    ///
+    /// let result = handle_upgrade(
+    ///     server_side,
+    ///     &head,
+    ///     Vec::new(),
+    ///     &config,
+    ///     std::future::pending::<()>(),
+    /// )
+    /// .await;
+    /// assert!(result.is_ok());
+    ///
+    /// let recorded = recorded.lock().unwrap();
+    /// assert_eq!(recorded.host.as_deref(), Some("example.test"));
+    /// assert_eq!(recorded.origin.as_deref(), Some("https://example.test"));
+    /// assert_eq!(recorded.user_agent.as_deref(), Some("fandhe-doctest/1.0"));
+    /// assert_eq!(recorded.query.as_deref(), Some("room=lobby"));
+    /// # }
+    /// ```
     #[must_use]
     pub fn host(&self) -> Option<&str> {
         self.info.host.as_deref()
     }
 
     /// `Origin` ヘッダの値を返す（イシュー #717）。検索意味論・上限・
-    /// 切り詰めない契約は [`Self::host`] と同一。
+    /// 切り詰めない契約は [`Self::host`] と同一（doc test も同所に集約、
+    /// [`Self::host`] を参照）。
     ///
     /// # セキュリティに関する注意
     ///
@@ -1045,8 +1133,9 @@ impl WsOpenContext {
     }
 
     /// `User-Agent` ヘッダの値を返す（イシュー #717）。検索意味論・上限・
-    /// 切り詰めない契約は [`Self::host`] と同一。クライアントの申告値で
-    /// あり偽装できるため、認可判定の根拠にしないこと。
+    /// 切り詰めない契約は [`Self::host`] と同一（doc test も同所に集約、
+    /// [`Self::host`] を参照）。クライアントの申告値であり偽装できるため、
+    /// 認可判定の根拠にしないこと。
     #[must_use]
     pub fn user_agent(&self) -> Option<&str> {
         self.info.user_agent.as_deref()
@@ -1058,6 +1147,7 @@ impl WsOpenContext {
     /// 非デコード契約（% デコード・key-value 分解を行わない生文字列）で、
     /// `?` が無ければ `None`、`?` のみ（値が空）なら `Some("")` を返す。
     /// [`MAX_CONTEXT_QUERY_BYTES`] 超過時は切り詰めず `None` になる。
+    /// doc test は [`Self::host`] に集約する。
     ///
     /// query はトークン等の機密情報を含みうる。ログへ出力する場合は
     /// 利用者側でマスクすること（`.claude/rules/security.md`）。
