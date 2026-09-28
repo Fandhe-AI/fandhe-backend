@@ -73,7 +73,8 @@ RFC 6455 ハンドシェイク検証・101 応答・tokio-tungstenite へのフ�
   受信側 `Receiver` はハンドラが返るまで drop されず自己デッドロックになる
   （世代キャンセル発火時のみ解除される）。`on_open` 等から `tokio::spawn`
   した別タスクでのみ使うこと
-- 注意（`idle_timeout` と Ping keepalive の併用、イシュー #714）:
+- 注意（`idle_timeout` と Ping keepalive の併用。設計判断は
+  `docs/design/ws-connection-context-and-close.md` 14 節参照）:
   `idle_timeout` はクライアントからのフレーム受信でのみリセットされ、
   `WsSender::send`/`try_send` による push・`with_ping_interval` によるサーバー
   起点 Ping 送出では延長されない。push だけを受けている受信専用クライアント
