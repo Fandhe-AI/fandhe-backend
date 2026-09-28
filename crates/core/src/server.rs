@@ -434,6 +434,20 @@ pub struct Server {
     /// `spawn_generation_drain`（detached `tokio::spawn` タスク）へ `Server`
     /// 全体ではなくシンクだけを安価に `clone` して渡すため。
     diagnostics: std::sync::Arc<dyn crate::diagnostics::Diagnostics>,
+    /// `diagnostics` が既定シンク（[`crate::diagnostics::StderrDiagnostics`]、
+    /// `Server::diagnostics` 未呼び出し）のままかどうか（PR #748
+    /// codex/review 指摘対応）。`Server::diagnostics` 呼び出しで `false` に
+    /// 固定する（一度カスタムシンクへ差し替えたら、以後 `StderrDiagnostics`
+    /// を明示的に再登録しても「既定」とは扱わない。利用者が明示的に選んだ
+    /// シンクである以上、既定シンクに許される「非ブロッキング契約の対象
+    /// 外」という意図的な例外を暗黙に適用しないため）。
+    ///
+    /// `run_until` の grace 超過通知（`ShutdownGraceExceeded`）で、既定
+    /// シンク向けの「返却前に必ず完了させる」経路とカスタムシンク向けの
+    /// 「有界時間だけ待って fire-and-forget へフォールバックする」経路を
+    /// 分岐するために使う（`docs/design/diagnostics-sink.md` 9 節・該当
+    /// 箇所の doc コメントを参照）。
+    diagnostics_is_default: bool,
     /// `webrtc-proxy` feature（TASK-2.1 / #18）有効時のみ意味を持つ設定。
     /// `crate::plugin::try_intercept` がこのフィールドを参照して `POST
     /// /rtc/offer` を上流へ中継するかどうかを判定する。feature 無効時は
@@ -533,6 +547,7 @@ impl Default for Server {
             keep_alive_enabled: true,
             shutdown_grace_period: DEFAULT_SHUTDOWN_GRACE_PERIOD,
             diagnostics: std::sync::Arc::new(crate::diagnostics::StderrDiagnostics),
+            diagnostics_is_default: true,
             #[cfg(feature = "webrtc-proxy")]
             webrtc_proxy_config: None,
             #[cfg(feature = "webrtc")]
@@ -755,6 +770,10 @@ impl Server {
     #[must_use]
     pub fn diagnostics(mut self, sink: impl crate::diagnostics::Diagnostics) -> Self {
         self.diagnostics = std::sync::Arc::new(sink);
+        // 利用者が明示的にシンクを登録した時点で「既定シンク」扱いを外す
+        // （`StderrDiagnostics` を明示的に再登録した場合も含む。`diagnostics_is_default`
+        // の doc を参照）。
+        self.diagnostics_is_default = false;
         self
     }
 
@@ -2202,80 +2221,105 @@ impl BoundServer {
                 // （イシュー #720。利用側シンクの異常・遅延が有界時間での
                 // クローズを妨げないようにする）。
                 join_set.shutdown().await;
-                // `emit`（内部で `Diagnostics::report` を同期呼び出しする）を
-                // `run_until` の返却経路から切り離す（PR #748 レビュー指摘
-                // P1 対応）。カスタムシンクは非ブロッキング契約
-                // （`crate::diagnostics` モジュール doc）を負うが、契約違反の
-                // シンクが `report` 内で停止・長時間ブロックした場合に
-                // `run_until` 自体が「shutdown_grace_period + ε 以内に必ず
-                // 戻る」という既存契約（`docs/design/graceful-shutdown.md`・
-                // `docs/design/rebind.md`）を破ってしまう。強制クローズは
-                // 上記 `join_set.shutdown().await` で既に確定済みのため、
-                // 通知（ログ出力）だけを切り離しても
-                // フェイルクローズの安全性は損なわれない（`spawn_generation_drain`
-                // の `RebindDrainGraceExceeded` 通知と同じ非同期化パターン）。
+                // 既定シンク（`StderrDiagnostics`、同期 `eprintln!` 1 行）と
+                // カスタムシンクとで通知の確定経路を分ける（PR #748
+                // codex/review 指摘対応、`docs/design/diagnostics-sink.md` 9
+                // 節）。
                 //
-                // 切り離し先は `tokio::spawn`（tokio タスク）ではなく
-                // `std::thread::spawn`（OS スレッド）を使う（PR #748 Bugbot
-                // 指摘対応）。`tokio::spawn` した detached タスクは tokio
-                // ランタイムが以後もポーリングし続けて初めて実行される。
-                // `run_until` を最後の await として呼び出す典型的な使い方
-                // （公式 `graceful_shutdown` サンプルを含む）では、
-                // `run_until` が `Ok(())` を返した直後にランタイムが
-                // shutdown することがあり、特に `current_thread` ランタイム
-                // では他にポーリングを進める主体が存在しないため、この
-                // detached タスクは 1 度もポーリングされずに破棄される
-                // （通知が確実に失われる）。`emit` 自体は同期関数で `.await`
-                // 点を持たないため、tokio タスクとして実行する必要はない。
-                // OS スレッドへ切り離せば tokio ランタイムの継続ポーリングに
-                // 依存せず独立に実行されるため、この欠落を避けられる。
+                // - **既定シンク**: `run_until` の返却前に**必ず**
+                //   `emit`（同期呼び出し）を完了させてから返す。
+                //   `StderrDiagnostics::report` は非ブロッキング契約の対象外
+                //   （`crate::diagnostics` モジュール doc）であり、事実上
+                //   一瞬で完了する同期 `eprintln!` のため、ここで直接呼んでも
+                //   「shutdown_grace_period + ε 以内に必ず戻る」という
+                //   `run_until` の契約は破らない。これにより「返却前に
+                //   `eprintln!` が実行されていた」旧挙動と完全に一致する
+                //   （下記カスタムシンク経路が採用する有界待機のような
+                //   確率的な保証ではなく、確定的な保証にする）。
+                // - **カスタムシンク**: 非ブロッキング契約を利用者が負う
+                //   （`crate::diagnostics::Diagnostics` の契約）が、契約
+                //   違反（`report` 内で停止・長時間ブロックする実装）が
+                //   `run_until` 自体をハングさせないよう、通知を
+                //   `std::thread::spawn`（OS スレッド）へ切り離し、完了を
+                //   有界時間（`SHUTDOWN_NOTIFY_FLUSH_WAIT`）だけ待ってから
+                //   `run_until` を返す（超過時は fire-and-forget へ
+                //   フォールバック）。`tokio::spawn` ではなく OS スレッドを
+                //   使う理由・待機を挟む理由は下記コメント・
+                //   `docs/design/diagnostics-sink.md` 9 節を参照。
                 //
-                // OS スレッドへの切り離しは tokio ランタイムのポーリング
-                // には依存しなくなるが、別の喪失経路が残っていた（PR #748
-                // レビュー指摘 P1）: `run_until` の呼び出し元がプロセスを
-                // 即座に終了させる典型的な使い方（`main` の最後の文として
-                // `run_until` を呼び、返り値を受けたら即 `main` を抜ける等）
-                // では、OS スレッドが 1 度もスケジュールされないまま
-                // プロセスごと消滅し、通知（既定シンクの `eprintln!` を
-                // 含む）が届かないことがある。この喪失は「返却前に
-                // `eprintln!` が実行されていた」旧挙動との互換性を破る。
-                // 対応として、通知スレッドの完了を有界時間
-                // （`SHUTDOWN_NOTIFY_FLUSH_WAIT`）だけ待ってから `run_until`
-                // を返す。既定シンク（同期 `eprintln!` 1 行）や大半の
-                // 妥当なカスタムシンクはこの待機時間内に確実に完了し、
-                // 旧 `eprintln!` 直書きと同等に「返却前に通知済み」という
-                // 実質同期の挙動を回復する。契約違反（ブロッキング I/O）の
-                // シンクは待機時間内に完了しないことがあるが、その場合も
-                // 待機を打ち切って `run_until` を返す（fire-and-forget へ
-                // フォールバック）ため、上記「grace + ε 以内に必ず戻る」
-                // 契約は破らない（`shutdown_grace_exceeded_sink_blocking_
-                // does_not_delay_run_until_return` で検証）。スレッド完了は
-                // `tokio::sync::oneshot` で通知する（`std::thread::spawn` の
-                // クロージャ内から同期 `Sender::send` を呼ぶだけで完結し、
-                // 受信側のみ非同期に待てるため、この切り離しパターンに最小
-                // 追加で組み込める）。
-                let diagnostics = Arc::clone(&server.diagnostics);
+                // 強制クローズは上記 `join_set.shutdown().await` で既に
+                // 確定済みのため、通知（ログ出力）の確定方式をどちらに
+                // 分岐してもフェイルクローズの安全性は損なわれない
+                // （`spawn_generation_drain` の `RebindDrainGraceExceeded`
+                // 通知とは独立した経路のまま、両者とも不変）。
                 let grace = server.shutdown_grace_period;
-                let (notified_tx, notified_rx) = oneshot::channel::<()>();
-                // `std::thread::spawn` はスレッド生成失敗時に panic するため
-                // `Builder::spawn` の `Result` を使う（panic をライブラリ境界の
-                // 外へ漏らさない）。生成に失敗した場合はクロージャごと
-                // `notified_tx` が drop されて下の待機は即座に終わり、通知は
-                // 行わずに `Ok(())` を返す。インライン実行へフォールバック
-                // しないのは、停止したシンクで `run_until` の返却を遅らせない
-                // ため（リソース枯渇時に 1 行の通知を諦めるほうを選ぶ）。
-                let _spawned = std::thread::Builder::new()
-                    .name("fandhe-shutdown-diagnostics".to_owned())
-                    .spawn(move || {
-                        crate::diagnostics::emit(
-                            &*diagnostics,
-                            crate::diagnostics::DiagnosticEvent::ShutdownGraceExceeded { grace },
-                        );
-                        // 受信側が待機を打ち切って drop 済みでも `send` は
-                        // エラーを返すだけで panic しない（無視してよい）。
-                        let _ = notified_tx.send(());
-                    });
-                let _ = tokio::time::timeout(SHUTDOWN_NOTIFY_FLUSH_WAIT, notified_rx).await;
+                if server.diagnostics_is_default {
+                    crate::diagnostics::emit(
+                        &*server.diagnostics,
+                        crate::diagnostics::DiagnosticEvent::ShutdownGraceExceeded { grace },
+                    );
+                } else {
+                    // 切り離し先は `tokio::spawn`（tokio タスク）ではなく
+                    // `std::thread::spawn`（OS スレッド）を使う（PR #748
+                    // Bugbot 指摘対応）。`tokio::spawn` した detached タスクは
+                    // tokio ランタイムが以後もポーリングし続けて初めて実行
+                    // される。`run_until` を最後の await として呼び出す典型的
+                    // な使い方（公式 `graceful_shutdown` サンプルを含む）
+                    // では、`run_until` が `Ok(())` を返した直後にランタイム
+                    // が shutdown することがあり、特に `current_thread`
+                    // ランタイムでは他にポーリングを進める主体が存在しない
+                    // ため、この detached タスクは 1 度もポーリングされずに
+                    // 破棄される（通知が確実に失われる）。`emit` 自体は
+                    // 同期関数で `.await` 点を持たないため、tokio タスクと
+                    // して実行する必要はない。OS スレッドへ切り離せば tokio
+                    // ランタイムの継続ポーリングに依存せず独立に実行される
+                    // ため、この欠落を避けられる。
+                    //
+                    // OS スレッドへの切り離しはランタイムのポーリングには
+                    // 依存しなくなるが、別の喪失経路が残っていた（PR #748
+                    // レビュー指摘 P1）: `run_until` の呼び出し元がプロセスを
+                    // 即座に終了させる典型的な使い方（`main` の最後の文として
+                    // `run_until` を呼び、返り値を受けたら即 `main` を抜ける
+                    // 等）では、OS スレッドが 1 度もスケジュールされないまま
+                    // プロセスごと消滅し、通知が届かないことがある。対応と
+                    // して、通知スレッドの完了を有界時間
+                    // （`SHUTDOWN_NOTIFY_FLUSH_WAIT`）だけ待ってから
+                    // `run_until` を返す。契約違反（ブロッキング I/O）の
+                    // シンクは待機時間内に完了しないことがあるが、その場合も
+                    // 待機を打ち切って `run_until` を返す（fire-and-forget
+                    // へフォールバック）ため、上記「grace + ε 以内に必ず
+                    // 戻る」契約は破らない（`shutdown_grace_exceeded_sink_
+                    // blocking_does_not_delay_run_until_return` で検証）。
+                    // スレッド完了は `tokio::sync::oneshot` で通知する
+                    // （`std::thread::spawn` のクロージャ内から同期
+                    // `Sender::send` を呼ぶだけで完結し、受信側のみ非同期に
+                    // 待てるため、この切り離しパターンに最小追加で組み込める）。
+                    let diagnostics = Arc::clone(&server.diagnostics);
+                    let (notified_tx, notified_rx) = oneshot::channel::<()>();
+                    // `std::thread::spawn` はスレッド生成失敗時に panic する
+                    // ため `Builder::spawn` の `Result` を使う（panic を
+                    // ライブラリ境界の外へ漏らさない）。生成に失敗した場合は
+                    // クロージャごと `notified_tx` が drop されて下の待機は
+                    // 即座に終わり、通知は行わずに `Ok(())` を返す。インライン
+                    // 実行へフォールバックしないのは、停止したシンクで
+                    // `run_until` の返却を遅らせないため（リソース枯渇時に
+                    // 1 行の通知を諦めるほうを選ぶ）。
+                    let _spawned = std::thread::Builder::new()
+                        .name("fandhe-shutdown-diagnostics".to_owned())
+                        .spawn(move || {
+                            crate::diagnostics::emit(
+                                &*diagnostics,
+                                crate::diagnostics::DiagnosticEvent::ShutdownGraceExceeded {
+                                    grace,
+                                },
+                            );
+                            // 受信側が待機を打ち切って drop 済みでも `send`
+                            // はエラーを返すだけで panic しない（無視して
+                            // よい）。
+                            let _ = notified_tx.send(());
+                        });
+                    let _ = tokio::time::timeout(SHUTDOWN_NOTIFY_FLUSH_WAIT, notified_rx).await;
+                }
             }
         }
 

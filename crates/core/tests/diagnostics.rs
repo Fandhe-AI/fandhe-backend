@@ -25,6 +25,13 @@
 //!   `graceful_shutdown` サンプルの使い方）、`block_on` から戻った直後に
 //!   ランタイムがそれ以上何もポーリングしない状況でも、通知が失われず
 //!   届くこと
+//! - `default_sink_notifies_even_when_process_exits_immediately_after_run_until_returns`:
+//!   PR #748 codex/review 指摘対応の回帰テスト。既定シンクは
+//!   `run_until` の返却前に**同期的に**通知を確定させる（`SHUTDOWN_NOTIFY_
+//!   FLUSH_WAIT` の有界待機にすら依存しない）ことを、`run_until` が
+//!   `Ok(())` を返した直後に子プロセスを `std::process::exit` で即座に
+//!   終了させる最も厳しい条件で検証する（`docs/design/diagnostics-sink.md`
+//!   9 節参照）
 
 use fandhe_backend_core::{DiagnosticEvent, Handler, Server};
 use fandhe_backend_http::request::RequestHead;
@@ -376,7 +383,8 @@ async fn diagnostics_child_shutdown_grace_scenario() {
         // stderr へは一切書かないシンクへ差し替える（出力抑止の代表例）。
         server = server.diagnostics(|_event: &DiagnosticEvent<'_>| {});
     }
-    // mode == "default" の場合は既定の `StderrDiagnostics` のまま。
+    // mode == "default" / "default_immediate_exit" の場合は既定の
+    // `StderrDiagnostics` のまま。
 
     let bound = server.bind("127.0.0.1:0").await.unwrap();
     let addr = bound.local_addr().unwrap();
@@ -399,6 +407,16 @@ async fn diagnostics_child_shutdown_grace_scenario() {
         .expect("run_until は grace 超過後も有界時間内に戻るはず")
         .expect("run_until タスクが panic しないこと")
         .expect("run_until は Ok(()) を返すはず");
+
+    if mode == "default_immediate_exit" {
+        // `run_until` が `Ok(())` を返した直後、tokio ランタイムの通常の
+        // shutdown・libtest 側の後処理を一切経由せずプロセスを即座に終了
+        // させる。既定シンクは `run_until` の返却前に同期的に通知を確定
+        // させる契約のため、この最も厳しい条件でも stderr へ出力済みで
+        // あるはず（`SHUTDOWN_NOTIFY_FLUSH_WAIT` の有界待機や OS スレッドの
+        // スケジューリングには一切依存しない）。
+        std::process::exit(0);
+    }
 }
 
 /// 子プロセスとして `diagnostics_child_shutdown_grace_scenario` を起動し、
@@ -455,5 +473,29 @@ fn default_sink_prints_to_stderr_when_unregistered() {
         ),
         "未登録時は既定シンクが現行文言のまま stderr へ出力するはず\
          （実際の stderr: {stderr}）"
+    );
+}
+
+/// PR #748 codex/review 指摘対応の回帰テスト: 既定シンク（`StderrDiagnostics`、
+/// `Server::diagnostics` 未登録）は、`run_until` の呼び出し元が返却直後に
+/// プロセスを終了させる最も厳しい条件でも、通知（`eprintln!`）が
+/// **確実に**届くこと。
+///
+/// `SHUTDOWN_NOTIFY_FLUSH_WAIT`（200ms の有界待機）や `std::thread::spawn`
+/// のスケジューリングに依存するカスタムシンク向け経路とは異なり、既定シンク
+/// は `run_until` の返却前に `emit` を同期的に完了させてから返る契約
+/// （`docs/design/diagnostics-sink.md` 9 節）。本テストはこの契約を、
+/// `run_until` が `Ok(())` を返した直後に子プロセスを
+/// `std::process::exit` で即座に終了させることで検証する
+/// （tokio ランタイムの shutdown・libtest の後処理いずれにも猶予を与えない）。
+#[test]
+fn default_sink_notifies_even_when_process_exits_immediately_after_run_until_returns() {
+    let stderr = run_child_and_capture_stderr("default_immediate_exit");
+    assert!(
+        stderr.contains(
+            "fandhe_backend_core::server: graceful shutdown の猶予期間（100ms）を超過したため残存接続を強制クローズします"
+        ),
+        "既定シンクは run_until の返却前に通知を同期的に確定させるため、\
+         直後のプロセス終了でも出力が届いているはず（実際の stderr: {stderr}）"
     );
 }

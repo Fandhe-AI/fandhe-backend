@@ -281,6 +281,44 @@ impl Server {
   失敗時（リソース枯渇）は panic せず通知を行わずに `run_until` を返す。
   インライン実行へはフォールバックしない（停止したシンクで返却を遅らせない
   ことを、1 行の通知より優先する）。
+- **対応（三訂正、PR #748 codex/review 指摘対応）**: 上記「対応（再訂正）」は
+  既定シンク・カスタムシンクの区別なく、通知を OS スレッドへ切り離し
+  `SHUTDOWN_NOTIFY_FLUSH_WAIT`（200ms）だけ待つ一律の経路にしていた。
+  これは「返却前に通知済み」を**確率的**にしか保証しない: 既定シンク
+  （`StderrDiagnostics`、同期 `eprintln!` 1 行）であっても、OS スレッドの
+  起動が遅延する・stderr が詰まる等が 200ms の待機時間と重なると、通知が
+  完了する前に `run_until` が返り、直後に呼び出し元プロセスが終了すれば
+  警告が失われうる。これは「既定出力は現行 `eprintln!` と完全互換」
+  （本書冒頭・`crates/core/src/diagnostics.rs` モジュール doc）という契約、
+  および CHANGELOG が謳う終了時の可観測性の契約に反する
+  （codex/review 2026-09-28 指摘、PR #748 `crates/core/src/
+  server.rs:2276`）。
+  対応として、`Server::diagnostics` が既定シンクのまま（`Server::diagnostics`
+  未呼び出し）かどうかを `Server::diagnostics_is_default`
+  （`crates/core/src/server.rs` 非公開フィールド）で追跡し、
+  `ShutdownGraceExceeded` の通知経路を 2 つに分離した:
+  - **既定シンク**: OS スレッドへ切り離さず、`run_until` の返却前に
+    `emit`（`StderrDiagnostics::report` の同期 `eprintln!`）を直接・
+    同期的に呼んでから返る。既定シンクは元々「非ブロッキング契約の対象外」
+    （7 節）という意図的な例外であり、事実上一瞬で完了する 1 行の
+    `eprintln!` を `run_until` の返却経路上で直接呼んでも
+    「shutdown_grace_period + ε 以内に必ず戻る」契約は破らない。これにより
+    「返却前に通知済み」が旧 `eprintln!` 直書きと同じ**確定的**な保証になる
+    （regression テスト `crates/core/tests/diagnostics.rs::
+    default_sink_notifies_even_when_process_exits_immediately_after_run_until_returns`
+    で検証。子プロセスが `run_until` 返却直後に `std::process::exit` する
+    最も厳しい条件でも通知が届くことを確認する）
+  - **カスタムシンク**: 上記「対応（再訂正）」の OS スレッド切り離し +
+    `SHUTDOWN_NOTIFY_FLUSH_WAIT` 有界待機のまま変更しない。カスタムシンクは
+    非ブロッキング契約を利用者が負うが、契約違反（`report` 内でブロッキング
+    I/O・停止）が `run_until` 自体をハングさせないための保険は既定シンクには
+    不要なため、この保険（有界待機・fire-and-forget フォールバック）は
+    カスタムシンク限定のまま維持する
+  - `RebindDrainGraceExceeded`（`spawn_generation_drain`）は本対応の対象外
+    のまま: この経路は元から `run_until` の返却経路とは独立した detached
+    `tokio::spawn` タスク内でのみ発火し（9 節の「`RebindDrainGraceExceeded`
+    は元から対象外」を参照）、`run_until`／`rebind()` いずれの返却も待たない
+    ため、同種の「返却前に完了する保証」を要求されない
 
 ## 10. スコープ外・将来案
 
