@@ -330,6 +330,76 @@ v0.4.0 公開（2026-08-13）後に main へ入った変更は breaking change �
   対象外のためマージは阻害しない）。publish 完了後に `workflow_dispatch` で
   再実行し、PASS を確認した（2026-09-26、success。run 36233416660）
 
+### 7.6 v0.4.2 リリース（2026-09-28 準備、publish は準備中）
+
+v0.4.1 公開（2026-09-26）後に main へ入った変更は breaking change を含まず、
+`fandhe-backend-core`・`fandhe-backend-routes`・`fandhe-backend-plugin-websocket`
+への後方互換な API 追加と `fandhe-backend-plugin-websocket` の不具合修正のみ
+だったため、7 節の lockstep 方針に従い公開対象 13 クレートを 0.4.2（パッチ）へ
+一括バンプする（ユーザー判断 2026-09-28。バージョン方針の検討は
+`docs/design/ws-connection-context-and-close.md` 7 節。7.5 節と同じく Cargo の
+0.x 系規則で非破壊の追加・修正をパッチ扱いとし、13 クレート一斉更新を維持する）。
+
+- **Added**（`fandhe-backend-core`）: 実行時診断を差し替え可能にする
+  `Diagnostics` / `DiagnosticEvent` / `StderrDiagnostics` と
+  `Server::diagnostics`（イシュー #720、PR #748。既定は従来の `eprintln!` と
+  完全互換）、`Middleware::on_response_with_status`（イシュー #721、PR #747）、
+  WebSocket の Upgrade 委譲経路への実 peer address 受け渡し（イシュー #728、
+  PR #741）
+- **Added**（`fandhe-backend-routes`）: 複数の `Router` を合成する
+  `Router::merge`（重複登録は `RouterMergeError` でフェイルクローズに検出、
+  イシュー #722、PR #746）
+- **Added**（`fandhe-backend-plugin-websocket`）: 接続 ID・接続コンテキスト
+  （`WsConnId` / `WsConnContext` / `on_message_with_ctx`、イシュー #704、
+  PR #725）、終了理由 `CloseReason` / `FailureKind`（イシュー #726、PR #731）、
+  切断通知 `on_close`（イシュー #729、PR #732）、`WsSender::closed` /
+  `is_closed`（イシュー #727、PR #730）、`WsSender::close` / `WsCloseError`
+  （イシュー #710、PR #736）、`with_outbound_capacity` / `WsSender::try_send`
+  （イシュー #709、PR #737）、Ping keepalive `with_ping_interval`（イシュー
+  #713、PR #738）、`handle_upgrade_with_peer_addr` / `WsOpenContext::peer_addr`
+  （イシュー #728、PR #741）、接続コンテキストの `Host` / `Origin` /
+  `User-Agent` / query（イシュー #717、PR #742）、ハンドシェイク受理判定フック
+  `with_handshake_check`（イシュー #716、PR #743）、型エイリアス `BoxFuture`
+  の公開（イシュー #723、PR #745）。新規外部依存の追加はない（dev-dependency
+  の `tokio` へ `test-util` feature を追加したのみ）
+- **Fixed**（`fandhe-backend-plugin-websocket`）: ハンドラ実行中の `WsSender::send`
+  によるデッドロック（イシュー #706、PR #733）、`WsOutcome::Close` 前の送信
+  キュー flush（イシュー #711、PR #735）、ハンドラ `Err` 時の送信キュー排出と
+  受信側解放後の `send` / `close` の扱い（イシュー #710、PR #736）、受信上限
+  超過時の Close 1009 送出（イシュー #719、PR #744）
+- **BREAKING CHANGE はない**。`cargo semver-checks --all-features`（baseline
+  v0.4.1）で破壊的変更なしを確認した（ユーザー確認済み 2026-09-28）。唯一の
+  検出 `trait_newly_sealed`（`fandhe-backend-plugin-websocket`）は、`BoxFuture`
+  を `futures_util::future::BoxFuture` から同一型の独自エイリアスへ置き換えた
+  ことによるツールの偽陽性で、外部クレートから旧・新どちらの書き方でも
+  `WsMessageHandler` を実装できることをコンパイルで実証済みである
+- **型は非破壊だが挙動が変わる点**: `WsSender::send` / `WsSender::close` は、
+  セッションが送信キューの受信側を解放した後（ハンドラ `Err`・
+  `WsOutcome::Close`・cancel・idle timeout・クライアント Close・EOF・送受信
+  エラーの各終了経路）に `Ok` を返して値を黙って捨てることがなくなり、`Err` を
+  返す（`CHANGELOG.md` `[0.4.2]` の Fixed（イシュー #710・#711）に記載済み）。
+  あわせて grace 超過強制クローズ時の診断通知が強制クローズ完了後に行われる
+  順序変更（イシュー #720）も `CHANGELOG.md` に記載している
+- **実施した機械作業**: 7.2 節の一元管理手順に従い、root `Cargo.toml` の
+  `[workspace.package] version` + `[workspace.dependencies]` の内部 13 クレート
+  `version` 値（計 14 箇所）を 0.4.2 へ書き換え。加えて standalone workspace
+  （`templates/app`・`examples/with-*` 4 件）の依存 `version` 併記、
+  `crates/plugin-openapi/openapi.json` / `openapi.yaml` の `info.version` 再生成
+  （`scripts/openapi-two-stage.sh --update`）、`benches/microbench/Cargo.lock`
+  の内部クレート版追随（`cargo update --manifest-path
+  benches/microbench/Cargo.toml -p fandhe-backend-http -p
+  fandhe-backend-routes`）、`CHANGELOG.md` の `[Unreleased]` 節の内容を
+  `[0.4.2] - 2026-09-28` 節へ移し、空の `[Unreleased]` を残す作業を実施した
+  （未記載だったイシュー #711・#723 の 2 件を同時に追記）
+- README・`docs/guide/getting-started.md`・`site/index.md`・CLAUDE.md の現行
+  公開版表記は、v0.4.1（7.5 節）・v0.4.0（7.4 節）と同じ慣例に従い、**Phase B
+  publish 完了後**に追随する（publish 未完了の間は「v0.4.1（2026-09-26）公開
+  済み」の表記が事実として正しいため）
+- `standalone-crates-io.yml` は v0.4.2 publish 完了までは構造的に FAIL する
+  （v0.2.0〜v0.4.1（7.1・7.3〜7.5 節）と同一のニワトリ卵問題、required check
+  対象外のためマージは阻害しない）。publish 完了後に `workflow_dispatch` で
+  再実行し PASS を確認する
+
 ## 8. 公開前チェックリスト
 
 実際に publish を実行する際に確認すべき項目。
@@ -415,6 +485,19 @@ v0.4.0 公開（2026-08-13）後に main へ入った変更は breaking change �
       再実行し、`templates/app`・`examples/with-*` 4 件の 5 クレートが
       `fandhe-backend-core = "^0.4.1"` 等を crates.io 公開版のみで解決できて PASS することを
       確認する（2026-09-26 実施済み、success。run 36233416660）
+
+### v0.4.2（2026-09-28 準備、publish は準備中）
+
+- [x] 公開対象 13 クレートの `version` および workspace 内 path 依存の `version` 併記が
+      すべて 0.4.2 に揃っている（恒久非公開 3 クレートは対象外。2026-09-28 実施済み）
+- [x] `cargo publish --workspace --dry-run` が公開対象 13 クレート全件で成功する
+      （2026-09-28 実施済み）
+- [ ] Phase B: `v0.4.2` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
+      の実行
+- [ ] Phase B publish 完了後、`standalone-crates-io.yml` を `workflow_dispatch` で
+      再実行し、`templates/app`・`examples/with-*` 4 件の 5 クレートが
+      `fandhe-backend-core = "^0.4.2"` 等を crates.io 公開版のみで解決できて PASS することを
+      確認する
 
 ## 参照
 

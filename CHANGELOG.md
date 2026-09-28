@@ -7,8 +7,16 @@
 
 ## [Unreleased]
 
-BREAKING CHANGE はありません（後方互換な API 追加・非破壊修正のみ）。0.4.2 として
-lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 節）。
+## [0.4.2] - 2026-09-28
+
+公開対象 13 クレートを lockstep バンプ（`docs/design/crates-io-release.md` 7.6 節）。
+実 publish（`v0.4.2` タグ push → verify → dry-run → GitHub Environments
+`crates-io-release` の required reviewers 承認 → `cargo publish --workspace`）は
+準備中（詳細は
+[`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7.6 節・8 節チェックリスト参照）。
+
+BREAKING CHANGE はありません（後方互換な API 追加・非破壊修正のみ。バージョン方針は
+`docs/design/ws-connection-context-and-close.md` 7 節）。
 
 ### Added
 
@@ -195,6 +203,13 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   順序保証・push の消化契約は `WsSender::send` と同一です（イシュー
   [#709](https://github.com/Fandhe-AI/fandhe-backend/issues/709)、親
   [#708](https://github.com/Fandhe-AI/fandhe-backend/issues/708)）
+- `fandhe-backend-plugin-websocket`: クレートルートに型エイリアス `BoxFuture`
+  （`Pin<Box<dyn Future<Output = T> + Send + 'a>>`）を公開しました。
+  `WsMessageHandler` の実装で `futures-util` へ直接依存せずに戻り値の型を
+  書けます。`futures_util::future::BoxFuture` と同一の型のため、既存の
+  書き方のハンドラも無変更のままコンパイル・動作します（イシュー
+  [#723](https://github.com/Fandhe-AI/fandhe-backend/issues/723)、PR
+  [#745](https://github.com/Fandhe-AI/fandhe-backend/pull/745)）
 
 ### Fixed
 
@@ -221,6 +236,16 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   不定契約は `crates/plugin-websocket/src/session.rs` モジュール doc
   「ハンドラ実行中の送信キュー消化」節を参照。イシュー
   [#706](https://github.com/Fandhe-AI/fandhe-backend/issues/706)）
+- `fandhe-backend-plugin-websocket`: ハンドラが `WsOutcome::Close` を返したとき、
+  それまでに `WsSender::send` で送信キューへ積まれていた push を送らずに
+  Close していた不具合を修正しました。現在は Close 処理の開始時点で送信キューを
+  封鎖し、キュー済みの push を Close フレームより先に送出します（以後の
+  `WsSender::send` は `Err` を返します）。flush と Close の送出は全体で
+  `WebSocketConfig::close_grace` を上限とし、超過・世代キャンセル・送出失敗で
+  打ち切られた場合は残りの push と Close フレームを送らずに終了します
+  （二次 DoS 対策。イシュー
+  [#711](https://github.com/Fandhe-AI/fandhe-backend/issues/711)、PR
+  [#735](https://github.com/Fandhe-AI/fandhe-backend/pull/735)）
 - `fandhe-backend-plugin-websocket`: ハンドラが `Err` を返したとき、送信キューを
   封鎖し、`close_grace` を上限にキュー済みの push を送出してから終了するように
   しました（従来は排出せずに即時終了していました）。封鎖前に確定した
