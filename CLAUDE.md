@@ -708,7 +708,15 @@ fandhe-backend/
 │   │                                    # 1 接続 1 回のみ。新規値はいずれも
 │   │                                    # `Debug` 出力に含めない（`docs/design/
 │   │                                    # ws-connection-context-and-close.md` 17 節
-│   │                                    # 参照）。
+│   │                                    # 参照）。イシュー #723 で
+│   │                                    # `on_message` の戻り値型 `BoxFuture` を
+│   │                                    # 独自の型エイリアスとして公開し
+│   │                                    # （`futures_util::future::BoxFuture` と
+│   │                                    # 同一の型、後方互換）、利用者が
+│   │                                    # `futures-util` を直接依存に加えずに
+│   │                                    # ハンドラを実装できるようにした
+│   │                                    # （`docs/design/plugin-boundary.md`
+│   │                                    # 5.5.1 節参照）。
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O
