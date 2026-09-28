@@ -71,7 +71,7 @@ let server = Server::new()
 > します（`on_response` 自体を実装する必要はありません。既定実装が no-op
 > のため）。詳細・実行可能な doc test は `crates/core/src/extension.rs` の
 > `Middleware` trait doc comment「ステータス付きアクセスログの例」節を参照
-> してください（イシュー #721）。
+> してください。
 
 ## 3. feature を有効化する: websocket エコー
 
