@@ -132,8 +132,13 @@ rebind コマンドを受理すると、`run_until` は次の手順を踏む（`
 3. 旧世代のコネクションタスク一式（`CancelSafeJoinSet`）を `std::mem::replace`
    で現行の `JoinSet` から切り離し、独立した背景タスク（`spawn_generation_drain`）
    で `Server::shutdown_grace_period` を上限に drain する（超過分は
-   `JoinSet::shutdown` で強制クローズ）。この drain は `run_until` 自体を
-   ブロックしない。新世代の accept ループは並行して動き続ける
+   `JoinSet::shutdown` で強制クローズしたのち、`Server::diagnostics`
+   （イシュー #720、`docs/design/diagnostics-sink.md`）で登録したシンクへ
+   `DiagnosticEvent::RebindDrainGraceExceeded` を通知する。強制クローズの確定を
+   通知より先に行う順序は、最終 graceful shutdown（`docs/design/
+   graceful-shutdown.md` 3 節）と同一で、利用側シンクの異常・遅延が
+   フェイルクローズを妨げないための意図的な順序）。この drain は `run_until`
+   自体をブロックしない。新世代の accept ループは並行して動き続ける
 4. 新世代用の `shutdown_flag`（`Arc<AtomicBool>::new(false)`）を用意する
 
 ### 5.1 なぜ `run_until` をブロックしないのか

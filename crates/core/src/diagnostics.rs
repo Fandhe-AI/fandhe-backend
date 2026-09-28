@@ -186,8 +186,9 @@ impl Diagnostics for StderrDiagnostics {
 }
 
 // クロージャをそのまま `Diagnostics` として登録できるようにする便利 impl。
-// `Server::new().diagnostics(|_| {})` で出力を抑止できる（利用者は独自
-// struct を書かずに済む）。
+// `Server::new().diagnostics(|_event: &DiagnosticEvent<'_>| {})` で出力を
+// 抑止できる（利用者は独自 struct を書かずに済む）。引数の型注釈は必須
+// （`|_| {}` のみでは HRTB が絡み型推論に失敗しコンパイルが通らない）。
 impl<F> Diagnostics for F
 where
     F: Fn(&DiagnosticEvent<'_>) + Send + Sync + 'static,

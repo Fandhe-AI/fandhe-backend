@@ -91,7 +91,9 @@ impl Server {
   breaking change にしない
 - `impl<F: Fn(&DiagnosticEvent<'_>) + Send + Sync + 'static> Diagnostics for F`
   の blanket impl により、クロージャをそのまま登録できる
-  （`Server::new().diagnostics(|_| {})` で出力抑止が 1 行で書ける）
+  （`Server::new().diagnostics(|_event: &DiagnosticEvent<'_>| {})` で出力
+  抑止が 1 行で書ける。引数の型注釈は必須で、`|_| {}` のみでは HRTB が絡み
+  型推論に失敗しコンパイルが通らない）
 - `Server` は `Arc<dyn Diagnostics>` としてシンクを保持する。`Box` ではなく
   `Arc` にしたのは、`spawn_generation_drain`（detached `tokio::spawn` タスク）
   へ `Server` 全体ではなくシンクだけを安価に `clone` して渡すため

@@ -19,9 +19,11 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
   シンク `StderrDiagnostics` を追加し、`Server::diagnostics(sink)` で登録
   できます。未登録時（既定）は `StderrDiagnostics` が使われ、現行の
   `eprintln!` 出力と文言・接頭辞・出力先（stderr）が完全互換です。クロージャを
-  そのまま登録できる blanket impl があるため、`Server::new().diagnostics(|_|
-  {})` の 1 行で出力を抑止したり、`tracing::warn!` 等へ転送する独自シンクを
-  書いたりできます（新規外部依存の追加なし、`tracing` feature とは無関係。
+  そのまま登録できる blanket impl があるため、
+  `Server::new().diagnostics(|_event: &DiagnosticEvent<'_>| {})` の 1 行で
+  出力を抑止したり、`tracing::warn!` 等へ転送する独自シンクを書いたりできます
+  （引数の型注釈は必須で、`|_| {}` のみでは HRTB が絡み型推論に失敗しコンパイル
+  が通りません。新規外部依存の追加なし、`tracing` feature とは無関係。
   設計は
   [`docs/design/diagnostics-sink.md`](docs/design/diagnostics-sink.md)、
   イシュー [#720](https://github.com/Fandhe-AI/fandhe-backend/issues/720)）。
