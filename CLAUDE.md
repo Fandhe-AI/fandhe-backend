@@ -688,14 +688,29 @@ fandhe-backend/
 │   │                                    # ときに Close フレームを送らず drop していた
 │   │                                    # 不具合を修正した。close code 1009（Message Too
 │   │                                    # Big）を送出後、生ストリームの半閉鎖 + 有界な
-│   │                                    # 読み捨て（`close_grace` で有界化）を行い、
-│   │                                    # frame 上限超過時に送信途中の巨大 payload が
-│   │                                    # 残ったままの close で Close 1009 が RST に
-│   │                                    # よって失われるのを防ぐ（`session::
+│   │                                    # 読み捨てを行い、frame 上限超過時に送信途中の
+│   │                                    # 巨大 payload が残ったままの close で Close 1009
+│   │                                    # が RST によって失われるのを防ぐ（`session::
 │   │                                    # handle_message_too_big`。戻り値は従来どおり
 │   │                                    # `Err(WsError::Protocol(Capacity(_)))` のままの
 │   │                                    # 非破壊修正、`docs/design/plugin-boundary.md`
-│   │                                    # 5 節参照）。
+│   │                                    # 5 節参照）。PR #744 の codex/review 指摘 2 件に
+│   │                                    # 対応し、(1) 読み捨て全体の期限は
+│   │                                    # `WsSender::close` の要求を既に観測済みなら
+│   │                                    # その要求時点 + `close_grace`（[`CloseBound`]）を
+│   │                                    # 引き継ぎ、検出時点から新たに `close_grace` を
+│   │                                    # 与え直さないようにし、(2) 読み捨てループ自体は
+│   │                                    # `LINGER_IDLE`（2 秒固定）単位の無通信タイムアウトで
+│   │                                    # 打ち切るようにした（Apache httpd の lingering
+│   │                                    # close と同型。Close 応答を返して TCP を
+│   │                                    # 開けたままにする協調的なクライアントや、
+│   │                                    # 応答しない相手が `close_grace` 一杯まで接続・
+│   │                                    # タスク・メモリを占有できないようにする DoS 対策。
+│   │                                    # 極小フレームを送り続けて無通信を作らない相手は
+│   │                                    # 従来どおり `close_grace`（要求済みならその
+│   │                                    # 継承先の期限）まで保持されうるが、これは
+│   │                                    # `close_and_drain` の他の終了経路が元々許容している
+│   │                                    # 残存リスクと同型で本経路固有の後退ではない）。
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O

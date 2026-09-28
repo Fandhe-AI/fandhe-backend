@@ -551,8 +551,18 @@ where
                             // 閉じる（イシュー #719）。根本原因は `failure` の
                             // `Capacity` エラーのまま呼び出し元へ返す
                             // （Close 送出自体の失敗で上書きしない）。
+                            //
+                            // 期限は `outbound.close`（[`CloseBound`]）から得る
+                            // （codex/review 指摘対応、PR #744）。`WsSender::close`
+                            // の要求を既に観測済みなら、その要求時点 +
+                            // `close_grace` という既存の期限をそのまま引き継ぐ
+                            // （新たに `close_grace` 全量を与え直すと、要求から
+                            // `close_grace` 以内にセッションを終える
+                            // [`CloseBound`] の契約を超過しうる）。要求が未観測
+                            // なら今から `close_grace` 後になり、従来と同じ。
+                            let deadline = outbound.close.deadline();
                             outbound.release();
-                            handle_message_too_big(ws, config.close_grace).await;
+                            handle_message_too_big(ws, deadline).await;
                         }
                         return failure.into_parts();
                     }
@@ -2027,15 +2037,47 @@ where
 ///   パース状態）は使わず生ストリームを直接読むため、frame 上限経路の
 ///   「ヘッダ解析済み・payload 未読」というパース状態の不整合には
 ///   影響されない。
-/// - Close 送出・半閉鎖・読み捨ての全体を `close_grace` 単一の期限で
-///   有界化する。Close 応答を返さない、または送り続けるクライアントにも
-///   接続を無期限には保持させない（Issue #175 の DoS 対策を後退させない）。
-async fn handle_message_too_big<S>(mut ws: WebSocketStream<S>, close_grace: Duration)
+/// - Close 送出・半閉鎖・読み捨ての全体を、呼び出し元から渡される
+///   `deadline` で有界化する（codex/review 指摘対応、PR #744）。
+///   `deadline` は通常 `close_grace` 相当の残り期限だが、`WsSender::close`
+///   の要求を既に観測済みの場合はその要求時点 + `close_grace` を引き継ぐ
+///   （呼び出し元 [`run_session_inner`] を参照。`close_grace` を都度
+///   フルに与え直すと [`CloseBound`] の「要求から `close_grace` 以内に
+///   終える」契約を超過しうる）。
+/// - 読み捨てループ自体は `LINGER_IDLE` 単位の短い無通信タイムアウトで
+///   打ち切る（Apache httpd の lingering close と同型のパターン）。
+///   フレーム上限超過は攻撃者が任意に安価にトリガできるため、
+///   [`close_and_drain`] のような cooperative なクライアント前提の経路
+///   （idle timeout・サーバー起点キャンセル等）と同じ「`deadline` 一杯まで
+///   保持してよい」設計を単純に踏襲すると、Close に対して TCP を
+///   閉じない・時々小さいフレームを送るだけの相手に `deadline` 分の
+///   接続・タスク・メモリを安価に占有させてしまう（AGENTS.md セキュリティ
+///   観点、DoS 上限の後退）。
+///   本経路は生ストリームを直接読むため tungstenite のフレームパーサは
+///   使えず（`ended` フラグにより `ws.next()` は機能しない、上記参照）、
+///   受信バイト列から相手の Close フレーム（opcode 0x8）を判別すること
+///   自体はできるが採用しない。frame 上限経路では読み捨て対象が「フレーム
+///   ヘッダ解析済み・payload 未読」の巨大 payload そのもの（クライアント
+///   側でマスクされ疑似ランダムに見えるバイト列）であり、その中に
+///   `0x88` 相当のバイトが偶然出現するたびに「Close 受信」と誤検出して
+///   早期に読み捨てを打ち切ると、payload の残りが未読のまま接続を閉じて
+///   カーネル RST を誘発し、クライアントが直前の Close 1009 を受け取れ
+///   なくなる（本関数が対策する #719 自体の再発）。そのため代わりに
+///   「一定時間相手から何も届かなければ打ち切る」という送信元の意図に
+///   依存しない有界化を採用する: Close 応答を返して TCP は開けたままにする
+///   協調的なクライアントは無通信になった時点で `LINGER_IDLE` 以内に
+///   終了し、応答しない・ヘッダのみ送って沈黙する相手も同じく
+///   `LINGER_IDLE` で終了する。極小フレームを送り続けて無通信を作らない
+///   相手（トリクラー）だけが `deadline` まで到達しうるが、これは
+///   [`close_and_drain`] が bounded な他の全終了経路（idle timeout・
+///   キャンセル・`WsSender::close`）で元々許容している残存リスクと同型
+///   であり、本経路固有の後退ではない。
+const LINGER_IDLE: Duration = Duration::from_secs(2);
+
+async fn handle_message_too_big<S>(mut ws: WebSocketStream<S>, deadline: Instant)
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let deadline = Instant::now() + close_grace;
-
     let sequence = async {
         // Close の reason は固定文字列のみとし、受信サイズ・上限値・内部
         // 状態を含めない（情報露出の最小化、`.claude/rules/security.md`・
@@ -2055,18 +2097,21 @@ where
         // 閉じられる。エラーは無視する。
         let _ = raw.shutdown().await;
 
-        // 有界の読み捨て（lingering close）。上のコメント「frame 上限経路
-        // では〜」を参照。
+        // 有界の読み捨て（lingering close）。上の doc「読み捨てループ自体は
+        // 〜」を参照。1 回の read を `LINGER_IDLE`（全体の残り期限が短ければ
+        // それ）で区切り、無通信（タイムアウト）・EOF・エラーのいずれかで
+        // 終了する。
         let mut buf = [0u8; 8192];
         loop {
-            match raw.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(_) => continue,
+            let read_until = std::cmp::min(Instant::now() + LINGER_IDLE, deadline);
+            match tokio::time::timeout_at(read_until, raw.read(&mut buf)).await {
+                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(_)) => continue,
             }
         }
     };
 
-    // `close_grace` 満了（タイムアウト）も、切断という目的自体は既に
+    // `deadline` 満了（タイムアウト）も、切断という目的自体は既に
     // Close 送出・半閉鎖で試み済みのため、特別扱いせず単に打ち切る。
     let _ = tokio::time::timeout_at(deadline, sequence).await;
 }
@@ -3050,6 +3095,131 @@ mod tests {
             ),
             "expected Err(WsError::Protocol(Capacity(_))), got {result:?}"
         );
+    }
+
+    /// codex/review 指摘（PR #744、P1）の回帰テスト: `WsSender::close` の
+    /// 要求を既に観測済みの状態で受信上限超過（`handle_message_too_big`）が
+    /// 発生した場合、`close_grace` を新たに全量与え直すのではなく、要求時点
+    /// + `close_grace` という既存の期限をそのまま引き継ぐこと。
+    ///
+    /// `run_session_inner` の `MessageTooLarge` 分岐は `outbound.close`
+    /// （[`CloseBound`]）に対して「`deadline()` を呼んでから `release()` する」
+    /// という手順を踏む（[`OutboundGuard::release`] は `close` フィールドには
+    /// 触れないため呼び出し順自体は結果に影響しないが、実際のコードと同じ
+    /// 手順で検証する）。本テストは `OutboundGuard`/`CloseBound` を直接
+    /// 構成してこの手順を再現し、要求時刻（t0）から間隔を置いた後に
+    /// 呼び出しても `deadline()` が t0 起点の値を返し続けることを確認する
+    /// （`run_session_inner` を丸ごと駆動する統合テストは、close 要求が
+    /// キュー投入直後に outbound 優先で即座に処理されてしまい
+    /// `MessageTooLarge` 分岐へ到達できないため、この境界で直接検証する）。
+    #[tokio::test(start_paused = true)]
+    async fn close_bound_deadline_is_reused_for_message_too_big() {
+        const CLOSE_GRACE: Duration = Duration::from_secs(10);
+        const GAP_BEFORE_TRIGGER: Duration = Duration::from_secs(3);
+
+        let (tx, rx) = handler::channel(handler::DEFAULT_OUTBOUND_CAPACITY);
+        let mut outbound = OutboundGuard::new(Some(rx), &tx, CLOSE_GRACE);
+
+        // close 要求前の観測は「要求なし」（実運用では通常送信経路
+        // （`send_bounded` 等）が都度参照する）。
+        assert!(
+            outbound.close.observe().is_none(),
+            "no close request yet, deadline must be unset"
+        );
+
+        tx.close(4000, "bye").await.expect("close should succeed");
+        let close_requested_at = Instant::now();
+
+        // 要求直後に 1 回観測させ、期限を記録させる（実運用では要求から
+        // `MessageTooLarge` 検出までの間に挟まる通常送信経路
+        // （`send_bounded`/`run_handler_with_outbound_drain` 等）が
+        // `outbound.close` を参照するたびに行う観測に相当する）。
+        assert_eq!(
+            outbound.close.observe(),
+            Some(close_requested_at + CLOSE_GRACE),
+            "first observation after the request must record t0 + close_grace"
+        );
+
+        // 記録後、`MessageTooLarge` 検出（＝ 2 回目の観測）までに間隔を置く。
+        tokio::time::sleep(GAP_BEFORE_TRIGGER).await;
+
+        // 実際の呼び出し箇所と同じ手順: 先に `deadline()` を取得してから
+        // `release()` する。
+        let deadline = outbound.close.deadline();
+        outbound.release();
+
+        assert_eq!(
+            deadline,
+            close_requested_at + CLOSE_GRACE,
+            "handle_message_too_big に渡す期限は close 要求時刻 (t0) + close_grace で\
+             なければならない（呼び出し時点 (t0 + {GAP_BEFORE_TRIGGER:?}) + close_grace を\
+             新たに与えてはならない）"
+        );
+    }
+
+    /// codex/review 指摘（PR #744、P1）の回帰テスト: 受信上限超過後の読み捨て
+    /// ループ（`handle_message_too_big`）は、相手が無通信になった時点で
+    /// `close_grace` 一杯まで待たず `LINGER_IDLE` 程度で速やかに終了すること。
+    ///
+    /// クライアントは受信上限超過を引き起こした後、TCP は開けたまま何も
+    /// 送らない（Close 応答すら返さない、最も非協力的なケース）。
+    /// `close_grace` を `LINGER_IDLE` より十分大きく設定し、セッション終了が
+    /// `close_grace` 全量ではなく `LINGER_IDLE` 程度で起きることを確認する。
+    #[tokio::test(start_paused = true)]
+    async fn message_too_big_ends_promptly_when_peer_goes_silent() {
+        const CLOSE_GRACE: Duration = Duration::from_secs(10);
+
+        let mut config = test_config();
+        config.close_grace = CLOSE_GRACE;
+        config.max_message_size = 64;
+        config.max_frame_size = 64;
+        let config: &'static WebSocketConfig = Box::leak(Box::new(config));
+
+        let (server_side, client_side) = tokio::io::duplex(1 << 16);
+        let (tx, rx) = handler::channel(handler::DEFAULT_OUTBOUND_CAPACITY);
+        let conn_ctx = test_conn_ctx(tx);
+
+        let session_handle = tokio::spawn(async move {
+            let cancel = std::future::pending::<()>();
+            let mut cancel = std::pin::pin!(cancel);
+            run_session_inner(
+                server_side,
+                Vec::new(),
+                config,
+                cancel.as_mut(),
+                Some(rx),
+                &conn_ctx,
+            )
+            .await
+        });
+
+        let mut client = WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
+        let oversized = "x".repeat(256);
+        client
+            .send(Message::Text(oversized.into()))
+            .await
+            .expect("client send should succeed at the transport layer");
+        let triggered_at = Instant::now();
+        // クライアントはここから何も送らない（サイレント）。`client` を保持
+        // したまま drop しない（TCP を閉じない = EOF を発生させない）。
+
+        let (reason, result) = tokio::time::timeout(Duration::from_secs(600), session_handle)
+            .await
+            .expect("session should finish within timeout")
+            .expect("session task should not panic");
+        assert!(
+            matches!(reason, CloseReason::MessageTooLarge),
+            "expected MessageTooLarge, got {reason:?}"
+        );
+        assert!(result.is_err(), "expected Err(..), got {result:?}");
+
+        let elapsed = triggered_at.elapsed();
+        assert!(
+            elapsed < CLOSE_GRACE,
+            "a silent peer must not hold the session open for the full close_grace \
+             ({CLOSE_GRACE:?}); expected termination around LINGER_IDLE, took {elapsed:?}"
+        );
+        drop(client);
     }
 
     /// 脱出点対応表: ハンドラが `WsOutcome::Close` →
