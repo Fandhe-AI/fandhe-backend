@@ -385,7 +385,7 @@ pub(crate) fn match_segments<'a>(
 /// `Literal` 同士は文字列が一致すること、`Param` 同士・`Wildcard` 同士は
 /// パラメータ名を問わず種別が一致することのみを要求する（`/a/{id}` と
 /// `/a/{name}` は名前が違うだけで同じ URL 集合を奪い合うため衝突、
-/// `docs/design/`（`Router::merge` doc comment）参照）。種別が異なる
+/// [`super::Router::merge`] doc comment 参照）。種別が異なる
 /// （`Param` と `Wildcard` 等）・セグメント数が異なる場合は非等価（衝突ではない）。
 /// 衝突としない部分的な重なり（`/a/{x}` と `/a/{*rest}` 等）は `Router::dispatch`
 /// の既存優先順位（登録順の線形走査）に委ねる、モジュール doc「マッチング方針」節参照。
@@ -402,7 +402,7 @@ pub(crate) fn segments_equivalent(a: &[Segment], b: &[Segment]) -> bool {
 }
 
 /// パース済み [`Segment`] 列をパターン文字列表現へ復元する（[`RouterMergeError`]
-/// のメッセージ用、`super::merge` モジュール参照）。`route_param` が受理する
+/// のメッセージ用、[`super::Router::merge`] 参照）。`route_param` が受理する
 /// 元表記（`{name}` / `{*name}`）へ 1 対 1 で戻せる（`parse_pattern` の逆変換）。
 pub(crate) fn render_segments(segments: &[Segment]) -> String {
     let mut out = String::new();
