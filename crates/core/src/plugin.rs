@@ -528,6 +528,16 @@ fn from_plugin_response(response: fandhe_backend_plugin_webrtc_proxy::Response) 
 /// permit はタスク完了（= `handle_upgrade` の戻り）まで保持され、Close
 /// ハンドシェイク完了（`WebSocketConfig::close_grace` 上限）で解放される。上記「permit の
 /// 契約」を破らない。
+///
+/// # 接続元アドレスの受け渡し（イシュー #728）
+///
+/// `peer_addr` は呼び出し元（`crate::server::handle_connection_with_permit`）が
+/// 保持する実 peer address（[`crate::extension::GateContext::peer_addr`] と
+/// 同一由来、イシュー #486）。`websocket` feature 有効時は
+/// `fandhe_backend_plugin_websocket::handle_upgrade_with_peer_addr` へ
+/// そのまま渡し、確立したセッションの `WsOpenContext::peer_addr` から
+/// 観測可能にする。`tokio::io::duplex` 等の非ソケット経路では `None` になる
+/// フェイルクローズ契約は `GateContext::peer_addr` と同一。
 pub(crate) async fn try_handle_upgrade<S>(
     stream: S,
     head: &RequestHead,
@@ -535,6 +545,7 @@ pub(crate) async fn try_handle_upgrade<S>(
     server: &Server,
     permit: &mut Option<OwnedSemaphorePermit>,
     cancel: UpgradeCancel,
+    peer_addr: Option<std::net::SocketAddr>,
 ) -> Option<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -560,11 +571,14 @@ where
                 let _permit = permit;
                 // キャンセル発火時の切断シーケンス（101 送出前なら送出せず
                 // 終了、セッション確立後なら Close frame 送信 → 有界応答待ち）
-                // は `handle_upgrade` 側の責務（上の関数 doc「世代キャンセル
-                // シグナル」を参照）。エラーは接続の静かなクローズとして扱い
-                // panic に変換しない（呼び出し元契約、上の関数 doc を参照）。
-                let _ = fandhe_backend_plugin_websocket::handle_upgrade(
-                    stream, &head, leftover, &config, cancel_fut,
+                // は `handle_upgrade_with_peer_addr` 側の責務（上の関数 doc
+                // 「世代キャンセルシグナル」を参照）。エラーは接続の静かな
+                // クローズとして扱い panic に変換しない（呼び出し元契約、
+                // 上の関数 doc を参照）。`peer_addr` は accept したソケットの
+                // 実 peer address（`GateContext::peer_addr` と同一由来、
+                // イシュー #486）をそのまま運ぶ（イシュー #728）。
+                let _ = fandhe_backend_plugin_websocket::handle_upgrade_with_peer_addr(
+                    stream, &head, leftover, &config, cancel_fut, peer_addr,
                 )
                 .await;
             });
@@ -574,7 +588,7 @@ where
 
     #[cfg(not(feature = "websocket"))]
     {
-        let _ = (head, &leftover, server, &permit, cancel);
+        let _ = (head, &leftover, server, &permit, cancel, peer_addr);
     }
 
     Some(stream)

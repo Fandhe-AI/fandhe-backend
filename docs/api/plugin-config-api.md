@@ -38,6 +38,7 @@ RFC 6455 ハンドシェイク検証・101 応答・tokio-tungstenite へのフ�
 | 既定値 | `path = "/ws"`、`max_message_size = 1 MiB`、`max_frame_size = 256 KiB`、`idle_timeout = Some(60 秒)`、`close_grace = 10 秒`、`outbound_capacity = 8`、`ping_interval = None`（Ping keepalive は無効） |
 | メッセージハンドラ | `with_handler(impl WsMessageHandler)` で差し替え。既定は `EchoHandler`（後方互換） |
 | 接続コンテキスト | `WsMessageHandler::on_message_with_ctx`（provided、既定は既存の `on_message` へ委譲）で `WsConnContext`（`conn_id()` / `sender()` / `param()` / `params()`）を参照可能。`WsOpenContext::conn_id()` で `on_open` 時点からも同じ接続 ID を取得できる（`docs/design/ws-connection-context-and-close.md` 参照） |
+| 接続元アドレス | `WsOpenContext::peer_addr()` で `on_open` 時点の接続元の実 peer address（`Option<std::net::SocketAddr>`）を参照可能。コア経由（`Server::bind`/`BoundServer::run_until` 等の実ソケット経路）では `Some`、`tokio::io::duplex` 等の非ソケット経路・`peer_addr` を渡さない旧 API `handle_upgrade`（5 引数）からの呼び出しでは常に `None`（`GateContext::peer_addr` と同型のフェイルクローズ契約）。`Debug` 出力には含まれない（イシュー [#728](https://github.com/Fandhe-AI/fandhe-backend/issues/728)、`docs/design/ws-connection-context-and-close.md` 15 節） |
 | 終了理由 | `handler::CloseReason` / `handler::FailureKind`（いずれも `#[non_exhaustive]`）でセッションの終了経路を種別化。`WsMessageHandler::on_close(&self, ctx: &WsConnContext, reason: CloseReason)`（既定 no-op）で `on_open` が呼ばれた接続についてのみ終了経路を問わずちょうど 1 回通知される（ハンドシェイク検証失敗・101 送出前キャンセルでは呼ばれない、`on_open` と対称のフェイルクローズ契約。`docs/design/ws-connection-context-and-close.md` 4 節参照）。`CloseReason::PongTimeout` は Ping keepalive の Pong 期限切れによる切断を表す（下記参照） |
 | サーバー起点 Ping keepalive | `WebSocketConfig::with_ping_interval(interval, pong_timeout)` で有効化（既定は無効、`interval`/`pong_timeout` に `Duration::ZERO` は `PingIntervalError` で構築時に拒否）。`interval` ごとにサーバーから `Message::Ping` を送出し、送出時点から `pong_timeout` 以内にクライアントの Pong が届かなければ `CloseReason::PongTimeout` で切断する（`idle_timeout` とは独立した死活監視で、サーバー起点 push を受けているだけの受信専用クライアントにも効く。Ping の送出自体は `idle_timeout` をリセットしない、Pong の受信は他の全フレーム種別と同じく `idle_timeout` もリセットする、既存挙動）。期限切れは受信待ちで読めるフレームがなくなった時点で判定し、それまでに届いているフレームは先に読んで処理する（Pong を返さない対向も、フレームが途切れず届いている間は切断しない）。1 回の送出（Ping・Reply・outbound push 等）がその開始時刻から `pong_timeout` を超えてブロックした場合も同じ `PongTimeout` で終了する。`without_ping_interval()` で明示的に無効へ戻す |
 | 送信ハンドル（切断待ち） | `WsSender::closed().await` で切断まで待つ（受信側 `Receiver` drop 時に完了。cancel-safe）、`WsSender::is_closed()` で同期判定（`send` の `Err` が正の判定基準、こちらは参考値）。`close()` 呼び出し後、または受信側 drop 後のいずれか早い方で `true` になる（clone 間で同じ時点を観測。`close()` 確定時点も対象） |
@@ -49,7 +50,11 @@ RFC 6455 ハンドシェイク検証・101 応答・tokio-tungstenite へのフ�
   shutdown・rebind 世代 drain）発火時の Close ハンドシェイク猶予。
   `fandhe_backend_plugin_websocket::handle_upgrade` の第 5 引数（キャンセル
   `Future`）が発火すると close code 1001 Going Away を送出し、`close_grace` を
-  上限にクライアント応答を有界に待つ（v0.3.0 での BREAKING CHANGE）。
+  上限にクライアント応答を有界に待つ（v0.3.0 での BREAKING CHANGE）。接続元
+  アドレスを渡したい呼び出し元は、同じ 5 引数 + `peer_addr`（6 番目）を取る
+  `handle_upgrade_with_peer_addr` を使う（既存 `handle_upgrade` は
+  `peer_addr: None` で本関数へ委譲する後方互換の薄いラッパー、イシュー
+  [#728](https://github.com/Fandhe-AI/fandhe-backend/issues/728)）。
   `WsMessageHandler::on_message` / `on_message_with_ctx` が返す `Future` は任意の
   `await` 点で drop されうる契約（
   [`docs/design/ws-cancellation-propagation.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/design/ws-cancellation-propagation.md)）

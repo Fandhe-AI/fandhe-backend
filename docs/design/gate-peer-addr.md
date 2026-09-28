@@ -143,6 +143,11 @@ cargo doc -p fandhe-backend-core -p fandhe-backend-plugin-hub-wiring --all-featu
 
 - `Middleware` / `UpgradeHandler` / `Interceptor` への peer addr 伝搬（本
   イシューは `RequestGate` のみ。必要になった時点で `GateContext` と同型の
-  パターンを適用可能）。
+  パターンを適用可能）。**イシュー #728 でこのうち WebSocket の Upgrade
+  委譲経路（`fandhe_backend_plugin_websocket::handle_upgrade_with_peer_addr`
+  → `WsOpenContext::peer_addr()`）を実装済み**（設計は
+  `docs/design/ws-connection-context-and-close.md` 15 節）。ただし
+  `WsOpenContext::peer_addr` は `GateContext::peer_addr`（`derive(Debug)` で
+  出力）とは異なり `Debug` 出力に含めない判断とした（同節 15.3 参照）。
 - `X-Forwarded-For` 等の信頼済みプロキシ解決（trusted proxies）機構。
 - local-llm-server 側の回避構成撤去（ダウンストリームの作業）。
