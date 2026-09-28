@@ -357,7 +357,14 @@ Upgrade 型パターン確立後もアプリケーションロジックを差し
 - **`async fn` in trait の型消去**: dyn 互換にするため、`crates/plugin-graphql`
   の `BoxExecuteFn` の先例に倣い、新規依存を追加せず既存依存
   `futures-util`（`std` feature）が提供する `BoxFuture` で手書きする
-  （async-trait 等は追加しない、pay-for-what-you-use）
+  （async-trait 等は追加しない、pay-for-what-you-use）。イシュー #723 で
+  同一型（`Pin<Box<dyn Future<Output = T> + Send + 'a>>`）の独自エイリアス
+  `handler::BoxFuture` を追加公開し、利用者が `futures-util` を直接の
+  依存に加えずに `WsMessageHandler` を実装できるようにした（外部クレートの
+  項目を再公開せず本クレート自身が型を定義することで、公開 API を
+  `futures-util` のバージョン更新から絶縁する。既存の
+  `futures_util::future::BoxFuture` を使った実装は型が同一のため無変更で
+  コンパイルが通る、非破壊）
 - **tungstenite 型を公開 API に漏らさない**: `WsMessage` は独自表現とし、
   内部依存（`tokio-tungstenite`）のバージョン更新から公開 API を絶縁する
 - **呼び出し順序**: セッションループはメッセージごとにハンドラを直列

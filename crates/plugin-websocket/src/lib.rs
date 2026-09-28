@@ -106,6 +106,13 @@
 //! #671 で `WsMessageHandler::on_open` を追加し、[`handle_upgrade`] が
 //! 101 応答送出成功後にチャネルを生成してハンドラへ渡すようになったが、
 //! 新規クレート依存は増えない（既存の `tokio`/`sync` feature を使うのみ）。
+//! イシュー #723 で、[`handler::WsMessageHandler::on_message`] 等が返す
+//! 型消去済み非同期処理の型 [`handler::BoxFuture`] を本クレート独自の
+//! 型エイリアスとして公開した
+//! （`futures_util::future::BoxFuture` と同一の型、非破壊）。利用者は
+//! `futures-util` を直接の依存に加えずに [`handler::WsMessageHandler`] を
+//! 実装できる（`futures-util` 自体は本クレートの内部依存として引き続き
+//! `session.rs` の `SinkExt`/`StreamExt` に使う）。
 //!
 //! # キャンセル `Future` の受け渡し（イシュー #492）
 //!
@@ -164,6 +171,7 @@ pub use config::{
     MAX_OUTBOUND_CAPACITY, OutboundCapacityError, PingIntervalError, WebSocketConfig,
 };
 pub use error::WsError;
+pub use handler::BoxFuture;
 pub use handshake::{WsHandshakeCheck, WsHandshakeContext};
 
 use fandhe_backend_http::request::RequestHead;
