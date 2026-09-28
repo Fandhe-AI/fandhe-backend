@@ -56,6 +56,38 @@ async fn read_http_response_line<S: AsyncRead + Unpin>(stream: &mut S) -> String
     String::from_utf8(buf).expect("response must be valid utf-8")
 }
 
+/// `101 Switching Protocols` 応答の期待バイト列（固定テンプレート、
+/// `crates/plugin-websocket/src/handshake.rs::serialize_101`）。本ファイルの
+/// 全テストは `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==`（RFC 6455 4.2.2
+/// の既知ベクタ）で統一しているため、`Sec-WebSocket-Accept` の導出値
+/// （`s3pPLMBiTxaQ9kYGzzhZRbK+xOo=`）も固定できる。
+const EXPECTED_101_RESPONSE: &str = "HTTP/1.1 101 Switching Protocols\r\n\
+    Upgrade: websocket\r\n\
+    Connection: Upgrade\r\n\
+    Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\
+    \r\n";
+
+/// `400 Bad Request` 応答の期待バイト列（固定テンプレート、
+/// `crates/plugin-websocket/src/handshake.rs::serialize_400`）。
+const EXPECTED_400_RESPONSE: &str =
+    "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+
+/// 101 応答直後に想定外のバイト列（ボディ相当）が続いていないことを確認する。
+/// `WsMessageHandler`（本テストの `RecordAllPhases`）はメッセージ受信まで
+/// サーバー起点で能動送信しないため、クライアントが何も送っていない時点で
+/// サーバー側ストリームから読み取りを試みれば必ずタイムアウトする契約
+/// （AGENTS.md「アサーション網羅性」節: ステータス行・ヘッダだけでなく
+/// ボディ〔ここでは「空である」こと〕まで確認する）。
+async fn assert_no_immediate_body<S: AsyncRead + Unpin>(stream: &mut S) {
+    let mut probe = [0u8; 1];
+    let result = tokio::time::timeout(Duration::from_millis(200), stream.read(&mut probe)).await;
+    assert!(
+        result.is_err(),
+        "101 response must have an empty body: no bytes should arrive before any WS frame \
+         is sent by the client"
+    );
+}
+
 fn parse_head(buf: &[u8]) -> RequestHead {
     match parse_request_head(buf).unwrap() {
         ParseOutcome::Complete { head, .. } => head,
@@ -173,7 +205,11 @@ async fn all_fields_observable_at_open_message_and_close() {
     });
 
     let response = read_http_response_line(&mut client_side).await;
-    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert_eq!(
+        response, EXPECTED_101_RESPONSE,
+        "101 response must match the exact status line, headers, and empty body"
+    );
+    assert_no_immediate_body(&mut client_side).await;
 
     let mut client: WebSocketStream<_> =
         WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
@@ -257,7 +293,11 @@ async fn legacy_api_and_missing_headers_yield_none() {
     });
 
     let response = read_http_response_line(&mut client_side).await;
-    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert_eq!(
+        response, EXPECTED_101_RESPONSE,
+        "101 response must match the exact status line, headers, and empty body"
+    );
+    assert_no_immediate_body(&mut client_side).await;
 
     let mut client: WebSocketStream<_> =
         WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
@@ -331,7 +371,11 @@ async fn over_limit_header_becomes_none_others_unaffected() {
     });
 
     let response = read_http_response_line(&mut client_side).await;
-    assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert_eq!(
+        response, EXPECTED_101_RESPONSE,
+        "101 response must match the exact status line, headers, and empty body"
+    );
+    assert_no_immediate_body(&mut client_side).await;
 
     let mut client: WebSocketStream<_> =
         WebSocketStream::from_raw_socket(client_side, Role::Client, None).await;
@@ -402,7 +446,10 @@ async fn handshake_failure_skips_open_and_close() {
         buf.push(byte[0]);
     }
     let response = String::from_utf8(buf).unwrap();
-    assert!(response.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+    assert_eq!(
+        response, EXPECTED_400_RESPONSE,
+        "400 response must match the exact status line, headers, and empty body"
+    );
 
     let result = tokio::time::timeout(Duration::from_secs(2), server_task)
         .await
