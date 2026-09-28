@@ -1041,6 +1041,66 @@ drop されていなくても `true` を返しうる点が、`closed()`（受信
   （`WsOutcome::Close` 確定後の終端排出）は対象外のままとする。すでに
   `close_deadline` で全体が有界であり、Close 経路であることが理由。
 
+## 14. #714: `idle_timeout` との併用（doc・テストの明確化）
+
+13 節（#713）は Ping keepalive 単体の設計を扱い、`idle_timeout`
+（`crates/plugin-websocket/src/config.rs`、Issue #175）との組み合わせ時の
+挙動・推奨設定は「別途整理する」として持ち越していた。本節はその整理結果を
+記録する（コード変更なし。doc・`tests/idle_keepalive_e2e.rs` の新規 e2e
+テストのみ、受け入れ基準は Issue #714 参照）。
+
+### 相互作用の根拠
+
+`run_session_inner` は各反復で `idle_deadline` と `Keepalive::timer_leg()`
+（13 節の `PongDeadline`/`PingDue`）の**早い方**だけを timer leg として採用する
+（同時刻は `Idle` を優先、`session.rs` L400–405）。`idle_deadline` は
+クライアントから実際にフレームを 1 つ受信するたびに更新され（Text/Binary/
+Ping/Pong の全種別、outbound push では更新しない）、Pong の受信は他の全
+フレーム種別と同じくこの更新対象に含まれる。
+
+この 2 点から次が導ける:
+
+- **生きた対向**: `interval` ごとの Ping に Pong を返す対向は、その Pong
+  受信で `idle_deadline` も更新される。したがって `interval + pong_timeout`
+  が `idle_timeout` より小さければ、Pong 期限が発火するより前に次の
+  `idle_deadline` 延長が起きるため、`idle_timeout` は実質発火しない。
+- **死んだ対向**: Pong を返さない対向は `idle_deadline` も更新されないため、
+  2 つのタイマーはどちらも当初の期限のまま競走する。`interval +
+  pong_timeout < idle_timeout` であれば必ず Pong 期限が先に発火し、
+  `CloseReason::PongTimeout` になる（「早い方が勝つ」契約、13 節参照）。
+- **誤設定（`interval >= idle_timeout`）**: 最初の Ping 送出予定時刻に
+  `idle_deadline` が先に到達してしまうため、対向の生死によらず
+  `CloseReason::IdleTimeout` で切断される。Pong を返す生存対向であっても
+  Pong を返すより前に切断されてしまう。
+
+以上から、**`interval + pong_timeout < idle_timeout`** を推奨設定として doc
+（`WebSocketConfig::idle_timeout` フィールド・`with_idle_timeout`・
+`with_ping_interval` の各 doc comment、`AGENTS.md`・
+`docs/api/plugin-config-api.md`）に明記した。`idle_timeout` 自体は無効化
+しないことを推奨する（fail-safe、Issue #175 の DoS 対策を後退させない）。
+
+### テストでの固定
+
+`tests/idle_keepalive_e2e.rs`（新規、公開 API 経由の e2e）で 4 点を固定する:
+
+1. keepalive 無効・push-only トラフィックでも `idle_timeout` が発火する
+   （AC2。push はリセットしない契約の e2e 側での確認）
+2. 推奨設定（`interval + pong_timeout < idle_timeout`）で、push-only の
+   生存クライアントは `idle_timeout` の何倍もの仮想時間が経過しても
+   切断されない（AC3・生存）
+3. 同じ推奨設定で、Pong を一切返さない対向は `idle_timeout` より先に
+   `CloseReason::PongTimeout` で切断される（AC3・死活検出。「早い方が勝つ」
+   契約の固定）
+4. `interval >= idle_timeout` の誤設定では、最初の Ping が送られる前に
+   `CloseReason::IdleTimeout` で切断される（AC3・誤設定の固定）
+
+`session.rs` の単体テスト `outbound_push_does_not_reset_idle_timeout` /
+`ping_send_does_not_reset_idle_timeout`（既存）は「push・Ping 送出自体が
+`idle_deadline` を進めない」という内部の一点を直接固定する契約テストで、
+本節の e2e はその契約の上に成り立つ利用者から見える結果（切断される／
+されない・どの `CloseReason` になるか）を検証する、役割の異なるテストとして
+併存する。
+
 [`WsOpenContext`]: ../../crates/plugin-websocket/src/handler.rs
 [`WsSendError`]: ../../crates/plugin-websocket/src/handler.rs
 [`DEFAULT_OUTBOUND_CAPACITY`]: ../../crates/plugin-websocket/src/handler.rs

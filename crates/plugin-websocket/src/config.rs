@@ -100,6 +100,51 @@ pub struct WebSocketConfig {
     /// 切断する（Issue #175）。`None` にするとアイドルタイムアウトを無効化
     /// する（[`without_idle_timeout`][Self::without_idle_timeout] による
     /// 明示操作でのみ無効化を許し、暗黙に保護が外れないようにする）。
+    ///
+    /// # リセット条件（イシュー #714）
+    ///
+    /// 期限はクライアントから実際にフレームを 1 つ受信するたびに延長される
+    /// （Text / Binary / Ping / Pong の全種別。ハンドラ処理・返信送出が
+    /// 完了して次の受信待ちに入る直前に更新するため、処理時間そのものは
+    /// アイドル待機時間に算入しない）。**サーバー起点の送出では延長されない**:
+    /// [`crate::handler::WsSender::send`]/`try_send` による push、
+    /// [`with_ping_interval`][Self::with_ping_interval] によるサーバー起点
+    /// Ping の送出、[`WsOutcome::Reply`][crate::handler::WsOutcome::Reply]
+    /// の送出のいずれも本フィールドをリセットしない。そのため CDP 互換
+    /// サーバーのように「サーバーが push するだけでクライアントは受信専用」
+    /// の用途では、`idle_timeout` だけでは生存クライアントを維持できず
+    /// 切断されてしまう（`crate::session` の単体テスト
+    /// `outbound_push_does_not_reset_idle_timeout` が push 側の契約を固定、
+    /// `tests/idle_keepalive_e2e.rs::push_only_traffic_triggers_idle_timeout`
+    /// が e2e で同じ結果を検証する）。
+    ///
+    /// # Ping keepalive との併用（推奨設定）
+    ///
+    /// push を受けているだけの受信専用クライアントも死活監視したい場合は
+    /// [`with_ping_interval`][Self::with_ping_interval] を併用する。Pong の
+    /// 受信は他の全フレーム種別と同じく本フィールドもリセットするため、
+    /// **`interval + pong_timeout` が本フィールドの値より小さくなるように
+    /// 設定すれば**、生存クライアントは Ping への自動 Pong で
+    /// `idle_timeout` が発火する前に期限が延長され続け、切断されない
+    /// （例: 既定 60 秒に対し `with_ping_interval(30s, 10s)`。
+    /// `tests/idle_keepalive_e2e.rs::
+    /// ping_keepalive_keeps_push_only_client_alive_beyond_idle_timeout`
+    /// で検証）。Pong を返さない対向は、`idle_timeout` より先に Pong 期限
+    /// （[`CloseReason::PongTimeout`][crate::handler::CloseReason::PongTimeout]）
+    /// で切断される（`idle_deadline` と keepalive のタイマーは早い方が
+    /// 採用される契約、`crate::session` モジュール doc・
+    /// `docs/design/ws-connection-context-and-close.md` 13 節を参照）。
+    ///
+    /// **誤設定への注意**: `interval` を本フィールドの値以上にすると、
+    /// 最初の Ping が送られる前（またはその Pong が届く前）に
+    /// `idle_timeout` が発火してしまい、生存している受信専用クライアント
+    /// でも切断される
+    /// （`tests/idle_keepalive_e2e.rs::
+    /// ping_interval_not_shorter_than_idle_timeout_still_hits_idle_timeout`
+    /// で固定）。本フィールドは無効化しない（fail-safe、Issue #175 を
+    /// 後退させない）ことを推奨する。`without_idle_timeout()` は keepalive
+    /// を有効化している場合の補足的な選択肢に留める（死活監視自体は
+    /// keepalive の Pong 期限が担う構成になる）。
     pub idle_timeout: Option<Duration>,
     /// Close handshake（サーバ側からの Close フレーム送出 → クライアント
     /// 応答またはEOF待ち）を打ち切るまでの猶予（既定 10 秒）。
@@ -324,6 +369,12 @@ impl WebSocketConfig {
 
     /// アイドルタイムアウトを指定した値に変更する。
     ///
+    /// クライアントからのフレーム受信でのみリセットされ、サーバー起点の
+    /// push・Ping 送出では延長されない（[`idle_timeout`][Self::idle_timeout]
+    /// フィールドの doc「リセット条件」節を参照）。
+    /// [`with_ping_interval`][Self::with_ping_interval] と併用する場合の
+    /// 推奨設定・誤設定時の挙動も同節を参照。
+    ///
     /// # Examples
     ///
     /// ```
@@ -332,6 +383,23 @@ impl WebSocketConfig {
     ///
     /// let config = WebSocketConfig::default().with_idle_timeout(Duration::from_secs(30));
     /// assert_eq!(config.idle_timeout, Some(Duration::from_secs(30)));
+    /// ```
+    ///
+    /// 推奨設定（`interval + pong_timeout < idle_timeout`）で
+    /// `with_ping_interval` と組み合わせる例（イシュー #714）:
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use fandhe_backend_plugin_websocket::WebSocketConfig;
+    ///
+    /// let config = WebSocketConfig::default()
+    ///     .with_idle_timeout(Duration::from_secs(60))
+    ///     .with_ping_interval(Duration::from_secs(30), Duration::from_secs(10))
+    ///     .unwrap();
+    /// assert!(
+    ///     config.ping_interval().unwrap() + config.pong_timeout().unwrap()
+    ///         < config.idle_timeout.unwrap()
+    /// );
     /// ```
     #[must_use]
     pub fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
@@ -522,6 +590,16 @@ impl WebSocketConfig {
     /// `idle_timeout` だけでは死活監視できず、本設定が必要になる（親
     /// #712）。Pong の受信自体は他の全フレーム種別と同じく `idle_timeout`
     /// もリセットする（既存挙動）。
+    ///
+    /// **`idle_timeout` との推奨設定（イシュー #714）**: `interval +
+    /// pong_timeout` を `idle_timeout` より小さく設定すると、生存クライアント
+    /// は Ping への Pong で `idle_timeout` が延長され続け、Pong を返さない
+    /// 対向は `idle_timeout` より先に `PongTimeout` で切断される（詳細・
+    /// 検証は [`idle_timeout`][Self::idle_timeout] フィールドの doc
+    /// 「Ping keepalive との併用」節を参照）。逆に `interval` を
+    /// `idle_timeout` 以上にすると、最初の Ping が送られる前に
+    /// `idle_timeout` が発火してしまい、生存クライアントでも切断される
+    /// （同節「誤設定への注意」を参照）。
     ///
     /// 既定（未呼び出し時）は無効（後方互換。既存の `idle_timeout` のみに
     /// よる死活監視から挙動を変えない）。
