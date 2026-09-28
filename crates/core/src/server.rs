@@ -65,7 +65,8 @@
 //!          イシュー #420。登録順に逐次適用。3.5/4/5 いずれの応答にも適用）
 //!       5.5. plugin::finalize_response（レスポンス後処理型プラグイン。
 //!          5.4 適用後の応答に適用）
-//!       6. レスポンス書き込み → Middleware::on_response
+//!       6. レスポンス書き込み → Middleware::on_response_with_status（送出
+//!          ステータス付き、イシュー #721。既定実装が on_response へ委譲）
 //!       7. should_keep_alive(head) が false なら接続を閉じる
 //! }
 //! ```
@@ -700,7 +701,9 @@ impl Server {
         self
     }
 
-    /// [`Middleware`] を登録する（登録順に `on_request` / `on_response` が呼ばれる）。
+    /// [`Middleware`] を登録する（登録順に `on_request` /
+    /// `on_response_with_status`（イシュー #721。既定実装が `on_response` へ
+    /// 委譲するため、後者だけを実装する既存コードも動作する）が呼ばれる）。
     #[must_use]
     pub fn middleware(mut self, middleware: impl Middleware + 'static) -> Self {
         self.middlewares.push(Box::new(middleware));
@@ -2427,7 +2430,11 @@ pub(crate) async fn handle_connection_with_permit<S>(
             // 抱えない。`RecvBuffer::shrink_if_oversized` と同一ポリシー）。
             send_buf.shrink_if_oversized();
             for middleware in &server.middlewares {
-                middleware.on_response(&request.head, started_at.elapsed());
+                middleware.on_response_with_status(
+                    &request.head,
+                    response.status,
+                    started_at.elapsed(),
+                );
             }
             if !keep_alive {
                 return;
@@ -2568,9 +2575,16 @@ pub(crate) async fn handle_connection_with_permit<S>(
             // ようにする（レビュー指摘、`crate::streaming` モジュール doc の
             // 「応答完全性」節と同じ fail-closed 方針）。
             match keep_alive_after {
-                Some(keep_alive_after) => {
+                Some(StreamingCompletion {
+                    keep_alive: keep_alive_after,
+                    status,
+                }) => {
                     for middleware in &server.middlewares {
-                        middleware.on_response(&request.head, started_at.elapsed());
+                        middleware.on_response_with_status(
+                            &request.head,
+                            status,
+                            started_at.elapsed(),
+                        );
                     }
                     if keep_alive_after {
                         continue;
@@ -2646,13 +2660,28 @@ pub(crate) async fn handle_connection_with_permit<S>(
         // 抱えない。`RecvBuffer::shrink_if_oversized` と同一ポリシー）。
         send_buf.shrink_if_oversized();
         for middleware in &server.middlewares {
-            middleware.on_response(&request.head, started_at.elapsed());
+            middleware.on_response_with_status(
+                &request.head,
+                response.status,
+                started_at.elapsed(),
+            );
         }
 
         if !keep_alive {
             return;
         }
     }
+}
+
+/// [`write_streaming_response`] が正常終端時に運ぶ完了情報（イシュー #721）。
+///
+/// `keep_alive` は呼び出し元がこの接続で次のリクエストを読みに行ってよいかを、
+/// `status` はクライアントへ実際に送出した最終ステータスを表す
+/// （[`write_streaming_response`] の doc「戻り値」節を参照）。非公開の
+/// 内部専用型で、公開 API 面には出さない。
+struct StreamingCompletion {
+    keep_alive: bool,
+    status: u16,
 }
 
 /// [`Handler::handle_streaming`]（イシュー #319）が `Some` を返した場合の
@@ -2697,13 +2726,20 @@ pub(crate) async fn handle_connection_with_permit<S>(
 ///
 /// # 戻り値
 ///
-/// - `Some(true)`: 正常終端（[`crate::streaming::BodyWriter::finish`]）し、
-///   かつ呼び出し元の keep-alive 判定・生存期間・shutdown 状態のいずれも
-///   継続を許す場合。呼び出し元はこの接続で次のリクエストを読みに行ってよい
-/// - `Some(false)`: 正常終端したが keep-alive を継続しない場合
-///   （`Connection: close` を広告済み、または完了後に生存期間超過・
-///   shutdown を検知した場合。プラン「完了後に max_connection_lifetime を
-///   再チェックし、超過時はヘッダが keep-alive でも接続を閉じる」を実装）
+/// - `Some(StreamingCompletion { keep_alive: true, status })`: 正常終端
+///   （[`crate::streaming::BodyWriter::finish`]）し、かつ呼び出し元の
+///   keep-alive 判定・生存期間・shutdown 状態のいずれも継続を許す場合。
+///   呼び出し元はこの接続で次のリクエストを読みに行ってよい
+/// - `Some(StreamingCompletion { keep_alive: false, status })`: 正常終端
+///   したが keep-alive を継続しない場合（`Connection: close` を広告済み、
+///   または完了後に生存期間超過・shutdown を検知した場合。プラン「完了後に
+///   max_connection_lifetime を再チェックし、超過時はヘッダが keep-alive
+///   でも接続を閉じる」を実装）
+/// - いずれの場合も `status` はクライアントへ実際に送出した最終ステータス
+///   （`Interceptor::map_response` → `finalize_streaming_head` 適用後の
+///   `head_response.status`。呼び出し元が
+///   [`Middleware::on_response_with_status`]（イシュー #721）へそのまま
+///   渡す値）
 /// - `None`: タイムアウト・書き込みエラー・producer が `finish` を呼ばずに
 ///   drop された（打ち切り）場合。呼び出し元は追加の応答を送らず接続を
 ///   即座にクローズする（応答完全性の fail-closed、`crate::streaming` の
@@ -2716,7 +2752,7 @@ async fn write_streaming_response<S>(
     server: &Server,
     connection_started_at: Instant,
     shutdown_flag: &Arc<AtomicBool>,
-) -> Option<bool>
+) -> Option<StreamingCompletion>
 where
     S: AsyncWrite + Unpin,
 {
@@ -2776,6 +2812,14 @@ where
     head_response = crate::plugin::finalize_streaming_head(server, head, head_response);
     head_response.body = Vec::new();
 
+    // クライアントへ実際に送出する最終ステータス（イシュー #721、
+    // `Middleware::on_response_with_status` へ渡す値）。`map_response` /
+    // `finalize_streaming_head` 適用後のここで確定し、以降の
+    // `prepare_streaming_compression`（HTTP/1.1 chunked 経路専用、ヘッダの
+    // みを変更し status には触れない）を経ても不変であるため、HTTP/1.0・
+    // HTTP/1.1 どちらの終端点でもこの値をそのまま使う。
+    let final_status = head_response.status;
+
     if head.version == HttpVersion::Http10 {
         // HTTP/1.0: chunked framing を使わず、ヘッドは常に Connection: close。
         let head_bytes = head_response.serialize_streaming_head_http10();
@@ -2803,7 +2847,10 @@ where
         // ことと「ヘッダ側で Transfer-Encoding を出力しない」ことが対で成立し、
         // ヘッダとボディ有無の不整合によるレスポンス分割類の脅威を防ぐ。
         if Response::is_bodyless_status(head_response.status) {
-            return Some(false);
+            return Some(StreamingCompletion {
+                keep_alive: false,
+                status: final_status,
+            });
         }
 
         loop {
@@ -2834,7 +2881,12 @@ where
                 // `Middleware::on_response` を呼んでしまい、「on_response は
                 // 完走した応答にのみ対応する」契約（`crate::streaming` の
                 // 応答完全性の節）に反する（レビュー指摘、イシュー #319）。
-                RecvOutcome::End => return Some(false),
+                RecvOutcome::End => {
+                    return Some(StreamingCompletion {
+                        keep_alive: false,
+                        status: final_status,
+                    });
+                }
                 RecvOutcome::Aborted => return None,
             }
         }
@@ -2882,11 +2934,12 @@ where
     // スマグリング）を招く。応答自体は完走しているため、通常の `End` と
     // 同じく `on_response` を発火させる `Some` を返す。
     if Response::is_bodyless_status(head_response.status) {
-        return Some(
-            keep_alive
+        return Some(StreamingCompletion {
+            keep_alive: keep_alive
                 && connection_started_at.elapsed() < server.max_connection_lifetime
                 && !shutdown_flag.load(Ordering::Relaxed),
-        );
+            status: final_status,
+        });
     }
 
     loop {
@@ -2960,11 +3013,12 @@ where
                 // shutdown_flag を反映し、shutdown 後も新規リクエストを
                 // 受け付け続けることは避ける（`max_connection_lifetime` の
                 // 扱いと同一パターン）。
-                return Some(
-                    keep_alive
+                return Some(StreamingCompletion {
+                    keep_alive: keep_alive
                         && connection_started_at.elapsed() < server.max_connection_lifetime
                         && !shutdown_flag.load(Ordering::Relaxed),
-                );
+                    status: final_status,
+                });
             }
             // producer が finish を呼ばずに drop された（打ち切り）。応答
             // 完全性を保つため終端チャンクを送らず接続を閉じる
@@ -3063,6 +3117,23 @@ mod tests {
         }
         fn on_response(&self, _head: &RequestHead, _elapsed: Duration) {
             self.events.lock().unwrap().push("on_response");
+        }
+    }
+
+    /// 送出ステータスだけを記録するトイ `Middleware`（イシュー #721）。
+    /// `on_response_with_status` のみを実装し、コアが新フックを正しく呼び
+    /// 出すこと（受入基準 1）を検証する。
+    struct StatusRecordingMiddleware {
+        statuses: Mutex<Vec<u16>>,
+    }
+
+    impl Middleware for StatusRecordingMiddleware {
+        fn name(&self) -> &'static str {
+            "status-recording"
+        }
+        fn on_request(&self, _head: &RequestHead) {}
+        fn on_response_with_status(&self, _head: &RequestHead, status: u16, _elapsed: Duration) {
+            self.statuses.lock().unwrap().push(status);
         }
     }
 
@@ -4896,5 +4967,259 @@ GET /c HTTP/1.1\r\n\r\n",
 
         let _client = TcpStream::connect(addr).await.expect("connect は成功する");
         accept_task.await.expect("accept task は panic しない");
+    }
+
+    // --- Middleware::on_response_with_status（イシュー #721） ---
+
+    /// 通常応答経路（200）で送出ステータスがそのまま観測されること
+    /// （受入基準 1）。
+    #[tokio::test]
+    async fn middleware_observes_status_for_normal_response() {
+        let handler = FixedHandler {
+            status: 200,
+            body: b"ok",
+            calls: AtomicUsize::new(0),
+        };
+        let mw = Arc::new(StatusRecordingMiddleware {
+            statuses: Mutex::new(Vec::new()),
+        });
+        struct MwProxy(Arc<StatusRecordingMiddleware>);
+        impl Middleware for MwProxy {
+            fn name(&self) -> &'static str {
+                "status-proxy"
+            }
+            fn on_request(&self, _head: &RequestHead) {}
+            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
+                self.0.on_response_with_status(head, status, elapsed);
+            }
+        }
+        let server = Server::new()
+            .handler(handler)
+            .middleware(MwProxy(Arc::clone(&mw)));
+
+        let _ = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+
+        assert_eq!(*mw.statuses.lock().unwrap(), vec![200]);
+    }
+
+    /// ハンドラ未登録（既定 404）でも送出ステータスがそのまま観測される
+    /// こと。
+    #[tokio::test]
+    async fn middleware_observes_404_when_no_handler() {
+        let mw = Arc::new(StatusRecordingMiddleware {
+            statuses: Mutex::new(Vec::new()),
+        });
+        struct MwProxy(Arc<StatusRecordingMiddleware>);
+        impl Middleware for MwProxy {
+            fn name(&self) -> &'static str {
+                "status-proxy"
+            }
+            fn on_request(&self, _head: &RequestHead) {}
+            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
+                self.0.on_response_with_status(head, status, elapsed);
+            }
+        }
+        let server = Server::new().middleware(MwProxy(Arc::clone(&mw)));
+
+        let _ = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+
+        assert_eq!(*mw.statuses.lock().unwrap(), vec![404]);
+    }
+
+    /// `RequestGate` 拒否応答（401）のステータスが観測されること
+    /// （ゲート拒否経路の呼び出し箇所の回帰防止）。
+    #[tokio::test]
+    async fn middleware_observes_gate_reject_status() {
+        let mw = Arc::new(StatusRecordingMiddleware {
+            statuses: Mutex::new(Vec::new()),
+        });
+        struct MwProxy(Arc<StatusRecordingMiddleware>);
+        impl Middleware for MwProxy {
+            fn name(&self) -> &'static str {
+                "status-proxy"
+            }
+            fn on_request(&self, _head: &RequestHead) {}
+            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
+                self.0.on_response_with_status(head, status, elapsed);
+            }
+        }
+        let server = Server::new()
+            .gate(RequireAuthGate)
+            .middleware(MwProxy(Arc::clone(&mw)));
+
+        let _ = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+
+        assert_eq!(*mw.statuses.lock().unwrap(), vec![401]);
+    }
+
+    /// `Interceptor::map_response` によるステータス書き換え（200 → 418）後、
+    /// 送出した書き換え後の値が観測されること。
+    #[tokio::test]
+    async fn middleware_observes_status_after_interceptor_map_response() {
+        struct RewriteTo418;
+        impl Interceptor for RewriteTo418 {
+            fn name(&self) -> &'static str {
+                "rewrite-to-418"
+            }
+            fn map_response(&self, _head: &RequestHead, mut response: Response) -> Response {
+                response.status = 418;
+                response
+            }
+        }
+        let handler = FixedHandler {
+            status: 200,
+            body: b"ok",
+            calls: AtomicUsize::new(0),
+        };
+        let mw = Arc::new(StatusRecordingMiddleware {
+            statuses: Mutex::new(Vec::new()),
+        });
+        struct MwProxy(Arc<StatusRecordingMiddleware>);
+        impl Middleware for MwProxy {
+            fn name(&self) -> &'static str {
+                "status-proxy"
+            }
+            fn on_request(&self, _head: &RequestHead) {}
+            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
+                self.0.on_response_with_status(head, status, elapsed);
+            }
+        }
+        let server = Server::new()
+            .handler(handler)
+            .interceptor(RewriteTo418)
+            .middleware(MwProxy(Arc::clone(&mw)));
+
+        let _ = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+
+        assert_eq!(*mw.statuses.lock().unwrap(), vec![418]);
+    }
+
+    /// ストリーミング応答（HTTP/1.1 chunked、201 完走）で送出ステータスが
+    /// 観測されること。
+    #[tokio::test]
+    async fn middleware_observes_streaming_status() {
+        let handler = StreamingHandler {
+            status: 201,
+            content_type: None,
+            chunks: vec![b"ok"],
+        };
+        let mw = Arc::new(StatusRecordingMiddleware {
+            statuses: Mutex::new(Vec::new()),
+        });
+        struct MwProxy(Arc<StatusRecordingMiddleware>);
+        impl Middleware for MwProxy {
+            fn name(&self) -> &'static str {
+                "status-proxy"
+            }
+            fn on_request(&self, _head: &RequestHead) {}
+            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
+                self.0.on_response_with_status(head, status, elapsed);
+            }
+        }
+        let server = Server::new()
+            .handler(handler)
+            .middleware(MwProxy(Arc::clone(&mw)));
+
+        let _ = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+
+        assert_eq!(*mw.statuses.lock().unwrap(), vec![201]);
+    }
+
+    /// ストリーミング応答の HTTP/1.0 経路でも送出ステータスが観測される
+    /// こと。
+    #[tokio::test]
+    async fn middleware_observes_streaming_status_on_http10() {
+        let handler = StreamingHandler {
+            status: 201,
+            content_type: None,
+            chunks: vec![b"ok"],
+        };
+        let mw = Arc::new(StatusRecordingMiddleware {
+            statuses: Mutex::new(Vec::new()),
+        });
+        struct MwProxy(Arc<StatusRecordingMiddleware>);
+        impl Middleware for MwProxy {
+            fn name(&self) -> &'static str {
+                "status-proxy"
+            }
+            fn on_request(&self, _head: &RequestHead) {}
+            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
+                self.0.on_response_with_status(head, status, elapsed);
+            }
+        }
+        let server = Server::new()
+            .handler(handler)
+            .middleware(MwProxy(Arc::clone(&mw)));
+
+        let _ = roundtrip(&server, b"GET / HTTP/1.0\r\n\r\n").await;
+
+        assert_eq!(*mw.statuses.lock().unwrap(), vec![201]);
+    }
+
+    /// ストリーミング応答の bodyless ステータス（204）完走経路でも送出
+    /// ステータスが観測されること。
+    #[tokio::test]
+    async fn middleware_observes_streaming_bodyless_status() {
+        let handler = StreamingHandler {
+            status: 204,
+            content_type: None,
+            chunks: vec![],
+        };
+        let mw = Arc::new(StatusRecordingMiddleware {
+            statuses: Mutex::new(Vec::new()),
+        });
+        struct MwProxy(Arc<StatusRecordingMiddleware>);
+        impl Middleware for MwProxy {
+            fn name(&self) -> &'static str {
+                "status-proxy"
+            }
+            fn on_request(&self, _head: &RequestHead) {}
+            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
+                self.0.on_response_with_status(head, status, elapsed);
+            }
+        }
+        let server = Server::new()
+            .handler(handler)
+            .middleware(MwProxy(Arc::clone(&mw)));
+
+        let _ = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n").await;
+
+        assert_eq!(*mw.statuses.lock().unwrap(), vec![204]);
+    }
+
+    /// 打ち切り（producer が `finish` を呼ばずに drop）では新フック
+    /// `on_response_with_status` も呼ばれないこと（既存
+    /// `streaming_abort_does_not_invoke_on_response` の対、「応答が完走した
+    /// 場合にのみ呼ぶ」契約の新フックへの継承確認）。
+    #[tokio::test]
+    async fn streaming_abort_does_not_invoke_on_response_with_status() {
+        let handler = AbortingStreamingHandler {
+            chunks: vec![b"partial"],
+        };
+        let mw = Arc::new(StatusRecordingMiddleware {
+            statuses: Mutex::new(Vec::new()),
+        });
+        struct MwProxy(Arc<StatusRecordingMiddleware>);
+        impl Middleware for MwProxy {
+            fn name(&self) -> &'static str {
+                "status-proxy"
+            }
+            fn on_request(&self, _head: &RequestHead) {}
+            fn on_response_with_status(&self, head: &RequestHead, status: u16, elapsed: Duration) {
+                self.0.on_response_with_status(head, status, elapsed);
+            }
+        }
+        let server = Server::new()
+            .handler(handler)
+            .middleware(MwProxy(Arc::clone(&mw)));
+
+        let _ = roundtrip(&server, b"GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n").await;
+
+        assert!(
+            mw.statuses.lock().unwrap().is_empty(),
+            "打ち切り（finish なし drop）では on_response_with_status を \
+             呼ばないはず: {:?}",
+            mw.statuses.lock().unwrap()
+        );
     }
 }

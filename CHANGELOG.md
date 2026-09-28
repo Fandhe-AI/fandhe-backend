@@ -12,6 +12,16 @@ lockstep バンプ予定（`docs/design/ws-connection-context-and-close.md` 7 �
 
 ### Added
 
+- `fandhe-backend-core`: `Middleware` に新規メソッド `on_response_with_status`
+  を追加しました。レスポンス送出後の観測フックからクライアントへ**実際に
+  送出したステータスコード**（`Interceptor::map_response` 等のレスポンス
+  改変シーム適用後の最終値）を参照できます。既定実装は `on_response` へ
+  委譲するため、`on_response` だけを実装した既存コードは変更なしにそのまま
+  動作します（コアは新フックのみを呼び出す非破壊追加。既存の必須メソッド
+  `on_response` にも既定実装（no-op）を付与しました）。ステータス付き
+  アクセスログ（`GET /path 200 3ms` 等）が必要な実装は本メソッドを override
+  してください（イシュー
+  [#721](https://github.com/Fandhe-AI/fandhe-backend/issues/721)）。
 - `fandhe-backend-plugin-websocket`: ハンドシェイクの受理判定フック
   `WebSocketConfig::with_handshake_check`（新規 trait `WsHandshakeCheck`・
   コンテキスト型 `WsHandshakeContext`）を追加しました。RFC 6455 検証を通過した
