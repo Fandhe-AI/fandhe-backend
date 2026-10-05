@@ -573,6 +573,22 @@ class FetchFfTest(unittest.TestCase):
                               capture_output=True, text=True,
                               env=dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1"))
 
+    def test_existing_repo_without_origin_is_not_touched(self):
+        """origin の無い既存の clean なリポジトリ（利用者の別リポジトリの可能性）へ origin を足して checkout しない。"""
+        self.ff.mkdir()
+        self.git(self.ff, "init", "-q", "-b", "main")
+        (self.ff / "mine.txt").write_text("mine\n")
+        self.git(self.ff, "add", ".")
+        self.git(self.ff, "commit", "-q", "-m", "mine")
+        head = self.git(self.ff, "rev-parse", "HEAD")
+        r = self.fetch(self.rev_a)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("origin を取得できない", r.stderr)
+        self.assertEqual(self.git(self.ff, "rev-parse", "HEAD"), head)
+        self.assertEqual(self.git(self.ff, "remote"), "", "origin を追加しない")
+        self.assertEqual((self.ff / "mine.txt").read_text(), "mine\n")
+        self.assertFalse((self.ff / "f.txt").exists())
+
     def test_fresh_fetch_and_clean_advance(self):
         r = self.fetch(self.rev_a)
         self.assertEqual(r.returncode, 0, r.stderr)

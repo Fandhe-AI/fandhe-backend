@@ -179,8 +179,15 @@ fetch_ff() {
       echo "エラー: ${FF_DIR}/.git が通常のディレクトリではない（symlink・gitdir ファイルはリンク先を書き換え得るため中止）" >&2
       return 1
     fi
+    # origin を取得できない（origin が無い・git リポジトリとして読めない）既存リポジトリは、このスクリプトが作った
+    # キャッシュと確認できない。origin を追加して checkout すると利用者の別リポジトリの作業ツリーを書き換えるため中止する。
     local origin
-    if origin="$(git -C "${FF_DIR}" remote get-url origin 2>/dev/null)" && [[ "${origin}" != "${FF_URL}" ]]; then
+    if ! origin="$(git -C "${FF_DIR}" remote get-url origin 2>/dev/null)"; then
+      echo "エラー: ${FF_DIR} は既存の git リポジトリだが origin を取得できない。利用者の別リポジトリの可能性があるため書き換えず中止する。" >&2
+      echo "       不要なら手動で ${FF_DIR} を削除してから再実行する。" >&2
+      return 1
+    fi
+    if [[ "${origin}" != "${FF_URL}" ]]; then
       echo "エラー: ${FF_DIR} の origin が期待する上流 URL と異なる（${origin}）。利用者の別リポジトリの可能性があるため書き換えず中止する。" >&2
       echo "       不要なら手動で ${FF_DIR} を削除してから再実行する。" >&2
       return 1
@@ -200,10 +207,9 @@ fetch_ff() {
       return 0
     fi
   else
+    # origin を追加するのは、ここで新規に git init した場合だけ。既存のリポジトリの origin は上で一致確認済みで、
+    # 追加も書き換えもしない
     git init -q "${FF_DIR}"
-  fi
-  # origin が無い場合（初回の git init 直後）だけ追加する。既存の origin は上で一致確認済みで、書き換えない
-  if ! git -C "${FF_DIR}" remote get-url origin >/dev/null 2>&1; then
     git -C "${FF_DIR}" remote add origin "${FF_URL}"
   fi
   # 認証プロンプトで止まらず失敗させる（CI・隔離環境での無限待機を避ける）

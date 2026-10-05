@@ -167,7 +167,7 @@
       "source": "Fandhe-AI/agent-util-skills",
       "sourceType": "github",
       "skillPath": "skills/setup-github-pages/SKILL.md",
-      "computedHash": "e951de3c73c4a2c26b3bd169291c24c654c9b91b10bd4eadab9b1eff56462824"
+      "computedHash": "ead97c73d2b871f09c7e2fb080c156e506d488f775f24955d1c2fd2564e89308"
     },
     "sync-skills-lock": {
       "source": "Fandhe-AI/agent-cli-skills",
