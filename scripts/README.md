@@ -581,6 +581,10 @@ bash scripts/standalone-crates-io-check.sh
 
 ## `docs-site-visual.sh` — docs サイトの視覚確認スクリーンショット撮影（イシュー #399）
 
+> **注意（PR #757 以降）**: 移行前の生成器（`crates/docs-site`）で実サイトをビルドする
+> スクリプトのため、公開サイトの生成を `tools/docs-site-gen` へ移行した現在の main では
+> 動かない。`crates/docs-site` と同時に削除または書き換える。
+
 ```bash
 bash scripts/docs-site-visual.sh
 # 出力: $HOME/fandhe-backend-docs-site-visual/<timestamp>/{shots/*.png, manifest.tsv, logs/}

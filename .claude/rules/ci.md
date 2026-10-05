@@ -38,7 +38,8 @@ self-hosted 専用 runner 例外を含む）を参照し、本節では書き写
   なるため、既存の導入ステップは削除・弱体化しない
 - Rust toolchain の導入は `dtolnay/rust-toolchain`（コミット SHA 固定）を正とする
   （self-hosted の永続環境前提だった `Fandhe-AI/actions/rust-toolchain-setup` の代替。
-  イシュー #551 で確立、`docs-site.yml` build ジョブが先行事例）
+  イシュー #551 で確立。旧 `docs-site.yml` build ジョブが先行事例で、同 workflow は
+  `pages.yml` へ移行済み）
 - ビルドを伴うジョブは `actions/cache`（コミット SHA 固定）で cargo registry /
   `target` をキャッシュしてよい。キーは
   `<job-family>-<runner.os>-<toolchain cachekey>-<hashFiles('**/Cargo.toml')>`

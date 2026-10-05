@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "fandhe-backend の公式 docs サイト（GitHub Pages）を生成する SSG ツール。Fandhe-AI/fandhe-frontend の crates/docs-site（MIT OR Apache-2.0）からの移植。配布物には含めない開発者・CI 用ツール。"
+description = "fandhe-backend の docs サイト（GitHub Pages）を生成していた旧 SSG ツール（公開サイトの生成は tools/docs-site-gen へ移行済み、切り戻し用の残置）。Fandhe-AI/fandhe-frontend の crates/docs-site（MIT OR Apache-2.0）からの移植。配布物には含めない開発者・CI 用ツール。"
 publish = false
 
 # workspace の lint 既定（unsafe_code / missing_docs を warn）を継承する

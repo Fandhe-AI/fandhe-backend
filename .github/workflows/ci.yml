@@ -98,7 +98,7 @@ jobs:
 
       # ホステッド移行（#551）: self-hosted 永続環境前提の
       # Fandhe-AI/actions/rust-toolchain-setup（rustup 自己修復）に代えて
-      # dtolnay/rust-toolchain（SHA 固定、docs-site.yml build ジョブの先行事例と同一 SHA）を
+      # dtolnay/rust-toolchain（SHA 固定、pages.yml build ジョブと同一 SHA）を
       # 使う。バージョン解決は rust-toolchain.toml（channel = "stable"）と一致させ、
       # 必要 component は action 側 input で明示する（minimal profile 導入時にも
       # rustfmt が確実に揃うようにする保険）。

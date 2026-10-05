@@ -8,6 +8,12 @@
 #   生成する。fandhe-frontend の tools/docs-site/visual-regression.sh からの
 #   移植・改変（base_path・ビルドコマンド・撮影マトリクスを本リポ向けに変更）。
 #
+# 注意（PR #757 以降）:
+#   本スクリプトは移行前の生成器（`cargo run -p fandhe-backend-docs-site`）で実サイトを
+#   ビルドする。公開サイトの生成は tools/docs-site-gen へ移行し `site/assets/site.css` を
+#   削除したため、現在の main では動かない（crates/docs-site と同時に削除または
+#   tools/docs-site-gen/build-local.sh 向けへ書き換える）。
+#
 # 呼び出し元:
 #   人手（レビュー時の目視確認）または docs/acceptance/issue399-docs-site-visual.md
 #   の「再現手順」節から。CI では実行しない（chromium 常設を self-hosted runner に

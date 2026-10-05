@@ -23,8 +23,12 @@
 //! `--out` 欠落・未知の引数は usage を stderr に出して非 0 終了する
 //! （黙って既定値へフォールバックしない、fail-closed。`security.md` A05）。
 //!
-//! CI ワークフロー（`.github/workflows/docs-site.yml`）から `cargo run
-//! -p fandhe-backend-docs-site -- --out <dir>` の形で呼ばれる想定。
+//! 移行前は CI ワークフロー（`.github/workflows/docs-site.yml`、削除済み）から
+//! `cargo run -p fandhe-backend-docs-site -- --out <dir>` の形で呼ばれていた。
+//! 公開サイトの生成は setup-github-pages スキルの構成（`tools/docs-site-gen/` +
+//! `.github/workflows/pages.yml`）へ移行済みで、本クレートは切り戻し用の残置である
+//! （`site/assets/site.css` を削除したため実リポジトリの `site/` はビルドできない。
+//! 公開確認後にクレートごと削除する）。
 //!
 //! 開発者・CI 用ツールであり、フレームワーク本体（`crates/core` 等）の
 //! 依存ツリー・配布物には一切影響しない（`Cargo.toml` の依存方針コメント参照）。
