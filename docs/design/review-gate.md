@@ -186,7 +186,7 @@ required status check の context は ci.yml 等のジョブ名（一部は `mat
 
 - 背景: main の実際の保護は `main-required-checks` ではなく `main-protection`
   （id 20587666）であり、required status check は `ci-complete` の 1 件ではなく 25 件
-  （matrix 化した fmt/clippy/test の 9 件・codex 系 3 件・Cursor Bugbot 等）だった。
+  （#693 時点。現行は 26 件。matrix 化した fmt/clippy/test の 9 件・codex 系 3 件・Cursor Bugbot 等）だった。
   `required_review_thread_resolution: true`・`allowed_merge_methods: ["squash"]` も
   設定されていたが、スクリプト・本ドキュメントには反映されていなかった。#679/PR #685 の
   matrix 化時に ruleset を手作業で更新した経緯もリポジトリに記録されていなかった。

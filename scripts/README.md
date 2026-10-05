@@ -144,7 +144,7 @@ bash scripts/setup-required-checks.sh --help
 - 対象は default branch（`~DEFAULT_BRANCH`）を保護する repository ruleset
   **`main-protection`**。イシュー #693 以前はスクリプトの宛先が存在しない
   `main-required-checks` になっており、実際の保護（`main-protection`、required status
-  check 25 件・`required_review_thread_resolution: true`・squash マージのみ・
+  check 25 件（#693 時点。現行は 26 件）・`required_review_thread_resolution: true`・squash マージのみ・
   `bypass_actors` 空）とは別の ruleset を作ってしまう不整合があった。#693 で
   `main-protection` を正としてその全構成を定義に持つよう改めた。
 - **終了コード**: `0` = 一致（apply なら適用済みか変更不要）、`1` = 差分あり（`--check`
