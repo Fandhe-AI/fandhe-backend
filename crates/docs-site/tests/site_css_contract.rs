@@ -19,6 +19,10 @@
 //! クラス（コードブロックの言語トークン依存で無数の値を取りうる）は本テスト
 //! のスコープ外とする（`.docs-content pre code` の要素セレクタでスタイルが
 //! 適用されるため、契約ドリフトの対象にならない）。
+//!
+//! `site/assets/site.css` を読む 6 テストは現在 `#[ignore]` で無効化している
+//! （公開サイトの生成を setup-github-pages スキルの生成器へ移行し、同ファイルを
+//! 削除したため。経緯と解除条件は `tests/site_build.rs` 冒頭を参照）。
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -200,6 +204,7 @@ fn assert_all_classes_covered(html: &str, css_tokens: &HashSet<String>, context:
 }
 
 #[test]
+#[ignore = "実サイトは setup-github-pages スキルの生成器へ移行し site/assets/site.css を削除済み（本クレート削除までの暫定）"]
 fn docs_page_html_class_tokens_are_covered_by_site_css() {
     let css_tokens = extract_css_class_selectors(&site_css());
     let node = docs_page(
@@ -214,6 +219,7 @@ fn docs_page_html_class_tokens_are_covered_by_site_css() {
 }
 
 #[test]
+#[ignore = "実サイトは setup-github-pages スキルの生成器へ移行し site/assets/site.css を削除済み（本クレート削除までの暫定）"]
 fn sidebar_html_class_tokens_are_covered_by_site_css() {
     let css_tokens = extract_css_class_selectors(&site_css());
     let nav = fixture_nav();
@@ -225,6 +231,7 @@ fn sidebar_html_class_tokens_are_covered_by_site_css() {
 }
 
 #[test]
+#[ignore = "実サイトは setup-github-pages スキルの生成器へ移行し site/assets/site.css を削除済み（本クレート削除までの暫定）"]
 fn header_nav_html_class_tokens_are_covered_by_site_css() {
     let css_tokens = extract_css_class_selectors(&site_css());
     let nav = fixture_nav();
@@ -236,6 +243,7 @@ fn header_nav_html_class_tokens_are_covered_by_site_css() {
 }
 
 #[test]
+#[ignore = "実サイトは setup-github-pages スキルの生成器へ移行し site/assets/site.css を削除済み（本クレート削除までの暫定）"]
 fn prev_next_nav_html_class_tokens_are_covered_by_site_css() {
     let css_tokens = extract_css_class_selectors(&site_css());
     let nav = fixture_nav();
@@ -292,6 +300,7 @@ const EXPECTED_CLASSES: &[&str] = &[
 ];
 
 #[test]
+#[ignore = "実サイトは setup-github-pages スキルの生成器へ移行し site/assets/site.css を削除済み（本クレート削除までの暫定）"]
 fn generated_html_class_inventory_matches_expected_contract_and_site_css() {
     let css_tokens = extract_css_class_selectors(&site_css());
     let expected: HashSet<String> = EXPECTED_CLASSES.iter().map(|s| s.to_string()).collect();
@@ -385,6 +394,7 @@ fn extract_css_class_selectors_ignores_decimal_numbers() {
 /// ことを文字列レベルで検証する（fail-closed。実ブラウザ検証は CI 環境で
 /// 不可なため、この契約テストと CSS 実装レビューの 2 点で担保する）。
 #[test]
+#[ignore = "実サイトは setup-github-pages スキルの生成器へ移行し site/assets/site.css を削除済み（本クレート削除までの暫定）"]
 fn site_css_has_three_column_responsive_breakpoints() {
     let css = site_css();
 

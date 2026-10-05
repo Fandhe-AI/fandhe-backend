@@ -14,6 +14,15 @@
 //! をルートに実際の `site/nav.toml` でビルド）もここに含める。以後の
 //! docs 編集によるリンク切れを `cargo test` が継続的に検出する
 //! （ドッグフーディング保証）。
+//!
+//! ただし実サイトビルド系の 6 テストは現在 `#[ignore]` で無効化している。
+//! 公開サイトの生成を setup-github-pages スキルの生成器（`tools/docs-site-gen/`・
+//! `.github/workflows/pages.yml`）へ移行した際、同生成器の予約アセット名と衝突する
+//! `site/assets/site.css` を削除したため、本クレートは実リポジトリの `site/` を
+//! ビルドできない。リンク切れ検出は移行先の `build-local.sh`（fail-closed の
+//! リンク検査）が担う。本クレートは切り戻し用に残置しており、公開確認後に
+//! クレートごと削除する（切り戻す場合は移行コミットの revert で `site.css` と
+//! 本無効化が同時に元へ戻る）。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -114,6 +123,7 @@ fn build_site_fails_closed_and_writes_nothing_for_broken_link_fixture() {
 /// リポジトリ自身の `site/nav.toml` で成功し続けることをドッグフーディング
 /// 保証として固定する。以後の docs 編集によるリンク切れも本テストが検出する。
 #[test]
+#[ignore = "実サイトは setup-github-pages スキルの生成器へ移行し site/assets/site.css を削除済み（本クレート削除までの暫定）"]
 fn build_site_succeeds_for_the_real_repository_site() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -157,6 +167,7 @@ fn build_site_succeeds_for_the_real_repository_site() {
 /// トリガーに `aria-current="true"` が付く、(c) サイドバーには現在セクション
 /// のページのみが載り他セクションのページが載らない、を固定する。
 #[test]
+#[ignore = "実サイトは setup-github-pages スキルの生成器へ移行し site/assets/site.css を削除済み（本クレート削除までの暫定）"]
 fn build_site_output_has_header_section_menu_and_scoped_sidebar() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -204,6 +215,7 @@ fn build_site_output_has_header_section_menu_and_scoped_sidebar() {
 /// イシュー #391: 実サイトビルド出力に SkipNav・`aria-current="page"` 一本化が
 /// 反映され、`class="current"` が残っていないことを E2E で固定する。
 #[test]
+#[ignore = "実サイトは setup-github-pages スキルの生成器へ移行し site/assets/site.css を削除済み（本クレート削除までの暫定）"]
 fn build_site_output_contains_skip_nav_and_aria_current_only() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -227,6 +239,7 @@ fn build_site_output_contains_skip_nav_and_aria_current_only() {
 /// サイズ上限（[`fandhe_backend_docs_site::search::MAX_INDEX_BYTES`]）以内に
 /// 収まることを固定する。
 #[test]
+#[ignore = "実サイトは setup-github-pages スキルの生成器へ移行し site/assets/site.css を削除済み（本クレート削除までの暫定）"]
 fn build_site_generates_search_index_within_size_limit_for_the_real_repository_site() {
     use fandhe_backend_docs_site::search::MAX_INDEX_BYTES;
 
@@ -260,6 +273,7 @@ fn build_site_generates_search_index_within_size_limit_for_the_real_repository_s
 /// （[`fandhe_backend_docs_site::search::escape_json_string`] の多層防御
 /// エスケープ契約の回帰テスト）。
 #[test]
+#[ignore = "実サイトは setup-github-pages スキルの生成器へ移行し site/assets/site.css を削除済み（本クレート削除までの暫定）"]
 fn build_site_search_index_covers_all_pages_and_escapes_defense_in_depth_characters() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -288,6 +302,7 @@ fn build_site_search_index_covers_all_pages_and_escapes_defense_in_depth_charact
 /// バイト列が同一になることを固定する（[`serialize_index`] のキー順固定
 /// 契約。fandhe_backend_docs_site::search::serialize_index の doc 参照）。
 #[test]
+#[ignore = "実サイトは setup-github-pages スキルの生成器へ移行し site/assets/site.css を削除済み（本クレート削除までの暫定）"]
 fn build_site_search_index_is_byte_identical_across_repeated_builds() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")

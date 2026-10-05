@@ -50,3 +50,9 @@ node_modules/
 # 誤って `git add -A` 等で 97GB 規模の作業ツリーを stage しないための衛生目的。
 # 残存ワークツリーの棚卸し・整理は scripts/clean-worktrees.sh を使う。
 .claude/worktrees/
+
+# docs サイト（setup-github-pages）
+_ff/
+tools/docs-site-gen/target/
+tools/docs-site-gen/Cargo.lock
+_site/
