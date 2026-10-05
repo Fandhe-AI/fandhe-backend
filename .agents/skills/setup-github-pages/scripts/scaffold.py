@@ -36,8 +36,14 @@ SKILL.md の Step 1（`--detect` によるモード判定）、新規構築フ�
 - `.gitignore` へは未登録の行だけを追記する。
 - 書き込み・読み取りは `--target` 配下の通常ファイルに限る（symlink・`.git` 配下は不可。`write_target_problem`）。
 
-終了コード: 0 成功 / 2 入力不正・書き込み先が不適・適用対象外 / 3 競合（所有ファイルの不一致・配置後に編集）/
-4 配置後の check_site 失敗（ファイルは配置済み。指摘箇所を直す）。`--json` 指定時は、どの終了コードでも
+`kind=unrelated`（スキルの配置とは認められない既存ファイルがある）の通常実行は、`--update` なしでは、内容が違う
+同名の所有ファイル・旧版形式の pages.yml・スキルが配置しないファイル（foreign_dir）を競合（exit 3）として何も書かずに
+止まる。生成予定と内容が一致する同名ファイルは配置済みとして扱う（中断した配置の再実行のため）。
+`tools/docs-site-gen` / `src` が対象内を指す symlink は --update でも進めない（kind=symlink の競合）。
+
+終了コード: 0 成功 / 2 入力不正・書き込み先が不適（親パスが通常ファイルなどを含む。書き込み前の検査で止まれば何も書かない。
+書き込み途中の OS エラーも 2 で、失敗したファイルは未変更か未作成のまま（ファイル単位で原子的に書く）、それ以前に書けた分は created / updated に残る）・適用対象外 / 3 競合（所有ファイルの不一致・
+配置後に編集）/ 4 配置後の check_site 失敗（ファイルは配置済み。指摘箇所を直す）。`--json` 指定時は、どの終了コードでも
 JSON を 1 つ標準出力へ出す。
 """
 
@@ -59,7 +65,7 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(Path(__file__).resolve().parent))
 from _common import (  # noqa: E402
     BIDI_RE, COLOR_RE, CONTROL_RE, FF_REV_RE, PLACEHOLDER_RE, LANG_RE, LETTER_RE, MAX_TEXT_LEN, UPSTREAM_BRAND, Brand,
-    has_upstream_word, is_upstream_repo, resolves_inside, sanitize, write_target_problem, valid_owner, valid_repo_name,
+    atomic_write_bytes, has_upstream_word, is_upstream_repo, resolves_inside, sanitize, write_target_problem, valid_owner, valid_repo_name,
 )
 
 BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
@@ -339,7 +345,8 @@ def unknown_generator_entries(target: Path, root_real: Path) -> list[str]:
 
     スキル所有の同名ファイルが 1 つも無くても、ディレクトリが別用途で使われていれば新規構築にしない。
     直下は許可リスト（known_generator_names）、`src/` はスキルが置くファイルだけを既知とする。
-    ディレクトリ自体が symlink・対象の外へ解決される場合は中を見ない（detect が別途その旨を根拠に載せる）。
+    ディレクトリ自体が symlink・対象の外へ解決される場合は中を見ない（symlink は generator_symlinks が別途
+    競合として拾い、対象の外へ解決されるものは配置先ごとの outside_root 競合になる）。
     名前だけを見て、内容は読まない。
     """
     gen = target / "tools" / "docs-site-gen"
@@ -360,6 +367,25 @@ def unknown_generator_entries(target: Path, root_real: Path) -> list[str]:
     except OSError:
         return [_GEN_REL.rstrip("/") + "（読めない）"]
     return sorted(found)
+
+
+def generator_symlinks(target: Path, root_real: Path) -> list[str]:
+    """`tools/docs-site-gen` または `tools/docs-site-gen/src` が、対象内の別の場所を指す symlink なら、その相対パス。
+
+    中に何があるかを確認できない（別プロジェクトのファイルを置いたディレクトリへのリンクかもしれない）ため、
+    「未知のファイルなし」とは扱わない。`build-local.sh` も `tools/docs-site-gen` が symlink なら中止するので、
+    配置してもビルドへ進めない。--update でも進めない（kind=symlink の競合。手動で通常のディレクトリへ直す）。
+    対象の外へ解決されるものは含めない（配置先ごとの outside_root 競合になる）。
+    """
+    gen = target / "tools" / "docs-site-gen"
+    if not resolves_inside(root_real, gen.parent):
+        return []
+    if gen.is_symlink():
+        return [_GEN_REL.rstrip("/")] if resolves_inside(root_real, gen) else []
+    src = gen / "src"
+    if gen.is_dir() and src.is_symlink() and resolves_inside(root_real, src):
+        return [_GEN_REL + "src"]
+    return []
 
 
 def detect(target: Path, root_real: Path) -> dict:
@@ -404,13 +430,16 @@ def detect(target: Path, root_real: Path) -> dict:
     # 同名の所有ファイルの有無に関わらず調べる（同名ファイルが生成予定と同じ内容なら競合にならないため、
     # 先に return すると別用途のファイルを見落として配置へ進んでしまう）。
     stray = unknown_generator_entries(target, root_real)
+    links = generator_symlinks(target, root_real)
+    if links:
+        reasons.append("次はシンボリックリンクで、中に何があるか確認できない（別用途のディレクトリの可能性）: " + ", ".join(links))
     if present:
         reasons.append("スキル所有の配置先に既存ファイルがあるが、スキルの配置とは認められない: " + ", ".join(present))
     if stray:
         reasons.append("tools/docs-site-gen/ にスキルが配置しないファイルがある（別用途のディレクトリの可能性）: "
                        + ", ".join(sanitize(s, 80) for s in stray[:6])
                        + (f" ほか {len(stray) - 6} 件" if len(stray) > 6 else ""))
-    if present or stray:
+    if present or stray or links:
         return {"mode": "foreign", "kind": "unrelated", "reasons": reasons, "stray": stray}
     reasons.append("スキルの配置痕跡なし")
     return {"mode": "new", "kind": "none", "reasons": reasons}
@@ -938,7 +967,9 @@ def main(argv: list[str] | None = None) -> int:
                             f"旧版の pages.yml の追加 paths のうち {len(an['dropped'])} 件を利用者区間へ引き継がなかった: "
                             + "; ".join(f"{sanitize(g, 60)}（{why}）" for g, why in an["dropped"][:5])
                             + ("…" if len(an["dropped"]) > 5 else ""))
-                    if an["clean"]:
+                    # 旧版配置と認められる（kind=legacy / manifest）ときだけ、--update なしで自動移行する。kind=unrelated は
+                    # 「スキルの配置とは認められない」既存ファイルであり、旧版形式の pages.yml の書き換えも --update を要する。
+                    if an["clean"] and (det["kind"] != "unrelated" or args.update):
                         n = len(an["extras"])
                         plan_write(dst_rel, dst, final, executable, "update",
                                    "旧版（利用者区間なし）から移行" + (f"し、追加の paths {n} 件を利用者区間へ引き継ぐ" if n else ""))
@@ -975,6 +1006,13 @@ def main(argv: list[str] | None = None) -> int:
                 conflicts.append(edited_conflict(dst_rel, text))
     except ValueError as e:
         return finish(2, f"エラー: {e}")
+
+    # ---- 生成器ディレクトリ（または src）が対象内を指す symlink: 中を確認できないため、--update でも進めない。
+    # 配置先ごとの分類は実体の内側として通るので、ここで 1 件の競合にまとめる（モードに関わらず判定する）。
+    for rel in generator_symlinks(args.target, root_real):
+        conflicts.append((rel, "symlink",
+                          "シンボリックリンク（対象内の別の場所を指す。中のファイルを確認できず、build-local.sh も受け付けない。"
+                          "通常のディレクトリへ直す。--update では上書きされない）"))
 
     # ---- 別用途の生成器ディレクトリ: 同名の所有ファイルが無く上の分類で競合にならなくても、黙って配置しない。
     # 所有ファイルの競合と同じ扱い（何も書かずに exit 3。利用者が内容を確認した上での --update でのみ進む）。
@@ -1018,12 +1056,14 @@ def main(argv: list[str] | None = None) -> int:
     gi = args.target / ".gitignore"
     gi_lines: list[str] = []
     gi_ends_nl = True
+    gi_raw = b""   # 追記は「既存の全バイト + 追記分」を原子的に書き直す（部分追記で行が壊れて、再実行で重複追記にならないよう）
     why = write_target_problem(root_real, gi)
     if why:
         problems.append(f".gitignore（{why}）")
     elif os.path.lexists(gi):
         try:
-            gi_text = read_text_capped(gi)
+            gi_raw = read_capped(gi, TEXT_READ_CAP)
+            gi_text = gi_raw.decode("utf-8")
             gi_lines = gi_text.splitlines()
             gi_ends_nl = gi_text.endswith("\n") or not gi_text
         except (OSError, OverflowError, UnicodeDecodeError):
@@ -1105,25 +1145,40 @@ def main(argv: list[str] | None = None) -> int:
                 + ", ".join(manual), err=True)
         return finish(EXIT_CONFLICT)
 
-    for dst_rel, text, executable, action, reason in plan:
-        dst = args.target / dst_rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(text.encode("utf-8"))   # バイト列で書く（プラットフォームの改行変換を通さない）
-        if executable:
-            dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        summary["created" if action == "create" else "updated"].append(
-            dst_rel if action == "create" else {"path": dst_rel, "reason": reason})
-    if manifest_changed:
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_bytes(new_manifest.encode("utf-8"))
-        summary["manifest_written"] = True
-        summary["manifest_recreated"] = manifest is None and mode == "update"
+    # 書き込みの途中で OS のエラーが出ても（権限・容量・分類後の競合する変更など）、トレースバックで落とさず、
+    # 既存の終了コードの流儀（exit 2・--json は JSON 1 つ）で報告する。書けた分は created / updated に残る。
+    # 書き込みはファイル単位で原子的（atomic_write_bytes。失敗したファイルは未変更か未作成のまま）なので、
+    # 書けたファイルは生成予定と完全に一致し、再実行では `same`（未着手の更新は自動更新、未作成は新規作成）に
+    # 分類されて収束する。
+    current = ""
+    to_add: list[str] = []
+    try:
+        for dst_rel, text, executable, action, reason in plan:
+            current = dst_rel
+            dst = args.target / dst_rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            # バイト列で書く（プラットフォームの改行変換を通さない）。一時ファイル + os.replace の原子的な置き換え
+            atomic_write_bytes(dst, text.encode("utf-8"), executable=executable)
+            summary["created" if action == "create" else "updated"].append(
+                dst_rel if action == "create" else {"path": dst_rel, "reason": reason})
+        if manifest_changed:
+            current = MANIFEST_REL
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_bytes(manifest_path, new_manifest.encode("utf-8"))
+            summary["manifest_written"] = True
+            summary["manifest_recreated"] = manifest is None and mode == "update"
 
-    to_add = [line for line in GITIGNORE_LINES if line not in gi_lines]
-    if to_add:
-        prefix = "" if not gi_lines or gi_ends_nl else "\n"
-        with gi.open("ab") as fh:
-            fh.write((prefix + "\n# docs サイト（setup-github-pages）\n" + "\n".join(to_add) + "\n").encode("utf-8"))
+        to_add = [line for line in GITIGNORE_LINES if line not in gi_lines]
+        if to_add:
+            current = ".gitignore"
+            prefix = "" if not gi_lines or gi_ends_nl else "\n"
+            atomic_write_bytes(gi, gi_raw + (prefix + "\n# docs サイト（setup-github-pages）\n" + "\n".join(to_add) + "\n").encode("utf-8"))
+    except OSError as e:
+        leftover = getattr(e, "leftover_tmp", None)
+        return finish(2, f"エラー: {current} の書き込みに失敗した（{type(e).__name__}）。{current} は変更されていない"
+                      "（ファイル単位で原子的に書くため、未変更か完全な内容のどちらかになる）。それ以前に書けたものは JSON の created / updated に"
+                      "残っている。原因（権限・空き容量・競合する変更）を直して同じコマンドを再実行する（再実行は冪等）"
+                      + (f"。一時ファイル {sanitize(str(leftover), 120)} を消せなかった。内容を確認して手動で削除する" if leftover else ""))
     summary["gitignore_added"] = to_add
 
     # 配置後の検証（利用者編集ファイルを含む構成全体が build の前提を満たすか）

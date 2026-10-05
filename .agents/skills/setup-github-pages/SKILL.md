@@ -60,7 +60,7 @@ user-invocable: true
 
 `scaffold.py` は、モード判定（`--detect`）・配置と更新・競合の差分表示（`--show-diff`）を担う。分類・競合の種別・利用者区間・マニフェスト・JSON キーの詳細は [`references/scaffold-reference.md`](references/scaffold-reference.md) を参照する。要点は次のとおり。
 
-- 全配置先を先に分類してから書く（部分書き込みなし）。スキル所有ファイル（wrapper・スクリプト・`FF_REV`・`pages.yml`）は、配置後に**未編集なら自動で新版へ更新**し、編集されていれば**競合（exit 3）**として何も書かない。利用者編集ファイル（`site/`・`brand.toml`・`rust-toolchain.toml`）は常に保持し、更新モードでは欠けていても再作成しない（`欠落` と報告）
+- 全配置先を先に分類してから書く（部分書き込みなし）。書き込みはファイル単位で原子的（同じディレクトリの一時ファイルへ書いて `os.replace` で置き換える。途中で失敗したファイルは未変更か未作成のまま）。スキル所有ファイル（wrapper・スクリプト・`FF_REV`・`pages.yml`）は、配置後に**未編集なら自動で新版へ更新**し、編集されていれば**競合（exit 3）**として何も書かない。利用者編集ファイル（`site/`・`brand.toml`・`rust-toolchain.toml`）は常に保持し、更新モードでは欠けていても再作成しない（`欠落` と報告）
 - 配置時の sha256 を `tools/docs-site-gen/.scaffold-manifest.json`（マニフェスト）に記録する。**コミットする**。信頼しない入力として厳格に検証し、不正なら無視して「マニフェストなし」に倒す
 - `pages.yml` の追加の監視パス（`docs/` 等）は、`sgp:user-paths:begin` と `end` の間の**利用者区間**だけに書く。区間の外を編集すると競合になる
 - `--json` は**どの終了コードでも** JSON を 1 つ出す。対象リポジトリ由来の文字列は、制御文字・不可視文字を無害化して出す
@@ -71,8 +71,8 @@ user-invocable: true
 | 終了コード | 意味 | 対処 |
 |-----------|------|------|
 | 0 | 成功（配置後の check_site も通過） | 次の手順へ進む |
-| 2 | 入力不正、書き込み先が不適（symlink・親が `--target` の外へ解決・`.git` 配下・`.gitignore` の不備等）、または適用対象外（上流リポジトリ自身）。1 件も書かれていない | JSON の `error` を読み、指摘を直す |
-| 3 | 競合（スキル所有ファイルが配置後に編集されている、またはマニフェストがない） | `--show-diff` で差分を確認して利用者に見せ、判断を仰ぐ。`--update` は所有ファイルを強制上書きする（利用者の了承後のみ）が、**symlink・通常ファイルでない・読めない・対象の外へ解決される（`kind` が `symlink` / `not_regular` / `unreadable` / `outside_root`）競合には効かない**。それらは手動で解消する |
+| 2 | 入力不正、書き込み先が不適（symlink・親が `--target` の外へ解決・`.git` 配下（`.GIT` など大文字小文字違いを含む）・親パスの途中が通常ファイル・`.gitignore` の不備等）、または適用対象外（上流リポジトリ自身）。**書き込み前の検査で止まった場合は 1 件も書かれていない**。書き込みの途中で OS のエラー（権限・空き容量等）が出た場合も exit 2 で、失敗したファイルは未変更か未作成のまま（切り詰められた内容は残らない）、それ以前に書けた分は JSON の `created` / `updated` に残る（再実行は冪等） | JSON の `error` を読み、指摘を直す |
+| 3 | 競合（スキル所有ファイルが配置後に編集されている、またはマニフェストがない） | `--show-diff` で差分を確認して利用者に見せ、判断を仰ぐ。`--update` は所有ファイルを強制上書きする（利用者の了承後のみ）が、**symlink・通常ファイルでない・読めない・対象の外へ解決される（`kind` が `symlink` / `not_regular` / `unreadable` / `outside_root`）競合には効かない**（`tools/docs-site-gen` や `tools/docs-site-gen/src` が対象内の別の場所を指す symlink の場合も `symlink`）。それらは手動で解消する |
 | 4 | 配置・更新は完了したが check_site が失敗 | 表示された項目（`brand.toml` の不足キー・`nav.toml` の予約パス、`nav.toml`・`brand.toml` の欠落など）を直し、同じコマンドを再実行する（収束する） |
 
 ## ローカルビルド（新規・更新共通）
@@ -124,7 +124,7 @@ python3 "${SKILL_DIR}/scripts/scaffold.py" --target . --detect --json
 | `manifest` | `update` | 配置マニフェストがある | **更新フロー** |
 | `legacy` | `update` | 旧版配置の痕跡があり、マニフェストがない | **更新フロー**。初回は所有ファイルが競合する（スキル由来の変更か利用者の編集か区別できないため）。旧版からの移行であり、所有ファイルを編集していなければ `--update` を 1 回実行すればマニフェストが書かれ、以後は自動更新になる（実行前に利用者の了承を取る） |
 | `upstream` | `foreign` | 対象が `Fandhe-AI/fandhe-frontend` 自身 | **中止**。上流はデザインの出どころであり適用対象外（自サイト用の wrapper・後処理を置く意味がない） |
-| `unrelated` | `foreign` | `pages.yml` や `tools/docs-site-gen/` 配下に、スキルの配置とは認められない既存ファイルがある（スキル所有ファイルと同名のもの、または `tools/docs-site-gen/` にスキルが配置しないファイル） | 中止して利用者に状況を案内する。別用途の構成を残すなら手動統合、スキルの構成で置き換えるなら、内容を確認した上で新規構築フロー（競合は `--update` で上書き）。`scaffold.py` 自体も `--update` なしでは何も書かずに exit 3 で止まる（同名の所有ファイルは各ファイルの競合、スキルが配置しないファイルだけがある場合は `foreign_dir`） |
+| `unrelated` | `foreign` | `pages.yml` や `tools/docs-site-gen/` 配下に、スキルの配置とは認められない既存ファイルがある（スキル所有ファイルと同名のもの、または `tools/docs-site-gen/` にスキルが配置しないファイル） | 中止して利用者に状況を案内する。別用途の構成を残すなら手動統合、スキルの構成で置き換えるなら、内容を確認した上で新規構築フロー（競合は `--update` で上書き）。`scaffold.py` 自体は、`--update` なしでは次のとおり何も書かずに exit 3 で止まる: 同名で**内容が生成予定と異なる**所有ファイルは各ファイルの競合、旧版形式（利用者区間なし）の `pages.yml` は `no_manifest` の競合、スキルが配置しないファイルだけがある場合は `foreign_dir`。`tools/docs-site-gen` または `src` が対象内を指す symlink は `symlink` の競合で、`--update` でも進まない（手動で通常のディレクトリへ直す）。一方、同名で**内容が生成予定と一致する**所有ファイルは配置済み（中断した配置の再実行を含む）として扱い、他に競合がなければ欠けたファイルを補う |
 
 ### 更新フロー（mode=update）
 
@@ -188,11 +188,11 @@ bash "${SKILL_DIR}/scripts/update-snapshot.sh" record-json "${SNAP}" < "${RESULT
   ```
 
   `git log -p` は利用者自身の編集の履歴を見るためで、git 管理下のオブジェクトを読むので symlink を辿らない（出力は `cat -v` と `head` で絞る）。`kind` ごとに扱いが違う（詳細は [`references/scaffold-reference.md`](references/scaffold-reference.md)）。
-  - **`symlink` / `not_regular` / `unreadable` / `outside_root`**: `--update` では解消しない。手動で通常ファイルへ直す（`outside_root` は親ディレクトリの symlink が対象の外を指しているので、通常のディレクトリへ直す）。直してから再実行する
+  - **`symlink` / `not_regular` / `unreadable` / `outside_root`**: `--update` では解消しない。手動で通常ファイルへ直す（`outside_root` は親ディレクトリの symlink が対象の外を指しているので、通常のディレクトリへ直す。`path` が `tools/docs-site-gen` / `tools/docs-site-gen/src` の `symlink` は、リンク先の中身を確認し、通常のディレクトリへ置き換える）。直してから再実行する
   - それ以外: 利用者の編集を残したい場合は手動で統合し、置き換えてよいと確認できたときだけ `--update` 付きで再実行する（編集を失わせる。実行前に差分を控える。この再実行の JSON を以降の報告に使う）
   - `pages.yml` の追加の監視パス: **区間のある版**は、利用者区間へ書き足してから再実行する。**旧版（区間なし）**は、`--update` の実行が追加 paths のうち検証を通ったものを自動で利用者区間へ移す（落とした分は `warnings` に出る）
 - **exit 4**: `brand.toml` に新しい必須キーが無い、`nav.toml`・`brand.toml` が欠落している等。所有ファイルは書き込み済みである。表示された項目と追記例を利用者と確認して直し、同じコマンドを再実行する（JSON の扱いは上記）
-- **exit 2**: JSON の `error` を読み、指摘（symlink・適用対象外・`.gitignore` の不備など）を直す。何も書かれていない
+- **exit 2**: JSON の `error` を読み、指摘（symlink・適用対象外・`.gitignore` の不備・親パスが通常ファイルなど）を直す。書き込み前の検査で止まった場合は何も書かれていない。書き込みの途中の OS エラーなら、失敗したファイルは未変更か未作成のままで、それ以前に書けた分が JSON の `created` / `updated` に残る（原因を直して同じコマンドを再実行する。書けたファイルは `same`、未着手の更新は自動更新、未作成は新規作成になり収束する）。`error` が一時ファイル（`.<名前>.<乱数>.sgp-tmp`）を消せなかったと伝えたら、内容を確認して手動で削除する（プロセスの強制終了で残ることもある。削除してよい）
 
 `削除候補` が表示された場合は、スキルで廃止されたファイルである。内容を確認し、不要なら利用者の了承を得て手動で削除する（自動では削除しない）。
 
@@ -392,7 +392,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' "${URL}"              # 200
 - **入力検証**: ブランド表示・URL・ブランチ名はすべて `scaffold.py` / `_common.py` が検証・エスケープする（リポジトリ URL は `https://github.com/<owner>/<repo>` のみ、HTML 出力は `html.escape`）。シェルへ渡す変数は常に `"${VAR}"` でクォートする。外部入力を `sed` や `bash -c` の文字列に展開しない
 - **CSP を壊さない**: 生成物の CSP は `script-src 'self'` 等で厳格。後処理はインライン script / style を一切追加しない。サイトへ手でインラインスクリプトを足さない
 - **置換は構造的に行う**: GitHub URL を一括置換しない。ヘッダー・フッターの「リポジトリへのリンク」要素だけを置換し、LICENSE-MIT / LICENSE-APACHE リンクと「Built with fandhe-frontend docs-site」の帰属表記は保持する。本文（`<main>`）は書き換えない
-- **書き込み先の限定**: `build-local.sh`・`scaffold.py`・`rebrand_site.py` が書く・消す先は、対象リポジトリの実体パス配下で、末端が symlink でないものに限る（`_ff/`・`tools/docs-site-gen/target/`・`Cargo.lock`・`THIRD-PARTY-LICENSES`・既定の `_site/`。bash は `guard_path`、Python は `resolves_inside` に集約）。違反したら何も書かず中止する。`--out` のみ対象リポジトリ外（CI の `${RUNNER_TEMP}` 等）を許すが、末端が symlink なら拒否する。既存の `_ff` は origin が上流 URL と一致する場合だけ再利用し、書き換えない。dist に symlink があれば `rebrand_site.py` は辿らず失敗する
+- **書き込み先の限定**: `build-local.sh`・`scaffold.py`・`rebrand_site.py` が書く・消す先は、対象リポジトリの実体パス配下で、末端が symlink でないものに限る（`_ff/`・`tools/docs-site-gen/target/`・`Cargo.lock`・`THIRD-PARTY-LICENSES`・既定の `_site/`。bash は `guard_path`、Python は `resolves_inside` に集約）。`.git` の判定は大文字小文字を区別しない（`.GIT` / `.Git` 経由の読み書きも拒否する）。違反したら何も書かず中止する。`--out` のみ対象リポジトリ外（CI の `${RUNNER_TEMP}` 等）を許すが、末端が symlink なら拒否する。既存の `_ff` は origin が上流 URL と一致する場合だけ再利用し、書き換えない。dist に symlink があれば `rebrand_site.py` は辿らず失敗する
 - **読み込みの上限**: `rebrand_site.py` は dist のテキストを 1 件 8 MiB・合計 256 MiB までしか読まない（巨大ファイルでメモリを使い切らない）。上限を超えるファイルは内容を保持せず最後まで走査して UTF-8 として妥当か判定し（先頭だけでは判定しない）、バイナリ（UTF-8 として不正）は従来どおり検査対象外。全体が妥当なテキストは残存ブランドを検査できないため黙って外さず、相対パスだけを示して失敗する（内容の断片は出さない。dist は変更しない）
 - **上流 fandhe-frontend 自身は対象外**: 上流はデザインの出どころで、自サイト用の wrapper・後処理・マニフェストを置く対象ではないため、`--detect` が `foreign` と判定し `scaffold.py` は exit 2 で中止する
 - **更新はスキル所有ファイルに限る**: 更新フローが書き換えるのはマニフェストに記録されたスキル所有ファイルだけで、`site/`・`brand.toml`・`nav.toml`・`rust-toolchain.toml` は触らない。マニフェスト（`tools/docs-site-gen/.scaffold-manifest.json`）は手で編集しない（不正と判定されたら無視され、自動更新が止まる）
