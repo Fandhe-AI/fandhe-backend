@@ -112,6 +112,9 @@ readonly TARGET_REF='~DEFAULT_BRANCH'
 #   WebRTC rebind e2e（standalone crate、#507）                 → ci.yml 同名ジョブ
 #   決定的マイクロベンチ（alloc カウンタ、#615）                → ci.yml `microbench` ジョブ
 #   cargo llvm-cov（コア行カバレッジ 80% ゲート）                → ci.yml `coverage` ジョブ
+#   docs サイトのビルド検証（生成・リンク検査）                 → ci.yml `docs-site-build` ジョブ
+#                                                                  （PR #757 で追加。required に無いと docs の
+#                                                                  リンク切れを残したままマージできてしまう）
 #   codex / preflight, codex / review, codex / post_feedback    → ai-review.yml の
 #                                                                  reusable workflow 呼び出し
 #                                                                  `codex` の子ジョブ
@@ -134,6 +137,7 @@ openapi-typescript 連携パイプライン（schema.d.ts 鮮度検証 → tsc -
 pay-for-what-you-use 検証（cargo tree/geiger・バイナリサイズ）	15368
 unsafe 追加の検知トリアージ	15368
 決定的マイクロベンチ（alloc カウンタ、#615）	15368
+docs サイトのビルド検証（生成・リンク検査）	15368
 codex / preflight	15368
 codex / review	15368
 codex / post_feedback	15368

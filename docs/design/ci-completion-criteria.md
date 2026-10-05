@@ -77,7 +77,7 @@ checks.sh`、差分がある場合のみ書き込み）を実行する必要が�
   `scripts/setup-required-checks.sh` に追加済み。詳細・人間判断ダイヤル（承認数・
   strict policy）は `docs/design/review-gate.md` を参照。
 - #693 で、スクリプトの宛先を実際の運用 ruleset `main-protection` に一致させ、
-  required status check を `ci-complete` を含む 25 件（matrix 化した fmt/clippy/test・
+  required status check を `ci-complete` を含む 25 件（#693 時点。現行は 26 件。matrix 化した fmt/clippy/test・
   codex 系・Cursor Bugbot 等）へ拡張した。実際の保護はこの時点までリポジトリの外
   （GitHub UI）で手作業運用されており、スクリプトの定義とは乖離していた
   （`docs/design/review-gate.md` §2・4.3 参照）。live との差分は

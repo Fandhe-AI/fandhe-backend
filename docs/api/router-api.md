@@ -3,7 +3,7 @@
 ## 1. 目的と位置づけ
 
 - 本ページは `fandhe-backend-routes` クレートが提供するルーティング API（`Router` と関連型）の契約を一覧化するリファレンスである
-- 一次情報源は rustdoc（`crates/routes/src/lib.rs` / `crates/routes/src/pattern.rs` の doc comment・doc test）であり、本ページは全体像の把握と横断的な契約・セキュリティ観点の整理を担う
+- 一次情報源は rustdoc（`crates/routes/src/lib.rs` / `crates/routes/src/pattern.rs` の doc comment・doc test。`Router::merge` はモジュール doc「ルータ合成」節、変更履歴は `CHANGELOG.md` の `[0.4.2]`）であり、本ページは全体像の把握と横断的な契約・セキュリティ観点の整理を担う
 - `Router` はコアの既定ハンドラとして動作する。依存方向は `server → routes → http::*` の一方向であり、本クレートはソケット I/O・接続ライフサイクルを扱わない（それらは `crates/core` の責務。[サーバ API](./server-api.md) 参照）
 - リクエスト・レスポンスのプリミティブ（`RequestHead` / `Response`）は `fandhe-backend-http` が提供する（[HTTP API](./http-api.md) 参照）
 
@@ -21,7 +21,7 @@
 | `Router::options_fallback` | `(handler: Fn(&RequestHead, &AllowedMethods, &[u8]) -> Response)` | `Self` | OPTIONS プリフライトの opt-in フォールバック登録 |
 | `Router::fallback` | `(handler: Fn(&RequestHead, &[u8]) -> Response)` | `Self` | 未マッチ共通処理の登録（ポリシーは既定 `FallbackPolicy::NotFoundOnly`） |
 | `Router::fallback_with` | `(policy: FallbackPolicy, handler)` | `Self` | ポリシー明示版の fallback 登録 |
-| `Router::merge` | `(self, other: Router) -> Result<Self, RouterMergeError>` | `Result<Self, RouterMergeError>` | 独立に組み立てた 2 つの `Router` を 1 つへ合成する。衝突（重複ルート・fallback の二重登録）は黙って上書きせず `Err` で返す |
+| `Router::merge` | `(self, other: Router)` | `Result<Self, RouterMergeError>` | 独立に組み立てた 2 つの `Router` を 1 つへ合成する（重複登録はフェイルクローズでエラー。`other` は所有権ごとムーブされる） |
 | `Router::dispatch` | `(&self, head: &RequestHead, body: &[u8])` | `HandlerFuture` | ルート解決とハンドラ委譲（解決は同期・ハンドラ実行のみ非同期） |
 
 ### 2.2 関連型
@@ -35,6 +35,7 @@
 | `FallbackPolicy` | `enum`（`NotFoundOnly` / `IncludeMethodNotAllowed`） | fallback が 405（メソッド不一致）も引き受けるかの選択。`Default` は `NotFoundOnly` |
 | `PathParams<'a>` | `struct`（`get` / `iter` / `len` / `is_empty`） | `{name}` / `{*name}` の束縛値への読み取りアクセス |
 | `RoutePatternError` | `enum` | パターン登録時エラー（`NoParamSegment` / `WildcardNotLast` 等） |
+| `RouterMergeError` | `enum`（`#[non_exhaustive]`） | `Router::merge` が検出する合成時の衝突（`DuplicateRoute` / `DuplicateParamRoute` / `ConflictingFallback` / `ConflictingOptionsFallback`） |
 | `ParamRoute` / `Segment` | `struct` / `enum` | パターンルートの内部表現（`pattern` モジュールから再エクスポート） |
 
 ## 3. 契約・不変条件
@@ -78,18 +79,7 @@
 2. 静的ルートが miss した場合のみ、パラメータルートを**登録順**に線形走査し最初の一致へ委譲
 3. いずれにも一致しない場合、`fallback` / `fallback_with` 登録済みならポリシーに従い委譲。未登録なら 404 / 405 + `Allow`
 
-### 3.3.1 `Router::merge` によるルータ合成
-
-`other` の所有権を受け取って self へ合成する。`?` で `Router::new().route(..).merge(a)?.merge(b)?` のように連鎖できる。
-
-- **衝突検出（フェイルクローズ）**: 変更前に全件を検査し、最初の衝突を `Err(RouterMergeError)` で返す（`Err` 時は self・other とも破棄）。検出対象は次の 4 種のみ。
-  - 静的ルートの `(method, path)` 一致 → `DuplicateRoute`
-  - パラメータルートの method 一致 + セグメント形状等価（`/a/{id}` と `/a/{name}` のように名前だけが違うものも衝突。`/a/{x}` と `/a/{*rest}` のように種別が異なるものは衝突ではない）→ `DuplicateParamRoute`
-  - 両方に `fallback` / `fallback_with` が登録済み → `ConflictingFallback`
-  - 両方に `options_fallback` が登録済み → `ConflictingOptionsFallback`
-- **引き継ぎ**: 静的ルートは path ごとに method を合併し、405 の `Allow` にも両方が集約される。パラメータルートは self が先・other が後の登録順で線形走査される。fallback / `options_fallback` は片方にのみあれば（`FallbackPolicy` ごと）引き継がれ、接頭辞に限定されず合成後のルータ全体に適用される。
-- 衝突でない部分的な重なりは 3.3 の既存優先順位（静的 → パラメータ登録順）で解決される。同一 `Router` 内の `route` / `route_param` の再登録意味論は変わらない。
-- `RouterMergeError` は `Display` / `std::error::Error` を実装する。
+- `Router::merge` 後もこの優先順位がそのまま適用される（パラメータルートの登録順は self が先、other が後。本ページ 3.8 節参照）
 
 ### 3.4 同期登録 API と `HandlerFuture` の内部アダプタ関係
 
@@ -124,6 +114,52 @@
 - 静的ルート照合・パラメータルート照合・405 の `Allow` 集約の 3 経路すべてが同一の `path()` を参照し、経路間でパース結果が食い違わない
 - `route` の `path` 引数に `?` を含めて登録したルートは、リクエスト側が常に `path()` で分離されるため到達不能になる（登録時に `?` を含めないこと）
 
+### 3.8 `merge` によるルータ合成
+
+- 想定用途は、クレートをまたいで独立に組み立てた `Router` を 1 つにまとめ、`Server::handler` へ登録する構成である。`other` は所有権ごとムーブ消費され、`route_param` と同じ `Result` 返却のビルダー形式のため `.merge(a)?.merge(b)?` と `?` で連鎖できる
+- 衝突は self（`merge` を呼ぶ側）と other の間でのみ判定する。同一 `Router` 内の既存意味論（`route` は後勝ち、`route_param` は登録順の先勝ち）は変えない
+
+| 衝突種別 | 判定条件 | 返却バリアント |
+|---------|---------|---------------|
+| 静的ルート | `(method, path)` の完全一致（method の大文字小文字は区別） | `DuplicateRoute { method, path }` |
+| パラメータルート | method 一致かつセグメント形状が等価（`Literal` は文字列一致、`{name}` 同士・`{*name}` 同士は名前を問わず種別一致、セグメント数も一致。`/a/{id}` と `/a/{name}` は衝突） | `DuplicateParamRoute { method, pattern }`（`pattern` は self 側の表記を `{name}` / `{*name}` 形式で復元したもの） |
+| `fallback` / `fallback_with` | 両方に登録されている | `ConflictingFallback` |
+| `options_fallback` | 両方に登録されている | `ConflictingOptionsFallback` |
+
+- 全件を検査してから統合する 2 段階方式で、最初に見つかった衝突を `Err` で返す。`Err` の場合は self・other のどちらも破棄される
+- 衝突としないもの: `/a/{x}` と `/a/{*rest}`（種別が異なる）、静的 `/a/b` とパラメータ `/a/{x}`、method が異なる同一パス。これらは既存の優先順位（静的 → パラメータ、登録順）で解決される
+- 引き継ぎの意味論:
+  - 静的ルートは path ごとに method を合併し、405 の `Allow` にも両方の method が集約される
+  - パラメータルートは self が先、other が後（`Vec::extend`）
+  - `fallback` / `options_fallback` は片方にのみ登録されていればそれを引き継ぐ（`FallbackPolicy` もそのまま）。どちらにもなければ `None` のままで既定の 404 / 405 + `Allow` を維持する
+  - `fallback` は接頭辞に限定されず、合成後のルータ全体に適用される（サブルータに付けた fallback は他のサブルータの未マッチにも効くため、合成後の最上位ルータで登録することを推奨）
+
+```rust
+use fandhe_backend_routes::{Router, RouterMergeError};
+use fandhe_backend_http::response::Response;
+
+let todos = Router::new().route("GET", "/todos", |_h, _b| {
+    Response::new(200, b"todos".to_vec())
+});
+let users = Router::new().route("GET", "/users", |_h, _b| {
+    Response::new(200, b"users".to_vec())
+});
+let router = todos.merge(users).unwrap();
+
+// 重複するルート登録はエラーになる
+let a = Router::new().route("GET", "/x", |_h, _b| Response::empty(200));
+let b = Router::new().route("GET", "/x", |_h, _b| Response::empty(200));
+let err = match a.merge(b) {
+    Ok(_) => panic!("expected merge to fail"),
+    Err(e) => e,
+};
+assert!(matches!(
+    err,
+    RouterMergeError::DuplicateRoute { ref method, ref path }
+        if method == "GET" && path == "/x"
+));
+```
+
 ## 4. セキュリティ観点
 
 | 観点 | 契約 |
@@ -133,8 +169,8 @@
 | パス走査対策 | `{name}` / `{*name}` は `.` / `..` セグメント、`?` / `#` を含むセグメントに一致しない（不一致 = 404 側へ倒す） |
 | ヘッダインジェクション | `Allow` は `AllowedMethods` の構築時 tchar 検証により CRLF インジェクションを型レベルで排除。不正 token の登録 method は `Allow` から除外され、全滅時は `Allow` なし 405 にフォールバック |
 | method の大文字小文字 | RFC 9110 に従い区別する（`get` は `GET` に一致しない）。独自の正規化を持ち込まない |
-| 合成時の黙示上書き禁止 | `Router::merge` は重複ルート・fallback の二重登録を `RouterMergeError` で検出し、片方を黙って上書きしない（意図しないハンドラ差し替えによるアクセス制御バイパス、OWASP A01 対策） |
 | DoS 耐性 | ルートは起動時登録のみ（実行時追加・削除 API なし）。`dispatch` は登録数に対して予測可能なコストで応答する |
+| 合成時の黙示的上書き | `Router::merge` は重複ルート・両方への fallback / options_fallback 登録を `RouterMergeError` で検出し、意図しないハンドラ差し替えを防ぐ（OWASP A01）。エラー内の `method` / `path` / `pattern` は起動時に開発者が登録した値でありリクエスト由来ではない |
 | 情報開示の非拡大 | `options_fallback` は未登録パスでは発火せず 404 のまま。既存の 405 + `Allow` で開示済みの情報以上を新規開示しない |
 
 ## 5. スコープ外・関連ドキュメント

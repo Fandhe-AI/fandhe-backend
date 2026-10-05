@@ -1061,7 +1061,7 @@ fandhe-backend/
 │   ├── setup-required-checks.sh       # main の実際の保護 ruleset `main-protection`（TASK-14.1、
 │   │                                    # #39・TASK-14.3、#41）の定義・適用・`--check` による
 │   │                                    # live 差分検出（イシュー #693。required status check
-│   │                                    # 25 件・PR 必須化・force push/削除禁止を対象）
+│   │                                    # 26 件・PR 必須化・force push/削除禁止を対象）
 │   ├── commit-msg-check.sh            # Conventional Commits 形式のシェル検証（lefthook の
 │   │                                    # commit-msg フックから呼ばれる。外部依存なし）
 │   ├── openapi-two-stage.sh           # gen-openapi --check → cargo build --all-features の 2 段階ビルド検証（TASK-3.2、#31）
