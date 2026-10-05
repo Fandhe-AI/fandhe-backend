@@ -1069,8 +1069,8 @@ fandhe-backend/
 │   ├── openapi-ts-negative.sh         # openapi-ts.sh の陰性対照（意図的な型不一致の tsc --noEmit エラー検出）CI 常設検証（TASK-6.2、#55）
 │   ├── clean-worktrees.sh             # .claude/worktrees/ 残存ワークツリーの棚卸し・退避・削除（既定 dry-run、--apply で実削除、イシュー #221）
 │   ├── standalone-crates-io-check.sh  # templates/・examples/ の path 依存を除去し crates.io 公開版のみで build/test 検証（standalone-crates-io.yml から週次 + PR paths で実行、イシュー #371。対象クレート直下に `.standalone-crates-io-skip`（理由必須）があれば crates.io 未再公開の新 API 依存を理由に build/test を SKIP し、全件 SKIP なら fail-closed で異常終了する。次回 crates.io 再公開時の削除手順は docs/design/crates-io-release.md 8 節、イシュー #433）
-│   ├── docs-site-visual.sh            # （旧生成器 `crates/docs-site` 前提。移行後の main では動かない、
-│   │                                    # クレート削除時に削除または書き換える）刷新後の docs サイトを headless chromium でライト/ダーク/no-JS ×
+│   ├── docs-site-visual.sh            # （ビルドは公開サイトと同じ `tools/docs-site-gen/build-local.sh`。
+│   │                                    # PR #757 で旧生成器から切り替え）docs サイトを headless chromium でライト/ダーク/no-JS ×
 │   │                                    # 複数解像度撮影し `docs/acceptance/issue399-docs-site-visual.md`
 │   │                                    # の視覚証跡一式を生成（イシュー #399。CI 常設化はしない）
 │   ├── webrtc-e2e.sh                  # `crates/plugin-webrtc/tests-e2e`（standalone crate）で
