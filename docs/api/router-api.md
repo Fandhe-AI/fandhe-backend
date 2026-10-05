@@ -21,6 +21,7 @@
 | `Router::options_fallback` | `(handler: Fn(&RequestHead, &AllowedMethods, &[u8]) -> Response)` | `Self` | OPTIONS プリフライトの opt-in フォールバック登録 |
 | `Router::fallback` | `(handler: Fn(&RequestHead, &[u8]) -> Response)` | `Self` | 未マッチ共通処理の登録（ポリシーは既定 `FallbackPolicy::NotFoundOnly`） |
 | `Router::fallback_with` | `(policy: FallbackPolicy, handler)` | `Self` | ポリシー明示版の fallback 登録 |
+| `Router::merge` | `(self, other: Router) -> Result<Self, RouterMergeError>` | `Result<Self, RouterMergeError>` | 独立に組み立てた 2 つの `Router` を 1 つへ合成する。衝突（重複ルート・fallback の二重登録）は黙って上書きせず `Err` で返す |
 | `Router::dispatch` | `(&self, head: &RequestHead, body: &[u8])` | `HandlerFuture` | ルート解決とハンドラ委譲（解決は同期・ハンドラ実行のみ非同期） |
 
 ### 2.2 関連型
@@ -77,7 +78,20 @@
 2. 静的ルートが miss した場合のみ、パラメータルートを**登録順**に線形走査し最初の一致へ委譲
 3. いずれにも一致しない場合、`fallback` / `fallback_with` 登録済みならポリシーに従い委譲。未登録なら 404 / 405 + `Allow`
 
-### 3.4 同期登録 API と `HandlerFuture` の内部アダプタ関係
+### 3.3.1 `Router::merge` によるルータ合成
+
+`other` の所有権を受け取って self へ合成する。`?` で `Router::new().route(..).merge(a)?.merge(b)?` のように連鎖できる。
+
+- **衝突検出（フェイルクローズ）**: 変更前に全件を検査し、最初の衝突を `Err(RouterMergeError)` で返す（`Err` 時は self・other とも破棄）。検出対象は次の 4 種のみ。
+  - 静的ルートの `(method, path)` 一致 → `DuplicateRoute`
+  - パラメータルートの method 一致 + セグメント形状等価（`/a/{id}` と `/a/{name}` のように名前だけが違うものも衝突。`/a/{x}` と `/a/{*rest}` のように種別が異なるものは衝突ではない）→ `DuplicateParamRoute`
+  - 両方に `fallback` / `fallback_with` が登録済み → `ConflictingFallback`
+  - 両方に `options_fallback` が登録済み → `ConflictingOptionsFallback`
+- **引き継ぎ**: 静的ルートは path ごとに method を合併し、405 の `Allow` にも両方が集約される。パラメータルートは self が先・other が後の登録順で線形走査される。fallback / `options_fallback` は片方にのみあれば（`FallbackPolicy` ごと）引き継がれ、接頭辞に限定されず合成後のルータ全体に適用される。
+- 衝突でない部分的な重なりは 3.3 の既存優先順位（静的 → パラメータ登録順）で解決される。同一 `Router` 内の `route` / `route_param` の再登録意味論は変わらない。
+- `RouterMergeError` は `Display` / `std::error::Error` を実装する。
+
+ と `HandlerFuture` の内部アダプタ関係
 
 - 既定ハンドラ契約は boxed future（`HandlerFuture`）返却へ移行済みだが、`route` / `route_param` の同期登録 API は**非破壊のまま維持**される
 - 同期ハンドラは内部アダプタで `Box::pin(std::future::ready(response))` に包まれる。借用（`head` / `body`）は同期部で消費され future へ持ち越されないため、`HandlerFuture` はライフタイムパラメータを持たない（常に `'static`）
@@ -119,6 +133,7 @@
 | パス走査対策 | `{name}` / `{*name}` は `.` / `..` セグメント、`?` / `#` を含むセグメントに一致しない（不一致 = 404 側へ倒す） |
 | ヘッダインジェクション | `Allow` は `AllowedMethods` の構築時 tchar 検証により CRLF インジェクションを型レベルで排除。不正 token の登録 method は `Allow` から除外され、全滅時は `Allow` なし 405 にフォールバック |
 | method の大文字小文字 | RFC 9110 に従い区別する（`get` は `GET` に一致しない）。独自の正規化を持ち込まない |
+| 合成時の黙示上書き禁止 | `Router::merge` は重複ルート・fallback の二重登録を `RouterMergeError` で検出し、片方を黙って上書きしない（意図しないハンドラ差し替えによるアクセス制御バイパス、OWASP A01 対策） |
 | DoS 耐性 | ルートは起動時登録のみ（実行時追加・削除 API なし）。`dispatch` は登録数に対して予測可能なコストで応答する |
 | 情報開示の非拡大 | `options_fallback` は未登録パスでは発火せず 404 のまま。既存の 405 + `Allow` で開示済みの情報以上を新規開示しない |
 

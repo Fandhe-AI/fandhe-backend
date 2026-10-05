@@ -20,7 +20,7 @@ fandhe-backend のコアは、拡張点を 4 種の trait（`Middleware` / `Upgr
 |-------|-------------------|-----------|-------------|
 | `RequestGate` | ルーティング・アップグレード判定より**前** | `GateOutcome::Allow` / `Reject` による早期拒否（認証・認可・同意ゲート等、拒否応答は `Retry-After` 等ヘッダ付きも可） | 判定根拠データ（JWT クレーム等）をコアへ持ち出すこと |
 | `UpgradeHandler` | `RequestGate` 通過後、既定 `Handler` より前 | 長時間接続（WebSocket 等）への**委譲判定**（`matches` が `bool` を返す） | フレーミング・接続奪取後の読み書き（プラグイン側の責務） |
-| `Middleware` | `on_request`: ヘッド受理後・ルーティング前 / `on_response`: レスポンス送出後 | ロギング・メトリクス等の**観測** | リクエスト・レスポンスの変更（`head` は不変参照のみ） |
+| `Middleware` | `on_request`: ヘッド受理後・ルーティング前 / `on_response` / `on_response_with_status`: レスポンス送出後（後者は送出ステータス付き） | ロギング・メトリクス等の**観測** | リクエスト・レスポンスの変更（`head` は不変参照のみ） |
 | `Interceptor` | `intercept`: `UpgradeHandler` 通過後・パスインターセプト型プラグインより前 / `map_response`: 既定 `Handler` 確定後・レスポンス後処理型プラグインより前 | `Some(response)` によるリダイレクト等の応答確定、確定済み `Response` の書き換え | `RequestGate` 拒否応答・パースエラー応答・Upgrade 委譲失敗応答への適用（fail-closed 除外） |
 
 登録は `Server` の builder メソッドで行い、いずれも複数登録できる。
@@ -29,7 +29,7 @@ fandhe-backend のコアは、拡張点を 4 種の trait（`Middleware` / `Upgr
 |-------|-------------|-----------------|---------------|
 | `RequestGate` | `Server::gate` | 登録順に評価し、最初の `Reject` を優先 | `plugin-hub-wiring`（`TenantGate`） |
 | `UpgradeHandler` | `Server::upgrade_handler` | 登録順に `matches` を評価 | `plugin-websocket` |
-| `Middleware` | `Server::middleware` | 登録順に `on_request` / `on_response` を呼ぶ | `plugin-tracing` |
+| `Middleware` | `Server::middleware` | 登録順に `on_request` / `on_response_with_status`（既定実装が `on_response` へ委譲）を呼ぶ | `plugin-tracing` |
 | `Interceptor` | `Server::interceptor` | `intercept` は登録順に評価し最初の `Some` を優先、`map_response` は登録順に逐次適用 | [`examples/with-interceptor`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/examples/with-interceptor) |
 
 ### 同期契約（4 trait 共通）

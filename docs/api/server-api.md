@@ -37,7 +37,7 @@
 | `gate` | `fn (impl RequestGate + 'static) -> Server` | 早期拒否ゲートを登録（登録順評価・最初の Reject 優先） |
 | `upgrade_handler` | `fn (impl UpgradeHandler + 'static) -> Server` | Upgrade 委譲判定を登録（登録順に `matches` 評価） |
 | `interceptor` | `fn (impl Interceptor + 'static) -> Server` | インターセプト・レスポンス改変拡張点を登録（複数登録可・登録順評価、詳細は [interceptor-api.md](./interceptor-api.md) 参照） |
-| `diagnostics` | `fn (impl Diagnostics) -> Server` | ライブラリ内部の診断イベント（accept 失敗・grace 超過の強制クローズ等）の出力先を差し替える（未登録時は stderr へ 1 行出力する `StderrDiagnostics`。`Fn(&DiagnosticEvent)` のクロージャも登録可。シンクはブロッキング I/O を行わない契約） |
+| `diagnostics` | `fn (impl Diagnostics) -> Server` | ライブラリ内部の診断イベント（accept 失敗・grace 超過の強制クローズ等）の出力先を差し替える（未登録時は stderr へ 1 行出力する `StderrDiagnostics`。`Fn(&DiagnosticEvent)` のクロージャも登録可。シンクはブロッキング I/O を行わない契約。最終 graceful shutdown・rebind 旧世代 drain の grace 超過強制クローズ 2 箇所では、強制クローズの完了後に通知する。クロージャ登録時は引数の型注釈が必須で、`|_event: &DiagnosticEvent<'_>| {}` と書く（`|_| {}` は型推論に失敗する）。出力を抑止したい場合は空クロージャ、`tracing::warn!` 等へ転送したい場合はクロージャ内で呼ぶ） |
 | `handler` | `fn (impl Handler + 'static) -> Server` | 既定ハンドラを登録。未登録時は 404 |
 | `bind` | `async fn (impl ToSocketAddrs) -> io::Result<BoundServer>` | TCP リスナーをバインドし `BoundServer` を返す |
 

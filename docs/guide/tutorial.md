@@ -68,8 +68,8 @@ let server = Server::new()
 > **ステータス付きアクセスログが必要な場合**: `on_response` はステータスを
 > 受け取らないため、`GET /path 200 3ms` のようなログを出したい場合は
 > `on_response_with_status(&self, head, status: u16, elapsed)` を override
-> します（`on_response` 自体を実装する必要はありません。既定実装が no-op
-> のため）。詳細・実行可能な doc test は `crates/core/src/extension.rs` の
+> します（`on_response` 自体を実装する必要はありません。既定実装が `on_response` へ
+> 委譲し、`on_response` も既定 no-op のため）。詳細・実行可能な doc test は `crates/core/src/extension.rs` の
 > `Middleware` trait doc comment「ステータス付きアクセスログの例」節を参照
 > してください。
 

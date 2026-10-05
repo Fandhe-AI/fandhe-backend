@@ -30,11 +30,16 @@ rustdoc を正とする。
 |---------|---------------|------|
 | `name` | `fn (&self) -> &'static str` | 診断・ログ表示用の静的識別名 |
 | `on_request` | `fn (&self, &RequestHead)` | リクエストヘッド受理後・ルーティング前に呼ばれる |
-| `on_response` | `fn (&self, &RequestHead, Duration)` | レスポンス送出後に呼ばれる。`Duration` は受理から送出までの経過時間 |
+| `on_response` | `fn (&self, &RequestHead, Duration)` | レスポンス送出後に呼ばれる。`Duration` は受理から送出までの経過時間。既定実装は no-op |
+| `on_response_with_status` | `fn (&self, &RequestHead, u16, Duration)` | レスポンス送出後に呼ばれ、実際に送出した最終ステータスコード（`Interceptor::map_response` 等の適用後の値）を受け取る。既定実装は `on_response` へ委譲する |
 
 ロギング・メトリクス等の横断的関心事向け。**レスポンスへの参照を持たない**
-（`on_response` の引数はリクエストヘッドと経過時間のみ）。レスポンスの読み取り・
-書き換えはできない。
+（`on_response` の引数はリクエストヘッドと経過時間のみ。送出ステータスが必要な場合は
+`on_response_with_status` を使う）。レスポンスの読み取り・書き換えはできない。
+
+コアが呼ぶのは `on_response_with_status` のみで、既定実装が `on_response` へ委譲するため、
+`on_response` だけを実装した既存コードは変更なしで動作する（非破壊追加）。両方を override した
+場合、`on_response` はコアから呼ばれない。呼ばれる条件は従来どおり応答が完走した場合に限る。
 
 ### 2.2 `UpgradeHandler` — 長時間接続への委譲判定
 
