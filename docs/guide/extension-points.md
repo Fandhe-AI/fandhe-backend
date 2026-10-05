@@ -106,7 +106,7 @@ impl RequestGate for RateLimitGate {
   `Content-Length`/`Connection`/`Transfer-Encoding` の予約名拒否）を経た値の
   みで、任意文字列を無検証でヘッダ・ステータス行へ書き出す経路は存在しない
   （レスポンス分割・ヘッダインジェクション対策）
-- 拒否レスポンス送出後も、登録済み `Middleware` の `on_response` は呼ばれる
+- 拒否レスポンス送出後も、登録済み `Middleware` の `on_response`（`on_response_with_status`）は呼ばれる
   （観測の一貫性）
 - `check` の第 2 引数 `ctx: &GateContext` は accept したソケットの
   実 peer address を `ctx.peer_addr() -> Option<SocketAddr>` で提供する
@@ -158,20 +158,20 @@ impl UpgradeHandler for WebSocketUpgrade {
 - `matches` が `true` を返したのに委譲先の Upgrade 型プラグインが存在しない場合
   （feature 無効・未登録）、コアは黙って落とさず **501 を返して接続を閉じる**。
   自作の `UpgradeHandler` を単独で登録しても長時間接続処理は成立しない点に注意する
-- 委譲が成立した接続では `Middleware::on_response` は呼ばれない（委譲時は
+- 委譲が成立した接続では `Middleware::on_response`（`on_response_with_status`）は呼ばれない（委譲時は
   呼ばない契約）。`Middleware` 実装側は「`on_request` が必ず `on_response` を
   伴う」と仮定してはならない
 
 ## `Middleware` の非同期 I/O 規約
 
 `Middleware` は同期 API だが、実装内で**同期ブロッキング I/O を行ってはならない**。
-`on_request` / `on_response` はコアのリクエストループから直接呼ばれるため、
+`on_request` / `on_response_with_status`（`on_response`）はコアのリクエストループから直接呼ばれるため、
 ここでのブロッキングはスループットに直結する（実測で最大 25% の劣化を確認済み。
 `AGENTS.md` の「規約: ミドルウェア非同期 I/O 必須化」を参照）。
 
 ロギング等で I/O が必要な場合は、次のパターンに従う。
 
-- **チャネル送信パターン**: `on_request` / `on_response` では非同期チャネル
+- **チャネル送信パターン**: `on_request` / `on_response_with_status` では非同期チャネル
   （`tokio::sync::mpsc` 等）への送信・アトミック操作等の非ブロッキング操作に
   留め、実際のファイル・ネットワーク I/O は別タスクで行う
 - カウンタ等の軽量な状態は `AtomicUsize` 等の内部可変性で持ち、`&self` の

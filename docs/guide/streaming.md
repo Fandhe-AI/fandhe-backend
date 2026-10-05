@@ -119,7 +119,7 @@ static 等）が処理を完結させなかった場合にのみ `handle_streami
 - チャンク待ち・実書き込みの双方に 30 秒のタイムアウトと接続生存期間上限
   （`Server::max_connection_lifetime`）の短い方が適用され、超過時は接続を
   強制クローズする（フェイルクローズ）
-- タイムアウト・書き込みエラー・producer 打ち切りの場合、`Middleware::on_response`
+- タイムアウト・書き込みエラー・producer 打ち切りの場合、`Middleware::on_response`（および `on_response_with_status`）
   は呼ばれない（「完走した応答のみ観測する」契約）
 - CORS ヘッダ付与（`Server::cors` 登録時）はストリーミング応答にも適用される。
   gzip 圧縮は既定では適用されず、`compress_streaming(true)` を明示 opt-in

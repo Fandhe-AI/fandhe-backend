@@ -30,16 +30,19 @@ rustdoc を正とする。
 |---------|---------------|------|
 | `name` | `fn (&self) -> &'static str` | 診断・ログ表示用の静的識別名 |
 | `on_request` | `fn (&self, &RequestHead)` | リクエストヘッド受理後・ルーティング前に呼ばれる |
-| `on_response` | `fn (&self, &RequestHead, Duration)` | レスポンス送出後に呼ばれる。`Duration` は受理から送出までの経過時間。既定実装は no-op |
-| `on_response_with_status` | `fn (&self, &RequestHead, u16, Duration)` | レスポンス送出後に呼ばれ、実際に送出した最終ステータスコード（`Interceptor::map_response` 等の適用後の値）を受け取る。既定実装は `on_response` へ委譲する |
+| `on_response` | `fn (&self, &RequestHead, Duration)` | レスポンス送出後の観測フック（既定実装は no-op）。`Duration` は受理から送出までの経過時間。コアから直接は呼ばれず、`on_response_with_status` の既定実装経由で呼ばれる |
+| `on_response_with_status` | `fn (&self, &RequestHead, u16, Duration)` | レスポンス送出後に呼ばれる。`u16` はクライアントへ実際に送出したステータス（`Interceptor::map_response` 等の改変適用後の最終値）。コアが呼ぶのは本フックのみで、既定実装は `status` を無視して `on_response` へ委譲する |
 
 ロギング・メトリクス等の横断的関心事向け。**レスポンスへの参照を持たない**
-（`on_response` の引数はリクエストヘッドと経過時間のみ。送出ステータスが必要な場合は
-`on_response_with_status` を使う）。レスポンスの読み取り・書き換えはできない。
+（`on_response` / `on_response_with_status` の引数はリクエストヘッド・送出ステータスの
+数値・経過時間のみ）。レスポンスの読み取り・書き換えはできない。
 
-コアが呼ぶのは `on_response_with_status` のみで、既定実装が `on_response` へ委譲するため、
-`on_response` だけを実装した既存コードは変更なしで動作する（非破壊追加）。両方を override した
-場合、`on_response` はコアから呼ばれない。呼ばれる条件は従来どおり応答が完走した場合に限る。
+- ステータス付きアクセスログ（`GET /path 200 3ms`）が必要なら `on_response_with_status`
+  を override する。実行可能な例は `Middleware` の rustdoc「ステータス付きアクセスログの例」を参照
+- `on_response` だけを実装した既存コードは変更不要でそのまま動作する
+- 両方を override した場合、`on_response` はコアから呼ばれなくなる
+- 呼ばれるのは応答が完走した場合のみ（Upgrade 委譲・委譲失敗時の 501・書き込み失敗・
+  ストリーミング打ち切り・パースエラー応答では呼ばれない）
 
 ### 2.2 `UpgradeHandler` — 長時間接続への委譲判定
 
@@ -97,14 +100,14 @@ body)` ヘルパで構築でき、`Retry-After` 等ヘッダ付き拒否応答�
 | 4 | パスインターセプト型プラグイン | （拡張点外） | WebRTC・GraphQL・OpenAPI・静的配信等。`Some(response)` なら 5 をスキップ |
 | 5 | `Handler::handle` | （既定ハンドラ） | 未登録時は 404 |
 | 6 | レスポンス後処理型プラグイン | （拡張点外） | CORS ヘッダ付与 → gzip 圧縮の順で逐次適用（4・5 双方の応答が対象） |
-| 7 | レスポンス書き込み → `Middleware::on_response` | Middleware | 登録順に全件呼び出し |
+| 7 | レスポンス書き込み → `Middleware::on_response_with_status` | Middleware | 登録順に全件呼び出し。既定実装が `on_response` へ委譲するため、`on_response` のみ実装した Middleware も従来どおり呼ばれる |
 
 | 観点 | Middleware | UpgradeHandler | RequestGate |
 |------|-----------|----------------|-------------|
 | 目的 | 観測（ロギング・計測） | 長時間接続への委譲判定 | 早期拒否（認証・認可・同意） |
 | 戻り値 | なし（副作用のみ） | `bool` | `GateOutcome` |
 | リクエストへの影響 | なし（変更禁止契約） | `true` で接続ごと委譲 | `Reject` で即時拒否応答 |
-| レスポンスへのアクセス | なし（経過時間のみ） | なし | 拒否応答の status/body を自ら生成 |
+| レスポンスへのアクセス | なし（送出ステータス・経過時間のみ） | なし | 拒否応答の status/body を自ら生成 |
 | 複数登録時 | 全件呼び出し（登録順） | 最初のマッチで確定 | 最初の `Reject` で確定 |
 
 `RequestGate` を `UpgradeHandler`・パスインターセプト型より**先**に評価するのは、
