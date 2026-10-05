@@ -31,15 +31,25 @@ brand.toml の値は `html.escape` を通してから HTML へ入れる。リポ
 生成物の CSP（script-src 'self' 等）を保つため、インライン script / style は追加しない
 （favicon は presentation 属性のみの SVG）。
 
-終了コード: 0 成功 / 1 置換・検証の失敗 / 2 引数・入力の不正。
+# 読み込みの上限
+
+dist の読み込みはメモリを有界にする。UTF-8 テキストは 1 件 `MAX_TEXT_FILE_BYTES`・合計 `MAX_TOTAL_TEXT_BYTES`
+まで。上限を超えるファイルは、内容を保持せず `SCAN_CHUNK_BYTES` ずつ最後まで走査して UTF-8 として妥当かを判定する
+（先頭だけでは判定しない。先頭が妥当でも後続に不正なバイトがあればバイナリのため）。バイナリは従来どおり検査対象外、
+全体が UTF-8 として妥当なものは「検査すべきなのに読めない」ため黙って外さず、相対パスだけを示して失敗（終了コード 1）に
+する。ファイル内容の断片はエラーに載せない。
+
+終了コード: 0 成功 / 1 置換・検証の失敗（上限超過で読めない場合を含む） / 2 引数・入力の不正。
 """
 
 from __future__ import annotations
 
 import argparse
+import codecs
 import html
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import Callable
@@ -47,7 +57,7 @@ from typing import Callable
 # `-I`（隔離モード）では起動スクリプトのディレクトリが sys.path に入らないため、自分で足す。append にして、
 # 同じディレクトリに標準モジュール名のファイル（argparse.py 等）があっても標準ライブラリを先に解決させる。
 sys.path.append(str(Path(__file__).resolve().parent))
-from _common import RESIDUAL_RE, write_target_problem, UPSTREAM_BRAND, Brand, BrandError, load_brand  # noqa: E402
+from _common import RESIDUAL_RE, write_target_problem, sanitize, UPSTREAM_BRAND, Brand, BrandError, load_brand  # noqa: E402
 
 UPSTREAM_REPO_URL = "https://github.com/Fandhe-AI/fandhe-frontend"
 ATTRIBUTION_TEXT = "Built with fandhe-frontend docs-site"
@@ -59,6 +69,14 @@ _LICENSE_ANCHOR_RE = re.compile(
 _ARTICLE_RE = re.compile(r'<article class="docs-content">.*?</article>', re.S)
 _HEADER_RE = re.compile(r'<header class="docs-header">.*?</header>', re.S)
 _FOOTER_RE = re.compile(r'<footer class="docs-footer">.*?</footer>', re.S)
+
+# 生成物の読み込み上限。`site/assets` 等に巨大なファイルが入っても、全体をメモリへ載せない。
+# 通常ファイルは 1 MiB 程度が上限（check_site / scaffold の読み取り上限）で、生成物の HTML・CSS・検索インデックスは
+# 通常数百 KiB 以下のため、余裕を持たせた値にしている。
+MAX_TEXT_FILE_BYTES = 8 * 1024 * 1024
+MAX_TOTAL_TEXT_BYTES = 256 * 1024 * 1024
+# 上限を超えるファイルが「バイナリ」かを、内容を保持せず最後まで走査して判定するときの読み込み単位。
+SCAN_CHUNK_BYTES = 64 * 1024
 
 # 検索インデックスはユーザー本文由来のため、本文中の言及を残存検査の対象外にする。
 _RESIDUAL_SKIP_PREFIXES = ("assets/search-index",)
@@ -246,18 +264,91 @@ def find_symlinks(dist: Path) -> list[str]:
     return sorted(found)
 
 
-def _collect(dist: Path) -> dict[str, str]:
+class DistReadError(Exception):
+    """生成物を安全に読み切れない（検査すべきテキストが上限超過など）。メッセージには相対パスだけを載せる。"""
+
+
+def _is_utf8_stream(fh) -> bool:
+    """fh の残り全体が UTF-8 として妥当か。チャンク境界で多バイト文字が切れても不正扱いにしない（増分デコーダ）。
+    内容は保持しない（メモリは SCAN_CHUNK_BYTES 分）。"""
+    dec = codecs.getincrementaldecoder("utf-8")()
+    try:
+        while True:
+            chunk = fh.read(SCAN_CHUNK_BYTES)
+            if not chunk:
+                dec.decode(b"", final=True)  # 末尾で多バイト文字が途切れていれば不正
+                return True
+            dec.decode(chunk, final=False)
+    except UnicodeDecodeError:
+        return False
+
+
+def _read_text_or_none(p: Path, max_bytes: int) -> tuple[str | None, bool]:
+    """(text, too_large)。UTF-8 テキストなら (text, False)、バイナリなら (None, False)、
+    上限超過のテキストなら (None, True)。メモリ使用量は max_bytes + 1 バイトで頭打ちになる。
+
+    サイズ（fstat）を読む前に見て、上限超過のファイルは SCAN_CHUNK_BYTES ずつ最後まで走査して UTF-8 の妥当性を
+    判定する（先頭だけでは判定しない。メモリは 1 チャンク分で頭打ち、不正バイトを見つけた時点で打ち切る）。
+    バイナリ（UTF-8 として不正）は従来どおり検査対象外。全体が妥当なテキストは、検査できない（読めない）以上
+    黙って対象から外さず too_large として呼び出し側で fail-closed にする。
+    """
+    fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None, False
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            if st.st_size > max_bytes:
+                return None, _is_utf8_stream(fh)
+            data = fh.read(max_bytes + 1)  # stat 後に伸びても上限で止める
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if len(data) > max_bytes:
+        return None, True
+    try:
+        return data.decode("utf-8"), False
+    except UnicodeDecodeError:
+        return None, False  # 画像等のバイナリは対象外
+
+
+def _collect(dist: Path, max_file: int | None = None, max_total: int | None = None) -> dict[str, str]:
+    """dist 配下の UTF-8 テキストを {相対パス: 内容} で返す（symlink・特殊ファイル・バイナリは対象外）。
+
+    ファイル 1 件の上限（max_file）・合計の上限（max_total）を超えるテキストがあれば DistReadError。
+    エラーには相対パスだけを載せ、ファイル内容の断片は載せない。
+    """
+    max_file = MAX_TEXT_FILE_BYTES if max_file is None else max_file
+    max_total = MAX_TOTAL_TEXT_BYTES if max_total is None else max_total
     files: dict[str, str] = {}
+    too_large: list[str] = []
+    total = 0
     for cur, dirs, names in os.walk(dist, followlinks=False):
         dirs.sort()
         for n in sorted(names):
             p = Path(cur) / n
             if p.is_symlink() or not p.is_file():
                 continue
-            try:
-                files[p.relative_to(dist).as_posix()] = p.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                continue  # 画像等のバイナリは対象外
+            rel = p.relative_to(dist).as_posix()
+            text, big = _read_text_or_none(p, max_file)
+            if big:
+                too_large.append(rel)
+                continue
+            if text is None:
+                continue
+            total += len(text.encode("utf-8"))
+            if total > max_total:
+                raise DistReadError(
+                    f"生成物のテキスト合計が上限 {max_total} バイトを超える（検査を完了できない）。"
+                    f"超過した時点のファイル: {sanitize(rel)}")
+            files[rel] = text
+    if too_large:
+        shown = ", ".join(sanitize(r) for r in too_large[:10])
+        more = f" ほか {len(too_large) - 10} 件" if len(too_large) > 10 else ""
+        raise DistReadError(
+            f"テキストファイルが上限 {max_file} バイトを超え、残存ブランドを検査できない: {shown}{more}"
+            "（site/assets 等に置いた大きなファイルでないか確認。バイナリなら検査対象外のため、UTF-8 として不正な内容にする）")
     return files
 
 
@@ -287,7 +378,11 @@ def main(argv: list[str] | None = None) -> int:
         print("エラー: dist 内に symlink がある（リンク先へ読み書きが及ぶため中止）: "
               + ", ".join(links[:10]), file=sys.stderr)
         return 1
-    files = _collect(args.dist)
+    try:
+        files = _collect(args.dist)
+    except (DistReadError, OSError) as e:
+        print(f"エラー: dist を読めない（中止。dist は変更していない）: {e}", file=sys.stderr)
+        return 1
     if not any(r.endswith(".html") for r in files):
         print("エラー: dist に HTML が 1 件も無い（生成失敗の可能性）", file=sys.stderr)
         return 1

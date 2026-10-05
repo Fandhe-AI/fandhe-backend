@@ -188,6 +188,167 @@ class RebrandTest(unittest.TestCase):
         self.assertEqual(self.rebrand().returncode, 1)
 
 
+class CollectSizeCapTest(unittest.TestCase):
+    """dist の読み込みはメモリ有界（上限付き）。検査対象のテキストは黙って外さず fail-closed。"""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(SCRIPTS))
+        import rebrand_site
+        cls.mod = rebrand_site
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.dist = self.tmp / "dist"
+        shutil.copytree(FIXTURE, self.dist)
+        self.brand = self.tmp / "brand.toml"
+        self.brand.write_text(brand_toml(), encoding="utf-8")
+        self.cap = self.mod.MAX_TEXT_FILE_BYTES
+
+    def tree(self):
+        return {p.relative_to(self.dist).as_posix(): p.read_bytes()
+                for p in sorted(self.dist.rglob("*")) if p.is_file()}
+
+    def rebrand(self, *extra):
+        return run("rebrand_site.py", "--dist", self.dist, "--brand", self.brand, *extra)
+
+    def test_text_exactly_at_cap_is_read_and_checked(self):
+        (self.dist / "assets" / "extra.css").write_bytes(b"a" * self.cap)
+        r = self.rebrand()
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_text_exactly_at_cap_with_residual_is_still_detected(self):
+        body = b"fandhe-frontend " + b"a" * (self.cap - 16)
+        self.assertEqual(len(body), self.cap)
+        (self.dist / "assets" / "extra.css").write_bytes(body)
+        r = self.rebrand("--verify-only")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("assets/extra.css", r.stderr)
+
+    def test_oversize_text_fails_closed_with_path_only(self):
+        secret = "SECRET-PAYLOAD-MARKER"
+        (self.dist / "assets" / "big.css").write_text(
+            "/* " + secret + " */" + "a" * self.cap, encoding="utf-8")
+        before = self.tree()
+        for extra in ((), ("--verify-only",)):
+            r = self.rebrand(*extra)
+            self.assertEqual(r.returncode, 1, extra)
+            self.assertIn("assets/big.css", r.stderr)
+            self.assertNotIn(secret, r.stderr + r.stdout)
+        self.assertEqual(self.tree(), before)  # dist は変更しない
+
+    def test_oversize_text_with_residual_brand_is_not_silently_skipped(self):
+        # 上限超過のテキストに上流名が残っていても「検査対象外」として通してはならない
+        (self.dist / "assets" / "big.js").write_text(
+            "fandhe-frontend\n" + "a" * self.cap, encoding="utf-8")
+        self.assertEqual(self.rebrand("--verify-only").returncode, 1)
+
+    def test_huge_binary_is_skipped_without_error(self):
+        (self.dist / "assets" / "big.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\xff" * (self.cap + 1))
+        before = self.tree()
+        r = self.rebrand()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.tree()["assets/big.png"], before["assets/big.png"])
+
+    def test_small_binary_is_still_skipped(self):
+        (self.dist / "assets" / "x.bin").write_bytes(b"\x89PNG\xff\xfe")
+        self.assertEqual(self.rebrand().returncode, 0)
+
+    def test_oversize_file_with_valid_head_but_invalid_tail_is_binary(self):
+        # 先頭チャンクが UTF-8 として妥当でも、後続に不正バイトがあれば従来どおりバイナリ（検査対象外）
+        probe = self.mod.SCAN_CHUNK_BYTES
+        body = b"a" * (probe * 2) + b"\xff" + b"a" * self.cap
+        (self.dist / "assets" / "big.dat").write_bytes(body)
+        before = self.tree()
+        r = self.rebrand()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.tree()["assets/big.dat"], before["assets/big.dat"])
+
+    def test_oversize_file_with_invalid_byte_in_last_chunk_is_binary(self):
+        body = b"a" * (self.cap + self.mod.SCAN_CHUNK_BYTES) + b"\xff"
+        (self.dist / "assets" / "tail.dat").write_bytes(body)
+        self.assertEqual(self.rebrand().returncode, 0)
+
+    def test_oversize_file_truncated_multibyte_at_eof_is_binary(self):
+        body = b"a" * self.cap + "あ".encode("utf-8")[:2]  # 末尾で途切れた多バイト文字
+        (self.dist / "assets" / "cut.dat").write_bytes(body)
+        self.assertEqual(self.rebrand().returncode, 0)
+
+    def test_multibyte_text_split_at_probe_boundary_is_not_mistaken_for_binary(self):
+        probe = self.mod.SCAN_CHUNK_BYTES
+        body = ("a" * (probe - 1) + "あ").encode("utf-8") + b"a" * self.cap  # 「あ」(3B) が先頭断片の末尾で切れる
+        (self.dist / "assets" / "big.txt").write_bytes(body)
+        r = self.rebrand("--verify-only")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("assets/big.txt", r.stderr)
+
+    def test_collect_with_patched_caps(self):
+        d = self.tmp / "small"
+        d.mkdir()
+        (d / "ok.txt").write_text("12345", encoding="utf-8")
+        self.assertEqual(self.mod._collect(d, max_file=5), {"ok.txt": "12345"})
+        (d / "over.txt").write_text("123456", encoding="utf-8")
+        with self.assertRaises(self.mod.DistReadError) as cm:
+            self.mod._collect(d, max_file=5)
+        self.assertIn("over.txt", str(cm.exception))
+        self.assertNotIn("123456", str(cm.exception))
+
+    def test_total_cap(self):
+        d = self.tmp / "total"
+        d.mkdir()
+        for i in range(3):
+            (d / f"f{i}.txt").write_text("x" * 10, encoding="utf-8")
+        self.assertEqual(len(self.mod._collect(d, max_file=10, max_total=30)), 3)
+        with self.assertRaises(self.mod.DistReadError):
+            self.mod._collect(d, max_file=10, max_total=29)
+
+    def test_oversize_path_is_sanitized_in_message(self):
+        d = self.tmp / "ctl"
+        d.mkdir()
+        (d / "a\x1b[31mb.txt").write_text("123456", encoding="utf-8")
+        with self.assertRaises(self.mod.DistReadError) as cm:
+            self.mod._collect(d, max_file=5)
+        self.assertNotIn("\x1b", str(cm.exception))
+
+    def test_memory_is_bounded_for_huge_binary(self):
+        import tracemalloc
+        d = self.tmp / "mem"
+        d.mkdir()
+        with open(d / "huge.bin", "wb") as fh:
+            fh.write(b"\xff")
+            fh.truncate(64 * 1024 * 1024)  # sparse
+        tracemalloc.start()
+        try:
+            self.assertEqual(self.mod._collect(d, max_file=1024 * 1024), {})
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 4 * 1024 * 1024)
+
+    def test_memory_is_bounded_for_huge_valid_text_scan(self):
+        import tracemalloc
+        d = self.tmp / "memtext"
+        d.mkdir()
+        (d / "huge.txt").write_bytes(b"a" * (16 * 1024 * 1024))
+        tracemalloc.start()
+        try:
+            with self.assertRaises(self.mod.DistReadError):
+                self.mod._collect(d, max_file=1024 * 1024)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 4 * 1024 * 1024)
+
+    def test_symlink_and_special_files_keep_existing_handling(self):
+        d = self.tmp / "sp"
+        d.mkdir()
+        (d / "real.txt").write_text("ok", encoding="utf-8")
+        (d / "link.txt").symlink_to(d / "real.txt")
+        os.mkfifo(d / "pipe")
+        self.assertEqual(self.mod._collect(d), {"real.txt": "ok"})
+
+
 class SubsetParserTest(unittest.TestCase):
     def setUp(self):
         sys.path.insert(0, str(SCRIPTS))
