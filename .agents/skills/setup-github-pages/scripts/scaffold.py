@@ -323,11 +323,49 @@ def _origin_owner_repo(target: Path) -> tuple[str, str] | None:
     return parse_origin(r.stdout.decode("utf-8", errors="replace"))
 
 
+_GEN_REL = "tools/docs-site-gen/"
+
+
+def known_generator_names() -> set[str]:
+    """`tools/docs-site-gen/` 直下にあってよい名前（スキルの配置物と、ビルドで生じるもの）。"""
+    names = {Path(dst).name for _, dst, _, _ in FILES if dst.startswith(_GEN_REL) and "/" not in dst[len(_GEN_REL):]}
+    return names | {Path(MANIFEST_REL).name, "src", "target", "Cargo.lock", "THIRD-PARTY-LICENSES"}
+
+
+def unknown_generator_entries(target: Path, root_real: Path) -> list[str]:
+    """`tools/docs-site-gen/` にある、スキルが配置しないもの（相対パス。名前順）。detect の「痕跡なし」判定用。
+
+    スキル所有の同名ファイルが 1 つも無くても、ディレクトリが別用途で使われていれば新規構築にしない。
+    直下は許可リスト（known_generator_names）、`src/` はスキルが置くファイルだけを既知とする。
+    ディレクトリ自体が symlink・対象の外へ解決される場合は中を見ない（detect が別途その旨を根拠に載せる）。
+    名前だけを見て、内容は読まない。
+    """
+    gen = target / "tools" / "docs-site-gen"
+    if not os.path.lexists(gen) or gen.is_symlink() or not resolves_inside(root_real, gen):
+        return []
+    if not gen.is_dir():
+        return [_GEN_REL.rstrip("/") + "（ディレクトリではない）"]
+    known = known_generator_names()
+    known_src = {Path(dst).name for _, dst, _, _ in FILES if dst.startswith(_GEN_REL + "src/")}
+    found: list[str] = []
+    try:
+        with os.scandir(gen) as it:
+            found += [_GEN_REL + e.name for e in it if e.name not in known]
+        src = gen / "src"
+        if src.is_dir() and not src.is_symlink():
+            with os.scandir(src) as it:
+                found += [_GEN_REL + "src/" + e.name for e in it if e.name not in known_src]
+    except OSError:
+        return [_GEN_REL.rstrip("/") + "（読めない）"]
+    return sorted(found)
+
+
 def detect(target: Path, root_real: Path) -> dict:
     """対象リポジトリを判定する（書き込みなし）。
 
     mode: new（痕跡なし）/ update（有効なマニフェスト、または旧版配置の痕跡）/ foreign（上流自身、
-    またはスキル由来でない同名ファイルがある）。kind は根拠の種別で、SKILL.md はこれで分岐する。
+    スキル由来でない同名ファイルがある、または `tools/docs-site-gen/` にスキルが配置しないファイルがある）。
+    kind は根拠の種別で、SKILL.md はこれで分岐する。
     upstream は foreign のうち適用対象外（デザインの出どころ）。
     """
     reasons: list[str] = []
@@ -363,6 +401,12 @@ def detect(target: Path, root_real: Path) -> dict:
                        + ", ".join(outside[:6]) + (f" ほか {len(outside) - 6} 件" if len(outside) > 6 else ""))
     if present:
         reasons.append("スキル所有の配置先に既存ファイルがあるが、スキルの配置とは認められない: " + ", ".join(present))
+        return {"mode": "foreign", "kind": "unrelated", "reasons": reasons}
+    stray = unknown_generator_entries(target, root_real)
+    if stray:
+        reasons.append("tools/docs-site-gen/ にスキルが配置しないファイルがある（別用途のディレクトリの可能性）: "
+                       + ", ".join(sanitize(s, 80) for s in stray[:6])
+                       + (f" ほか {len(stray) - 6} 件" if len(stray) > 6 else ""))
         return {"mode": "foreign", "kind": "unrelated", "reasons": reasons}
     reasons.append("スキルの配置痕跡なし")
     return {"mode": "new", "kind": "none", "reasons": reasons}
@@ -493,7 +537,6 @@ def analyze_pages(cur: str, rendered: str) -> dict:
 # `THIRD-PARTY-LICENSES`（実際は対象リポジトリ直下だが、置かれても無害な既知の名前として含める）。
 # build-local.sh は python を `-B`（__pycache__ を作らない）で起動するため、`__pycache__` は既知にしない
 # （事前に置かれた .pyc が読み込まれ得るので、見つけたら警告する）。
-_GEN_REL = "tools/docs-site-gen/"
 _TOOLCHAIN_PATH_RE = re.compile(rb"(?m)^[ \t]*path[ \t]*=")
 
 
@@ -505,8 +548,7 @@ def unexpected_buildable(target: Path, root_real: Path) -> list[str]:
     （リポジトリ直下・`tools/`・`tools/docs-site-gen/`）と、`path` キーを持つ `rust-toolchain(.toml)`。
     見つけても中止はしない（利用者の正当なファイルの可能性があるため）。警告で内容の確認を促す。
     """
-    expected = {Path(dst).name for _, dst, _, _ in FILES if dst.startswith(_GEN_REL) and "/" not in dst[len(_GEN_REL):]}
-    expected |= {Path(MANIFEST_REL).name, "src", "target", "Cargo.lock", "THIRD-PARTY-LICENSES"}
+    expected = known_generator_names()
     found: list[str] = []
 
     # この関数の判定はすべて「安全側の警告」を出すためのもの。実体を検証した結果が偽になることを理由に警告を

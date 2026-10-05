@@ -1962,6 +1962,45 @@ class ScaffoldRound2Test(unittest.TestCase):
         for expected in ("rebrand_site.py", "check_site.py", "_common.py", "build-local.sh"):
             self.assertNotIn(expected, w, "スキルが配置したファイルを警告してはいけない")
 
+    def test_detect_treats_unknown_files_in_generator_dir_as_unrelated(self):
+        """スキル所有の同名ファイルが無くても、tools/docs-site-gen/ が別用途なら新規構築（kind=none）にしない。"""
+        gen = self.t / "tools/docs-site-gen"
+        gen.mkdir(parents=True)
+
+        def det():
+            j = json.loads(self.sc("--detect", "--json", args=()).stdout)
+            return (j["mode"], j["kind"]), " ".join(j["reasons"])
+
+        self.assertEqual(det()[0], ("new", "none"), "空のディレクトリは痕跡なし")
+        (gen / "target").mkdir()
+        (gen / "Cargo.lock").write_text("")
+        (gen / "src").mkdir()
+        self.assertEqual(det()[0], ("new", "none"), "ビルドで生じる既知の名前だけなら痕跡なし")
+        (gen / "other.py").write_text("print(1)\n")
+        kind, reasons = det()
+        self.assertEqual(kind, ("foreign", "unrelated"))
+        self.assertIn("tools/docs-site-gen/other.py", reasons)
+        (gen / "other.py").unlink()
+        (gen / "src/lib.rs").write_text("pub fn f() {}\n")
+        kind, reasons = det()
+        self.assertEqual(kind, ("foreign", "unrelated"))
+        self.assertIn("tools/docs-site-gen/src/lib.rs", reasons)
+        self.assertEqual(sorted(p.name for p in gen.iterdir()), ["Cargo.lock", "src", "target"], "--detect は書き込まない")
+
+    def test_detect_unknown_files_do_not_demote_a_scaffolded_repo(self):
+        self.init()
+        (self.t / "tools/docs-site-gen/helper.py").write_text("print(1)\n")
+        j = json.loads(self.sc("--detect", "--json", args=()).stdout)
+        self.assertEqual((j["mode"], j["kind"]), ("update", "manifest"))
+
+    def test_detect_does_not_read_generator_dir_behind_symlink(self):
+        (self.outside / "other.py").write_text("print(1)\n")
+        (self.t / "tools").mkdir()
+        (self.t / "tools/docs-site-gen").symlink_to(self.outside)
+        j = json.loads(self.sc("--detect", "--json", args=()).stdout)
+        self.assertEqual((j["mode"], j["kind"]), ("new", "none"))
+        self.assertNotIn("other.py", " ".join(j["reasons"]))
+
     SENTINEL = "SECRET-SENTINEL-4f9a"
 
     def test_check_site_refuses_symlinks_leaving_the_repository(self):
