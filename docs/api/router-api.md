@@ -91,7 +91,7 @@
 - 衝突でない部分的な重なりは 3.3 の既存優先順位（静的 → パラメータ登録順）で解決される。同一 `Router` 内の `route` / `route_param` の再登録意味論は変わらない。
 - `RouterMergeError` は `Display` / `std::error::Error` を実装する。
 
- と `HandlerFuture` の内部アダプタ関係
+### 3.4 同期登録 API と `HandlerFuture` の内部アダプタ関係
 
 - 既定ハンドラ契約は boxed future（`HandlerFuture`）返却へ移行済みだが、`route` / `route_param` の同期登録 API は**非破壊のまま維持**される
 - 同期ハンドラは内部アダプタで `Box::pin(std::future::ready(response))` に包まれる。借用（`head` / `body`）は同期部で消費され future へ持ち越されないため、`HandlerFuture` はライフタイムパラメータを持たない（常に `'static`）
