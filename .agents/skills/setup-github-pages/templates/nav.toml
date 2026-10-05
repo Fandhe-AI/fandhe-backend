@@ -1,0 +1,16 @@
+# docs サイトのナビゲーション定義。書式は references/site-format.md を参照。
+# 使える TOML は `key = "文字列"` のみ（配列・整数・bool・inline table は不可）。
+# path が /themes/ /primitives/ /blocks/ /wireframes/ で始まるページは作れない（予約）。
+
+[site]
+title = "__SGP_SITE_TITLE__"
+base_path = "__SGP_BASE_PATH__"
+
+[[section]]
+title = "Guide"
+index_path = "/"
+
+[[section.page]]
+title = "Home"
+source = "site/index.md"
+path = "/"

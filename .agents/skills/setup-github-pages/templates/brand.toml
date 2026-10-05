@@ -1,0 +1,21 @@
+# 生成済みサイトのブランド表示（ヘッダー・フッター・favicon）。rebrand_site.py の入力。
+# `[site]` で変えられる title はフッターのブランド名のみに反映されるため、それ以外の
+# 表示はここで指定する。上流が [site] を拡張したら本ファイルと rebrand_site.py を廃止する。
+# 書式は nav.toml と同じ（`key = "文字列"` のみ）。値に fandhe-frontend は含められない。
+
+[brand]
+# ヘッダー左上のブランド名
+brand = "__SGP_BRAND__"
+# ヘッダー・フッターの GitHub リンク先。https://github.com/<owner>/<repo> のみ許可
+repository = "__SGP_REPOSITORY__"
+# フッターのタグライン。空文字なら行ごと削除する
+tagline = "__SGP_TAGLINE__"
+# フッター下段の著作権表記
+copyright = "__SGP_COPYRIGHT__"
+# <html lang>
+lang = "__SGP_LANG__"
+# ブランド横のバージョン badge。空文字なら削除する（上流は "core v0.4.3" を埋め込んでいる）
+version_badge = "__SGP_VERSION_BADGE__"
+# favicon とヘッダーのマーク（英数字 1 文字 + #RRGGBB。白文字を載せるため暗めの色を選ぶ）
+favicon_letter = "__SGP_FAVICON_LETTER__"
+favicon_color = "__SGP_FAVICON_COLOR__"
