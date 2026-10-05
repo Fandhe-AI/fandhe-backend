@@ -95,6 +95,8 @@ DEPRECATED_OWNED: tuple[str, ...] = ()
 # 終了コード: 0 成功 / 2 入力不正・書き込み先が不適 / 3 競合（OWNED の不一致）/ 4 配置後の check_site 失敗
 EXIT_CONFLICT, EXIT_CHECK_FAILED = 3, 4
 # --update でも解消しない競合の種別（手動で解消する。案内も --update を勧めない）
+# 別用途と見られる `tools/docs-site-gen/`（スキルが配置しないファイルがある）。--update で進められる
+FOREIGN_DIR_KIND = "foreign_dir"
 UNFIXABLE_KINDS = frozenset({"symlink", "not_regular", "unreadable", "outside_root"})
 
 MANIFEST_REL = "tools/docs-site-gen/.scaffold-manifest.json"
@@ -399,15 +401,17 @@ def detect(target: Path, root_real: Path) -> dict:
     if outside:
         reasons.append("次の配置先は対象の外（または .git 配下）へ解決されるため読まない（親ディレクトリが symlink 等）: "
                        + ", ".join(outside[:6]) + (f" ほか {len(outside) - 6} 件" if len(outside) > 6 else ""))
+    # 同名の所有ファイルの有無に関わらず調べる（同名ファイルが生成予定と同じ内容なら競合にならないため、
+    # 先に return すると別用途のファイルを見落として配置へ進んでしまう）。
+    stray = unknown_generator_entries(target, root_real)
     if present:
         reasons.append("スキル所有の配置先に既存ファイルがあるが、スキルの配置とは認められない: " + ", ".join(present))
-        return {"mode": "foreign", "kind": "unrelated", "reasons": reasons}
-    stray = unknown_generator_entries(target, root_real)
     if stray:
         reasons.append("tools/docs-site-gen/ にスキルが配置しないファイルがある（別用途のディレクトリの可能性）: "
                        + ", ".join(sanitize(s, 80) for s in stray[:6])
                        + (f" ほか {len(stray) - 6} 件" if len(stray) > 6 else ""))
-        return {"mode": "foreign", "kind": "unrelated", "reasons": reasons}
+    if present or stray:
+        return {"mode": "foreign", "kind": "unrelated", "reasons": reasons, "stray": stray}
     reasons.append("スキルの配置痕跡なし")
     return {"mode": "new", "kind": "none", "reasons": reasons}
 
@@ -972,10 +976,23 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as e:
         return finish(2, f"エラー: {e}")
 
+    # ---- 別用途の生成器ディレクトリ: 同名の所有ファイルが無く上の分類で競合にならなくても、黙って配置しない。
+    # 所有ファイルの競合と同じ扱い（何も書かずに exit 3。利用者が内容を確認した上での --update でのみ進む）。
+    stray = det.get("stray") or []
+    if stray and not args.update:
+        conflicts.append((_GEN_REL.rstrip("/"), FOREIGN_DIR_KIND,
+                          "スキルが配置しないファイルがある（別用途のディレクトリの可能性）: "
+                          + ", ".join(sanitize(s, 80) for s in stray[:6])
+                          + (f" ほか {len(stray) - 6} 件" if len(stray) > 6 else "")))
+
     # ---- 差分表示（書き込みなし）
     if args.show_diff:
         diffs: dict[str, dict] = {}
         for path, kind, reason in conflicts:
+            if kind == FOREIGN_DIR_KIND:   # ディレクトリであり、比べる対象が無い（中のファイルの内容も読まない）
+                diffs[path] = {"conflict_kind": kind, "reason": reason, "status": "directory",
+                               "lines": ["ディレクトリのため差分はない。理由に挙げたファイルの用途を確認する"]}
+                continue
             status, lines = build_diff(root_real, args.target / path, path, desired.get(path, ""))
             diffs[path] = {"conflict_kind": kind, "reason": reason, "status": status, "lines": lines}
         summary["diffs"] = diffs
@@ -1071,7 +1088,7 @@ def main(argv: list[str] | None = None) -> int:
     if conflicts:
         for w in warnings:
             out(f"警告 {w}", err=True)
-        out("エラー: スキルが所有するファイルが既存で、内容が生成予定と一致しない（競合）。何も書かずに中止する:", err=True)
+        out("エラー: スキルの配置先に、スキルの配置とは認められない既存のファイルがある（競合）。何も書かずに中止する:", err=True)
         for path, _kind, reason in conflicts:
             out(f"  - {path}（{reason}）", err=True)
         fixable = [p for p, k, _ in conflicts if k not in UNFIXABLE_KINDS]

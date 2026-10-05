@@ -1987,6 +1987,52 @@ class ScaffoldRound2Test(unittest.TestCase):
         self.assertIn("tools/docs-site-gen/src/lib.rs", reasons)
         self.assertEqual(sorted(p.name for p in gen.iterdir()), ["Cargo.lock", "src", "target"], "--detect は書き込まない")
 
+    def test_scaffold_refuses_unrelated_generator_dir_without_update(self):
+        """kind=unrelated（別用途の tools/docs-site-gen/）へは、--update なしでは何も書かない。"""
+        gen = self.t / "tools/docs-site-gen"
+        gen.mkdir(parents=True)
+        (gen / "other.py").write_text("print(1)\n")
+        before = self.tree()
+        r = self.sc("--json")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        j = json.loads(r.stdout)
+        self.assertEqual([(c["path"], c["kind"]) for c in j["conflicts"]], [("tools/docs-site-gen", "foreign_dir")])
+        self.assertIn("other.py", j["conflicts"][0]["reason"])
+        self.assertEqual(self.tree(), before, "何も書かずに中止する")
+        r = self.sc("--show-diff", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        d = json.loads(r.stdout)["diffs"]["tools/docs-site-gen"]
+        self.assertEqual((d["conflict_kind"], d["status"]), ("foreign_dir", "directory"))
+        self.assertEqual(self.tree(), before, "--show-diff は書き込まない")
+        r = self.sc("--update", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        j = json.loads(r.stdout)
+        self.assertEqual(j["conflicts"], [])
+        self.assertIn("other.py", " ".join(j["warnings"]), "進めた場合も想定外のファイルは警告する")
+        self.assertEqual((gen / "other.py").read_text(), "print(1)\n", "既存のファイルは残す")
+        self.assertTrue((gen / "FF_REV").is_file())
+
+    def test_scaffold_refuses_unrelated_generator_dir_even_with_matching_owned_files(self):
+        """同名の所有ファイルが生成予定と同じ内容（競合にならない）でも、別用途のファイルがあれば配置しない。"""
+        self.init()
+        gen = self.t / "tools/docs-site-gen"
+        (self.t / self.MANIFEST).unlink()
+        (gen / "build-local.sh").unlink()   # マニフェストも旧版の痕跡も揃わない = スキルの配置と認められない
+        (gen / "other.py").write_text("print(1)\n")
+        j = json.loads(self.sc("--detect", "--json", args=()).stdout)
+        self.assertEqual((j["mode"], j["kind"]), ("foreign", "unrelated"))
+        self.assertIn("other.py", " ".join(j["reasons"]))
+        before = self.tree()
+        r = self.sc("--json")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertEqual([(c["path"], c["kind"]) for c in json.loads(r.stdout)["conflicts"]],
+                         [("tools/docs-site-gen", "foreign_dir")])
+        self.assertEqual(self.tree(), before, "何も書かずに中止する")
+        (gen / "other.py").unlink()
+        r = self.sc("--json")
+        self.assertEqual(r.returncode, 0, r.stderr)   # 別用途のファイルが無ければ、欠けた所有ファイルを補う（従来どおり）
+        self.assertTrue((gen / "build-local.sh").is_file())
+
     def test_detect_unknown_files_do_not_demote_a_scaffolded_repo(self):
         self.init()
         (self.t / "tools/docs-site-gen/helper.py").write_text("print(1)\n")
