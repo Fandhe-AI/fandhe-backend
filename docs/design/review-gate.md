@@ -25,7 +25,7 @@ REQ-14 の受け入れ基準のうち、TASK-14.1（#39）・TASK-14.2（#40）�
 | # | 条件 | 機械強制 | 担保方法 |
 |---|------|---------|----------|
 | 1 | PR 経由必須（main への直 push 不可） | 可能 | ruleset `main-protection`（#693 でリポジトリ外運用の実態に合わせて一本化。以前は本タスクで `main-required-checks` に追加した）の `pull_request` ルール |
-| 2 | `ci-complete` 全通過（fmt / clippy / test / doc / coverage / dep-audit / unsafe-triage の集約を含む required status check 25 件） | 可能 | 既存 required status check（TASK-14.1、#39。実際の contexts は `scripts/setup-required-checks.sh --print-desired` を正とする） |
+| 2 | `ci-complete` 全通過（fmt / clippy / test / doc / coverage / dep-audit / unsafe-triage の集約を含む required status check 26 件） | 可能 | 既存 required status check（TASK-14.1、#39。実際の contexts は `scripts/setup-required-checks.sh --print-desired` を正とする） |
 | 3 | レビューゲート通過（人間承認 **または** 追加の AI レビュー） | 一部（証跡の存在は確認可能だが、レビュー内容の妥当性そのものは機械判定できない） | 下記 §1.1 の運用 |
 
 REQ-14 は「人間または追加の AI レビュー」を明示的に許容している（単独メンテナ体制でも
@@ -69,7 +69,7 @@ main の実際の保護は repository ruleset **`main-protection`**（対象: de
 | `pull_request` | `required_approving_review_count: 0`・`required_review_thread_resolution: true`・`allowed_merge_methods: ["squash"]`・その他パラメータは `--print-desired` 参照 | main への直 push を禁止し PR 経由を機械強制する（レビューゲートの土台）。承認数は既存の AI レビュー運用（単独メンテナ + push 前 review + squash merge）を壊さないよう `0` とする |
 | `non_fast_forward` | 有効 | main への force push を禁止する（履歴改変によるレビュー済み内容のすり替え防止） |
 | `deletion` | 有効 | main ブランチの削除を禁止する |
-| `required_status_checks` | `ci-complete` を含む 25 件（matrix 化した fmt/clippy/test の 9 件・codex 系 3 件・Cursor Bugbot 等、`strict_required_status_checks_policy: false`） | TASK-14.1（#39）で `ci-complete` を確立、#679/PR #685 の matrix 化・#693 の一本化を経て現行構成に至る。個別 context の対応は `scripts/setup-required-checks.sh` のコメントを参照 |
+| `required_status_checks` | `ci-complete` を含む 26 件（matrix 化した fmt/clippy/test の 9 件・codex 系 3 件・Cursor Bugbot 等、`strict_required_status_checks_policy: false`） | TASK-14.1（#39）で `ci-complete` を確立、#679/PR #685 の matrix 化・#693 の一本化を経て現行構成に至る。個別 context の対応は `scripts/setup-required-checks.sh` のコメントを参照 |
 
 `bypass_actors` は空のまま維持する（例外経路を作らない、fail-closed）。PUT ペイロードでは
 `bypass_actors: []` を明示的に送る（フィールド省略では既存の bypass_actors がクリアされる
