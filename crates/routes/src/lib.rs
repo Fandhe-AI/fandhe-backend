@@ -968,7 +968,6 @@ impl Router {
     /// let text = String::from_utf8(res.serialize(false)).unwrap();
     /// assert!(text.contains("Allow: GET, POST\r\n"));
     /// ```
-    #[must_use]
     pub fn dispatch(&self, head: &RequestHead, body: &[u8]) -> HandlerFuture {
         // 1. 静的ルート（完全一致）を最優先で照合する（イシュー #583）。
         //    `path` → `method` のネスト map を `&str` の借用キーで 2 段照合する
