@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+import tempfile
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -163,8 +164,17 @@ def _resolve_real(path: Path) -> Path:
 
 
 def _in_git_dir(root_real: Path, real: Path) -> bool:
-    git_dir = root_real / ".git"
-    return real == git_dir or git_dir in real.parents
+    """実体が root 直下の `.git` 配下（`.git` 自体を含む）か。
+
+    名前は大文字小文字を区別せず比べる。macOS（APFS 既定）・Windows は大文字小文字を区別しないため、
+    `.GIT` / `.Git` も同じディレクトリを指す（`ln -s .GIT site` で `.git/` へ書き込み・読み取りが通ってしまう）。
+    区別するファイルシステムでは `.GIT` は別名の通常ディレクトリだが、判定を環境で変えず常に拒否する（安全側）。
+    """
+    try:
+        parts = real.relative_to(root_real).parts
+    except ValueError:
+        return False
+    return bool(parts) and parts[0].lower() == ".git"
 
 
 def resolves_inside(root_real: Path, path: Path) -> bool:
@@ -198,7 +208,62 @@ def write_target_problem(root_real: Path, path: Path) -> str | None:
         return "対象の外へ解決される（親ディレクトリが symlink の可能性）"
     if os.path.lexists(path) and not path.is_file():
         return "通常ファイルではない"
+    # 未作成の宛先は、存在する最も近い祖先がディレクトリでなければ書けない（親が通常ファイルだと mkdir が
+    # FileExistsError / NotADirectoryError になり、書き込みの途中で落ちて部分書き込みが残る）。書く前にここで拒否する。
+    ancestor = path.parent
+    while not os.path.lexists(ancestor) and ancestor != ancestor.parent:
+        ancestor = ancestor.parent
+    if os.path.lexists(ancestor) and not ancestor.is_dir():
+        return "親パスの途中にディレクトリではないもの（通常ファイル等）がある"
     return None
+
+
+# 書き込み途中の一時ファイル名の接尾辞。拡張子（.rs / .py / .yml / .toml 等）で終わらせず、
+# 万一プロセスが強制終了されて残っても、cargo・GitHub Actions・python が拾う名前にならないようにする。
+ATOMIC_TMP_SUFFIX = ".sgp-tmp"
+
+
+def atomic_write_bytes(path: Path, data: bytes, *, executable: bool = False) -> None:
+    """`path` をファイル単位で原子的に書く（未変更か完全な内容のどちらかにしかならない）。
+
+    同じディレクトリの一時ファイルへ全バイトを書き、fsync してから `os.replace` で置き換える。途中で失敗
+    （空き容量不足・I/O エラー・権限・シグナル）しても、既存のファイルは元の内容のまま残り、新規ファイルは
+    作られない（`open(..., "wb")` で書くと、先に 0 バイトへ切り詰められ、途中で失敗すると生成予定でも
+    旧版でもない中途半端な内容が残り、再実行で競合になる）。失敗時は一時ファイルを消して例外を再送出する
+    （消せなかったときは、例外の `leftover_tmp` 属性にそのパスを載せる）。
+
+    - 権限: 既存ファイルはその権限を引き継ぐ。新規は umask に従う。`executable` なら実行ビットを足す。
+    - `os.replace` は末端が symlink でもリンク先へは書かずリンク自体を置き換えるため、検査後に差し替えられても
+      リンク先へ書き込まない（検査は `write_target_problem` が先に行う）。
+    - 親ディレクトリは呼び出し側が作っておく。
+    """
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except FileNotFoundError:
+        umask = os.umask(0)
+        os.umask(umask)
+        mode = 0o666 & ~umask
+    if executable:
+        mode |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=ATOMIC_TMP_SUFFIX)
+    try:
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)   # 容量不足は flush 時に初めて表面化し得る。置き換えの前に確定させる
+        finally:
+            os.close(fd)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException as e:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            e.leftover_tmp = tmp   # type: ignore[attr-defined]
+        raise
 
 
 class SubsetError(ValueError):

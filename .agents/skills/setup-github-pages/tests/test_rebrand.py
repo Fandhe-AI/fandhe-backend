@@ -4,10 +4,12 @@ fixtures/raw は生成器の実出力（rebrand 前）。手書き fixture で�
 実物を使う。`rebrand.test.mjs` から `node --test` 経由でも実行される。
 """
 
+import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -2447,6 +2449,442 @@ class ScaffoldRound3Test(unittest.TestCase):
         sys.path.insert(0, str(SCRIPTS))
         import _common
         self.assertNotIn(chr(0x2800), _common.sanitize("a" + chr(0x2800) + "b"))
+
+class ScaffoldRound4Test(unittest.TestCase):
+    """4 巡目の監査（F1 生成器ディレクトリの symlink・F2 unrelated での旧版 pages.yml の書き換え・F3 `.git` の大文字小文字・
+    F4 親パスが通常ファイル）の回帰テスト。中止すべき場面では「ファイルの一覧と内容ハッシュが実行前後で一致」「終了コード」
+    「`--json` の `error` / `conflicts`」を確認する。"""
+
+    ARGS = ScaffoldHardeningTest.ARGS
+    PAGES = ScaffoldHardeningTest.PAGES
+    MANIFEST = ScaffoldHardeningTest.MANIFEST
+    setUp = ScaffoldHardeningTest.setUp
+    sc = ScaffoldHardeningTest.sc
+    init = ScaffoldHardeningTest.init
+    pages = ScaffoldHardeningTest.pages
+    legacy_pages = ScaffoldHardeningTest.legacy_pages
+
+    def snap(self):
+        """対象の全エントリ（`.git` も含む。ディレクトリ・symlink のリンク先・通常ファイルの sha256）。"""
+        import hashlib
+        res = {}
+        for dirpath, dirnames, filenames in os.walk(self.t):
+            for name in dirnames + filenames:
+                p = Path(dirpath) / name
+                rel = p.relative_to(self.t).as_posix()
+                if p.is_symlink():
+                    res[rel] = ("link", os.readlink(p))
+                elif p.is_dir():
+                    res[rel] = ("dir", None)
+                else:
+                    res[rel] = ("file", hashlib.sha256(p.read_bytes()).hexdigest())
+        return res
+
+    def assert_refused_without_writing(self, code, *extra, args=ARGS):
+        before = self.snap()
+        r = self.sc("--json", *extra, args=args)
+        self.assertEqual(r.returncode, code, r.stdout + r.stderr)
+        j = json.loads(r.stdout)   # どの終了コードでも JSON が 1 つ出る
+        self.assertEqual(j["exit_code"], code)
+        self.assertEqual(self.snap(), before, "中止すべき場面で 1 バイトも書かない")
+        self.assertEqual(r.stdout.count("\n"), 1, "JSON は 1 つだけ")
+        return j
+
+    # ---- F1: tools/docs-site-gen・src が root 内を指すディレクトリ symlink
+
+    def test_generator_dir_symlink_inside_root_is_refused_even_with_update(self):
+        real = self.t / "real-gen"
+        real.mkdir()
+        (real / "evil.py").write_text("print(1)\n")
+        (self.t / "tools").mkdir()
+        (self.t / "tools/docs-site-gen").symlink_to("../real-gen")
+        det = json.loads(self.sc("--detect", "--json", args=()).stdout)
+        self.assertEqual((det["mode"], det["kind"]), ("foreign", "unrelated"))
+        self.assertIn("シンボリックリンク", " ".join(det["reasons"]))
+        for extra in ((), ("--update",)):
+            j = self.assert_refused_without_writing(3, *extra)
+            self.assertEqual([(c["path"], c["kind"]) for c in j["conflicts"]], [("tools/docs-site-gen", "symlink")])
+        self.assert_refused_without_writing(0, "--show-diff")
+        # 同内容の実ディレクトリなら foreign_dir（--update で進める）。symlink はそれより厳しい
+        (self.t / "tools/docs-site-gen").unlink()
+        shutil.move(str(real), str(self.t / "tools/docs-site-gen"))
+        j = self.assert_refused_without_writing(3)
+        self.assertEqual([c["kind"] for c in j["conflicts"]], ["foreign_dir"])
+
+    def test_empty_generator_dir_symlink_inside_root_is_refused(self):
+        (self.t / "real-gen").mkdir()
+        (self.t / "tools").mkdir()
+        (self.t / "tools/docs-site-gen").symlink_to("../real-gen")
+        for extra in ((), ("--update",)):
+            j = self.assert_refused_without_writing(3, *extra)
+            self.assertEqual([(c["path"], c["kind"]) for c in j["conflicts"]], [("tools/docs-site-gen", "symlink")])
+
+    def test_src_symlink_inside_root_is_refused_even_with_update(self):
+        (self.t / "tools/docs-site-gen").mkdir(parents=True)
+        (self.t / "real-src").mkdir()
+        (self.t / "tools/docs-site-gen/src").symlink_to("../../real-src")
+        det = json.loads(self.sc("--detect", "--json", args=()).stdout)
+        self.assertEqual((det["mode"], det["kind"]), ("foreign", "unrelated"))
+        for extra in ((), ("--update",)):
+            j = self.assert_refused_without_writing(3, *extra)
+            self.assertEqual([(c["path"], c["kind"]) for c in j["conflicts"]], [("tools/docs-site-gen/src", "symlink")])
+
+    def test_scaffolded_repo_whose_generator_dir_becomes_a_symlink_is_refused(self):
+        self.init()
+        gen = self.t / "tools/docs-site-gen"
+        shutil.move(str(gen), str(self.t / "moved-gen"))
+        gen.symlink_to("../moved-gen")
+        for extra in ((), ("--update",)):
+            j = self.assert_refused_without_writing(3, *extra)
+            self.assertIn(("tools/docs-site-gen", "symlink"), [(c["path"], c["kind"]) for c in j["conflicts"]])
+
+    # ---- F2: kind=unrelated では、旧版形式の pages.yml を --update なしで書き換えない
+
+    def test_unrelated_with_only_legacy_format_pages_yml_does_not_rewrite_it_without_update(self):
+        self.init()
+        for rel in ("tools/docs-site-gen", "site", "rust-toolchain.toml"):
+            p = self.t / rel
+            shutil.rmtree(p) if p.is_dir() else p.unlink()
+        (self.t / self.PAGES).write_text(self.legacy_pages(['      - "docs/**"']))
+        det = json.loads(self.sc("--detect", "--json", args=()).stdout)
+        self.assertEqual((det["mode"], det["kind"]), ("foreign", "unrelated"))
+        j = self.assert_refused_without_writing(3)
+        self.assertEqual([(c["path"], c["kind"]) for c in j["conflicts"]], [(self.PAGES, "no_manifest")])
+        r = self.sc("--update", "--json")   # 内容を確認した上での --update でだけ進む（追加 paths は利用者区間へ）
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('      - "docs/**"', self.pages().split("sgp:user-paths:begin")[1].split("sgp:user-paths:end")[0])
+
+    # ---- F3: 大文字小文字を区別しないファイルシステムでの .git 配下の除外
+
+    def test_git_dir_is_rejected_regardless_of_letter_case(self):
+        sys.path.insert(0, str(SCRIPTS))
+        import _common
+        root = Path(os.path.realpath(self.t))
+        for name in (".git", ".GIT", ".Git", ".gIt"):
+            (self.t / name).mkdir(exist_ok=True)
+            self.assertFalse(_common.resolves_inside(root, root / name / "config"), name)
+            self.assertIsNotNone(_common.write_target_problem(root, root / name / "x"), name)
+        self.assertTrue(_common.resolves_inside(root, root / ".github" / "x"), ".github は .git ではない")
+        self.assertTrue(_common.resolves_inside(root, root / ".gitignore"), ".gitignore は .git ではない")
+        self.assertTrue(_common.resolves_inside(root, root / "a" / ".GIT" / "x"), "root 直下以外の .git という名前は対象外")
+
+    def test_symlink_to_upper_case_git_dir_is_refused_without_writing(self):
+        (self.t / ".GIT").mkdir()
+        (self.t / ".GIT/config").write_text("[core]\n")
+        (self.t / "site").symlink_to(".GIT")
+        j = self.assert_refused_without_writing(3)   # outside_root（.git 配下は書かない・読まない）
+        self.assertIn("outside_root", [c["kind"] for c in j["conflicts"]])
+        self.assertEqual(sorted(p.name for p in (self.t / ".GIT").iterdir()), ["config"])
+
+    def test_check_site_does_not_read_through_upper_case_git_dir(self):
+        self.init()
+        (self.t / ".GIT").mkdir()
+        (self.t / ".GIT/config").write_text("[core]\n")
+        nav = self.t / "site/nav.toml"
+        nav.write_text(nav.read_text() + '\n[[section]]\ntitle = "X"\n\n[[section.page]]\ntitle = "cfg"\n'
+                       'path = "/cfg/"\nsource = ".GIT/config"\n')
+        r = run("check_site.py", "--root", self.t)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+
+    # ---- F4: 配置先の親パスが通常ファイル（書き込み前に検出し、トレースバックにしない）
+
+    def assert_parent_file_refused(self, rel, code=2):
+        parent = self.t / rel
+        parent.parent.mkdir(parents=True, exist_ok=True)
+        parent.write_text("not a directory\n")
+        before = self.snap()
+        r = self.sc("--json")
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(r.returncode, code, r.stdout + r.stderr)
+        j = json.loads(r.stdout)
+        self.assertEqual(j["exit_code"], code)
+        self.assertEqual(self.snap(), before, f"{rel} が通常ファイル: 何も書かない")
+        return j
+
+    def test_site_being_a_regular_file_is_refused_without_writing(self):
+        det = None
+        (self.t / "site").write_text("x\n")
+        det = json.loads(self.sc("--detect", "--json", args=()).stdout)
+        self.assertEqual((det["mode"], det["kind"]), ("new", "none"))
+        (self.t / "site").unlink()
+        j = self.assert_parent_file_refused("site")
+        self.assertIn("site/nav.toml", j["error"])
+
+    def test_workflows_dir_being_a_regular_file_is_refused_without_writing(self):
+        j = self.assert_parent_file_refused(".github/workflows")
+        self.assertIn(self.PAGES, j["error"])
+
+    def test_tools_being_a_regular_file_is_refused_without_writing(self):
+        self.assert_parent_file_refused("tools")
+
+    def test_generator_dir_being_a_regular_file_is_refused_even_with_update(self):
+        self.assert_parent_file_refused("tools/docs-site-gen")   # 書き込み前の検査（exit 2）が foreign_dir（exit 3）より先
+        before = self.snap()
+        r = self.sc("--update", "--json")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(self.snap(), before)
+
+    def test_src_being_a_regular_file_is_refused_without_writing(self):
+        self.assert_parent_file_refused("tools/docs-site-gen/src")
+
+    def test_os_error_while_writing_is_reported_as_json_not_traceback(self):
+        """分類後に書き込みが失敗しても（ここでは親ディレクトリの書き込み権限なし）、トレースバックにせず JSON を出す。"""
+        if os.name == "nt" or os.geteuid() == 0:
+            self.skipTest("権限による書き込み失敗を作れない環境")
+        d = self.t / "site"
+        d.mkdir()
+        os.chmod(d, 0o500)
+        self.addCleanup(os.chmod, d, 0o700)
+        r = self.sc("--json")
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        j = json.loads(r.stdout)
+        self.assertEqual(j["exit_code"], 2)
+        self.assertIn("書き込み", j["error"])
+
+
+# 書き込み途中の失敗を注入して scaffold.py を起動するラッパー。RLIMIT_FSIZE でファイルサイズの上限を設け、
+# 上限を超える書き込みを「前半だけ書いてから EFBIG」にする（ディスクフル・I/O エラーと同じ「途中で止まる書き込み」。
+# `os.write` の差し替えと違い、書き込み方式（write_bytes / 一時ファイル + os.replace）に依らず同じ条件で再現できる）。
+# 上限の下でインポートされるモジュールの `.pyc` も同じ上限で切り詰められる（Linux では短い書き込みのまま `__pycache__` へ
+# 置き換えられ、上限なしの次の実行が `EOFError: marshal data too short` で落ちる）ため、先にバイトコードの書き出しを止める。
+FAIL_MID_WRITE = """
+import os, resource, runpy, signal, sys
+sys.dont_write_bytecode = True
+signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+limit = int(os.environ["SGP_FSIZE"])
+resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+
+
+class FailMidWriteWrapperTest(unittest.TestCase):
+    """失敗注入ラッパー自体が、ファイルサイズ上限の下でバイトコードキャッシュ（.pyc）を書かないことの回帰テスト。
+
+    上限を超える書き込みは前半だけ書かれて短い書き込みとして返る（Linux）。Python は `.pyc` をその短い書き込みのまま
+    `__pycache__` へ置き換えるため、上限より大きいモジュール（`_common.py` など）の切り詰められた `.pyc` が
+    スキルのコピー（またはリポジトリ）に残り、上限なしの再実行が `EOFError: marshal data too short` で落ちる。
+    """
+
+    def test_wrapper_does_not_create_bytecode_cache_under_the_limit(self):
+        if os.name == "nt":
+            self.skipTest("RLIMIT_FSIZE が使えない")
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "big_helper.py").write_text("DATA = %r\n" % ("x" * 5000))   # 上限（1000B）より大きい .pyc になる
+            (root / "main.py").write_text("import sys\nsys.path.insert(0, %r)\nimport big_helper\nprint(len(big_helper.DATA))\n" % d)
+            r = subprocess.run([sys.executable, "-c", FAIL_MID_WRITE, str(root / "main.py")],
+                               capture_output=True, text=True, env=dict(os.environ, SGP_FSIZE="1000"))
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(r.stdout.strip(), "5000")
+            self.assertEqual(sorted(p.name for p in root.rglob("__pycache__")), [],
+                             "上限下の起動が __pycache__ を作った（切り詰められた .pyc が残り得る）")
+            self.assertEqual(sorted(p.name for p in root.rglob("*.pyc")), [])
+
+
+class ScaffoldAtomicWriteTest(unittest.TestCase):
+    """書き込みの途中で失敗しても、ファイルが中途半端な内容で残らず、再実行で収束することの回帰テスト。
+
+    以前は `write_bytes()` が 0 バイトへ切り詰めてから書いたため、空き容量不足などで途中失敗すると、
+    生成予定でも旧版でもない内容が残った。そのファイルは created / updated に記録されず、再実行では
+    競合（所有ファイルの更新中ならマニフェストのハッシュとも不一致）になり、「原因を直して再実行する」案内が成り立たなかった。
+    """
+
+    ARGS = ScaffoldHardeningTest.ARGS
+    MANIFEST = ScaffoldHardeningTest.MANIFEST
+    MAIN_RS = ScaffoldHardeningTest.MAIN_RS
+    BUILD_SH = ScaffoldHardeningTest.BUILD_SH
+    setUp = ScaffoldHardeningTest.setUp
+    sc = ScaffoldHardeningTest.sc
+    init = ScaffoldHardeningTest.init
+    skill_copy = ScaffoldHardeningTest.skill_copy
+    snap = ScaffoldRound4Test.snap
+
+    def failing_sc(self, limit, *extra, skill=None, args=ARGS):
+        """ファイルサイズが `limit` バイトを超える書き込みを、途中で EFBIG にして scaffold.py を起動する。"""
+        if os.name == "nt":
+            self.skipTest("RLIMIT_FSIZE が使えない")
+        script = (skill or SKILL) / "scripts" / "scaffold.py"
+        return subprocess.run([sys.executable, "-c", FAIL_MID_WRITE, str(script), "--target", str(self.t), *args, *extra],
+                              capture_output=True, text=True, env=dict(os.environ, SGP_FSIZE=str(limit)))
+
+    def leftovers(self):
+        return sorted(p.relative_to(self.t).as_posix() for p in self.t.rglob("*") if p.name.endswith(".sgp-tmp"))
+
+    def new_skill(self, **edits):
+        """スキルの新版を模した複製（テンプレート / スクリプトの末尾へ 1 行足す）。"""
+        skill = self.skill_copy()
+        for rel, line in edits.items():
+            f = skill / rel
+            f.write_text(f.read_text() + line)
+        return skill
+
+    # main.rs（約 3.9KB）だけが上限を超え、Cargo.toml（約 1KB）・FF_REV（41B）は収まる大きさ
+    LIMIT = 2000
+
+    def test_failure_while_updating_owned_file_leaves_it_unchanged_and_rerun_converges(self):
+        self.init()
+        before_main = (self.t / self.MAIN_RS).read_bytes()
+        skill = self.new_skill(**{"templates/docs-site-gen/Cargo.toml": "# v2-first\n",
+                                  "templates/docs-site-gen/src/main.rs": "// v2-last\n"})
+        before = self.snap()
+        r = self.failing_sc(self.LIMIT, "--json", skill=skill, args=())
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        j = json.loads(r.stdout)
+        self.assertEqual(j["exit_code"], 2)
+        # 失敗したファイルは旧版のまま（切り詰められていない）。一時ファイルも残らない
+        self.assertEqual((self.t / self.MAIN_RS).read_bytes(), before_main)
+        self.assertIn(self.MAIN_RS, j["error"])
+        self.assertIn("変更されていない", j["error"])
+        self.assertEqual(self.leftovers(), [])
+        # それ以前に書けたファイルは updated に記録され、実際に新版になっている
+        self.assertEqual([u["path"] for u in j["updated"]], ["tools/docs-site-gen/Cargo.toml"])
+        self.assertTrue((self.t / "tools/docs-site-gen/Cargo.toml").read_text().endswith("# v2-first\n"))
+        # マニフェストは未更新で、失敗した所有ファイルは旧マニフェストのハッシュと一致したまま
+        self.assertEqual(json.loads((self.t / self.MANIFEST).read_text())["files"][self.MAIN_RS],
+                         hashlib.sha256(before_main).hexdigest())
+        after = self.snap()
+        self.assertEqual([k for k in after if after[k] != before.get(k)], ["tools/docs-site-gen/Cargo.toml"])
+        # 原因を直した再実行（フラグなし）で収束する。書けた Cargo.toml は一致、main.rs は自動更新、競合なし
+        r = self.sc("--json", skill=skill, args=())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        j = json.loads(r.stdout)
+        self.assertIn("tools/docs-site-gen/Cargo.toml", j["same"])
+        self.assertEqual([u["path"] for u in j["updated"]], [self.MAIN_RS])
+        self.assertTrue((self.t / self.MAIN_RS).read_text().endswith("// v2-last\n"))
+        r = self.sc("--json", skill=skill, args=())
+        j = json.loads(r.stdout)
+        self.assertEqual((r.returncode, j["created"], j["updated"]), (0, [], []))
+
+    def test_failure_while_creating_leaves_no_partial_file_and_rerun_converges(self):
+        r = self.failing_sc(self.LIMIT, "--json")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        j = json.loads(r.stdout)
+        self.assertIn(self.MAIN_RS, j["error"])
+        self.assertFalse((self.t / self.MAIN_RS).exists(), "途中まで書かれた main.rs が残っている")
+        self.assertEqual(self.leftovers(), [])
+        self.assertEqual(j["created"], ["tools/docs-site-gen/Cargo.toml"])
+        r = self.sc("--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        j = json.loads(r.stdout)
+        self.assertIn("tools/docs-site-gen/Cargo.toml", j["same"])
+        self.assertIn(self.MAIN_RS, j["created"])
+
+    def test_manifest_write_failure_leaves_the_old_manifest_intact(self):
+        self.init()
+        manifest = self.t / self.MANIFEST
+        old = manifest.read_bytes()
+        skill = self.new_skill()
+        (skill / "templates/docs-site-gen/FF_REV").write_text("0" * 40 + "\n")   # FF_REV（41B）とマニフェストだけが変わる
+        r = self.failing_sc(len(old) - 1, "--json", skill=skill, args=())
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn(self.MANIFEST, json.loads(r.stdout)["error"])
+        self.assertEqual(manifest.read_bytes(), old, "切り詰められた（または半端な）マニフェストが残っている")
+        self.assertEqual(self.leftovers(), [])
+        r = self.sc("--json", skill=skill, args=())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(manifest.read_text())["ff_rev"], "0" * 40)
+
+    def test_gitignore_append_is_all_or_nothing(self):
+        gi = self.t / ".gitignore"
+        gi.write_bytes(b"node_modules\r\ndist" + b"\n# pad\n" * 60)   # CRLF 混在・十分な長さ
+        self.init()
+        added = gi.read_bytes()
+        gi.write_bytes(added.replace(b"_site/\n", b"", 1))   # 1 行だけ欠けた状態へ戻す
+        base = gi.read_bytes()
+        self.assertNotEqual(base, added)
+        before = self.snap()
+        r = self.failing_sc(len(base) + 10, "--json")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn(".gitignore", json.loads(r.stdout)["error"])
+        self.assertEqual(gi.read_bytes(), base, "半端な追記が残っている")
+        self.assertEqual(self.snap(), before)
+        self.assertEqual(self.leftovers(), [])
+        r = self.sc("--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(gi.read_bytes().startswith(base))
+        self.assertIn(b"_site/", gi.read_bytes()[len(base):])
+        self.assertTrue(gi.read_bytes().startswith(b"node_modules\r\ndist\n"), "既存のバイトを保つ")
+        again = gi.read_bytes()
+        self.assertEqual(self.sc("--json").returncode, 0)
+        self.assertEqual(gi.read_bytes(), again)
+
+    def test_rebrand_write_failure_does_not_leave_a_truncated_page(self):
+        """rebrand_site.py も同じ書き込み方式（置換中の失敗でページが切り詰められたまま残らない）。"""
+        if os.name == "nt":
+            self.skipTest("RLIMIT_FSIZE が使えない")
+        dist = self.base / "dist"
+        shutil.copytree(FIXTURE, dist)
+        brand = self.base / "brand.toml"
+        brand.write_text(brand_toml(), encoding="utf-8")
+        original = {p.relative_to(dist).as_posix(): p.read_bytes() for p in dist.rglob("*") if p.is_file()}
+        script = SCRIPTS / "rebrand_site.py"
+        r = subprocess.run([sys.executable, "-c", FAIL_MID_WRITE, str(script), "--dist", str(dist), "--brand", str(brand)],
+                           capture_output=True, text=True, env=dict(os.environ, SGP_FSIZE="11000"))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("書き込みに失敗した", r.stderr)
+        now = {p.relative_to(dist).as_posix(): p.read_bytes() for p in dist.rglob("*") if p.is_file()}
+        self.assertEqual(sorted(now), sorted(original), "一時ファイルが残っている、またはファイルが消えた")
+        for rel, data in now.items():
+            if rel.endswith(".html"):
+                self.assertTrue(data == original[rel] or data.rstrip().endswith(b"</html>"), f"{rel} が切り詰められている")
+
+    def test_atomic_replace_keeps_executable_and_existing_mode(self):
+        if os.name == "nt":
+            self.skipTest("POSIX の権限ビットを検証する")
+        self.init()
+        build = self.t / self.BUILD_SH
+        self.assertTrue(os.access(build, os.X_OK))
+        os.chmod(self.t / self.MAIN_RS, 0o600)   # 利用者が絞った権限は更新後も保たれる
+        skill = self.new_skill(**{"scripts/build-local.sh": "# v2\n", "templates/docs-site-gen/src/main.rs": "// v2\n"})
+        r = self.sc("--json", skill=skill, args=())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(build.read_text().endswith("# v2\n"))
+        self.assertTrue(os.access(build, os.X_OK), "更新後に実行権限が落ちた")
+        self.assertEqual(stat.S_IMODE((self.t / self.MAIN_RS).stat().st_mode), 0o600)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_new_files_follow_umask_not_mkstemp_0600(self):
+        if os.name == "nt":
+            self.skipTest("POSIX の権限ビットを検証する")
+        old = os.umask(0o022)
+        try:
+            self.init()
+        finally:
+            os.umask(old)
+        self.assertEqual(stat.S_IMODE((self.t / self.MAIN_RS).stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE((self.t / self.BUILD_SH).stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE((self.t / self.MANIFEST).stat().st_mode), 0o644)
+
+    def test_helper_cleans_temp_on_failure_and_does_not_follow_leaf_symlink(self):
+        sys.path.insert(0, str(SCRIPTS))
+        import _common
+        from unittest import mock
+        d = self.base / "d"
+        d.mkdir()
+        f = d / "f.txt"
+        f.write_bytes(b"old")
+        with mock.patch.object(os, "replace", side_effect=OSError(28, "No space left on device")):
+            with self.assertRaises(OSError):
+                _common.atomic_write_bytes(f, b"new")
+        self.assertEqual(f.read_bytes(), b"old")
+        self.assertEqual(sorted(p.name for p in d.iterdir()), ["f.txt"], "一時ファイルが残っている")
+        # 末端が symlink でも、リンク先へは書かずリンク自体を置き換える
+        victim = self.outside / "victim.txt"
+        victim.write_bytes(b"keep")
+        link = d / "link.txt"
+        link.symlink_to(victim)
+        _common.atomic_write_bytes(link, b"new")
+        self.assertEqual(victim.read_bytes(), b"keep")
+        self.assertFalse(link.is_symlink())
+        self.assertEqual(link.read_bytes(), b"new")
+        # 一時ファイル名は拡張子（.rs / .py 等）で終わらない
+        self.assertTrue(_common.ATOMIC_TMP_SUFFIX.startswith(".") and _common.ATOMIC_TMP_SUFFIX not in (".rs", ".py", ".toml", ".yml"))
+
 
 class SectionReferenceTest(unittest.TestCase):
     """節名の参照（SKILL.md・references/<file> の見出しを名指しする形、および「…」節 の形）が実在の見出しに解決することの機械検査。

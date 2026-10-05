@@ -57,7 +57,7 @@ from typing import Callable
 # `-I`（隔離モード）では起動スクリプトのディレクトリが sys.path に入らないため、自分で足す。append にして、
 # 同じディレクトリに標準モジュール名のファイル（argparse.py 等）があっても標準ライブラリを先に解決させる。
 sys.path.append(str(Path(__file__).resolve().parent))
-from _common import RESIDUAL_RE, write_target_problem, sanitize, UPSTREAM_BRAND, Brand, BrandError, load_brand  # noqa: E402
+from _common import RESIDUAL_RE, atomic_write_bytes, write_target_problem, sanitize, UPSTREAM_BRAND, Brand, BrandError, load_brand  # noqa: E402
 
 UPSTREAM_REPO_URL = "https://github.com/Fandhe-AI/fandhe-frontend"
 ATTRIBUTION_TEXT = "Built with fandhe-frontend docs-site"
@@ -438,7 +438,15 @@ def main(argv: list[str] | None = None) -> int:
             if why:
                 print(f"エラー: {rel} の書き込み先が不適（{why}）。中止", file=sys.stderr)
                 return 1
-            target.write_text(text, encoding="utf-8")
+            try:
+                # ファイル単位で原子的に置き換える（途中で失敗しても、そのファイルが切り詰められた HTML のまま残らない）
+                atomic_write_bytes(target, text.encode("utf-8"))
+            except OSError as e:
+                print(f"エラー: {rel} の書き込みに失敗した（{type(e).__name__}）。{rel} は変更されていない（原子的に書く）が、"
+                      f"ここまでに {changed} ファイルを置換済みで、dist は一部だけ置換された状態。置換は再実行できない（置換済みの"
+                      "ページは期待数が合わず失敗する）ため、原因（権限・空き容量）を直したうえで dist を空にして"
+                      "（既定の `_site` なら build-local.sh --clean）作り直す", file=sys.stderr)
+                return 1
             changed += 1
     print(f"rebrand ok: HTML {html_count} 件を検査、{changed} ファイルを更新（残存 0・帰属表記あり）")
     return 0
