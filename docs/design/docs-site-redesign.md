@@ -1,5 +1,15 @@
 # docs-site 刷新設計
 
+> **現行の生成経路（PR #757 以降）**: 公開 docs サイトは setup-github-pages スキルの構成
+> （`tools/docs-site-gen/` + `.github/workflows/pages.yml`。生成器は `tools/docs-site-gen/FF_REV`
+> の commit に固定した fandhe-frontend の docs-site）で生成・デプロイする。本文書の 1〜13 節は、
+> 移行前の自前生成器（`crates/docs-site` + `.github/workflows/docs-site.yml` +
+> `site/assets/site.css`）に対する設計判断の記録であり、現行サイトの DOM・CSS・検索
+> インデックスの仕様ではない（`docs-site.yml` と `site/assets/site.css` は削除済み。
+> `crates/docs-site` は切り戻し用に残置しており、実リポジトリの `site/` はビルドできない）。
+> 現行の運用手順は 14 節を参照する。コンテンツ構成（6 節）と公開範囲規約（7 節）は、
+> `site/nav.toml` と Markdown を引き継いでいるため移行後も有効。
+
 親トラッキング #384（GitHub Pages ドキュメントサイト刷新）Phase 1 の先頭タスク
 （イシュー #388）として、後続 11 イシュー（#389〜#399）が受け入れ基準の根拠として
 参照する設計判断を確定する。fandhe-frontend で確立済みの docs-site 設計正典 3 本
@@ -374,54 +384,58 @@ Markdown/HTML 生成が手書き実装である方針と揃える）。
   親トラッキング issue #384、CLAUDE.md の Repository Structure（`crates/docs-site`
   節・`site/` 節）
 
-## 14. 手動再デプロイ運用（workflow_dispatch）（→ #398）
+## 14. 手動再デプロイ運用（workflow_dispatch）
 
-`.github/workflows/docs-site.yml` の `push.paths` は `docs/guide/**` /
-`docs/api/**` / `site/**` / `crates/docs-site/**` / 本 workflow 自身のみを対象と
-する。以下のケースでは push だけではサイトが再ビルドされず、手動再デプロイが必要になる。
+公開サイトは `.github/workflows/pages.yml` が `tools/docs-site-gen/build-local.sh`
+（fetch → build → 生成 → rebrand → verify。リンク検査は fail-closed）を実行して生成し、
+`Fandhe-AI/actions` の `pages-deploy.yml` でデプロイする。`push.paths` は `site/**` /
+`tools/docs-site-gen/**` / `rust-toolchain.toml` / 本 workflow 自身と、利用者区間
+（`sgp:user-paths`）に登録した `docs/guide/**` / `docs/api/**` を対象とする。
 
-- **レンダラ側クレートの更新**: crates.io の `fandhe-frontend-core` /
-  `fandhe-frontend-app` / `fandhe-frontend-server`（`crates/docs-site/Cargo.toml`
-  の依存）が新バージョンを公開した場合。本リポジトリは Cargo.lock を
-  コミットしない方針（`.gitignore`）のため、依存更新は `paths` トリガーに乗らない
-  （workflow ヘッダーコメントに明記済みの既知の制約）。
-- その他、`paths` に含まれないファイルの変更がビルド結果に影響する場合
-  （例: nav.toml が将来的に `site/**` 外を参照するよう変更された場合）。
+生成器（fandhe-frontend の docs-site）は `tools/docs-site-gen/FF_REV` の commit に固定
+しており、上流のデザイン変更は自動では取り込まれない。取り込むには setup-github-pages
+スキルを再実行する（`FF_REV` を含む `tools/docs-site-gen/**` が更新され、その push で
+再デプロイされる）。`pages.yml` はスキルが管理するファイルのため、監視パスを足す場合は
+利用者区間の中だけを編集する（区間の外を編集するとスキルの更新が競合する）。
+
+push だけではサイトが再ビルドされず、手動再デプロイが必要になるのは次の場合。
+
+- `paths` に含まれないファイルの変更がビルド結果に影響する場合
+  （例: `site/nav.toml` が `site/**`・`docs/guide/**`・`docs/api/**` の外を参照するよう
+  変更され、利用者区間への追記が漏れた場合）
+- デプロイが一時障害で失敗し、同じ内容で再実行したい場合
 
 ### 手順
 
 ```bash
 # main ブランチの内容で再ビルド・再デプロイを起動する
-gh workflow run docs-site.yml --ref main
+gh workflow run pages.yml --ref main
 
 # 起動した run を追跡する（run ID は `gh run list` で確認可能）
-gh run list --workflow=docs-site.yml --limit 1
+gh run list --workflow=pages.yml --limit 1
 gh run watch <run-id>
 ```
 
 ### デプロイ後の確認方法
 
 ```bash
-# 公開ページが 200 で応答し、刷新後のヘッダー構造を含むこと
+# 公開ページが 200 で応答し、ヘッダー構造を含むこと
 curl -fsS https://fandhe-ai.github.io/fandhe-backend/ | grep -c "docs-header-actions"
 
-# テーマトグル JS アセットが配信されていること
-curl -fsS -o /dev/null -w "%{http_code}\n" https://fandhe-ai.github.io/fandhe-backend/assets/site.js
+# スタイルシート・テーマ切替/検索 JS・検索インデックスが配信されていること
+for a in assets/site.css assets/site.js assets/search-index.json; do
+  curl -fsS -o /dev/null -w "%{http_code} ${a}\n" "https://fandhe-ai.github.io/fandhe-backend/${a}"
+done
 
-# 検索インデックスが配信されていること（#396）
-curl -fsS -o /dev/null -w "%{http_code}\n" https://fandhe-ai.github.io/fandhe-backend/assets/search-index.json
+# 存在しないパスが 404 を返すこと
+curl -sS -o /dev/null -w "%{http_code}\n" https://fandhe-ai.github.io/fandhe-backend/no-such-page/
 ```
-
-体系的な視覚確認・受け入れレポート作成は #399 のスコープとする。本節は
-workflow_dispatch 経路の運用手順のみを扱う。
 
 ### マージ前と後の検証範囲の違い
 
-`docs-site.yml` の `push` トリガーは `branches: [main]` に固定されており、
-`workflow_dispatch` も `--ref` に指定したブランチのワークフロー**定義**を実行するのみで、
-Pages への実デプロイは常に `github-pages` environment（main 相当）へ反映される。
-そのため本イシュー（#398）のブランチ上で `gh workflow run --ref <このブランチ>` を
-実行しても、実際にデプロイされるのは main 側の docs-site.yml のコピーであり、
-本ブランチの変更（paths トリガー追加・存在検査拡充）そのものの実デプロイ検証には
-ならない。実デプロイ検証（受け入れ条件 4）は本ブランチのマージ後に実施する前提とし、
-マージ前に本節の手順だけで無理に完了させない。
+`pages.yml` の `push` トリガーは `branches: [main]` に固定されており、PR では起動しない。
+PR 段階の検証は `ci.yml` の `docs-site-build` ジョブが担い、デプロイと同じ
+`build-local.sh` を実行して生成とリンク検査の成否を確認する（デプロイはしない）。
+`workflow_dispatch` を `--ref <作業ブランチ>` で実行すると、そのブランチの内容が
+`github-pages` environment（公開サイト）へ実際にデプロイされうるため、マージ前の
+検証目的では実行しない。実デプロイの確認はマージ後に行う。

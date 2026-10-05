@@ -367,6 +367,18 @@ cargo geiger -p fandhe-backend-routes
 bash scripts/dep-audit.sh
 ```
 
+## 2026-10-05 — docs サイト生成を tools/docs-site-gen へ移行（PR #757）
+
+公開 docs サイトの生成・デプロイ経路を `crates/docs-site` + `docs-site.yml` から
+setup-github-pages スキルの構成（`tools/docs-site-gen/` + `pages.yml`）へ移行した。
+
+- `tools/docs-site-gen` は独立 workspace（root の `members = ["crates/*"]` に含まれない）。
+  root workspace の `cargo tree`・`cargo audit`・`cargo geiger`・バイナリサイズに影響しない
+- 依存は `tools/docs-site-gen/FF_REV` の commit に固定した fandhe-frontend の path 依存のみで、
+  crates.io の registry 依存は 0 件（`build-local.sh` が毎回検査する）
+- `crates/docs-site` は切り戻し用に残置しており、下の 2026-07-21 の記録（依存・unsafe 件数）は
+  クレート削除まで有効。ただしデプロイ経路の記述（`docs-site.yml`）は本移行で失効した
+
 ## 2026-07-21 — docs-site 基盤追加（GitHub Pages ドキュメントサイト生成ツール）
 
 `crates/docs-site`（`fandhe-backend-docs-site`、publish=false）を新設し、GitHub Pages

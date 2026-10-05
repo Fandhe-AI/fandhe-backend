@@ -34,7 +34,7 @@ on:
       - "templates/**"
       - "examples/**"
       - "scripts/standalone-crates-io-check.sh"
-      - ".github/workflows/standalone-crates-io.yml" # 自己参照パターン（docs-site.yml と同様）
+      - ".github/workflows/standalone-crates-io.yml" # 自己参照パターン（pages.yml と同様）
   schedule:
     - cron: "0 2 * * 6"
   workflow_dispatch: {}

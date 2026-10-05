@@ -8,6 +8,14 @@
 #   生成する。fandhe-frontend の tools/docs-site/visual-regression.sh からの
 #   移植・改変（base_path・ビルドコマンド・撮影マトリクスを本リポ向けに変更）。
 #
+# ビルド経路（PR #757 以降）:
+#   公開サイトと同じ入口 `tools/docs-site-gen/build-local.sh`（setup-github-pages
+#   スキルの生成器。fandhe-frontend の docs-site を FF_REV の commit で取得する）で
+#   ビルドする。初回は fandhe-frontend の匿名 fetch にネットワークが要る。
+#   移行前は `cargo run -p fandhe-backend-docs-site`（自前生成器）でビルドしていた。
+#   docs/acceptance/issue399-docs-site-visual.md の証跡は移行前の生成器の出力に
+#   対するもので、本スクリプトの現在の出力とはデザインが異なる。
+#
 # 呼び出し元:
 #   人手（レビュー時の目視確認）または docs/acceptance/issue399-docs-site-visual.md
 #   の「再現手順」節から。CI では実行しない（chromium 常設を self-hosted runner に
@@ -92,8 +100,8 @@ cleanup() {
 trap cleanup EXIT
 
 # ── ステップ 1: サイトビルド ─────────────────────────────────────────
-echo "==> building docs site (cargo run -p fandhe-backend-docs-site)"
-( cd "$REPO_ROOT" && cargo run -p fandhe-backend-docs-site -- --out "$DIST" ) \
+echo "==> building docs site (tools/docs-site-gen/build-local.sh)"
+( cd "$REPO_ROOT" && bash tools/docs-site-gen/build-local.sh --out "$DIST" ) \
   >"$LOGS_DIR/build.log" 2>&1 || {
   echo "error: docs-site build failed (see $LOGS_DIR/build.log)" >&2
   exit 1
@@ -298,8 +306,11 @@ shoot n2-nojs-http-api-375 "$NOJS_PORT" "/api/http-api/" 375 700 light nojs
 echo "==> captured $TOTAL_SHOTS screenshot(s) (Tier 1)"
 
 # ── S2（Tier 2、失敗許容・既定 off）: 検索結果ドロップダウン ────────────
-# 使い捨ての配信コピーにのみクエリ注入ハーネスを挿入する（crates/docs-site の
+# 使い捨ての配信コピーにのみクエリ注入ハーネスを挿入する（生成器の
 # ソースは一切変更しない、実装計画 §5 A03）。固定リテラルクエリのみを扱う。
+# 現行の生成器は CSP（`script-src 'self'`）を meta で出力するため、インラインの
+# ハーネスはブラウザに拒否され、検索結果は表示されない見込み（Tier 2 は失敗許容。
+# 検索の動作確認は実ブラウザでの手動操作で行う）。
 # 容量バジェット（3.5MiB）内に収めるため既定では実行しない
 # （実装計画 §ステップ4 のトリミング順位 (1) が S2）。
 # `DOCS_SITE_VISUAL_TIER2=1` を指定した場合のみ実行する。

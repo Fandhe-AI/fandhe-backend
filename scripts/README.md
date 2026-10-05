@@ -581,6 +581,10 @@ bash scripts/standalone-crates-io-check.sh
 
 ## `docs-site-visual.sh` — docs サイトの視覚確認スクリーンショット撮影（イシュー #399）
 
+> **ビルド経路（PR #757 以降）**: 公開サイトと同じ入口 `tools/docs-site-gen/build-local.sh`
+> でビルドする（移行前は `cargo run -p fandhe-backend-docs-site`）。初回は fandhe-frontend の
+> 匿名 fetch にネットワークが要る。
+
 ```bash
 bash scripts/docs-site-visual.sh
 # 出力: $HOME/fandhe-backend-docs-site-visual/<timestamp>/{shots/*.png, manifest.tsv, logs/}

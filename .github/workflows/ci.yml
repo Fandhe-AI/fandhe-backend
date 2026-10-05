@@ -98,7 +98,7 @@ jobs:
 
       # ホステッド移行（#551）: self-hosted 永続環境前提の
       # Fandhe-AI/actions/rust-toolchain-setup（rustup 自己修復）に代えて
-      # dtolnay/rust-toolchain（SHA 固定、docs-site.yml build ジョブの先行事例と同一 SHA）を
+      # dtolnay/rust-toolchain（SHA 固定、pages.yml build ジョブと同一 SHA）を
       # 使う。バージョン解決は rust-toolchain.toml（channel = "stable"）と一致させ、
       # 必要 component は action 側 input で明示する（minimal profile 導入時にも
       # rustfmt が確実に揃うようにする保険）。
@@ -1105,6 +1105,34 @@ jobs:
       - name: coverage.sh（コア対象、80% 未満で失敗）
         run: bash scripts/coverage.sh
 
+  docs-site-build:
+    name: docs サイトのビルド検証（生成・リンク検査）
+    # 公開 docs サイト（site/nav.toml + docs/guide + docs/api）を、デプロイ用 workflow
+    # （pages.yml）と同一の入口 `tools/docs-site-gen/build-local.sh` で生成する。
+    # pages.yml は main への push と手動実行でしか起動しないため、本ジョブが無いと
+    # docs・nav の編集によるリンク切れは PR 段階で検出されず、マージ後の公開ビルドで
+    # 初めて失敗する。生成器のリンク検査は fail-closed（1 件でも切れていれば非 0 終了）。
+    # デプロイは行わない（生成物は RUNNER_TEMP に置いて破棄する）。
+    # pages.yml 側へ pull_request トリガーを足さない理由: 同ファイルは
+    # setup-github-pages スキルが管理しており、利用者区間の外を編集すると
+    # スキルの更新（scaffold.py）が競合として止まるため。
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      - name: "build: fetch → build → generate → rebrand → verify"
+        run: bash tools/docs-site-gen/build-local.sh --out "${RUNNER_TEMP}/docs-site-dist"
+
   # --------------------------------------------------
   # CI 完遂判定（TASK-14.1、#39、docs/spec/04-requirements.md REQ-14）:
   # fmt / clippy / test（spec が定める必須 3 条件）に加え、リポジトリ方針として
@@ -1139,13 +1167,14 @@ jobs:
     permissions: {}
     # 失敗・スキップ時にも必ず実行して fail-closed で判定する。
     # schedule（日次 dep-audit のみ）実行時は
-    # fmt/clippy/test/unsafe-triage/fuzz-smoke/webrtc-e2e/microbench/openapi-two-stage/openapi-ts が
+    # fmt/clippy/test/unsafe-triage/fuzz-smoke/webrtc-e2e/microbench/openapi-two-stage/openapi-ts/
+    # docs-site-build が
     # 意図的に skipped になる（doc ジョブには schedule 除外の if がなく実行される既存
     # 挙動だが、ci-complete 自体が schedule 時は丸ごとスキップされるため判定ロジックには
     # 影響しない）。
     # 完遂判定の対象外（required check としては pull_request/push イベントのみを想定する）。
     if: ${{ always() && github.event_name != 'schedule' }}
-    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, pay-for-what-you-use, fuzz-smoke, webrtc-e2e, microbench, openapi-two-stage, openapi-ts, actionlint]
+    needs: [fmt, clippy, test, doc, dep-audit, coverage, unsafe-triage, pay-for-what-you-use, fuzz-smoke, webrtc-e2e, microbench, openapi-two-stage, openapi-ts, actionlint, docs-site-build]
     timeout-minutes: 5
     steps:
       - name: 完遂判定（全 needs ジョブが success であること）
@@ -1167,6 +1196,7 @@ jobs:
           RESULT_OPENAPI_TWO_STAGE: ${{ needs.openapi-two-stage.result }}
           RESULT_OPENAPI_TS: ${{ needs.openapi-ts.result }}
           RESULT_ACTIONLINT: ${{ needs.actionlint.result }}
+          RESULT_DOCS_SITE_BUILD: ${{ needs.docs-site-build.result }}
         run: |
           set -euo pipefail
           ok=1
@@ -1180,7 +1210,8 @@ jobs:
                       "microbench:${RESULT_MICROBENCH}" \
                       "openapi-two-stage:${RESULT_OPENAPI_TWO_STAGE}" \
                       "openapi-ts:${RESULT_OPENAPI_TS}" \
-                      "actionlint:${RESULT_ACTIONLINT}"; do
+                      "actionlint:${RESULT_ACTIONLINT}" \
+                      "docs-site-build:${RESULT_DOCS_SITE_BUILD}"; do
             job="${pair%%:*}"; result="${pair#*:}"
             echo "${job}: ${result}"
             # skipped / cancelled / failure はすべて未完遂として扱う（fail-closed）

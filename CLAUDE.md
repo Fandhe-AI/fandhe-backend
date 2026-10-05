@@ -56,7 +56,8 @@ fandhe-backend/
 │   │   │                            # （レスポンス後処理型シーム）の公開 API 化の採否検討
 │   │   │                            # （イシュー #462。`Interceptor::map_response` との棲み分け・
 │   │   │                            # 不採用根拠・再検討条件を記録。結論は不採用）
-│   │   ├── docs-site-redesign.md  # GitHub Pages docs サイト刷新設計（イシュー #388、
+│   │   ├── docs-site-redesign.md  # （1〜13 節は移行前の自前生成器の設計記録。現行の
+│   │   │                            # 運用手順は 14 節）GitHub Pages docs サイト刷新設計（イシュー #388、
 │   │   │                            # 親 #384。3 カラムレイアウト・依存ゼロ全文検索・
 │   │   │                            # 公開範囲規約（issue/TASK 番号記述の docs/design/ への
 │   │   │                            # 集約）を fandhe-frontend 設計正典から翻訳、#389〜#399 の根拠）
@@ -843,7 +844,12 @@ fandhe-backend/
 │   │                                    # `test_symlink_file`/`test_symlink_dir` ヘルパで OS
 │   │                                    # 分岐、詳細は `docs/design/plugin-boundary.md` 5.11.3.2 節）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
-│   ├── docs-site                      # GitHub Pages ドキュメントサイト生成ツール（SSG、
+│   ├── docs-site                      # **切り戻し用の残置**（PR #757）。公開サイトの生成は
+│   │                                    # `tools/docs-site-gen/` + `pages.yml` へ移行済みで、
+│   │                                    # `site/assets/site.css` を削除したため本クレートは実
+│   │                                    # リポジトリの `site/` をビルドできない（該当 12 テストは
+│   │                                    # `#[ignore]`）。公開確認後の別 PR で削除する。以下は
+│   │                                    # 移行前の説明: GitHub Pages ドキュメントサイト生成ツール（SSG、
 │   │                                    # fandhe-frontend の docs-site を移植。publish=false で
 │   │                                    # 本体バイナリに含まれない。crates.io 依存は
 │   │                                    # fandhe-frontend-core/app/server 0.1.0 のみ。
@@ -895,8 +901,10 @@ fandhe-backend/
 │   └── with-interceptor               # コア拡張点 `Interceptor` の 2 フック（`intercept`
 │                                        # によるリダイレクト・`map_response` によるレスポンス
 │                                        # 改変）を見せる最小サンプル（イシュー #433）
-├── site/                   # GitHub Pages ドキュメントサイトコンテンツ（index.md・nav.toml・
-│                            # assets/site.css。docs-site SSG ツールで生成対象。base_path=/fandhe-backend）
+├── site/                   # GitHub Pages ドキュメントサイトコンテンツ（index.md・nav.toml。
+│                            # `tools/docs-site-gen` の生成対象。base_path=/fandhe-backend。
+│                            # CSS・JS・検索インデックスは生成器が出力するため `site/assets/` に
+│                            # `site.css` 等の予約アセット名を置かない）
 │   ├── guides.md                      # Guides セクション索引ページ（イシュー #393）。要約付き
 │   │                                    # リンク一覧を持ちセクション先頭に配置、既存
 │   │                                    # `docs/guide/README.md` は /guides/reading/ へ再登録し
@@ -908,6 +916,17 @@ fandhe-backend/
 │                                        # with-websocket / templates-app の 4 紹介ページ。
 │                                        # `examples/README.md`・各 README を再構成し、
 │                                        # GitHub 上の実体への絶対 URL 導線を張る
+├── tools/
+│   └── docs-site-gen/      # 公開 docs サイトの生成器一式（setup-github-pages スキルが配置・更新、
+│                            # PR #757）。fandhe-frontend の docs-site を `FF_REV` の commit に固定して
+│                            # 取得する wrapper crate（独立 workspace、root workspace 非メンバー、
+│                            # registry 依存 0 件）+ `build-local.sh`（CI と同一の入口。リンク検査は
+│                            # fail-closed）+ ブランド置換の後処理（`rebrand_site.py`・`brand.toml`）。
+│                            # `brand.toml` 以外はスキル所有ファイルで、手で編集するとスキルの更新が
+│                            # 競合する（`.scaffold-manifest.json` が配置時のハッシュを記録）。
+│                            # fandhe-frontend のデザイン変更にはスキルの再実行で追従する
+├── THIRD-PARTY-LICENSES    # 生成サイトに含まれる fandhe-frontend docs-site 出力（MIT）の帰属表記。
+│                            # `build-local.sh --write-third-party` が生成する
 ├── ts/                     # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）。
 │                            # crates/plugin-openapi/openapi.json → openapi-typescript →
 │                            # ts/src/generated/schema.d.ts（コミット対象）→ openapi-fetch
@@ -1050,7 +1069,8 @@ fandhe-backend/
 │   ├── openapi-ts-negative.sh         # openapi-ts.sh の陰性対照（意図的な型不一致の tsc --noEmit エラー検出）CI 常設検証（TASK-6.2、#55）
 │   ├── clean-worktrees.sh             # .claude/worktrees/ 残存ワークツリーの棚卸し・退避・削除（既定 dry-run、--apply で実削除、イシュー #221）
 │   ├── standalone-crates-io-check.sh  # templates/・examples/ の path 依存を除去し crates.io 公開版のみで build/test 検証（standalone-crates-io.yml から週次 + PR paths で実行、イシュー #371。対象クレート直下に `.standalone-crates-io-skip`（理由必須）があれば crates.io 未再公開の新 API 依存を理由に build/test を SKIP し、全件 SKIP なら fail-closed で異常終了する。次回 crates.io 再公開時の削除手順は docs/design/crates-io-release.md 8 節、イシュー #433）
-│   ├── docs-site-visual.sh            # 刷新後の docs サイトを headless chromium でライト/ダーク/no-JS ×
+│   ├── docs-site-visual.sh            # （ビルドは公開サイトと同じ `tools/docs-site-gen/build-local.sh`。
+│   │                                    # PR #757 で旧生成器から切り替え）docs サイトを headless chromium でライト/ダーク/no-JS ×
 │   │                                    # 複数解像度撮影し `docs/acceptance/issue399-docs-site-visual.md`
 │   │                                    # の視覚証跡一式を生成（イシュー #399。CI 常設化はしない）
 │   ├── webrtc-e2e.sh                  # `crates/plugin-webrtc/tests-e2e`（standalone crate）で
@@ -1062,6 +1082,10 @@ fandhe-backend/
 │       └── core-deps-unsafe-audit.sh  # 依存数比・unsafe・audit/deny・LoC・拡張点・プラグイン非依存の検証本体
 ├── .github/
 │   ├── workflows/
+│   │   ├── pages.yml                   # docs サイトのビルド・GitHub Pages デプロイ（setup-github-pages
+│   │   │                                # スキルが管理。main への push と手動実行で起動。監視パスの
+│   │   │                                # 追加は `sgp:user-paths` 区間の中だけに書く。PR 段階の
+│   │   │                                # ビルド・リンク検査は ci.yml の `docs-site-build` ジョブが担う）
 │   │   └── ai-review.yml               # Fandhe-AI/actions の ai-review reusable workflow
 │   │                                    # （provider: codex）を `@latest` で呼び出す薄い
 │   │                                    # wrapper（旧 codex-review.yml、#528/#529 で移行）。
