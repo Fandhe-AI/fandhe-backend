@@ -1166,7 +1166,7 @@ main は判断・統合・ユーザー対話に集中する**。詳細は [rules
   `implement-review-pr` / `update-issue-tree`
 - **プロジェクト管理**: `project-init` / `project-add-items` / `project-create-issues` /
   `project-update-items` / `project-view-status` / `project-sync-issues` / `project-archive-done`
-- **ドキュメント・コメント**: `update-docs` / `comment-code`
+- **ドキュメント・コメント**: `update-docs` / `comment-code` / `setup-github-pages`
 - **.claude 体系**: `init-claude` / `update-claude`
 - **スキル運用**: `contribute-skill` / `sync-skills-lock`
 - **リファレンス**: `rust` / `github-docs` / `commitlint` / `lefthook` / `editorconfig`

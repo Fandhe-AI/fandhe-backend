@@ -163,6 +163,12 @@
       "skillPath": "skills/rust/SKILL.md",
       "computedHash": "6457a11f83e2699e2767c5ec0a7d8c8defe74bdaf7d81a0a00b4f719212deba4"
     },
+    "setup-github-pages": {
+      "source": "Fandhe-AI/agent-util-skills",
+      "sourceType": "github",
+      "skillPath": "skills/setup-github-pages/SKILL.md",
+      "computedHash": "3a9e3d1cd2e135da07c05fd619e7403eb4c7c02f9f81f02c95c270e6ba4b9d53"
+    },
     "sync-skills-lock": {
       "source": "Fandhe-AI/agent-cli-skills",
       "sourceType": "github",
