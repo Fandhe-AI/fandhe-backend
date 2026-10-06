@@ -35,10 +35,54 @@ fn repo_root() -> PathBuf {
         .expect("repo_root should resolve from CARGO_MANIFEST_DIR")
 }
 
+/// 本クレートのパーサ（`nav::parse_nav`）が受理する `[site]` のキー。
+const LEGACY_SITE_KEYS: [&str; 2] = ["title", "base_path"];
+
+/// `[site]` テーブルから、本クレートのパーサが知らないキーの行を取り除く。
+///
+/// 実サイトは setup-github-pages スキルの生成器（`tools/docs-site-gen/`）へ移行
+/// 済みで、ブランド表示（`brand`・`repository_url`・`tagline` 等）は実
+/// `site/nav.toml` の `[site]` に書く。それらのキーの検証は新生成器と
+/// `tools/docs-site-gen/check_site.py` が担う。切り戻し用に残置している
+/// 本クレートのパーサは未知キーを fail-closed で拒否するため、そのままでは
+/// 実マニフェストを読めない。本テストの目的（ナビ登録と実ファイルのドリフト
+/// 検知）は `[[section]]` 以降に対するものなので、`[site]` の追加キーだけを
+/// 読み飛ばして検知を維持する（本クレート削除までの暫定）。
+/// `[site]` 以外のテーブルの行には手を加えない。
+fn strip_unknown_site_keys(input: &str) -> String {
+    let mut in_site = false;
+    let mut out = String::with_capacity(input.len());
+    for line in input.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_site = trimmed == "[site]";
+        } else if in_site
+            && let Some((key, _)) = trimmed.split_once('=')
+            && !trimmed.starts_with('#')
+            && !LEGACY_SITE_KEYS.contains(&key.trim())
+        {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 fn load_nav() -> Nav {
     let path = repo_root().join("site/nav.toml");
     let input = std::fs::read_to_string(&path).expect("site/nav.toml should be readable");
-    parse_nav(&input).expect("site/nav.toml should conform to the fail-closed TOML subset")
+    parse_nav(&strip_unknown_site_keys(&input))
+        .expect("site/nav.toml should conform to the fail-closed TOML subset")
+}
+
+#[test]
+fn strip_unknown_site_keys_drops_only_unknown_keys_inside_site_table() {
+    let input = "[site]\ntitle = \"t\"\nbrand = \"b\"\nbase_path = \"/p\"\n\n[[section]]\ntitle = \"s\"\nbrand = \"kept\"\n";
+    assert_eq!(
+        strip_unknown_site_keys(input),
+        "[site]\ntitle = \"t\"\nbase_path = \"/p\"\n\n[[section]]\ntitle = \"s\"\nbrand = \"kept\"\n"
+    );
 }
 
 #[test]
