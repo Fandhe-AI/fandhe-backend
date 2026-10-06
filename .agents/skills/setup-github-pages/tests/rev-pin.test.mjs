@@ -1,15 +1,15 @@
 // rev-pin.test.mjs — 上流 fandhe-frontend の commit 固定（FF_REV）と workflow の固定方針の回帰テスト。
 //
 // 生成器（fandhe-frontend の docs-site）は crates.io に公開されておらず、`FF_REV` の commit を
-// shallow fetch して path 依存でビルドする。FF_REV が未固定・不正な値・箇所ごとの不一致になると、
+// 固定 rev の匿名 `cargo install --git`（--locked）でインストールして使う。FF_REV が未固定・不正な値・箇所ごとの不一致になると、
 // 上流の任意コミット（乗っ取り・破壊的変更を含む）をビルドして公開物に混ぜる経路になる。
 // 唯一の定義元は templates/docs-site-gen/FF_REV（対象リポジトリでは tools/docs-site-gen/FF_REV）。
 // pages.yml・build-local.sh は値を直書きせずこのファイルを読む設計のため、ここでは次を検証する。
 //   1. FF_REV が 40 桁の小文字 hex 1 行であること
 //   2. スキル内のドキュメント・スクリプト・テンプレートに現れる 40 桁 hex（`uses:` 行の
 //      action SHA を除く）がすべて FF_REV と一致すること（更新漏れの検出）
-//   3. build-local.sh が FF_REV ファイルを読み、使用前に ^[0-9a-f]{40}$ で検証していること
-//   4. pages.yml が FF_REV を直書きせず、cache キーに FF_REV ファイルのハッシュを含むこと
+//   3. build-local.sh が FF_REV ファイルを読み、使用前に ^[0-9a-f]{40}$ で検証し、固定 URL・固定 rev でだけ取得すること
+//   4. pages.yml が FF_REV を直書きせず、cache キーが FF_REV・build-local.sh のハッシュと rustc の commit-hash で構成されること
 //   5. pages.yml の action が SHA 固定（Fandhe-AI/actions@latest のみ例外）、run: に ${{ }} が無いこと、
 //      deploy 呼び出しの必須設定（runner-label 等）が揃っていること
 import { test } from 'node:test'
@@ -64,28 +64,87 @@ test('build-local.sh は FF_REV ファイルを読み、使用前に 40 桁 hex 
   assert.match(sh, /FF_REV="\$\(tr -d '\[:space:\]' < "\$\{SCRIPT_DIR\}\/FF_REV"\)"/)
   const readIdx = sh.indexOf('FF_REV="$(')
   const checkIdx = sh.indexOf('^[0-9a-f]{40}$')
-  const useIdx = sh.indexOf('fetch -q --depth 1 origin "${FF_REV}"')
+  const useIdx = sh.indexOf('--rev "${FF_REV}"')
   assert.ok(readIdx >= 0 && checkIdx > readIdx && useIdx > checkIdx, '読込 → 検証 → 使用の順になっていない')
   assert.doesNotMatch(sh, /(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])/, 'build-local.sh に commit SHA が直書きされている')
-  assert.match(sh, /git -C "\$\{FF_DIR\}" fetch -q --depth 1/)
-  const code = sh.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
-  assert.doesNotMatch(code, /submodule|--recurse/, 'submodule を取る操作が混入している')
 })
 
-test('build-local.sh は wrapper build 前に cargo metadata で registry 依存 0 件を検査する', () => {
+test('build-local.sh は固定 URL・固定 rev・--locked の匿名 cargo install と --no-page-sections で生成する', () => {
   const sh = read('scripts/build-local.sh')
-  const meta = sh.indexOf('cargo metadata --format-version 1')
-  const build = sh.indexOf('cargo build --release')
-  assert.ok(meta >= 0 && build > meta, 'cargo metadata による依存検査が build より前に無い')
-  assert.match(sh, /p\.get\("source"\) is not None/)
+  const code = sh.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+  const url = code.match(/^FF_URL="([^"]*)"$/m)
+  assert.ok(url, 'FF_URL の定義が無い')
+  assert.equal(url[1], 'https://github.com/Fandhe-AI/fandhe-frontend')
+  assert.ok(!url[1].includes('${'), 'FF_URL が可変値を含む')
+  assert.ok(
+    code.includes('cargo install --git "${FF_URL}" --rev "${FF_REV}" --locked --root "${INSTALL_ROOT}" fandhe-frontend-docs-site'),
+    'cargo install の引数が仕様と異なる',
+  )
+  assert.ok(code.includes('--no-page-sections'), '--no-page-sections が無い')
+  assert.match(code, /GIT_TERMINAL_PROMPT=0 cargo install/)
+  assert.doesNotMatch(code, /submodule|--recurse|_ff|cargo build|cargo metadata|docs-site-gen\/target\/release|git (init|fetch|clone)/,
+    '旧経路（_ff・wrapper build・registry 検査）の残骸がある')
+  assert.doesNotMatch(code, /\beval\b/)
+  assert.doesNotMatch(code, /templates\/docs-site-gen|Cargo\.toml|main\.rs/, 'wrapper を参照している')
 })
 
-test('pages.yml は FF_REV を直書きせず、cache キーに FF_REV ファイルのハッシュを含む', () => {
+test('build-local.sh のライセンス取得は固定 URL・https 限定・リダイレクト非追従・時間とサイズ上限付き', () => {
+  const sh = read('scripts/build-local.sh')
+  const code = sh.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+  const m = code.match(/license_url="([^"]*)"/)
+  assert.ok(m, 'license_url の定義が無い')
+  assert.equal(m[1], 'https://raw.githubusercontent.com/Fandhe-AI/fandhe-frontend/${FF_REV}/LICENSE-MIT')
+  assert.equal((m[1].match(/\$\{/g) || []).length, 1, '${FF_REV} 以外の可変部分がある')
+  const curl = code.match(/curl [\s\S]*?"\$\{license_url\}"/)[0]
+  for (const opt of ["--proto '=https'", "--proto-redir '=https'", '--max-time', '--max-filesize', '--fail']) {
+    assert.ok(curl.includes(opt), `curl に ${opt} が無い`)
+  }
+  assert.doesNotMatch(curl, /\s-[a-zA-Z]*L|--location/, 'curl がリダイレクトを追従する')
+})
+
+test('pages.yml は FF_REV を直書きせず、cache キーに FF_REV・build-local.sh のハッシュを含む', () => {
   const y = read('templates/pages.yml')
   assert.doesNotMatch(y, /FF_REV\s*[:=]/, 'workflow に FF_REV の定義が重複している')
-  assert.match(y, /hashFiles\('tools\/docs-site-gen\/FF_REV'/)
+  const hf = y.match(/hashFiles\(([^)]*)\)/)
+  assert.ok(hf, 'hashFiles が無い')
+  const args = [...hf[1].matchAll(/'([^']+)'/g)].map((m) => m[1])
+  assert.deepEqual(args, ['tools/docs-site-gen/FF_REV', 'tools/docs-site-gen/build-local.sh'])
+  const key = y.match(/key: .*/)[0]
+  assert.doesNotMatch(key, /Cargo\.toml|main\.rs/, 'ビルドに使わないファイルが cache キーに入っている')
   assert.match(y, /steps\.rustc\.outputs\.hash/)
   assert.match(y, /rustc -vV \| sed -n 's\/\^commit-hash: \/\/p'/)
+})
+
+test('pages.yml の cache は cargo install の出力先だけを対象とし、完全一致でのみ復元する', () => {
+  const y = read('templates/pages.yml')
+  const sh = read('scripts/build-local.sh')
+  const root = sh.match(/^INSTALL_ROOT="\$\{SCRIPT_DIR\}\/([^"]+)"/m)
+  assert.ok(root, 'build-local.sh に INSTALL_ROOT の定義が無い')
+  assert.equal(y.match(/^\s*path: (tools\/docs-site-gen\/\S+)$/m)[1], `tools/docs-site-gen/${root[1]}`)
+  // 存在しないパスを hashFiles に渡すと黙って空文字になり、FF_REV を変えてもキーが変わらなくなる
+  const scaffold = read('scripts/scaffold.py')
+  const dests = [...scaffold.matchAll(/^\s*\("[^"]+", "([^"]+)"/gm)].map((m) => m[1])
+  const hf = y.match(/hashFiles\(([^)]*)\)/)[1]
+  for (const m of hf.matchAll(/'([^']+)'/g)) assert.ok(dests.includes(m[1]), `hashFiles の ${m[1]} が scaffold の配置先に無い`)
+  assert.doesNotMatch(y, /restore-keys/, 'restore-keys は別の FF_REV の復元を許す')
+  assert.doesNotMatch(y, /cache-hit/, '省略判定は build-local.sh に置く')
+  const build = y.slice(y.indexOf('name: "build: install'))
+  assert.doesNotMatch(build.split('- name: Upload')[0], /^\s*if:/m, 'build ステップに if: がある')
+  const order = ['id: rustc', 'actions/cache@', 'build-local.sh --out'].map((k) => y.indexOf(k))
+  assert.ok(order.every((n) => n >= 0) && order[0] < order[1] && order[1] < order[2], 'rustc → cache → build の順でない')
+  for (const m of y.matchAll(/^\s*- name: (.*)$/gm)) assert.doesNotMatch(m[1], /rebrand|wrapper|fetch/i, `旧工程名: ${m[1]}`)
+})
+
+test('build-local.sh の install 省略判定は台帳と FF_REV を照合し、cargo install より前にある', () => {
+  const code = read('scripts/build-local.sh').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+  const guard = code.indexOf('guard_install_tree || exit 2')
+  const judge = code.indexOf('"(git+%s?rev=%s#%s)"')
+  const install = code.indexOf('cargo install --git')
+  assert.ok(guard >= 0 && judge > guard && install > judge, '省略判定の位置が不正')
+  // 台帳は対象パッケージのエントリ単位で照合する（grep -Fq の部分一致では別エントリの記載でも通る）
+  assert.doesNotMatch(code.slice(guard, install), /grep -Fq/)
+  assert.match(code.slice(guard, install), /tomllib/)
+  assert.match(code.slice(guard, install), /fandhe-frontend-docs-site/)
 })
 
 test('pages.yml の action は SHA 固定（Fandhe-AI/actions の reusable のみ @latest）', () => {
@@ -192,22 +251,13 @@ test('build-local.sh は python3 を常に隔離モード（-I -B）で起動す
   const sh = read('scripts/build-local.sh')
   const code = sh.split('\n').filter((l) => !/^\s*#/.test(l))
   const py = code.filter((l) => /python3\s/.test(l))
-  assert.ok(py.length >= 6, `python3 の呼び出しが 6 箇所に満たない: ${py.length}`)
+  assert.ok(py.length >= 5, `python3 の呼び出しが 5 箇所に満たない: ${py.length}`)
   for (const l of py) assert.match(l, /python3 -I -B /, `-I -B が無い: ${l.trim()}`)
   // 起動スクリプトのディレクトリを自分で sys.path の末尾へ足す（先頭ではない）。標準モジュール名の影を避ける
   for (const f of ['check_site.py', 'rebrand_site.py', 'scaffold.py']) {
     const src = read(`scripts/${f}`)
     assert.match(src, /sys\.path\.append\(/)
     assert.doesNotMatch(src, /sys\.path\.insert\(0/)
-  }
-})
-
-test('wrapper の Cargo.toml は build = false（対象リポジトリの build.rs を自動実行しない）で、registry 依存を持たない', () => {
-  const toml = read('templates/docs-site-gen/Cargo.toml')
-  assert.match(toml, /^build = false$/m)
-  const deps = toml.split('[dependencies]')[1].split('[workspace]')[0]
-  for (const l of deps.split('\n').filter((x) => x.includes('='))) {
-    assert.match(l, /path = "/, `path 依存以外が混入している: ${l}`)
   }
 })
 
