@@ -114,7 +114,7 @@ gh repo view "${REPO}" --json nameWithOwner,defaultBranchRef,visibility,viewerPe
 以降の作業は対象リポジトリのクローンのルートで行う。② モードを判定する（書き込みなし）。判定は `scaffold.py` が持ち、SKILL.md は **`kind` で分岐する**（根拠の文字列では分岐しない）。
 
 ```bash
-python3 "${SKILL_DIR}/scripts/scaffold.py" --target . --detect --json
+python3 -I -B "${SKILL_DIR}/scripts/scaffold.py" --target . --detect --json
 # {"mode": "new|update|foreign", "kind": "...", "reasons": [...]}
 ```
 
@@ -165,7 +165,7 @@ git -c core.fsmonitor=false -c core.hooksPath=/dev/null switch -c "${NAME}" "${B
 ```bash
 SNAP="$(mktemp)"; RESULT="$(mktemp)"     # 作業ツリーの外のファイル。値を控える（別シェルでは渡し直す）
 bash "${SKILL_DIR}/scripts/update-snapshot.sh" guard "${SNAP}"   # scaffold の直前（HEAD を記録し、利用者が触ったパスに印を付ける。再実行の前にも毎回呼ぶ）
-python3 "${SKILL_DIR}/scripts/scaffold.py" --target . --branch "<Step 1 で解決した既定ブランチ>" --json > "${RESULT}"; echo "exit=$?"
+python3 -I -B "${SKILL_DIR}/scripts/scaffold.py" --target . --branch "<Step 1 で解決した既定ブランチ>" --json > "${RESULT}"; echo "exit=$?"
 cat "${RESULT}"
 # 書き込み直後の内容のハッシュを記録する（更新の取り消しで「書いたまま変わっていないか」を比べる基準。書き込みが無い実行は何も記録しない）
 bash "${SKILL_DIR}/scripts/update-snapshot.sh" record-json "${SNAP}" < "${RESULT}"
@@ -183,7 +183,7 @@ bash "${SKILL_DIR}/scripts/update-snapshot.sh" record-json "${SNAP}" < "${RESULT
 - **exit 3（競合）**: **勝手に `--update` を付けない**。競合ごとに差分を確認して利用者に見せ、判断を仰ぐ。
 
   ```bash
-  python3 "${SKILL_DIR}/scripts/scaffold.py" --target . --branch "<既定ブランチ>" --show-diff
+  python3 -I -B "${SKILL_DIR}/scripts/scaffold.py" --target . --branch "<既定ブランチ>" --show-diff
   git log -p -n 3 --no-color --no-ext-diff --no-textconv -- <競合したファイルのパス> | head -200 | cat -v
   ```
 
@@ -212,6 +212,7 @@ Step U1 の JSON をもとに、次を利用者へ報告する。
 - 更新したファイルと理由（`updated`）、保持したファイル（`kept`）、欠落（`missing`）、競合と解決（`conflicts`）、削除候補（`deprecated`）、旧構成の生成物の案内（`legacy_artifacts`）、`[site]` 移行案の状態（`site_migration`）、警告（`warnings`）
 - `manifest_recreated` が true なら、旧版（マニフェストなし）からの移行であり、以後は未編集の所有ファイルが自動更新になること
 - ローカルビルドの結果（Step U2 の終了コードと `verify ok`）
+- 更新で `pages.yml` の build ジョブ名が `build: docs site (SSG + linkcheck)` に変わる（旧名は末尾が `+ rebrand)`）。旧名を required status check に登録しているリポジトリでは check 名が変わり、更新 PR が「Expected」のまま待ち続けるため、ruleset と classic branch protection の両方を確認し、旧名が登録されている側の required status check を新名へ更新するよう案内する（ruleset は `required_status_checks` の `context`、branch protection は `required_status_checks.checks` の `context`）。スキルは ruleset・branch protection を変更しない。利用者が PUT で更新する場合は、ruleset は `integration_id`、branch protection は `app_id` の束縛を保持する
 
 #### Step U4: コミットして PR にする
 
@@ -235,7 +236,7 @@ gh api "repos/${REPO}/pages" --jq '.build_type'    # workflow であること
 #### Step N1: テンプレートを配置する
 
 ```bash
-python3 "${SKILL_DIR}/scripts/scaffold.py" \
+python3 -I -B "${SKILL_DIR}/scripts/scaffold.py" \
   --target . \
   --owner "<owner>" --repo "<repo>" --branch "<既定ブランチ>" \
   --title "<サイト title>" --brand "<ブランド名>" \
@@ -411,7 +412,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' "${URL}"              # 200
 
 | 問題 | 回避策 |
 |------|--------|
-| `cargo install --git` が認証失敗する | 上流は submodule 非依存化済みで、匿名の `cargo install --git` が通る。`build-local.sh` は `GIT_TERMINAL_PROMPT=0` で認証待ちを避けて即時に失敗させる。ネットワーク・`FF_REV` の commit が上流に存在するかを確認し、まず再試行する |
+| `cargo install --git` が認証失敗する | 上流は submodule 非依存化済みで、匿名の `cargo install --git` が通る。`build-local.sh` は `GIT_TERMINAL_PROMPT=0` で認証待ちを避けて即時に失敗させる。まず `git -C / config --get-regexp '^url\..*\.insteadof$' >/dev/null && echo あり` で `url."git@github.com:".insteadOf "https://github.com/"` のような書き換え規則が無いか有無だけ確認する。「あり」は GitLab 等の無関係な規則でも出るため、規則の存在を示すだけで github.com への適用は保証しない（FF_URL への適用有無は、規則の値を出さずに判定する `build-local.sh` の失敗時案内が見る。案内が出れば適用あり）。（`>/dev/null` を外さない。設定キーに `user:token@` 等の認証情報が含まれ得て、表示するとログに残る）。あると cargo が ssh で取得しようとし、ssh-agent 認証ができず `failed to authenticate` で止まる。回避策は `CARGO_NET_GIT_FETCH_WITH_CLI=true` を付けて `build-local.sh` を実行すること（git CLI も書き換えに従うため、書き換え先の認証が通る環境が前提）。`build-local.sh` は失敗時にこの案内を stderr へ出すが、環境変数は匿名取得の前提を変えないため自動では付けない。GitHub ホステッドランナーの CI では起きない。書き換えが無ければネットワーク・`FF_REV` の commit が上流に存在するかを確認し、再試行する |
 | deploy ジョブが永久に pending | reusable workflow の `runner-label` 既定は `self-hosted`。`pages.yml` では必ず `runner-label: ubuntu-latest` を明示する（テンプレートは設定済み。消さない） |
 | `site/assets/` に `site.css` 等を置いてビルドエラー | 予約アセット名（`references/site-format.md`）を避ける。`check_site.py` が具体名を報告する |
 | リンク切れで生成が失敗し `_site/` に何も出力されない | fail-closed 仕様。出力されたエラーの 1 件ずつを直す（存在しない `#anchor`・nav 未登録の `.md`・存在しない絶対パス） |
@@ -425,7 +426,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' "${URL}"              # 200
 | `scaffold.py` の更新が exit 2（既定ブランチを決められない） | 既存の `pages.yml` から `branches` を読めない（編集済み）。`--branch <既定ブランチ>` を付ける |
 | `scaffold.py` が exit 4（check_site 失敗） | 利用者編集ファイル（nav.toml）の不備。`[site]` の必須キーが無い場合は、不足キーと追記例が表示されるので追記する（旧 brand.toml からの読み替えは Step U の exit 4 を参照） |
 | `build-local.sh` が「シンボリックリンクのため、書き込み・削除をしない」「対象リポジトリの外へ解決される」で止まる | `target`・`target/docs-site-install`・`THIRD-PARTY-LICENSES`・出力先のいずれかが symlink（または親が外を指す）。通常のファイル・ディレクトリに置き換える |
-| `build-local.sh` が「`docs-site` が生成されていない」「`cargo install` が失敗」で止まる | ネットワーク・`rust-toolchain.toml`・`.cargo/` の設定を確認して再試行する。初回は上流のビルドに時間がかかる |
+| `build-local.sh` が「`docs-site` が生成されていない」「`cargo install` が失敗」で止まる | ネットワーク・`rust-toolchain.toml`・`.cargo/` の設定を確認して再試行する（認証失敗なら上の `cargo install --git` の行を参照）。初回は上流のビルドに時間がかかる |
 | `build-local.sh` が「出力先が既に存在し空ではない」で止まる | `--clean` を付ける（既定の `_site/` のみ削除対象） |
 | build は成功するが deploy だけ失敗する | Pages の Source が「GitHub Actions」でない。Step N4 を実行する（更新フローでは自動で実行せず、利用者の了承を取る） |
 | `${{ }}` を `run:` に書き足してしまう | env 経由で渡す（式の直書きはインジェクション経路になる） |

@@ -139,7 +139,11 @@ test('pages.yml の cache は cargo install の出力先だけを対象とし、
   assert.doesNotMatch(build.split('- name: Upload')[0], /^\s*if:/m, 'build ステップに if: がある')
   const order = ['id: rustc', 'actions/cache@', 'build-local.sh --out'].map((k) => y.indexOf(k))
   assert.ok(order.every((n) => n >= 0) && order[0] < order[1] && order[1] < order[2], 'rustc → cache → build の順でない')
-  for (const m of y.matchAll(/^\s*- name: (.*)$/gm)) assert.doesNotMatch(m[1], /rebrand|wrapper|fetch/i, `旧工程名: ${m[1]}`)
+  // ステップ名（`- name:`）に加えジョブ名（`name:`）も検査する。ジョブ名は required check の context になる
+  const names = [...y.matchAll(/^\s*(?:-\s+)?name:\s*(.*)$/gm)].map((m) => m[1])
+  assert.ok(names.length >= 3, `name の検出数が少ない: ${names.length}`)
+  assert.match(y, /^ {2}build:\n {4}name: .+$/m, 'build ジョブ名が検出できない')
+  for (const n of names) assert.doesNotMatch(n, /rebrand|wrapper|fetch/i, `旧工程名: ${n}`)
 })
 
 test('build-local.sh の install 省略判定は台帳と FF_REV を照合し、cargo install より前にある', () => {
@@ -152,6 +156,16 @@ test('build-local.sh の install 省略判定は台帳と FF_REV を照合し、
   assert.doesNotMatch(code.slice(guard, install), /grep -Fq/)
   assert.match(code.slice(guard, install), /tomllib/)
   assert.match(code.slice(guard, install), /fandhe-frontend-docs-site/)
+})
+
+test('build-local.sh は cargo install の失敗コードを保持して案内し、環境変数を自動付与しない', () => {
+  const code = read('scripts/build-local.sh').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+  const install = code.indexOf('GIT_TERMINAL_PROMPT=0 cargo install')
+  const hint = code.indexOf('    hint_git_rewrite\n', install)
+  const exit = code.indexOf('exit "${install_rc}"', install)
+  assert.ok(install >= 0 && hint > install && exit > hint, 'install → 案内 → 失敗コードで終了 の順でない')
+  assert.match(code.slice(install, hint), /\|\| install_rc=\$\?/)
+  assert.doesNotMatch(code, /export\s+CARGO_NET_GIT_FETCH_WITH_CLI|CARGO_NET_GIT_FETCH_WITH_CLI=\S+\s+(GIT_TERMINAL_PROMPT=0\s+)?cargo/)
 })
 
 test('pages.yml の action は SHA 固定（Fandhe-AI/actions の reusable のみ @latest）', () => {
@@ -295,4 +309,24 @@ test('update-snapshot.sh は構文が正しく、対象リポジトリへは配�
   const sh = read('scripts/update-snapshot.sh')
   assert.match(sh, /git hash-object --no-filters/)
   assert.doesNotMatch(sh, /\beval\b/)
+})
+
+test('SKILL.md と references の scripts/ 実行例は python3 -I -B で起動する', () => {
+  // __pycache__ をスキルのディレクトリへ残さず、利用者の PYTHON* 環境変数や user site の影響も受けない
+  const refs = readdirSync(join(SKILL_DIR, 'references'))
+    .filter((f) => f.endsWith('.md'))
+    .map((f) => `references/${f}`)
+  let seen = 0
+  for (const f of ['SKILL.md', ...refs]) {
+    const lines = read(f).split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      if (!/python3\s/.test(lines[i])) continue
+      // 行継続（末尾 \）の場合は次行までを 1 コマンドとして判定する
+      const cmd = /\\\s*$/.test(lines[i]) ? `${lines[i]} ${lines[i + 1] ?? ''}` : lines[i]
+      if (!/scripts\//.test(cmd)) continue
+      seen++
+      assert.match(cmd, /python3 -I -B /, `${f}:${i + 1} に -I -B が無い: ${lines[i].trim()}`)
+    }
+  }
+  assert.ok(seen >= 4, `scripts/ 実行例が 4 箇所に満たない（検査の空振り）: ${seen}`)
 })
