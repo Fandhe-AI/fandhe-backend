@@ -12,7 +12,7 @@
 （`index.html`・`404.html`。手書き・加工なし）。`VerifyAttributionTest` が `verify_attribution` の入力に使う。
 上流の DOM が変わって帰属表記の並びが崩れたら、実ビルドの verify とこのテストが止まる。
 
-再生成: 空の一時ディレクトリへ `python3 scripts/scaffold.py --target <dir> --owner acme --repo mini-repo --branch main --title Mini --tagline "Tiny site" --year 2026`
+再生成: 空の一時ディレクトリへ `python3 -I -B scripts/scaffold.py --target <dir> --owner acme --repo mini-repo --branch main --title Mini --tagline "Tiny site" --year 2026`
 を実行し、`<dir>` で（使い捨ての `CARGO_HOME` を付けて）`bash tools/docs-site-gen/build-local.sh --clean --write-third-party` を実行する。
 後処理は無い。`_site/index.html` と `_site/404.html` をそのままコピーする。最終再生成: FF_REV `b3e31ef663a98b6080feb98c84ade238d1074a08`。
 

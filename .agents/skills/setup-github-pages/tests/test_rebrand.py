@@ -434,6 +434,105 @@ class UpstreamLikeRepoNameTest(unittest.TestCase):
                 "--branch", "main", "--title", "T", "--tagline", "Tag")
         self.assertEqual(r.returncode, 2)
 
+class InstallFailureHintTest(unittest.TestCase):
+    """cargo install 失敗時の insteadOf 書き換え案内の回帰テスト（ネットワーク不要）。
+
+    案内は助言のみで、cargo の終了コードを保持すること・規則の値（認証情報を含み得る）を出さないこと・
+    環境変数を自動で付けないことを固定する。git 設定は GIT_CONFIG_GLOBAL の一時ファイルでホストから隔離する。
+    """
+
+    HINT = "CARGO_NET_GIT_FETCH_WITH_CLI"
+    SENTINEL = "SENTINELHOST"
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.base, ignore_errors=True)
+        self.repo = self.base / "repo"
+        self.repo.mkdir()
+        r = run("scaffold.py", "--target", self.repo, "--owner", "acme", "--repo", "r", "--branch", "main", "--title", "T", "--tagline", "Tag")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rev = (self.repo / "tools/docs-site-gen/FF_REV").read_text().strip()
+        self.log = self.base / "calls.log"
+        self.bindir = self.base / "stubs"
+        self.bindir.mkdir()
+        for name, code in (("cargo", 97), ("curl", 22)):
+            stub = self.bindir / name
+            stub.write_text(f'#!/bin/sh\necho "{name} $*" >> "{self.log}"\nexit {code}\n')
+            stub.chmod(0o755)
+        self.gitconfig = self.base / "gitconfig"
+        self.gitconfig.write_text("")
+        self.env = {**os.environ, "PATH": f"{self.bindir}:{os.environ['PATH']}",
+                    "GIT_CONFIG_GLOBAL": str(self.gitconfig), "GIT_CONFIG_NOSYSTEM": "1"}
+        self.env.pop(self.HINT, None)
+        root = self.repo / "tools/docs-site-gen/target/docs-site-install"
+        (root / "bin").mkdir(parents=True)
+        exe = root / "bin/docs-site"
+        exe.write_text("#!/bin/sh\nexit 96\n")
+        exe.chmod(0o755)
+        (root / ".registry-checked").write_text(rev + "\n")
+        other = "0" * 40  # 40 桁 hex を別 rev としてテストに直書きしない（rev-pin.test.mjs の一致検査）
+        url = "https://github.com/Fandhe-AI/fandhe-frontend"
+        (root / ".crates.toml").write_text(
+            f'[v1]\n"fandhe-frontend-docs-site 0.1.0 (git+{url}?rev={other}#{other})" = ["docs-site"]\n')
+
+    def build(self, config=None, extra_env=None):
+        if config is not None:
+            self.gitconfig.write_text(config)
+        env = {**self.env, **(extra_env or {})}
+        return subprocess.run(["bash", str(self.repo / "tools/docs-site-gen/build-local.sh"), "--out", str(self.base / "out")],
+                              capture_output=True, text=True, cwd=self.repo, env=env)
+
+    def test_hint_when_rewrite_applies_and_values_not_leaked(self):
+        r = self.build(f'[url "https://user:tok{self.SENTINEL}@github.com/"]\n\tinsteadOf = https://github.com/\n'
+                       f'[url "git@{self.SENTINEL}.example:"]\n\tinsteadOf = https://github.com/\n')
+        self.assertEqual(r.returncode, 97, r.stderr)
+        self.assertIn(self.HINT, r.stderr)
+        self.assertNotIn(self.SENTINEL, r.stdout + r.stderr)
+        # 案内する確認コマンドは出力を捨てる形に限る（生の設定キーを端末へ出させない）
+        self.assertIn("--get-regexp '^url\\..*\\.insteadof$' >/dev/null", r.stderr)
+        # 書き換え先のプロトコルは判定しないため、ssh 前提の断定文言を出さない
+        self.assertNotIn("ssh", r.stderr)
+
+    def test_hint_for_ssh_rewrite(self):
+        r = self.build('[url "git@github.com:"]\n\tinsteadOf = https://github.com/\n')
+        self.assertEqual(r.returncode, 97, r.stderr)
+        self.assertIn(self.HINT, r.stderr)
+
+    def test_hint_for_rule_exactly_matching_ff_url(self):
+        r = self.build('[url "git@github.com:Fandhe-AI/fandhe-frontend"]\n\tinsteadOf = https://github.com/Fandhe-AI/fandhe-frontend\n')
+        self.assertEqual(r.returncode, 97, r.stderr)
+        self.assertIn(self.HINT, r.stderr)
+
+    def test_no_hint_without_rules(self):
+        r = self.build("")
+        self.assertEqual(r.returncode, 97, r.stderr)
+        self.assertNotIn(self.HINT, r.stderr)
+
+    def test_no_hint_for_unrelated_rule(self):
+        r = self.build('[url "git@gitlab.com:"]\n\tinsteadOf = https://gitlab.com/\n')
+        self.assertEqual(r.returncode, 97, r.stderr)
+        self.assertNotIn(self.HINT, r.stderr)
+
+    def test_no_hint_when_workaround_already_set(self):
+        r = self.build('[url "git@github.com:"]\n\tinsteadOf = https://github.com/\n', {self.HINT: "true"})
+        self.assertEqual(r.returncode, 97, r.stderr)
+        self.assertNotIn("ヒント", r.stderr)
+
+    def test_no_hint_for_repo_local_rule(self):
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, env=self.env, check=True)
+        subprocess.run(["git", "config", "--local", "url.git@github.com:.insteadOf", "https://github.com/"],
+                       cwd=self.repo, env=self.env, check=True)
+        r = self.build("")
+        self.assertEqual(r.returncode, 97, r.stderr)
+        self.assertNotIn("ヒント", r.stderr)
+
+    def test_success_path_has_no_hint(self):
+        (self.bindir / "cargo").write_text(f'#!/bin/sh\necho "cargo $*" >> "{self.log}"\nexit 0\n')
+        r = self.build('[url "git@github.com:"]\n\tinsteadOf = https://github.com/\n')
+        self.assertEqual(r.returncode, 96, r.stderr)
+        self.assertNotIn("ヒント", r.stderr)
+
+
 class InstallSkipTest(unittest.TestCase):
     """同一 FF_REV でインストール・検査済みなら cargo install を省く判定の回帰テスト（ネットワーク不要）。
 
