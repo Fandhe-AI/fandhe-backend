@@ -536,139 +536,149 @@ class ScaffoldSymlinkTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
 
 
-class FetchFfTest(unittest.TestCase):
-    """build-local.sh の fetch_ff（目印 `>>> fetch_ff` ～ `<<< fetch_ff` の区間）を一時 git リポで単体実行する。
+class ThirdPartyLicenseTest(unittest.TestCase):
+    """build-local.sh の write_third_party（目印 `>>> third_party` ～ `<<< third_party` の区間）を単体実行する。
 
-    `_ff` は生成器のキャッシュ専用だが、利用者が手で編集していた場合に変更を破棄しないこと
-    （P0 回帰）と、clean な場合だけ checkout で進むことを確認する。ネットワークは使わず、
-    FF_URL にローカルのリポジトリを渡す。
+    ネットワークには出ない。PATH の先頭へスタブ `curl` を置き、終了コード・HTTP コード・本文を
+    シナリオごとに返して、(a) 検証を通った本文だけが THIRD-PARTY-LICENSES になること、
+    (b) 失敗時は既存ファイルがバイト単位で不変・一時ファイルが残らないこと、
+    (c) curl の引数が固定 URL・https 限定・リダイレクト非追従・時間とサイズ上限付きであることを確認する。
     """
 
-    def git(self, cwd, *args):
-        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
-                   GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@e", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@e")
-        r = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, env=env)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        return r.stdout.strip()
+    REV = "b3e31ef663a98b6080feb98c84ade238d1074a08"
+    GOOD = (
+        "Copyright (c) 2026 Fandhe-AI / fandhe-frontend contributors\n\n"
+        "Permission is hereby granted, free of charge, to any\n"
+        "person obtaining a copy of this software and associated\n"
+        "documentation files (the \"Software\"), to deal in the\n"
+        "Software without restriction, including without\n"
+        "limitation the rights to use, copy, modify, merge,\n"
+        "publish, distribute, sublicense, and/or sell copies of\n"
+        "the Software, and to permit persons to whom the Software\n"
+        "is furnished to do so, subject to the following\n"
+        "conditions:\n\n"
+        "The above copyright notice and this permission notice\n"
+        "shall be included in all copies or substantial portions\n"
+        "of the Software.\n\n"
+        "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF\n"
+        "ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED\n"
+        "TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A\n"
+        "PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT\n"
+        "SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\n"
+        "CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION\n"
+        "OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR\n"
+        "IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\n"
+        "DEALINGS IN THE SOFTWARE.\n"
+    ).encode()
 
     def setUp(self):
         self.base = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.base, ignore_errors=True)
-        self.src = self.base / "src"
-        self.src.mkdir()
-        self.git(self.src, "init", "-q", "-b", "main")
-        (self.src / "f.txt").write_text("one\n")
-        self.git(self.src, "add", ".")
-        self.git(self.src, "commit", "-q", "-m", "a")
-        self.rev_a = self.git(self.src, "rev-parse", "HEAD")
-        (self.src / "f.txt").write_text("two\n")
-        self.git(self.src, "commit", "-q", "-am", "b")
-        self.rev_b = self.git(self.src, "rev-parse", "HEAD")
+        self.root = self.base / "repo"
+        self.root.mkdir()
+        self.bin = self.base / "bin"
+        self.bin.mkdir()
+        self.args_log = self.base / "curl-args.txt"
         sh = (SCRIPTS / "build-local.sh").read_text(encoding="utf-8")
-        body = re.search(r"# >>> fetch_ff.*?\n(.*?)# <<< fetch_ff", sh, re.S).group(1)
-        self.func = body
-        self.ff = self.base / "_ff"
+        self.func = re.search(r"# >>> third_party.*?\n(.*?)# <<< third_party", sh, re.S).group(1)
+        self.tpl = self.root / "THIRD-PARTY-LICENSES"
 
-    def fetch(self, rev):
-        script = f'set -euo pipefail\nFF_DIR="$1"; FF_URL="$2"; FF_REV="$3"\n{self.func}\nfetch_ff'
-        return subprocess.run(["bash", "-c", script, "_", str(self.ff), f"file://{self.src}", rev],
-                              capture_output=True, text=True,
-                              env=dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1"))
+    def stub_curl(self, rc=0, code="200", body=b""):
+        (self.base / "body.bin").write_bytes(body)
+        stub = self.bin / "curl"
+        stub.write_text(
+            '#!/usr/bin/env bash\n'
+            f'printf \'%s\\n\' "$@" > "{self.args_log}"\n'
+            'out=""; while [[ $# -gt 0 ]]; do [[ "$1" == "--output" ]] && out="$2"; shift; done\n'
+            f'[[ {rc} -eq 0 ]] && cat "{self.base / "body.bin"}" > "$out"\n'
+            f'printf %s "{code}"\n'
+            f'exit {rc}\n'
+        )
+        stub.chmod(0o755)
 
-    def test_existing_repo_without_origin_is_not_touched(self):
-        """origin の無い既存の clean なリポジトリ（利用者の別リポジトリの可能性）へ origin を足して checkout しない。"""
-        self.ff.mkdir()
-        self.git(self.ff, "init", "-q", "-b", "main")
-        (self.ff / "mine.txt").write_text("mine\n")
-        self.git(self.ff, "add", ".")
-        self.git(self.ff, "commit", "-q", "-m", "mine")
-        head = self.git(self.ff, "rev-parse", "HEAD")
-        r = self.fetch(self.rev_a)
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("origin を取得できない", r.stderr)
-        self.assertEqual(self.git(self.ff, "rev-parse", "HEAD"), head)
-        self.assertEqual(self.git(self.ff, "remote"), "", "origin を追加しない")
-        self.assertEqual((self.ff / "mine.txt").read_text(), "mine\n")
-        self.assertFalse((self.ff / "f.txt").exists())
+    def run_func(self):
+        script = f'set -euo pipefail\nROOT_REAL="$1"; FF_REV="$2"\n{self.func}\nwrite_third_party'
+        env = dict(os.environ, PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}")
+        return subprocess.run(["bash", "-c", script, "_", str(self.root), self.REV],
+                              capture_output=True, text=True, env=env)
 
-    def test_fresh_fetch_and_clean_advance(self):
-        r = self.fetch(self.rev_a)
+    def leftovers(self):
+        return sorted(p.name for p in self.root.iterdir() if p.name.startswith(".THIRD-PARTY-LICENSES"))
+
+    def assert_failed_untouched(self, r, before):
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        if before is None:
+            self.assertFalse(self.tpl.exists(), "失敗したのに THIRD-PARTY-LICENSES が作られた")
+        else:
+            self.assertEqual(self.tpl.read_bytes(), before)
+        self.assertEqual(self.leftovers(), [], "一時ファイルが残っている")
+
+    def test_success_output_is_header_blank_line_and_body(self):
+        self.stub_curl(body=self.GOOD)
+        r = self.run_func()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual((self.ff / "f.txt").read_text(), "one\n")
-        r = self.fetch(self.rev_a)  # 一致 → 再利用
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("再利用", r.stderr)
-        r = self.fetch(self.rev_b)  # clean なら進められる
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual((self.ff / "f.txt").read_text(), "two\n")
+        header = (
+            "This repository's documentation site is generated with the docs-site generator of\n"
+            f"fandhe-frontend (https://github.com/Fandhe-AI/fandhe-frontend, commit {self.REV}),\n"
+            "which is licensed under MIT OR Apache-2.0. The MIT license text follows.\n\n"
+        ).encode()
+        self.assertEqual(self.tpl.read_bytes(), header + self.GOOD)
+        self.assertEqual(self.tpl.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(self.leftovers(), [])
 
-    def test_uncommitted_change_aborts_and_is_preserved(self):
-        self.assertEqual(self.fetch(self.rev_a).returncode, 0)
-        (self.ff / "f.txt").write_text("my local edit\n")
-        r = self.fetch(self.rev_b)
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("破棄しない", r.stderr)
-        self.assertEqual((self.ff / "f.txt").read_text(), "my local edit\n")
-        self.assertEqual(self.git(self.ff, "rev-parse", "HEAD"), self.rev_a)
+    def test_curl_nonzero_exit_keeps_existing_file(self):
+        self.tpl.write_bytes(b"old\n")
+        self.stub_curl(rc=22, code="404", body=self.GOOD)
+        self.assert_failed_untouched(self.run_func(), b"old\n")
 
-    def test_dirty_even_when_head_matches_aborts(self):
-        self.assertEqual(self.fetch(self.rev_a).returncode, 0)
-        (self.ff / "f.txt").write_text("edit\n")
-        r = self.fetch(self.rev_a)
-        self.assertNotEqual(r.returncode, 0)
-        self.assertEqual((self.ff / "f.txt").read_text(), "edit\n")
+    def test_non_200_status_keeps_existing_file(self):
+        for code in ("301", "404", "500"):
+            with self.subTest(code=code):
+                self.tpl.write_bytes(b"old\n")
+                self.stub_curl(code=code, body=self.GOOD)
+                self.assert_failed_untouched(self.run_func(), b"old\n")
 
-    def test_untracked_file_aborts_and_is_preserved(self):
-        self.assertEqual(self.fetch(self.rev_a).returncode, 0)
-        (self.ff / "notes.txt").write_text("keep me\n")
-        r = self.fetch(self.rev_b)
-        self.assertNotEqual(r.returncode, 0)
-        self.assertEqual((self.ff / "notes.txt").read_text(), "keep me\n")
+    def test_missing_copyright_permission_or_empty_body(self):
+        def cls_good_without_disclaimer():
+            return self.GOOD.split(b"THE SOFTWARE IS PROVIDED")[0]
+        cases = {
+            "no-copyright": b"MIT License\n\nPermission is hereby granted, free of charge, to any person\n",
+            "no-permission": b"Copyright (c) 2026 Fandhe-AI / fandhe-frontend contributors\n",
+            "wrong-holder": b"Copyright (c) 2026 Someone Else\nPermission is hereby granted, free of charge, to any x\n",
+            "empty": b"",
+            "truncated-after-permission-line": b"Copyright (c) 2026 Fandhe-AI / fandhe-frontend contributors\n\n"
+                b"Permission is hereby granted, free of charge, to any person obtaining a copy\nof this software.\n",
+            "no-disclaimer": cls_good_without_disclaimer(),
+            "trailing-garbage": ThirdPartyLicenseTest.GOOD + b"extra line\n",
+        }
+        for name, body in cases.items():
+            with self.subTest(name=name):
+                self.tpl.write_bytes(b"old\n")
+                self.stub_curl(body=body)
+                self.assert_failed_untouched(self.run_func(), b"old\n")
 
-    def test_non_git_nonempty_dir_aborts_and_is_preserved(self):
-        self.ff.mkdir()
-        (self.ff / "precious.txt").write_text("data\n")
-        r = self.fetch(self.rev_a)
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("git 作業ツリーではない", r.stderr)
-        self.assertEqual((self.ff / "precious.txt").read_text(), "data\n")
-        self.assertFalse((self.ff / ".git").exists())
+    def test_oversized_or_nul_body_keeps_existing_file(self):
+        self.tpl.write_bytes(b"old\n")
+        self.stub_curl(body=self.GOOD + b"x" * 65536)
+        self.assert_failed_untouched(self.run_func(), b"old\n")
+        self.stub_curl(body=self.GOOD + b"\x00")
+        self.assert_failed_untouched(self.run_func(), b"old\n")
 
-    def test_origin_mismatch_aborts_without_rewriting(self):
-        self.assertEqual(self.fetch(self.rev_a).returncode, 0)
-        other = "https://example.invalid/someone/else.git"
-        self.git(self.ff, "remote", "set-url", "origin", other)
-        r = self.fetch(self.rev_b)
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("origin が期待する上流 URL と異なる", r.stderr)
-        self.assertEqual(self.git(self.ff, "remote", "get-url", "origin"), other)
-        self.assertEqual(self.git(self.ff, "rev-parse", "HEAD"), self.rev_a)
-        # HEAD が一致する再利用経路でも同じ
-        r = self.fetch(self.rev_a)
-        self.assertNotEqual(r.returncode, 0)
-        self.assertEqual(self.git(self.ff, "remote", "get-url", "origin"), other)
+    def test_failure_without_existing_file_creates_nothing(self):
+        self.stub_curl(rc=7, code="000")
+        self.assert_failed_untouched(self.run_func(), None)
 
-    def test_dot_git_symlink_or_file_aborts(self):
-        outside = self.base / "elsewhere.git"
-        outside.mkdir()
-        self.git(outside, "init", "-q", "--bare")
-        before = sorted(p.name for p in outside.iterdir())
-        self.ff.mkdir()
-        (self.ff / ".git").symlink_to(outside)
-        r = self.fetch(self.rev_a)
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("通常のディレクトリではない", r.stderr)
-        self.assertEqual(sorted(p.name for p in outside.iterdir()), before)
-        (self.ff / ".git").unlink()
-        (self.ff / ".git").write_text(f"gitdir: {outside}\n")
-        r = self.fetch(self.rev_a)
-        self.assertNotEqual(r.returncode, 0)
-        self.assertEqual(sorted(p.name for p in outside.iterdir()), before)
+    def test_curl_arguments_are_fixed_and_restrictive(self):
+        self.stub_curl(body=self.GOOD)
+        self.assertEqual(self.run_func().returncode, 0)
+        args = self.args_log.read_text().splitlines()
+        self.assertEqual(args[-1], f"https://raw.githubusercontent.com/Fandhe-AI/fandhe-frontend/{self.REV}/LICENSE-MIT")
+        self.assertEqual(sum(1 for a in args if a.startswith("http")), 1)
+        for opt in ("--fail", "--proto", "=https", "--proto-redir", "--max-time", "--max-filesize"):
+            self.assertIn(opt, args)
+        for banned in ("-L", "--location", "--insecure", "-k"):
+            self.assertNotIn(banned, args)
 
-    def test_script_has_no_force_checkout_or_clean(self):
-        code = "\n".join(l for l in self.func.split("\n") if not l.lstrip().startswith("#"))
-        self.assertNotRegex(code, r"checkout\s+(-q\s+)?-f|--force|git[^\n]* clean|reset --hard")
-        self.assertNotIn("set-url", code, "既存 origin を書き換えてはいけない")
 
 class UpstreamLikeRepoNameTest(unittest.TestCase):
     """利用者のリポジトリ名・owner が `fandhe-frontend` を含む場合（例: Fandhe-AI/fandhe-frontend-docs）。
@@ -767,11 +777,96 @@ class UpstreamLikeRepoNameTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("残っている", r.stderr)
 
+class InstallSkipTest(unittest.TestCase):
+    """同一 FF_REV でインストール・検査済みなら cargo install を省く判定の回帰テスト（ネットワーク不要）。
+
+    cargo / curl を PATH 先頭のスタブへ差し替え、呼び出しの有無と終了コードで経路を判別する。
+    省略は「検査済み記録・台帳・実行ファイル」がすべて揃うときだけで、1 つでも欠ければ install（または検査）へ倒れる。
+    """
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.base, ignore_errors=True)
+        self.repo = self.base / "repo"
+        self.repo.mkdir()
+        r = run("scaffold.py", "--target", self.repo, "--owner", "acme", "--repo", "r", "--branch", "main", "--title", "T")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.rev = (self.repo / "tools/docs-site-gen/FF_REV").read_text().strip()
+        self.other = "0" * 40  # 40 桁 hex を別 rev としてテストに直書きしない（rev-pin.test.mjs の一致検査）
+        self.log = self.base / "calls.log"
+        bindir = self.base / "stubs"
+        bindir.mkdir()
+        for name, code in (("cargo", 97), ("curl", 22)):
+            stub = bindir / name
+            stub.write_text(f'#!/bin/sh\necho "{name} $*" >> "{self.log}"\nexit {code}\n')
+            stub.chmod(0o755)
+        self.env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"}
+        self.root = self.repo / "tools/docs-site-gen/target/docs-site-install"
+        (self.root / "bin").mkdir(parents=True)
+
+    def prepare(self, mark, ledger, executable=True):
+        exe = self.root / "bin/docs-site"
+        exe.write_text("#!/bin/sh\nexit 96\n")
+        exe.chmod(0o755 if executable else 0o644)
+        if mark is not None:
+            (self.root / ".registry-checked").write_text(mark + "\n")
+        if ledger is not None:
+            url = "https://github.com/Fandhe-AI/fandhe-frontend"
+            (self.root / ".crates.toml").write_text(
+                f'[v1]\n"fandhe-frontend-docs-site 0.1.0 (git+{url}?rev={ledger}#{ledger})" = ["docs-site"]\n')
+
+    def build(self):
+        r = subprocess.run(["bash", str(self.repo / "tools/docs-site-gen/build-local.sh"), "--out", str(self.base / "out")],
+                           capture_output=True, text=True, cwd=self.repo, env=self.env)
+        calls = self.log.read_text() if self.log.exists() else ""
+        return r, calls
+
+    def test_skip_when_marker_and_ledger_match(self):
+        self.prepare(self.rev, self.rev)
+        r, calls = self.build()
+        self.assertEqual(r.returncode, 96, r.stderr)
+        self.assertEqual(calls, "")
+        self.assertIn("インストールは省略", r.stderr)
+
+    def test_install_when_ledger_rev_differs_or_missing(self):
+        for ledger in (self.other, None):
+            with self.subTest(ledger=ledger):
+                self.log.unlink(missing_ok=True)
+                self.prepare(self.rev, ledger)
+                if ledger is None:
+                    (self.root / ".crates.toml").unlink(missing_ok=True)
+                r, calls = self.build()
+                self.assertEqual(r.returncode, 97, r.stderr)
+                self.assertNotIn("curl", calls)
+                self.assertIn(f"cargo install --git https://github.com/Fandhe-AI/fandhe-frontend --rev {self.rev} --locked", calls)
+
+    def test_recheck_when_marker_missing_or_stale_or_not_executable(self):
+        cases = ((self.other, self.rev, True), (None, self.rev, True), (self.rev, self.rev, False))
+        for mark, ledger, exe in cases:
+            with self.subTest(mark=mark, exe=exe):
+                self.log.unlink(missing_ok=True)
+                (self.root / ".registry-checked").unlink(missing_ok=True)
+                self.prepare(mark, ledger, exe)
+                r, calls = self.build()
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("curl", calls)
+                self.assertNotIn("cargo", calls)
+
+    def test_ledger_symlink_aborts_before_any_call(self):
+        self.prepare(self.rev, None)
+        real = self.base / "real.toml"
+        real.write_text("x\n")
+        (self.root / ".crates.toml").symlink_to(real)
+        r, calls = self.build()
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertEqual(calls, "")
+
+
 class WriteBoundaryTest(unittest.TestCase):
     """書き込み・削除先が対象リポジトリの外へ出ないことの回帰テスト（symlink 経由の脱出）。
 
     build-local.sh は guard_path（bash）、scaffold.py / rebrand_site.py は resolves_inside（Python）を通す。
-    ガードは fetch・cargo より前で実行されるため、ネットワーク・ビルド無しで中止を確認できる。
+    ガードは取得・cargo install より前で実行されるため、ネットワーク・ビルド無しで中止を確認できる。
     各ケースで「リンク先（外部ディレクトリ）が無変更」であることを検証する。
     """
 
@@ -801,25 +896,22 @@ class WriteBoundaryTest(unittest.TestCase):
             self.assertIn(needle, r.stderr)
         self.assertNotIn("==> fandhe-frontend", r.stderr.split("エラー")[0] if "エラー" in r.stderr else "")
 
-    def test_ff_symlink_to_outside_dir(self):
-        (self.repo / "_ff").symlink_to(self.outside)
-        self.assert_aborted(self.build(), "_ff")
-
-    def test_ff_symlink_to_empty_outside_dir(self):
-        empty = self.base / "empty"
-        empty.mkdir()
-        (self.repo / "_ff").symlink_to(empty)
-        r = self.build()
-        self.assertNotEqual(r.returncode, 0)
-        self.assertEqual(list(empty.iterdir()), [], "空のリンク先に git init された")
+    def test_install_root_symlink_to_outside_dir(self):
+        target = self.repo / "tools/docs-site-gen/target"
+        target.mkdir(exist_ok=True)
+        (target / "docs-site-install").symlink_to(self.outside)
+        self.assert_aborted(self.build(), "docs-site のインストール先")
 
     def test_target_dir_symlink(self):
         (self.repo / "tools/docs-site-gen/target").symlink_to(self.outside)
         self.assert_aborted(self.build(), "target")
 
-    def test_cargo_lock_symlink(self):
-        (self.repo / "tools/docs-site-gen/Cargo.lock").symlink_to(self.outside / "keep.txt")
-        self.assert_aborted(self.build(), "Cargo.lock")
+    def test_target_dir_resolving_outside_via_parent_symlink(self):
+        """target 配下の実体が外を指す場合（親が symlink）も中止し、リンク先へ cargo install しない。"""
+        (self.repo / "tools/docs-site-gen/target").symlink_to(self.outside)
+        r = self.build("--write-third-party")
+        self.assert_aborted(r)
+        self.assertFalse((self.outside / "docs-site-install").exists())
 
     def test_third_party_licenses_symlink_file_and_dir(self):
         link = self.repo / "THIRD-PARTY-LICENSES"
@@ -3418,7 +3510,7 @@ class UpdateSnapshotHardeningTest(unittest.TestCase):
     def test_t5_build_local_writes_third_party_before_failing_stages(self):
         sh = (SCRIPTS / "build-local.sh").read_text(encoding="utf-8")
         tpl = sh.index("THIRD-PARTY-LICENSES を生成")
-        for later in ('step "check_site"', 'step "wrapper を build"', 'step "サイトを生成"', 'step "rebrand"', 'step "verify"'):
+        for later in ('step "check_site"', 'step "docs-site をインストール"', 'step "サイトを生成"', 'step "rebrand"', 'step "verify"'):
             self.assertLess(tpl, sh.index(later), f"THIRD-PARTY-LICENSES は {later} より前に書かれる（後段が失敗しても書き換わる）")
         md = (SKILL / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("成否にかかわらず", md)
