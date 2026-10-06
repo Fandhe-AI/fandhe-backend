@@ -387,7 +387,8 @@ Markdown/HTML 生成が手書き実装である方針と揃える）。
 ## 14. 手動再デプロイ運用（workflow_dispatch）
 
 公開サイトは `.github/workflows/pages.yml` が `tools/docs-site-gen/build-local.sh`
-（fetch → build → 生成 → rebrand → verify。リンク検査は fail-closed）を実行して生成し、
+（`FF_REV` 固定の `cargo install --git` → 生成 → 帰属表記の verify。リンク検査は fail-closed。
+ブランド表示は `site/nav.toml` の `[site]` で指定し、生成後の置換は行わない）を実行して生成し、
 `Fandhe-AI/actions` の `pages-deploy.yml` でデプロイする。`push.paths` は `site/**` /
 `tools/docs-site-gen/**` / `rust-toolchain.toml` / 本 workflow 自身と、利用者区間
 （`sgp:user-paths`）に登録した `docs/guide/**` / `docs/api/**` を対象とする。

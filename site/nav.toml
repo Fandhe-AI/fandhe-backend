@@ -4,6 +4,14 @@
 [site]
 title = "fandhe-backend"
 base_path = "/fandhe-backend"
+brand = "fandhe-backend"
+repository_url = "https://github.com/Fandhe-AI/fandhe-backend"
+tagline = "軽量・高速・高並行な Rust 製バックエンドフレームワーク"
+copyright = "© 2026 Fandhe-AI"
+version_badge = ""
+brand_mark = "F"
+lang = "ja"
+brand_color = "#2b6cb0"
 
 [[section]]
 title = "Getting Started"

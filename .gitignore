@@ -52,7 +52,5 @@ node_modules/
 .claude/worktrees/
 
 # docs サイト（setup-github-pages）
-_ff/
 tools/docs-site-gen/target/
-tools/docs-site-gen/Cargo.lock
 _site/

@@ -1,14 +1,11 @@
 {
-  "ff_rev": "cf5edb9b8f1bf2a63d51dcf50a8d2806e2d8f9f9",
+  "ff_rev": "b3e31ef663a98b6080feb98c84ade238d1074a08",
   "files": {
-    ".github/workflows/pages.yml": "3b2a8468098b0ead8c2073dc54d4e1ad9f190f2565a2c4c775b1b3afce91e18a",
-    "tools/docs-site-gen/Cargo.toml": "2b2c944f251d4e39dee1cbf857bf1e2e2f3251702dcaebad1cb726eeaaaafef3",
-    "tools/docs-site-gen/FF_REV": "fa914b578b0dddfc6dc7665d72bb073efe3bf678e053774bf569abe0251cea52",
-    "tools/docs-site-gen/_common.py": "1ca904203dd54d3f285b9bd1140ca9fe9b40272e54710ac189fae9fdf601cc0c",
-    "tools/docs-site-gen/build-local.sh": "715c8e8612b53107affc839c1e751894872844300b7235d1cc271bca893edc8e",
-    "tools/docs-site-gen/check_site.py": "1601f09dc3631e2d59cebcccaa76e1befa279a0da2a9d989602d53d33680b98c",
-    "tools/docs-site-gen/rebrand_site.py": "566e228bc70713eadf745d2fc7eab6437ccd294567236c6a7644dccb91380002",
-    "tools/docs-site-gen/src/main.rs": "c27948f7ba8c7a3db8afd2803fd72da2070b16a4388f3bbdef1f55d74e83b947"
+    ".github/workflows/pages.yml": "8df07e7b8b9c5a67bf35109ace5c23ddc2368c7458a53dc658cdcff71d811a46",
+    "tools/docs-site-gen/FF_REV": "bd029c1eff65937d5a9d94f8fb4eba4fd05fc5c1bc5f92fdb516f535213f8cd5",
+    "tools/docs-site-gen/_common.py": "49fdb363b1fc8dafc1d203c480873ad3a4147f348e02c45a99d3cd680425ff3d",
+    "tools/docs-site-gen/build-local.sh": "0e17f99c27b24b543a54a3e27098c2e465005af63f87cf2862086dfb1eabfa99",
+    "tools/docs-site-gen/check_site.py": "1dd56e84d52961e06b756fd99ef6cb0df63fb45be870be7a024978e7cd8a35f9"
   },
   "version": 1
 }
