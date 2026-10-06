@@ -88,6 +88,13 @@ test('build-local.sh は固定 URL・固定 rev・--locked の匿名 cargo insta
   assert.doesNotMatch(code, /templates\/docs-site-gen|Cargo\.toml|main\.rs/, 'wrapper を参照している')
 })
 
+test('build-local.sh の docs-site 実行行はすべて --no-page-sections を持つ（予約パス検査の代わりにショーケース混入を防ぐ）', () => {
+  const sh = read('scripts/build-local.sh')
+  const calls = sh.split('\n').filter((l) => /^\s*"\$\{INSTALL_ROOT\}\/bin\/docs-site"\s/.test(l))
+  assert.equal(calls.length, 1, `docs-site の実行行が 1 行でない: ${calls.length}`)
+  for (const l of calls) assert.ok(/\s--no-page-sections(\s|$)/.test(l), `--no-page-sections の無い実行行: ${l}`)
+})
+
 test('build-local.sh のライセンス取得は固定 URL・https 限定・リダイレクト非追従・時間とサイズ上限付き', () => {
   const sh = read('scripts/build-local.sh')
   const code = sh.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
@@ -205,8 +212,23 @@ test('pages.yml の必須設定（runner-label・permissions・concurrency・art
 test('scaffold.py が配置するテンプレート・スクリプトがすべて実在する', () => {
   const py = read('scripts/scaffold.py')
   const srcs = [...py.matchAll(/^\s*\("((?:templates|scripts)\/[^"]+)",/gm)].map((m) => m[1])
-  assert.ok(srcs.length >= 10)
+  // 配置物は 8 件。wrapper（Cargo.toml・src/main.rs）・brand.toml・置換スクリプトは配置しない（旧構成の削除候補として案内するだけ）
+  assert.deepEqual(srcs.sort(), [
+    'scripts/_common.py',
+    'scripts/build-local.sh',
+    'scripts/check_site.py',
+    'templates/docs-site-gen/FF_REV',
+    'templates/index.md',
+    'templates/nav.toml',
+    'templates/pages.yml',
+    'templates/rust-toolchain.toml',
+  ])
   for (const s of srcs) assert.doesNotThrow(() => statSync(join(SKILL_DIR, s)), `${s} が存在しない`)
+  for (const gone of ['templates/brand.toml', 'templates/docs-site-gen/Cargo.toml', 'templates/docs-site-gen/src/main.rs']) {
+    assert.throws(() => statSync(join(SKILL_DIR, gone)), `${gone} は削除済みのはず`)
+  }
+  const filesBlock = py.slice(py.indexOf('FILES = ['), py.indexOf('\n]\n', py.indexOf('FILES = [')))
+  assert.doesNotMatch(filesBlock, /Cargo\.toml|main\.rs|brand\.toml/)
 })
 
 test('SKILL.md の frontmatter（name・model・user-invocable・description 長）', () => {
@@ -224,7 +246,7 @@ test('SKILL.md の frontmatter（name・model・user-invocable・description 長
 test('SKILL.md は新規構築と更新の両方を案内し、更新の発火語・モード判定・非破壊の方針を含む', () => {
   const md = read('SKILL.md')
   const desc = md.match(/^description:\s*(.+)$/m)[1]
-  for (const w of ['Rust 製 SSG', 'Markdown 管理', 'Actions 自動デプロイ', 'ブランド置換', 'Pages サイトを更新して', 'デザインを最新にして', 'GitHub Pages で公開したい', 'docs サイト作って', 'fandhe-frontend と同じデザイン', 'setup-firebase-hosting', 'create-html-report']) {
+  for (const w of ['Rust 製 SSG', 'Markdown 管理', 'Actions 自動デプロイ', 'ブランド設定', 'Pages サイトを更新して', 'デザインを最新にして', 'GitHub Pages で公開したい', 'docs サイト作って', 'fandhe-frontend と同じデザイン', 'setup-firebase-hosting', 'create-html-report']) {
     assert.ok(desc.includes(w), `description に発火語「${w}」が無い`)
   }
   assert.ok(!/\s#/.test(desc) && !desc.includes(': '), 'description に YAML の落とし穴（` #`・`: `）がある')
@@ -251,10 +273,15 @@ test('build-local.sh は python3 を常に隔離モード（-I -B）で起動す
   const sh = read('scripts/build-local.sh')
   const code = sh.split('\n').filter((l) => !/^\s*#/.test(l))
   const py = code.filter((l) => /python3\s/.test(l))
-  assert.ok(py.length >= 5, `python3 の呼び出しが 5 箇所に満たない: ${py.length}`)
+  // canon・canon_leaf・check_site.py・tomllib 検査の 4 か所（rebrand の 2 か所は #50 で無くなった）
+  assert.ok(py.length >= 4, `python3 の呼び出しが 4 箇所に満たない: ${py.length}`)
   for (const l of py) assert.match(l, /python3 -I -B /, `-I -B が無い: ${l.trim()}`)
+  // ブランド設定は nav.toml の [site] へ移った。後処理置換と brand.toml はビルドで使わない（rebrand_site.py は #51 で削除済み）
+  const joined = code.join('\n')
+  assert.doesNotMatch(joined, /rebrand_site\.py/)
+  assert.doesNotMatch(joined, /brand\.toml/)
   // 起動スクリプトのディレクトリを自分で sys.path の末尾へ足す（先頭ではない）。標準モジュール名の影を避ける
-  for (const f of ['check_site.py', 'rebrand_site.py', 'scaffold.py']) {
+  for (const f of ['check_site.py', 'scaffold.py']) {
     const src = read(`scripts/${f}`)
     assert.match(src, /sys\.path\.append\(/)
     assert.doesNotMatch(src, /sys\.path\.insert\(0/)

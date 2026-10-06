@@ -18,19 +18,20 @@ TOML が壊れる・注入される）ため、値は `scaffold.py` が検証・
 | `--show-diff` | 競合した所有ファイルとスキルの新版の差分を表示して終了（書き込みなし） |
 | `--update` | 競合した所有ファイルを強制的に上書きする（利用者の了承後のみ。効かない種別は後述） |
 | `--owner` `--repo` `--branch` `--title` | 新規構築で必須。更新では省略できる（`--branch` は更新でも Step 1 の値を渡す） |
-| `--brand` `--tagline` `--copyright` `--lang` `--version-badge` `--favicon-letter` `--favicon-color` `--year` | 新規構築の任意入力（既定あり） |
+| `--tagline` | 新規構築で必須（`[site].tagline`。空にできない・既定値を補わない） |
+| `--brand` `--copyright` `--lang` `--version-badge` `--favicon-letter` `--favicon-color` `--year` | 新規構築の任意入力（既定あり。`nav.toml` の `[site]` へ書かれる） |
 
 ## 分類
 
-全配置先を先に分類してから書く（途中失敗による部分書き込みなし）。各ファイルの書き込みも原子的で、同じディレクトリに一時ファイル（`.<名前>.<乱数>.sgp-tmp`。拡張子で終わらないため cargo・GitHub Actions・python は拾わない）へ全バイトを書き、fsync してから `os.replace` で置き換える。途中で失敗（空き容量不足・I/O エラー・シグナル）した場合、既存のファイルは元の内容のまま、新規のファイルは作られず、一時ファイルは消される（`.gitignore` の追記・マニフェスト・`rebrand_site.py` の dist も同じ）。権限は、既存ファイルは引き継ぎ、新規は umask に従い、`build-local.sh` は実行ビットを足す。完了したファイルは生成予定と完全に一致するため、再実行では一致（`same`）、未着手の更新は自動更新、未作成は新規作成になり、フラグを足さずに収束する。プロセスが強制終了（SIGKILL・電源断）されると一時ファイルが残り得る。内容を確認して削除してよい（`tools/docs-site-gen/` に残ったまま新規構築を再実行すると、スキルが配置しないファイルとして検出される）
+全配置先を先に分類してから書く（途中失敗による部分書き込みなし）。各ファイルの書き込みも原子的で、同じディレクトリに一時ファイル（`.<名前>.<乱数>.sgp-tmp`。拡張子で終わらないため cargo・GitHub Actions・python は拾わない）へ全バイトを書き、fsync してから `os.replace` で置き換える。途中で失敗（空き容量不足・I/O エラー・シグナル）した場合、既存のファイルは元の内容のまま、新規のファイルは作られず、一時ファイルは消される（`.gitignore` の追記・マニフェストも同じ）。権限は、既存ファイルは引き継ぎ、新規は umask に従い、`build-local.sh` は実行ビットを足す。完了したファイルは生成予定と完全に一致するため、再実行では一致（`same`）、未着手の更新は自動更新、未作成は新規作成になり、フラグを足さずに収束する。プロセスが強制終了（SIGKILL・電源断）されると一時ファイルが残り得る。内容を確認して削除してよい（`tools/docs-site-gen/` に残ったまま新規構築を再実行すると、スキルが配置しないファイルとして検出される）
 
 | 種別 | 対象 | 状態 | 扱い |
 |------|------|------|------|
-| スキル所有 | `tools/docs-site-gen/{Cargo.toml,src/main.rs,FF_REV,build-local.sh,rebrand_site.py,check_site.py,_common.py}`、`.github/workflows/pages.yml` | 存在しない | 作成 |
+| スキル所有 | `tools/docs-site-gen/{FF_REV,build-local.sh,check_site.py,_common.py}`、`.github/workflows/pages.yml` | 存在しない | 作成 |
 | | | 生成予定と一致 | 変更なし（冪等） |
 | | | 不一致で、ハッシュがマニフェストと一致（配置後に未編集） | **自動で更新**（`--update` 不要） |
 | | | 不一致で、編集あり／マニフェストなし | **競合**。何も書かず exit 3 |
-| 利用者編集 | `tools/docs-site-gen/brand.toml`、`site/{nav.toml,index.md}`、`rust-toolchain.toml` | 既存 | **保持**。書き換えない |
+| 利用者編集 | `site/{nav.toml,index.md}`、`rust-toolchain.toml` | 既存 | **保持**。書き換えない |
 | | | 欠落（更新モード） | **再作成しない**。`欠落` として報告（必要かどうかは配置後の検証が判定する）。再作成は 4 つの引数が揃っているときだけ |
 
 ### `kind=unrelated`（`mode=foreign`）の通常実行
@@ -100,8 +101,8 @@ TOML が壊れる・注入される）ため、値は `scaffold.py` が検証・
 
 人間向け出力は `モード` / `FF_REV: 旧 → 新` / `作成` / `更新`（理由付き）/ `一致（変更なし）` / `保持（利用者編集）` /
 `欠落` / `追記した .gitignore 行` / `マニフェスト`（無くて再作成した場合はその旨）/ `削除候補`（あれば）で、最後に
-配置後の検証（`check_site.py` 相当）を実行する。保持した利用者ファイルの内容（brand.toml の値・nav.toml の予約パス等）も
-ここで検査され、`brand.toml` にテンプレートの新しい必須キーが不足していれば、不足キーと追記例を案内して exit 4 になる
+配置後の検証（`check_site.py` 相当）を実行する。保持した利用者ファイルの内容（nav.toml の `[site]` の値等）も
+ここで検査され、`nav.toml` の `[site]` に必須キーが不足していれば、不足キーと追記例を案内して exit 4 になる
 （利用者ファイルは書き換えない）。対象リポジトリ由来の文字列（パス・検証エラーの断片等）は、制御文字・bidi 文字・
 不可視文字（ゼロ幅・Unicode タグ文字等）を `\uXXXX` へ無害化し、長さを制限して出力する。
 
@@ -113,7 +114,9 @@ TOML が壊れる・注入される）ため、値は `scaffold.py` が検証・
 | `ff_rev` | `old` / `new` / `changed` |
 | `created` / `updated` / `same` / `kept` / `missing` | 作成・更新（`path` と `reason`）・一致・保持・欠落 |
 | `conflicts` | `path` / `kind` / `reason` |
-| `deprecated` | 削除候補（`path` と `edited`） |
+| `deprecated` | 削除候補（`path` と `edited`。`brand.toml` のみ `note` を持つ）。`--detect --json` も、`mode=update` のときに同じキーで返す |
+| `site_migration` | 更新モードで旧 `tools/docs-site-gen/brand.toml` があるときの `[site]` 移行案（無ければ `null`）。`status` は `proposal`（案あり）/ `needs_input`（旧 tagline が空。案の tagline 行は `__SGP_TAGLINE__` の目印で、貼っても check_site が止める）/ `invalid`（旧値が検証を通らない。`problems` にキー名と理由だけ。値は載せない）/ `unreadable`（symlink・64 KiB 超・構文違反等で読めない）/ `migrated`（`nav.toml` が既に必須キーを満たす）。`entries`（`key`・`from`・`state` = add / same / differs / needs_input / invalid・`value`）・`needs_input`・`block`（追加すべきキーだけの文面）・`applied`（**常に false**。scaffold は反映しない） |
+| `legacy_artifacts` | 旧構成の生成物（`_ff`・`tools/docs-site-gen/Cargo.lock`・`tools/docs-site-gen/target`）の案内（`path`・`note`・`symlink`）。スキル所有ではないので `deprecated` には含めず、自動では削除しない。`target` は新構成でも `target/docs-site-install` を使うため丸ごとは消さない。直下が `docs-site-install` だけなら案内しない |
 | `gitignore_added` | 追記した `.gitignore` の行 |
 | `manifest_written` / `manifest_recreated` | マニフェストを書いたか／無くて再作成したか（旧版からの移行） |
 | `warnings` | 警告（マニフェストの無視・`--branch` の食い違い・想定外ファイル・引き継がなかった paths など） |
@@ -136,4 +139,4 @@ TOML が壊れる・注入される）ため、値は `scaffold.py` が検証・
 | 0 | 成功（配置後の check_site も通過） |
 | 2 | 入力不正、書き込み先が不適（symlink・親が `--target` の外へ解決・`.git` 配下（大文字小文字違いを含む）・配置先の親パスの途中が通常ファイル・`.gitignore` が通常ファイルでない／UTF-8 でない等）、または適用対象外（上流リポジトリ自身）。書き込み前の検査で止まった場合は 1 件も書かれていない。書き込みの途中の OS エラー（権限・空き容量等）も exit 2 で、失敗したファイルは未変更か未作成のまま、それ以前に書けた分は `created` / `updated` に残る（再実行は冪等） |
 | 3 | 競合（スキル所有ファイルが生成予定と違い、配置後に編集されている、またはマニフェストがない） |
-| 4 | 配置・更新は完了したが check_site が失敗（`brand.toml` の不足キー、`nav.toml` の予約パス、`nav.toml`・`brand.toml` の欠落など、利用者編集ファイルの不備） |
+| 4 | 配置・更新は完了したが check_site が失敗（`nav.toml` の `[site]` の不足キー・不正な値、予約アセット名、`nav.toml` の欠落など、利用者編集ファイルの不備） |
