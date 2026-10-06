@@ -1,4 +1,4 @@
-// rebrand.test.mjs — python 製スクリプト（rebrand_site.py / check_site.py / scaffold.py）の
+// rebrand.test.mjs — python 製スクリプト（check_site.py / scaffold.py など）の
 // 回帰テスト（test_rebrand.py）を `node --test` の入口から実行するブリッジ。
 //
 // Python のテストを別コマンドにすると CI・ローカルで片方が実行されず退行を見逃すため、
@@ -17,7 +17,7 @@ test('python3 が利用できる', () => {
   assert.equal(r.status, 0, 'python3 が必要（setup-github-pages の前提条件）')
 })
 
-test('test_rebrand.py（rebrand・check_site・scaffold の unittest）が全件成功する', () => {
+test('test_rebrand.py（check_site・scaffold・verify_attribution などの unittest）が全件成功する', () => {
   const r = spawnSync('python3', [join(TESTS_DIR, 'test_rebrand.py')], { encoding: 'utf8' })
   assert.equal(r.status, 0, `unittest 失敗\n${r.stdout}\n${r.stderr}`)
   assert.match(r.stderr, /\nOK\n?$/, 'unittest が OK で終了していない')

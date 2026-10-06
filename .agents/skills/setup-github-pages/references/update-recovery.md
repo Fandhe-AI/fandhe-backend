@@ -8,7 +8,7 @@
 
 ## いつ復旧するか
 
-- 復旧するのは**決定的な失敗**だけ（`rebrand_site.py` の「一致数が 0」、`verify` の失敗など。上流のデザイン更新で HTML 構造が変わり、後処理の置換対象が合わなくなったことの検知）。対象リポジトリ側の後処理は書き換えず、スキル側の修正が必要であることを利用者に報告する
+- 復旧するのは**決定的な失敗**だけ（`verify_attribution` の帰属表記の欠落、`verify` の失敗など。上流のデザイン更新で HTML 構造が変わり、帰属表記が見つからなくなったことの検知）。対象リポジトリ側のスクリプトを手で直さず、スキル側の修正が必要であることを利用者に報告する
 - ネットワーク断や cargo の一時障害は復旧せず、まず**再試行**する
 
 ## 仕組み: 書き込み直後のスナップショットとの比較
@@ -24,9 +24,9 @@
 | 取り消し | 記録と一致するパスだけを戻す | `restore "${SNAP}"` |
 
 - `${SNAP}` は `mktemp` で作る**作業ツリーの外**のファイル（リポジトリの中・symlink は拒否される）。値は控える（別シェルでは渡し直す）
-- `THIRD-PARTY-LICENSES` は `build-local.sh --write-third-party` が**ビルドの前段**（`check_site`・docs-site のインストール・生成・rebrand より前）で書く。後段が決定的に失敗しても書き換わっているので、ビルドの成否にかかわらず直後に記録する
+- `THIRD-PARTY-LICENSES` は `build-local.sh --write-third-party` が**ビルドの前段**（`check_site`・docs-site のインストール・生成・verify より前）で書く。後段が決定的に失敗しても書き換わっているので、ビルドの成否にかかわらず直後に記録する
 - **TAINT（基準を信頼できない印）**: 同じパスに 2 回目の記録が来ると、その間に利用者が触った内容が基準へ取り込まれ得る（例: exit 3 → 利用者が `pages.yml` の区間へ追記 → `--update` で再実行 → 追記込みの内容が基準になる）。そこで scaffold・ビルドの直前に `guard` を呼び、現在の内容が HEAD とも前回の記録とも違うパスに印を付ける。印の付いたパスは、以後ずっと自動では戻さない（`ASK`）。記録の直前に作業ツリーの内容が HEAD か前回の記録と一致していれば、利用者が触っていないと判定できる
-- **許可リスト**: 記録・復元・削除してよいのは、所有ファイル・マニフェスト・`.gitignore`・`THIRD-PARTY-LICENSES` だけ。一覧は `scaffold.py --list-paths` が唯一の定義元（スクリプトはそれを呼ぶ）。利用者編集ファイル（`brand.toml`・`nav.toml`・`index.md`・`rust-toolchain.toml`）は `created`（`missing` の再作成）に含まれても記録しないので、自動では削除せず、利用者に確認する
+- **許可リスト**: 記録・復元・削除してよいのは、所有ファイル・マニフェスト・`.gitignore`・`THIRD-PARTY-LICENSES` だけ。一覧は `scaffold.py --list-paths` が唯一の定義元（スクリプトはそれを呼ぶ）。利用者編集ファイル（`nav.toml`・`index.md`・`rust-toolchain.toml`）は `created`（`missing` の再作成）に含まれても記録しないので、自動では削除せず、利用者に確認する
 - **ハッシュ（2 種類。取り違えない）**: 記録と「前回の記録との比較」は `git hash-object --no-filters`（生バイト）。選んだ理由: macOS と Linux で同じ結果になる（`sha256sum` と `shasum` の違いに依存しない）、`core.autocrlf`・属性のフィルタを通さないので設定で結果が変わらない、ファイルを書き込まない。一方、**「HEAD と同じか」の比較だけ**は、HEAD の blob が改行変換後の表現なので、作業ツリーも同じ表現にそろえる: filter 属性が指定されていない（`attr_filter` で確認）パスに限り、改行変換つきの `git hash-object`（`--no-filters` なし。内部の改行変換だけが適用される）を使う。生バイトのまま HEAD の blob と比べると、`core.autocrlf` や `.gitattributes` の `text` / `eol` が有効な環境（作業ツリーが CRLF、HEAD が LF）で、未編集の追跡ファイルまで「HEAD と違う」と誤判定して TAINT になる（実際の git で、`core.autocrlf=true` と `* text=auto eol=crlf` のどちらでも、未編集は一致・1 文字編集は不一致になることを確認済み）。filter 属性つきのパスでは、clean フィルタという外部コマンドを起動しないよう変換つきハッシュを呼ばず、TAINT / `ASK` にする。どちらのハッシュも `file_state` の中（祖先の検証の後）にだけ置く。symlink は辿らず（`-L` を先に判定）、通常ファイル以外はハッシュしない
 - **パス**: ルートからの相対パスに限り、`..`・絶対パス・末尾の `/`・`.git`（大文字小文字を区別しない）配下・先頭の `-` などを拒否する。すべてクォートして `--` の後に渡す
 - **ファイルに触れる入口は 1 つ（`file_state`）**: パスの中身・種別を見る処理（`-L`・`-e`・`-f`・`git hash-object`）は `file_state` の中だけに置き、その最初に祖先の検証（祖先ディレクトリが symlink・ファイルでない、実体がルートの下）を行う。不適なら、ファイルを開かず stat もせずに `ANCESTOR` を返し、`guard` では TAINT、`status` では `ancestor`、`restore` では `ASK` として扱う（記録後に親ディレクトリがリポジトリ外への symlink に差し替わっても、リンク先を読まない）。`rm`・`git restore` は、`file_state` が記録と一致したパスにだけ、`cmd_restore` の中で行う。この構造は `UpdateSnapshotEntrypointTest` がソースの検査で固定している（`hash-object` を呼ぶのは `file_state` の中だけ、など）
@@ -82,7 +82,9 @@ git diff --no-ext-diff --no-textconv --no-color HEAD -- <path> | head -200 | cat
 git -c core.fsmonitor=false -c core.hooksPath=/dev/null switch "${START_BRANCH}" && git branch -D "${NAME}"     # U0 で控えた値
 ```
 
-復旧後、利用者が U0 以降に手で行った変更（exit 3 の統合、exit 4 の `brand.toml` 追記、新規ファイル）と、`ASK` で残したファイルは、作業ツリーに残り、元のブランチへ持ち越される。その旨を利用者に伝える。
+復旧後、利用者が U0 以降に手で行った変更（exit 3 の統合、exit 4 の `nav.toml` の `[site]` への追記、新規ファイル）と、`ASK` で残したファイルは、作業ツリーに残り、元のブランチへ持ち越される。その旨を利用者に伝える。
+
+廃止された旧構成のファイル（旧 `brand.toml`・`Cargo.toml`・`src/main.rs` など）は、`scaffold.py --list-paths` の許可リストに含めない。scaffold はそれらを書かない・消さないので、`record-json` に載らず取り消しの対象にならない。許可リストへ加えると `restore` の `rm` や `git restore` が利用者編集の `brand.toml` に届く経路ができるためである。利用者が移行の一環で廃止ファイルを手で消した後に更新を取り消したい場合は、利用者自身が `git restore --source=HEAD --worktree -- <path>` で戻す。スキルは自動では戻さない。
 
 ## なぜ `scaffold.py --show-diff` の `same` を判定に使わないか
 

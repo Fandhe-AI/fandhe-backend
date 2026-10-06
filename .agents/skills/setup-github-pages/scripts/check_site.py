@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
-"""docs サイトの生成前検証（nav.toml・brand.toml・site/assets・Markdown の事前チェック）。
+"""docs サイトの生成前検証（nav.toml・site/assets・Markdown の事前チェック）。
 
 # 役割・境界
 
 `build-local.sh`（ローカルと CI 共通）の最初の工程として呼ばれ、生成器（fandhe-frontend
-docs-site）に渡す前に「生成器は通すが公開物として壊れる / 他サイトのショーケースが混入する」
+docs-site）に渡す前に「生成器は通すが公開物として壊れる」
 入力を止める。生成器自身の検査（リンク検査・nav スキーマ検査）と重複させず、生成器が
-検知できない次の 5 点を担う。
+検知できない次の 3 点を担う（`[site]` のブランド値の検証は上流の規則と揃えた `_common.check_site_values`）。
 
-1. 予約パス: nav の path が `/themes/` `/primitives/` `/blocks/` `/wireframes/` で始まると、
-   registry を空にしていても fandhe-frontend のショーケースが混入する（実測）。全面禁止。
-2. base_path と公開 URL の整合: GitHub Pages のプロジェクトサイトは `/<repo>/` 配下で配信される。
-   nav.toml の base_path が brand.toml の repository から導出した値と一致しないと、全アセットと
-   内部リンクが 404 になる。
-3. 予約アセット名: `site/assets/` に生成物と同名のファイルがあると生成器がビルドエラーにする。
+1. `[site]` のブランド値と base_path: 必須 6 キーの欠落（未指定だと上流の既定表示が公開される）と
+   上流が拒否する値を止める。GitHub Pages のプロジェクトサイトは `/<repo>/` 配下で配信されるため、
+   base_path が repository_url から導出した値と一致しないと、全アセットと内部リンクが 404 になる。
+2. 予約アセット名: `site/assets/` に生成物と同名のファイルがあると生成器がビルドエラーにする。
    エラー文が分かりにくいため事前に具体名で報告する。
-4. 未置換プレースホルダー（`__SGP_*__`）の残存。
-5. nav の title に上流名 `fandhe-frontend` が含まれる（rebrand 後の残存検査と衝突）。
+3. 未置換プレースホルダー（`__SGP_*__`）の残存。
+
+nav の path が `/themes/` 等の上流ショーケースの接頭辞で始まっても検査しない。`build-local.sh` は
+常に `--no-page-sections` を付けて生成し、上流がその指定でショーケースの注入を止めるため。
+このフラグを外す変更をする場合は、予約パス検査の復活が要る（`tests/rev-pin.test.mjs` が欠落を検出する）。
+
+加えて、`[site]` の必須キーが無く旧 brand.toml が残る場合は、更新モードの移行案への案内をエラー文に足す（存在だけを見る）。
 
 警告のみ（終了コードに影響しない）: Markdown の画像記法（上流は画像非対応）、base_path を
 含まない絶対パスリンク、THIRD-PARTY-LICENSES の欠落。
@@ -36,12 +39,9 @@ from pathlib import Path
 # 同じディレクトリに標準モジュール名のファイル（argparse.py 等）があっても標準ライブラリを先に解決させる。
 sys.path.append(str(Path(__file__).resolve().parent))
 from _common import (  # noqa: E402
-    PLACEHOLDER_RE, UPSTREAM_BRAND, BrandError, SubsetError, has_upstream_word, load_brand, parse_nav,
+    PLACEHOLDER_RE, SITE_REQUIRED_KEYS, SubsetError, check_site_values, parse_nav, parse_repository_url, pages_base_path,
     read_bounded_text, resolves_inside, sanitize,
 )
-
-# 上流のショーケース生成パス。nav の path がここから始まると部品ページ等が混入する。
-RESERVED_PATH_PREFIXES = ("/themes/", "/primitives/", "/blocks/", "/wireframes/")
 
 # build.rs の RESERVED_ASSET_NAMES と同一（FF_REV 更新時に再確認する。SKILL.md 参照）。
 RESERVED_ASSET_NAMES = {
@@ -53,13 +53,12 @@ RESERVED_ASSET_NAMES = {
 }
 RESERVED_ASSET_DIRS = {"search-index"}
 
-# 入力（nav.toml・Markdown・brand.toml）は信頼しない。`[^\]]*` のような上限なしの繰り返しは、細工した入力で
+# 入力（nav.toml・Markdown）は信頼しない。`[^\]]*` のような上限なしの繰り返しは、細工した入力で
 # 最悪 O(n²) になるため長さを制限する。ファイル自体も読み取りサイズに上限を付ける。
 _IMAGE_RE = re.compile(r"!\[[^\]\n]{0,300}\]\([^)\n]{0,500}\)")
 _ABS_LINK_RE = re.compile(r"(?<!!)\[[^\]\n]{0,300}\]\((/[^)\s]{0,500})\)")
 _INLINE_CODE_RE = re.compile(r"`[^`\n]{0,300}`")
 NAV_MAX_BYTES = 1024 * 1024
-BRAND_MAX_BYTES = 64 * 1024
 MD_MAX_BYTES = 1024 * 1024
 WORKFLOW_MAX_BYTES = 256 * 1024
 
@@ -91,7 +90,7 @@ def _read_in_root(root_real: Path, path: Path, cap: int) -> str:
         raise ValueError(f"{rel} を読めない: {e if isinstance(e, ValueError) and not isinstance(e, UnicodeDecodeError) else type(e).__name__}") from e
 
 
-def check(root: Path, brand_path: Path) -> tuple[list[str], list[str]]:
+def check(root: Path) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -100,47 +99,38 @@ def check(root: Path, brand_path: Path) -> tuple[list[str], list[str]]:
         tables = parse_nav(_read_in_root(root, nav_path, NAV_MAX_BYTES))
     except (SubsetError, ValueError) as e:
         raise ValueError(f"site/nav.toml を読めない: {e}") from e
-    if brand_path.is_symlink():
-        raise ValueError("brand.toml がシンボリックリンクのため読まない（通常ファイルにする）")
-    if not resolves_inside(root, brand_path):
-        raise ValueError("brand.toml が対象リポジトリの外（または .git 配下）へ解決される。読まない")
-    try:
-        brand = load_brand(brand_path)
-    except BrandError as e:
-        raise ValueError(str(e)) from e
 
-    # 1. base_path の整合
-    site = [t for t in tables if t.header == "site"]
-    base = site[0].values.get("base_path", "") if site else ""
-    if base != brand.base_path:
+    # 1. [site] の検証と base_path の整合。上流は [site] の再掲を同じ文脈として積むため全テーブルを合算し、
+    # 同名キーの重複は上流と同じく拒否する。brand.toml はビルドで読まれないため内容は読まない（[site] の必須キー欠落時に限り、存在だけを見て移行の案内を足す）。
+    values: dict[str, str] = {}
+    for t in tables:
+        if t.header != "site":
+            continue
+        for k, v in t.values.items():
+            if k in values:
+                errors.append(f"site/nav.toml line {t.line}: [site] のキー `{sanitize(k, 60)}` が重複している")
+            values[k] = v
+    errors.extend(f"site/nav.toml {p}" for p in check_site_values(values))
+    # 旧構成の brand.toml が残り、[site] の必須キーが無い = 旧構成から未移行。存在だけを見て内容は読まず、symlink も辿らない
+    legacy_brand = root / "tools" / "docs-site-gen" / "brand.toml"
+    if any(k not in values for k in SITE_REQUIRED_KEYS) and resolves_inside(root, legacy_brand.parent) \
+            and os.path.lexists(legacy_brand):
         errors.append(
-            f"site/nav.toml の base_path が `{base}`。repository（{brand.repository}）から導出した"
-            f"公開パスは `{brand.base_path}`（User/Org サイトは空、プロジェクトサイトは /<repo>）"
+            "旧構成の tools/docs-site-gen/brand.toml が残っている（ビルドでは読まれない）。setup-github-pages の更新モード"
+            "（scaffold.py）を実行すると、brand.toml から [site] への移行案が出る。案を確認して nav.toml の [site] へ"
+            "キー単位で追記する")
+    base = values.get("base_path", "")
+    parsed = parse_repository_url(values["repository_url"]) if "repository_url" in values else None
+    if parsed is not None and base != pages_base_path(*parsed):
+        errors.append(
+            f"site/nav.toml の base_path が `{base}`。repository_url（{values['repository_url']}）から導出した"
+            f"公開パスは `{pages_base_path(*parsed)}`（User/Org サイトは空、プロジェクトサイトは /<repo>）"
         )
 
-    # 2. 予約パス（page.path / section.index_path / menu.index_path）
-    sources: list[str] = []
-    for t in tables:
-        for key in ("path", "index_path"):
-            p = t.values.get(key)
-            if p is not None and p.startswith(RESERVED_PATH_PREFIXES):
-                errors.append(
-                    f"site/nav.toml line {t.line}: {key} `{p}` は予約パス"
-                    "（/themes/ /primitives/ /blocks/ /wireframes/ は上流のショーケースと衝突する）"
-                )
-        s = t.values.get("source")
-        if s is not None:
-            sources.append(s)
-        title = t.values.get("title")
-        if title is not None and has_upstream_word(title):
-            # title はヘッダー・サイドバー・フッター・<title> に出る。rebrand 後の残存検査
-            # （帰属表記以外に上流名が残らないこと）と衝突し、ビルド最終段で原因不明に失敗するため先に拒否する。
-            errors.append(
-                f"site/nav.toml line {t.line}: title `{title}` に上流名 `{UPSTREAM_BRAND}` を独立した語として含められない"
-                "（生成後の残存検査と区別できない。`fandhe-frontend-docs` のような別の語の一部は可）"
-            )
+    # nav が参照する Markdown（プレースホルダー検査と警告の対象）
+    sources = [t.values["source"] for t in tables if "source" in t.values]
 
-    # 3. 予約アセット名
+    # 2. 予約アセット名
     assets = root / "site" / "assets"
     if resolves_inside(root, assets) and assets.is_dir():   # 実体の検証が先（is_dir は親 symlink を辿って外を見る）
         for child in sorted(assets.iterdir()):
@@ -149,8 +139,8 @@ def check(root: Path, brand_path: Path) -> tuple[list[str], list[str]]:
             elif child.name in RESERVED_ASSET_NAMES:
                 errors.append(f"site/assets/{child.name} は予約アセット名（生成物と衝突しビルドエラーになる）")
 
-    # 4. プレースホルダー残存（nav・brand・nav が参照する Markdown・workflow）
-    scan = [nav_path, brand_path, root / ".github" / "workflows" / "pages.yml"]
+    # 3. プレースホルダー残存（nav・nav が参照する Markdown・workflow）
+    scan = [nav_path, root / ".github" / "workflows" / "pages.yml"]
     scan += [root / s for s in sources if not Path(s).is_absolute() and ".." not in Path(s).parts]
     for f in scan:
         # 実体の検証が先。root 外へ解決されるものは（存在の有無にかかわらず）読まずにエラーにする
@@ -189,13 +179,10 @@ def check(root: Path, brand_path: Path) -> tuple[list[str], list[str]]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--root", type=Path, default=Path("."), help="対象リポジトリのルート")
-    ap.add_argument("--brand", type=Path, default=None,
-                    help="brand.toml のパス（既定 <root>/tools/docs-site-gen/brand.toml）")
     args = ap.parse_args(argv)
     root = args.root.resolve()
-    brand_path = args.brand or root / "tools" / "docs-site-gen" / "brand.toml"
     try:
-        errors, warnings = check(root, brand_path)
+        errors, warnings = check(root)
     except ValueError as e:
         print(f"エラー: {sanitize(e, 500)}", file=sys.stderr)
         return 2

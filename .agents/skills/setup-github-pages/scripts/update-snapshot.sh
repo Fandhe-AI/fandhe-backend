@@ -18,7 +18,9 @@
 #
 # # 触ってよい対象（許可リスト）
 # 所有ファイル（scaffold.py が唯一の定義元。`scaffold.py --list-paths`）・マニフェスト・.gitignore・
-# THIRD-PARTY-LICENSES に限る。利用者編集ファイル（brand.toml 等）は記録も復元も削除もしない。
+# THIRD-PARTY-LICENSES に限る。利用者編集ファイル（nav.toml 等）と、廃止された旧構成のファイル（旧 brand.toml・
+# Cargo.toml・src/main.rs・_ff/・Cargo.lock・target/）は許可リストの外で、記録も復元も削除もしない（scaffold は廃止ファイルを
+# 書かない・消さないため、取り消しの対象にならない）。
 #
 # # ハッシュと git
 # 記録と「前回の記録との比較」のハッシュは `git hash-object --no-filters`（macOS・Linux で同じ。autocrlf・属性のフィルタを

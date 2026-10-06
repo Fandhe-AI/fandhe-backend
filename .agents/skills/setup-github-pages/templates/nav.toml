@@ -1,10 +1,25 @@
 # docs サイトのナビゲーション定義。書式は references/site-format.md を参照。
 # 使える TOML は `key = "文字列"` のみ（配列・整数・bool・inline table は不可）。
-# path が /themes/ /primitives/ /blocks/ /wireframes/ で始まるページは作れない（予約）。
+# path は / 始まり・/ 終わり。予約アセット名などの制約は references/site-format.md を参照。
 
 [site]
 title = "__SGP_SITE_TITLE__"
 base_path = "__SGP_BASE_PATH__"
+# ブランド表示（ヘッダー・フッター・favicon・<html lang>）。必須 6 キー（brand・repository_url・tagline・
+# copyright・version_badge・brand_mark）は未指定だと上流の既定表示が公開されるためビルドが止まる。
+# 許容値の正は上流ガイド docs/guides/docs-site-external-repos.md（references/site-format.md から辿れる）。
+brand = "__SGP_BRAND__"
+# GitHub リンク先。https://github.com/<owner>/<repo> のみ。base_path もここから導出した値と一致させる
+repository_url = "__SGP_REPOSITORY__"
+# フッターのタグライン。空にできない
+tagline = "__SGP_TAGLINE__"
+copyright = "__SGP_COPYRIGHT__"
+# ブランド横の badge。空文字で非表示
+version_badge = "__SGP_VERSION_BADGE__"
+lang = "__SGP_LANG__"
+# ヘッダー・favicon のマーク（英数字 1 文字 + #RRGGBB。白文字を載せるため暗めの色を選ぶ）
+brand_mark = "__SGP_FAVICON_LETTER__"
+brand_color = "__SGP_FAVICON_COLOR__"
 
 [[section]]
 title = "Guide"

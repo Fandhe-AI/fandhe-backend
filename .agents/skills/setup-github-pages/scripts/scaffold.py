@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""対象リポジトリへ docs サイト一式（wrapper・後処理・workflow・初期サイト）を配置・更新する。
+"""対象リポジトリへ docs サイト一式（ビルドスクリプト・workflow・初期サイト）を配置・更新する。
 
 # 役割・境界
 
@@ -27,7 +27,7 @@ SKILL.md の Step 1（`--detect` によるモード判定）、新規構築フ�
 - pages.yml の `sgp:user-paths` 区間（追加の監視パス）は利用者が編集してよい例外。区間の中身は検証して
   保持し、「未編集」判定と記録ハッシュは区間を空にした正規形で行う。
 - 利用者編集ファイル（USER）は常に保持する。更新モードで欠けていても再作成せず「欠落」と報告する
-  （再作成は `--owner/--repo/--branch/--title` を明示したときだけ）。
+  （再作成は `--owner/--repo/--branch/--title/--tagline` を明示したときだけ）。
 - マニフェストは信頼しない入力として扱う。厳密に検証して 1 つでも違反すれば丸ごと無視（=マニフェストなし。
   自動更新は行わず、不一致は競合になる安全側）。マニフェスト内のパスは FILES の固定パスとの突き合わせに
   のみ使い、書き込み・削除・表示の対象にしない。スキルで廃止された所有ファイルはスキル側の固定リスト
@@ -64,8 +64,10 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 # append: 同じディレクトリに標準モジュール名のファイルがあっても、標準ライブラリを先に解決させる
 sys.path.append(str(Path(__file__).resolve().parent))
 from _common import (  # noqa: E402
-    BIDI_RE, COLOR_RE, CONTROL_RE, FF_REV_RE, PLACEHOLDER_RE, LANG_RE, LETTER_RE, MAX_TEXT_LEN, UPSTREAM_BRAND, Brand,
-    atomic_write_bytes, has_upstream_word, is_upstream_repo, resolves_inside, sanitize, write_target_problem, valid_owner, valid_repo_name,
+    BIDI_RE, CONTROL_RE, FF_REV_RE, PLACEHOLDER_RE, MAX_TEXT_LEN, SITE_BRAND_MAX, SITE_BADGE_MAX, SITE_TEXT_MAX,
+    atomic_write_bytes, check_site_values, is_upstream_repo, pages_base_path, resolves_inside, sanitize,
+    write_target_problem, valid_owner, valid_repo_name, parse_subset, parse_nav, site_value_problem,
+    SITE_REQUIRED_KEYS,
 )
 
 BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
@@ -79,12 +81,8 @@ BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
 OWNED, USER = "owned", "user"
 PAGES_REL = ".github/workflows/pages.yml"
 FILES = [
-    ("templates/docs-site-gen/Cargo.toml", "tools/docs-site-gen/Cargo.toml", False, OWNED),
-    ("templates/docs-site-gen/src/main.rs", "tools/docs-site-gen/src/main.rs", False, OWNED),
     ("templates/docs-site-gen/FF_REV", "tools/docs-site-gen/FF_REV", False, OWNED),
-    ("templates/brand.toml", "tools/docs-site-gen/brand.toml", False, USER),
     ("scripts/build-local.sh", "tools/docs-site-gen/build-local.sh", True, OWNED),
-    ("scripts/rebrand_site.py", "tools/docs-site-gen/rebrand_site.py", False, OWNED),
     ("scripts/check_site.py", "tools/docs-site-gen/check_site.py", False, OWNED),
     ("scripts/_common.py", "tools/docs-site-gen/_common.py", False, OWNED),
     ("templates/pages.yml", PAGES_REL, False, OWNED),
@@ -96,7 +94,12 @@ FILES = [
 # スキル側で廃止された所有ファイル（配置先の相対パス）。廃止の判定は、対象リポジトリのマニフェストではなく
 # このスキル側の固定リストだけで行う（マニフェストは信頼しない入力で、任意のパスを「廃止された所有ファイル」
 # として指名させると、利用者に無関係なファイルの削除を促せてしまうため）。廃止したら、ここへ追加する。
-DEPRECATED_OWNED: tuple[str, ...] = ()
+DEPRECATED_OWNED: tuple[str, ...] = ("tools/docs-site-gen/rebrand_site.py", "tools/docs-site-gen/Cargo.toml", "tools/docs-site-gen/src/main.rs", "tools/docs-site-gen/brand.toml",)
+# 廃止ファイルの補足（固定の文言だけ。ファイルの内容は読まない）。brand.toml は利用者が編集する前提のファイルで、
+# マニフェストに記録されたことがないため edited が常に不明になる。そのままだと「スキルの生成物」と誤解されるので明示する。
+DEPRECATED_NOTES: dict[str, str] = {
+    "tools/docs-site-gen/brand.toml": "利用者編集ファイル。nav.toml の [site] へ移行してから削除する",
+}
 
 # 終了コード: 0 成功 / 2 入力不正・書き込み先が不適 / 3 競合（OWNED の不一致）/ 4 配置後の check_site 失敗
 EXIT_CONFLICT, EXIT_CHECK_FAILED = 3, 4
@@ -122,7 +125,7 @@ LEGACY_TRACES = (
     "tools/docs-site-gen/build-local.sh",
 )
 
-GITIGNORE_LINES = ["_ff/", "tools/docs-site-gen/target/", "tools/docs-site-gen/Cargo.lock", "_site/"]
+GITIGNORE_LINES = ["tools/docs-site-gen/target/", "_site/"]
 
 # 読み取りの上限。対象リポジトリのファイルは信頼できないため、巨大ファイル・特殊ファイルで止まらない・
 # メモリを使い切らないようにする。
@@ -217,27 +220,246 @@ def regular_inside(root_real: Path, path: Path) -> bool:
 
 
 def toml_escape(value: str) -> str:
+    """値を TOML サブセットの二重引用符文字列として安全に書ける形にする。
+
+    不変条件: 返す文字列に生の改行・制御文字を含めない。行ベースの構造が壊れて別のキーが注入されるため、
+    制御文字が 1 つでもあれば ValueError で止める（入力検証が先に拒否するので通常は到達しない多層防御）。
+    サブセットが表現できる制御文字は `\\n` `\\t` だけで、`[site]` の値としては上流と check_site が拒否するため、
+    エスケープして通す経路は作らない。
+    """
+    if CONTROL_RE.search(value):
+        raise ValueError("TOML へ書く値に制御文字を含められない")
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def validate_text(name: str, value: str, *, required: bool) -> str:
+# 旧 brand.toml のキー → nav.toml `[site]` のキー
+_LEGACY_BRAND_MAP = {"brand": "brand", "repository": "repository_url", "tagline": "tagline", "copyright": "copyright",
+                     "lang": "lang", "version_badge": "version_badge", "favicon_letter": "brand_mark",
+                     "favicon_color": "brand_color"}
+
+
+LEGACY_BRAND_REL = "tools/docs-site-gen/brand.toml"
+# 旧 tagline が空だったときに案へ置く、検証を必ず通らない目印。そのまま貼っても check_site がプレースホルダー残存で
+# 止めるため、既定文言が黙って公開されない（fail-closed）。「要入力」のように検証を通る文字列は使わない。
+TAGLINE_PLACEHOLDER = "__SGP_TAGLINE__"
+TAGLINE_NEEDS_INPUT_LINE = (f'tagline = "{TAGLINE_PLACEHOLDER}"  # 要入力: サイトの説明を 1 行。旧 brand.toml の空 tagline'
+                            "（行ごと削除していた旧挙動）は廃止。決めるまで check_site が止める")
+
+
+def _read_nav_site(root_real: Path) -> dict[str, str]:
+    """現在の nav.toml の `[site]`（読めなければ空）。移行案との突き合わせ専用で、検証の判定には使わない。"""
+    try:
+        tables = parse_nav(read_capped(root_real / "site" / "nav.toml", 1024 * 1024).decode("utf-8"))
+    except (OSError, OverflowError, UnicodeDecodeError, ValueError):
+        return {}
+    values: dict[str, str] = {}
+    for t in tables:
+        if t.header == "site":
+            values.update(t.values)
+    return values
+
+
+def legacy_brand_site_proposal(root_real: Path) -> dict | None:
+    """旧 `tools/docs-site-gen/brand.toml` から nav.toml `[site]` への移行案を作る（読むだけ。何も書かない・消さない）。
+
+    役割: 更新モードの main が分類フェーズで 1 回呼び、結果を JSON の `site_migration` と人間向け出力へ流す。
+    brand.toml が無ければ None。あれば必ず dict を返し、`status` で状態を伝える（読めない・不正でも黙って無視しない）。
+    読み取りは scaffold の入口（read_capped: _ROOT_GUARD・O_NOFOLLOW・通常ファイルのみ・上限 64 KiB）を通し、
+    解析は既存の TOML 部分集合パーサを使う。案の値は check_site と同じ検証器を通ったものだけで、problems には
+    キー名と理由だけを載せる（旧値・ファイルの断片は載せない）。block が持つのは `[site]` へ**追加すべき**キーだけ
+    （nav.toml に既にあるキーは含めない）。呼び出し側は丸ごと置き換えず、キー単位で追加する。`applied` は常に False。
+    """
+    path = root_real / LEGACY_BRAND_REL
+    if not os.path.lexists(path):
+        return None
+    res: dict = {"source": LEGACY_BRAND_REL, "status": "unreadable", "entries": [], "needs_input": [],
+                 "block": None, "problems": [], "applied": False}
+
+    def unreadable(why: str) -> dict:
+        res["problems"] = [f"旧 brand.toml を読めない: {why}"]
+        return res
+
+    if not resolves_inside(root_real, path):
+        return unreadable("対象リポジトリの外（または .git 配下）へ解決される")
+    try:
+        text = read_capped(path, 64 * 1024).decode("utf-8")
+    except OverflowError:
+        return unreadable("64 KiB を超える")
+    except UnicodeDecodeError:
+        return unreadable("UTF-8 ではない")
+    except OSError:
+        return unreadable("シンボリックリンク・通常ファイルでない、または開けない")
+    try:
+        tables = parse_subset(text, {"brand"})
+    except ValueError:
+        return unreadable("TOML サブセットの構文違反")
+    if len(tables) != 1:
+        return unreadable("[brand] がちょうど 1 つではない")
+    old = tables[0].values
+    nav_site = _read_nav_site(root_real)
+
+    site = {_LEGACY_BRAND_MAP[k]: v for k, v in old.items() if k in _LEGACY_BRAND_MAP}
+    site.setdefault("version_badge", "")
+    # 旧設定で任意だったキーの既定値を補う（nav.toml では brand_mark が必須）。旧 favicon_letter が無ければ
+    # ブランド名の最初の ASCII 英数字（大文字化）を使う。導出できなければ不足として案内する。tagline の既定値は補わない
+    if "brand_mark" not in site:
+        brand_src = site.get("brand") or nav_site.get("brand", "")
+        first = next((c for c in str(brand_src) if c.isascii() and c.isalnum()), "")
+        if first:
+            site["brand_mark"] = first.upper()
+
+    def nav_ok(key: str) -> bool:
+        """nav.toml に当該キーがあり、check_site と同じ検証器を通る（旧値に頼らず充足している）か。"""
+        return key in nav_site and site_value_problem(key, nav_site[key]) is None
+
+    tagline_blank = not str(site.get("tagline", "")).strip()
+    tagline_needed = tagline_blank and not nav_ok("tagline")
+    reverse = {v: k for k, v in _LEGACY_BRAND_MAP.items()}
+    # 未知の旧キーは移行に無関係（[site] へ写さない）ため、案の可否を妨げない注記に留める
+    notes: list[str] = [f"旧 brand.toml の未知のキー {sanitize(k, 60)} は移行しない" for k in sorted(set(old) - set(_LEGACY_BRAND_MAP))]
+    blocking: list[str] = []
+    # brand.toml に由来が無く置換もできない nav.toml 側の不正値。他キーの提案を巻き込んで破棄しない（blocking にしない）
+    leftovers: list[str] = []
+    entries: list[dict] = []
+    for key in (*SITE_REQUIRED_KEYS, "lang", "brand_color"):
+        old_key = reverse.get(key, key)
+        if key == "tagline" and tagline_blank:
+            if tagline_needed:
+                entries.append({"key": key, "from": "tagline", "state": "needs_input", "value": None,
+                                "replace": "tagline" in nav_site})
+            continue
+        if nav_ok(key):
+            # nav.toml 側が既に有効。旧値は案の可否に関係させず、有効な旧値があるときだけ差異を報告する
+            if key in site and site_value_problem(key, site[key]) is None:
+                entries.append({"key": key, "from": old_key, "state": "same" if nav_site[key] == site[key] else "differs",
+                                "value": site[key]})
+            continue
+        in_nav = key in nav_site
+        nav_why = f"nav.toml の既存の値が不正（{site_value_problem(key, nav_site[key])}）。置換が必要" if in_nav else ""
+        if key not in site:
+            if key in SITE_REQUIRED_KEYS or in_nav:
+                msg = (f"[site] の `{key}`: " + (nav_why + "。" if in_nav else "") +
+                       f"旧 brand.toml に `{old_key}` が無く、導出もできない（手で置き換える・追記する）")
+                (leftovers if in_nav else blocking).append(msg)
+                entries.append({"key": key, "from": old_key, "state": "invalid", "value": None})
+            continue
+        why = site_value_problem(key, site[key])
+        if why:
+            msg = f"[site] の `{key}`（旧 `{old_key}`）: {why}" + (f"（{nav_why}）" if in_nav else "")
+            # 任意キー（lang / brand_color）の旧値が不正でも、検証済みの必須キーの案を巻き込んで破棄しない。
+            # 案から除外して problems に残し、利用者が手で直す（既定値で動くため公開を止めない）
+            if key in SITE_REQUIRED_KEYS:
+                blocking.append(msg)
+            else:
+                leftovers.append(msg + "。この値は案に含めない（手で直す）")
+            entries.append({"key": key, "from": old_key, "state": "invalid", "value": None})
+            continue
+        entries.append({"key": key, "from": old_key, "state": "replace" if in_nav else "add", "value": site[key]})
+    res["entries"] = entries
+    res["needs_input"] = ["tagline"] if tagline_needed else []
+
+    if blocking:
+        res["status"], res["problems"] = "invalid", blocking + notes
+        return res
+    todo = [e for e in entries if e["state"] in ("add", "replace")]
+    if not todo and not tagline_needed and leftovers:
+        res["status"], res["problems"] = "invalid", leftovers + notes
+        return res
+    if not todo and not tagline_needed:
+        res["status"] = "migrated"   # nav.toml が既に有効な値で充足。brand.toml は削除候補として案内するだけ
+        res["problems"] = [f"[site] の `{e['key']}`: 旧 brand.toml と値が異なる（nav.toml の値を優先する）"
+                           for e in entries if e["state"] == "differs"] + notes
+        return res
+    lines = ["[site]"]
+    for e in todo:
+        line = f'{e["key"]} = "{toml_escape(e["value"])}"'
+        if e["state"] == "replace":
+            line += f"  # nav.toml の既存の `{e['key']}` 行は不正。追加でなく置き換える"
+        lines.append(line)
+    res["problems"] = leftovers + notes
+    if tagline_needed:
+        tl = TAGLINE_NEEDS_INPUT_LINE
+        if "tagline" in nav_site:
+            tl += "。nav.toml の既存の `tagline` 行は不正。追加でなく置き換える（重複キーは拒否される）"
+        lines.append(tl)
+        res["problems"].append("tagline: 旧 brand.toml の説明文が空。旧挙動（行ごと削除）から変わり、既定値は補わない。"
+                               "サイトの説明を 1 行決めて置き換えるまで check_site が止める")
+    res["status"] = "needs_input" if tagline_needed else "proposal"
+    res["block"] = "\n".join(lines)
+    return res
+
+
+# 旧構成（wrapper 方式）の生成物。スキル所有ファイルではないため削除候補（deprecated）には含めず、案内だけを出す。
+LEGACY_ARTIFACTS: tuple[tuple[str, str], ...] = (
+    ("_ff", "旧構成で上流を shallow fetch した clone。新構成では使わない。不要なら手動で削除してよい"),
+    ("tools/docs-site-gen/Cargo.lock", "旧 wrapper の lock。新構成では使わない。手動で削除してよい"),
+    ("tools/docs-site-gen/target",
+     "新構成でも target/docs-site-install をインストール先と Actions のキャッシュに使う。削除してよいのは旧 wrapper の"
+     "ビルド成果物（target/debug・target/release など）だけ。丸ごと消すと次回のビルドでネットワーク越しに再インストールされる"),
+)
+
+
+def only_current_install(root_real: Path, p: Path) -> bool:
+    """target が現行構成の docs-site-install だけを含む実ディレクトリか（直下の名前だけを見る。辿らない）。
+
+    親の symlink 経由でリポジトリ外を一覧しないよう、is_dir・listdir より先に resolves_inside を検査する。
+    空ディレクトリは現行構成の成果物を含まないため False（旧構成の残置として案内する）。
+    """
+    if not resolves_inside(root_real, p.parent) or p.is_symlink() or not p.is_dir():
+        return False
+    try:
+        names = os.listdir(p)
+    except OSError:
+        return False
+    return bool(names) and all(n == "docs-site-install" for n in names)
+
+
+def legacy_artifacts(root_real: Path) -> list[dict]:
+    """旧構成の生成物のうち、対象に残っているもの（固定 3 パスの存在と、target 直下の名前だけを見る。中身は読まない・触れない）。
+
+    target は現行構成も docs-site-install のために使うため、直下が docs-site-install だけなら旧構成の生成物として案内しない。
+    """
+    found = []
+    for rel, note in LEGACY_ARTIFACTS:
+        p = root_real / rel
+        if rel.endswith("/target") and only_current_install(root_real, p):
+            continue
+        if resolves_inside(root_real, p.parent) and os.path.lexists(p):
+            found.append({"path": rel, "note": note, "symlink": p.is_symlink()})
+    return found
+
+
+def print_site_migration(sm: dict, *, err: bool) -> None:
+    """移行案を人間向けに出す。1 行ずつ out()（無害化）を通す（複数行を 1 回に渡すと改行が潰れる）。"""
+    status = sm["status"]
+    if status == "migrated":
+        out(f"旧 {sm['source']} は nav.toml の [site] へ移行済み（削除候補。自動削除しない）", err=err)
+    elif status == "unreadable":
+        out(f"旧 {sm['source']} から [site] の移行案を作れない（読めない）。nav.toml の [site] を手で追記する", err=err)
+    elif status == "invalid":
+        out(f"旧 {sm['source']} の値が検証を通らず移行案を作れない。直してから nav.toml の [site] へ追記する:", err=err)
+    else:
+        out(f"旧 {sm['source']} からの [site] 移行案（下のキーだけを nav.toml の既存 [site] へ反映する。"
+            "state が add のキーは追記、replace のキーは既存の行を置き換える（同名キーを重複させない）。"
+            "[site] を丸ごと置き換えない — 既存の title・base_path 等は残す。自動では書き換えない）:", err=err)
+        for line in (sm["block"] or "").split("\n"):
+            out(line, err=err)
+    for p in sm["problems"]:
+        out(f"  - {p}", err=err)
+
+
+def validate_text(name: str, value: str, *, required: bool, max_len: int = MAX_TEXT_LEN) -> str:
     if required and not value.strip():
         raise ValueError(f"--{name} は必須")
     if CONTROL_RE.search(value):
         raise ValueError(f"--{name} に制御文字を含められない")
-    if len(value) > MAX_TEXT_LEN:
-        raise ValueError(f"--{name} は {MAX_TEXT_LEN} 文字以内")
+    if len(value) > max_len:
+        raise ValueError(f"--{name} は {max_len} 文字以内")
     if BIDI_RE.search(value):
         raise ValueError(f"--{name} に双方向制御文字を含められない")
     if PLACEHOLDER_RE.search(value):
         # 置換結果が再置換されて意図しない値になる経路を入力段階で断つ
         raise ValueError(f"--{name} にプレースホルダー（__SGP_*__）を含められない")
-    if has_upstream_word(value):
-        raise ValueError(
-            f"--{name} に上流名 `{UPSTREAM_BRAND}` を独立した語として含められない"
-            "（生成後の残存検査と区別できない。`fandhe-frontend-docs` のような別の語の一部は可。"
-            "--copyright の既定値は owner を含むため、必要なら --copyright を明示する）"
-        )
     return value
 
 
@@ -334,9 +556,16 @@ def _origin_owner_repo(target: Path) -> tuple[str, str] | None:
 _GEN_REL = "tools/docs-site-gen/"
 
 
-def known_generator_names() -> set[str]:
-    """`tools/docs-site-gen/` 直下にあってよい名前（スキルの配置物と、ビルドで生じるもの）。"""
+def known_generator_names(include_deprecated: bool = True) -> set[str]:
+    """`tools/docs-site-gen/` 直下にあってよい名前（スキルの配置物と、ビルドで生じるもの）。
+
+    include_deprecated=False では廃止済みの所有ファイル名を含めない。廃止ファイルを既知扱いしてよいのは、有効な
+    マニフェストまたは旧版の配置痕跡で「スキルが配置したディレクトリ」と確認できた場合（update 判定）に限る。
+    """
     names = {Path(dst).name for _, dst, _, _ in FILES if dst.startswith(_GEN_REL) and "/" not in dst[len(_GEN_REL):]}
+    # 廃止済みの所有ファイルは、残っていても「スキルが配置していない」警告にしない（削除候補として別に案内する）
+    if include_deprecated:
+        names |= {Path(d).name for d in DEPRECATED_OWNED if d.startswith(_GEN_REL) and "/" not in d[len(_GEN_REL):]}
     return names | {Path(MANIFEST_REL).name, "src", "target", "Cargo.lock", "THIRD-PARTY-LICENSES"}
 
 
@@ -348,14 +577,18 @@ def unknown_generator_entries(target: Path, root_real: Path) -> list[str]:
     ディレクトリ自体が symlink・対象の外へ解決される場合は中を見ない（symlink は generator_symlinks が別途
     競合として拾い、対象の外へ解決されるものは配置先ごとの outside_root 競合になる）。
     名前だけを見て、内容は読まない。
+
+    廃止済みの所有ファイル（Cargo.toml・src/main.rs・brand.toml 等）は既知にしない。この関数は有効なマニフェスト・
+    旧版の配置痕跡がない場合（detect の最終判定）だけが使うため、それらは別用途の同名ファイルと区別できない。
+    update 判定になる場合は detect が先に返し、廃止ファイルは削除候補（deprecated_present）として案内される。
     """
     gen = target / "tools" / "docs-site-gen"
     if not os.path.lexists(gen) or gen.is_symlink() or not resolves_inside(root_real, gen):
         return []
     if not gen.is_dir():
         return [_GEN_REL.rstrip("/") + "（ディレクトリではない）"]
-    known = known_generator_names()
-    known_src = {Path(dst).name for _, dst, _, _ in FILES if dst.startswith(_GEN_REL + "src/")}
+    known = known_generator_names(include_deprecated=False)
+    known_src = {Path(p).name for p in [dst for _, dst, _, _ in FILES] if p.startswith(_GEN_REL + "src/")}
     found: list[str] = []
     try:
         with os.scandir(gen) as it:
@@ -388,6 +621,30 @@ def generator_symlinks(target: Path, root_real: Path) -> list[str]:
     return []
 
 
+def deprecated_present(target: Path, root_real: Path, m_files: dict) -> list[dict]:
+    """スキルで廃止された所有ファイルのうち、対象に通常ファイルとして残っているもの（スキル側の固定リストだけで判定）。
+
+    detect（--detect の削除候補表示）と main（更新の結果表示）の両方から呼ぶ。マニフェストのパスは
+    記録ハッシュとの突き合わせ（edited 判定）にだけ使い、列挙・表示の根拠にしない。
+    """
+    found: list[dict] = []
+    for rel in DEPRECATED_OWNED:
+        pth = target / rel
+        if not regular_inside(root_real, pth):
+            continue
+        h = safe_sha256(pth)
+        item = {"path": rel, "edited": (h != m_files[rel]) if rel in m_files else None}
+        if rel in DEPRECATED_NOTES:
+            item["note"] = DEPRECATED_NOTES[rel]
+        found.append(item)
+    return found
+
+
+def _deprecated_line(d: dict, prefix: str = "削除候補: ") -> str:
+    state = "未編集" if d["edited"] is False else "配置後に編集あり" if d["edited"] else "編集の有無は不明"
+    return f"{prefix}{d['path']}（{state}）" + (f" 注: {d['note']}" if d.get("note") else "")
+
+
 def detect(target: Path, root_real: Path) -> dict:
     """対象リポジトリを判定する（書き込みなし）。
 
@@ -417,11 +674,13 @@ def detect(target: Path, root_real: Path) -> dict:
         return {"mode": "foreign", "kind": "upstream", "reasons": reasons}
     if manifest is not None:
         reasons.append(f"配置マニフェスト {MANIFEST_REL}（FF_REV {manifest[0][:12]}）がある")
-        return {"mode": "update", "kind": "manifest", "reasons": reasons}
+        return {"mode": "update", "kind": "manifest", "reasons": reasons,
+                "deprecated": deprecated_present(target, root_real, manifest[1])}
     legacy = [t for t in LEGACY_TRACES if regular_inside(root_real, target / t)]
     if len(legacy) == len(LEGACY_TRACES):
-        reasons.append("旧版配置の痕跡（FF_REV・wrapper・build-local.sh）がある（マニフェストなし）")
-        return {"mode": "update", "kind": "legacy", "reasons": reasons}
+        reasons.append("旧構成（wrapper 方式）の配置痕跡（FF_REV・wrapper・build-local.sh）がある（マニフェストなし）")
+        return {"mode": "update", "kind": "legacy", "reasons": reasons,
+                "deprecated": deprecated_present(target, root_real, {})}
     present = [dst for _, dst, _, kind in FILES if kind == OWNED and exists_inside(root_real, target / dst)]
     outside = [dst for _, dst, _, _ in FILES if not resolves_inside(root_real, target / dst)]
     if outside:
@@ -565,8 +824,8 @@ def analyze_pages(cur: str, rendered: str) -> dict:
             "norm": "\n".join(lines[:b[0]] + [CANON_BEGIN, CANON_END] + lines[e[0] + 1:])}
 
 
-# tools/docs-site-gen/ 直下に存在してよい名前（許可リスト）。スキルが配置するもの（FILES の basename）・マニフェスト・
-# cargo が作る `target` と `Cargo.lock`・wrapper の `src`・build-local.sh が（--write-third-party で）作る
+# tools/docs-site-gen/ 直下に存在してよい名前（許可リスト）。スキルが配置するもの（FILES の basename）・廃止済みの所有ファイル・マニフェスト・
+# cargo が作る `target` と `Cargo.lock`・旧構成（wrapper 方式）の残骸の `src`・build-local.sh が（--write-third-party で）作る
 # `THIRD-PARTY-LICENSES`（実際は対象リポジトリ直下だが、置かれても無害な既知の名前として含める）。
 # build-local.sh は python を `-B`（__pycache__ を作らない）で起動するため、`__pycache__` は既知にしない
 # （事前に置かれた .pyc が読み込まれ得るので、見つけたら警告する）。
@@ -711,17 +970,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--branch", default=None,
                     help="既定ブランチ名（gh repo view で解決した値）。新規構築で必須。更新では省略すると既存の pages.yml から読む")
     ap.add_argument("--title", default=None, help="サイトタイトル（nav.toml [site].title・トップ見出し）。新規構築で必須")
-    ap.add_argument("--brand", default=None, help="ヘッダーのブランド名（既定: --title）")
-    ap.add_argument("--tagline", default="")
+    ap.add_argument("--brand", default=None, help="ヘッダーのブランド名（nav.toml [site].brand。64 文字以内。既定: --title）")
+    ap.add_argument("--tagline", default=None,
+                    help="フッターのタグライン（nav.toml [site].tagline）。新規構築で必須（空にできない。既定値は補わない）")
     ap.add_argument("--copyright", dest="copyright_", default=None, help="既定: © <年> <owner>")
     ap.add_argument("--lang", default="ja")
-    ap.add_argument("--version-badge", default="")
+    ap.add_argument("--version-badge", default="", help="ブランド横の badge（nav.toml [site].version_badge。32 文字以内。空で非表示）")
     ap.add_argument("--favicon-letter", default=None, help="既定: ブランド名の先頭英数字")
     ap.add_argument("--favicon-color", default="#2b6cb0")
     ap.add_argument("--update", action="store_true",
-                    help="スキル所有ファイル（workflow・wrapper・スクリプト・FF_REV）の不一致を、配置後の編集を含めて"
+                    help="スキル所有ファイル（workflow・スクリプト・FF_REV）の不一致を、配置後の編集を含めて"
                          "強制的に上書きする。未編集のものは --update なしでも自動更新される。"
-                         "利用者編集ファイル（nav.toml・index.md・brand.toml・rust-toolchain.toml）は触らない")
+                         "利用者編集ファイル（nav.toml・index.md・rust-toolchain.toml）は触らない")
     ap.add_argument("--year", default=None, help="著作権表記の年（既定: 現在の年）")
     args = ap.parse_args(argv)
 
@@ -737,6 +997,7 @@ def main(argv: list[str] | None = None) -> int:
         "ff_rev": None, "created": [], "updated": [], "same": [], "kept": [], "missing": [],
         "conflicts": [], "deprecated": [], "gitignore_added": [], "manifest_written": False,
         "manifest_recreated": False, "warnings": [], "check": None, "diffs": None, "exit_code": None,
+        "site_migration": None, "legacy_artifacts": [],
     }
 
     def finish(code: int, msg: str | None = None) -> int:
@@ -759,13 +1020,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.detect:
         if args.json:
             summary["exit_code"] = 0
-            print(json.dumps({"mode": det["mode"], "kind": det["kind"], "reasons": summary["detect"], "exit_code": 0},
-                             ensure_ascii=True))
+            payload = {"mode": det["mode"], "kind": det["kind"], "reasons": summary["detect"], "exit_code": 0}
+            if det["mode"] == "update":
+                payload["deprecated"] = det["deprecated"]
+            print(json.dumps(payload, ensure_ascii=True))
         else:
             out(f"mode={det['mode']}")
             out(f"kind={det['kind']}")
             for r in det["reasons"]:
                 out(f"根拠: {r}")
+            for d in det.get("deprecated", []):
+                out(_deprecated_line(d))
         return 0
     if det["kind"] == "upstream":
         return finish(2, "エラー: 適用対象外: " + " / ".join(det["reasons"]))
@@ -781,8 +1046,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if mode == "new" and not full and not args.show_diff:
             missing = [n for n, v in (("--owner", args.owner), ("--repo", args.repo),
-                                      ("--branch", args.branch), ("--title", args.title)) if v is None]
+                                      ("--branch", args.branch), ("--title", args.title),
+                                      ("--tagline", args.tagline)) if v is None]
             raise ValueError(f"新規構築には {', '.join(missing)} が必要（更新モードでは省略できる）")
+        if (full or args.tagline is not None) and (args.tagline is None or not args.tagline.strip()):
+            raise ValueError("--tagline は必須（[site].tagline は空にできない。未指定だと上流の既定文言が公開されるため、"
+                             "サイトの説明を 1 行指定する）")
         if args.owner is not None and not valid_owner(args.owner):
             raise ValueError("--owner が GitHub の owner 名として不正")
         if args.repo is not None and not valid_repo_name(args.repo):
@@ -806,19 +1075,16 @@ def main(argv: list[str] | None = None) -> int:
         title = None
         if full:
             title = validate_text("title", args.title, required=True)
-            brand = validate_text("brand", args.brand if args.brand is not None else title, required=True)
-            tagline = validate_text("tagline", args.tagline, required=False)
-            badge = validate_text("version-badge", args.version_badge, required=False)
-            if not LANG_RE.fullmatch(args.lang):
-                raise ValueError("--lang は BCP 47 風（例: ja / en）")
-            if not COLOR_RE.fullmatch(args.favicon_color):
-                raise ValueError("--favicon-color は #RRGGBB 形式")
+            if args.brand is None and len(title) > SITE_BRAND_MAX:
+                raise ValueError(f"--title が {SITE_BRAND_MAX} 文字を超える。ブランド名は {SITE_BRAND_MAX} 文字以内のため --brand を明示する")
+            brand = validate_text("brand", args.brand if args.brand is not None else title, required=True,
+                                  max_len=SITE_BRAND_MAX)
+            tagline = validate_text("tagline", args.tagline, required=True, max_len=SITE_TEXT_MAX)
+            badge = validate_text("version-badge", args.version_badge, required=False, max_len=SITE_BADGE_MAX)
             letter = args.favicon_letter
             if letter is None:
                 m = re.search(r"[A-Za-z0-9]", brand)
                 letter = m.group(0).upper() if m else ""
-            if not LETTER_RE.fullmatch(letter):
-                raise ValueError("--favicon-letter は英数字 1 文字")
             if args.copyright_ is None:
                 import datetime
                 year = args.year or str(datetime.date.today().year)
@@ -827,21 +1093,32 @@ def main(argv: list[str] | None = None) -> int:
                 copyright_ = f"© {year} {args.owner}"
             else:
                 copyright_ = args.copyright_
-            copyright_ = validate_text("copyright", copyright_, required=True)
+            copyright_ = validate_text("copyright", copyright_, required=True, max_len=SITE_TEXT_MAX)
             repository = f"https://github.com/{args.owner}/{args.repo}"
-            probe = Brand(brand, repository, args.owner, args.repo, tagline, copyright_, args.lang,
-                          badge, letter, args.favicon_color)
+            # 書く前に check_site と同じ検証器を通す（scaffold は check_site が拒否する値を書かない）
+            flag = {"brand": "--brand", "repository_url": "--owner/--repo", "tagline": "--tagline",
+                    "copyright": "--copyright", "version_badge": "--version-badge", "lang": "--lang",
+                    "brand_mark": "--favicon-letter", "brand_color": "--favicon-color"}
+            problems = check_site_values({
+                "brand": brand, "repository_url": repository, "tagline": tagline, "copyright": copyright_,
+                "version_badge": badge, "lang": args.lang, "brand_mark": letter, "brand_color": args.favicon_color,
+            })
+            if problems:
+                text = "; ".join(problems)
+                for k, f in flag.items():
+                    text = text.replace(f"`{k}`", f"`{k}`（{f}）")
+                raise ValueError(text)
             subs = {
                 "__SGP_SITE_TITLE__": toml_escape(title),
-                "__SGP_BASE_PATH__": probe.base_path,
+                "__SGP_BASE_PATH__": toml_escape(pages_base_path(args.owner, args.repo)),
                 "__SGP_BRAND__": toml_escape(brand),
-                "__SGP_REPOSITORY__": repository,
+                "__SGP_REPOSITORY__": toml_escape(repository),
                 "__SGP_TAGLINE__": toml_escape(tagline),
                 "__SGP_COPYRIGHT__": toml_escape(copyright_),
-                "__SGP_LANG__": args.lang,
+                "__SGP_LANG__": toml_escape(args.lang),
                 "__SGP_VERSION_BADGE__": toml_escape(badge),
-                "__SGP_FAVICON_LETTER__": letter,
-                "__SGP_FAVICON_COLOR__": args.favicon_color,
+                "__SGP_FAVICON_LETTER__": toml_escape(letter),
+                "__SGP_FAVICON_COLOR__": toml_escape(args.favicon_color),
                 "__SGP_DEFAULT_BRANCH__": branch,
             }
         ff_rev = (SKILL_DIR / "templates/docs-site-gen/FF_REV").read_text().strip()
@@ -1070,13 +1347,12 @@ def main(argv: list[str] | None = None) -> int:
             problems.append(".gitignore（UTF-8 として読めない、または大きすぎる）")
 
     # ---- 廃止された所有ファイル（スキル側の固定リストだけで判定。表示のみで自動削除しない）
-    deprecated: list[dict] = []
-    for rel in DEPRECATED_OWNED:
-        pth = args.target / rel
-        if not regular_inside(root_real, pth):
-            continue
-        h = safe_sha256(pth)
-        deprecated.append({"path": rel, "edited": (h != m_files[rel]) if rel in m_files else None})
+    deprecated = deprecated_present(args.target, root_real, m_files)
+    # 旧構成からの移行案と生成物の案内（読むだけ。nav.toml・brand.toml・_ff 等へは書かない・消さない）。
+    # 書き込み前の分類で計算するので、どの終了コード（0 / 2 / 3 / 4）の JSON にも載る
+    if mode == "update":
+        summary["site_migration"] = legacy_brand_site_proposal(root_real)
+        summary["legacy_artifacts"] = legacy_artifacts(root_real)
     unknown = [k for k in m_files if k not in {d for _, d, _, kd in FILES if kd == OWNED}
                and k not in DEPRECATED_OWNED and k != MANIFEST_REL]
     if unknown:
@@ -1133,6 +1409,8 @@ def main(argv: list[str] | None = None) -> int:
             out(f"  - {path}（{reason}）", err=True)
         fixable = [p for p, k, _ in conflicts if k not in UNFIXABLE_KINDS]
         manual = [p for p, k, _ in conflicts if k in UNFIXABLE_KINDS]
+        if summary["site_migration"]:
+            print_site_migration(summary["site_migration"], err=True)
         out("  対処: まず --show-diff で差分を確認する（内容を読むのは通常ファイルだけ）。", err=True)
         if fixable:
             out("  別用途・利用者の編集を残すなら手動で統合し、スキルの新版で置き換えてよいなら、同じ引数に --update を付けて"
@@ -1183,9 +1461,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # 配置後の検証（利用者編集ファイルを含む構成全体が build の前提を満たすか）
     import check_site
-    brand_path = args.target / "tools" / "docs-site-gen" / "brand.toml"
     try:
-        errors, check_warnings = check_site.check(root_real, brand_path)
+        errors, check_warnings = check_site.check(root_real)
     except ValueError as e:
         errors, check_warnings = [str(e)], []
     summary["check"] = {"ok": not errors, "errors": [sanitize(e) for e in errors],
@@ -1206,17 +1483,22 @@ def main(argv: list[str] | None = None) -> int:
         out("一致（変更なし）: " + (", ".join(same) or "なし"))
         out("保持（利用者編集）: " + (", ".join(keep) or "なし"))
         if missing:
-            out("欠落（再作成しない。必要なら --owner/--repo/--branch/--title を付けて再実行）: " + ", ".join(missing))
+            out("欠落（再作成しない。必要なら --owner/--repo/--branch/--title/--tagline を付けて再実行）: " + ", ".join(missing))
         out("追記した .gitignore 行: " + (", ".join(to_add) or "なし"))
         out("マニフェスト: " + ("再作成した（マニフェストが無かった旧版配置からの移行）" if summary["manifest_recreated"]
                               else "書き込んだ" if summary["manifest_written"] else "変更なし"))
         if deprecated:
             out("削除候補（スキルで廃止された所有ファイル。自動削除しない。内容を確認して手動で削除する）:")
             for d in deprecated:
-                state = "未編集" if d["edited"] is False else "配置後に編集あり" if d["edited"] else "編集の有無は不明"
-                out(f"  - {d['path']}（{state}）")
+                out(_deprecated_line(d, "  - "))
+        if summary["site_migration"]:
+            print_site_migration(summary["site_migration"], err=bool(errors))
+        if summary["legacy_artifacts"]:
+            out("旧構成の生成物（スキル所有ではない。自動では削除しない）:")
+            for a in summary["legacy_artifacts"]:
+                out(f"  - {a['path']}" + ("（シンボリックリンク）" if a["symlink"] else "") + f": {a['note']}")
         if keep:
-            out("注: 保持したファイルの内容（brand.toml・nav.toml 等）は生成予定と一致する保証がない。"
+            out("注: 保持したファイルの内容（nav.toml 等）は生成予定と一致する保証がない。"
                 "下の check_site で検証する（失敗したら該当ファイルを直す）。")
         for w in check_warnings:
             out(f"警告 {w}")
