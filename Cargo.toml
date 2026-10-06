@@ -48,7 +48,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/Fandhe-AI/fandhe-backend"
 # lockstep バージョニング（docs/design/crates-io-release.md 7 節）の一元管理点
 # （イシュー #452）。公開対象 13 クレート（http / routes / core / plugin-* 10 種）と
-# 恒久非公開 3 クレート（axum-ref / docs-site / ws-load-client）はすべて
+# 恒久非公開 2 クレート（axum-ref / ws-load-client）はすべて
 # `version.workspace = true` でこの値を継承する。次回バンプはこの 1 行 +
 # 下記 `[workspace.dependencies]` の `version` 値のみを書き換えればよい
 # （`crates/http/fuzz` は独立 workspace のため対象外、本ファイル冒頭のコメント参照）。

@@ -367,6 +367,27 @@ cargo geiger -p fandhe-backend-routes
 bash scripts/dep-audit.sh
 ```
 
+## 2026-10-06 — 残置していた crates/docs-site を削除
+
+切り戻し用に残置していた `crates/docs-site`（`fandhe-backend-docs-site` パッケージ）を削除した。
+公開 docs サイトの生成は PR #757 で `tools/docs-site-gen/` へ移行完了し、公開確認も完了したため、
+復元の必要がなくなった。git 履歴は保存されており、必要な場合は PR #757 より前の commit から
+復元可能。
+
+### pay-for-what-you-use への影響
+
+- 公開対象 13 クレートの依存グラフに元から含まれていない（`publish = false` の非公開クレート）
+- root workspace の `cargo tree` から registry 依存 `fandhe-frontend-core` / `fandhe-frontend-app` /
+  `fandhe-frontend-server` 0.1.0 とその推移依存がなくなる（`cargo tree --workspace` で 0 件を確認）
+- root workspace メンバーが 16 から 15 に変更（恒久非公開クレートは axum-ref / ws-load-client の 2 のみ）
+- `tools/docs-site-gen/` は既に独立 workspace のため、root workspace の `cargo tree` / `cargo audit` /
+  `cargo geiger` / バイナリサイズに影響なし
+- `scripts/unsafe-baseline.json` から `docs-site` キーを削除した
+
+### unsafe 件数
+
+該当なし（非公開クレートの削除のため）
+
 ## 2026-10-05 — docs サイト生成を tools/docs-site-gen へ移行（PR #757）
 
 公開 docs サイトの生成・デプロイ経路を `crates/docs-site` + `docs-site.yml` から
@@ -376,8 +397,8 @@ setup-github-pages スキルの構成（`tools/docs-site-gen/` + `pages.yml`）�
   root workspace の `cargo tree`・`cargo audit`・`cargo geiger`・バイナリサイズに影響しない
 - 依存は `tools/docs-site-gen/FF_REV` の commit に固定した fandhe-frontend の path 依存のみで、
   crates.io の registry 依存は 0 件（`build-local.sh` が毎回検査する）
-- `crates/docs-site` は切り戻し用に残置しており、下の 2026-07-21 の記録（依存・unsafe 件数）は
-  クレート削除まで有効。ただしデプロイ経路の記述（`docs-site.yml`）は本移行で失効した
+- `crates/docs-site` は切り戻し用に残置していたが、2026-10-06 に削除された。
+  下の 2026-07-21 の記録（依存・unsafe 件数）は参考記録として残す
 
 ## 2026-07-21 — docs-site 基盤追加（GitHub Pages ドキュメントサイト生成ツール）
 

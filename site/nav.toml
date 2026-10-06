@@ -1,6 +1,6 @@
 # docs サイトのナビゲーション構成マニフェスト。
-# スキーマ: crates/docs-site/src/nav.rs（fail-closed TOML サブセット）。
-# パーサ・検証ロジックの契約はドキュメンテーションコメントを参照。
+# スキーマ: 現行の生成器 fandhe-frontend の docs-site で検証（tools/docs-site-gen/FF_REV で固定）。
+# `[site]` 内のキー構成は tools/docs-site-gen/check_site.py で検査する（fail-closed TOML サブセット）。
 [site]
 title = "fandhe-backend"
 base_path = "/fandhe-backend"
