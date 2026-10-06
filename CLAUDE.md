@@ -903,6 +903,8 @@ fandhe-backend/
 │                                        # 改変）を見せる最小サンプル（イシュー #433）
 ├── site/                   # GitHub Pages ドキュメントサイトコンテンツ（index.md・nav.toml。
 │                            # `tools/docs-site-gen` の生成対象。base_path=/fandhe-backend。
+│                            # ヘッダー・フッターのブランド名・リポジトリ URL・タグライン等は
+│                            # `nav.toml` の `[site]` で指定する。
 │                            # CSS・JS・検索インデックスは生成器が出力するため `site/assets/` に
 │                            # `site.css` 等の予約アセット名を置かない）
 │   ├── guides.md                      # Guides セクション索引ページ（イシュー #393）。要約付き
@@ -918,12 +920,16 @@ fandhe-backend/
 │                                        # GitHub 上の実体への絶対 URL 導線を張る
 ├── tools/
 │   └── docs-site-gen/      # 公開 docs サイトの生成器一式（setup-github-pages スキルが配置・更新、
-│                            # PR #757）。fandhe-frontend の docs-site を `FF_REV` の commit に固定して
-│                            # 取得する wrapper crate（独立 workspace、root workspace 非メンバー、
-│                            # registry 依存 0 件）+ `build-local.sh`（CI と同一の入口。リンク検査は
-│                            # fail-closed）+ ブランド置換の後処理（`rebrand_site.py`・`brand.toml`）。
-│                            # `brand.toml` 以外はスキル所有ファイルで、手で編集するとスキルの更新が
-│                            # 競合する（`.scaffold-manifest.json` が配置時のハッシュを記録）。
+│                            # PR #757）。`build-local.sh`（CI と同一の入口）が fandhe-frontend の
+│                            # docs-site を `FF_REV` の commit に固定して匿名 `cargo install --git`
+│                            # （`--locked`、インストール先は `target/docs-site-install`。registry
+│                            # 依存 0 件を事前検査）で取得し、`--no-page-sections` で生成する
+│                            # （リンク検査は fail-closed）。ブランド表示は `site/nav.toml` の
+│                            # `[site]` で指定し、生成後の置換は行わない（旧構成の wrapper crate・
+│                            # `rebrand_site.py`・`brand.toml` は agent-util-skills イシュー #57 の
+│                            # 移行で廃止）。配下はすべてスキル所有ファイルで、手で編集すると
+│                            # スキルの更新が競合する（`.scaffold-manifest.json` が配置時の
+│                            # ハッシュを記録）。
 │                            # fandhe-frontend のデザイン変更にはスキルの再実行で追従する
 ├── THIRD-PARTY-LICENSES    # 生成サイトに含まれる fandhe-frontend docs-site 出力（MIT）の帰属表記。
 │                            # `build-local.sh --write-third-party` が生成する

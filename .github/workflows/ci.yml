@@ -1130,7 +1130,7 @@ jobs:
         with:
           toolchain: stable
 
-      - name: "build: fetch → build → generate → rebrand → verify"
+      - name: "build: install docs-site → generate → verify"
         run: bash tools/docs-site-gen/build-local.sh --out "${RUNNER_TEMP}/docs-site-dist"
 
   # --------------------------------------------------
