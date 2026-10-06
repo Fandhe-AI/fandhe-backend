@@ -14,7 +14,7 @@ OpenAPI 自動生成 / hub 配線 / 可観測性を段階的に拡張できる�
 - **AI ファースト保守性**: doc test・網羅テスト・CI ガードレールで AI が安全に保守できる状態を保つ
 
 公開対象 13 クレート（http / routes / core / plugin-* 10 種）を crates.io へ lockstep
-バージョニングで公開する（恒久非公開: axum-ref / ws-load-client / docs-site）。現行公開版は
+バージョニングで公開する（恒久非公開: axum-ref / ws-load-client）。現行公開版は
 0.4.2（2026-09-28）。手順・区分は `docs/design/crates-io-release.md` 参照。
 
 仕様書は [Fandhe-AI/fandhe-backend-spec](https://github.com/Fandhe-AI/fandhe-backend-spec) を
@@ -844,42 +844,6 @@ fandhe-backend/
 │   │                                    # `test_symlink_file`/`test_symlink_dir` ヘルパで OS
 │   │                                    # 分岐、詳細は `docs/design/plugin-boundary.md` 5.11.3.2 節）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
-│   ├── docs-site                      # **切り戻し用の残置**（PR #757）。公開サイトの生成は
-│   │                                    # `tools/docs-site-gen/` + `pages.yml` へ移行済みで、
-│   │                                    # `site/assets/site.css` を削除したため本クレートは実
-│   │                                    # リポジトリの `site/` をビルドできない（該当 12 テストは
-│   │                                    # `#[ignore]`）。公開確認後の別 PR で削除する。以下は
-│   │                                    # 移行前の説明: GitHub Pages ドキュメントサイト生成ツール（SSG、
-│   │                                    # fandhe-frontend の docs-site を移植。publish=false で
-│   │                                    # 本体バイナリに含まれない。crates.io 依存は
-│   │                                    # fandhe-frontend-core/app/server 0.1.0 のみ。
-│   │                                    # 内蔵 linkcheck は fail-closed でリンク切れ時は書き出さない）。
-│   │                                    # `src/script.rs` にダークモードトグル用の唯一の JS を
-│   │                                    # 保持し、`build::build_site` が `out_dir/assets/site.js`
-│   │                                    # へ書き出す（イシュー #390）。`layout::docs_page` は
-│   │                                    # FOUC 抑止インラインスニペットを `<head>` 先頭付近
-│   │                                    # （stylesheet より前）へ、`<script src>`（`defer`）を
-│   │                                    # stylesheet の後へ埋め込み、ヘッダー右側の
-│   │                                    # `div.docs-header-actions` に GitHub リンクと既定
-│   │                                    # `hidden` のテーマトグルボタンを配置する（可視化・
-│   │                                    # イベント配線は `site.js` 読み込み後にのみ行う
-│   │                                    # fail-closed 構成。JS 無効時は `prefers-color-scheme`
-│   │                                    # 追従へ退避）。`site/assets/site.js` と同名の静的
-│   │                                    # アセットは生成物との衝突としてビルドエラーにする。
-│   │                                    # `src/search.rs` が依存ゼロ全文検索インデックスを
-│   │                                    # 生成し（イシュー #396）、`build::build_site` が各
-│   │                                    # ページの本文（prev/next ナビ・サイドバー・ヘッダー
-│   │                                    # を含まない）を走査してページ単位 4 KiB 切り詰め・
-│   │                                    # 索引全体 1 MiB 上限（超過は fail-closed でビルド
-│   │                                    # 失敗）を適用したのち `out_dir/assets/search-index.json`
-│   │                                    # へ書き出す。`layout::docs_page` はヘッダー右側の
-│   │                                    # 検索入力欄（既定 `hidden`）へ索引 URL を
-│   │                                    # `data-search-index` 属性で埋め込み、`src/script.rs`
-│   │                                    # の `SITE_JS` が実行時に索引を遅延 `fetch` して
-│   │                                    # タイトル/見出し/本文の部分一致検索・結果描画を行う
-│   │                                    # （`site/assets/search-index.json` も生成物との衝突
-│   │                                    # としてビルドエラーにする。外部 JS ライブラリ・
-│   │                                    # 追加クレート依存は一切増やさない）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
 ├── templates/              # 利用者向け配布テンプレート（イシュー #364）
 │   └── app                            # feature 一式（cors / compression / static / openapi）を

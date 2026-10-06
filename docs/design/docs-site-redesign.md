@@ -6,7 +6,7 @@
 > 移行前の自前生成器（`crates/docs-site` + `.github/workflows/docs-site.yml` +
 > `site/assets/site.css`）に対する設計判断の記録であり、現行サイトの DOM・CSS・検索
 > インデックスの仕様ではない（`docs-site.yml` と `site/assets/site.css` は削除済み。
-> `crates/docs-site` は切り戻し用に残置しており、実リポジトリの `site/` はビルドできない）。
+> `crates/docs-site` も削除済み。切り戻す場合は PR #757 より前の git 履歴から復元する）。
 > 現行の運用手順は 14 節を参照する。コンテンツ構成（6 節）と公開範囲規約（7 節）は、
 > `site/nav.toml` と Markdown を引き継いでいるため移行後も有効。
 

@@ -67,11 +67,10 @@
 | `fandhe-backend-plugin-websocket` / `fandhe-backend-plugin-graphql` / `fandhe-backend-plugin-openapi` / `fandhe-backend-plugin-webrtc` / `fandhe-backend-plugin-webrtc-proxy` / `fandhe-backend-plugin-tracing` / `fandhe-backend-plugin-hub-wiring` / `fandhe-backend-plugin-cors` / `fandhe-backend-plugin-compression` / `fandhe-backend-plugin-static` | 公開対象 | feature 駆動プラグイン本体（10 クレート） |
 | `axum-ref` | 恒久非公開 | 性能比較用参照実装。フレームワーク利用者向け成果物ではない |
 | `ws-load-client` | 恒久非公開 | WebSocket 負荷試験専用バイナリ |
-| `docs-site` | 恒久非公開 | GitHub Pages ドキュメントサイト生成ツール（SSG）。開発者・CI 用でフレームワーク利用者向け成果物ではない |
 | `crates/http/fuzz` | 恒久非公開（対象外） | cargo-fuzz 専用クレート。root workspace から `exclude` 済み（TASK-15.3-1、#87）であり、`cargo publish` の対象にも入らない |
 
 - **公開対象 13 クレートは crates.io v0.1.0 として公開済み**（2026-07-21 実施。5 節参照）。
-  恒久非公開 3 クレート（`axum-ref` / `ws-load-client` / `docs-site`）は `publish = false`
+  恒久非公開 2 クレート（`axum-ref` / `ws-load-client`）は `publish = false`
   で維持し、workspace `exclude` の `crates/http/fuzz` と合わせて公開物から除外
 - 解除と併せて各公開対象クレートの `Cargo.toml` に次のメタデータを整備済み:
   - path 依存への `version = "0.1.0"` 併記（crates.io 公開には version 指定が必須）
@@ -103,7 +102,8 @@
   `cargo publish` 事故を機械的に防ぐフェイルクローズ状態を維持していた（本イシュー #94 で
   `crates/core` に追加、他クレートは設定済みを確認。2026-07 時点）
 - **2026-07-21 の公開判断（1 節）に基づき、公開対象 13 クレートの `publish = false` を
-  解除した**。恒久非公開 3 クレート（`axum-ref` / `ws-load-client` / `docs-site`）のみ
+  解除した**。恒久非公開 3 クレート（`axum-ref` / `ws-load-client` / `docs-site`。`docs-site` は
+  2026-10-06 に削除し、現在は 2 クレート）のみ
   `publish = false` を維持し、フェイルクローズの対象を「利用者向け成果物でないクレート」に
   限定する運用へ移行した（4 節の区分表が正）
 
