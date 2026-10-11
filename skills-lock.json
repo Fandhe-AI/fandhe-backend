@@ -103,6 +103,12 @@
       "skillPath": "skills/lefthook/SKILL.md",
       "computedHash": "976ee8abc6c0c18d2ee7dd823c24a444a50c92558238c9129d345c41b6349bcd"
     },
+    "make": {
+      "source": "Fandhe-AI/agent-reference-skills",
+      "sourceType": "github",
+      "skillPath": "skills/make/SKILL.md",
+      "computedHash": "1f31950974ee19d19907e4c508a1b052d3aa104c4831cad582a24fd3fa8df733"
+    },
     "openai-codex": {
       "source": "Fandhe-AI/agent-reference-skills",
       "sourceType": "github",
