@@ -103,25 +103,27 @@ metadata_json() {
 
 # Windows（Git Bash）の jq は CRLF で出力するため \r を落とす。sort/comm の照合順は C で揃える。
 METADATA="$(metadata_json | tr -d '\r')"
-mapfile -t pkg_names < <(jq -r '.packages[] | select(.source == null) | .name' <<<"${METADATA}" | tr -d '\r' | LC_ALL=C sort -u)
-mapfile -t target_names < <(
+# macOS ランナーの /bin/bash は 3.2 で mapfile・連想配列が無いため、名前集合は改行区切りの
+# 文字列（前後に改行を付ける）で持ち、in_set で部分一致判定する。
+PKG_SET=$'\n'"$(jq -r '.packages[] | select(.source == null) | .name' <<<"${METADATA}" | tr -d '\r' | LC_ALL=C sort -u)"$'\n'
+TARGET_SET=$'\n'"$(
     LC_ALL=C comm -23 \
         <(jq -r '.packages[] | select(.source == null) | .name, .targets[].name' <<<"${METADATA}" \
             | tr -d '\r' | tr '-' '_' | LC_ALL=C sort -u) \
         <(jq -r '.packages[] | select(.source != null)
             | .name, (.targets[] | select(.kind | any(. == "test" or . == "example" or . == "bench") | not) | .name)' \
             <<<"${METADATA}" | tr -d '\r' | tr '-' '_' | LC_ALL=C sort -u)
-)
+)"$'\n'
 
-if [ "${#target_names[@]}" -eq 0 ]; then
+if [ -z "${TARGET_SET//$'\n'/}" ]; then
     echo "エラー: ワークスペースのターゲット名を 1 件も取得できませんでした" >&2
     exit 1
 fi
 
-declare -A is_target=()
-for n in "${target_names[@]}"; do is_target["${n}"]=1; done
-declare -A is_pkg=()
-for n in "${pkg_names[@]}"; do is_pkg["${n}"]=1; done
+# $2 が集合 $1 に含まれるか（右辺はクォートしてグロブ文字を文字どおりに扱う）
+in_set() {
+    [ -n "$2" ] && [[ "$1" == *$'\n'"$2"$'\n'* ]]
+}
 
 removed=0
 remove() {
@@ -164,7 +166,7 @@ slim_profile_dir() {
     for entry in "${profile}/deps"/*; do
         [ -e "${entry}" ] || continue
         artifact_stem "${entry##*/}"
-        if [ -n "${STEM}" ] && [ -n "${is_target[${STEM}]+x}" ]; then
+        if in_set "${TARGET_SET}" "${STEM}"; then
             remove "${entry}"
         fi
     done
@@ -175,7 +177,7 @@ slim_profile_dir() {
         for entry in "${profile}/${sub}"/*; do
             [ -e "${entry}" ] || continue
             dir_pkg "${entry##*/}"
-            if [ -n "${STEM}" ] && [ -n "${is_pkg[${STEM}]+x}" ]; then
+            if in_set "${PKG_SET}" "${STEM}"; then
                 remove "${entry}"
             fi
         done
@@ -187,7 +189,7 @@ slim_profile_dir() {
         base="${entry##*/}"
         stem="${base%%.*}"
         stem="${stem//-/_}"
-        if [ -n "${is_target[${stem}]+x}" ]; then
+        if in_set "${TARGET_SET}" "${stem}"; then
             remove "${entry}"
         fi
     done
