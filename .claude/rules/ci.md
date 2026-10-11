@@ -215,14 +215,21 @@ gh run view <run-id> --json jobs   # ジョブ・ステップ別の startedAt / 
   日付 + hash）を入れる。toolchain は action が毎回導入するので runner イメージの rustc に依存しない。
   入れないと rustc 更新後も旧成果物に exact hit し続け（exact hit では再保存されない）、依存を毎回
   全再ビルドする。pinned nightly の fuzz は `scripts/fuzz.sh` をハッシュに含めて版を反映する
-- ビルド設定（下記の env・slim の対象）を変えたら版 `v<N>` を上げる（旧設定の成果物を引き継いで
-  初回保存が太るのを防ぐ）
+- ビルド設定（下記の env・slim の対象・ルート `Cargo.toml` の `[profile]`）を変えたら版 `v<N>` を
+  上げる（旧設定の成果物を引き継いで初回保存が太るのを防ぐ）。`[profile]` の変更は Cargo.toml の
+  ハッシュでキー自体は切り替わるが、restore-keys で旧版の世代を部分復元すると依存が別の
+  `-C metadata` で再ビルドされ、slim は依存を消さないため新旧の依存成果物が両方保存される。
+  上げるのは設定が効く系統だけでよい（`[profile]` ならルート workspace を dev/test でビルドする系統。
+  独立 workspace の fuzz-smoke・webrtc-e2e・microbench と registry のみの dep-audit は不要）。
+  現在の版は `ci.yml` の workflow `env` 直前のコメントに記録する
 - ツールバイナリは `cargo-tool-<tool>-<version>-<OS>-<arch>`（完全一致のみ）
 
 ### 5. サイズを抑える
 
 - `ci.yml` の workflow `env` で `CARGO_INCREMENTAL=0`・`CARGO_PROFILE_DEV_DEBUG=line-tables-only`
-  （release ビルド＝pay-for-what-you-use のバイナリサイズ計測・microbench・fuzz には影響しない）
+  （release ビルド＝pay-for-what-you-use のバイナリサイズ計測・microbench・fuzz には影響しない）。
+  依存側はルート `Cargo.toml` の `[profile.dev.package."*"]` でも line-tables-only だが、メンバーまで
+  行番号のみにするのは env だけのため env は維持する
 - 保存前に `bash scripts/ci-cache-slim-target.sh [--manifest-path <standalone>] <target>` で
   ワークスペース自身の成果物（lib・テスト・example・bin・incremental・`doc/`）を除き、第三者依存
   だけを残す。actions/checkout が mtime をチェックアウト時刻にするため、ワークスペースのクレートは

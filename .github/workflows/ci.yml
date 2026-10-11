@@ -71,8 +71,20 @@ permissions:
 #   中間生成物（ローカル実測で target の約 16%）は再利用されず、容量と時間を浪費する。
 # - CARGO_PROFILE_DEV_DEBUG=line-tables-only: dev/test プロファイルの debuginfo を
 #   行番号のみに縮める（panic のファイル:行は残る）。release ビルド（pay-for-what-you-use の
-#   バイナリサイズ計測・microbench）・fuzz（release）には影響しない。
-# 両者を変えたらキャッシュキーの版（`-v2-`）を上げる（旧設定の成果物を引き継がないため）。
+#   バイナリサイズ計測・microbench）・fuzz（release）には影響しない。依存（workspace
+#   メンバー以外）はルート Cargo.toml の `[profile.dev.package."*"]` でも line-tables-only に
+#   固定済み（ローカル開発と共用。package 指定は env で上書きした profile 本体より優先されるが
+#   値が同じため衝突しない）。Cargo.toml ではメンバーを full debuginfo のまま残しているため、
+#   メンバーまで行番号のみにする本 env は CI 側で引き続き必要。
+# 両者やルート Cargo.toml の `[profile]` を変えたらキャッシュキーの版（`-v<N>-`）を上げる
+# （キーは Cargo.toml のハッシュで切り替わるが、restore-keys で旧設定の成果物を部分復元すると
+# 依存が別 `-C metadata` で再ビルドされ、新旧の依存成果物が両方入って初回保存が太るため）。
+# 現在の版: ルート workspace を dev/test プロファイルでビルドする clippy / test / doc /
+# pay-for-what-you-use / openapi-two-stage / openapi-ts / coverage は `-v3-`（Cargo.toml へ
+# `[profile.dev.package."*"]` を追加し、依存のビルドスクリプト・proc-macro が debuginfo なし →
+# line-tables-only に変わって、それらに依存する crate の `-C metadata` も連鎖して変わったため）。
+# dep-audit（registry のみ）と、ルートの `[profile]` が効かない独立 workspace の fuzz-smoke /
+# webrtc-e2e / microbench は `-v2-` のまま。
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -180,9 +192,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: clippy-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
+          key: clippy-${{ runner.os }}-v3-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            clippy-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
+            clippy-${{ runner.os }}-v3-${{ steps.toolchain.outputs.cachekey }}-
 
       # --all-features を指定しておくことで、TASK-2.1 以降で feature（plugin-*）が
       # 増えた際にも既定で全 feature を lint 対象にできる。feature 構成別の
@@ -267,9 +279,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: test-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
+          key: test-${{ runner.os }}-v3-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            test-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
+            test-${{ runner.os }}-v3-${{ steps.toolchain.outputs.cachekey }}-
 
       # バージョン固定インストール（dep-audit ジョブと同じ方針）。共通部品
       # cargo-tool-install が「導入済み同一バージョンならスキップ」の冪等判定と
@@ -351,9 +363,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: doc-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
+          key: doc-${{ runner.os }}-v3-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            doc-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
+            doc-${{ runner.os }}-v3-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: cargo doc --workspace --all-features --no-deps
         env:
@@ -698,9 +710,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: pay-for-what-you-use-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
+          key: pay-for-what-you-use-${{ runner.os }}-v3-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            pay-for-what-you-use-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
+            pay-for-what-you-use-${{ runner.os }}-v3-${{ steps.toolchain.outputs.cachekey }}-
 
       # バージョン固定インストール（dep-audit / test ジョブと同じ方針。共通部品
       # cargo-tool-install が冪等判定・導入後の厳密一致検証を担う（サプライチェーン考慮:
@@ -773,9 +785,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: openapi-two-stage-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
+          key: openapi-two-stage-${{ runner.os }}-v3-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            openapi-two-stage-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
+            openapi-two-stage-${{ runner.os }}-v3-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: "openapi-two-stage.sh（stage 1: gen-openapi --check、stage 2: cargo build --all-features）"
         run: bash scripts/openapi-two-stage.sh
@@ -879,9 +891,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: openapi-ts-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
+          key: openapi-ts-${{ runner.os }}-v3-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            openapi-ts-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
+            openapi-ts-${{ runner.os }}-v3-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: "openapi-ts.sh（stage 1: gen-openapi --check、stage 2: schema.d.ts 鮮度検証、stage 3: tsc --noEmit）"
         run: bash scripts/openapi-ts.sh
@@ -1283,9 +1295,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: coverage-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
+          key: coverage-${{ runner.os }}-v3-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            coverage-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
+            coverage-${{ runner.os }}-v3-${{ steps.toolchain.outputs.cachekey }}-
 
       # バージョン固定インストール（dep-audit / test ジョブと
       # 同じ方針。共通部品 cargo-tool-install が冪等判定・導入後の厳密一致検証を担う

@@ -132,3 +132,23 @@ multiple_unsafe_ops_per_block = "deny"
 # フルスクラッチコア）に同一のリリース最適化条件を適用し、比較のノイズ要因を減らす。
 [profile.release]
 lto = true
+
+# 依存クレート（workspace メンバー以外）のデバッグ情報を行番号のみにする。
+# 依存グラフ全体の full debuginfo（統合テスト・example の各バイナリへ静的リンクされる）が
+# ローカルの `target/` の容量とリンク時間を押し上げる。開発時に依存の内部変数・型を
+# デバッガで追う必要は薄いため、それを諦めて両方を減らす。
+# - 残るもの: panic 位置・バックトレースの file:line・プロファイラの行番号
+# - 失うもの: デバッガ（lldb / gdb）で依存クレートの変数・型を見る機能のみ
+# - `"*"` はメンバー以外にだけ効くため、本リポのクレートは full debuginfo のまま
+# - 依存のビルドスクリプト・proc-macro（`build-override` 側の既定は debuginfo なし）にも
+#   適用され行番号付きになる（`build-override` より `package."*"` が優先されるため
+#   打ち消せない）。増分は依存本体の削減に比べて小さい
+# - `test` プロファイルは `dev` を継承するため `cargo test` にも効く。`release`・
+#   `bench`（`release` 継承）は既定どおり debuginfo なしで影響しない。独立 workspace
+#   （`exclude` の fuzz・tests-e2e・microbench）には本ファイルの profile は効かない
+# CI は workflow env `CARGO_PROFILE_DEV_DEBUG=line-tables-only` でメンバーを含む全体を
+# 行番号のみにしている（`.github/workflows/ci.yml` の env 節）。依存に対する値は本設定と
+# 同じで矛盾しない。本設定を変えたら ci.yml のビルドキャッシュキーの版を上げる
+# （`.claude/rules/ci.md`「キャッシュ方針」4 節）。
+[profile.dev.package."*"]
+debug = "line-tables-only"

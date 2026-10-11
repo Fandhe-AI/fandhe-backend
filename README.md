@@ -100,6 +100,14 @@ make docker-test   # コンテナ内で make test-all を実行
 
 エディタ設定は `.editorconfig` で統一しています（Rust は rustfmt と同じ 4 スペース）。
 
+ビルド成果物（`target/`）は肥大化しやすいため、ルート `Cargo.toml` の
+`[profile.dev.package."*"]` で依存クレート（workspace 外）のデバッグ情報を行番号のみに
+しています（`dev`・`test` に効き、本リポのクレートは full debuginfo のままです。panic 位置・
+バックトレースの行番号は残り、デバッガで依存の変数・型を見られなくなるだけです）。
+溜まった古い成果物は `cargo install cargo-sweep` のうえ `cargo sweep --time 14`
+（14 日以上使われていない成果物を削除）や `cargo sweep --installed`（rustup に現存しない
+ツールチェーンでビルドした成果物を削除）で消せます。
+
 ## コントリビュート
 
 開発フロー・コミット規約・設計原則は [`CONTRIBUTING.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/CONTRIBUTING.md) を参照してください。
