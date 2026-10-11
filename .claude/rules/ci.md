@@ -192,6 +192,14 @@ gh run view <run-id> --json jobs   # ジョブ・ステップ別の startedAt / 
    - `hashFiles` からスキルのサンプル（`.agents/**`・`.claude/**` 配下の Cargo.toml）を除外する。
      含めるとスキル更新 PR のたびに全系統のキーが変わり、全ジョブ miss → 全保存 → 追い出しになる
      （#779 で実測: 15/15 ジョブ miss）
+   - 再帰 glob（`**/Cargo.toml`・`**/Cargo.lock` 等）は必ず `!.agents/**`・`!.claude/**` を付ける。
+     `.agents/skills/make/samples/` には Cargo.toml・Cargo.lock があり、`.claude/skills/make` は
+     そこへの symlink のため、除外しないと依存が変わらなくてもキーが変わる
+   - **rustc の実体をキーに含める**: `dtolnay/rust-toolchain` の `steps.toolchain.outputs.cachekey`
+     （rustc の commit 日付 + hash）を使う。toolchain は action が毎回導入するため runner イメージの
+     rustc に依存しない。runner の rustc やキーに出ない toolchain を使うと、rustc 更新後も
+     exact hit したまま旧 rustc の target を復元し、依存を毎回全再ビルドする（他リポジトリで実例）。
+     pinned nightly（fuzz）は `scripts/fuzz.sh` をハッシュに含めて版を反映する
    - SHA・run_id 等の一意値をキーに入れない
    - ビルド設定（下記 env・プロファイル・slim の対象）を変えたら版 `v<N>` を上げる。旧設定の
      成果物を復元して積み増すと、初回保存が「旧 + 新」で逆に太るため
@@ -246,3 +254,18 @@ target 縮小のローカル実測（macOS、`cargo test --workspace --all-featu
 | 従来（incremental・debug=2） | 7.6 GB | ワークスペース成果物 5.1 GB・incremental 1.3 GB・第三者依存 1.3 GB |
 | `CARGO_INCREMENTAL=0` + `line-tables-only` | 4.2 GB | ワークスペース成果物 3.2 GB・第三者依存 1.0 GB |
 | 上記 + `ci-cache-slim-target.sh` | 1.2 GB | 第三者依存のみ（再ビルドはワークスペース 15 クレートのみ） |
+
+変更後（PR #780 の CI、v2 キーは main 未保存のためビルドキャッシュは全系統 cold・ツールは main から hit）:
+
+| 項目 | 値 |
+| --- | --- |
+| PR からの保存 | 0 件（`Save ... (main only)` は全ジョブ skipped、PR スコープのエントリ増加なし） |
+| `cargo-tool-*` | 8 件すべて main スコープに存在し全ジョブで exact hit |
+| `Slim cargo target for cache` | 1〜7 秒（3 OS で動作。macOS の `/bin/bash` 3.2 互換） |
+| ワークフロー所要 | 7.9 分（クリティカルパスは fuzz smoke 7.8 分。fuzz 実行時間が支配的） |
+| `cargo test` cold | ubuntu 2.7 / macOS 3.1 / windows 3.9 分（変更前は warm でも 3.6〜7.2 / 7.0〜15.7 分） |
+| `cargo clippy` cold | 1.3〜1.9 分 |
+
+line-tables-only・incremental 無効化で cold ビルド自体が速くなったため、ビルドキャッシュの寄与は
+ツールキャッシュより小さい。マージ後に main の v2 世代のサイズと warm 時の所要時間を計測し、
+復元時間に見合わないジョブはキャッシュを外す（ルール 7）。
