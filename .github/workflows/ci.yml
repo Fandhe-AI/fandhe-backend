@@ -205,22 +205,12 @@ jobs:
         shell: bash
         run: bash scripts/ci-cache-slim-target.sh target
 
-      - name: TEMP measure cache size (revert before merge)
-        shell: bash
-        run: |
-          for d in "$HOME/.cargo/registry/index" "$HOME/.cargo/registry/cache" "$HOME/.cargo/git/db" target; do
-            [ -e "$d" ] || continue
-            raw=$(du -sm "$d" | cut -f1)
-            zst=$(tar -cf - "$d" 2>/dev/null | zstd -T0 -3 --long=30 -q -c | wc -c)
-            echo "CACHESIZE ${d} raw=${raw}MB zst=$((zst / 1048576))MB"
-          done
-
       # 保存は main のみ（PR は restore のみ。PR スコープのキャッシュは他 PR・main から
       # 参照できず、容量だけ占有して main の世代やツールキャッシュを LRU で追い出す）。
       # primary key に完全一致して復元できた場合は保存しない（同一キーは上書き不可）。
       # 方針: .claude/rules/ci.md「キャッシュ方針」
       - name: Save cargo registry and target (main only)
-        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -309,19 +299,9 @@ jobs:
         shell: bash
         run: bash scripts/ci-cache-slim-target.sh target
 
-      - name: TEMP measure cache size (revert before merge)
-        shell: bash
-        run: |
-          for d in "$HOME/.cargo/registry/index" "$HOME/.cargo/registry/cache" "$HOME/.cargo/git/db" target; do
-            [ -e "$d" ] || continue
-            raw=$(du -sm "$d" | cut -f1)
-            zst=$(tar -cf - "$d" 2>/dev/null | zstd -T0 -3 --long=30 -q -c | wc -c)
-            echo "CACHESIZE ${d} raw=${raw}MB zst=$((zst / 1048576))MB"
-          done
-
       # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
       - name: Save cargo registry and target (main only)
-        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -385,19 +365,9 @@ jobs:
         shell: bash
         run: bash scripts/ci-cache-slim-target.sh target
 
-      - name: TEMP measure cache size (revert before merge)
-        shell: bash
-        run: |
-          for d in "$HOME/.cargo/registry/index" "$HOME/.cargo/registry/cache" "$HOME/.cargo/git/db" target; do
-            [ -e "$d" ] || continue
-            raw=$(du -sm "$d" | cut -f1)
-            zst=$(tar -cf - "$d" 2>/dev/null | zstd -T0 -3 --long=30 -q -c | wc -c)
-            echo "CACHESIZE ${d} raw=${raw}MB zst=$((zst / 1048576))MB"
-          done
-
       # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
       - name: Save cargo registry and target (main only)
-        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -542,7 +512,7 @@ jobs:
 
       # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
       - name: Save cargo registry (main only)
-        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -752,19 +722,9 @@ jobs:
         shell: bash
         run: bash scripts/ci-cache-slim-target.sh target
 
-      - name: TEMP measure cache size (revert before merge)
-        shell: bash
-        run: |
-          for d in "$HOME/.cargo/registry/index" "$HOME/.cargo/registry/cache" "$HOME/.cargo/git/db" target; do
-            [ -e "$d" ] || continue
-            raw=$(du -sm "$d" | cut -f1)
-            zst=$(tar -cf - "$d" 2>/dev/null | zstd -T0 -3 --long=30 -q -c | wc -c)
-            echo "CACHESIZE ${d} raw=${raw}MB zst=$((zst / 1048576))MB"
-          done
-
       # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
       - name: Save cargo registry and target (main only)
-        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -860,19 +820,9 @@ jobs:
         shell: bash
         run: bash scripts/ci-cache-slim-target.sh target
 
-      - name: TEMP measure cache size (revert before merge)
-        shell: bash
-        run: |
-          for d in "$HOME/.cargo/registry/index" "$HOME/.cargo/registry/cache" "$HOME/.cargo/git/db" target; do
-            [ -e "$d" ] || continue
-            raw=$(du -sm "$d" | cut -f1)
-            zst=$(tar -cf - "$d" 2>/dev/null | zstd -T0 -3 --long=30 -q -c | wc -c)
-            echo "CACHESIZE ${d} raw=${raw}MB zst=$((zst / 1048576))MB"
-          done
-
       # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
       - name: Save cargo registry and target (main only)
-        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -948,19 +898,9 @@ jobs:
         shell: bash
         run: bash scripts/ci-cache-slim-target.sh target
 
-      - name: TEMP measure cache size (revert before merge)
-        shell: bash
-        run: |
-          for d in "$HOME/.cargo/registry/index" "$HOME/.cargo/registry/cache" "$HOME/.cargo/git/db" target; do
-            [ -e "$d" ] || continue
-            raw=$(du -sm "$d" | cut -f1)
-            zst=$(tar -cf - "$d" 2>/dev/null | zstd -T0 -3 --long=30 -q -c | wc -c)
-            echo "CACHESIZE ${d} raw=${raw}MB zst=$((zst / 1048576))MB"
-          done
-
       # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
       - name: Save cargo registry and target (main only)
-        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -1102,19 +1042,9 @@ jobs:
         shell: bash
         run: bash scripts/ci-cache-slim-target.sh --manifest-path crates/http/fuzz/Cargo.toml crates/http/fuzz/target
 
-      - name: TEMP measure cache size (revert before merge)
-        shell: bash
-        run: |
-          for d in "$HOME/.cargo/registry/index" "$HOME/.cargo/registry/cache" "$HOME/.cargo/git/db" crates/http/fuzz/target; do
-            [ -e "$d" ] || continue
-            raw=$(du -sm "$d" | cut -f1)
-            zst=$(tar -cf - "$d" 2>/dev/null | zstd -T0 -3 --long=30 -q -c | wc -c)
-            echo "CACHESIZE ${d} raw=${raw}MB zst=$((zst / 1048576))MB"
-          done
-
       # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
       - name: Save cargo registry and fuzz target (main only)
-        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -1178,19 +1108,9 @@ jobs:
         shell: bash
         run: bash scripts/ci-cache-slim-target.sh --manifest-path crates/plugin-webrtc/tests-e2e/Cargo.toml crates/plugin-webrtc/tests-e2e/target
 
-      - name: TEMP measure cache size (revert before merge)
-        shell: bash
-        run: |
-          for d in "$HOME/.cargo/registry/index" "$HOME/.cargo/registry/cache" "$HOME/.cargo/git/db" crates/plugin-webrtc/tests-e2e/target; do
-            [ -e "$d" ] || continue
-            raw=$(du -sm "$d" | cut -f1)
-            zst=$(tar -cf - "$d" 2>/dev/null | zstd -T0 -3 --long=30 -q -c | wc -c)
-            echo "CACHESIZE ${d} raw=${raw}MB zst=$((zst / 1048576))MB"
-          done
-
       # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
       - name: Save cargo registry and e2e target (main only)
-        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -1304,19 +1224,9 @@ jobs:
         shell: bash
         run: bash scripts/ci-cache-slim-target.sh --manifest-path benches/microbench/Cargo.toml benches/microbench/target
 
-      - name: TEMP measure cache size (revert before merge)
-        shell: bash
-        run: |
-          for d in "$HOME/.cargo/registry/index" "$HOME/.cargo/registry/cache" "$HOME/.cargo/git/db" benches/microbench/target; do
-            [ -e "$d" ] || continue
-            raw=$(du -sm "$d" | cut -f1)
-            zst=$(tar -cf - "$d" 2>/dev/null | zstd -T0 -3 --long=30 -q -c | wc -c)
-            echo "CACHESIZE ${d} raw=${raw}MB zst=$((zst / 1048576))MB"
-          done
-
       # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
       - name: Save cargo registry and microbench target (main only)
-        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -1401,19 +1311,9 @@ jobs:
         shell: bash
         run: bash scripts/ci-cache-slim-target.sh target
 
-      - name: TEMP measure cache size (revert before merge)
-        shell: bash
-        run: |
-          for d in "$HOME/.cargo/registry/index" "$HOME/.cargo/registry/cache" "$HOME/.cargo/git/db" target; do
-            [ -e "$d" ] || continue
-            raw=$(du -sm "$d" | cut -f1)
-            zst=$(tar -cf - "$d" 2>/dev/null | zstd -T0 -3 --long=30 -q -c | wc -c)
-            echo "CACHESIZE ${d} raw=${raw}MB zst=$((zst / 1048576))MB"
-          done
-
       # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
       - name: Save cargo registry and target (main only)
-        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |

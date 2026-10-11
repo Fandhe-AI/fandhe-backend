@@ -5,8 +5,8 @@ paths:
   - ".github/actionlint.yaml"
 description: >
   GitHub Actions を編集する際の規約。runner 方針（public は GitHub ホステッド）・必須チェック名と
-  集約ジョブ ci-complete・発火条件・ジョブ追加チェックリスト・計測方法・キャッシュ方針（上限 20 GB・
-  予算 $10・main のみ保存・キー設計）を規定する。
+  集約ジョブ ci-complete・発火条件・ジョブ追加チェックリスト・計測方法・キャッシュ方針（上限 10 GB・
+  Org 予算 $0・main のみ保存・キー設計・サイズ）を規定する。
 ---
 
 # CI 実行環境規約
@@ -167,72 +167,98 @@ gh run view <run-id> --json jobs   # ジョブ・ステップ別の startedAt / 
 
 ## キャッシュ方針
 
-### 前提（2026-10-11）
+### 1. 前提（容量と課金）
 
-- リポジトリのキャッシュ上限は **20 GB**（既定 10 GB から引き上げ）。Actions の予算は **$10/月**
-  （超過時停止）で、**10 GB を超えた分は 1 GB あたり月 $0.07 の課金**になる。定常の main 一式は
-  10 GB 未満（課金ゼロ）に収め、20 GB は世代交代時の一時的な二重化の余裕として使う
-- 上限を超えると GitHub は **最終アクセス時刻の古い順（LRU）** に追い出す。restore は run 冒頭、
-  save は数分後に集中するため、1 run の保存量が空き容量を超えると、その run の冒頭で復元した
-  数 MB のツールキャッシュ（`cargo-tool-*`）が直後に保存した数 GB より「古い」と判定されて
-  先に消える。ツールキャッシュを守る条件は「保存総量を上限より十分小さく保つ」ことで、
-  キー設計では守れない。7 日間アクセスの無いキャッシュも削除される
+- キャッシュ上限はリポジトリあたり **10 GB**（Org 設定も 10 GB）。超えると **最終アクセス時刻の
+  古い順（LRU）** に追い出され、7 日間アクセスの無いキャッシュは削除される
+- Org の Actions 予算は **$0（超過時停止）** のため、10 GB を超える上限は使えない（上げると 10 GB を
+  超えた時点でキャッシュが読み取り専用になる）。上限・予算の変更はユーザー判断
 - PR（`refs/pull/<n>/merge`）スコープのキャッシュは同じ PR からしか復元できない。main スコープは
   全 PR から復元できる
+- 本リポジトリの現状（2026-10-11）: GitHub ホステッド runner（使い捨て VM）で、`ci.yml` の
+  ビルド系ジョブが cargo registry + `target` を `actions/cache/restore`・`save` でキャッシュし、
+  `cargo install` するツールは `./.github/actions/cargo-tool-install-cached`（`~/.cargo/bin/<tool>*`）、
+  `pages.yml` は docs-site のインストール結果をキャッシュする。#780 前は 12.2〜16.5 GB / 18〜23 件で
+  上限超過が常態化し、ツールキャッシュが全滅していた
 
-### ルール
+### 2. 入れる前に効果を測る
 
-1. **保存は main のみ**。ビルドキャッシュは `actions/cache/restore`（`id: cargo-cache`）と
-   `actions/cache/save`（`if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'`、
-   `key: ${{ steps.cargo-cache.outputs.cache-primary-key }}`、`path` は restore と完全一致）に分割し、
-   PR は restore のみにする。トレードオフ: Cargo.toml を変える PR は 2 回目以降の push でも
-   main の世代から部分復元（restore-keys）になる（同じ PR 内での exact hit は無くなる）
-2. **キー**: `<family>-${{ runner.os }}-v<N>-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}`、
-   restore-keys は `<family>-${{ runner.os }}-v<N>-${{ steps.toolchain.outputs.cachekey }}-`。
-   - `hashFiles` からスキルのサンプル（`.agents/**`・`.claude/**` 配下の Cargo.toml）を除外する。
-     含めるとスキル更新 PR のたびに全系統のキーが変わり、全ジョブ miss → 全保存 → 追い出しになる
-     （#779 で実測: 15/15 ジョブ miss）
-   - 再帰 glob（`**/Cargo.toml`・`**/Cargo.lock` 等）は必ず `!.agents/**`・`!.claude/**` を付ける。
-     `.agents/skills/make/samples/` には Cargo.toml・Cargo.lock があり、`.claude/skills/make` は
-     そこへの symlink のため、除外しないと依存が変わらなくてもキーが変わる
-   - **rustc の実体をキーに含める**: `dtolnay/rust-toolchain` の `steps.toolchain.outputs.cachekey`
-     （rustc の commit 日付 + hash）を使う。toolchain は action が毎回導入するため runner イメージの
-     rustc に依存しない。runner の rustc やキーに出ない toolchain を使うと、rustc 更新後も
-     exact hit したまま旧 rustc の target を復元し、依存を毎回全再ビルドする（他リポジトリで実例）。
-     pinned nightly（fuzz）は `scripts/fuzz.sh` をハッシュに含めて版を反映する
-   - SHA・run_id 等の一意値をキーに入れない
-   - ビルド設定（下記 env・プロファイル・slim の対象）を変えたら版 `v<N>` を上げる。旧設定の
-     成果物を復元して積み増すと、初回保存が「旧 + 新」で逆に太るため
-3. **保存前に target を縮める**: `bash scripts/ci-cache-slim-target.sh [--manifest-path <standalone>] <target>`
-   でワークスペース自身の成果物（lib・テスト・example・bin・incremental・`doc/`）を除く。
-   actions/checkout が mtime をチェックアウト時刻にするため、ワークスペースのクレートは
-   復元しても毎回再ビルドされ、保存しても再利用されない。第三者依存の成果物だけを残す。
-   PR でも実行してスクリプトの退行を 3 OS で検知する（数秒）
-4. **ビルド設定**: `ci.yml` の workflow `env` で `CARGO_INCREMENTAL=0`・
-   `CARGO_PROFILE_DEV_DEBUG=line-tables-only`。release ビルド（pay-for-what-you-use のバイナリ
-   サイズ計測・microbench）・fuzz には影響しない
-5. **旧世代の削除**: main への push 後に `cache-prune` ジョブ（`scripts/ci-cache-prune-generations.sh`、
-   `actions: write`）が、main スコープの同じ `<family>-<OS>` で最大版・最新の 1 件だけを残す。
-   品質ゲートではないため `ci-complete` の needs・required check には含めない（PR では skipped）
-6. **ツールバイナリ**は `./.github/actions/cargo-tool-install-cached`（数 MB、
-   `cargo-tool-<tool>-<version>-<OS>-<arch>`）。小さいため PR からの保存も許容する
-   （main 未保存のバージョンを PR が導入した場合のみ PR スコープに保存される）。
-   週次の `bench-schedule.yml` だけが使う `oha` は 7 日の未使用期限と同じ周期のため、
-   消えていればソースビルドにフォールバックする
-7. キャッシュを新設・拡大する場合は、main 一式が 10 GB 未満に収まるかを下記コマンドで確認し、
-   本節の実測表を更新する。効果（復元時間 < 節約時間）が無いジョブにはキャッシュを付けない
+- ホステッド runner はジョブ間で何も残らないため、self-hosted のような「runner に残る資産と二重に
+  なる」問題は無い。ただし復元時間 > 節約時間のジョブもありうるので、キャッシュを足す・残す前に
+  ログ（`Cache Size`・復元ステップの秒数・`Compiling` の件数）で効果を確かめる
+- 実測: ツールキャッシュは効果が大きい（`cargo-nextest` のソースビルド最大 7 分強が数秒の復元に
+  なる。ワークフロー全体で約 15 分 → 約 8 分）。ビルドキャッシュは `CARGO_INCREMENTAL=0`・
+  `line-tables-only` 導入後は cold でも `cargo test` 2.7〜3.9 分・`cargo clippy` 1.3〜1.9 分と
+  速く、寄与は小さい。#780 マージ後の main で warm 時の所要時間を測り、効果の無いジョブは外す
 
-### 計測方法
+### 3. 保存は main への push だけ
+
+- ビルドキャッシュは `actions/cache/restore`（`id: cargo-cache`、全イベント）と `actions/cache/save`
+  （`if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'`、
+  `key: ${{ steps.cargo-cache.outputs.cache-primary-key }}`、`path` は restore と完全一致）に分ける。
+  PR から保存すると、その PR しか読めないキャッシュが上限を共有して main の世代を追い出す
+- トレードオフ: Cargo.toml を変える PR は 2 回目以降の push でも main の世代からの部分復元になる
+- 例外: ツールバイナリ（`cargo-tool-install-cached`、数 MB）は一体型の `actions/cache` のままとし、
+  main 未保存のバージョンを PR が導入した場合のみ PR スコープに保存されることを許容する
+
+### 4. キーの設計
+
+- ビルドキャッシュのキーは
+  `<family>-${{ runner.os }}-v<N>-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}`、
+  restore-keys は `<family>-${{ runner.os }}-v<N>-${{ steps.toolchain.outputs.cachekey }}-`（キーが
+  変わっても同じ toolchain の直近世代から部分復元し cold にしない）。`github.sha`・`run_id` は入れない
+- 依存の入力: ルートの Cargo.lock はコミットしない方針のため、ワークスペース各所の Cargo.toml を
+  入力にする。再帰 glob には必ず `!.agents/**`・`!.claude/**` を付ける。`.agents/skills/make/samples/`
+  には Cargo.toml・Cargo.lock があり、`.claude/skills/make` はそこへの symlink のため、除外しないと
+  スキル更新だけで全系統のキーが変わる（#779 で 15/15 ジョブ miss → 全保存 → 追い出しを実測）
+- ツールチェーン: `dtolnay/rust-toolchain` の `steps.toolchain.outputs.cachekey`（rustc の commit
+  日付 + hash）を入れる。toolchain は action が毎回導入するので runner イメージの rustc に依存しない。
+  入れないと rustc 更新後も旧成果物に exact hit し続け（exact hit では再保存されない）、依存を毎回
+  全再ビルドする。pinned nightly の fuzz は `scripts/fuzz.sh` をハッシュに含めて版を反映する
+- ビルド設定（下記の env・slim の対象）を変えたら版 `v<N>` を上げる（旧設定の成果物を引き継いで
+  初回保存が太るのを防ぐ）
+- ツールバイナリは `cargo-tool-<tool>-<version>-<OS>-<arch>`（完全一致のみ）
+
+### 5. サイズを抑える
+
+- `ci.yml` の workflow `env` で `CARGO_INCREMENTAL=0`・`CARGO_PROFILE_DEV_DEBUG=line-tables-only`
+  （release ビルド＝pay-for-what-you-use のバイナリサイズ計測・microbench・fuzz には影響しない）
+- 保存前に `bash scripts/ci-cache-slim-target.sh [--manifest-path <standalone>] <target>` で
+  ワークスペース自身の成果物（lib・テスト・example・bin・incremental・`doc/`）を除き、第三者依存
+  だけを残す。actions/checkout が mtime をチェックアウト時刻にするため、ワークスペースのクレートは
+  復元しても毎回再ビルドされ、保存しても再利用されない。PR でも実行して 3 OS で退行を検知する
+- main への push 後に `cache-prune` ジョブ（`scripts/ci-cache-prune-generations.sh`、`actions: write`）が
+  main スコープの同じ `<family>-<OS>` で最大版・最新の 1 件だけを残し、旧世代を即時削除する
+  （品質ゲートではないため `ci-complete` の needs・required check には含めない）
+- キャッシュ種別・OS を増やすときは「1 件のサイズ × 種別 × OS」を見積もり、main 1 世代が
+  10 GB に余裕をもって収まることを確認する
+
+### 6. 追い出されても hit する設計
+
+- 毎回読まれる main の最新世代とツールキャッシュは LRU で最後まで残る。キー切替時は新世代の保存
+  直後に `cache-prune` が旧世代を消すため、新旧並存は一時的（1 世代 約 2.0 GB × 2 + ツール）
+- 1 run の保存量が空き容量を超えると、run 冒頭に復元したツールキャッシュが直後に保存した大きい
+  キャッシュより「古い」と判定されて先に消える（#780 前に全滅した原因）。保存は main 1 世代分に
+  限り、その合計を上限より十分小さく保つ。この状態なら上限を上げる必要はない
+
+### 7. 計測コマンド
 
 ```bash
-gh api repos/Fandhe-AI/fandhe-backend/actions/cache/usage                 # 使用量
-gh api repos/Fandhe-AI/fandhe-backend/actions/cache/storage-limit         # 上限
-gh api --paginate "repos/Fandhe-AI/fandhe-backend/actions/caches?per_page=100" \
-  --jq '.actions_caches[] | [.key, .ref, .size_in_bytes, .created_at, .last_accessed_at] | @tsv'
-# ヒット判定（exact = primary key で復元 / partial = restore-keys で別キー / miss = Cache not found）
+gh api repos/Fandhe-AI/fandhe-backend/actions/cache/usage
+gh cache list -R Fandhe-AI/fandhe-backend -L 100          # key・サイズ・ref
 gh run view <run-id> --log | grep -E "Cache restored from key|Cache not found for input keys|Cache saved with key|Cache Size"
-bash scripts/ci-cache-prune-generations.sh --dry-run                     # 旧世代の削除対象
+# primary key と一致 = exact、別キー = partial（restore-keys）、Cache not found = miss
+bash scripts/ci-cache-prune-generations.sh --dry-run    # main の旧世代
+gh cache delete <id> -R Fandhe-AI/fandhe-backend          # 共有状態なので対象を確認してから
 ```
+
+### 8. チェックリスト
+
+ワークフローにキャッシュを追加・変更する PR では、本文に次を確認したことを書く:
+効果の実測（2）、保存条件が main への push のみ（3）、キーの入力・toolchain・`!.agents/**`
+`!.claude/**`・版（4）、1 世代のサイズ見積もりと 10 GB への収まり（5）。新しいビルド系ジョブは
+既存ジョブの 3 ステップ（`Cache cargo registry and target` / `Slim cargo target for cache` /
+`Save ... (main only)`）をコピーして付ける。
 
 ### 実測（2026-10-11）
 
@@ -240,32 +266,27 @@ bash scripts/ci-cache-prune-generations.sh --dry-run                     # 旧�
 
 | 項目 | 値 |
 | --- | --- |
-| 使用量 | 16.5 GB / 18 件（当時の上限 10 GB を超過、追い出し待ち） |
-| main スコープ | 8.2 GB / 13 件（`test-Linux` 2.9・`coverage` 2.9 GB 等。`test-macOS`/`test-Windows` は追い出し済み） |
-| PR スコープ（マージ済み #778/#779） | 8.2 GB / 6 件（`test-Windows` 2.2 GB × 2・`coverage` 2.9 GB 等、誰も復元できない死蔵） |
+| 使用量 | 16.5 GB / 18 件（上限 10 GB を超過） |
+| main スコープ 1 世代 | 約 11.6 GB（`test-Linux` 2.9・`coverage` 2.9・`test-Windows` 2.1・`test-macOS` 1.2〜2.1 GB 等） |
+| PR スコープ | マージ済み #778/#779 の 8.2 GB / 6 件（他から復元できない死蔵） |
 | `cargo-tool-*` | 0 件（#778 の PR スコープで作成後、LRU で全滅） |
 | ヒット率 | exact 95（63%）/ partial 11（7%）/ miss 44（29%） |
 | miss の原因 | スキルサンプルの Cargo.toml によるキー変化（#778・#779）と追い出し（38119559192 で `test-Linux-…-` の prefix すら見つからない） |
 
-target 縮小のローカル実測（macOS、`cargo test --workspace --all-features --no-run`、非圧縮）:
+変更後（#780 の PR CI。PR は保存しないため、保存対象を zstd で圧縮した実測値で見積もり）:
 
-| 設定 | target | 内訳 |
-| --- | --- | --- |
-| 従来（incremental・debug=2） | 7.6 GB | ワークスペース成果物 5.1 GB・incremental 1.3 GB・第三者依存 1.3 GB |
-| `CARGO_INCREMENTAL=0` + `line-tables-only` | 4.2 GB | ワークスペース成果物 3.2 GB・第三者依存 1.0 GB |
-| 上記 + `ci-cache-slim-target.sh` | 1.2 GB | 第三者依存のみ（再ビルドはワークスペース 15 クレートのみ） |
-
-変更後（PR #780 の CI、v2 キーは main 未保存のためビルドキャッシュは全系統 cold・ツールは main から hit）:
-
-| 項目 | 値 |
+| 系統 | 1 件（registry + target、圧縮後） |
 | --- | --- |
-| PR からの保存 | 0 件（`Save ... (main only)` は全ジョブ skipped、PR スコープのエントリ増加なし） |
-| `cargo-tool-*` | 8 件すべて main スコープに存在し全ジョブで exact hit |
-| `Slim cargo target for cache` | 1〜7 秒（3 OS で動作。macOS の `/bin/bash` 3.2 互換） |
-| ワークフロー所要 | 7.9 分（クリティカルパスは fuzz smoke 7.8 分。fuzz 実行時間が支配的） |
-| `cargo test` cold | ubuntu 2.7 / macOS 3.1 / windows 3.9 分（変更前は warm でも 3.6〜7.2 / 7.0〜15.7 分） |
-| `cargo clippy` cold | 1.3〜1.9 分 |
+| `test-{Linux,macOS,Windows}` | 189 / 165 / 205 MB（変更前 2,873 / 1,188〜2,064 / 2,140 MB） |
+| `clippy-{Linux,macOS,Windows}` | 150 / 125 / 160 MB |
+| `coverage` / `pay-for-what-you-use` / `openapi-two-stage` | 190 / 263 / 182 MB |
+| `doc` / `webrtc-e2e` / `dep-audit` / `microbench` / `openapi-ts` / `fuzz-smoke` | 133 / 121 / 約 82 / 51 / 18 / 14 MB |
+| **main 1 世代の合計** | **約 2.0 GB**（変更前 約 11.6 GB）＋ ツール 8 件 約 45 MB |
 
-line-tables-only・incremental 無効化で cold ビルド自体が速くなったため、ビルドキャッシュの寄与は
-ツールキャッシュより小さい。マージ後に main の v2 世代のサイズと warm 時の所要時間を計測し、
-復元時間に見合わないジョブはキャッシュを外す（ルール 7）。
+- キー切替時の並存（新旧 2 世代）でも約 4 GB で、10 GB の半分以下。PR からの保存は 0 件、
+  ツールキャッシュは全ジョブで main から exact hit
+- `Slim cargo target for cache` は 1〜7 秒。ワークフロー所要は 7.9 分（クリティカルパスは
+  fuzz smoke 7.8 分で fuzz 実行時間が支配的）
+- ローカル（macOS、`cargo test --workspace --all-features --no-run`、非圧縮）: 従来 7.6 GB →
+  incremental 無効 + `line-tables-only` で 4.2 GB → slim 後 1.2 GB（slim 後の再ビルドは
+  ワークスペース 15 クレートのみ）
