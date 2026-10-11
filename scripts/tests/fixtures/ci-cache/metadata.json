@@ -1,0 +1,21 @@
+{
+  "packages": [
+    {"name": "demo-core", "source": null, "targets": [
+      {"kind": ["lib"], "name": "demo_core"},
+      {"kind": ["test"], "name": "http_flow"},
+      {"kind": ["test"], "name": "interceptor"},
+      {"kind": ["example"], "name": "minimal"}
+    ]},
+    {"name": "demo-cli", "source": null, "targets": [
+      {"kind": ["bin"], "name": "demo-cli"}
+    ]},
+    {"name": "serde", "source": "registry+https://github.com/rust-lang/crates.io-index", "targets": [
+      {"kind": ["lib"], "name": "serde"},
+      {"kind": ["custom-build"], "name": "build-script-build"}
+    ]},
+    {"name": "interceptor", "source": "registry+https://github.com/rust-lang/crates.io-index", "targets": [
+      {"kind": ["lib"], "name": "interceptor"},
+      {"kind": ["test"], "name": "http_flow"}
+    ]}
+  ]
+}

@@ -65,6 +65,8 @@ req6-typescript-types.md` 参照）。
 | スクリプト | 用途 | CI との対応 |
 |-----------|------|-------------|
 | `dep-audit.sh` | 全 feature 構成で `cargo audit`（`audit-triage.sh` 経由）・`cargo deny check` を実行する依存監査 | `.github/workflows/ci.yml` の `dep-audit` ジョブから呼ばれる |
+| `ci-cache-slim-target.sh` | ビルドキャッシュ保存前に target からワークスペース自身の成果物（lib・テスト・example・bin・incremental・`doc/`）を除き、第三者依存の成果物だけを残す（`--dry-run` あり） | `.github/workflows/ci.yml` のビルド系ジョブの `Slim cargo target for cache` ステップから呼ばれる（方針は `.claude/rules/ci.md`「キャッシュ方針」） |
+| `ci-cache-prune-generations.sh` | main スコープの Actions キャッシュから、同じ `<family>-<OS>` のビルドキャッシュの旧世代を削除し最新 1 件だけを残す（`--dry-run` / `--input` あり） | `.github/workflows/ci.yml` の `cache-prune` ジョブ（main への push のみ）から呼ばれる。セルフテストは `tests/run-ci-cache-tests.sh` |
 | `openapi-two-stage.sh` | `gen-openapi` CLI（`fandhe-backend-plugin-openapi` の `gen-cli` feature）を `--check` 実行し `crates/plugin-openapi/openapi.json` の鮮度を検証してから `cargo build --workspace --all-features` を実行する（`--update` で in-place 再生成も可能） | `.github/workflows/ci.yml` の `openapi-two-stage` ジョブから呼ばれる |
 | `audit-triage.sh` | `cargo audit --json` の指摘を「自動更新提案」「要エスカレーション」「情報（記録・監視）」に分類し、改善提案の必須 5 項目（背景・根拠データ／影響範囲／対応方針／検証方法／リスク、`docs/design/improvement-proposal-flow.md` 4 節、#226）を満たす形式で markdown レポートを生成する | `dep-audit.sh` から呼ばれる。`dep-audit` ジョブは schedule / workflow_dispatch 実行時に限り、検知結果を Issue（`audit-triage` ラベル）として起票する |
 | `unsafe-triage.sh` | workspace（`crates/*/src`・`crates/*/tests`）の `unsafe` 使用数を `unsafe-baseline.json` と比較し、増加・SAFETY コメント欠落を検知する | `.github/workflows/ci.yml` の `unsafe-triage` ジョブから呼ばれる |

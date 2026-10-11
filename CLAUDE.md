@@ -1031,6 +1031,9 @@ fandhe-backend/
 │   ├── help.sh                        # Make 非依存の操作一覧（`make help` と手動同期）
 │   ├── hooks.sh                       # lefthook install（`make hooks` / `make setup` から）
 │   ├── dep-audit.sh                   # 全 feature 構成の cargo audit / cargo deny check（ci.yml dep-audit ジョブ）
+│   ├── ci-cache-slim-target.sh        # ビルドキャッシュ保存前の target 縮小（ワークスペース成果物を除去、ci.yml）
+│   ├── ci-cache-prune-generations.sh  # main の旧世代ビルドキャッシュ削除（ci.yml cache-prune ジョブ、
+│   │                                    # セルフテストは tests/run-ci-cache-tests.sh。方針は .claude/rules/ci.md）
 │   ├── dep-impact.sh                  # 依存クレート数・バイナリサイズ・unsafe 件数の計測（markdown 出力）
 │   ├── setup-required-checks.sh       # main の実際の保護 ruleset `main-protection`（TASK-14.1、
 │   │                                    # #39・TASK-14.3、#41）の定義・適用・`--check` による
