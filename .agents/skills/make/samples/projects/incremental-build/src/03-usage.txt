@@ -1,6 +1,0 @@
-Usage
-=====
-
-This fragment describes usage. `make` is the file-dependency and
-incremental-build source of truth in this sample; there is no
-separate build system reimplementing the dependency graph.
