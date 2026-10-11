@@ -12,7 +12,7 @@
 #   - deps/(lib)<target 名>-<16hex>[.*]   ワークスペースのターゲット（lib/test/example/bin）
 #   - .fingerprint/<パッケージ名>-* / build/<パッケージ名>-*
 #   - examples/ / incremental/              （example はワークスペース由来のみ）
-#   - プロファイル直下の <target 名>[.*]     （bin の実体・.d・.pdb 等）
+#   - プロファイル直下の (lib)<target 名>[.*] （bin の実体・lib の .rlib/.so/.dylib/.dll・.d・.pdb 等）
 #   - TARGET_DIR/doc                        （`cargo doc --no-deps` の出力。毎回再生成される）
 # 第三者依存の成果物は残す（名前が偶然一致した場合は次回再ビルドされるだけで、正当性には
 # 影響しない。cargo は成果物の欠落を検知して再ビルドする）。
@@ -183,13 +183,15 @@ slim_profile_dir() {
         done
     done
 
-    # プロファイル直下のファイル（bin の実体・.d・.pdb・.exe）。ディレクトリは触らない。
+    # プロファイル直下のファイル（bin の実体・.exe・.pdb、lib の lib<name>.rlib/.rmeta/.so/
+    # .dylib/.a と Windows の <name>.dll/.lib、各 .d）。deps/ の成果物へのハードリンクのため、
+    # 残すと deps/ 側を消しても容量が減らない。ディレクトリは触らない。
     for entry in "${profile}"/*; do
         [ -f "${entry}" ] || continue
         base="${entry##*/}"
         stem="${base%%.*}"
         stem="${stem//-/_}"
-        if in_set "${TARGET_SET}" "${stem}"; then
+        if in_set "${TARGET_SET}" "${stem}" || in_set "${TARGET_SET}" "${stem#lib}"; then
             remove "${entry}"
         fi
     done

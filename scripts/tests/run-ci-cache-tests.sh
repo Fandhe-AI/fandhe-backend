@@ -62,7 +62,9 @@ make_profile() {
         "${p}/deps/libserde-${H}.rlib" "${p}/deps/serde-${H}.d" \
         "${p}/deps/libinterceptor-${H}.rlib" \
         "${p}/examples/minimal-${H}" \
-        "${p}/demo-cli" "${p}/demo-cli.d" "${p}/demo-cli.exe" "${p}/keep-me.txt"
+        "${p}/demo-cli" "${p}/demo-cli.d" "${p}/demo-cli.exe" "${p}/keep-me.txt" \
+        "${p}/libdemo_core.rlib" "${p}/libdemo_core.d" "${p}/libdemo_core.dylib" "${p}/demo_core.dll" \
+        "${p}/libserde.rlib"
     mkdir -p "${p}/.fingerprint/demo-core-${H}" "${p}/.fingerprint/serde-${H}" \
         "${p}/build/demo-cli-${H}" "${p}/build/serde-${H}"
 }
@@ -102,6 +104,11 @@ for prof in "${T}/debug" "${T}/x86_64-unknown-linux-gnu/release"; do
     assert_absent "${label}: プロファイル直下の bin を消す" "${prof}/demo-cli"
     assert_absent "${label}: プロファイル直下の bin の .d を消す" "${prof}/demo-cli.d"
     assert_absent "${label}: プロファイル直下の bin の .exe を消す" "${prof}/demo-cli.exe"
+    assert_absent "${label}: プロファイル直下の lib の .rlib（deps へのハードリンク）を消す" "${prof}/libdemo_core.rlib"
+    assert_absent "${label}: プロファイル直下の lib の .d を消す" "${prof}/libdemo_core.d"
+    assert_absent "${label}: プロファイル直下の lib の .dylib を消す" "${prof}/libdemo_core.dylib"
+    assert_absent "${label}: プロファイル直下の lib の .dll（Windows）を消す" "${prof}/demo_core.dll"
+    assert_exists "${label}: プロファイル直下の第三者依存の .rlib を残す" "${prof}/libserde.rlib"
     assert_absent "${label}: ワークスペースの .fingerprint を消す" "${prof}/.fingerprint/demo-core-${H}"
     assert_absent "${label}: ワークスペースの build を消す" "${prof}/build/demo-cli-${H}"
     assert_exists "${label}: 第三者依存の rlib を残す" "${prof}/deps/libserde-${H}.rlib"
