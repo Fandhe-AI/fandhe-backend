@@ -1,3 +1,13 @@
+---
+paths:
+  - ".github/workflows/**"
+  - ".github/actions/**"
+  - ".github/actionlint.yaml"
+description: >
+  GitHub Actions を編集する際の規約。runner 方針（public は GitHub ホステッド）・必須チェック名と
+  集約ジョブ ci-complete・発火条件・ジョブ追加チェックリスト・計測方法を規定する。
+---
+
 # CI 実行環境規約
 
 ## Runner 方針（GitHub ホステッド既定）
@@ -80,3 +90,77 @@ self-hosted 専用 runner 例外を含む）を参照し、本節では書き写
 | timeout の確認 | 各ジョブに `timeout-minutes` があることを目視確認 |
 
 CI ジョブ構成の変更時は本ルールへの準拠を `reviewer` が確認する。
+
+## 必須チェックと集約ジョブ
+
+ruleset `main-protection` の required status checks は **ジョブ名（`name:`）** で参照される
+（2026-10-11 時点。実体は `gh api repos/Fandhe-AI/fandhe-backend/rulesets` で確認する）。
+
+- `ci.yml` の全ジョブ名（matrix は `cargo fmt --check (<os>)` / `cargo clippy (<os>)` /
+  `cargo test (<os>)` の 3 OS 展開名ごと）と集約ジョブ `ci-complete`
+- `ai-review.yml` の `codex / preflight`・`codex / review`・`codex / post_feedback`
+- 外部アプリの `Cursor Bugbot`
+- branch protection（classic）は未設定。ruleset のみが正
+
+守ること:
+
+- **ジョブ名（`name:`）・matrix の os 一覧を変えると required check が pending のまま
+  マージ不能になる**。変更は ruleset の更新（`scripts/setup-required-checks.sh`）と同時にユーザー判断を仰ぐ
+- ジョブを追加したら `ci-complete` の `needs` とシェル判定（`RESULT_*`）にも追加する
+  （[[git-hooks]] の判断手順 3 と同じ）
+- **required check を含む workflow に workflow 単位の `paths` / `paths-ignore` を付けない**
+  （一致しないとチェックが報告されず pending のままになる）。matrix ジョブをジョブレベルの
+  `if` で skipped にすると、展開前の名前（`${{ matrix.os }}` 未展開）で報告され
+  `cargo fmt --check (ubuntu-latest)` 等の required check が満たされない。変更検知で省略する
+  場合はステップレベルの `if` を使い、ジョブ自体は常に実行して success を返す
+- `standalone-crates-io.yml` は required ではないため workflow 単位の `paths` を許容する
+
+## 発火条件の方針
+
+- `pull_request`（`branches: [main]`）と `push`（`branches: [main]`）のみ。feature ブランチへの
+  `push` トリガーは付けない（PR と二重実行になる）
+- `concurrency` は `group: <workflow>-${{ github.ref }}` +
+  `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`（PR のみ打ち切り。main・
+  schedule・tag・release 系は打ち切らない）。リリース・pages・bench 系は `cancel-in-progress: false`
+- draft PR の扱い: 現状は draft でも実行する（required check の skipped 化は上記の通り
+  マージ不能リスクがあるため、導入する場合はユーザー判断）
+- schedule は軽量に保つ（上記「運用ルール」）。頻度: ci.yml 日次 / update-external.yml 日次 /
+  bench-schedule.yml 週次 + 月次 / standalone-crates-io.yml 週次。増やさない
+- `merge_group` は未使用（merge queue 未導入）
+
+## ジョブ・ワークフロー追加チェックリスト
+
+1. 新しいワークフローを増やさず、既存 `ci.yml` へジョブを追加する（トリガーが同じなら統合）
+2. `ci-complete` の `needs` と判定へ追加し、ruleset の required check へ追加する（ユーザー判断事項）
+3. `runs-on` は `ubuntu-latest`（上記 runner 方針）、`timeout-minutes` を設定、`permissions` は最小
+4. 不要な `needs` を作らない（直列化すると wall-clock が伸びる。集約は `ci-complete` のみ）
+5. checkout は既定の `fetch-depth: 1`、submodule は必要なジョブだけ取得する
+6. ビルドを伴うなら `Cache cargo registry and target`（`actions/cache`）を付ける。
+    `cargo install` で導入するツールは `./.github/actions/cargo-tool-install-cached` を使う
+    （`~/.cargo/bin/<tool>*` をバージョン込みキーでキャッシュし、導入検証は
+    `Fandhe-AI/actions/cargo-tool-install` に委ねる）。素の `cargo install` をステップに書かない
+7. action のピン止めは既存と同じ（サードパーティはコミット SHA。`Fandhe-AI/actions` は `@latest`）
+8. 処理の定義は `scripts/*.sh` に置き、ワークフローは呼ぶだけにする（ローカルで再現できること。
+    [[makefile]] 参照）。lefthook と重複する検査は CI 側を正とする（[[git-hooks]]）
+9. 変更後は `actionlint`（`bash scripts/actionlint.sh`）を通し、PR の CI で前後の所要時間を比較する
+
+## 計測方法
+
+```bash
+gh run list --workflow ci.yml --limit 30 --json databaseId,conclusion,createdAt,updatedAt,event
+gh run view <run-id> --json jobs   # ジョブ・ステップ別の startedAt / completedAt
+```
+
+## 棚卸し結果（2026-10-11、直近 30 run 実測）
+
+| workflow | 中央値 | 最大 | 備考 |
+| --- | --- | --- | --- |
+| ci.yml | 15.3 分 | 20.6 分 | クリティカルパスは `cargo test (windows-latest)` 16 分（cargo-nextest のソースビルド 7.4 分） |
+| ai-review.yml | 1.6 分 | 32.9 分 | self-hosted codex 専用 runner（例外） |
+| pages.yml / standalone-crates-io.yml / update-external.yml | 1.3〜1.8 分 | 3.5 分 | 軽量 |
+| bench-schedule.yml | 20.2 分 | 89.2 分 | 週次・月次のみ |
+| release.yml | 16.9 分 | 62.5 分 | タグ時のみ |
+
+`cargo install` 由来のソースビルドが最長ジョブの大半を占めていたため、ツールバイナリを
+キャッシュする方針を採った（`cargo-nextest` / `cargo-geiger` / `cargo-llvm-cov` / `cargo-fuzz` /
+`cargo-audit` / `cargo-deny` / `oha`）。release.yml は検証経路の保守性を優先し対象外。

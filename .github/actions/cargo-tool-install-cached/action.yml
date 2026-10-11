@@ -1,0 +1,40 @@
+name: Cargo Tool Install (cached)
+description: >-
+  Fandhe-AI/actions/cargo-tool-install の前段に ~/.cargo/bin のバイナリキャッシュを挟む薄いラッパー。
+  cargo install のソースビルド（cargo-nextest で最大 7 分強）を 2 回目以降の実行で省く。
+
+# バージョン固定・導入後の厳密一致検証（fail-closed）は cargo-tool-install 側が引き続き担う。
+# キャッシュが miss / 破損 / 別バージョンだった場合は同アクションが従来どおり
+# `cargo install --locked` へフォールバックするため、キャッシュは正当性の前提にならない。
+# キャッシュ対象は ~/.cargo/bin/<tool>*（Windows の .exe を含む）のみで、cargo registry や
+# target/ は含めない（各ジョブの Cache cargo registry and target ステップが別途担当）。
+# 運用規約: .claude/rules/ci.md
+
+inputs:
+  tool:
+    description: 'crates.io のクレート名（例: cargo-nextest）'
+    required: true
+  version:
+    description: '固定するバージョン（例: 0.9.137）'
+    required: true
+  binary-name:
+    description: '導入後に呼び出すコマンド名（省略時はクレート名）'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # actions/cache v6.1.0（ci.yml の Cache cargo registry and target と同一 SHA）
+    - name: Restore cached ${{ inputs.tool }} binary
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: ~/.cargo/bin/${{ inputs.tool }}*
+        key: cargo-tool-${{ inputs.tool }}-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}
+
+    - name: Ensure ${{ inputs.tool }} ${{ inputs.version }}
+      uses: Fandhe-AI/actions/cargo-tool-install@latest
+      with:
+        tool: ${{ inputs.tool }}
+        version: ${{ inputs.version }}
+        binary-name: ${{ inputs.binary-name }}

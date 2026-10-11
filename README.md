@@ -78,7 +78,7 @@ git clone git@github.com:Fandhe-AI/fandhe-backend.git
 cd fandhe-backend
 make setup    # submodule 取得 + lefthook install（pre-commit / commit-msg フック配線）
 
-make help     # ターゲット一覧
+make help     # ターゲット一覧（Make 非依存の一覧は scripts/help.sh）
 make build    # デフォルト構成のビルド
 make test-all # 全 feature 有効のテスト（doc test 含む）
 make lint     # cargo fmt --check + clippy -D warnings（CI と同一コマンド）

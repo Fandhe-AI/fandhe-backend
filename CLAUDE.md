@@ -34,7 +34,8 @@ fandhe-backend/
 ├── CONTRIBUTING.md        # 貢献ガイド（開発フロー・コミット規約・設計原則・ライセンス同意、イシュー #94）
 ├── skills-lock.json       # 導入スキルのロック
 ├── Makefile               # 開発タスクの入口（setup / build / test / lint / audit / docker-*。
-│                            # CI と同一コマンドをローカル再現、`make help` で一覧）
+│                            # CI と同一コマンドをローカル再現、`make help` で一覧。薄い入口で
+│                            # 複数行処理は scripts/ へ。編集方針は .claude/rules/makefile.md）
 ├── lefthook.yml           # git hooks 定義（pre-commit: staged .rs の rustfmt --check、commit-msg:
 │                            # Conventional Commits 検証。`make hooks` で配線。編集方針は
 │                            # .claude/rules/git-hooks.md）
@@ -1027,6 +1028,8 @@ fandhe-backend/
 │                                        # 5 節 2 項の受容条件 (a) を充足）
 ├── scripts/               # CI・運用スクリプト（TASK-15.2 で追加）
 │   ├── README.md                      # 使い方・前提ツール・CI との対応
+│   ├── help.sh                        # Make 非依存の操作一覧（`make help` と手動同期）
+│   ├── hooks.sh                       # lefthook install（`make hooks` / `make setup` から）
 │   ├── dep-audit.sh                   # 全 feature 構成の cargo audit / cargo deny check（ci.yml dep-audit ジョブ）
 │   ├── dep-impact.sh                  # 依存クレート数・バイナリサイズ・unsafe 件数の計測（markdown 出力）
 │   ├── setup-required-checks.sh       # main の実際の保護 ruleset `main-protection`（TASK-14.1、
@@ -1150,8 +1153,9 @@ main は判断・統合・ユーザー対話に集中する**。詳細は [rules
 | [improvement-proposal.md](.claude/rules/improvement-proposal.md) | 改善提案フロー・起票・承認の運用規約 |
 | [feature-modification.md](.claude/rules/feature-modification.md) | 機能要求→実装→テスト→ドキュメント追随→完遂判定の一貫改修フロー運用規約 |
 | [feasibility-guardrail.md](.claude/rules/feasibility-guardrail.md) | 対応可否自律判断ガードレール（曖昧要求・危険要求の不可判定規約） |
-| [ci.md](.claude/rules/ci.md) | CI 実行環境規約（self-hosted 必須（actionlint.yaml 登録のカスタムラベル許容）・timeout・schedule 負荷抑制） |
+| [ci.md](.claude/rules/ci.md) | CI 実行環境規約（ホステッド既定・codex 例外・timeout・schedule 負荷抑制・必須チェックと `ci-complete`・発火条件・ジョブ追加チェックリスト） |
 | [git-hooks.md](.claude/rules/git-hooks.md) | Git hooks（lefthook）編集ルール（時間予算・CI との役割分担・例外） |
+| [makefile.md](.claude/rules/makefile.md) | Makefile / scripts 編集ルール（薄い入口・ターゲット変更手順・契約・スクリプト規約） |
 
 ## Current Skills
 
@@ -1162,6 +1166,7 @@ main は判断・統合・ユーザー対話に集中する**。詳細は [rules
   `implement-review-pr` / `update-issue-tree`
 - **プロジェクト管理**: `project-init` / `project-add-items` / `project-create-issues` /
   `project-update-items` / `project-view-status` / `project-sync-issues` / `project-archive-done`
+- **ビルド・ツール**: `make`（Makefile / scripts 設計。`.claude/rules/makefile.md`）
 - **ドキュメント・コメント**: `update-docs` / `comment-code` / `setup-github-pages`
 - **.claude 体系**: `init-claude` / `update-claude`
 - **スキル運用**: `contribute-skill` / `sync-skills-lock`
