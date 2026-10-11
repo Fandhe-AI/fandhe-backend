@@ -164,3 +164,9 @@ gh run view <run-id> --json jobs   # ジョブ・ステップ別の startedAt / 
 `cargo install` 由来のソースビルドが最長ジョブの大半を占めていたため、ツールバイナリを
 キャッシュする方針を採った（`cargo-nextest` / `cargo-geiger` / `cargo-llvm-cov` / `cargo-fuzz` /
 `cargo-audit` / `cargo-deny` / `oha`）。release.yml は検証経路の保守性を優先し対象外。
+
+キャッシュ容量の注意（2026-10-11 実測）: リポジトリのキャッシュ合計は GitHub の上限 10 GB に
+ほぼ達している（9.5 GB / 16 エントリ。`test-<os>` の target キャッシュが 1 本 2〜3 GB）。
+LRU 退避で数 MB のツールバイナリキャッシュも消えることがあり、その場合は従来どおり
+ソースビルドへフォールバックする。target キャッシュを新設・拡大する場合は容量を確認する
+（`gh api repos/Fandhe-AI/fandhe-backend/actions/cache/usage`）。
