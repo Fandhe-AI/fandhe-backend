@@ -85,7 +85,7 @@ make lint     # cargo fmt --check + clippy -D warnings（CI と同一コマン�
 ```
 
 git hooks は [lefthook](https://lefthook.dev/)（`lefthook.yml`）で管理し、pre-commit で
-`cargo fmt --all --check`、commit-msg で Conventional Commits 形式検証
+staged の `.rs` に対する `rustfmt --check`、commit-msg で Conventional Commits 形式検証
 （`scripts/commit-msg-check.sh`、外部依存なし）を行います。`--no-verify` での
 スキップは禁止です（[`CONTRIBUTING.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/CONTRIBUTING.md) 参照）。
 

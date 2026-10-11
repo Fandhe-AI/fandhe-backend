@@ -63,8 +63,10 @@ git submodule update --init
 - pre-commit / commit-msg フックは必ず通してください（`--no-verify` は使用不可）
 - フックは [lefthook](https://lefthook.dev/)（`lefthook.yml`）で管理します。クローン後に
   `make setup`（または `make hooks`）で `.git/hooks` へ配線してください。pre-commit は
-  `cargo fmt --all --check`、commit-msg は Conventional Commits 形式検証
-  （`scripts/commit-msg-check.sh`）を実行します
+  staged の `.rs` に対する `rustfmt --check`、commit-msg は Conventional Commits 形式検証
+  （`scripts/commit-msg-check.sh`）を実行します。clippy / test などの重い検査はフックでは
+  実行しないため、上記「検証」のコマンドは PR 前に手動で実行してください（CI が最終ゲート。
+  フックの方針は `.claude/rules/git-hooks.md`）
 
 ## 設計原則
 
