@@ -188,7 +188,7 @@ jobs:
       # RPS を比較しないため（当初指定の 1.9.1 は crates.io に存在しないバージョンで、
       # `cargo install` が `could not find oha in registry` で必ず失敗していた）。
       - name: Ensure oha 1.15.0
-        uses: Fandhe-AI/actions/cargo-tool-install@latest
+        uses: ./.github/actions/cargo-tool-install-cached
         with:
           tool: oha
           version: 1.15.0
@@ -454,7 +454,7 @@ jobs:
           toolchain: stable
 
       - name: Ensure oha 1.15.0
-        uses: Fandhe-AI/actions/cargo-tool-install@latest
+        uses: ./.github/actions/cargo-tool-install-cached
         with:
           tool: oha
           version: 1.15.0
