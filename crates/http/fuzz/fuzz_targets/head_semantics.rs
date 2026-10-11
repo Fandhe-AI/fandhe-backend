@@ -16,7 +16,7 @@
 
 use fandhe_backend_http::body::body_length;
 use fandhe_backend_http::connection::should_keep_alive;
-use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

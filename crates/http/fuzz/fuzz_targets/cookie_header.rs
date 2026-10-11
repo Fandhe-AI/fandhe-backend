@@ -17,7 +17,7 @@
 
 #![no_main]
 
-use fandhe_backend_http::cookie::{parse_cookie_header, MAX_COOKIE_COUNT};
+use fandhe_backend_http::cookie::{MAX_COOKIE_COUNT, parse_cookie_header};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
