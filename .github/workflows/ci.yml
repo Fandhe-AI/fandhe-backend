@@ -66,6 +66,17 @@ on:
 permissions:
   contents: read
 
+# ビルドキャッシュ（target）の縮小（.claude/rules/ci.md「キャッシュ方針」）。
+# - CARGO_INCREMENTAL=0: CI は毎回ワークスペースをフルビルドするため incremental の
+#   中間生成物（ローカル実測で target の約 16%）は再利用されず、容量と時間を浪費する。
+# - CARGO_PROFILE_DEV_DEBUG=line-tables-only: dev/test プロファイルの debuginfo を
+#   行番号のみに縮める（panic のファイル:行は残る）。release ビルド（pay-for-what-you-use の
+#   バイナリサイズ計測・microbench）・fuzz（release）には影響しない。
+# 両者を変えたらキャッシュキーの版（`-v2-`）を上げる（旧設定の成果物を引き継がないため）。
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 concurrency:
   group: ci-${{ github.ref }}
   # PR の古い実行だけを打ち切る。main への push / schedule は検証結果を残すため cancel しない
@@ -161,16 +172,17 @@ jobs:
       # 分離し、将来 release 系ワークフローがキャッシュを導入する場合も
       # 検証ビルド生成物と prefix を混在させない設計とする。
       - name: Cache cargo registry and target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: clippy-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          key: clippy-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            clippy-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+            clippy-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
 
       # --all-features を指定しておくことで、TASK-2.1 以降で feature（plugin-*）が
       # 増えた際にも既定で全 feature を lint 対象にできる。feature 構成別の
@@ -185,6 +197,28 @@ jobs:
       # 6 節の手動コマンド表を機械検証へ格上げ）。
       - name: cargo clippy -p fandhe-backend-core --all-targets --no-default-features
         run: cargo clippy -p fandhe-backend-core --all-targets --no-default-features -- -D warnings
+
+      # 保存前に target からワークスペース自身の成果物（checkout の mtime で毎回再ビルド
+      # されるため再利用されない）を除き、第三者依存の成果物だけを残す。保存しない PR でも
+      # 実行してスクリプトの退行を 3 OS で検知する（数秒）。
+      - name: Slim cargo target for cache
+        shell: bash
+        run: bash scripts/ci-cache-slim-target.sh target
+
+      # 保存は main のみ（PR は restore のみ。PR スコープのキャッシュは他 PR・main から
+      # 参照できず、容量だけ占有して main の世代やツールキャッシュを LRU で追い出す）。
+      # primary key に完全一致して復元できた場合は保存しない（同一キーは上書き不可）。
+      # 方針: .claude/rules/ci.md「キャッシュ方針」
+      - name: Save cargo registry and target (main only)
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # --------------------------------------------------
   # cargo nextest run（テスト単位のタイムアウト付き） + cargo test --doc
@@ -225,16 +259,17 @@ jobs:
 
       # ビルドキャッシュ（#551 の clippy ジョブと同一設計、job family prefix は test-）。
       - name: Cache cargo registry and target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: test-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          key: test-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            test-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+            test-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
 
       # バージョン固定インストール（dep-audit ジョブと同じ方針）。共通部品
       # cargo-tool-install が「導入済み同一バージョンならスキップ」の冪等判定と
@@ -258,6 +293,23 @@ jobs:
         # テスト単位のタイムアウトは適用できないためステップ単位でガードする。
         timeout-minutes: 15
         run: cargo test --doc --workspace --all-features
+
+      # 保存前の target 縮小（clippy ジョブと同一方針）。
+      - name: Slim cargo target for cache
+        shell: bash
+        run: bash scripts/ci-cache-slim-target.sh target
+
+      # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
+      - name: Save cargo registry and target (main only)
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # --------------------------------------------------
   # cargo doc（rustdoc lint・missing_docs の機械強制ゲート）
@@ -291,21 +343,39 @@ jobs:
 
       # ビルドキャッシュ（clippy ジョブと同一設計、job family prefix のみ doc- に変更）。
       - name: Cache cargo registry and target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: doc-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          key: doc-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            doc-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+            doc-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: cargo doc --workspace --all-features --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --all-features --no-deps
+
+      # 保存前の target 縮小（clippy ジョブと同一方針）。
+      - name: Slim cargo target for cache
+        shell: bash
+        run: bash scripts/ci-cache-slim-target.sh target
+
+      # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
+      - name: Save cargo registry and target (main only)
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # --------------------------------------------------
   # 依存監査（cargo audit / cargo deny check）を全 feature 構成で実行（TASK-15.2、#17）。
@@ -348,15 +418,16 @@ jobs:
       # cargo-deny / cargo-audit の `cargo install`（ソースビルド）が registry
       # キャッシュの恩恵を受ける。
       - name: Cache cargo registry
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: dep-audit-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          key: dep-audit-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            dep-audit-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+            dep-audit-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
 
       # ツールのバージョン固定インストール。共通部品 cargo-tool-install が
       # 「導入済み同一バージョンならスキップ」の冪等判定と導入後の厳密一致検証を担う
@@ -439,6 +510,17 @@ jobs:
               || echo "警告: ${advisory_id} の Issue 起票に失敗しました（gh 障害でも監査結果は変えない）" >&2
           done
 
+      # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
+      - name: Save cargo registry (main only)
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
   # --------------------------------------------------
   # unsafe 追加のラチェット検知（TASK-12.1-1、#79）。ビルド不要で軽量なため
   # schedule（日次、dep-audit のみを走らせる方針）からは除外する。
@@ -492,6 +574,11 @@ jobs:
       # ネットワーク不要のスタブ経由でオフライン検証する。
       - name: run-setup-required-checks-tests.sh（main-protection ruleset 定義のオフラインセルフテスト、#693）
         run: bash scripts/tests/run-setup-required-checks-tests.sh
+
+      # キャッシュ補助スクリプト（保存前の target 縮小・main の旧世代削除）の判定ロジックを
+      # フィクスチャで固定化する（.claude/rules/ci.md「キャッシュ方針」）。
+      - name: run-ci-cache-tests.sh（ci-cache-slim-target.sh / ci-cache-prune-generations.sh のセルフテスト）
+        run: bash scripts/tests/run-ci-cache-tests.sh
 
       - name: run-guardrail-tests.sh（対応可否判定記録バリデータのセルフテスト、TASK-12.3-2、#84）
         run: bash scripts/tests/run-guardrail-tests.sh
@@ -603,16 +690,17 @@ jobs:
       # （target/pay-for-what-you-use-check{,-all,-geiger} 等）を使うため、`target` の
       # キャッシュがそのまま全構成に効く。
       - name: Cache cargo registry and target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: pay-for-what-you-use-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          key: pay-for-what-you-use-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            pay-for-what-you-use-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+            pay-for-what-you-use-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
 
       # バージョン固定インストール（dep-audit / test ジョブと同じ方針。共通部品
       # cargo-tool-install が冪等判定・導入後の厳密一致検証を担う（サプライチェーン考慮:
@@ -628,6 +716,23 @@ jobs:
 
       - name: pay-for-what-you-use-check.sh（cargo tree/geiger・バイナリサイズ・全構成ビルド）
         run: bash scripts/pay-for-what-you-use-check.sh
+
+      # 保存前の target 縮小（clippy ジョブと同一方針）。
+      - name: Slim cargo target for cache
+        shell: bash
+        run: bash scripts/ci-cache-slim-target.sh target
+
+      # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
+      - name: Save cargo registry and target (main only)
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # --------------------------------------------------
   # openapi 2 段階ビルド（TASK-3.2、#31）: 「gen-openapi CLI 実行 → openapi.json 生成 →
@@ -660,16 +765,17 @@ jobs:
 
       # ビルドキャッシュ（#551 と同一設計、job family prefix は openapi-two-stage-）。
       - name: Cache cargo registry and target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: openapi-two-stage-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          key: openapi-two-stage-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            openapi-two-stage-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+            openapi-two-stage-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: "openapi-two-stage.sh（stage 1: gen-openapi --check、stage 2: cargo build --all-features）"
         run: bash scripts/openapi-two-stage.sh
@@ -708,6 +814,23 @@ jobs:
       # 呼び出す（PR #141 CI failure 対応）。
       - name: openapi.json 構文妥当性検証（openapi-spec-validator）
         run: python3 -m openapi_spec_validator crates/plugin-openapi/openapi.json
+
+      # 保存前の target 縮小（clippy ジョブと同一方針）。
+      - name: Slim cargo target for cache
+        shell: bash
+        run: bash scripts/ci-cache-slim-target.sh target
+
+      # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
+      - name: Save cargo registry and target (main only)
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # --------------------------------------------------
   # openapi-typescript 連携パイプライン（TASK-6.1、#54、REQ-6）: 「gen-openapi --check →
@@ -748,16 +871,17 @@ jobs:
 
       # ビルドキャッシュ（#551 と同一設計、job family prefix は openapi-ts-）。
       - name: Cache cargo registry and target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: openapi-ts-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          key: openapi-ts-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            openapi-ts-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+            openapi-ts-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: "openapi-ts.sh（stage 1: gen-openapi --check、stage 2: schema.d.ts 鮮度検証、stage 3: tsc --noEmit）"
         run: bash scripts/openapi-ts.sh
@@ -768,6 +892,23 @@ jobs:
       # （docs/design/openapi-typescript-pipeline.md 参照）。
       - name: "openapi-ts-negative.sh（陰性対照: 意図的な型不一致の検出を検証）"
         run: bash scripts/openapi-ts-negative.sh
+
+      # 保存前の target 縮小（clippy ジョブと同一方針）。
+      - name: Slim cargo target for cache
+        shell: bash
+        run: bash scripts/ci-cache-slim-target.sh target
+
+      # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
+      - name: Save cargo registry and target (main only)
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # --------------------------------------------------
   # ワークフロー静的検証（TASK-15、#180）: `.github/workflows/*.yml` を actionlint で
@@ -857,7 +998,8 @@ jobs:
       # cargo-fuzz は crates/http/fuzz（standalone workspace）内でビルドするため、
       # ルート target ではなく crates/http/fuzz/target をキャッシュ対象にする。
       - name: Cache cargo registry and fuzz target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
@@ -867,9 +1009,9 @@ jobs:
           # scripts/fuzz.sh を key に含めるのは PINNED_NIGHTLY バンプ時に旧 nightly の
           # ビルドキャッシュを引きずらないため（stable の cachekey は nightly の
           # バージョンを反映しない）。
-          key: fuzz-smoke-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', 'scripts/fuzz.sh') }}
+          key: fuzz-smoke-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**', 'scripts/fuzz.sh') }}
           restore-keys: |
-            fuzz-smoke-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+            fuzz-smoke-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
 
       # nightly バージョンは scripts/fuzz.sh の PINNED_NIGHTLY 定数を単一真実源とする。
       # リポジトリ既定（rust-toolchain.toml）は stable のまま変更しない
@@ -894,6 +1036,23 @@ jobs:
 
       - name: scripts/fuzz.sh（smoke、60 秒/target）
         run: bash scripts/fuzz.sh --max-total-time 60
+
+      # 保存前の target 縮小（clippy ジョブと同一方針）。
+      - name: Slim cargo target for cache
+        shell: bash
+        run: bash scripts/ci-cache-slim-target.sh --manifest-path crates/http/fuzz/Cargo.toml crates/http/fuzz/target
+
+      # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
+      - name: Save cargo registry and fuzz target (main only)
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            crates/http/fuzz/target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # --------------------------------------------------
   # WebRTC rebind force-close e2e テスト（イシュー #507）。
@@ -929,19 +1088,37 @@ jobs:
       # tests-e2e は standalone workspace（--manifest-path 実行）のため、ビルド成果物は
       # crates/plugin-webrtc/tests-e2e/target に出る。ルート target はビルドしない。
       - name: Cache cargo registry and e2e target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             crates/plugin-webrtc/tests-e2e/target
-          key: webrtc-e2e-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          key: webrtc-e2e-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            webrtc-e2e-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+            webrtc-e2e-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: scripts/webrtc-e2e.sh
         run: bash scripts/webrtc-e2e.sh
+
+      # 保存前の target 縮小（clippy ジョブと同一方針）。
+      - name: Slim cargo target for cache
+        shell: bash
+        run: bash scripts/ci-cache-slim-target.sh --manifest-path crates/plugin-webrtc/tests-e2e/Cargo.toml crates/plugin-webrtc/tests-e2e/target
+
+      # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
+      - name: Save cargo registry and e2e target (main only)
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            crates/plugin-webrtc/tests-e2e/target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # --------------------------------------------------
   # 決定的マイクロベンチ（per-request alloc カウンタ、イシュー #615）。
@@ -980,16 +1157,17 @@ jobs:
       # ビルドキャッシュ（#551 と同一設計、job family prefix は microbench-）。
       # standalone workspace のため成果物は benches/microbench/target に出る。
       - name: Cache cargo registry and microbench target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             benches/microbench/target
-          key: microbench-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          key: microbench-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            microbench-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+            microbench-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
 
       # standalone workspace のため root fmt/clippy ジョブの対象範囲に含まれない
       # （両ジョブは root `cargo fmt --check` / `cargo clippy --workspace` を実行し、
@@ -1041,6 +1219,23 @@ jobs:
       - name: benches/microbench.sh --check
         run: bash benches/microbench.sh --check
 
+      # 保存前の target 縮小（clippy ジョブと同一方針）。
+      - name: Slim cargo target for cache
+        shell: bash
+        run: bash scripts/ci-cache-slim-target.sh --manifest-path benches/microbench/Cargo.toml benches/microbench/target
+
+      # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
+      - name: Save cargo registry and microbench target (main only)
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            benches/microbench/target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
   # --------------------------------------------------
   # コア全体の行カバレッジ計測（TASK-11.5-2、#78）。
   # 親タスク TASK-11.5（#37、docs/spec/05-tasks.md）が要求する「コア全体の自動テスト行
@@ -1080,16 +1275,17 @@ jobs:
       # 計測前に `cargo llvm-cov clean --workspace` が coverage 成果物を除去するため、
       # 復元された stale なプロファイルデータが判定へ混入することはない。
       - name: Cache cargo registry and target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: coverage-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml') }}
+          key: coverage-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.toml', '!.agents/**', '!.claude/**') }}
           restore-keys: |
-            coverage-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
+            coverage-${{ runner.os }}-v2-${{ steps.toolchain.outputs.cachekey }}-
 
       # バージョン固定インストール（dep-audit / test ジョブと
       # 同じ方針。共通部品 cargo-tool-install が冪等判定・導入後の厳密一致検証を担う
@@ -1109,6 +1305,23 @@ jobs:
 
       - name: coverage.sh（コア対象、80% 未満で失敗）
         run: bash scripts/coverage.sh
+
+      # 保存前の target 縮小（clippy ジョブと同一方針）。
+      - name: Slim cargo target for cache
+        shell: bash
+        run: bash scripts/ci-cache-slim-target.sh target
+
+      # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
+      - name: Save cargo registry and target (main only)
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   docs-site-build:
     name: docs サイトのビルド検証（生成・リンク検査）
@@ -1223,3 +1436,34 @@ jobs:
             [ "${result}" = "success" ] || ok=0
           done
           [ "${ok}" = "1" ]
+
+  # --------------------------------------------------
+  # main の旧世代ビルドキャッシュ削除（.claude/rules/ci.md「キャッシュ方針」）
+  # Cargo.toml・toolchain の変更でビルドキャッシュの新世代が main に保存されると、旧世代は
+  # 誰も復元しないまま 7 日間残り、容量上限で数 MB のツールキャッシュまで LRU で追い出す。
+  # 全ビルドジョブの保存が終わった後（needs）に、同じ <family>-<OS> の最新世代だけを残す。
+  # 品質ゲートではない保守ジョブのため ci-complete の needs・required check には含めない
+  # （PR・schedule では skipped。マージ判定に影響しない）。
+  # --------------------------------------------------
+  cache-prune:
+    name: cache-prune（main の旧世代ビルドキャッシュ削除）
+    runs-on: ubuntu-latest
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: [clippy, test, doc, dep-audit, coverage, pay-for-what-you-use, fuzz-smoke, webrtc-e2e, microbench, openapi-two-stage, openapi-ts]
+    # キャッシュ削除 API（DELETE /repos/{owner}/{repo}/actions/caches/{id}）に必要な最小権限。
+    # main への push でのみ実行し、PR（fork 含む）のコードはこの権限で動かない。
+    permissions:
+      contents: read
+      actions: write
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: ci-cache-prune-generations.sh
+        # 容量最適化であり、API の一時障害等で main を赤くしない（失敗時は旧世代が
+        # 7 日の未使用期限で消えるのを待つだけ）。
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci-cache-prune-generations.sh

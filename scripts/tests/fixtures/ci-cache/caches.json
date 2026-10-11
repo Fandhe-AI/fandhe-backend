@@ -1,0 +1,14 @@
+{
+  "total_count": 9,
+  "actions_caches": [
+    {"id": 1, "ref": "refs/heads/main", "key": "test-Linux-20260928b940-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "created_at": "2026-10-10T00:00:00Z", "size_in_bytes": 3000000000},
+    {"id": 2, "ref": "refs/heads/main", "key": "test-Linux-v2-20260928b940-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "created_at": "2026-10-11T00:00:00Z", "size_in_bytes": 1000000000},
+    {"id": 3, "ref": "refs/heads/main", "key": "test-Linux-v2-20260928b940-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "created_at": "2026-10-12T00:00:00Z", "size_in_bytes": 1000000000},
+    {"id": 4, "ref": "refs/heads/main", "key": "test-Windows-v2-20260928b940-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "created_at": "2026-10-09T00:00:00Z", "size_in_bytes": 1000000000},
+    {"id": 5, "ref": "refs/heads/main", "key": "fuzz-smoke-Linux-v2-20260928b940-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "created_at": "2026-10-10T00:00:00Z", "size_in_bytes": 60000000},
+    {"id": 6, "ref": "refs/heads/main", "key": "fuzz-smoke-Linux-v2-20261108aaaa-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "created_at": "2026-10-11T00:00:00Z", "size_in_bytes": 60000000},
+    {"id": 7, "ref": "refs/heads/main", "key": "cargo-tool-cargo-nextest-0.9.137-Linux-X64", "created_at": "2026-10-01T00:00:00Z", "size_in_bytes": 8000000},
+    {"id": 8, "ref": "refs/heads/main", "key": "cargo-tool-cargo-nextest-0.9.136-Linux-X64", "created_at": "2026-09-01T00:00:00Z", "size_in_bytes": 8000000},
+    {"id": 9, "ref": "refs/pull/1/merge", "key": "test-Linux-v2-20260928b940-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "created_at": "2026-10-01T00:00:00Z", "size_in_bytes": 1000000000}
+  ]
+}
