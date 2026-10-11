@@ -25,7 +25,7 @@
 #![no_main]
 
 use fandhe_backend_http::chunked::{
-    encode_chunk, encode_terminator, ChunkedDecoder, DecodeOutcome, MAX_CHUNK_COUNT,
+    ChunkedDecoder, DecodeOutcome, MAX_CHUNK_COUNT, encode_chunk, encode_terminator,
 };
 use libfuzzer_sys::fuzz_target;
 

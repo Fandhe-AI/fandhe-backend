@@ -35,8 +35,9 @@ fandhe-backend/
 ├── skills-lock.json       # 導入スキルのロック
 ├── Makefile               # 開発タスクの入口（setup / build / test / lint / audit / docker-*。
 │                            # CI と同一コマンドをローカル再現、`make help` で一覧）
-├── lefthook.yml           # git hooks 定義（pre-commit: cargo fmt --check、commit-msg:
-│                            # Conventional Commits 検証。`make hooks` で配線）
+├── lefthook.yml           # git hooks 定義（pre-commit: staged .rs の rustfmt --check、commit-msg:
+│                            # Conventional Commits 検証。`make hooks` で配線。編集方針は
+│                            # .claude/rules/git-hooks.md）
 ├── .editorconfig          # エディタ設定統一（Rust 4 スペース・YAML/TOML 等 2 スペース）
 ├── .gitattributes         # `* text=auto eol=lf` でチェックアウト時の改行を LF に正規化
 │                            # （`fuzz/corpus/**`・CRLF フィクスチャは `-text` で除外、
@@ -1150,6 +1151,7 @@ main は判断・統合・ユーザー対話に集中する**。詳細は [rules
 | [feature-modification.md](.claude/rules/feature-modification.md) | 機能要求→実装→テスト→ドキュメント追随→完遂判定の一貫改修フロー運用規約 |
 | [feasibility-guardrail.md](.claude/rules/feasibility-guardrail.md) | 対応可否自律判断ガードレール（曖昧要求・危険要求の不可判定規約） |
 | [ci.md](.claude/rules/ci.md) | CI 実行環境規約（self-hosted 必須（actionlint.yaml 登録のカスタムラベル許容）・timeout・schedule 負荷抑制） |
+| [git-hooks.md](.claude/rules/git-hooks.md) | Git hooks（lefthook）編集ルール（時間予算・CI との役割分担・例外） |
 
 ## Current Skills
 

@@ -1,8 +1,10 @@
 # Git hooks 定義（lefthook）。`make hooks`（lefthook install）で .git/hooks へ配線する。
-# pre-commit は高速性を優先し cargo fmt --check のみ（clippy / test は CI が担う、
-# .github/workflows/ci.yml）。commit-msg は Conventional Commits 形式を検証する
-# （.claude/rules/conventional-commits.md）。`--no-verify` でのスキップは禁止
-# （CONTRIBUTING.md・.claude/rules/conventional-commits.md）。
+# pre-commit は高速性を優先し staged の .rs に対する rustfmt --check のみ（clippy / test /
+# workspace 全体の fmt は CI が担う、.github/workflows/ci.yml）。commit-msg は
+# Conventional Commits 形式を検証する（.claude/rules/conventional-commits.md）。
+# `--no-verify` でのスキップは禁止（CONTRIBUTING.md・.claude/rules/conventional-commits.md）。
+# フックの追加・変更時は .claude/rules/git-hooks.md の方針（時間予算・CI との役割分担）に従う。
+# テスト・ビルド・全体 lint など重い処理や CI と重複する検査はフックに置かず CI 側に置く。
 
 # lefthook バイナリ不在時にフックを警告のみ（exit 0）で素通しさせず、コミットを失敗させる
 # （フック必須方針の fail-closed 化。バイナリ導入は `make hooks` / lefthook skill 参照）
@@ -12,10 +14,18 @@ pre-commit:
   parallel: true
   commands:
     fmt:
-      # .rs がステージされたときのみ workspace 全体の整形差分を検査する
-      # （CI の fmt ジョブと同一コマンド。自動修正はしない）
-      glob: "*.rs"
-      run: cargo fmt --all --check
+      # staged の .rs のみ整形差分を検査する（自動修正はしない）。CI の fmt ジョブ
+      # （cargo fmt --all --check）と同じ対象範囲にするため、root workspace のメンバー
+      # （Cargo.toml の members = ["crates/*"]）に限定し、同 exclude の独立 workspace
+      # （crates/http/fuzz・crates/plugin-webrtc/tests-e2e）を除外する。
+      # cargo fmt は workspace 全体を走査し約 0.3 秒かかるため、rustfmt を直接呼ぶ
+      # （1 ファイルあたり約 0.03〜0.06 秒）。rustfmt.toml は無く、--edition は
+      # Cargo.toml の [workspace.package] edition と揃えること。
+      glob: "crates/**/*.rs"
+      exclude:
+        - "crates/http/fuzz/**"
+        - "crates/plugin-webrtc/tests-e2e/**"
+      run: rustfmt --check --edition 2024 {staged_files}
 
 commit-msg:
   commands:
