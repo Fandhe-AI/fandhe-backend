@@ -401,7 +401,8 @@ Upgrade 型パターン確立後もアプリケーションロジックを差し
 [`ws-connection-context-and-close.md`](./ws-connection-context-and-close.md) を参照。
 
 ## 5.6 Gate 型パターン（依存逆転型、TASK-9.1 / #61 で確立、TASK-9.2 / #62 で
-RS256 + JWKS へ差し替え）
+RS256 + JWKS へ差し替え、#812〜#816 で 2 例目 `fandhe-backend-plugin-jwt` を追加、
+#820 で hub-wiring の検証部を移管）
 
 `fandhe-backend-plugin-hub-wiring`（`TenantGate`、JWT 検証 → `org_id` 抽出 →
 フェイルクローズ）は、4・5 節の 2 パターン（コア → プラグインの optional
@@ -418,23 +419,26 @@ RS256 + JWKS へ差し替え）
 出しを持ち込めないことにあった（6.1 節）。
 
 `RequestGate` はヘッダ検査のみで完結する既存拡張点であり、`TenantGate` の
-判定（`Authorization` ヘッダ抽出 → RS256 署名検証、`kid` による JWKS 内
+判定（`Authorization` ヘッダ抽出 → RS256・ES256 署名検証、`kid` による JWKS 内
 鍵選択、I/O なし）はこの同期 API 制約に抵触しない。JWKS の取得（HTTP
 フェッチ・自動リフレッシュ）自体は非同期 I/O を要するため `check()` 内では
 行わず、利用側サービスが取得済み JWKS JSON を注入し
-`SharedJwks::set()` で再起動なしローテーションする設計とすることで、
-同期 API 制約の中に収めている（TASK-9.2、`crates/plugin-hub-wiring/src/jwks.rs`）。
+`fandhe_backend_plugin_jwt::SharedKeySet` で再起動なしローテーションする設計とすることで、
+同期 API 制約の中に収めている（TASK-9.2。#820 で検証部を `crates/plugin-jwt/src/jwks.rs` へ移管）。
 したがって:
 
 - `crates/core` の `Cargo.toml`・`server.rs`・`plugin.rs` は一切変更しない
   （`optional = true` + `dep:` 構文も、非公開シームへの分岐追加も不要）
 - 利用側サービスが `fandhe-backend-plugin-hub-wiring` を依存に加え、
-  `Server::gate(TenantGate::new(TenantGateConfig::from_jwks_json(jwks_json)?))`
+  `Server::gate(TenantGate::new(TenantGateConfig::from_jwks_json(jwks_json, policy)?))`
   （既存の公開 API `Server::gate`、TASK-1.4）で登録するだけで配線が完結する
 - `scripts/dep-direction-check.sh` の許可リストには汎用パターン
   `fandhe-backend-plugin-*:fandhe-backend-core`・`fandhe-backend-plugin-*:fandhe-backend-http` が既に存在する
   ため、6.1 節のような個別例外追加は不要（`crates/plugin-hub-wiring/src/lib.rs`
-  に依存方向宣言 `server → routes → http::*` を記載するのみでチェック 2 も通過する）
+  に依存方向宣言 `server → routes → http::*` を記載するのみでチェック 2 も通過する）。
+  `fandhe-backend-plugin-jwt` 自体も同じ汎用パターン（plugin → core/http）で足りる。
+  一方 hub-wiring → plugin-jwt は plugin → plugin の依存であり、#820 で許可リストに
+  明示追加した唯一の例外である（一般化はしない。5.6.5 節）
 
 ### 5.6.2 pay-for-what-you-use の成立根拠
 
@@ -443,7 +447,13 @@ RS256 + JWKS へ差し替え）
 pay-for-what-you-use が成立する。`cargo tree -p fandhe-backend-core` に
 本クレート・その依存（`ring`/`base64`/`serde`/`serde_json`）が一切現れない
 ことで機械検証できる（コアが本クレートを依存に持たないため、そもそも現れ
-ようがない設計）。
+ようがない設計）。`fandhe-backend-plugin-jwt` も同様で、`cargo tree -p
+fandhe-backend-core`（`--no-default-features`・既定・`--all-features` のいずれでも）に
+`fandhe-backend-plugin-jwt` が現れず、plugin-jwt 経由の `ring`/`base64` も現れない
+（`--all-features` の `ring` は `webrtc` feature の webrtc-rs 経由であり plugin-jwt とは
+無関係）。hub-wiring を依存に加えた構成では plugin-jwt も入る（設計どおり）。依存の
+解釈（`Cargo.lock` に新しい crate・版を増やさない）は
+`docs/design/jwt-verify-plugin.md` 2.7 節を参照。
 
 JWT 検証は TASK-9.1（#61）の HS256（HMAC-SHA256、`hmac`/`sha2`）共有秘密鍵
 スパイクから、TASK-9.2（#62）で RS256（非対称鍵）+ JWKS へ差し替えた
@@ -461,7 +471,8 @@ feature 経由）が既に依存グラフへ引き込んでいる実績依存（
 `RequestGate::check` の戻り値 `GateOutcome` は許可/拒否の判定結果のみを運ぶ
 契約（`crates/core/src/extension.rs` doc、`docs/spec/03-poc/hub-wiring-middleware`
 PoC-6）であり、JWT 検証で抽出した `org_id` 等のクレームはコアへ一切渡らない
-（`fandhe-backend-plugin-hub-wiring` 内の `jwt::Claims` に閉じる）。この境界により、
+（`fandhe_backend_plugin_jwt::Claims<E>` として `JwtAuthenticator` の共有ハンドル経由で
+得る。hub 固有の `org_id` は hub-wiring 側の `HubClaims` に閉じる）。この境界により、
 コアは hub 固有シンボル（JWT・`org_id`・JWKS）へ一切依存しないまま、
 依存逆転型プラグインからの利用を受け付けられる。
 
@@ -481,6 +492,19 @@ PoC-6）であり、JWT 検証で抽出した `org_id` 等のクレームはコ�
 が同期 I/O なしで完結する場合は、まず本パターン（依存逆転、コア無変更）を
 検討すること。非同期処理・上流中継・コネクション奪取が必要になった時点で
 初めて 4・5 節のコア→プラグインパターンへ切り替える。
+
+### 5.6.5 2 例目: `fandhe-backend-plugin-jwt`（REQ-16、#812〜#816・#820）
+
+汎用 JWT 検証（RS256・ES256、`JwtPolicy` で `iss`・`aud`・`typ`・許可 `alg` を必須）を
+`fandhe-backend-plugin-jwt` に切り出した Gate 型の 2 例目。`lib.rs` に
+`拡張点対応: RequestGate` を宣言し、`Server::gate(JwtGate::…)` で登録する。コアの
+`Cargo.toml`・`server.rs`・`plugin.rs` は無変更で、feature も再エクスポートも置かない。
+
+- plugin → plugin 依存の規則: hub-wiring → plugin-jwt は `scripts/dep-direction-check.sh` の
+  `allowed_edge_patterns` に明示追加した唯一の例外で、追加にはレビューを要する。逆向き
+  （plugin-jwt → hub-wiring）は禁止で、循環は DFS で検出する
+- 複数ゲートは AND 結合（いずれかが拒否すれば拒否）。REQ-17 の CSRF ゲートとの登録順は
+  #826 で定める予定
 
 ## 5.7 Middleware 型パターン（TASK-10.1 / #56 で確立）
 
@@ -1224,6 +1248,7 @@ WS 委譲タスクの世代キャンセル機構（5 節の Upgrade 型パター
 | lint | `cargo clippy -p fandhe-backend-core --all-targets --no-default-features -- -D warnings`／`--features webrtc-proxy`／`cargo clippy --workspace --all-targets --all-features -- -D warnings` | 警告 0 件 |
 | doc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps` | 警告 0 件 |
 | 依存監査 | `scripts/dep-audit.sh` | `webrtc-proxy`・`webrtc`・`websocket` を含む動的列挙構成で違反 0 件（`webrtc` feature 有効化に伴い `deny.toml` の許可ライセンスへ `ISC` を追加済み） |
+| Gate 型の依存除外 | `cargo tree -p fandhe-backend-core --all-features -e normal` | `fandhe-backend-plugin-jwt` が 0 件（5.6.2 節） |
 | pay-for-what-you-use 機械検証 | `scripts/pay-for-what-you-use-check.sh`（TASK-2.2、#19） | cargo tree/geiger・バイナリサイズ・全構成ビルドすべて PASS（`docs/design/pay-for-what-you-use-check.md` 参照） |
 
 `websocket` feature（TASK-4.1 / #22）も同一パターンで検証済み:

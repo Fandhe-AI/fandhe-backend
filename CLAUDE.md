@@ -13,7 +13,8 @@ OpenAPI 自動生成 / hub 配線 / 可観測性を段階的に拡張できる�
 - **pay-for-what-you-use**: feature を無効化したら依存・コード・`unsafe`・バイナリ増をゼロにする
 - **AI ファースト保守性**: doc test・網羅テスト・CI ガードレールで AI が安全に保守できる状態を保つ
 
-公開対象 13 クレート（http / routes / core / plugin-* 10 種）を crates.io へ lockstep
+公開対象 14 クレート（http / routes / core / plugin-* 11 種。0.4.2 までの公開済みは
+13 クレートで、plugin-jwt は 0.5.0 で初公開予定）を crates.io へ lockstep
 バージョニングで公開する（恒久非公開: axum-ref / ws-load-client）。現行公開版は
 0.4.2（2026-09-28）。手順・区分は `docs/design/crates-io-release.md` 参照。
 
@@ -162,7 +163,7 @@ fandhe-backend/
 │                            # 実ブラウザ描画でのみ発見できた CSS カスケード順序バグの検出・修正記録）
 ├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）。
 │                            # `[workspace.package] version` + `[workspace.dependencies]`
-│                            # （内部 13 クレートを path + version で定義）で lockstep
+│                            # （内部 14 クレートを path + version で定義）で lockstep
 │                            # バージョン・path 依存の version 併記を一元管理し、各クレートは
 │                            # `version.workspace = true` + `{ workspace = true }` で継承する
 │                            # （イシュー #452。`docs/design/crates-io-release.md` 7.2 節参照）
@@ -854,6 +855,17 @@ fandhe-backend/
 │   │                                    # （本番コードは元々 `cfg(unix)` 非依存。テスト側のみ
 │   │                                    # `test_symlink_file`/`test_symlink_dir` ヘルパで OS
 │   │                                    # 分岐、詳細は `docs/design/plugin-boundary.md` 5.11.3.2 節）
+│   ├── plugin-jwt                     # 汎用 JWT 検証プラグイン（REQ-16、イシュー #811〜#821）。
+│   │                                    # Gate 型・依存逆転型（`RequestGate` 実装 `JwtGate`、
+│   │                                    # core に feature も再エクスポートも置かず、利用側が
+│   │                                    # 直接依存して `Server::gate` で登録）。RS256・ES256、
+│   │                                    # `iss`/`aud`/`typ`/許可 `alg` 必須の `JwtPolicy`、JWKS
+│   │                                    # 鍵集合（`SharedKeySet` で差し替え）、検証結果キャッシュ、
+│   │                                    # 未知 `kid` 通知口。hub-wiring から唯一の plugin→plugin
+│   │                                    # 依存を受ける。0.5.0 で初公開予定。設計は
+│   │                                    # `docs/design/jwt-verify-plugin.md`
+│   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、
+│   │                                    # `crates/http/fuzz` と同パターン、イシュー #818）
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
 ├── templates/              # 利用者向け配布テンプレート（イシュー #364）

@@ -27,12 +27,14 @@ cargo add fandhe-backend-core --features graphql,openapi,cors
 
 公開対象クレートは `fandhe-backend-http` / `fandhe-backend-routes` / `fandhe-backend-core` と
 `fandhe-backend-plugin-*`（websocket / graphql / openapi / webrtc / webrtc-proxy / tracing /
-hub-wiring / cors / compression / static）の 13 クレートで、すべて同一バージョン
-（lockstep）で公開します。現時点の crates.io 公開版は 0.4.2（2026-09-28 公開、
+hub-wiring / jwt / cors / compression / static）の 14 クレートで、すべて同一バージョン
+（lockstep）で公開します。現時点の crates.io 公開版は 0.4.2（2026-09-28 公開、13 クレート。
+`fandhe-backend-plugin-jwt` は 0.5.0 で初公開予定。
 変更履歴は `CHANGELOG.md`、公開手順は `docs/design/crates-io-release.md` 参照）です。
 通常は `fandhe-backend-core` の feature 経由で利用し、
 個別クレートを直接依存に追加する必要はありません
-（`fandhe-backend-plugin-hub-wiring` のみ独立クレートとして直接利用します）。
+（Gate 型の `fandhe-backend-plugin-hub-wiring` と `fandhe-backend-plugin-jwt` は
+core の feature を持たない独立クレートで、直接依存に加えて `Server::gate` で登録します）。
 
 ## Getting Started
 

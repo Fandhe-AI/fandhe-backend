@@ -8,7 +8,8 @@
 #   - crates/routes  : ルーティング（TASK-1.5、#14 で新設）。依存方向は
 #                       `server` → `routes` → `http::*` の一方向であり、
 #                       `scripts/dep-direction-check.sh` が機械的に保証する
-#   - crates/plugin-*: websocket / graphql / openapi / webrtc / hub-wiring / tracing。
+#   - crates/plugin-*: websocket / graphql / openapi / webrtc / hub-wiring / tracing / jwt
+#                       （hub-wiring・jwt は Gate 型で core の feature を持たない）。
 #                       Cargo feature + `dep:` 構文で着脱可能にし、無効時は依存・コード・
 #                       unsafe をゼロにする（TASK-2.1 以降）
 #   - crates/axum-ref: axum を性能・フットプリント比較の参照実装として運用する（TASK-1.2）
@@ -43,7 +44,7 @@ members = ["crates/*"]
 # `benches/microbench` は決定的マイクロベンチ（per-request alloc カウンタ、
 # イシュー #615）専用クレート。上記 2 クレートと同じ理由（root workspace の
 # `cargo metadata`/`cargo tree`/`cargo geiger` へ計測専用依存
-# （`stats_alloc`・`serde_json`）を混入させず、公開 13 クレートの依存グラフに
+# （`stats_alloc`・`serde_json`）を混入させず、公開対象クレートの依存グラフに
 # 一切影響させない）で独立 workspace 化する。`benches/microbench.sh` 経由での
 # みビルド・実行する（CI は `.github/workflows/ci.yml` の `microbench` ジョブ）。
 exclude = ["crates/http/fuzz", "crates/plugin-jwt/fuzz", "crates/plugin-webrtc/tests-e2e", "benches/microbench", "benches/refs"]
@@ -53,18 +54,18 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Fandhe-AI/fandhe-backend"
 # lockstep バージョニング（docs/design/crates-io-release.md 7 節）の一元管理点
-# （イシュー #452）。公開対象 13 クレート（http / routes / core / plugin-* 10 種）と
+# （イシュー #452）。公開対象 14 クレート（http / routes / core / plugin-* 11 種）と
 # 恒久非公開 2 クレート（axum-ref / ws-load-client）はすべて
 # `version.workspace = true` でこの値を継承する。次回バンプはこの 1 行 +
 # 下記 `[workspace.dependencies]` の `version` 値のみを書き換えればよい
 # （`crates/http/fuzz`・`crates/plugin-jwt/fuzz` は独立 workspace のため対象外、本ファイル冒頭のコメント参照）。
 version = "0.4.2"
 
-# workspace 内 path 依存の一元管理点（イシュー #452）。公開対象 13 クレート
-# （http / routes / core / plugin-* 10 種）を内部依存として参照する各クレートの
+# workspace 内 path 依存の一元管理点（イシュー #452）。公開対象 14 クレート
+# （http / routes / core / plugin-* 11 種）を内部依存として参照する各クレートの
 # Cargo.toml は `{ workspace = true }`（optional なものは
 # `{ workspace = true, optional = true }`）でここを継承し、`path = "../.."` +
-# `version = "0.4.2"` 併記の重複記述を排除する。バンプ時は本表の 13 行の
+# `version = "0.4.2"` 併記の重複記述を排除する。バンプ時は本表の 14 行の
 # `version` 値を上記 `[workspace.package] version` と揃えて書き換える
 # （`crates/plugin-hub-wiring` の dev-dependency `fandhe-backend-routes` は
 # publish 時に strip される dev 専用の version なし path 依存であり、公開
@@ -88,7 +89,6 @@ fandhe-backend-plugin-websocket = { path = "crates/plugin-websocket", version = 
 # plugin-jwt（REQ-16）と plugin-hub-wiring が共有する外部依存（イシュー #813）。
 # 版指定は hub-wiring と同一で、workspace の `Cargo.lock` に新しい crate・版を
 # 増やさない（docs/design/jwt-verify-plugin.md 2.7 節）。暗号は `ring` のみ。
-# なお上記コメントの「13 クレート」は plugin-jwt 追加後の件数へ別 issue（#822）で追随する。
 ring = "0.17"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }

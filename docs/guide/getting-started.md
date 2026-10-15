@@ -24,8 +24,8 @@ cargo add fandhe-backend-core --features websocket
 ```
 
 公開対象クレートは `fandhe-backend-core` / `fandhe-backend-http` / `fandhe-backend-routes` と
-`fandhe-backend-plugin-*` の計 13 クレート（すべて lockstep で同一バージョン。
-現行公開版は v0.4.2）ですが、
+`fandhe-backend-plugin-*` の計 14 クレート（すべて lockstep で同一バージョン。
+現行公開版は v0.4.2 で 13 クレート、`fandhe-backend-plugin-jwt` は 0.5.0 で初公開予定）ですが、
 通常は `fandhe-backend-core` の feature 経由で利用すれば十分です（feature 一覧は
 本ページ 5 節参照）。feature を何も指定しない場合、`fandhe-backend-plugin-*` の
 依存・コードは一切バイナリに含まれません（pay-for-what-you-use、

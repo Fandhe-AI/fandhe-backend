@@ -5,11 +5,6 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "fandhe-backend の汎用 JWT 検証プラグイン（REQ-16）。RS256・ES256 の検証ポリシー（iss・aud・typ・許可 alg を必須とし、none・HS 系は型として表現不能）を提供する（RFC 8725・RFC 9068）。"
-# 暫定の安全側設定: 骨格段階で `v*` タグが打たれると `cargo publish --workspace` が
-# 中身のないクレートを crates.io へ公開してしまう（名前は実体のある初回 publish で
-# 確保する方針、docs/design/crates-io-release.md 2 節）。公開準備を行うイシュー #822
-# で本行を削除すること。
-publish = false
 readme = "../../README.md"
 keywords = ["jwt", "jwks", "authentication", "web", "plugin"]
 categories = ["authentication", "web-programming"]
