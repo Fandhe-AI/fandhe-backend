@@ -129,6 +129,9 @@ ruleset `main-protection` の required status checks は **ジョブ名（`name:
 ## ジョブ・ワークフロー追加チェックリスト
 
 1. 新しいワークフローを増やさず、既存 `ci.yml` へジョブを追加する（トリガーが同じなら統合）
+    （例外: PR で常に skipped になる main 専用の保守ジョブは、PR の HEAD に required 外の check-run を
+    残さないよう `workflow_run` 等の別ワークフローへ置く。先行事例は `cache-prune.yml`。同ファイルは
+    `ci.yml` の `name: CI` に名前で結合しているため、`ci.yml` の `name:` を変えるときは同時に直す）
 2. `ci-complete` の `needs` と判定へ追加し、ruleset の required check へ追加する（ユーザー判断事項）
 3. `runs-on` は `ubuntu-latest`（上記 runner 方針）、`timeout-minutes` を設定、`permissions` は最小
 4. 不要な `needs` を作らない（直列化すると wall-clock が伸びる。集約は `ci-complete` のみ）
@@ -234,9 +237,12 @@ gh run view <run-id> --json jobs   # ジョブ・ステップ別の startedAt / 
   ワークスペース自身の成果物（lib・テスト・example・bin・incremental・`doc/`）を除き、第三者依存
   だけを残す。actions/checkout が mtime をチェックアウト時刻にするため、ワークスペースのクレートは
   復元しても毎回再ビルドされ、保存しても再利用されない。PR でも実行して 3 OS で退行を検知する
-- main への push 後に `cache-prune` ジョブ（`scripts/ci-cache-prune-generations.sh`、`actions: write`）が
-  main スコープの同じ `<family>-<OS>` で最大版・最新の 1 件だけを残し、旧世代を即時削除する
-  （品質ゲートではないため `ci-complete` の needs・required check には含めない）
+- main への push で起動した CI の完了後に、`cache-prune.yml`（`workflow_run`。
+  `scripts/ci-cache-prune-generations.sh`、`actions: write`）が main スコープの同じ `<family>-<OS>` で
+  最大版・最新の 1 件だけを残し、旧世代を即時削除する（品質ゲートではないため required check には
+  含めない）。`ci.yml` のジョブにしないのは、PR でも skipped の check-run が PR の HEAD に残り、
+  required に無い check-run として implement-issue-tree の自動マージ前ゲート（G0 の client-only 判定）
+  を止めるため。`workflow_run` は既定ブランチの定義だけが起動し、check-run も main の commit に付く
 - キャッシュ種別・OS を増やすときは「1 件のサイズ × 種別 × OS」を見積もり、main 1 世代が
   10 GB に余裕をもって収まることを確認する
 

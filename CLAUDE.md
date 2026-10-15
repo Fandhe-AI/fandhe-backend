@@ -1032,7 +1032,7 @@ fandhe-backend/
 │   ├── hooks.sh                       # lefthook install（`make hooks` / `make setup` から）
 │   ├── dep-audit.sh                   # 全 feature 構成の cargo audit / cargo deny check（ci.yml dep-audit ジョブ）
 │   ├── ci-cache-slim-target.sh        # ビルドキャッシュ保存前の target 縮小（ワークスペース成果物を除去、ci.yml）
-│   ├── ci-cache-prune-generations.sh  # main の旧世代ビルドキャッシュ削除（ci.yml cache-prune ジョブ、
+│   ├── ci-cache-prune-generations.sh  # main の旧世代ビルドキャッシュ削除（cache-prune.yml、
 │   │                                    # セルフテストは tests/run-ci-cache-tests.sh。方針は .claude/rules/ci.md）
 │   ├── dep-impact.sh                  # 依存クレート数・バイナリサイズ・unsafe 件数の計測（markdown 出力）
 │   ├── setup-required-checks.sh       # main の実際の保護 ruleset `main-protection`（TASK-14.1、
@@ -1063,6 +1063,11 @@ fandhe-backend/
 │   │   │                                # スキルが管理。main への push と手動実行で起動。監視パスの
 │   │   │                                # 追加は `sgp:user-paths` 区間の中だけに書く。PR 段階の
 │   │   │                                # ビルド・リンク検査は ci.yml の `docs-site-build` ジョブが担う）
+│   │   ├── cache-prune.yml             # main の旧世代ビルドキャッシュ削除（main への push で起動した
+│   │   │                                # CI の完了後に `workflow_run` で起動。ci.yml のジョブにすると
+│   │   │                                # PR の HEAD に required 外の skipped check-run が残り、
+│   │   │                                # implement-issue-tree の自動マージ前ゲートを止めるため分離。
+│   │   │                                # 方針は .claude/rules/ci.md「キャッシュ方針」）
 │   │   └── ai-review.yml               # Fandhe-AI/actions の ai-review reusable workflow
 │   │                                    # （provider: codex）を `@latest` で呼び出す薄い
 │   │                                    # wrapper（旧 codex-review.yml、#528/#529 で移行）。
