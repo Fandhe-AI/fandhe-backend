@@ -236,31 +236,36 @@ echo "正常性確認 OK" >&2
 "${BASELINE_BIN}" >/dev/null 2>&1 &
 CURRENT_PID="$!"
 wait_ready "${BASE_URL}" "${ES_TOKEN}"
-read -r baseline_rps baseline_p95 <<<"$(run_load "${BASELINE_PORT}" baseline "${ES_TOKEN}")"
+load_out="$(run_load "${BASELINE_PORT}" baseline "${ES_TOKEN}")" || exit 1
+read -r baseline_rps baseline_p95 <<<"${load_out}"
 stop_server
 
 # RS256 比較用 baseline（RS256 トークンのヘッダを付けた minimal）
 "${BASELINE_BIN}" >/dev/null 2>&1 &
 CURRENT_PID="$!"
 wait_ready "${BASE_URL}" "${RS_TOKEN0}"
-read -r rs_baseline_rps rs_baseline_p95 <<<"$(run_load "${BASELINE_PORT}" "baseline(RS256 token)" "${RS_TOKEN0}")"
+load_out="$(run_load "${BASELINE_PORT}" "baseline(RS256 token)" "${RS_TOKEN0}")" || exit 1
+read -r rs_baseline_rps rs_baseline_p95 <<<"${load_out}"
 stop_server
 
 start_server "${JWT_BIN}" "off" "es256"
 wait_ready "${JWT_URL}" "${ES_TOKEN}"
-read -r off_rps off_p95 <<<"$(run_load "${JWT_PORT}" "jwt(gate off)" "${ES_TOKEN}")"
+load_out="$(run_load "${JWT_PORT}" "jwt(gate off)" "${ES_TOKEN}")" || exit 1
+read -r off_rps off_p95 <<<"${load_out}"
 stop_server
 
 start_server "${JWT_BIN}" "" "es256"
 ES_TOKEN="$(read_token)"
 wait_ready "${JWT_URL}" "${ES_TOKEN}"
-read -r es_rps es_p95 <<<"$(run_load "${JWT_PORT}" "jwt(gate on, ES256)" "${ES_TOKEN}")"
+load_out="$(run_load "${JWT_PORT}" "jwt(gate on, ES256)" "${ES_TOKEN}")" || exit 1
+read -r es_rps es_p95 <<<"${load_out}"
 stop_server
 
 start_server "${JWT_BIN}" "" "rs256"
 RS_TOKEN="$(read_token)"
 wait_ready "${JWT_URL}" "${RS_TOKEN}"
-read -r rs_rps rs_p95 <<<"$(run_load "${JWT_PORT}" "jwt(gate on, RS256)" "${RS_TOKEN}")"
+load_out="$(run_load "${JWT_PORT}" "jwt(gate on, RS256)" "${RS_TOKEN}")" || exit 1
+read -r rs_rps rs_p95 <<<"${load_out}"
 stop_server
 
 es_rps_ratio="$(ratio "${es_rps}" "${baseline_rps}")"
