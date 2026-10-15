@@ -97,6 +97,12 @@ trap cleanup EXIT
 wait_ready() {
     local url="$1" token="$2" timeout_ms=5000 elapsed_ms=0
     while [ "${elapsed_ms}" -lt "${timeout_ms}" ]; do
+        # 起動したプロセスが bind 失敗等で終了していたら、別プロセスの 200 を拾わず中止する。
+        if [ -n "${CURRENT_PID}" ] && ! kill -0 "${CURRENT_PID}" 2>/dev/null; then
+            echo "エラー: 起動したサーバ（pid=${CURRENT_PID}）が ready 前に終了しました（ポート bind 失敗の可能性）。誤った比較を記録しないため中止します" >&2
+            CURRENT_PID=""
+            return 1
+        fi
         if curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${token}" "${url}" 2>/dev/null | grep -q '^200$'; then
             return 0
         fi
@@ -107,10 +113,29 @@ wait_ready() {
     return 1
 }
 
+# 指定ポートを既に誰かが listen していないことを確認する。占有されていると起動した
+# サーバが bind に失敗し、既存サーバの応答を計測対象と取り違えるため。
+# 引数: $1 ポート
+assert_port_free() {
+    local port="$1"
+    if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
+        echo "エラー: 127.0.0.1:${port} は既に使用されています。別プロセスを停止してから再実行してください" >&2
+        exit 1
+    fi
+}
+
+# baseline（minimal）を起動する。
+start_baseline() {
+    assert_port_free "${BASELINE_PORT}"
+    "${BASELINE_BIN}" >/dev/null 2>&1 &
+    CURRENT_PID="$!"
+}
+
 # サーバを起動する（stdout は捨てる。トークンは出力しない）。
 # 引数: $1 バイナリ、$2 FANDHE_BACKEND_JWT_GATE の値（"" なら未設定）、$3 ALG（"" なら既定）
 start_server() {
     local bin="$1" gate="$2" alg="$3"
+    assert_port_free "${JWT_PORT}"
     : >"${TOKEN_FILE}"
     (
         if [ -n "${gate}" ]; then export FANDHE_BACKEND_JWT_GATE="${gate}"; fi
@@ -207,7 +232,7 @@ BASE_URL="http://127.0.0.1:${BASELINE_PORT}/"
 
 start_server "${JWT_BIN}" "" "es256"
 ES_TOKEN="$(read_token)"
-wait_ready "${JWT_URL}" "${ES_TOKEN}"
+wait_ready "${JWT_URL}" "${ES_TOKEN}" || exit 1
 expect_code 200 "$(http_code "${JWT_URL}" "${ES_TOKEN}")" "ゲート有効・有効トークン付き GET /"
 expect_code 401 "$(http_code "${JWT_URL}" "")" "ゲート有効・ヘッダ無し GET /（ゲートが効いている証跡）"
 stop_server
@@ -216,54 +241,51 @@ stop_server
 # baseline は RS256 トークンで別途計測する。ここで長さの代表となる RS_TOKEN0 を得る。
 start_server "${JWT_BIN}" "" "rs256"
 RS_TOKEN0="$(read_token)"
-wait_ready "${JWT_URL}" "${RS_TOKEN0}"
+wait_ready "${JWT_URL}" "${RS_TOKEN0}" || exit 1
 expect_code 200 "$(http_code "${JWT_URL}" "${RS_TOKEN0}")" "ゲート有効・RS256 有効トークン付き GET /"
 stop_server
 
 start_server "${JWT_BIN}" "off" "es256"
-wait_ready "${JWT_URL}" "${ES_TOKEN}"
+wait_ready "${JWT_URL}" "${ES_TOKEN}" || exit 1
 expect_code 200 "$(http_code "${JWT_URL}" "${ES_TOKEN}")" "ゲート無効・トークン付き GET /"
 stop_server
 
-"${BASELINE_BIN}" >/dev/null 2>&1 &
-CURRENT_PID="$!"
-wait_ready "${BASE_URL}" "${ES_TOKEN}"
+start_baseline
+wait_ready "${BASE_URL}" "${ES_TOKEN}" || exit 1
 expect_code 200 "$(http_code "${BASE_URL}" "${ES_TOKEN}")" "baseline・トークン付き GET /"
 stop_server
 echo "正常性確認 OK" >&2
 
 # --- 計測 ---
-"${BASELINE_BIN}" >/dev/null 2>&1 &
-CURRENT_PID="$!"
-wait_ready "${BASE_URL}" "${ES_TOKEN}"
+start_baseline
+wait_ready "${BASE_URL}" "${ES_TOKEN}" || exit 1
 load_out="$(run_load "${BASELINE_PORT}" baseline "${ES_TOKEN}")" || exit 1
 read -r baseline_rps baseline_p95 <<<"${load_out}"
 stop_server
 
 # RS256 比較用 baseline（RS256 トークンのヘッダを付けた minimal）
-"${BASELINE_BIN}" >/dev/null 2>&1 &
-CURRENT_PID="$!"
-wait_ready "${BASE_URL}" "${RS_TOKEN0}"
+start_baseline
+wait_ready "${BASE_URL}" "${RS_TOKEN0}" || exit 1
 load_out="$(run_load "${BASELINE_PORT}" "baseline(RS256 token)" "${RS_TOKEN0}")" || exit 1
 read -r rs_baseline_rps rs_baseline_p95 <<<"${load_out}"
 stop_server
 
 start_server "${JWT_BIN}" "off" "es256"
-wait_ready "${JWT_URL}" "${ES_TOKEN}"
+wait_ready "${JWT_URL}" "${ES_TOKEN}" || exit 1
 load_out="$(run_load "${JWT_PORT}" "jwt(gate off)" "${ES_TOKEN}")" || exit 1
 read -r off_rps off_p95 <<<"${load_out}"
 stop_server
 
 start_server "${JWT_BIN}" "" "es256"
 ES_TOKEN="$(read_token)"
-wait_ready "${JWT_URL}" "${ES_TOKEN}"
+wait_ready "${JWT_URL}" "${ES_TOKEN}" || exit 1
 load_out="$(run_load "${JWT_PORT}" "jwt(gate on, ES256)" "${ES_TOKEN}")" || exit 1
 read -r es_rps es_p95 <<<"${load_out}"
 stop_server
 
 start_server "${JWT_BIN}" "" "rs256"
 RS_TOKEN="$(read_token)"
-wait_ready "${JWT_URL}" "${RS_TOKEN}"
+wait_ready "${JWT_URL}" "${RS_TOKEN}" || exit 1
 load_out="$(run_load "${JWT_PORT}" "jwt(gate on, RS256)" "${RS_TOKEN}")" || exit 1
 read -r rs_rps rs_p95 <<<"${load_out}"
 stop_server
