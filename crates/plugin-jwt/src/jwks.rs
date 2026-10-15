@@ -414,23 +414,28 @@ fn classify(raw: &RawJwk<'_>) -> Result<Option<Jwk>, JwksError> {
         return Ok(None);
     }
 
+    let (algorithm, skippable) = if is_rsa {
+        (Algorithm::Rs256, SKIPPABLE_RSA_ALGS)
+    } else {
+        (Algorithm::Es256, SKIPPABLE_EC_ALGS)
+    };
+    // 読み飛ばし対象の alg（暗号化用途など）は kid 検査より前に判定し、
+    // kid を持たない非署名用鍵で文書全体を拒否しない。
+    if let Some(a) = alg
+        && a != algorithm.as_jose_name()
+        && skippable.contains(&a)
+    {
+        return Ok(None);
+    }
+
     let kid = raw.kid.as_deref().filter(|k| !k.is_empty());
     let kid = kid.ok_or(JwksError::MissingKeyId)?;
     if kid.len() > MAX_KID_LEN {
         return Err(JwksError::KeyIdTooLong);
     }
     let alg = alg.ok_or(JwksError::MissingAlgorithm)?;
-    let (algorithm, skippable) = if is_rsa {
-        (Algorithm::Rs256, SKIPPABLE_RSA_ALGS)
-    } else {
-        (Algorithm::Es256, SKIPPABLE_EC_ALGS)
-    };
     if alg != algorithm.as_jose_name() {
-        return if skippable.contains(&alg) {
-            Ok(None)
-        } else {
-            Err(JwksError::KeyAlgorithmMismatch)
-        };
+        return Err(JwksError::KeyAlgorithmMismatch);
     }
 
     let material = if is_rsa {
@@ -538,5 +543,25 @@ mod tests {
             }
             KeyMaterial::Rsa { .. } => panic!("EC のはず"),
         }
+    }
+
+    #[test]
+    fn encryption_key_without_kid_is_skipped() {
+        let json = format!(
+            r#"{{"keys":[{{"kty":"RSA","alg":"RSA-OAEP","n":"{}","e":"AQAB"}},{}]}}"#,
+            b64(&[7, 8]),
+            rsa("a", &[7, 8])
+        );
+        let set = KeySet::from_json(&json).unwrap();
+        assert_eq!((set.len(), set.skipped()), (1, 1));
+    }
+
+    #[test]
+    fn signing_key_without_kid_is_still_rejected() {
+        let json = format!(
+            r#"{{"keys":[{{"kty":"RSA","alg":"RS256","n":"{}","e":"AQAB"}}]}}"#,
+            b64(&[7, 8])
+        );
+        assert!(KeySet::from_json(&json).is_err());
     }
 }
