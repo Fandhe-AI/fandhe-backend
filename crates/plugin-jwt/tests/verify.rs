@@ -518,3 +518,15 @@ fn types_are_send_sync_clone() {
     check::<VerifyError>();
     check::<Claims<NoExtraClaims>>();
 }
+
+#[test]
+fn claims_debug_does_not_leak_values() {
+    let (ec, ks) = ec_fixture();
+    let body = payload(
+        r#","sub":"SECRET-SUB","jti":"SECRET-JTI","client_id":"SECRET-CID","scope":"SECRET-SCOPE","tenant":"SECRET-TENANT""#,
+    );
+    let c = verify::<Ext>(&ec_token(&ec, HDR, &body), &ks, &policy(), NOW).unwrap();
+    let dbg = format!("{c:?} {c:#?}");
+    assert!(!dbg.contains("SECRET"), "{dbg}");
+    assert!(dbg.contains("has_sub: true"));
+}

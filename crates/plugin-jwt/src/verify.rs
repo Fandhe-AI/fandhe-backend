@@ -132,7 +132,7 @@ impl<'de> Deserialize<'de> for NoExtraClaims {
 /// fn show(c: &Claims<NoExtraClaims>) -> (&str, u64) { (c.iss(), c.exp()) }
 /// # let _ = show;
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Claims<E = NoExtraClaims> {
     iss: String,
     sub: Option<String>,
@@ -144,6 +144,23 @@ pub struct Claims<E = NoExtraClaims> {
     client_id: Option<String>,
     scope: Option<String>,
     extra: E,
+}
+
+/// `sub`・`jti`・`client_id`・`scope`・`extra` の値は出さず、有無だけを示す（ログ漏洩防止）。
+impl<E> fmt::Debug for Claims<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Claims")
+            .field("iss", &self.iss)
+            .field("aud_count", &self.aud.len())
+            .field("exp", &self.exp)
+            .field("nbf", &self.nbf)
+            .field("iat", &self.iat)
+            .field("has_sub", &self.sub.is_some())
+            .field("has_jti", &self.jti.is_some())
+            .field("has_client_id", &self.client_id.is_some())
+            .field("has_scope", &self.scope.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<E> Claims<E> {
