@@ -400,15 +400,18 @@ fn classify(raw: &RawJwk<'_>) -> Result<Option<Jwk>, JwksError> {
     // 検査する（矛盾する鍵が 1 つでもあれば文書全体を拒否する fail-closed）。
     if let Some(a) = alg {
         let required_kty = if a.starts_with("RS") || a.starts_with("PS") || a.starts_with("RSA") {
-            Some("RSA")
-        } else if a.starts_with("ES") || a.starts_with("ECDH-ES") {
-            Some("EC")
+            Some(&["RSA"][..])
+        } else if a.starts_with("ECDH-ES") {
+            // RFC 8037 は ECDH-ES に OKP（X25519/X448）の鍵も許可する。
+            Some(&["EC", "OKP"][..])
+        } else if a.starts_with("ES") {
+            Some(&["EC"][..])
         } else {
             None
         };
         // 未対応 kty（OKP 等）も比較対象にする（読み飛ばしで矛盾を見逃さない）。
         if let Some(req) = required_kty
-            && kty != req
+            && !req.contains(&kty)
         {
             return Err(JwksError::KeyAlgorithmMismatch);
         }
@@ -628,5 +631,21 @@ mod tests {
         let okp = r#"{"kty":"OKP","crv":"Ed25519","alg":"EdDSA"}"#;
         let set = KeySet::from_json(&format!(r#"{{"keys":[{good},{okp}]}}"#)).unwrap();
         assert_eq!((set.len(), set.skipped()), (1, 1));
+    }
+
+    #[test]
+    fn ecdh_es_allows_okp_but_rejects_rsa() {
+        let good = rsa("a", &[7, 8]);
+        let okp = r#"{"kty":"OKP","crv":"X25519","use":"enc","alg":"ECDH-ES"}"#;
+        let set = KeySet::from_json(&format!(r#"{{"keys":[{good},{okp}]}}"#)).unwrap();
+        assert_eq!((set.len(), set.skipped()), (1, 1));
+        let bad = format!(
+            r#"{{"kty":"RSA","kid":"b","alg":"ECDH-ES","use":"enc","n":"{}","e":"AQAB"}}"#,
+            b64(&[7, 8])
+        );
+        assert_eq!(
+            KeySet::from_json(&format!(r#"{{"keys":[{good},{bad}]}}"#)).unwrap_err(),
+            JwksError::KeyAlgorithmMismatch
+        );
     }
 }
