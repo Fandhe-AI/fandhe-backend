@@ -52,7 +52,7 @@ description: >
   （2026-10-11 計測・決定）。従来の `cargo fmt --all --check` は staged ファイル数に関係なく
   workspace 全体を走査し毎回 0.3 秒程度かかっていた
   - 対象範囲は CI と揃える: root workspace のメンバー（`Cargo.toml` の `members = ["crates/*"]`）
-    に限定し、同 `exclude` の独立 workspace（`crates/http/fuzz`・`crates/plugin-webrtc/tests-e2e`）を
+    に限定し、同 `exclude` の独立 workspace（`crates/http/fuzz`・`crates/plugin-jwt/fuzz`・`crates/plugin-webrtc/tests-e2e`）を
     除外する。`benches/`・`examples/`・`templates/`・`scripts/tests/fixtures/` も CI の fmt 対象外のため
     glob に含めない。`Cargo.toml` の `members` / `exclude` を変えたら `lefthook.yml` の
     `glob` / `exclude` も追随させる

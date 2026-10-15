@@ -26,6 +26,12 @@ members = ["crates/*"]
 # .claude/rules/pay-for-what-you-use.md）。`scripts/fuzz.sh` が独立
 # workspace として `cargo +<pinned-nightly> fuzz` 経由でのみビルド・実行する。
 #
+# `crates/plugin-jwt/fuzz` は JWT 解析部（JWKS・トークン）の cargo-fuzz 専用クレート
+# （イシュー #818、設計は docs/design/jwt-verify-plugin.md 2.8 節）。`crates/http/fuzz`
+# と同じ理由（libfuzzer-sys・nightly 前提、root workspace の `cargo metadata` /
+# `cargo tree` / `cargo geiger` への fuzz 専用依存の混入防止）で独立 workspace 化し、
+# `scripts/fuzz.sh` 経由でのみビルド・実行する。
+#
 # `crates/plugin-webrtc/tests-e2e` は `RebindHandle::rebind` 経由の実接続
 # force-close e2e テスト専用クレート（イシュー #507）。core（`webrtc` feature）と
 # plugin-webrtc を同時に参照するため、root workspace に含めると `cargo metadata`
@@ -40,7 +46,7 @@ members = ["crates/*"]
 # （`stats_alloc`・`serde_json`）を混入させず、公開 13 クレートの依存グラフに
 # 一切影響させない）で独立 workspace 化する。`benches/microbench.sh` 経由での
 # みビルド・実行する（CI は `.github/workflows/ci.yml` の `microbench` ジョブ）。
-exclude = ["crates/http/fuzz", "crates/plugin-webrtc/tests-e2e", "benches/microbench", "benches/refs"]
+exclude = ["crates/http/fuzz", "crates/plugin-jwt/fuzz", "crates/plugin-webrtc/tests-e2e", "benches/microbench", "benches/refs"]
 
 [workspace.package]
 edition = "2024"
@@ -51,7 +57,7 @@ repository = "https://github.com/Fandhe-AI/fandhe-backend"
 # 恒久非公開 2 クレート（axum-ref / ws-load-client）はすべて
 # `version.workspace = true` でこの値を継承する。次回バンプはこの 1 行 +
 # 下記 `[workspace.dependencies]` の `version` 値のみを書き換えればよい
-# （`crates/http/fuzz` は独立 workspace のため対象外、本ファイル冒頭のコメント参照）。
+# （`crates/http/fuzz`・`crates/plugin-jwt/fuzz` は独立 workspace のため対象外、本ファイル冒頭のコメント参照）。
 version = "0.4.2"
 
 # workspace 内 path 依存の一元管理点（イシュー #452）。公開対象 13 クレート

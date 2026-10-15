@@ -68,6 +68,7 @@
 | `axum-ref` | 恒久非公開 | 性能比較用参照実装。フレームワーク利用者向け成果物ではない |
 | `ws-load-client` | 恒久非公開 | WebSocket 負荷試験専用バイナリ |
 | `crates/http/fuzz` | 恒久非公開（対象外） | cargo-fuzz 専用クレート。root workspace から `exclude` 済み（TASK-15.3-1、#87）であり、`cargo publish` の対象にも入らない |
+| `crates/plugin-jwt/fuzz` | 恒久非公開（対象外） | JWT 解析部の cargo-fuzz 専用クレート（イシュー #818）。`crates/http/fuzz` と同じく `publish = false` かつ root workspace から `exclude` 済み |
 
 - **公開対象 13 クレートは crates.io v0.1.0 として公開済み**（2026-07-21 実施。5 節参照）。
   恒久非公開 2 クレート（`axum-ref` / `ws-load-client`）は `publish = false`

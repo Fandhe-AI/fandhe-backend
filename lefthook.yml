@@ -17,13 +17,14 @@ pre-commit:
       # staged の .rs のみ整形差分を検査する（自動修正はしない）。CI の fmt ジョブ
       # （cargo fmt --all --check）と同じ対象範囲にするため、root workspace のメンバー
       # （Cargo.toml の members = ["crates/*"]）に限定し、同 exclude の独立 workspace
-      # （crates/http/fuzz・crates/plugin-webrtc/tests-e2e）を除外する。
+      # （crates/http/fuzz・crates/plugin-jwt/fuzz・crates/plugin-webrtc/tests-e2e）を除外する。
       # cargo fmt は workspace 全体を走査し約 0.3 秒かかるため、rustfmt を直接呼ぶ
       # （1 ファイルあたり約 0.03〜0.06 秒）。rustfmt.toml は無く、--edition は
       # Cargo.toml の [workspace.package] edition と揃えること。
       glob: "crates/**/*.rs"
       exclude:
         - "crates/http/fuzz/**"
+        - "crates/plugin-jwt/fuzz/**"
         - "crates/plugin-webrtc/tests-e2e/**"
       run: rustfmt --check --edition 2024 {staged_files}
 

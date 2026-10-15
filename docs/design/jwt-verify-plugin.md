@@ -205,7 +205,7 @@ JSON・base64 の自前実装は攻撃表面を増やす（`plugin-hub-wiring/Ca
 
 **理由**: `crates/http/fuzz` から依存すると http の fuzz ビルドに `ring` と plugin 依存が入り
 責務が混ざる。どちらも `exclude` するため pay-for-what-you-use の差は出ず、決め手は責務分離と
-#507 の standalone 隔離の前例。`cargo geiger` 等で偽陽性にならないことは #818 で確認する。
+#507 の standalone 隔離の前例。`cargo geiger` 等で偽陽性にならないことは #818 で確認した（ルート workspace の `cargo metadata` に fuzz crate が現れないこと、`scripts/pay-for-what-you-use-check.sh` が PASS すること。手順と結果は `docs/design/fuzzing.md` の #818 の節を参照）。
 **影響先**: #818。
 
 ### 2.9 hub-wiring の移行

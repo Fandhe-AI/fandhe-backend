@@ -1,0 +1,60 @@
+[package]
+# JWT 検証プラグイン（`fandhe-backend-plugin-jwt`）の解析部を cargo-fuzz（libFuzzer）で
+# ファジングする専用クレート（イシュー #818、REQ-16 受入基準 6 / NFR-11。設計は
+# docs/design/jwt-verify-plugin.md 2.8 節）。
+#
+# root `Cargo.toml` の `[workspace] exclude` に本パスを追加しているため、本体 workspace の
+# `cargo build` / `cargo tree` / `cargo geiger` からは見えない（`libfuzzer-sys` 等の
+# fuzz 専用依存を本体依存グラフに混入させない。pay-for-what-you-use、
+# .claude/rules/pay-for-what-you-use.md）。ビルド・実行は `scripts/fuzz.sh` 経由で、
+# 本ディレクトリを独立 workspace として扱う（`cargo +<pinned-nightly> fuzz ...`）。
+name = "fandhe-backend-plugin-jwt-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# 本クレート自身を独立 workspace のルートとして明示する（空 [workspace] テーブル）。
+# 未指定だと cargo が祖先の workspace root を探しに行き、members/exclude に一致しない
+# 環境（nested git worktree 等）でビルドエラーになる（crates/http/fuzz と同じ理由）。
+[workspace]
+
+[dependencies]
+# libFuzzer ハーネスマクロ（`fuzz_target!`）。nightly のサニタイザ計装が前提。
+libfuzzer-sys = "0.4"
+# 以下はハーネスがテスト鍵で署名・エンコードするためだけに使う。版は root
+# `[workspace.dependencies]` と揃え、新しい版を持ち込まない。
+ring = "0.17"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dependencies.fandhe-backend-plugin-jwt]
+# fuzz 対象クレート本体。本 fuzz クレートは workspace 外（exclude 済み）のため path 依存。
+path = ".."
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "jwks_from_json"
+path = "fuzz_targets/jwks_from_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "verify_token"
+path = "fuzz_targets/verify_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "verify_claims"
+path = "fuzz_targets/verify_claims.rs"
+test = false
+doc = false
+bench = false

@@ -135,6 +135,41 @@ TASK-15.3-2（#88）で `bash scripts/fuzz.sh --max-total-time 240` により両
 欠落・サイズ宣言オーバーフロー）・境界系（chunk-data 途中での EOF 相当）を手動
 キュレーションして配置した。
 
+## イシュー #818（JWT 解析部）fuzz target 追加
+
+REQ-16 受入基準 6（NFR-11）への対応として、`fandhe-backend-plugin-jwt` の攻撃者入力の解析部
+を独立 fuzz crate `crates/plugin-jwt/fuzz` に配置した（置き場所の判断は
+`docs/design/jwt-verify-plugin.md` 2.8 節）。`crates/http/fuzz` と同形（空 `[workspace]`、
+`publish = false`、ルート `Cargo.toml` の `exclude`）で、`scripts/fuzz.sh` は
+`FUZZ_DIRS` の全 dir を順に実行する。target 名は dir をまたいで重複させない（重複は
+エラー終了）。fuzz 専用の公開 API・feature は足さず、公開 API のみを呼ぶ。
+
+| target | 対象 API | 検証範囲 |
+|--------|---------|---------|
+| `jwks_from_json` | `KeySet::from_json` | 任意の JWKS 文書。文書長 `MAX_JWKS_DOC_LEN`・鍵数 `MAX_KEYS`・同一 kid の鍵数 `MAX_KEYS_PER_KID` の上限、エラー `Display` が panic しないこと |
+| `verify_token` | `verify`（署名検証前の経路） | 生文字列（モード A）と、ハーネスが `header.payload.signature` を組み立てヘッダ・署名のみ fuzz 入力にする構造化入力（モード B）。分割・base64url・ヘッダ JSON・`alg`・`kid`・`crit`・鍵特定・署名検証。`MAX_TOKEN_LEN` 超過は必ず `TooLong`、`Ok` なら iss・aud・exp がポリシーを満たすこと |
+| `verify_claims` | `verify`（署名検証後のクレーム解析） | 入力を payload とし、ハーネスがテスト鍵で RS256 署名して署名後の経路へ到達させる。`NoExtraClaims` と追加クレーム型の双方、`now`（0・通常・`u64::MAX` 付近）と leeway（0・300 秒）を切り替え、`Ok` なら exp・nbf・iss・aud がポリシーを満たす（誤受理がない）こと |
+
+- 鍵はリポジトリ内のテスト専用フィクスチャ（`crates/plugin-jwt/tests/fixtures`）を
+  `include_bytes!` で参照するだけで、本番鍵・実トークンは置かない。シード corpus
+  （`crates/plugin-jwt/fuzz/corpus/`）は JSON と base64url のテキストで CRLF の意味論を
+  持たないため、`.gitattributes` の `-text` 指定は不要
+- `ring`（C/asm を含む）も ASan 計装下でビルドされる。`verify_claims` は 1 実行ごとに
+  RSA 2048 の署名を行うため実行速度は約 2k exec/s に落ちる（smoke 用途としては許容）
+- pay-for-what-you-use: ルート workspace の `cargo metadata` に fuzz crate が現れず、
+  ルートの `Cargo.lock`・公開クレートの依存グラフは変わらない
+
+### 実行結果（`bash scripts/fuzz.sh --max-total-time 60`、全 10 target、ローカル）
+
+| target | 実行回数（61 秒） | exec/s | 結果 |
+|--------|------------------|--------|------|
+| `jwks_from_json` | 約 1,288 万 | 約 21 万 | crash/hang なし |
+| `verify_token` | 約 759 万 | 約 12 万 | crash/hang なし |
+| `verify_claims` | 約 12.8 万 | 約 2.1k | crash/hang なし |
+
+既存 7 target（http）も同条件で crash/hang なし。実行で libFuzzer が追記した corpus は
+コミット前に削除し、手で用意したシードのみを残した（既存方針）。
+
 ## スコープ外（out-of-scope-tracking）
 
 - corpus の永続化・自動最小化（`cargo fuzz cmin`）・カバレッジ計測の CI 化、

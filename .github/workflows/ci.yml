@@ -973,8 +973,9 @@ jobs:
         run: bash scripts/tests/run-actionlint-tests.sh
 
   # --------------------------------------------------
-  # fuzz smoke（TASK-15.3-1、#87）: crates/http/fuzz（root workspace から exclude 済み、
-  # pay-for-what-you-use）の全 fuzz target を短時間（既定 60 秒/target）だけ実行し、
+  # fuzz smoke（TASK-15.3-1、#87）: crates/http/fuzz・crates/plugin-jwt/fuzz（イシュー
+  # #818、いずれも root workspace から exclude 済み、pay-for-what-you-use）の全 fuzz
+  # target を短時間（既定 60 秒/target）だけ実行し、
   # パーサのパニック・メモリ不正への回帰を CI 常設で検知する。ビルドは pinned nightly +
   # ASan 計装で通常ビルドより重いため timeout を厚めに確保する。
   # 長時間スクリーニング・検出欠陥の修正は #88（TASK-15.3-2）のスコープ。schedule（日次
@@ -1007,8 +1008,9 @@ jobs:
           toolchain: stable
 
       # ビルドキャッシュ（#551 と同一設計、job family prefix は fuzz-smoke-）。
-      # cargo-fuzz は crates/http/fuzz（standalone workspace）内でビルドするため、
-      # ルート target ではなく crates/http/fuzz/target をキャッシュ対象にする。
+      # cargo-fuzz は crates/http/fuzz・crates/plugin-jwt/fuzz（standalone workspace、
+      # イシュー #818）内でビルドするため、ルート target ではなく各 fuzz クレートの
+      # target をキャッシュ対象にする。
       - name: Cache cargo registry and fuzz target
         id: cargo-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1018,6 +1020,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             crates/http/fuzz/target
+            crates/plugin-jwt/fuzz/target
           # scripts/fuzz.sh を key に含めるのは PINNED_NIGHTLY バンプ時に旧 nightly の
           # ビルドキャッシュを引きずらないため（stable の cachekey は nightly の
           # バージョンを反映しない）。
@@ -1052,7 +1055,7 @@ jobs:
       # 保存前の target 縮小（clippy ジョブと同一方針）。
       - name: Slim cargo target for cache
         shell: bash
-        run: bash scripts/ci-cache-slim-target.sh --manifest-path crates/http/fuzz/Cargo.toml crates/http/fuzz/target
+        run: bash scripts/ci-cache-slim-target.sh --manifest-path crates/http/fuzz/Cargo.toml --manifest-path crates/plugin-jwt/fuzz/Cargo.toml crates/http/fuzz/target crates/plugin-jwt/fuzz/target
 
       # 保存は main のみ（clippy ジョブと同一方針、.claude/rules/ci.md「キャッシュ方針」）。
       - name: Save cargo registry and fuzz target (main only)
@@ -1064,6 +1067,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             crates/http/fuzz/target
+            crates/plugin-jwt/fuzz/target
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # --------------------------------------------------

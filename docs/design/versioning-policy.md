@@ -22,7 +22,7 @@
   `fandhe-backend-plugin-websocket` / `fandhe-backend-plugin-graphql` / `fandhe-backend-plugin-openapi` / `fandhe-backend-plugin-webrtc` /
   `fandhe-backend-plugin-webrtc-proxy` / `fandhe-backend-plugin-hub-wiring` / `fandhe-backend-plugin-tracing`（`crates/plugin-*`）
 - **非対象**（内部専用・バージョン保証の対象外）: `axum-ref`（性能比較用参照実装）・`ws-load-client`
-  （負荷生成ハーネス）・`crates/http/fuzz`（cargo-fuzz 専用クレート、root workspace から exclude 済み）。
+  （負荷生成ハーネス）・`crates/http/fuzz`・`crates/plugin-jwt/fuzz`（cargo-fuzz 専用クレート、root workspace から exclude 済み）。
   いずれも `Cargo.toml` に `publish = false` が設定されており（`axum-ref`・`ws-load-client` は確認済み）、
   外部公開 API としての互換性保証を負わない
 

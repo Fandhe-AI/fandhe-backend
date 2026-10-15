@@ -862,6 +862,31 @@ E（閉包違反候補）と判定された（後続コミットで `examples/wi
 閉じない場合は理由を明記する」という REQ-13 の要求に対しては、配線後も
 「拡張点自体を使用しない（非該当）」区分を維持し、本節をその理由の実体とする。
 
+## 4 補遺. 記載例（#818 / PR #843、plugin-jwt の fuzz 用独立 workspace の追加）
+
+`crates/plugin-jwt/fuzz`（`crates/http/fuzz` と同パターンの独立 workspace）を新設した変更で、
+`.claude/rules/git-hooks.md` と `lefthook.yml` が E（閉包違反候補）と判定された
+（`.gitignore`・`Cargo.toml` も E だが、前者は fuzz 生成物の除外、後者は root
+`exclude` への追加であり、いずれも実行時拡張点とは無関係。併せて理由を示す）。
+
+1. **対象コミット/PR**: PR #843（#818）
+2. **E ファイルパス**:
+   - `.claude/rules/git-hooks.md`
+   - `lefthook.yml`
+   - `.gitignore`
+   - `Cargo.toml`
+3. **閉じない理由**: いずれもリポジトリ運用・ビルド構成ファイルであり、
+   `extension-closure-check.sh` の A〜D の glob（プラグインクレート内・コア許容シーム・
+   テスト・`docs/*`・`scripts/*` 等）に含まれないため機械的に E に分類される
+4. **正当性根拠**: `lefthook.yml` の pre-commit `rustfmt` 対象から
+   `crates/plugin-jwt/fuzz/**` を除外し、`.claude/rules/git-hooks.md` の同記述を
+   追随させただけである（root workspace の fmt 対象と揃える既存規約どおり）。
+   `Cargo.toml` は root workspace の `exclude` に独立 workspace を加えるのみ、
+   `.gitignore` は fuzz の生成物を除外するのみで、いずれも拡張点契約
+   （`Middleware` / `UpgradeHandler` / `RequestGate` / `Interceptor`）・依存方向（1 節）・
+   プラグイン実装ロジックには影響しない。`crates/http/fuzz` 追加時と同種の運用上の
+   ギャップであり、拡張点設計の閉包漏れではない
+
 ## 6. 検証コマンド
 
 ```bash
