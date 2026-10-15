@@ -887,12 +887,19 @@ E（閉包違反候補）と判定された（後続コミットで `examples/wi
    - `README.md`
    - `CHANGELOG.md`
    - `site/index.md`
+   - `benches/README.md`
+   - `benches/microbench/Cargo.toml`
+   - `benches/refs/Cargo.toml`
+   - `benches/refs/deny.toml`
 3. **閉じない理由**: 4.16 節と同一の運用上のギャップ（分類規則 D がルート直下の
-   `README.md`・`CHANGELOG.md`・`Cargo.toml` と `site/**` を含まない）により E 判定となる、
-   コメント・件数表記・リリースノートの追随である
+   `README.md`・`CHANGELOG.md`・`Cargo.toml` と `site/**` を含まない）に加え、4.3 節〜4.6 節
+   と同一の `benches/**` が D 未対応というギャップにより E 判定となる、コメント・件数表記・
+   リリースノート・ベンチ用 workspace の依存 version 追随である
 4. **正当性根拠**: 変更はコメント・件数表記・リリースノートのみで、拡張点 trait とシームの
    契約・依存方向（1 節）に影響しない。`crates/plugin-jwt/Cargo.toml` の変更は `publish`
-   メタデータの解除だけである
+   メタデータの解除だけである。`benches/microbench/Cargo.toml`・`benches/refs/Cargo.toml`・
+   `benches/refs/deny.toml` の変更は version 追随のみで、拡張点とシームの契約・依存方向に
+   影響しない
 
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 
