@@ -530,3 +530,22 @@ fn claims_debug_does_not_leak_values() {
     assert!(!dbg.contains("SECRET"), "{dbg}");
     assert!(dbg.contains("has_sub: true"));
 }
+
+#[test]
+fn rejects_non_object_header_and_claims() {
+    // Deserialize derive は JSON 配列からもフィールド順に復元できるため、
+    // オブジェクト以外は Malformed で拒否する（fail-closed）。
+    expect(
+        r#"["ES256","k","at+jwt"]"#,
+        &payload(""),
+        VerifyError::Malformed,
+    );
+    expect(
+        HDR,
+        &format!(
+            r#"["{ISS}",null,"api",{},null,null,null,null,null]"#,
+            NOW + 100
+        ),
+        VerifyError::Malformed,
+    );
+}

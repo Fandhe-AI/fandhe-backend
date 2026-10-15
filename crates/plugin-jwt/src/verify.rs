@@ -33,6 +33,18 @@ use crate::policy::{Algorithm, JwtPolicy};
 /// 受理するトークン全体の最大バイト長（超過は [`VerifyError::TooLong`]）。
 pub const MAX_TOKEN_LEN: usize = 8192;
 
+/// JSON のトップレベルがオブジェクトであることを要求する。
+///
+/// `Deserialize` を derive した構造体は JSON 配列からもフィールド順に復元できてしまうため、
+/// 配列等を `Malformed` として拒否する（fail-closed）。
+fn require_json_object(bytes: &[u8]) -> Result<(), VerifyError> {
+    if bytes.trim_ascii_start().first() == Some(&b'{') {
+        Ok(())
+    } else {
+        Err(VerifyError::Malformed)
+    }
+}
+
 /// トークン側 `aud` 配列の最大要素数（超過は [`VerifyError::Malformed`]）。
 pub const MAX_TOKEN_AUDIENCES: usize = 16;
 
@@ -376,6 +388,7 @@ pub fn verify<E: DeserializeOwned>(
     }
 
     let header_bytes = b64(h)?;
+    require_json_object(&header_bytes)?;
     let header: RawHeader<'_> =
         serde_json::from_slice(&header_bytes).map_err(|_| VerifyError::Malformed)?;
     if header.crit {
@@ -419,6 +432,7 @@ pub fn verify<E: DeserializeOwned>(
         _ => return Err(VerifyError::InvalidType),
     }
     let payload = b64(p)?;
+    require_json_object(&payload)?;
     let raw: RawClaims = serde_json::from_slice(&payload).map_err(|_| VerifyError::Malformed)?;
 
     let iss = raw.iss.ok_or(VerifyError::MissingClaim)?;
