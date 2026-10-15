@@ -233,3 +233,8 @@
   `log` への外部依存追加案と比較し、新規依存ゼロの trait 登録口方式を採用した
   理由・panic 境界・grace 超過 2 箇所での通知順序変更（強制クローズ確定後に
   通知）・将来の `tracing` 転送シンク同梱案を記述）
+- [`jwt-verify-plugin.md`](./jwt-verify-plugin.md): 汎用 JWT 検証プラグイン
+  `fandhe-backend-plugin-jwt`（REQ-16）の設計（イシュー #811。Gate 型の配置・
+  必須引数ポリシー型・RS256/ES256 の JWK 分類と同一 `kid` 複数鍵・未知 `kid` 通知口・
+  依存の解釈・fuzz の置き場所・hub-wiring 移行・REQ-16 受け入れ基準と
+  Phase 2・3 issue の対応表を記述。設計のみでコード変更なし）

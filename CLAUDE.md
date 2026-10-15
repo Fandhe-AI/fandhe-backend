@@ -138,6 +138,10 @@ fandhe-backend/
 │   │   │                        # 非同期経路を対象外とする既知の限界・toolchain 差異時の
 │   │   │                        # ベースライン更新運用・カデンツ「ci.yml で PR/push
 │   │   │                        # 毎回実行」の確定を記録
+│   │   ├── jwt-verify-plugin.md  # 汎用 JWT 検証プラグイン（REQ-16、イシュー #811）の
+│   │   │                            # 設計記録（設計のみ）。Gate 型配置・必須引数ポリシー型・
+│   │   │                            # RS256/ES256 の JWK 分類・hub-wiring 移行方針・
+│   │   │                            # REQ-16 受け入れ基準と Phase 2・3 issue の対応表
 │   │   └── diagnostics-sink.md  # ライブラリ内部の実行時診断（accept 失敗・
 │   │                            # TCP_NODELAY 設定失敗・graceful shutdown / rebind の
 │   │                            # grace 超過強制クローズの 4 箇所）を `eprintln!` 直書きから
