@@ -12,9 +12,9 @@
 //!
 //! # 実装状況
 //!
-//! 現状は検証ポリシー型 [`JwtPolicy`] と JWKS 鍵集合 [`KeySet`]
-//! （RS256・ES256、[`SharedKeySet`] による差し替え）。トークン検証・
-//! `RequestGate` 実装は後続イシューで追加する。設計は
+//! 現状は検証ポリシー型 [`JwtPolicy`]、JWKS 鍵集合 [`KeySet`]
+//! （RS256・ES256、[`SharedKeySet`] による差し替え）、トークン検証関数 [`verify()`]
+//! （署名・`typ`・`iss`・`aud`・`exp`・`nbf`）。`RequestGate` 実装は後続イシューで追加する。設計は
 //! `docs/design/jwt-verify-plugin.md` を参照。
 //!
 //! `iss`・`aud`・`typ`・許可 `alg` の欠けた構成は型の段階で作れない。`none`・HS 系は
@@ -27,6 +27,7 @@
 
 pub mod jwks;
 pub mod policy;
+pub mod verify;
 
 pub use jwks::{
     Jwk, JwksError, KeySet, MAX_JWKS_DOC_LEN, MAX_KEYS, MAX_KEYS_PER_KID, MAX_KID_LEN, SharedKeySet,
@@ -36,3 +37,5 @@ pub use policy::{
     Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, MAX_AUDIENCES, MAX_CLAIM_VALUE_LEN,
     MAX_CLOCK_SKEW, PolicyError, TokenType,
 };
+
+pub use verify::{Claims, MAX_TOKEN_AUDIENCES, MAX_TOKEN_LEN, NoExtraClaims, VerifyError, verify};

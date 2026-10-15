@@ -140,6 +140,12 @@ impl Jwk {
     pub fn algorithm(&self) -> Algorithm {
         self.alg
     }
+
+    /// 署名検証（`verify` モジュール）が ring の入力を組み立てるための鍵成分。
+    /// 公開 API には出さず、クレート内に閉じる。
+    pub(crate) fn material(&self) -> &KeyMaterial {
+        &self.material
+    }
 }
 
 impl fmt::Debug for Jwk {
