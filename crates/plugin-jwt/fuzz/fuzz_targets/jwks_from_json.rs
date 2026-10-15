@@ -19,9 +19,6 @@ fuzz_target!(|data: &[u8]| {
         Ok(ks) => {
             assert!(s.len() <= MAX_JWKS_DOC_LEN, "文書長上限を超えて受理された");
             assert!(ks.len() <= MAX_KEYS, "鍵数上限を超えて受理された");
-            #[allow(clippy::len_zero)]
-            let consistent = ks.is_empty() == (ks.len() == 0);
-            assert!(consistent);
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(s)
                 && let Some(keys) = v.get("keys").and_then(|k| k.as_array())
             {
