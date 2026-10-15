@@ -406,8 +406,8 @@ fn classify(raw: &RawJwk<'_>) -> Result<Option<Jwk>, JwksError> {
         } else {
             None
         };
+        // 未対応 kty（OKP 等）も比較対象にする（読み飛ばしで矛盾を見逃さない）。
         if let Some(req) = required_kty
-            && matches!(kty, "RSA" | "EC")
             && kty != req
         {
             return Err(JwksError::KeyAlgorithmMismatch);
@@ -611,5 +611,22 @@ mod tests {
             KeySet::from_json(&json).unwrap_err(),
             JwksError::KeyAlgorithmMismatch
         );
+    }
+
+    #[test]
+    fn unsupported_kty_contradicting_alg_rejects_whole_document() {
+        let good = rsa("a", &[7, 8]);
+        for alg in ["RS256", "PS256", "ES256", "ES384"] {
+            let okp = format!(r#"{{"kty":"OKP","crv":"Ed25519","alg":"{alg}"}}"#);
+            let json = format!(r#"{{"keys":[{good},{okp}]}}"#);
+            assert_eq!(
+                KeySet::from_json(&json).unwrap_err(),
+                JwksError::KeyAlgorithmMismatch,
+                "{alg}"
+            );
+        }
+        let okp = r#"{"kty":"OKP","crv":"Ed25519","alg":"EdDSA"}"#;
+        let set = KeySet::from_json(&format!(r#"{{"keys":[{good},{okp}]}}"#)).unwrap();
+        assert_eq!((set.len(), set.skipped()), (1, 1));
     }
 }
