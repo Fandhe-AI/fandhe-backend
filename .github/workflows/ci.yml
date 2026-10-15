@@ -1448,34 +1448,3 @@ jobs:
             [ "${result}" = "success" ] || ok=0
           done
           [ "${ok}" = "1" ]
-
-  # --------------------------------------------------
-  # main の旧世代ビルドキャッシュ削除（.claude/rules/ci.md「キャッシュ方針」）
-  # Cargo.toml・toolchain の変更でビルドキャッシュの新世代が main に保存されると、旧世代は
-  # 誰も復元しないまま 7 日間残り、容量上限で数 MB のツールキャッシュまで LRU で追い出す。
-  # 全ビルドジョブの保存が終わった後（needs）に、同じ <family>-<OS> の最新世代だけを残す。
-  # 品質ゲートではない保守ジョブのため ci-complete の needs・required check には含めない
-  # （PR・schedule では skipped。マージ判定に影響しない）。
-  # --------------------------------------------------
-  cache-prune:
-    name: cache-prune（main の旧世代ビルドキャッシュ削除）
-    runs-on: ubuntu-latest
-    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    needs: [clippy, test, doc, dep-audit, coverage, pay-for-what-you-use, fuzz-smoke, webrtc-e2e, microbench, openapi-two-stage, openapi-ts]
-    # キャッシュ削除 API（DELETE /repos/{owner}/{repo}/actions/caches/{id}）に必要な最小権限。
-    # main への push でのみ実行し、PR（fork 含む）のコードはこの権限で動かない。
-    permissions:
-      contents: read
-      actions: write
-    timeout-minutes: 5
-    steps:
-      - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
-
-      - name: ci-cache-prune-generations.sh
-        # 容量最適化であり、API の一時障害等で main を赤くしない（失敗時は旧世代が
-        # 7 日の未使用期限で消えるのを待つだけ）。
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/ci-cache-prune-generations.sh
