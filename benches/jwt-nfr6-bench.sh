@@ -14,6 +14,9 @@
 #   - サーバが起動時に有効トークンを作り、`FANDHE_BACKEND_JWT_BENCH_TOKEN_FILE` へ書く
 #   - 全系統（baseline を含む）に同じ `Authorization: Bearer <token>` を付けて負荷をかける
 #     （ヘッダ解析コストが揃い、差がゲートのコストだけになる）
+#   RS256 は署名が長くヘッダ転送量・解析コストが異なるため、RS256 の比率は RS256 トークンを
+#   付けた baseline を分母にする（ES256 の baseline とは別に計測する）。
+#   各試行は oha の JSON で成功率 100% かつ全応答 200 を検証し、満たさなければ中止する。
 #   系統は (a) baseline（minimal）、(b) リンクのみ（ゲート未登録）、(c) ゲート有効 +
 #   有効トークン（ES256 が主計測、RS256 も 1 系列）。
 #
@@ -149,6 +152,26 @@ expect_code() {
     fi
 }
 
+# 試行の全応答が 200 で、通信失敗が無いことを確認する。満たさない試行（401 の混入、
+# 接続失敗等）の RPS/p95 は別の応答形状の値になるため、計測失敗として中止する。
+# 引数: $1 oha の JSON、$2 ラベル
+verify_all_200() {
+    local json="$1" what="$2"
+    if ! echo "${json}" | jq -e '
+        (.summary.successRate == 1)
+        and ((.errorDistribution // {}) | length == 0)
+        and ((.statusCodeDistribution // {}) | to_entries | length > 0)
+        and ((.statusCodeDistribution // {}) | to_entries | all(.key == "200"))
+    ' >/dev/null 2>&1; then
+        echo "エラー: 計測失敗（${what}）: 全応答が 200 ではない、または通信失敗があります。" >&2
+        echo "  statusCodeDistribution=$(echo "${json}" | jq -c '.statusCodeDistribution // null')" >&2
+        echo "  successRate=$(echo "${json}" | jq -c '.summary.successRate // null')" >&2
+        echo "  errorDistribution=$(echo "${json}" | jq -c '.errorDistribution // null')" >&2
+        echo "誤った比較を記録しないため中止します" >&2
+        exit 1
+    fi
+}
+
 # 1 系統の RPS/p95 を RUNS 回計測し中央値を返す（"rps p95"）。
 # 引数: $1 ポート、$2 ラベル、$3 トークン。サーバは起動済みで ready 済みであること。
 run_load() {
@@ -162,6 +185,7 @@ run_load() {
     local i json rps p95
     for ((i = 1; i <= RUNS; i++)); do
         json="$(oha -z "${DURATION}" -c "${CONNECTIONS}" -H "${hdr}" --no-tui --output-format json "${url}")"
+        verify_all_200 "${json}" "${label} run ${i}"
         rps="$(echo "${json}" | jq -r '.summary.requestsPerSec')"
         p95="$(echo "${json}" | jq -r '.latencyPercentiles.p95')"
         rps_values+=("${rps}")
@@ -188,6 +212,14 @@ expect_code 200 "$(http_code "${JWT_URL}" "${ES_TOKEN}")" "ゲート有効・有
 expect_code 401 "$(http_code "${JWT_URL}" "")" "ゲート有効・ヘッダ無し GET /（ゲートが効いている証跡）"
 stop_server
 
+# RS256 のトークンは署名が長くヘッダ転送量・解析コストが ES256 と異なるため、RS256 の
+# baseline は RS256 トークンで別途計測する。ここで長さの代表となる RS_TOKEN0 を得る。
+start_server "${JWT_BIN}" "" "rs256"
+RS_TOKEN0="$(read_token)"
+wait_ready "${JWT_URL}" "${RS_TOKEN0}"
+expect_code 200 "$(http_code "${JWT_URL}" "${RS_TOKEN0}")" "ゲート有効・RS256 有効トークン付き GET /"
+stop_server
+
 start_server "${JWT_BIN}" "off" "es256"
 wait_ready "${JWT_URL}" "${ES_TOKEN}"
 expect_code 200 "$(http_code "${JWT_URL}" "${ES_TOKEN}")" "ゲート無効・トークン付き GET /"
@@ -205,6 +237,13 @@ echo "正常性確認 OK" >&2
 CURRENT_PID="$!"
 wait_ready "${BASE_URL}" "${ES_TOKEN}"
 read -r baseline_rps baseline_p95 <<<"$(run_load "${BASELINE_PORT}" baseline "${ES_TOKEN}")"
+stop_server
+
+# RS256 比較用 baseline（RS256 トークンのヘッダを付けた minimal）
+"${BASELINE_BIN}" >/dev/null 2>&1 &
+CURRENT_PID="$!"
+wait_ready "${BASE_URL}" "${RS_TOKEN0}"
+read -r rs_baseline_rps rs_baseline_p95 <<<"$(run_load "${BASELINE_PORT}" "baseline(RS256 token)" "${RS_TOKEN0}")"
 stop_server
 
 start_server "${JWT_BIN}" "off" "es256"
@@ -228,8 +267,8 @@ es_rps_ratio="$(ratio "${es_rps}" "${baseline_rps}")"
 es_p95_ratio="$(ratio "${es_p95}" "${baseline_p95}")"
 off_rps_ratio="$(ratio "${off_rps}" "${baseline_rps}")"
 off_p95_ratio="$(ratio "${off_p95}" "${baseline_p95}")"
-rs_rps_ratio="$(ratio "${rs_rps}" "${baseline_rps}")"
-rs_p95_ratio="$(ratio "${rs_p95}" "${baseline_p95}")"
+rs_rps_ratio="$(ratio "${rs_rps}" "${rs_baseline_rps}")"
+rs_p95_ratio="$(ratio "${rs_p95}" "${rs_baseline_p95}")"
 
 es_verdict="$(evaluate_nfr6_ratio "${es_rps_ratio}" "${es_p95_ratio}")"
 off_verdict="$(evaluate_nfr6_ratio "${off_rps_ratio}" "${off_p95_ratio}")"
@@ -241,6 +280,7 @@ rs_verdict="$(evaluate_nfr6_ratio "${rs_rps_ratio}" "${rs_p95_ratio}")"
     echo "baseline            RPS=${baseline_rps} p95=${baseline_p95}"
     echo "jwt ゲート無効       RPS=${off_rps}（${off_rps_ratio}%） p95=${off_p95}（${off_p95_ratio}%） 判定=${off_verdict}"
     echo "jwt ゲート有効 ES256 RPS=${es_rps}（${es_rps_ratio}%） p95=${es_p95}（${es_p95_ratio}%） 判定=${es_verdict}（主判定）"
+    echo "baseline(RS256 token) RPS=${rs_baseline_rps} p95=${rs_baseline_p95}（RS256 の比較分母）"
     echo "jwt ゲート有効 RS256 RPS=${rs_rps}（${rs_rps_ratio}%） p95=${rs_p95}（${rs_p95_ratio}%） 判定=${rs_verdict}"
 } >&2
 
@@ -251,5 +291,6 @@ printf 'gate_on_es256_rps=%s\ngate_on_es256_p95=%s\n' "${es_rps}" "${es_p95}"
 printf 'rps_ratio_pct=%s\np95_ratio_pct=%s\nverdict=%s\n' "${es_rps_ratio}" "${es_p95_ratio}" "${es_verdict}"
 printf 'gate_off_rps=%s\ngate_off_p95=%s\ngate_off_rps_ratio=%s\ngate_off_p95_ratio=%s\ngate_off_verdict=%s\n' \
     "${off_rps}" "${off_p95}" "${off_rps_ratio}" "${off_p95_ratio}" "${off_verdict}"
+printf 'baseline_rs256_token_rps=%s\nbaseline_rs256_token_p95=%s\n' "${rs_baseline_rps}" "${rs_baseline_p95}"
 printf 'gate_on_rs256_rps=%s\ngate_on_rs256_p95=%s\ngate_on_rs256_rps_ratio=%s\ngate_on_rs256_p95_ratio=%s\ngate_on_rs256_verdict=%s\n' \
     "${rs_rps}" "${rs_p95}" "${rs_rps_ratio}" "${rs_p95_ratio}" "${rs_verdict}"
