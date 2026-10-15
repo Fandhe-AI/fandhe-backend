@@ -71,12 +71,22 @@ fandhe-backend-plugin-compression = { path = "crates/plugin-compression", versio
 fandhe-backend-plugin-cors = { path = "crates/plugin-cors", version = "0.4.2" }
 fandhe-backend-plugin-graphql = { path = "crates/plugin-graphql", version = "0.4.2" }
 fandhe-backend-plugin-hub-wiring = { path = "crates/plugin-hub-wiring", version = "0.4.2" }
+fandhe-backend-plugin-jwt = { path = "crates/plugin-jwt", version = "0.4.2" }
 fandhe-backend-plugin-openapi = { path = "crates/plugin-openapi", version = "0.4.2" }
 fandhe-backend-plugin-static = { path = "crates/plugin-static", version = "0.4.2" }
 fandhe-backend-plugin-tracing = { path = "crates/plugin-tracing", version = "0.4.2" }
 fandhe-backend-plugin-webrtc = { path = "crates/plugin-webrtc", version = "0.4.2" }
 fandhe-backend-plugin-webrtc-proxy = { path = "crates/plugin-webrtc-proxy", version = "0.4.2" }
 fandhe-backend-plugin-websocket = { path = "crates/plugin-websocket", version = "0.4.2" }
+
+# plugin-jwt（REQ-16）と plugin-hub-wiring が共有する外部依存（イシュー #813）。
+# 版指定は hub-wiring と同一で、workspace の `Cargo.lock` に新しい crate・版を
+# 増やさない（docs/design/jwt-verify-plugin.md 2.7 節）。暗号は `ring` のみ。
+# なお上記コメントの「13 クレート」は plugin-jwt 追加後の件数へ別 issue（#822）で追随する。
+ring = "0.17"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # workspace 全体の lint 既定値。各クレートの Cargo.toml で
 # `[lints] workspace = true` を指定して継承する。
