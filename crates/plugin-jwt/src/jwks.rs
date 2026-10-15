@@ -396,11 +396,39 @@ fn classify(raw: &RawJwk<'_>) -> Result<Option<Jwk>, JwksError> {
     if raw.d || raw.p || raw.q || raw.dp || raw.dq || raw.qi || raw.oth || raw.k {
         return Err(JwksError::PrivateKeyMaterial);
     }
-    match alg {
-        Some("RS256") if kty != "RSA" => return Err(JwksError::KeyAlgorithmMismatch),
-        Some("ES256") if kty != "EC" => return Err(JwksError::KeyAlgorithmMismatch),
-        Some("ES256") if crv != Some("P-256") => return Err(JwksError::UnsupportedCurve),
-        _ => {}
+    // 未対応方式を含む既知の alg について、kty・crv との矛盾を読み飛ばし判定より前に
+    // 検査する（矛盾する鍵が 1 つでもあれば文書全体を拒否する fail-closed）。
+    if let Some(a) = alg {
+        let required_kty = if a.starts_with("RS") || a.starts_with("PS") || a.starts_with("RSA") {
+            Some("RSA")
+        } else if a.starts_with("ES") || a.starts_with("ECDH-ES") {
+            Some("EC")
+        } else {
+            None
+        };
+        if let Some(req) = required_kty
+            && matches!(kty, "RSA" | "EC")
+            && kty != req
+        {
+            return Err(JwksError::KeyAlgorithmMismatch);
+        }
+        let required_crv = match a {
+            "ES256" => Some("P-256"),
+            "ES384" => Some("P-384"),
+            "ES512" => Some("P-521"),
+            _ => None,
+        };
+        if let Some(rc) = required_crv
+            && kty == "EC"
+            && crv != Some(rc)
+        {
+            // ES256 は従来どおり曲線不対応、未対応方式は alg との矛盾として扱う。
+            return Err(if a == "ES256" {
+                JwksError::UnsupportedCurve
+            } else {
+                JwksError::KeyAlgorithmMismatch
+            });
+        }
     }
     if raw.use_.as_deref().is_some_and(|u| u != "sig") {
         return Ok(None);
@@ -563,5 +591,25 @@ mod tests {
             b64(&[7, 8])
         );
         assert!(KeySet::from_json(&json).is_err());
+    }
+
+    #[test]
+    fn unsupported_alg_contradicting_kty_rejects_whole_document() {
+        let good = rsa("a", &[7, 8]);
+        let ec384 = r#"{"kty":"EC","crv":"P-384","alg":"RS384"}"#;
+        let json = format!(r#"{{"keys":[{good},{ec384}]}}"#);
+        assert_eq!(
+            KeySet::from_json(&json).unwrap_err(),
+            JwksError::KeyAlgorithmMismatch
+        );
+        let rsa_es = format!(
+            r#"{{"kty":"RSA","kid":"b","alg":"ES384","use":"enc","n":"{}","e":"AQAB"}}"#,
+            b64(&[7, 8])
+        );
+        let json = format!(r#"{{"keys":[{good},{rsa_es}]}}"#);
+        assert_eq!(
+            KeySet::from_json(&json).unwrap_err(),
+            JwksError::KeyAlgorithmMismatch
+        );
     }
 }
