@@ -8,6 +8,17 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-10-15 — `crates/plugin-jwt` に `ring` を追加（イシュー #815、トークン検証）
+
+RS256・ES256 の署名検証のため `crates/plugin-jwt/Cargo.toml` の `[dependencies]` に
+`ring`（`{ workspace = true }`、版は workspace 共有の 0.17.14）を追加した。#814 の記録が
+「ring は #815 で追加する」と後送りしていた分。
+
+- 新規パッケージ: 0（`ring` とその推移依存は hub-wiring 経由で workspace の依存ツリーに既存）
+- `unsafe` の追加: なし（本クレートは `#![forbid(unsafe_code)]`。ring 内部の unsafe は既存分）
+- core 利用者への影響: なし（`plugin-jwt` は `crates/core` の feature に未配線で、
+  `cargo tree -p fandhe-backend-core -e normal` に現れない）
+
 ## 2026-10-15 — `crates/plugin-jwt` の依存追加（イシュー #814、JWKS 鍵集合）
 
 JWKS の解析のため `crates/plugin-jwt/Cargo.toml` の `[dependencies]` に `base64` /
