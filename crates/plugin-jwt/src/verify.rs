@@ -371,6 +371,21 @@ pub fn verify<E: DeserializeOwned>(
     policy: &JwtPolicy,
     now_unix: u64,
 ) -> Result<Claims<E>, VerifyError> {
+    verify_inner(token, keys, policy, now_unix, |_| {})
+}
+
+/// [`verify`] の本体。`UnknownKeyId` を返す直前にだけ `on_unknown_kid(kid)` を呼ぶ。
+///
+/// `VerifyError` は文字列を持たない契約のため、未知 `kid` の通知（`crate::auth`）へ
+/// `kid` を渡す経路として本関数を用意する。呼ばれる時点で `kid` は非空かつ
+/// [`MAX_KID_LEN`] 以下に検証済み。
+pub(crate) fn verify_inner<E: DeserializeOwned, F: FnOnce(&str)>(
+    token: &str,
+    keys: &KeySet,
+    policy: &JwtPolicy,
+    now_unix: u64,
+    on_unknown_kid: F,
+) -> Result<Claims<E>, VerifyError> {
     if token.is_empty() {
         return Err(VerifyError::MissingToken);
     }
@@ -409,11 +424,11 @@ pub fn verify<E: DeserializeOwned>(
         .filter(|k| k.algorithm() == alg)
         .collect();
     if candidates.is_empty() {
-        return Err(if any_kid {
-            VerifyError::KeyAlgorithmMismatch
-        } else {
-            VerifyError::UnknownKeyId
-        });
+        if any_kid {
+            return Err(VerifyError::KeyAlgorithmMismatch);
+        }
+        on_unknown_kid(kid);
+        return Err(VerifyError::UnknownKeyId);
     }
 
     let sig = b64(s)?;
