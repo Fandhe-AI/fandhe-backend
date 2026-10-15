@@ -371,17 +371,37 @@ fn c1_rejects_hs_family() {
     assert_eq!(run(&t, &rks).unwrap_err(), VerifyError::AlgorithmNotAllowed);
 }
 
+/// 固定長 R||S（64 バイト）を DER `SEQUENCE{INTEGER r, INTEGER s}` へ変換する。
+fn rs_to_der(sig: &[u8]) -> Vec<u8> {
+    fn int(v: &[u8]) -> Vec<u8> {
+        let mut v: Vec<u8> = v.iter().copied().skip_while(|b| *b == 0).collect();
+        if v.first().is_none_or(|b| b & 0x80 != 0) {
+            v.insert(0, 0);
+        }
+        let mut out = vec![0x02, v.len() as u8];
+        out.extend(v);
+        out
+    }
+    let (r, s) = sig.split_at(sig.len() / 2);
+    let body: Vec<u8> = int(r).into_iter().chain(int(s)).collect();
+    let mut out = vec![0x30, body.len() as u8];
+    out.extend(body);
+    out
+}
+
 #[test]
 fn c1_rejects_der_encoded_ecdsa_signature() {
-    let (_, ks) = es_fixture();
-    // DER SEQUENCE{INTEGER r, INTEGER s}（r = s = 1）。JWS は R||S 固定長が正。
-    let der = [0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01];
-    let msg = format!(
-        "{}.{}",
-        B.encode(hdr("ES256", "k", Some("at+jwt"))),
-        B.encode(body(""))
-    );
-    let t = format!("{msg}.{}", B.encode(der));
+    let (kp, ks) = es_fixture();
+    let header = hdr("ES256", "k", Some("at+jwt"));
+    let payload = body(r#","sub":"u""#);
+    // 同じ鍵・同じメッセージの有効な R||S は受理される（対照）。
+    let valid = sign_es(&kp, &header, &payload);
+    assert!(run(&valid, &ks).is_ok());
+    // 同一署名を DER に変換しただけで拒否される（JWS は R||S 固定長が正）。
+    let (msg, sig_b64) = valid.rsplit_once('.').unwrap();
+    let raw = B.decode(sig_b64).unwrap();
+    assert_eq!(raw.len(), 64);
+    let t = format!("{msg}.{}", B.encode(rs_to_der(&raw)));
     assert_eq!(run(&t, &ks).unwrap_err(), VerifyError::InvalidSignature);
 }
 
