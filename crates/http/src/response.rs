@@ -500,6 +500,10 @@ impl Response {
     /// let second = text.find("Set-Cookie: b=2\r\n").unwrap();
     /// assert!(first < second);
     /// ```
+    ///
+    /// `__Host-`/`__Secure-` 接頭辞付き cookie は `SetCookie::host_prefixed` /
+    /// `secure_prefixed` で構築済みなら、条件充足が型で保証されるため本メソッドは
+    /// infallible のまま渡せる。
     #[must_use]
     pub fn with_set_cookie(mut self, cookie: crate::cookie::SetCookie) -> Self {
         // `SetCookie::to_header_value` が出力しうる文字集合（tchar な名前 /
