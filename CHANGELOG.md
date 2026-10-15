@@ -1,7 +1,7 @@
 # Changelog
 
-公開対象 13 クレート（`fandhe-backend-http` / `fandhe-backend-routes` / `fandhe-backend-core` /
-`fandhe-backend-plugin-*` 10 種）は lockstep（同一バージョン一斉更新）で運用する
+公開対象 14 クレート（`fandhe-backend-http` / `fandhe-backend-routes` / `fandhe-backend-core` /
+`fandhe-backend-plugin-*` 11 種。0.5.0 で `fandhe-backend-plugin-jwt` が加わり、0.4.2 以前は 13 クレート）は lockstep（同一バージョン一斉更新）で運用する
 （詳細は [`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7 節）。
 恒久非公開クレート（`axum-ref` / `ws-load-client` / `docs-site`）はこの一覧に含めない。
 
@@ -64,11 +64,19 @@
     付けてください。未対応の方式（EdDSA 等）は読み飛ばします。
   - 401 / 403 の判定・応答本文は変わりません（`org_id` の欠落・空は 403、それ以外の
     検証失敗は 401）。
-  - リリース順の注意: `fandhe-backend-plugin-jwt` は現在 `publish = false` です。
-    `v0.5.0` タグの前に #822（公開準備）をマージしてください。
+  - リリース順の注意: `fandhe-backend-plugin-jwt` の暫定の `publish = false` は
+    #822（公開準備）で解除済みです。`fandhe-backend-plugin-hub-wiring` が依存するため、
+    0.5.0 で 2 クレートを同時に初公開します。
 
 ### Added
 
+- `fandhe-backend-plugin-jwt`: 汎用 JWT 検証クレートを新設しました（REQ-16、0.5.0 で
+  初公開）。RS256・ES256 の検証（`JwtPolicy` で `iss`・`aud`・`typ`・許可 `alg` を必須とし、
+  `none`・HS 系は型として表現不能）、JWKS 鍵集合（`KeySet` / `SharedKeySet`）、
+  `verify`、検証結果キャッシュ付き `JwtAuthenticator`、`RequestGate` 実装 `JwtGate`、
+  未知 `kid` の通知口 `UnknownKeyNotifier` を提供します。Gate 型のため core の feature は
+  なく、`Server::gate` で登録します（設計は
+  [`docs/design/jwt-verify-plugin.md`](docs/design/jwt-verify-plugin.md)）。
 - `fandhe-backend-http`: `SetCookie::host_prefixed` / `SetCookie::secure_prefixed` を追加しました。
 - `fandhe-backend-plugin-hub-wiring`: `jwt`（`fandhe-backend-plugin-jwt` 全体の再エクスポート）、
   `AuthError` / `TenantClaims` / `HubClaims`、`Authenticator::from_jwt` を追加しました。

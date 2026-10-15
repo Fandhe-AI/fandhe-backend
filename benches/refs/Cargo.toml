@@ -10,7 +10,7 @@
 # `crates/http/fuzz`・`crates/plugin-webrtc/tests-e2e`・`benches/microbench` と同じ
 # standalone workspace パターンを踏襲し、root `Cargo.toml` の `[workspace] exclude` に
 # 本パスを登録する。root workspace の `cargo metadata` / `cargo tree` /
-# `cargo geiger` に actix-web / Rocket の依存グラフが一切現れず、公開 13 クレートの
+# `cargo geiger` に actix-web / Rocket の依存グラフが一切現れず、公開対象クレートの
 # 依存監査・pay-for-what-you-use 検証（`.claude/rules/pay-for-what-you-use.md`）に
 # 影響しない。
 #

@@ -8,6 +8,34 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-10-15 — `crates/plugin-jwt` の公開準備（イシュー #822、`publish = false` 解除と pay-for-what-you-use の確認）
+
+`fandhe-backend-plugin-jwt` の暫定 `publish = false` を解除し、公開対象を 14 クレートとした
+（初公開は 0.5.0）。依存の追加・変更はなく、`Cargo.lock` に差分はない。REQ-16 受け入れ基準 4
+（使わない構成に plugin-jwt とその依存が現れない）の確認結果を記録する。
+
+計測コマンド: `bash scripts/dep-impact.sh`（本ブランチ、cargo-geiger 未導入）
+
+| feature 構成 | 依存クレート数（workspace メンバー除外） |
+|---|---|
+| --no-default-features | 281 |
+| default | 281 |
+| --all-features | 283 |
+
+`cargo tree -e normal --prefix none` の確認結果（`grep -c '^fandhe-backend-plugin-jwt '`）:
+
+- `-p fandhe-backend-core`: `--no-default-features`・既定・`--all-features` のすべてで 0 件
+- `-p fandhe-backend-core` の `ring` / `base64`: `--no-default-features`・既定で 0 件。
+  `--all-features` では `ring` が現れるが、`cargo tree -i ring` の経路は
+  `webrtc` → `fandhe-backend-plugin-webrtc` 経由であり plugin-jwt 経由ではない
+- `fandhe-backend-http` / `routes` と、hub-wiring 以外の各 plugin（websocket / graphql /
+  openapi / webrtc / webrtc-proxy / tracing / cors / compression / static、`--all-features`）: 0 件
+- `templates/app`（standalone workspace）: 0 件
+- `fandhe-backend-plugin-hub-wiring`: 1 件（hub-wiring を使う構成でのみ入る。設計どおり）
+- 新規パッケージ: 0（`Cargo.lock` の差分なし）
+- `unsafe` の追加: なし（`#![forbid(unsafe_code)]`。`scripts/unsafe-baseline.json` に
+  `plugin-jwt` を 0 件で明示した）
+
 ## 2026-10-15 — `crates/plugin-hub-wiring` が `plugin-jwt` へ依存（イシュー #820、JWT 検証部の移管）
 
 JWT/JWKS の検証を `fandhe-backend-plugin-jwt` へ一本化したため、

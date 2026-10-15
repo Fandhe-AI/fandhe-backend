@@ -37,7 +37,7 @@ REQ-16 は、下流サービスが認証基盤（`fandhe-auth-backend`）の発�
 - `scripts/dep-direction-check.sh` の `allowed_edge_patterns` は `plugin-*:core/http/routes`
   のみ許可し、plugin から plugin への依存は現状違反になる。
 - 名前の可用性: 2026-10-15 に crates.io API で `fandhe-backend-plugin-jwt` が 404（未登録）
-  であることを確認した。
+  であることを確認した（#822 でも `cargo search` と API の 404 を再確認、`crates-io-release.md` 2 節に記録）。
 
 ## 2. 決定事項
 
@@ -258,7 +258,7 @@ JSON・base64 の自前実装は攻撃表面を増やす（`plugin-hub-wiring/Ca
 - 5.6.3: `GateOutcome` はクレームを運ばず、共有ハンドル経由で得る。
 - 5.6.4: まず依存逆転を検討する。
 
-#822 へ回す追記（本イシューでは `plugin-boundary.md` を編集しない）:
+#822 へ回した追記（本イシューでは `plugin-boundary.md` を編集しなかった。いずれも #822 で対応済み）:
 
 - (a) Gate 型の 2 例目として `plugin-jwt` を加え、5.6.1 の「RS256」記述を RS256・ES256 へ更新。
 - (b) plugin から plugin への依存エッジ `fandhe-backend-plugin-hub-wiring → fandhe-backend-plugin-jwt`
@@ -267,7 +267,8 @@ JSON・base64 の自前実装は攻撃表面を増やす（`plugin-hub-wiring/Ca
 - (c) `plugin-jwt` の `拡張点対応: RequestGate` 宣言と `extension-closure-gate.sh` の通過確認。
 - (d) 公開 crate 数 13 → 14 の追随（`CLAUDE.md`・`crates-io-release.md`・ルート `Cargo.toml` の
   コメント・`CHANGELOG.md` 冒頭）。
-- (e) REQ-17 の CSRF ゲートとの登録順は #826 が定める、と相互参照する。
+- (e) REQ-17 の CSRF ゲートとの登録順は #826 が定める、と相互参照する
+  （`plugin-boundary.md` 5.6.5 節に記載済み）。
 
 ## 5. セキュリティ考慮（OWASP Top 10・RFC 8725）
 
@@ -328,7 +329,7 @@ Phase 2・3 の各 issue は着手時にそれぞれ 3 軸を判定する。
 
 ## 7. スコープ外・見直しの条件
 
-- `plugin-boundary.md`・`dependency-graph-contract.md`・`dep-direction-check.sh` の追随は #822。
+- `plugin-boundary.md`・`dependency-graph-contract.md`・`dep-direction-check.sh` の追随は #822（対応済み）。
 - crate 新設と実装は #813〜#816、テストは #817、fuzz 配線は #818、hub 移行は #820、計測は #821、
   受け入れレポートは #823。
 - 見直しの条件は 2.10 節を参照。

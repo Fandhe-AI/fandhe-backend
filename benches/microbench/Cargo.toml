@@ -13,7 +13,7 @@
 # パターン（空 `[workspace]` テーブルで独立 workspace 化、`publish = false`）を
 # 踏襲する。root `Cargo.toml` の `[workspace] exclude` に本パスを追加しており、
 # root workspace の `cargo metadata` / `cargo tree` / `cargo geiger` に一切現れない
-# （公開 13 クレートの依存グラフ・pay-for-what-you-use 検証に影響しない、
+# （公開対象クレートの依存グラフ・pay-for-what-you-use 検証に影響しない、
 # `.claude/rules/pay-for-what-you-use.md`）。
 name = "fandhe-backend-microbench"
 version = "0.0.0"

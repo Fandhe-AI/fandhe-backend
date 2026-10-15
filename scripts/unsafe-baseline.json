@@ -27,6 +27,10 @@
     "allow_unsafe_code_count": 0,
     "unsafe_count": 0
   },
+  "plugin-jwt": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
   "plugin-openapi": {
     "allow_unsafe_code_count": 0,
     "unsafe_count": 0

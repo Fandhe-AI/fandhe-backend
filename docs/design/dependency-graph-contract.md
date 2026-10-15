@@ -40,6 +40,10 @@ graph LR
     server -.->|optional dep, feature 有効時のみ| compression[fandhe-backend-plugin-compression]
     server -.->|optional dep, feature 有効時のみ| static_files[fandhe-backend-plugin-static]
 
+    hub[fandhe-backend-plugin-hub-wiring<br/>拡張点対応: RequestGate] --> server
+    jwt[fandhe-backend-plugin-jwt<br/>拡張点対応: RequestGate] --> server
+    hub --> jwt
+
     subgraph "プラグイン（feature 着脱、pay-for-what-you-use）"
         ws
         gql
@@ -55,6 +59,10 @@ graph LR
 - 実線（`server → routes → http::*`）: 常時有効な一方向コア依存。循環なし
 - 破線（`server -.-> fandhe-backend-plugin-*`）: feature 無効時は `cargo tree` に一切現れない
   （pay-for-what-you-use、`.claude/rules/pay-for-what-you-use.md`）コンパイル時依存逆転
+- Gate 型（`fandhe-backend-plugin-hub-wiring`・`fandhe-backend-plugin-jwt`）は core から
+  辺が出ない（依存逆転型、`docs/design/plugin-boundary.md` 5.6 節）。利用側が直接依存して
+  `Server::gate` で登録するため、図では plugin → server の実線で表す。hub-wiring → jwt は
+  plugin→plugin の唯一の例外（1.2 節）
 - `fandhe-backend-plugin-openapi` は他プラグインと同じコンパイル時依存逆転エッジ
   （`fandhe-backend-core:fandhe-backend-plugin-openapi`、TASK-2.1 / #256 で配線済み）を
   持つが、実行時拡張点（`Middleware`/`UpgradeHandler`/`RequestGate`）のいずれにも
@@ -95,7 +103,7 @@ graph LR
 |---|---|---|---|---|---|---|
 | 1 | `Middleware` | `crates/core/src/extension.rs` | dyn 互換 | 同期 | （現状該当実装なし、将来用） | リクエスト前後処理への割り込み |
 | 2 | `UpgradeHandler` | 同上（`try_handle_upgrade`） | dyn 互換 | 同期（委譲判定のみ）+ 実処理は非同期委譲 | `fandhe-backend-plugin-websocket` | 「委譲判定のみ」を担い、ハンドシェイク検証・101 応答送出・フレーミングはプラグイン側に閉じる契約（REQ-4） |
-| 3 | `RequestGate` | 同上 | dyn 互換 | 同期 | （現状該当実装なし、将来用） | リクエスト可否判定 |
+| 3 | `RequestGate` | 同上 | dyn 互換 | 同期 | `fandhe-backend-plugin-hub-wiring`（`TenantGate`）・`fandhe-backend-plugin-jwt`（`JwtGate`） | リクエスト可否判定。同期・I/O なしで、`GateOutcome` は判定根拠のクレームを運ばない（`docs/design/plugin-boundary.md` 5.6 節）。Gate 型は core に feature を持たず、利用側が直接依存して `Server::gate` で登録する |
 | 4 | `try_intercept`（固定シーム） | `crates/core/src/plugin.rs` | — | 非同期 | `fandhe-backend-plugin-graphql`・`fandhe-backend-plugin-webrtc`・`fandhe-backend-plugin-webrtc-proxy`・`fandhe-backend-plugin-static` | 3 trait はいずれも dyn 互換性のため同期 API 限定であり、非同期の上流中継・クエリ実行・`spawn_blocking` を伴うファイル I/O を要するプラグインは既存拡張点経由の依存逆転で表現できない（`dep-direction-check.sh` 該当コメント）。パスインターセプト型は cfg-gated 分岐として `try_intercept` に集約され、`Option` フォールスルーで次のプラグインへ委譲する（`docs/design/plugin-boundary.md` 4 節） |
 | 5 | `finalize_response`（固定シーム） | `crates/core/src/plugin.rs` | — | 同期 | `fandhe-backend-plugin-cors`・`fandhe-backend-plugin-compression` | `Middleware::on_response` がレスポンスへの参照を持たない観測専用契約のため、応答内容自体を書き換える必要があるプラグインは既存 3 trait のいずれでも表現できない（イシュー #305、圧縮は #321 で第 2 インスタンスとして追加）。`try_intercept` 応答・既定 `Handler` 応答の双方に対する単一の後処理合流点として機能し、複数登録時は CORS → 圧縮の順で逐次適用する（`docs/design/plugin-boundary.md` 5.9・5.10 節） |
 
@@ -122,7 +130,7 @@ graph LR
 | `UpgradeHandler（try_handle_upgrade）` | `fandhe-backend-plugin-websocket` | Upgrade 型シーム |
 | `パスインターセプト型（try_intercept）` | `fandhe-backend-plugin-graphql`・`fandhe-backend-plugin-webrtc`・`fandhe-backend-plugin-webrtc-proxy`・`fandhe-backend-plugin-static` | 3 trait 非該当だがシグネチャ固定シームに閉じる。宣言直後に `docs/design/extension-closure-verification.md` への参照を必須とする |
 | `Middleware` | （現状該当なし、将来用） | 新規実装時にこの語彙で宣言する |
-| `RequestGate` | （現状該当なし、将来用） | 同上 |
+| `RequestGate` | `fandhe-backend-plugin-hub-wiring`・`fandhe-backend-plugin-jwt` | Gate 型（依存逆転型）。両 `lib.rs` が宣言済み |
 | `非該当（<理由の参照: docs/design/*.md>）` | `fandhe-backend-plugin-openapi` | ビルド時生成でランタイム拡張点を使わない。理由の実体は本書 5 節。参照先ファイルの存在を機械検査する |
 | `レスポンス後処理型（finalize_response）` | `fandhe-backend-plugin-cors` | 3 trait 非該当だがシグネチャ固定シームに閉じる（イシュー #305）。宣言直後に `docs/design/plugin-boundary.md` 5.9 節への参照を必須とする |
 
@@ -865,6 +873,33 @@ E（閉包違反候補）と判定された（後続コミットで `examples/wi
 4. **正当性根拠**: いずれも `JwtGate` の契約・依存方向（`server → routes → http::*`、
    1 節）を変更せず、既存バイナリへの外部負荷生成（`oha`）による計測と結果記録のみを
    行う。`benches/*` を D に加える是正は 4.3 節〜4.6 節と同一の別 Issue 対象とする
+
+### 4.19 記載例（#822、plugin-jwt の公開準備と文書追随）
+
+イシュー #822 は、`fandhe-backend-plugin-jwt` の暫定 `publish = false` の解除と、公開対象
+クレート数（13 → 14）・Gate 型パターン 2 例目の追加に伴う文書・台帳の追随である。
+`crates/plugin-jwt/Cargo.toml`（A 判定）は `publish` メタデータの解除のみで、以下 E
+（閉包違反候補）が判定される。
+
+1. **対象コミット/PR**: #822 の PR（番号は PR 作成後に確定。コミットは PR 参照）
+2. **E ファイルパス**:
+   - `Cargo.toml`
+   - `README.md`
+   - `CHANGELOG.md`
+   - `site/index.md`
+   - `benches/README.md`
+   - `benches/microbench/Cargo.toml`
+   - `benches/refs/Cargo.toml`
+   - `benches/refs/deny.toml`
+3. **閉じない理由**: 4.16 節と同一の運用上のギャップ（分類規則 D がルート直下の
+   `README.md`・`CHANGELOG.md`・`Cargo.toml` と `site/**` を含まない）に加え、4.3 節〜4.6 節
+   と同一の `benches/**` が D 未対応というギャップにより E 判定となる、コメント・件数表記・
+   リリースノート・ベンチ用 workspace の依存 version 追随である
+4. **正当性根拠**: 変更はコメント・件数表記・リリースノートのみで、拡張点 trait とシームの
+   契約・依存方向（1 節）に影響しない。`crates/plugin-jwt/Cargo.toml` の変更は `publish`
+   メタデータの解除だけである。`benches/microbench/Cargo.toml`・`benches/refs/Cargo.toml`・
+   `benches/refs/deny.toml` の変更は version 追随のみで、拡張点とシームの契約・依存方向に
+   影響しない
 
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 

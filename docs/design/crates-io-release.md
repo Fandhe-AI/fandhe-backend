@@ -16,7 +16,8 @@
    #202・PR #209 で反映済み）。本ブロッカーは解消済み
 2. **公開判断**: 2026-07-21 にリポジトリオーナーから公開指示済み。本ブロッカーは解消済み
 3. **公開対象クレートの最終選定**: 公開対象 13 クレートで確定済み（4 節の区分表参照）。
-   本ブロッカーは解消済み
+   その後 REQ-16 で `fandhe-backend-plugin-jwt` を加え、現行の公開対象は 14 クレート
+   （イシュー #822。初公開は 0.5.0 の予定）。本ブロッカーは解消済み
 4. **リポジトリの public 化**: 2026-07-21 に public 化完了済み。README・doc comment 内の
    リンクを crates.io 上で解決可能にするため実施。本ブロッカーは解消済み
 5. **`cargo login`**: crates.io への認証はユーザーが実施済み。トークンをリポジトリ・
@@ -36,6 +37,11 @@
 
 - 確認対象は 4 節の公開予定クレート名すべて（`fandhe-backend-http` / `fandhe-backend-routes` /
   `fandhe-backend-core` 等）
+- **`fandhe-backend-plugin-jwt` の名前確保（イシュー #822）**: 2026-10-15 に空き状況を
+  確認した（`cargo search fandhe-backend-plugin-jwt --limit 3` で該当なし、
+  `https://crates.io/api/v1/crates/fandhe-backend-plugin-jwt` が HTTP 404）。
+  空クレートでの予約は行わず、実体のある初回 publish（v0.5.0、`fandhe-backend-plugin-hub-wiring`
+  と同時）で確保する。publish 直前に再確認すること（8 節 v0.5.0 チェックリスト）
 
 ## 3. 所有権
 
@@ -55,6 +61,7 @@
   cargo owner --remove <individual-account> -p <crate-name>
   ```
 
+- `fandhe-backend-plugin-jwt` も初回 publish（0.5.0）の後に同じ手順で team を owner に追加する
 - `<team>` の具体名は org 側のチーム構成確定後に定める（本ドキュメントでは方針のみ固定する）
 
 ## 4. 公開対象クレートと publish フラグ
@@ -64,7 +71,7 @@
 | `fandhe-backend-http` | 公開対象 | HTTP プリミティブ（下位層）。単体でも再利用価値がある |
 | `fandhe-backend-routes` | 公開対象 | ルーティング。`fandhe-backend-http` にのみ依存する中間層 |
 | `fandhe-backend-core`（`crates/core`） | 公開対象 | 最小コア本体 |
-| `fandhe-backend-plugin-websocket` / `fandhe-backend-plugin-graphql` / `fandhe-backend-plugin-openapi` / `fandhe-backend-plugin-webrtc` / `fandhe-backend-plugin-webrtc-proxy` / `fandhe-backend-plugin-tracing` / `fandhe-backend-plugin-hub-wiring` / `fandhe-backend-plugin-cors` / `fandhe-backend-plugin-compression` / `fandhe-backend-plugin-static` | 公開対象 | feature 駆動プラグイン本体（10 クレート） |
+| `fandhe-backend-plugin-websocket` / `fandhe-backend-plugin-graphql` / `fandhe-backend-plugin-openapi` / `fandhe-backend-plugin-webrtc` / `fandhe-backend-plugin-webrtc-proxy` / `fandhe-backend-plugin-tracing` / `fandhe-backend-plugin-hub-wiring` / `fandhe-backend-plugin-jwt` / `fandhe-backend-plugin-cors` / `fandhe-backend-plugin-compression` / `fandhe-backend-plugin-static` | 公開対象 | feature 駆動プラグイン本体（11 クレート） |
 | `axum-ref` | 恒久非公開 | 性能比較用参照実装。フレームワーク利用者向け成果物ではない |
 | `ws-load-client` | 恒久非公開 | WebSocket 負荷試験専用バイナリ |
 | `crates/http/fuzz` | 恒久非公開（対象外） | cargo-fuzz 専用クレート。root workspace から `exclude` 済み（TASK-15.3-1、#87）であり、`cargo publish` の対象にも入らない |
@@ -73,6 +80,13 @@
 - **公開対象 13 クレートは crates.io v0.1.0 として公開済み**（2026-07-21 実施。5 節参照）。
   恒久非公開 2 クレート（`axum-ref` / `ws-load-client`）は `publish = false`
   で維持し、workspace `exclude` の `crates/http/fuzz` と合わせて公開物から除外
+- **`fandhe-backend-plugin-jwt`（イシュー #822、0.5.0 で初公開予定）**: 骨格段階の暫定
+  `publish = false` を #822 で解除した。Gate 型のため core の feature 経由ではなく利用側が
+  直接依存する。テスト専用鍵 `tests/fixtures/*.pk8` は hub-wiring と同じ判断で公開物に同梱する
+  （`tests/` と `examples/` が `include_bytes!` で参照するため。`tests/fixtures/README.md` に
+  テスト専用・秘匿性なしと明記）。`fuzz/` はネストした `Cargo.toml` を持つため package に
+  自動的に含まれない。依存順では `fandhe-backend-core`・`fandhe-backend-http` の後、
+  `fandhe-backend-plugin-hub-wiring`（plugin-jwt に依存）の前に解決される
 - 解除と併せて各公開対象クレートの `Cargo.toml` に次のメタデータを整備済み:
   - path 依存への `version = "0.1.0"` 併記（crates.io 公開には version 指定が必須）
   - `readme = "../../README.md"`（ルート README を各クレートの crates.io 掲載 README
@@ -107,6 +121,9 @@
   2026-10-06 に削除し、現在は 2 クレート）のみ
   `publish = false` を維持し、フェイルクローズの対象を「利用者向け成果物でないクレート」に
   限定する運用へ移行した（4 節の区分表が正）
+
+- **#822**: `fandhe-backend-plugin-jwt` の暫定 `publish = false` を解除した（公開対象は 14 クレート。
+  初公開は 0.5.0）
 
 ## 6. リリース CI（実ファイル化済み、イシュー #373）
 
@@ -197,7 +214,7 @@ root `Cargo.toml` の `[workspace.package] version` + `[workspace.dependencies]`
   時に strip されていた dev 専用依存が公開版 Cargo.toml の内容を変えて
   しまうため（公開成果物の完全性維持を優先した安全側の判断）
 - **次回バンプの手順**: root `Cargo.toml` の `[workspace.package] version` 1 行
-  + `[workspace.dependencies]` の内部 13 クレートの `version` 値（14 箇所）を
+  + `[workspace.dependencies]` の内部 14 クレートの `version` 値（15 箇所）を
   書き換える。加えて standalone workspace の `templates/app`・`examples/with-*`
   （workspace inheritance の対象外）の依存 `version` 併記、
   `crates/plugin-openapi/openapi.json` の再生成、`CHANGELOG.md` は従来どおり
@@ -507,6 +524,20 @@ v0.4.1 公開（2026-09-26）後に main へ入った変更は breaking change �
       再実行し、`templates/app`・`examples/with-*` 4 件の 5 クレートが
       `fandhe-backend-core = "^0.4.2"` 等を crates.io 公開版のみで解決できて PASS することを
       確認する（2026-09-28 実施済み、success。run 36457798408）
+
+### v0.5.0（未実施）
+
+- [ ] 公開対象 14 クレートの `version` および workspace 内 path 依存の `version` 併記が
+      すべて 0.5.0 に揃っている
+- [ ] `cargo publish --workspace --dry-run` が公開対象 14 クレート全件で成功する
+      （#822 で 0.4.2 のまま dry-run 確認済み、2026-10-15）
+- [ ] `cargo package --list -p fandhe-backend-plugin-jwt` の同梱内容を確認する
+      （`fuzz/`・秘密情報・`benches/reports/**` を含まず、`tests/fixtures/*.pk8` と
+      `tests/fixtures/README.md` を含む。#822 で確認済み）
+- [ ] `fandhe-backend-plugin-jwt` の名前の空きを publish 直前に再確認する（2 節）
+- [ ] Phase B: `v0.5.0` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
+- [ ] 初回 publish の後、`fandhe-backend-plugin-jwt` に team owner を追加する（3 節）
+- [ ] Phase B publish 完了後、`standalone-crates-io.yml` を `workflow_dispatch` で再実行する
 
 ## 参照
 
