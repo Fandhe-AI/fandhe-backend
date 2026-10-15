@@ -8,6 +8,19 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-10-15 — `crates/plugin-jwt` に core / http を追加（イシュー #816、RequestGate 実装）
+
+`RequestGate` 実装 `JwtGate` のため `crates/plugin-jwt/Cargo.toml` の `[dependencies]` に
+`fandhe-backend-core`・`fandhe-backend-http`（いずれも `{ workspace = true }`）を、
+`[dev-dependencies]` に `tokio`（`macros`・`rt-multi-thread`・`io-util`）と
+`fandhe-backend-routes` を追加した（統合テストが `handle_connection` を駆動するため。
+hub-wiring と同一構成）。
+
+- 新規パッケージ: 0（`Cargo.lock` に新しい crate・版はない。tokio も既存）
+- `unsafe` の追加: なし（`#![forbid(unsafe_code)]` 維持）
+- 依存の向き: plugin → core の一方向。`cargo tree -p fandhe-backend-core -e normal` に
+  `plugin-jwt` は現れない（core 利用者への影響なし）
+
 ## 2026-10-15 — `crates/plugin-jwt` に `ring` を追加（イシュー #815、トークン検証）
 
 RS256・ES256 の署名検証のため `crates/plugin-jwt/Cargo.toml` の `[dependencies]` に

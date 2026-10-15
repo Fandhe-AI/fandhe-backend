@@ -20,8 +20,24 @@ workspace = true
 # JWKS 鍵集合の解析（#814）に base64 / serde / serde_json を使う。版は hub-wiring と
 # 同一（workspace 共有）で新しい crate・版を増やさない。ring は署名検証（#815）に
 # 使う（RS256・ES256 の検証のみ。自前の暗号演算は持たない）。
+#
+# core / http は `RequestGate` 実装（#816、`JwtGate`）のために依存する（plugin → core の
+# 一方向。core から本クレートへの辺は作らない）。workspace 内 crate のため
+# Cargo.lock に新しい crate・版は増えない。
 [dependencies]
+fandhe-backend-core = { workspace = true }
+fandhe-backend-http = { workspace = true }
 base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ring = { workspace = true }
+
+# 統合テスト（tests/gate.rs）が `handle_connection` を `tokio::io::duplex` 越しに駆動し、
+# ハンドラの戻り値に `HandlerFuture` を使うためだけに必要（hub-wiring と同一パターン）。
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = [
+  "macros",
+  "rt-multi-thread",
+  "io-util",
+] }
+fandhe-backend-routes = { workspace = true }
