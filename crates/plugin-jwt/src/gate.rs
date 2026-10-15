@@ -94,17 +94,29 @@ mod tests {
         }
     }
 
+    fn assert_full(o: GateOutcome, challenge: &str) {
+        let s = text(o);
+        let (head, body) = s.split_once("\r\n\r\n").unwrap();
+        let lines: Vec<&str> = head.split("\r\n").collect();
+        assert_eq!(lines[0], "HTTP/1.1 401 Unauthorized", "{s}");
+        let auth: Vec<&&str> = lines[1..]
+            .iter()
+            .filter(|l| l.to_ascii_lowercase().starts_with("www-authenticate:"))
+            .collect();
+        assert_eq!(auth.len(), 1, "{s}");
+        assert_eq!(*auth[0], format!("WWW-Authenticate: {challenge}"), "{s}");
+        assert!(lines.contains(&"Content-Type: application/json"), "{s}");
+        assert_eq!(body, r#"{"error":"invalid_token"}"#, "{s}");
+        let cl = format!("Content-Length: {}", body.len());
+        assert!(lines.contains(&cl.as_str()), "{s}");
+    }
+
     #[test]
     fn challenge_headers_are_attached() {
-        let s = text(unauthorized(CHALLENGE_NO_TOKEN));
-        assert!(s.starts_with("HTTP/1.1 401"), "{s}");
-        assert!(s.contains("WWW-Authenticate: Bearer\r\n"), "{s}");
-        assert!(s.contains("Content-Type: application/json"), "{s}");
-        assert!(s.ends_with(r#"{"error":"invalid_token"}"#), "{s}");
-        let s = text(unauthorized(CHALLENGE_INVALID));
-        assert!(
-            s.contains("WWW-Authenticate: Bearer error=\"invalid_token\"\r\n"),
-            "{s}"
+        assert_full(unauthorized(CHALLENGE_NO_TOKEN), "Bearer");
+        assert_full(
+            unauthorized(CHALLENGE_INVALID),
+            "Bearer error=\"invalid_token\"",
         );
     }
 }

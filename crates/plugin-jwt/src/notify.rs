@@ -102,7 +102,15 @@ impl NotifyThrottle {
     }
 
     /// 通知してよければ、これまでに間引いた件数を返す。
+    ///
+    /// 時計異常（`now_unix == u64::MAX`、`authenticate` が渡す番兵）では状態を保存しない。
+    /// 保存すると `next_allowed_unix` が `u64::MAX` に張り付き、時計が戻っても
+    /// 通知が再起動まで止まるため。この間は通知を抑止（件数のみ加算）する。
     pub(crate) fn try_acquire(&self, now_unix: u64) -> Option<u64> {
+        if now_unix == u64::MAX {
+            self.suppressed.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
         let next = self.next_allowed_unix.load(Ordering::Acquire);
         if next == u64::MAX && self.interval_secs > 0
             || now_unix < next
@@ -148,8 +156,12 @@ mod tests {
         assert_eq!(t.try_acquire(0), Some(0));
         assert_eq!(t.try_acquire(5), None);
         let t = NotifyThrottle::new(Duration::from_secs(10));
-        assert_eq!(t.try_acquire(u64::MAX), Some(0));
         assert_eq!(t.try_acquire(u64::MAX), None);
+        assert_eq!(t.try_acquire(u64::MAX), None);
+        // 時計が戻れば、異常中の件数を引き継いで通知が再開する（状態が張り付かない）。
+        assert_eq!(t.try_acquire(100), Some(2));
+        assert_eq!(t.try_acquire(105), None);
+        assert_eq!(t.try_acquire(110), Some(1));
         let t = NotifyThrottle::new(Duration::ZERO);
         assert_eq!(t.try_acquire(7), Some(0));
         assert_eq!(t.try_acquire(7), Some(0));

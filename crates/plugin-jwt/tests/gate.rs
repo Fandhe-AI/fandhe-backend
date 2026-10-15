@@ -97,6 +97,43 @@ fn req(auth: Option<&str>) -> String {
     format!("GET / HTTP/1.1\r\nHost: x\r\n{a}Connection: close\r\n\r\n")
 }
 
+/// レスポンス全体（ステータス行・ヘッダ・本文）を検証する。ヘッダは名前の一致で
+/// 1 本ずつ取り出し、`WWW-Authenticate` の欠落・重複・値の変更を検出する。
+fn split(r: &str) -> (Vec<&str>, &str) {
+    let (head, body) = r.split_once("\r\n\r\n").expect("head/body separator");
+    (head.split("\r\n").collect(), body)
+}
+
+fn header_values<'a>(lines: &[&'a str], name: &str) -> Vec<&'a str> {
+    lines[1..]
+        .iter()
+        .filter_map(|l| l.split_once(": "))
+        .filter(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v)
+        .collect()
+}
+
+fn assert_401(r: &str, challenge: &str) {
+    let (lines, body) = split(r);
+    assert_eq!(lines[0], "HTTP/1.1 401 Unauthorized", "{r}");
+    assert_eq!(
+        header_values(&lines, "WWW-Authenticate"),
+        vec![challenge],
+        "{r}"
+    );
+    assert_eq!(
+        header_values(&lines, "Content-Type"),
+        vec!["application/json"],
+        "{r}"
+    );
+    assert_eq!(body, r#"{"error":"invalid_token"}"#, "{r}");
+    assert_eq!(
+        header_values(&lines, "Content-Length"),
+        vec![body.len().to_string()],
+        "{r}"
+    );
+}
+
 type Log = Arc<Mutex<Vec<String>>>;
 
 fn setup(ec: &Ec) -> (Server, JwtAuthenticator, Log) {
@@ -122,8 +159,11 @@ async fn valid_token_reaches_handler_and_claims_are_shared() {
     let (server, auth, _) = setup(&ec);
     let t = ec.token("k", now() + 300);
     let r = roundtrip(&server, &req(Some(&format!("Bearer {t}")))).await;
-    assert!(r.starts_with("HTTP/1.1 200"), "{r}");
-    assert!(r.ends_with("sub=user-1"), "{r}");
+    let (lines, body) = split(&r);
+    assert_eq!(lines[0], "HTTP/1.1 200 OK", "{r}");
+    assert!(header_values(&lines, "WWW-Authenticate").is_empty(), "{r}");
+    assert_eq!(header_values(&lines, "Content-Length"), vec!["10"], "{r}");
+    assert_eq!(body, "sub=user-1", "{r}");
     // ゲートで温まったキャッシュをハンドラが再利用する。
     assert!(auth.cache_hits() >= 1);
 }
@@ -133,10 +173,7 @@ async fn missing_token_is_401_with_bare_challenge() {
     let ec = Ec::new();
     let (server, _, _) = setup(&ec);
     let r = roundtrip(&server, &req(None)).await;
-    assert!(r.starts_with("HTTP/1.1 401"), "{r}");
-    assert!(r.contains("WWW-Authenticate: Bearer\r\n"), "{r}");
-    assert!(!r.contains("error="), "{r}");
-    assert!(r.ends_with(r#"{"error":"invalid_token"}"#), "{r}");
+    assert_401(&r, "Bearer");
     assert!(!r.contains("sub="), "{r}");
 }
 
@@ -147,11 +184,7 @@ async fn bad_signature_and_expired_are_401_invalid_token() {
     let (server, _, _) = setup(&ec);
     for t in [other.token("k", now() + 300), ec.token("k", now() - 3600)] {
         let r = roundtrip(&server, &req(Some(&format!("Bearer {t}")))).await;
-        assert!(r.starts_with("HTTP/1.1 401"), "{r}");
-        assert!(
-            r.contains("WWW-Authenticate: Bearer error=\"invalid_token\"\r\n"),
-            "{r}"
-        );
+        assert_401(&r, "Bearer error=\"invalid_token\"");
         assert!(!r.contains("sub="), "{r}");
     }
 }
@@ -162,7 +195,8 @@ async fn unknown_kid_is_rejected_and_notified() {
     let (server, _, log) = setup(&ec);
     let t = ec.token("rotated", now() + 300);
     let r = roundtrip(&server, &req(Some(&format!("Bearer {t}")))).await;
-    assert!(r.starts_with("HTTP/1.1 401"), "{r}");
+    assert_401(&r, "Bearer error=\"invalid_token\"");
+    assert!(!r.contains("rotated"), "{r}");
     assert_eq!(*log.lock().unwrap(), vec!["rotated".to_owned()]);
 }
 
@@ -171,6 +205,5 @@ async fn non_bearer_scheme_is_401() {
     let ec = Ec::new();
     let (server, _, _) = setup(&ec);
     let r = roundtrip(&server, &req(Some("Basic dXNlcjpwYXNz"))).await;
-    assert!(r.starts_with("HTTP/1.1 401"), "{r}");
-    assert!(r.contains("WWW-Authenticate: Bearer\r\n"), "{r}");
+    assert_401(&r, "Bearer");
 }
