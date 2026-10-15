@@ -93,6 +93,13 @@ else
     fail "with-handwritten-auth フィクスチャで見逃し（verify_token 混入を検知できず）"
 fi
 
+handwritten_v2_hits="$(detect_handwritten_auth_in_handlers "${FIXTURES_DIR}/with-handwritten-auth-v2.rs")"
+if [ -n "${handwritten_v2_hits}" ]; then
+    pass "with-handwritten-auth-v2 フィクスチャは plugin-jwt 検証 API の直接呼び出しを検出"
+else
+    fail "with-handwritten-auth-v2 フィクスチャで見逃し（jwt::verify 直接呼び出しを検知できず）"
+fi
+
 if [ -f "${DEMO_EXAMPLE}" ]; then
     demo_hits="$(detect_handwritten_auth_in_handlers "${DEMO_EXAMPLE}")"
     if [ -z "${demo_hits}" ]; then

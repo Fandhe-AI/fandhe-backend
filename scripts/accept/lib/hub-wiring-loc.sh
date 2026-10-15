@@ -72,7 +72,9 @@ detect_handwritten_auth_in_handlers() {
         # `build_router` が存在しないファイル（フィクスチャ等）はハンドラ領域全体を対象にする。
         region="$(cat "${file}")"
     fi
-    printf '%s\n' "${region}" | grep -nE '\b(verify_token|RsaKeyPair|JwksKeySet|SharedJwks::(new|from_json)|TenantGateConfig::(new|from_jwks_json))\b' || true
+    # 旧シンボル（イシュー #820 で削除された自前実装）と新シンボル（plugin-jwt の検証 API）の
+    # 両方を検出する。旧シンボルだけだと、検証 API を直接呼ぶ手書き配線を見逃す（fail-open）。
+    printf '%s\n' "${region}" | grep -nE '\b(verify_token|RsaKeyPair|JwksKeySet|SharedJwks::(new|from_json)|KeySet::from_json|SharedKeySet::(new|from_json)|JwtAuthenticator|(jwt|plugin_jwt)::verify|TenantGateConfig::(new|from_jwks_json))\b' || true
 }
 
 # 配線 LOC の削減率を PoC-6 基準（207 行）に対して評価する。

@@ -10,7 +10,7 @@
 //!   ケースを、実ハンドラ（到達すればデータ層まで届く構成）でも再確認し、
 //!   `RequestGate` が拒否した場合はハンドラへ**到達すらしない**ことを到達
 //!   カウンタで直接証跡化する
-//! - **鍵ローテーション**: `SharedJwks::set` によるローテーション後、旧鍵
+//! - **鍵ローテーション**: `SharedKeySet::set` によるローテーション後、旧鍵
 //!   トークンが拒否され新鍵トークンが許可されること（再起動なし）
 //! - **検証結果キャッシュの共有**: TASK-9.3（#63）の `Authenticator` 共有が
 //!   実データハンドラでも機能し、ゲート（ミス）→ ハンドラ（ヒット）の順に
@@ -30,8 +30,10 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use fandhe_backend_core::{Server, handle_connection};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
-use fandhe_backend_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
-use fandhe_backend_plugin_hub_wiring::{Authenticator, TenantGate, TenantGateConfig, TokenError};
+use fandhe_backend_plugin_hub_wiring::jwt::{
+    Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, KeySet, SharedKeySet, TokenType,
+};
+use fandhe_backend_plugin_hub_wiring::{AuthError, Authenticator, TenantGate, TenantGateConfig};
 use fandhe_backend_routes::Router;
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
@@ -39,6 +41,18 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const TEST_KID: &str = "test-kid-1";
 const ROTATED_KID: &str = "test-kid-2";
+const TEST_ISS: &str = "https://issuer.example";
+const TEST_AUD: &str = "hub-api";
+
+/// 全テスト共通の検証ポリシー（RS256・`at+jwt` のみ許可）。
+fn test_policy() -> JwtPolicy {
+    JwtPolicy::new(
+        Issuer::new(TEST_ISS).unwrap(),
+        Audiences::single(TEST_AUD).unwrap(),
+        AllowedAlgorithms::only(Algorithm::Rs256),
+        TokenType::AccessToken,
+    )
+}
 
 /// org-1 が保有する item ID（越境検証における「自テナント」側）。
 const ORG1_IDS: [u64; 2] = [1, 2];
@@ -71,10 +85,12 @@ fn make_token(
     exp: u64,
     alg: &str,
 ) -> String {
-    let header = format!(r#"{{"alg":"{alg}","typ":"JWT","kid":"{kid}"}}"#);
+    let header = format!(r#"{{"alg":"{alg}","typ":"at+jwt","kid":"{kid}"}}"#);
     let payload = match org_id {
-        Some(org_id) => format!(r#"{{"org_id":"{org_id}","exp":{exp}}}"#),
-        None => format!(r#"{{"exp":{exp}}}"#),
+        Some(org_id) => {
+            format!(r#"{{"iss":"{TEST_ISS}","aud":"{TEST_AUD}","org_id":"{org_id}","exp":{exp}}}"#)
+        }
+        None => format!(r#"{{"iss":"{TEST_ISS}","aud":"{TEST_AUD}","exp":{exp}}}"#),
     };
     let header_b64 = URL_SAFE_NO_PAD.encode(header);
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
@@ -159,19 +175,14 @@ fn seed_store() -> Store {
 fn require_org(authenticator: &Authenticator, head: &RequestHead) -> Result<String, Response> {
     authenticator
         .authenticate(head)
-        .map(|claims| claims.org_id)
+        .map(|claims| claims.org_id().to_owned())
         .map_err(|err| match err {
-            TokenError::MissingOrgId => {
+            AuthError::MissingOrgId => {
                 Response::new(403, br#"{"error":"tenant_scope_required"}"#.to_vec())
                     .with_content_type("application/json")
             }
-            TokenError::MissingToken
-            | TokenError::Malformed
-            | TokenError::InvalidAlgorithm
-            | TokenError::MissingKeyId
-            | TokenError::UnknownKeyId
-            | TokenError::InvalidSignature
-            | TokenError::Expired => Response::new(401, br#"{"error":"invalid_token"}"#.to_vec())
+            // 検証失敗のすべて（`AuthError` は `#[non_exhaustive]`）は 401。
+            _ => Response::new(401, br#"{"error":"invalid_token"}"#.to_vec())
                 .with_content_type("application/json"),
         })
 }
@@ -258,7 +269,8 @@ fn build_router(store: Store, authenticator: Authenticator, reached: Arc<AtomicU
 /// `config` を `TenantGate::new` へ渡す前に `Authenticator` を取り出す手順は
 /// `TenantGateConfig::authenticator` の doc・TASK-9.3（#63）の利用手順どおり。
 fn hub_service(keypair: &RsaKeyPair) -> (Server, Arc<AtomicU64>, Authenticator) {
-    let config = TenantGateConfig::from_jwks_json(&jwks_json_for(keypair, TEST_KID)).unwrap();
+    let config =
+        TenantGateConfig::from_jwks_json(&jwks_json_for(keypair, TEST_KID), test_policy()).unwrap();
     let authenticator = config.authenticator();
     let reached = Arc::new(AtomicU64::new(0));
     let router = build_router(seed_store(), authenticator.clone(), reached.clone());
@@ -531,8 +543,8 @@ async fn key_rotation_via_shared_jwks_rejects_old_key_tokens_without_restart() {
     let old_keypair = test_keypair();
     let new_keypair = rotated_keypair();
 
-    let shared = SharedJwks::from_json(&jwks_json_for(&old_keypair, TEST_KID)).unwrap();
-    let config = TenantGateConfig::new(shared.clone());
+    let shared = SharedKeySet::from_json(&jwks_json_for(&old_keypair, TEST_KID)).unwrap();
+    let config = TenantGateConfig::new(shared.clone(), test_policy());
     let authenticator = config.authenticator();
     let reached = Arc::new(AtomicU64::new(0));
     let router = build_router(seed_store(), authenticator, reached);
@@ -552,7 +564,7 @@ async fn key_rotation_via_shared_jwks_rejects_old_key_tokens_without_restart() {
         "ローテーション前は旧鍵トークンが許可されるはず: {response}"
     );
 
-    shared.set(JwksKeySet::from_json(&jwks_json_for(&new_keypair, ROTATED_KID)).unwrap());
+    shared.set(KeySet::from_json(&jwks_json_for(&new_keypair, ROTATED_KID)).unwrap());
 
     let response_after_rotation = roundtrip(&server, &old_request).await;
     assert!(

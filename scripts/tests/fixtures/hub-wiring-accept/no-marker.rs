@@ -2,7 +2,7 @@
 // ことを確認する。マーカー未設置＝検証不能を表す境界値）。
 
 fn main() {
-    let config = TenantGateConfig::from_jwks_json(&jwks_json).unwrap();
+    let config = TenantGateConfig::from_jwks_json(&jwks_json, policy).unwrap();
     let authenticator = config.authenticator();
     let server = Server::new().gate(TenantGate::new(config));
 }

@@ -14,7 +14,7 @@
 //! `// --- wiring:begin ---` 〜 `// --- wiring:end ---` の区間が、利用側サービス
 //! （hub サービス）が新たに書く必要のある配線コードそのもの。PoC-6 の 207 行
 //! （3 エンドポイント × 手書き JWT 検証・クレーム抽出・境界チェック）に対し、
-//! ここでは JWKS 注入 + ゲート登録の数行のみで済む。
+//! ここでは検証ポリシー + JWKS 注入 + ゲート登録の十数行のみで済む。
 //!
 //! # `FANDHE_BACKEND_HUB_GATE=off`（NFR-6 「無関係パスへの影響」計測用、`benches/hub-nfr6-bench.sh`）
 //!
@@ -42,7 +42,10 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use fandhe_backend_core::Server;
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
-use fandhe_backend_plugin_hub_wiring::{Authenticator, TenantGate, TenantGateConfig, TokenError};
+use fandhe_backend_plugin_hub_wiring::jwt::{
+    Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, TokenType,
+};
+use fandhe_backend_plugin_hub_wiring::{AuthError, Authenticator, TenantGate, TenantGateConfig};
 use fandhe_backend_routes::Router;
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
@@ -51,6 +54,8 @@ use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
 /// （`tests/fixtures/README.md`、`.claude/rules/security.md` シークレット混入防止）。
 const DEMO_PKCS8: &[u8] = include_bytes!("../tests/fixtures/test-rsa-2048.pk8");
 const DEMO_KID: &str = "hub-demo-kid-1";
+const DEMO_ISS: &str = "https://hub-demo.example";
+const DEMO_AUD: &str = "hub-demo-api";
 
 /// マルチテナントのダミーデータ 1 件（TASK-9.5 の越境遮断検証対象）。
 #[derive(Clone)]
@@ -112,8 +117,10 @@ fn jwks_json_for(keypair: &RsaKeyPair, kid: &str) -> String {
 /// 受け入れテスト本体（`tests/hub_acceptance.rs`）は自前でトークンを組み立てて
 /// おり本関数には依存しない。
 fn demo_token(keypair: &RsaKeyPair, org_id: &str) -> String {
-    let header = format!(r#"{{"alg":"RS256","typ":"JWT","kid":"{DEMO_KID}"}}"#);
-    let payload = format!(r#"{{"org_id":"{org_id}","exp":9999999999}}"#);
+    let header = format!(r#"{{"alg":"RS256","typ":"at+jwt","kid":"{DEMO_KID}"}}"#);
+    let payload = format!(
+        r#"{{"iss":"{DEMO_ISS}","aud":"{DEMO_AUD}","org_id":"{org_id}","exp":9999999999}}"#
+    );
     let header_b64 = URL_SAFE_NO_PAD.encode(header);
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
     let signing_input = format!("{header_b64}.{payload_b64}");
@@ -143,19 +150,14 @@ fn demo_token(keypair: &RsaKeyPair, org_id: &str) -> String {
 fn require_org(authenticator: &Authenticator, head: &RequestHead) -> Result<String, Response> {
     authenticator
         .authenticate(head)
-        .map(|claims| claims.org_id)
+        .map(|claims| claims.org_id().to_owned())
         .map_err(|err| match err {
-            TokenError::MissingOrgId => {
+            AuthError::MissingOrgId => {
                 Response::new(403, br#"{"error":"tenant_scope_required"}"#.to_vec())
                     .with_content_type("application/json")
             }
-            TokenError::MissingToken
-            | TokenError::Malformed
-            | TokenError::InvalidAlgorithm
-            | TokenError::MissingKeyId
-            | TokenError::UnknownKeyId
-            | TokenError::InvalidSignature
-            | TokenError::Expired => Response::new(401, br#"{"error":"invalid_token"}"#.to_vec())
+            // 検証失敗のすべて（`AuthError` は `#[non_exhaustive]`）は 401。
+            _ => Response::new(401, br#"{"error":"invalid_token"}"#.to_vec())
                 .with_content_type("application/json"),
         })
 }
@@ -256,7 +258,13 @@ async fn main() -> std::io::Result<()> {
     // --- wiring:begin ---
     // hub サービス側が新規に書く配線コードはこの区間のみ（PoC-6 の 207 行相当を
     // 代替、`scripts/accept/hub-wiring-accept.sh` 判定 B が本区間の LOC を集計）。
-    let config = TenantGateConfig::from_jwks_json(&jwks_json).expect("valid demo jwks");
+    let policy = JwtPolicy::new(
+        Issuer::new(DEMO_ISS).expect("valid issuer"),
+        Audiences::single(DEMO_AUD).expect("valid audience"),
+        AllowedAlgorithms::only(Algorithm::Rs256),
+        TokenType::AccessToken,
+    );
+    let config = TenantGateConfig::from_jwks_json(&jwks_json, policy).expect("valid demo jwks");
     let authenticator = config.authenticator();
     let mut server = Server::new();
     if env::var("FANDHE_BACKEND_HUB_GATE").as_deref() != Ok("off") {

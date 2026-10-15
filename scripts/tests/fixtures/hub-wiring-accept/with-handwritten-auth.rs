@@ -4,7 +4,7 @@
 
 fn main() {
     // --- wiring:begin ---
-    let config = TenantGateConfig::from_jwks_json(&jwks_json).unwrap();
+    let config = TenantGateConfig::from_jwks_json(&jwks_json, policy).unwrap();
     let server = Server::new().gate(TenantGate::new(config));
     // --- wiring:end ---
 }

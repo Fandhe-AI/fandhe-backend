@@ -275,3 +275,47 @@ RUNS=5（奇数）のため中央値は 5 値の中央（3 番目）の値（偶
 「2026-07-20・ローカル macOS 環境」節の既存記述・実測値はいずれも改変しない。過去の記録
 として保持したうえで、本節が最新かつ公式の基準 D 判定を確定させる。「BLOCKED / フォロー
 アップ」節が挙げていた「専有環境での確定的な再計測」課題はこれで解消済みとする）。
+
+## 再検証（2026-10-15・JWT 検証部を plugin-jwt へ移した後、イシュー #820）
+
+REQ-16 受け入れ基準 5（REQ-9 の移行と既存基準の維持）に基づき、hub-wiring の自前 JWT / JWKS
+検証実装（`jwt.rs`・`jwks.rs`・検証結果キャッシュ）を削除して `fandhe-backend-plugin-jwt`
+へ依存させたあと、`scripts/accept/hub-wiring-accept.sh` で基準 A〜D を再検証した。
+上記の既存節の記述・実測値は改変せず、本節が移行後の最新の記録である。
+
+### 実行環境
+
+| 項目 | 値 |
+|------|-----|
+| 実行日 | 2026-10-15 |
+| 起点コミット（`origin/main`） | `a412553` |
+| rustc / cargo | 1.99.0 (b940084d7 2026-09-28) / 1.99.0 (5f94df478 2026-08-27) |
+| oha | 未導入 |
+
+### 変わった点
+
+- 検証ポリシー（`JwtPolicy`: `iss`・`aud`・許可 `alg`・`typ`）を `TenantGateConfig::new` /
+  `from_jwks_json` の必須引数にした。ポリシーなしの構成は型として作れない
+  （`compile_fail` doc test で固定）。
+- テストと example のトークンは `typ: at+jwt`・`iss`・`aud` を持つ形へ移行した。
+  `tests/tenant_gate.rs` には `iss`・`aud`・`typ` の不一致が署名正当でも 401 になり、
+  ハンドラへ到達しない回帰テスト（`wrong_iss_aud_or_typ_is_rejected_before_handler`）を追加した。
+- `cross_tenant_audit.rs` のハンドラは、ゲートと共有した `Authenticator` から `org_id` を得る
+  形へ変更した（検証 API の直接呼び出しをやめた）。
+- 401 / 403 の判定・応答本文・`Content-Type` は不変（`org_id` の欠落・空は 403、それ以外の
+  検証失敗は 401）。
+
+### 判定サマリー
+
+| 判定 | 基準 | 詳細 |
+|------|------|------|
+| PASS | A: 越境遮断・フェイルクローズ受け入れテスト | `cargo test -p fandhe-backend-plugin-hub-wiring --test hub_acceptance` 全件 PASS（16 件）。同クレート全体では単体 43・`cross_tenant_audit` 6・`tenant_gate` 15・doc test 16 が PASS |
+| PASS | B: 配線コード削減率 | マーカー区間 12 行（PoC-6 基準 207 行比 削減率 94.2%、閾値 90% 以上）。検証ポリシーの構築 6 行を区間内に含めて数えている（旧 6 行 → 12 行） |
+| PASS | B補足: ハンドラ領域の手書き配線シンボル不在 | 旧シンボルに加え、plugin-jwt の検証 API（`KeySet::from_json`・`SharedKeySet::*`・`JwtAuthenticator`・`jwt::verify`）の直接呼び出しも検出対象に拡張し、`build_router` 内に出現なし |
+| PASS | C: 依存逆転型プラグインの維持 | `cargo tree -p fandhe-backend-core` に `plugin-hub-wiring`・`plugin-jwt` とも現れない（依存方向は `scripts/dep-direction-check.sh` でも PASS。plugin → plugin の許可エッジは hub-wiring → plugin-jwt の 1 本だけ） |
+| SKIP | D: NFR-6 無関係パス影響 | `oha` 未導入のため計測していない（FAIL ではなく SKIP。旧 WARN（確定）の判定は上記の専有 Linux ホスト計測が最新で、本移行の影響は未計測） |
+
+D は、この移行が `TenantGate` を登録しない構成（`FANDHE_BACKEND_HUB_GATE=off`）の
+リンクコストに与える影響を測る基準である。導入後に `benches/hub-nfr6-bench.sh` で再判定すること。
+依存面では、`Cargo.lock` に新しい `[[package]]` は増えていない（hub-wiring の依存エッジに
+workspace 内の `fandhe-backend-plugin-jwt` が加わっただけ）。

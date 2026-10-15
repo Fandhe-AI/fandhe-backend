@@ -10,67 +10,52 @@
 //! 既存 4 プラグイン（websocket / graphql / openapi / webrtc 系、コア →
 //! プラグインの optional 依存 + feature ゲート）とは異なり、本クレートは
 //! **プラグイン → コアの一方向依存**（依存逆転型）を取る。`RequestGate` は
-//! 同期 API の既存拡張点であり、TenantGate の判定はヘッダ検査 + HMAC 検証
+//! 同期 API の既存拡張点であり、TenantGate の判定はヘッダ検査 + 署名検証
 //! のみで非同期処理を要しないため、既存プラグインが依存逆転を採れなかった
 //! 理由（拡張点の同期 API 制約）に該当しない。`crates/core` の
 //! `Cargo.toml`・`server.rs`・`plugin.rs` は本クレートのために一切変更しない
 //! （`docs/design/plugin-boundary.md` 「Gate 型パターン」節）。
 //!
-//! 利用側サービスは本クレートを依存に加え、
-//! `Server::gate(TenantGate::new(TenantGateConfig::from_jwks_json(jwks_json)?))`
+//! 利用側サービスは本クレートを依存に加え、検証ポリシーを添えて
+//! `Server::gate(TenantGate::new(TenantGateConfig::from_jwks_json(jwks_json, policy)?))`
 //! （`crates/core/src/server.rs`）で登録する。
 //!
-//! # RS256 + JWKS（TASK-9.2 / #62）
+//! # JWT 検証は `fandhe-backend-plugin-jwt` へ委譲（イシュー #820）
 //!
-//! [`jwt`] モジュールの JWT 検証は TASK-9.1（#61）の HS256（HMAC-SHA256）
-//! 共有秘密鍵スパイクから、RS256（非対称鍵）+ JWKS（[`jwks`] モジュール、
-//! [RFC 7517]）連携へ差し替え済み。HMAC 実装は本番実装に流用せず削除した
-//! （`docs/spec/05-tasks.md` TASK-9.2）。
+//! 署名・`iss`・`aud`・`typ`・`exp`・`nbf` の検証、JWKS 鍵集合、検証結果の
+//! キャッシュは汎用 JWT 検証クレート `fandhe-backend-plugin-jwt`（REQ-16）が担う。
+//! 本クレートはそのクレート全体を [`jwt`] として再エクスポートする
+//! （[`jwt::JwtPolicy`]・[`jwt::SharedKeySet`] など。依存は本クレート 1 つで足りる）。
+//! 検証ポリシー（発行者・受信者・許可アルゴリズム・トークン種別）は
+//! [`gate::TenantGateConfig`] の構築に**必須**で、ポリシーなしの構成は型として作れない。
+//!
+//! 本クレートに残すのは hub 固有の判定だけである。
+//!
+//! - `org_id` クレームの取り出しとテナント境界（[`auth::Authenticator`]、欠落・空は 403）
+//! - Outbox・同意ゲート・越境アクセス監査（下記各節）
 //!
 //! JWKS の**取得**（HTTP フェッチ・自動リフレッシュ）は本クレートの責務外
 //! （`RequestGate::check` は同期・I/O なしの契約、`crates/core/src/extension.rs`
 //! doc）であり、利用側サービスが取得した JWKS JSON ドキュメントを注入する。
-//! 再起動なしの鍵ローテーションは [`jwks::SharedJwks::set`] が担う。JWKS
-//! 自動リフレッシュヘルパー（HTTP クライアント連携）・実 hub エンドポイントとの
-//! E2E 結線は本タスクのスコープ外（追加の HTTP クライアント依存を要するため。
-//! micro-service-hub 側の JWKS エンドポイントは roadmap 上 MS-1 完了目標
-//! 2026-07-30 で本タスク時点では未提供）。
+//! 再起動なしの鍵ローテーションは [`jwt::SharedKeySet::set`] が担う。
 //!
-//! [RFC 7517]: https://www.rfc-editor.org/rfc/rfc7517
-//!
-//! # JWT 検証結果のリクエストスコープキャッシュ（TASK-9.3 / #63）
+//! # 検証結果のキャッシュ（TASK-9.3 / #63、実装は #816 から plugin-jwt）
 //!
 //! [`gate::TenantGate`] は `GateOutcome`（許可/拒否のみ）しかコアへ返せない
-//! 契約上、検証で得た `org_id` 等のクレームを直接コアへ渡せない。従来は
-//! ハンドラ側で再度クレームが必要な場合に [`jwt::verify_token`] を再呼び出し
-//! するしかなく、1 リクエストにつき RS256 署名検証（RSA-2048）が 2 回
-//! （ゲート + ハンドラ）走っていた。
-//!
-//! [`auth::Authenticator`] はこの重複を解消する、検証成功済みトークンの
-//! キャッシュ（トークン文字列の SHA-256 ハッシュをキーとする。生トークンは
-//! 保持しない）。[`gate::TenantGateConfig::authenticator`] で取得できる
-//! `Authenticator` を、`Server::gate(TenantGate::new(config))` で `config` を
-//! 消費する**前に** clone してハンドラ側へ持ち回ることで、ゲート通過時点の
-//! 検証でキャッシュが温まり、ハンドラ内の [`auth::Authenticator::authenticate`]
-//! 呼び出しは署名検証を再実行しない。
-//!
-//! キャッシュヒットを許すのは「再検証しても同じ結果になる」場合のみ:
-//! 検証時点の鍵集合（`Arc<JwksKeySet>`）が現行 [`jwks::SharedJwks::snapshot`]
-//! と一致（`Arc::ptr_eq`）していること（鍵ローテーション後は自動的に無効化）、
-//! かつ `exp` がヒット時にも毎回再判定され期限内であること。検証**失敗**は
-//! キャッシュしない（失敗の再検証コストは要求元に払わせ、無効トークンの
-//! 大量投入によるキャッシュ汚染を防ぐ、.claude/rules/security.md）。
+//! 契約上、検証で得た `org_id` を直接コアへ渡せない。[`auth::Authenticator`] を
+//! [`gate::TenantGateConfig::authenticator`] で取り出し、`Server::gate` で `config` を
+//! 消費する**前に** clone してハンドラ側へ持ち回ると、ゲート通過時点の検証で
+//! キャッシュが温まり、ハンドラ内の [`auth::Authenticator::authenticate`] は署名検証を
+//! 再実行しない。鍵ローテーション後は自動的に無効化され、`exp` は毎回再判定され、
+//! 検証失敗はキャッシュされない。
 //!
 //! # pay-for-what-you-use
 //!
-//! 本クレートを依存に追加しないサービスには、`ring` / `base64` / `serde` /
-//! `serde_json` を含む本クレートの依存・コード・バイナリ増が一切発生しない
+//! 本クレートを依存に追加しないサービスには、`fandhe-backend-plugin-jwt`・`ring`・
+//! `serde` 等を含む本クレートの依存・コード・バイナリ増が一切発生しない
 //! （`cargo tree -p fandhe-backend-core` に本クレート・本依存が現れないことで
-//! 検証可能、.claude/rules/pay-for-what-you-use.md）。`ring` は
-//! `crates/plugin-webrtc`（`webrtc` feature 経由）が既に依存グラフへ引き込んで
-//! いる実績依存であり、本クレート追加による新規のライセンス・advisory 面の
-//! リスク増はない。[`auth`] モジュールのキャッシュも `ring::digest`（既存の
-//! `ring` 依存内）のみを用い、新規依存はゼロ。
+//! 検証可能、.claude/rules/pay-for-what-you-use.md）。plugin → plugin の依存は
+//! `scripts/dep-direction-check.sh` に明示した唯一の例外である。
 //!
 //! # 越境アクセス監査ログ標準整合（TASK-9.6 / #89）
 //!
@@ -104,16 +89,15 @@ pub mod audit;
 pub mod auth;
 pub mod consent;
 pub mod gate;
-pub mod jwks;
-pub mod jwt;
 pub mod outbox;
+
+/// 汎用 JWT 検証クレート `fandhe-backend-plugin-jwt` 全体の再エクスポート。
+pub use fandhe_backend_plugin_jwt as jwt;
 
 pub use audit::{
     AuditCategory, AuditContext, AuditEvent, AuditSink, MemoryAuditSink, TenantLookupOutcome,
 };
-pub use auth::Authenticator;
+pub use auth::{AuthError, Authenticator, HubClaims, TenantClaims};
 pub use consent::{ConsentError, ConsentStore, InMemoryConsentStore};
 pub use gate::{TenantGate, TenantGateConfig};
-pub use jwks::{JwksError, JwksKeySet, SharedJwks};
-pub use jwt::{Claims, TokenError, verify_token};
 pub use outbox::{InMemoryOutboxStore, OutboxError, OutboxEvent, OutboxStore};

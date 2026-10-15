@@ -1,5 +1,5 @@
-//! `RequestGate` 拡張点上の `TenantGate` 実装（TASK-9.1 の主成果物、TASK-9.2 で
-//! RS256 + JWKS へ差し替え）。
+//! `RequestGate` 拡張点上の `TenantGate` 実装（TASK-9.1 の主成果物。JWT 検証は
+//! イシュー #820 で汎用 JWT 検証クレートへ移した）。
 //!
 //! コアの `Server::gate(impl RequestGate + 'static)`
 //! （`crates/core/src/server.rs`）へ登録することで、hub 系サービスが
@@ -9,17 +9,14 @@
 //! （`crates/core/src/server.rs` doc）ため、WebSocket アップグレード等の
 //! 長時間接続もこの認証をバイパスできない。
 
-use crate::auth::Authenticator;
-#[cfg(test)]
-use crate::jwks::JwksKeySet;
-use crate::jwks::{JwksError, SharedJwks};
-use crate::jwt::TokenError;
+use crate::auth::{AuthError, Authenticator};
 use fandhe_backend_core::extension::{GateContext, GateOutcome, RequestGate};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_jwt::{JwksError, JwtPolicy, SharedKeySet};
 
-/// [`TenantGate`] の設定。JWKS は [`SharedJwks`] ハンドル経由で保持し、
-/// 利用側サービスが再起動なしで鍵ローテーション（[`SharedJwks::set`]）を
+/// [`TenantGate`] の設定。JWKS は [`SharedKeySet`] ハンドル経由で保持し、
+/// 利用側サービスが再起動なしで鍵ローテーション（[`SharedKeySet::set`]）を
 /// 行えるようにする。JWKS の**取得**（HTTP フェッチ・自動リフレッシュ）は
 /// 本クレートの責務外（`RequestGate::check` は同期・I/O なしの契約）であり、
 /// 利用側サービスが取得した JSON ドキュメントを注入する
@@ -37,28 +34,39 @@ pub struct TenantGateConfig {
 }
 
 impl TenantGateConfig {
-    /// 既に構築済みの [`SharedJwks`] ハンドルから設定を組み立てる。
-    /// 呼び出し元が [`SharedJwks`] を保持し続けることで、`TenantGate` 登録後も
-    /// [`SharedJwks::set`] による鍵ローテーションを行える。
+    /// 既に構築済みの [`SharedKeySet`] ハンドルと検証ポリシーから設定を組み立てる。
+    /// ポリシー（`iss`・`aud`・`typ`・許可 `alg`）を渡さずに設定は作れない。
+    /// 呼び出し元が [`SharedKeySet`] を保持し続けることで、`TenantGate` 登録後も
+    /// [`SharedKeySet::set`] による鍵ローテーションを行える。
     ///
     /// # Examples
     ///
     /// ```
     /// use fandhe_backend_plugin_hub_wiring::gate::TenantGateConfig;
-    /// use fandhe_backend_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
+    /// use fandhe_backend_plugin_hub_wiring::jwt::{
+    ///     Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, KeySet, SharedKeySet,
+    ///     TokenType,
+    /// };
     ///
-    /// let shared = SharedJwks::new(JwksKeySet::from_json(r#"{"keys":[]}"#).unwrap());
-    /// let config = TenantGateConfig::new(shared);
+    /// let policy = JwtPolicy::new(
+    ///     Issuer::new("https://issuer.example")?,
+    ///     Audiences::single("hub-api")?,
+    ///     AllowedAlgorithms::only(Algorithm::Rs256),
+    ///     TokenType::AccessToken,
+    /// );
+    /// let shared = SharedKeySet::new(KeySet::from_json(r#"{"keys":[]}"#)?);
+    /// let config = TenantGateConfig::new(shared, policy);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn new(jwks: SharedJwks) -> Self {
+    pub fn new(jwks: SharedKeySet, policy: JwtPolicy) -> Self {
         Self {
-            authenticator: Authenticator::new(jwks),
+            authenticator: Authenticator::new(jwks, policy),
         }
     }
 
-    /// JWKS JSON ドキュメントから直接設定を組み立てる便宜コンストラクタ。
+    /// JWKS JSON ドキュメントと検証ポリシーから直接設定を組み立てる便宜コンストラクタ。
     /// 事後にローテーションする必要がない・単純な起動時注入のみで足りる
-    /// 利用側サービス向け（ローテーションが必要な場合は [`SharedJwks::new`] を
+    /// 利用側サービス向け（ローテーションが必要な場合は [`SharedKeySet::new`] を
     /// 呼び出し元で保持したまま [`Self::new`] を使う）。
     ///
     /// # Errors
@@ -69,11 +77,29 @@ impl TenantGateConfig {
     ///
     /// ```
     /// use fandhe_backend_plugin_hub_wiring::gate::TenantGateConfig;
+    /// use fandhe_backend_plugin_hub_wiring::jwt::{
+    ///     Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, TokenType,
+    /// };
     ///
-    /// let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#).unwrap();
+    /// let policy = JwtPolicy::new(
+    ///     Issuer::new("https://issuer.example")?,
+    ///     Audiences::single("hub-api")?,
+    ///     AllowedAlgorithms::only(Algorithm::Rs256),
+    ///     TokenType::AccessToken,
+    /// );
+    /// let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#, policy)?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn from_jwks_json(json: &str) -> Result<Self, JwksError> {
-        Ok(Self::new(SharedJwks::from_json(json)?))
+    ///
+    /// 検証ポリシーを渡さない構成は型として作れない。
+    ///
+    /// ```compile_fail
+    /// use fandhe_backend_plugin_hub_wiring::gate::TenantGateConfig;
+    ///
+    /// let _ = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#);
+    /// ```
+    pub fn from_jwks_json(json: &str, policy: JwtPolicy) -> Result<Self, JwksError> {
+        Ok(Self::new(SharedKeySet::from_json(json)?, policy))
     }
 
     /// 内部で共有する [`Authenticator`] を取得する（`Clone`、`Arc` 共有）。
@@ -90,7 +116,14 @@ impl TenantGateConfig {
     /// ```
     /// use fandhe_backend_plugin_hub_wiring::gate::{TenantGate, TenantGateConfig};
     ///
-    /// let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#).unwrap();
+    /// # use fandhe_backend_plugin_hub_wiring::jwt::*;
+    /// # let policy = JwtPolicy::new(
+    /// #     Issuer::new("https://issuer.example").unwrap(),
+    /// #     Audiences::single("hub-api").unwrap(),
+    /// #     AllowedAlgorithms::only(Algorithm::Rs256),
+    /// #     TokenType::AccessToken,
+    /// # );
+    /// let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#, policy).unwrap();
     /// let authenticator = config.authenticator();
     /// let gate = TenantGate::new(config);
     /// // `authenticator` はハンドラ側で保持し、`gate` はコアへ登録する。
@@ -106,7 +139,7 @@ impl TenantGateConfig {
 ///
 /// 判定ポリシー（PoC-6 踏襲、TASK-9.2 で RS256 + JWKS 前提へ更新）:
 /// - トークン欠落・形式不正・アルゴリズム不正・`kid` 欠落・未知 `kid`・
-///   署名不一致・期限切れ → `401`（認証失敗）
+///   署名不一致・期限切れ・`iss`/`aud`/`typ` 不一致 → `401`（認証失敗）
 /// - 署名は妥当だが `org_id` クレームが欠落・空 → `403`
 ///   （クライアント入力誤りとしてアプリ層の明示的拒否）
 /// - 上記いずれにも該当しない検証成功時のみ `Allow`
@@ -142,7 +175,14 @@ impl TenantGate {
     /// use fandhe_backend_core::extension::RequestGate;
     /// use fandhe_backend_plugin_hub_wiring::gate::{TenantGate, TenantGateConfig};
     ///
-    /// let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#).unwrap();
+    /// # use fandhe_backend_plugin_hub_wiring::jwt::*;
+    /// # let policy = JwtPolicy::new(
+    /// #     Issuer::new("https://issuer.example").unwrap(),
+    /// #     Audiences::single("hub-api").unwrap(),
+    /// #     AllowedAlgorithms::only(Algorithm::Rs256),
+    /// #     TokenType::AccessToken,
+    /// # );
+    /// let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#, policy).unwrap();
     /// let gate = TenantGate::new(config);
     /// assert_eq!(gate.name(), "hub-tenant-gate");
     /// ```
@@ -181,23 +221,17 @@ impl RequestGate for TenantGate {
         // `Authenticator::authenticate` はロックを短時間保持するのみで、
         // 実際の署名検証（キャッシュミス時のみ）中はロックを保持しない
         // （.claude/rules/coding-rust.md）。判定ポリシー（401/403 マッピング）は
-        // 従来の `verify_token` 直接呼び出しと完全に同一であり、キャッシュ
+        // 自前検証時代（イシュー #820 以前）の 401/403 マッピングと同一であり、キャッシュ
         // ヒット/ミスで判定結果が変わることはない（TASK-9.3 / #63）。テナント
         // 境界判定はトークンクレーム（`org_id`）のみに基づき、`ctx` の実 peer
         // address は本ゲートの判定に使用しない（イシュー #486、`GateContext`
         // 追加は既存 gate 実装への影響を最小化する非対応追随のみ）。
         match self.config.authenticator.authenticate(head) {
-            Ok(_claims) => GateOutcome::Allow,
-            Err(TokenError::MissingOrgId) => reject_json(403, FORBIDDEN_BODY),
-            Err(
-                TokenError::MissingToken
-                | TokenError::Malformed
-                | TokenError::InvalidAlgorithm
-                | TokenError::MissingKeyId
-                | TokenError::UnknownKeyId
-                | TokenError::InvalidSignature
-                | TokenError::Expired,
-            ) => reject_json(401, UNAUTHORIZED_BODY),
+            Ok(_) => GateOutcome::Allow,
+            Err(AuthError::MissingOrgId) => reject_json(403, FORBIDDEN_BODY),
+            // 検証失敗のすべて。`AuthError`・`VerifyError` は `#[non_exhaustive]` のため、
+            // 将来の変種も 401 に倒す（フェイルクローズ、Allow へは落ちない）。
+            Err(_) => reject_json(401, UNAUTHORIZED_BODY),
         }
     }
 }
@@ -211,7 +245,22 @@ mod tests {
     use ring::rand::SystemRandom;
     use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
 
+    use fandhe_backend_plugin_jwt::{
+        Algorithm, AllowedAlgorithms, Audiences, Issuer, KeySet, TokenType,
+    };
+
     const TEST_KID: &str = "test-kid-1";
+    const TEST_ISS: &str = "https://issuer.example";
+    const TEST_AUD: &str = "hub-api";
+
+    fn test_policy() -> JwtPolicy {
+        JwtPolicy::new(
+            Issuer::new(TEST_ISS).unwrap(),
+            Audiences::single(TEST_AUD).unwrap(),
+            AllowedAlgorithms::only(Algorithm::Rs256),
+            TokenType::AccessToken,
+        )
+    }
 
     fn test_keypair() -> RsaKeyPair {
         RsaKeyPair::from_pkcs8(include_bytes!("../tests/fixtures/test-rsa-2048.pk8"))
@@ -236,10 +285,12 @@ mod tests {
     }
 
     fn make_token(keypair: &RsaKeyPair, kid: &str, org_id: Option<&str>, exp: u64) -> String {
-        let header = format!(r#"{{"alg":"RS256","typ":"JWT","kid":"{kid}"}}"#);
+        let header = format!(r#"{{"alg":"RS256","typ":"at+jwt","kid":"{kid}"}}"#);
         let payload = match org_id {
-            Some(org_id) => format!(r#"{{"org_id":"{org_id}","exp":{exp}}}"#),
-            None => format!(r#"{{"exp":{exp}}}"#),
+            Some(org_id) => format!(
+                r#"{{"iss":"{TEST_ISS}","aud":"{TEST_AUD}","org_id":"{org_id}","exp":{exp}}}"#
+            ),
+            None => format!(r#"{{"iss":"{TEST_ISS}","aud":"{TEST_AUD}","exp":{exp}}}"#),
         };
         let header_b64 = URL_SAFE_NO_PAD.encode(header);
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
@@ -259,7 +310,9 @@ mod tests {
     }
 
     fn gate_for(keypair: &RsaKeyPair) -> TenantGate {
-        let config = TenantGateConfig::from_jwks_json(&jwks_json_for(keypair, TEST_KID)).unwrap();
+        let config =
+            TenantGateConfig::from_jwks_json(&jwks_json_for(keypair, TEST_KID), test_policy())
+                .unwrap();
         TenantGate::new(config)
     }
 
@@ -377,7 +430,8 @@ mod tests {
         let token = make_token(&keypair, TEST_KID, Some("org-1"), 9_999_999_999);
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
-        let empty_config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#).unwrap();
+        let empty_config =
+            TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#, test_policy()).unwrap();
         let gate = TenantGate::new(empty_config);
         assert_eq!(
             gate.check(&head, &GateContext::new(None)),
@@ -450,7 +504,7 @@ mod tests {
 
     #[test]
     fn config_rotation_reflects_in_check() {
-        // `SharedJwks::set` によるローテーション後、旧鍵で署名したトークンは
+        // `SharedKeySet::set` によるローテーション後、旧鍵で署名したトークンは
         // 拒否され新鍵で署名したトークンが許可されることを確認する。
         let keypair = test_keypair();
         let rotated_keypair = RsaKeyPair::from_pkcs8(include_bytes!(
@@ -458,9 +512,8 @@ mod tests {
         ))
         .expect("valid pkcs8 fixture");
 
-        let shared =
-            crate::jwks::SharedJwks::from_json(&jwks_json_for(&keypair, TEST_KID)).unwrap();
-        let gate = TenantGate::new(TenantGateConfig::new(shared.clone()));
+        let shared = SharedKeySet::from_json(&jwks_json_for(&keypair, TEST_KID)).unwrap();
+        let gate = TenantGate::new(TenantGateConfig::new(shared.clone(), test_policy()));
 
         let old_token = make_token(&keypair, TEST_KID, Some("org-1"), 9_999_999_999);
         let raw =
@@ -470,7 +523,7 @@ mod tests {
             GateOutcome::Allow
         );
 
-        shared.set(JwksKeySet::from_json(&jwks_json_for(&rotated_keypair, TEST_KID)).unwrap());
+        shared.set(KeySet::from_json(&jwks_json_for(&rotated_keypair, TEST_KID)).unwrap());
 
         // 旧鍵の署名は新 JWKS では検証できず拒否される。
         assert_eq!(

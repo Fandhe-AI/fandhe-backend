@@ -23,9 +23,61 @@
     `HostPrefixPath` を追加しました。移行手順: `CookieError` を網羅的に `match` している
     場合は `_ =>` アームを追加してください。
 
+- `fandhe-backend-plugin-hub-wiring`: JWT 検証部を汎用 JWT 検証クレート
+  `fandhe-backend-plugin-jwt` へ移しました（イシュー #820、REQ-16 受け入れ基準 5、
+  設計は [`docs/design/jwt-verify-plugin.md`](docs/design/jwt-verify-plugin.md) 2.9 節）。
+  検証ポリシー（発行者・受信者・許可アルゴリズム・トークン種別）を
+  `TenantGateConfig` の構築に必須で渡す形になり、ポリシーなしの構成は型として作れません。
+  旧公開パスの互換層は置きません。
+  - 移行手順（ポリシーの渡し方）:
+    ```rust
+    use fandhe_backend_plugin_hub_wiring::jwt::{
+        Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, TokenType,
+    };
+    let policy = JwtPolicy::new(
+        Issuer::new("https://issuer.example")?,
+        Audiences::single("hub-api")?,
+        AllowedAlgorithms::only(Algorithm::Rs256),
+        TokenType::AccessToken,
+    );
+    // 旧: TenantGateConfig::from_jwks_json(&jwks_json)?
+    let config = TenantGateConfig::from_jwks_json(&jwks_json, policy)?;
+    // 旧: TenantGateConfig::new(shared_jwks)  ->  new(shared_key_set, policy)
+    ```
+  - 公開パスの対応: `jwks::{JwksKeySet, SharedJwks, JwksError}` は
+    `jwt::{KeySet, SharedKeySet, JwksError}`、`TokenError` は `AuthError`
+    （`Jwt(VerifyError)` と `MissingOrgId` の 2 変種）、`Claims` は `jwt::Claims`
+    （`TenantClaims::claims()` で参照）へ移りました。`jwt::verify_token` は削除しました
+    （`jwt::verify` はポリシーと現在時刻を取ります）。`Authenticator::new` は
+    `(SharedKeySet, JwtPolicy)` を取る公開コンストラクタになり、`authenticate` は
+    `TenantClaims`（`org_id()` / `claims()`）を返します。
+  - トークンに必要なクレーム: ヘッダ `typ` は `at+jwt`（`application/at+jwt` も可、
+    大文字小文字は区別しない）が必須です。payload は `iss`（ポリシーと完全一致）・
+    `aud`（ポリシーのいずれかと一致、文字列でも配列でも可）・`exp` が必須で、`org_id` も
+    引き続き必須です。`nbf` があれば検証し、`crit` ヘッダがあれば拒否します。`kid` は
+    256 バイトまでです。ES256 はポリシーの許可リストに入れたときだけ受理します。
+  - JWKS の扱い: 同じ `kid` の鍵を 3 件まで許すようにし（ローテーション用）、
+    `DuplicateKeyId` は廃止しました。採用候補（RSA / EC P-256）の鍵に `kid` や `alg`
+    がない場合、`kty` と `alg` が合わない場合、秘密鍵成分・`oct`・`alg: none` / HS 系が
+    ある場合は文書ごと拒否します。**`alg` を持たない RSA JWK は旧実装では採用されて
+    いましたが、新実装では文書ごと拒否されます。** 発行元の JWKS に `"alg": "RS256"` を
+    付けてください。未対応の方式（EdDSA 等）は読み飛ばします。
+  - 401 / 403 の判定・応答本文は変わりません（`org_id` の欠落・空は 403、それ以外の
+    検証失敗は 401）。
+  - リリース順の注意: `fandhe-backend-plugin-jwt` は現在 `publish = false` です。
+    `v0.5.0` タグの前に #822（公開準備）をマージしてください。
+
 ### Added
 
 - `fandhe-backend-http`: `SetCookie::host_prefixed` / `SetCookie::secure_prefixed` を追加しました。
+- `fandhe-backend-plugin-hub-wiring`: `jwt`（`fandhe-backend-plugin-jwt` 全体の再エクスポート）、
+  `AuthError` / `TenantClaims` / `HubClaims`、`Authenticator::from_jwt` を追加しました。
+
+### Removed
+
+- `fandhe-backend-plugin-hub-wiring`: 独自の JWT / JWKS 検証実装（`jwt.rs`・`jwks.rs`・
+  検証結果キャッシュ）を削除し、`fandhe-backend-plugin-jwt` への依存に置き換えました
+  （上記 BREAKING CHANGES 参照）。
 
 ## [0.4.2] - 2026-09-28
 
