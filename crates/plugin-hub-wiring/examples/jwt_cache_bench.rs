@@ -7,8 +7,8 @@
 //! 試行の中央値を採用する。
 //!
 //! 検証・キャッシュの実装は `fandhe-backend-plugin-jwt` にあり、本 example は hub の
-//! ラッパー（`Authenticator`）越しの計測として残している。plugin-jwt 側への計測方式の
-//! 移設は別イシュー（#821）の担当。
+//! ラッパー（`Authenticator`）越しの計測として残している。RS256・ES256 を対象にした
+//! plugin-jwt 直接の計測は `crates/plugin-jwt/examples/jwt_verify_bench.rs`（#821）にある。
 //!
 //! example のためライブラリ本体・依存ツリーへ影響しない
 //! （`.claude/rules/pay-for-what-you-use.md`）。

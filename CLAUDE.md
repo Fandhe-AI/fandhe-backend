@@ -923,6 +923,10 @@ fandhe-backend/
 │   ├── nfr6-exclusive.sh               # 専有実行枠で webrtc/graphql/hub の NFR-6 を順次計測・
 │   │                                    # 判定確定する wrapper（#178、docs/design/
 │   │                                    # nfr6-exclusive-measurement.md 参照）
+│   ├── jwt-nfr6-bench.sh               # plugin-jwt の `JwtGate` 有効時の NFR-6 計測（イシュー #821）。
+│   │                                    # 全系統へ同一の有効トークンを付けて比較し、`TARGETS=jwt` で
+│   │                                    # nfr6-exclusive.sh から opt-in 実行。プロセス内の検証コスト計測は
+│   │                                    # `crates/plugin-jwt/examples/jwt_verify_bench.rs`
 │   ├── bench-accept-exclusive.sh       # 専有実行枠で bench-accept.sh（REQ-1/NFR-1/NFR-2 判定）を
 │   │                                    # 実行する wrapper。REQ-2 基準 5（両 feature 無効時のコア
 │   │                                    # 性能維持）の再計測に使用（#260、benches/reports/

@@ -174,7 +174,8 @@ I/O しない・panic しない」で、panic 境界は diagnostics-sink 5 節�
 容量 1024・期限切れを先に掃いて FIFO 追い出し、鍵集合の `Arc::ptr_eq` で無効化、成功のみ保持、
 ヒットごとに `exp`・`nbf` を leeway 付きで再判定する。キャッシュは 1 ポリシーに束ね、ポリシーは
 構築後に変更不可。ES256 検証は RS256 より重い（`fandhe-auth.md` の注記）ため、効果は #821 で
-中央値として計測する（`plugin-hub-wiring/examples/jwt_cache_bench.rs` の方式を移す）。
+中央値として計測した（`crates/plugin-jwt/examples/jwt_verify_bench.rs`。結果は
+`benches/reports/issue821-jwt-verify-performance.md`）。
 **影響先**: #816・#821。
 
 ### 2.7 依存の解釈
