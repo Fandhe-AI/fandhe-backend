@@ -1,6 +1,6 @@
 # `benches/refs`（他フレームワーク参照実装、standalone workspace）専用の cargo-deny 設定。
 #
-# root `deny.toml`（公開 13 クレートの依存監査、REQ-15）と同じ許可リスト方式・
+# root `deny.toml`（公開対象クレートの依存監査、REQ-15）と同じ許可リスト方式・
 # フェイルクローズ方針を踏襲しつつ、本 workspace にしか現れない actix-web / Rocket
 # 由来の推移依存に対する判断を **root 設定を汚さずに** ここへ隔離する。root 側の
 # `[advisories] ignore = []`・ライセンス許可リストは変更しない（本 workspace は

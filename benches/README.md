@@ -838,7 +838,7 @@ Markdown の比較表を組み立てる。先頭に指定した対象を比率�
 `benches/refs/` は actix-web（`actix-ref`）・Rocket（`rocket-ref`）の参照実装を持つ
 standalone workspace（`crates/http/fuzz`・`benches/microbench` と同パターン。root
 `Cargo.toml` の `[workspace] exclude` に登録済み）。root workspace の `cargo metadata` /
-`cargo tree` / `cargo geiger` にこれらの依存は一切現れず、公開 13 クレートの依存監査・
+`cargo tree` / `cargo geiger` にこれらの依存は一切現れず、公開対象クレートの依存監査・
 pay-for-what-you-use 検証に影響しない。
 
 `benches/refs/Cargo.lock` はコミット対象（`benches/microbench` と同じ例外。比較レポートの
