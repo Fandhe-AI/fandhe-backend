@@ -29,6 +29,48 @@ pub use fandhe_backend_plugin_jwt::bearer_token;
 ///
 /// `org_id` が文字列以外（数値など）の場合は検証側で
 /// [`VerifyError::InvalidExtraClaims`] になる。欠落は `None`（[`AuthError::MissingOrgId`]）。
+///
+/// # Examples
+///
+/// ```
+/// # use base64::Engine as _;
+/// # use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+/// # use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+/// # use fandhe_backend_plugin_hub_wiring::auth::Authenticator;
+/// # use fandhe_backend_plugin_hub_wiring::jwt::{
+/// #     Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, SharedKeySet, TokenType,
+/// # };
+/// # use ring::rand::SystemRandom;
+/// # use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
+/// # let pair = RsaKeyPair::from_pkcs8(include_bytes!("../tests/fixtures/test-rsa-2048.pk8"))
+/// #     .map_err(|_| "pkcs8")?;
+/// # let c: RsaPublicKeyComponents<Vec<u8>> = RsaPublicKeyComponents::from(pair.public_key());
+/// # let jwks = format!(
+/// #     r#"{{"keys":[{{"kty":"RSA","kid":"k1","n":"{}","e":"{}","use":"sig","alg":"RS256"}}]}}"#,
+/// #     B64.encode(&c.n), B64.encode(&c.e)
+/// # );
+/// # let h = B64.encode(r#"{"alg":"RS256","typ":"at+jwt","kid":"k1"}"#);
+/// # let p = B64.encode(r#"{"iss":"https://issuer.example","aud":"hub-api","sub":"u1","org_id":" org-1 ","exp":9999999999}"#);
+/// # let mut sig = vec![0u8; pair.public().modulus_len()];
+/// # pair.sign(&signature::RSA_PKCS1_SHA256, &SystemRandom::new(), format!("{h}.{p}").as_bytes(), &mut sig)
+/// #     .map_err(|_| "sign")?;
+/// # let token = format!("{h}.{p}.{}", B64.encode(sig));
+/// # let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n");
+/// # let ParseOutcome::Complete { head, .. } = parse_request_head(raw.as_bytes())? else { unreachable!() };
+/// # let policy = JwtPolicy::new(
+/// #     Issuer::new("https://issuer.example")?,
+/// #     Audiences::single("hub-api")?,
+/// #     AllowedAlgorithms::only(Algorithm::Rs256),
+/// #     TokenType::AccessToken,
+/// # );
+/// # let authenticator = Authenticator::new(SharedKeySet::from_json(&jwks)?, policy);
+/// let tenant = authenticator.authenticate(&head)?;
+/// // `HubClaims` は検証済みトークンの追加クレームで、`Claims<HubClaims>` の `extra()` に載る。
+/// let extra = tenant.claims().extra();
+/// // 値（org_id）は Debug に出ない。
+/// assert_eq!(format!("{extra:?}"), "HubClaims { has_org_id: true }");
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Clone, Deserialize)]
 pub struct HubClaims {
     #[serde(default)]
@@ -82,6 +124,46 @@ impl From<VerifyError> for AuthError {
 /// 認証済みのテナント情報。`org_id` は trim 後に空でないことが保証される。
 ///
 /// `sub` などを含む [`Claims`] を持つため、ログへ出さないこと（`Debug` は値を出さない）。
+///
+/// # Examples
+///
+/// ```
+/// # use base64::Engine as _;
+/// # use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+/// # use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+/// # use fandhe_backend_plugin_hub_wiring::auth::Authenticator;
+/// # use fandhe_backend_plugin_hub_wiring::jwt::{
+/// #     Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, SharedKeySet, TokenType,
+/// # };
+/// # use ring::rand::SystemRandom;
+/// # use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
+/// # let pair = RsaKeyPair::from_pkcs8(include_bytes!("../tests/fixtures/test-rsa-2048.pk8"))
+/// #     .map_err(|_| "pkcs8")?;
+/// # let c: RsaPublicKeyComponents<Vec<u8>> = RsaPublicKeyComponents::from(pair.public_key());
+/// # let jwks = format!(
+/// #     r#"{{"keys":[{{"kty":"RSA","kid":"k1","n":"{}","e":"{}","use":"sig","alg":"RS256"}}]}}"#,
+/// #     B64.encode(&c.n), B64.encode(&c.e)
+/// # );
+/// # let h = B64.encode(r#"{"alg":"RS256","typ":"at+jwt","kid":"k1"}"#);
+/// # let p = B64.encode(r#"{"iss":"https://issuer.example","aud":"hub-api","sub":"u1","org_id":" org-1 ","exp":9999999999}"#);
+/// # let mut sig = vec![0u8; pair.public().modulus_len()];
+/// # pair.sign(&signature::RSA_PKCS1_SHA256, &SystemRandom::new(), format!("{h}.{p}").as_bytes(), &mut sig)
+/// #     .map_err(|_| "sign")?;
+/// # let token = format!("{h}.{p}.{}", B64.encode(sig));
+/// # let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n");
+/// # let ParseOutcome::Complete { head, .. } = parse_request_head(raw.as_bytes())? else { unreachable!() };
+/// # let policy = JwtPolicy::new(
+/// #     Issuer::new("https://issuer.example")?,
+/// #     Audiences::single("hub-api")?,
+/// #     AllowedAlgorithms::only(Algorithm::Rs256),
+/// #     TokenType::AccessToken,
+/// # );
+/// # let authenticator = Authenticator::new(SharedKeySet::from_json(&jwks)?, policy);
+/// let tenant = authenticator.authenticate(&head)?;
+/// assert_eq!(tenant.org_id(), "org-1");
+/// assert_eq!(tenant.claims().sub(), Some("u1"));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Clone)]
 pub struct TenantClaims {
     org_id: String,
@@ -90,11 +172,93 @@ pub struct TenantClaims {
 
 impl TenantClaims {
     /// テナント ID（trim 済み・非空）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use base64::Engine as _;
+    /// # use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+    /// # use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+    /// # use fandhe_backend_plugin_hub_wiring::auth::Authenticator;
+    /// # use fandhe_backend_plugin_hub_wiring::jwt::{
+    /// #     Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, SharedKeySet, TokenType,
+    /// # };
+    /// # use ring::rand::SystemRandom;
+    /// # use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
+    /// # let pair = RsaKeyPair::from_pkcs8(include_bytes!("../tests/fixtures/test-rsa-2048.pk8"))
+    /// #     .map_err(|_| "pkcs8")?;
+    /// # let c: RsaPublicKeyComponents<Vec<u8>> = RsaPublicKeyComponents::from(pair.public_key());
+    /// # let jwks = format!(
+    /// #     r#"{{"keys":[{{"kty":"RSA","kid":"k1","n":"{}","e":"{}","use":"sig","alg":"RS256"}}]}}"#,
+    /// #     B64.encode(&c.n), B64.encode(&c.e)
+    /// # );
+    /// # let h = B64.encode(r#"{"alg":"RS256","typ":"at+jwt","kid":"k1"}"#);
+    /// # let p = B64.encode(r#"{"iss":"https://issuer.example","aud":"hub-api","sub":"u1","org_id":" org-1 ","exp":9999999999}"#);
+    /// # let mut sig = vec![0u8; pair.public().modulus_len()];
+    /// # pair.sign(&signature::RSA_PKCS1_SHA256, &SystemRandom::new(), format!("{h}.{p}").as_bytes(), &mut sig)
+    /// #     .map_err(|_| "sign")?;
+    /// # let token = format!("{h}.{p}.{}", B64.encode(sig));
+    /// # let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n");
+    /// # let ParseOutcome::Complete { head, .. } = parse_request_head(raw.as_bytes())? else { unreachable!() };
+    /// # let policy = JwtPolicy::new(
+    /// #     Issuer::new("https://issuer.example")?,
+    /// #     Audiences::single("hub-api")?,
+    /// #     AllowedAlgorithms::only(Algorithm::Rs256),
+    /// #     TokenType::AccessToken,
+    /// # );
+    /// # let authenticator = Authenticator::new(SharedKeySet::from_json(&jwks)?, policy);
+    /// let tenant = authenticator.authenticate(&head)?;
+    /// // trim 済みの非空テナント ID。
+    /// assert_eq!(tenant.org_id(), "org-1");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn org_id(&self) -> &str {
         &self.org_id
     }
 
     /// 検証済みの標準クレーム（`iss`・`sub`・`aud`・`exp` など）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use base64::Engine as _;
+    /// # use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+    /// # use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+    /// # use fandhe_backend_plugin_hub_wiring::auth::Authenticator;
+    /// # use fandhe_backend_plugin_hub_wiring::jwt::{
+    /// #     Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, SharedKeySet, TokenType,
+    /// # };
+    /// # use ring::rand::SystemRandom;
+    /// # use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
+    /// # let pair = RsaKeyPair::from_pkcs8(include_bytes!("../tests/fixtures/test-rsa-2048.pk8"))
+    /// #     .map_err(|_| "pkcs8")?;
+    /// # let c: RsaPublicKeyComponents<Vec<u8>> = RsaPublicKeyComponents::from(pair.public_key());
+    /// # let jwks = format!(
+    /// #     r#"{{"keys":[{{"kty":"RSA","kid":"k1","n":"{}","e":"{}","use":"sig","alg":"RS256"}}]}}"#,
+    /// #     B64.encode(&c.n), B64.encode(&c.e)
+    /// # );
+    /// # let h = B64.encode(r#"{"alg":"RS256","typ":"at+jwt","kid":"k1"}"#);
+    /// # let p = B64.encode(r#"{"iss":"https://issuer.example","aud":"hub-api","sub":"u1","org_id":" org-1 ","exp":9999999999}"#);
+    /// # let mut sig = vec![0u8; pair.public().modulus_len()];
+    /// # pair.sign(&signature::RSA_PKCS1_SHA256, &SystemRandom::new(), format!("{h}.{p}").as_bytes(), &mut sig)
+    /// #     .map_err(|_| "sign")?;
+    /// # let token = format!("{h}.{p}.{}", B64.encode(sig));
+    /// # let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n");
+    /// # let ParseOutcome::Complete { head, .. } = parse_request_head(raw.as_bytes())? else { unreachable!() };
+    /// # let policy = JwtPolicy::new(
+    /// #     Issuer::new("https://issuer.example")?,
+    /// #     Audiences::single("hub-api")?,
+    /// #     AllowedAlgorithms::only(Algorithm::Rs256),
+    /// #     TokenType::AccessToken,
+    /// # );
+    /// # let authenticator = Authenticator::new(SharedKeySet::from_json(&jwks)?, policy);
+    /// let tenant = authenticator.authenticate(&head)?;
+    /// let claims = tenant.claims();
+    /// assert_eq!(claims.iss(), "https://issuer.example");
+    /// assert_eq!(claims.sub(), Some("u1"));
+    /// assert_eq!(claims.exp(), 9_999_999_999);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn claims(&self) -> &Claims<HubClaims> {
         &self.claims
     }

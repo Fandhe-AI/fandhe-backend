@@ -439,5 +439,13 @@ async fn wrong_iss_aud_or_typ_is_rejected_before_handler() {
             "{name} 不一致は 401 のはず: {response}"
         );
         assert!(!response.ends_with("ok"), "ハンドラへ到達した: {response}");
+        assert!(
+            response.contains("Content-Type: application/json\r\n"),
+            "{name} 不一致の拒否応答に Content-Type がない: {response}"
+        );
+        assert!(
+            response.ends_with(r#"{"error":"invalid_token"}"#),
+            "{name} 不一致の本文が invalid_token でない: {response}"
+        );
     }
 }

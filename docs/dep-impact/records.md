@@ -8,6 +8,27 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-10-15 — `crates/plugin-hub-wiring` が `plugin-jwt` へ依存（イシュー #820、JWT 検証部の移管）
+
+JWT/JWKS の検証を `fandhe-backend-plugin-jwt` へ一本化したため、
+`crates/plugin-hub-wiring/Cargo.toml` の `[dependencies]` から `ring` / `base64` を外し
+（`[dev-dependencies]` へ移動。テストのトークン署名と JWKS 組み立てにのみ使う）、
+`fandhe-backend-plugin-jwt` を追加した。`serde` / `serde_json` は `{ workspace = true }` に
+切り替えた（版は workspace 共有）。
+
+計測コマンド: `bash scripts/dep-impact.sh`（本ブランチ、cargo-geiger 未導入）
+
+| feature 構成 | 依存クレート数（workspace メンバー除外） |
+|---|---|
+| --no-default-features | 281 |
+| default | 281 |
+| --all-features | 283 |
+
+- 新規パッケージ: 0（workspace 内クレートの追加のみで、`Cargo.lock` に新しい外部 crate・版はない。`ring` / `base64` は `plugin-jwt` が引き続き保有）
+- plugin → plugin 依存の追加: `scripts/dep-direction-check.sh` に明示した唯一の例外
+- `unsafe` の追加: なし（`cargo-geiger` 未導入のため未計測。本クレートは暗号処理を持たず、`unsafe` を追加していない）
+- core 利用者への影響: なし（`hub-wiring` は `crates/core` の feature に未配線）
+
 ## 2026-10-15 — `crates/plugin-jwt` に core / http を追加（イシュー #816、RequestGate 実装）
 
 `RequestGate` 実装 `JwtGate` のため `crates/plugin-jwt/Cargo.toml` の `[dependencies]` に
