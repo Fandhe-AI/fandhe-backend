@@ -12,9 +12,9 @@
 
 | ファイル | 用途 | 使用テスト |
 |---|---|---|
-| `test-rsa-2048.pk8` | RS256 の署名鍵（回転の「旧」） | `verify.rs`、`req16_acceptance.rs` |
+| `test-rsa-2048.pk8` | RS256 の署名鍵（回転の「旧」） | `verify.rs`、`req16_acceptance.rs`、`fuzz/fuzz_targets/`（`verify_claims`・`verify_token`・`jwks_from_json` が `common/mod.rs` 経由で参照） |
 | `test-rsa-2048-rotated.pk8` | RS256 回転の「新」鍵 | `req16_acceptance.rs` |
-| `test-ec-p256.pk8` | ES256 の署名鍵（回転の「旧」） | `req16_acceptance.rs` |
+| `test-ec-p256.pk8` | ES256 の署名鍵（回転の「旧」） | `req16_acceptance.rs`、`fuzz/fuzz_targets/`（`verify_token`・`jwks_from_json`） |
 | `test-ec-p256-rotated.pk8` | ES256 回転の「新」鍵 | `req16_acceptance.rs` |
 
 RSA の 2 本は `plugin-hub-wiring` の同名フィクスチャと同一バイト列の複製です。

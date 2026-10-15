@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # fuzz 実行スクリプト（TASK-15.3-1、#87、docs/spec/05-tasks.md）。
 #
-# `crates/http/fuzz`（cargo-fuzz / libFuzzer、root Cargo.toml の workspace から
-# exclude 済み）の全 fuzz target を、pinned nightly ツールチェーンで順次実行する。
-# 対象は `crates/http/src` の sans-IO パーサ群（`request.rs` の doc コメント
-# 「I/O なしでそのまま fuzz（TASK-15.3 / #51）に供せる」を実現する CI 側の受け皿）。
+# `FUZZ_DIRS` 配列の各 fuzz クレート（cargo-fuzz / libFuzzer、いずれも root
+# Cargo.toml の workspace から exclude 済みの独立 workspace）の全 fuzz target を、
+# pinned nightly ツールチェーンで順次実行する。対象は次のとおり。
+#   - `crates/http/fuzz`: `crates/http/src` の sans-IO パーサ群（`request.rs` の doc
+#     コメント「I/O なしでそのまま fuzz（TASK-15.3 / #51）に供せる」を実現する CI 側の受け皿）
+#   - `crates/plugin-jwt/fuzz`: JWT 検証プラグインの解析部（JWKS・トークン、イシュー #818）
 #
 # 本スクリプトは CI（ci.yml の fuzz-smoke ジョブ）から短時間実行（既定 60 秒/target）
 # される「smoke」用途と、ローカルでの長時間スクリーニング（#88 のスコープ）の両方に
@@ -17,7 +19,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-FUZZ_DIR="${REPO_ROOT}/crates/http/fuzz"
+# fuzz クレートのディレクトリ（REPO_ROOT からの相対パス）。追加時はここに足し、
+# CI（ci.yml fuzz-smoke）のキャッシュ path・slim 対象も同じ dir に揃える。
+FUZZ_DIRS=("crates/http/fuzz" "crates/plugin-jwt/fuzz")
 
 # fuzz / サニタイザ計装専用の nightly pin（単一真実源）。更新する場合は本行のみ
 # 変更し、CI 側（ci.yml fuzz-smoke ジョブ）は `rustup toolchain install` で
@@ -37,6 +41,7 @@ usage() {
   --max-total-time SECONDS  各 fuzz target あたりの実行秒数（既定: 60。smoke 用途）。
                              長時間スクリーニング（#88）ではより大きい値を指定する。
   --list                    fuzz target 名を列挙して終了する（実行しない）。
+                             全 fuzz クレート（FUZZ_DIRS）の target を対象にする。
 EOF
 }
 
@@ -103,41 +108,62 @@ if ! check_c_compiler; then
     exit 1
 fi
 
-cd "${FUZZ_DIR}"
-
 # --------------------------------------------------
-# fuzz target の列挙（fuzz_targets/*.rs のファイル名 = target 名という cargo-fuzz の慣習）
+# fuzz target の列挙（各 dir の fuzz_targets/*.rs のファイル名 = target 名という
+# cargo-fuzz の慣習）。target が 0 件の dir、および dir をまたいだ target 名の重複は
+# 実行対象の取り違え（別 dir の同名 target の上書き）を招くためエラー終了する。
 # --------------------------------------------------
-mapfile -t targets < <(
-    find "${FUZZ_DIR}/fuzz_targets" -maxdepth 1 -name '*.rs' -exec basename {} .rs \; | sort
-)
+# 並行配列: target_names[i] は target_dirs[i]（REPO_ROOT 相対）に属する。
+target_names=()
+target_dirs=()
 
-if [ "${#targets[@]}" -eq 0 ]; then
-    echo "エラー: crates/http/fuzz/fuzz_targets/ に fuzz target が見つかりません" >&2
-    exit 1
-fi
+for dir in "${FUZZ_DIRS[@]}"; do
+    mapfile -t found < <(
+        find "${REPO_ROOT}/${dir}/fuzz_targets" -maxdepth 1 -name '*.rs' -exec basename {} .rs \; | sort
+    )
+    if [ "${#found[@]}" -eq 0 ]; then
+        echo "エラー: ${dir}/fuzz_targets/ に fuzz target が見つかりません" >&2
+        exit 1
+    fi
+    for name in "${found[@]}"; do
+        for existing in "${target_names[@]+"${target_names[@]}"}"; do
+            if [ "${existing}" = "${name}" ]; then
+                echo "エラー: fuzz target 名 ${name} が複数の fuzz クレートで重複しています" >&2
+                exit 1
+            fi
+        done
+        target_names+=("${name}")
+        target_dirs+=("${dir}")
+    done
+done
 
 if [ "${LIST_ONLY}" -eq 1 ]; then
-    printf '%s\n' "${targets[@]}"
+    printf '%s\n' "${target_names[@]}"
     exit 0
 fi
 
-echo "==> pinned nightly: ${PINNED_NIGHTLY} / max-total-time: ${MAX_TOTAL_TIME}s / targets: ${targets[*]}"
+echo "==> pinned nightly: ${PINNED_NIGHTLY} / max-total-time: ${MAX_TOTAL_TIME}s / targets: ${target_names[*]}"
 
 # --------------------------------------------------
 # 各 target を順次実行する。crash を検出した場合は非 0 終了し artifacts のパスを
 # 表示する（フェイルクローズ、.claude/rules/security.md）。self-hosted runner の
 # 無期限占有を避けるため `-max_total_time` に加え `-rss_limit_mb` でメモリも制限する。
+# cargo-fuzz は実行 dir の独立 workspace 内でビルドするため dir ごとにサブシェルで cd する。
 # --------------------------------------------------
 overall_status=0
 
-for target in "${targets[@]}"; do
-    echo "==> cargo +${PINNED_NIGHTLY} fuzz run ${target}"
-    if ! cargo "+${PINNED_NIGHTLY}" fuzz run "${target}" -- \
-        "-max_total_time=${MAX_TOTAL_TIME}" \
-        "-rss_limit_mb=2048"; then
+for i in "${!target_names[@]}"; do
+    target="${target_names[$i]}"
+    dir="${target_dirs[$i]}"
+    echo "==> (${dir}) cargo +${PINNED_NIGHTLY} fuzz run ${target}"
+    if ! (
+        cd "${REPO_ROOT}/${dir}" &&
+            cargo "+${PINNED_NIGHTLY}" fuzz run "${target}" -- \
+                "-max_total_time=${MAX_TOTAL_TIME}" \
+                "-rss_limit_mb=2048"
+    ); then
         echo "エラー: fuzz target ${target} でクラッシュ/ハングを検出しました。" >&2
-        echo "  再現入力: crates/http/fuzz/artifacts/${target}/" >&2
+        echo "  再現入力: ${dir}/artifacts/${target}/" >&2
         overall_status=1
     fi
 done
