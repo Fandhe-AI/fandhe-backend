@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "fandhe-backend の hub 共通配線プラグイン（TASK-9.1 / TASK-9.2）。コアの RequestGate 拡張点上に TenantGate を実装し、RS256 + JWKS による JWT 検証 → org_id 抽出 → フェイルクローズの配線を集約する。"
+description = "fandhe-backend の hub 共通配線プラグイン（TASK-9.1 / TASK-9.2）。コアの RequestGate 拡張点上に TenantGate を実装し、汎用 JWT 検証クレート（fandhe-backend-plugin-jwt）による検証 → org_id 抽出 → フェイルクローズの配線を集約する。"
 # イシュー #94 の公開判断に基づき `publish = false` を解除済み。
 # 公開手順は docs/design/crates-io-release.md を参照。
 readme = "../../README.md"
@@ -30,27 +30,20 @@ workspace = true
 # server.rs・plugin.rs は一切変更しない。利用側サービスが本クレートを依存に
 # 加え `Server::gate(TenantGate::new(config))` で登録する。
 #
-# JWT (RS256) 検証は ring（定数時間比較の RSA PKCS#1 v1.5 検証を内蔵）、
-# base64url デコードは base64、JWKS / クレーム JSON の厳密パースは serde +
-# serde_json を用いる（手書き RSA 演算・JSON パースによるタイミング攻撃・
-# 堅牢性リスクを回避、.claude/rules/security.md）。
-#
-# `rsa`（RustCrypto）ではなく `ring` を採用する理由: `rsa` crate は
-# RUSTSEC-2023-0071（Marvin attack、fix なし）を抱えており `scripts/dep-audit.sh`
-# （`deny.toml` advisories.ignore = [] のフェイルクローズ運用）で確実に FAIL
-# する。`ring` は `crates/plugin-webrtc`（`webrtc` feature 経由）が既に
-# 依存グラフへ引き込んでいる実績依存（`deny.toml` のライセンス許可リストに
-# ISC 等が既存）であり、新規のライセンス・advisory 面の追加リスクがない。
-# 使わないサービスはこれらの依存を一切引き込まない（`cargo tree
-# -p fandhe-backend-core` に本クレート・本依存が現れないことで
-# pay-for-what-you-use を機械検証できる）。
+# JWT/JWKS の検証（署名・iss・aud・typ・exp・nbf・鍵集合・検証結果キャッシュ）は
+# 汎用 JWT 検証クレート `fandhe-backend-plugin-jwt`（REQ-16）へ一本化した
+# （イシュー #820、`docs/design/jwt-verify-plugin.md` 2.9 節）。本クレートは
+# `org_id` 抽出・テナント境界・Outbox・同意ゲート・監査のみを担い、暗号処理は
+# 持たない。plugin → plugin の依存は `scripts/dep-direction-check.sh` に明示した
+# 唯一の例外。workspace 内クレートのため Cargo.lock に新しい crate・版は増えない。
+# `serde` は `HubClaims`（追加クレーム `org_id`）の derive、`serde_json` は
+# `audit` モジュールのログ直列化に使う。
 [dependencies]
 fandhe-backend-core = { workspace = true }
 fandhe-backend-http = { workspace = true }
-ring = "0.17"
-base64 = "0.22"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+fandhe-backend-plugin-jwt = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # 統合テスト（tests/tenant_gate.rs・tests/hub_acceptance.rs）で
 # `handle_connection` を `tokio::io::duplex` 越しに駆動する E2E 確認、および
@@ -67,3 +60,6 @@ tokio = { version = "1", default-features = false, features = [
   "io-util",
 ] }
 fandhe-backend-routes = { path = "../routes" }
+# テスト・example のトークン署名（RS256）と JWKS 組み立てにのみ使う（src/** は暗号を持たない）。
+ring = { workspace = true }
+base64 = { workspace = true }

@@ -80,6 +80,7 @@ graph LR
 | `fandhe-backend-plugin-*` | `fandhe-backend-http` | プラグイン→コア基盤層参照（許可） |
 | `fandhe-backend-plugin-*` | `fandhe-backend-routes` | プラグイン→コア基盤層参照（許可） |
 | `fandhe-backend-plugin-*` | `fandhe-backend-core` | 汎用パターン（現状 `fandhe-backend-plugin-websocket` は循環回避のため不使用） |
+| `fandhe-backend-plugin-hub-wiring` | `fandhe-backend-plugin-jwt` | plugin→plugin の唯一の例外（イシュー #820、REQ-16 受け入れ基準 5。hub の独自 JWT/JWKS 検証を汎用 JWT 検証クレートへ一本化。他の plugin 間エッジは明示追加とレビューを要する） |
 
 上記以外のエッジ（逆方向・未許可のプラグイン依存等）は `dep-direction-check.sh`
 チェック 1 が非 0 終了で検出する。循環依存は同スクリプト内 DFS で別途検出する

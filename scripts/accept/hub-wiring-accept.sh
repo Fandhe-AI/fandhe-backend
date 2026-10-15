@@ -99,7 +99,7 @@ check_wiring_reduction() {
     local handwritten
     handwritten="$(detect_handwritten_auth_in_handlers "${DEMO_EXAMPLE}")"
     if [ -z "${handwritten}" ]; then
-        record_pass "B補足: ハンドラ領域の手書き配線シンボル不在" "verify_token / RsaKeyPair / JwksKeySet / SharedJwks::new / TenantGateConfig::(new|from_jwks_json) いずれも build_router 内に出現なし"
+        record_pass "B補足: ハンドラ領域の手書き配線シンボル不在" "verify_token / RsaKeyPair / JwksKeySet / SharedJwks::new / KeySet::from_json / SharedKeySet::new / JwtAuthenticator / jwt::verify / TenantGateConfig::(new|from_jwks_json) いずれも build_router 内に出現なし"
     else
         record_fail "B補足: ハンドラ領域の手書き配線シンボル不在" "ハンドラ領域に手書き配線シンボルを検出: $(printf '%s' "${handwritten}" | tr '\n' ' ')"
     fi

@@ -16,16 +16,28 @@ use fandhe_backend_http::response::Response;
 use fandhe_backend_plugin_hub_wiring::audit::{
     AuditContext, AuditSink, MemoryAuditSink, TenantLookupOutcome,
 };
-use fandhe_backend_plugin_hub_wiring::auth::bearer_token;
-use fandhe_backend_plugin_hub_wiring::jwks::SharedJwks;
-use fandhe_backend_plugin_hub_wiring::jwt::verify_token;
-use fandhe_backend_plugin_hub_wiring::{TenantGate, TenantGateConfig};
+use fandhe_backend_plugin_hub_wiring::jwt::{
+    Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, TokenType,
+};
+use fandhe_backend_plugin_hub_wiring::{Authenticator, TenantGate, TenantGateConfig};
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const TEST_KID: &str = "test-kid-1";
+const TEST_ISS: &str = "https://issuer.example";
+const TEST_AUD: &str = "hub-api";
+
+/// 全テスト共通の検証ポリシー（RS256・`at+jwt` のみ許可）。
+fn test_policy() -> JwtPolicy {
+    JwtPolicy::new(
+        Issuer::new(TEST_ISS).unwrap(),
+        Audiences::single(TEST_AUD).unwrap(),
+        AllowedAlgorithms::only(Algorithm::Rs256),
+        TokenType::AccessToken,
+    )
+}
 
 fn test_keypair() -> RsaKeyPair {
     RsaKeyPair::from_pkcs8(include_bytes!("fixtures/test-rsa-2048.pk8")).expect("valid pkcs8")
@@ -42,8 +54,9 @@ fn jwks_json_for(keypair: &RsaKeyPair, kid: &str) -> String {
 }
 
 fn make_token(keypair: &RsaKeyPair, kid: &str, org_id: &str, exp: u64) -> String {
-    let header = format!(r#"{{"alg":"RS256","typ":"JWT","kid":"{kid}"}}"#);
-    let payload = format!(r#"{{"org_id":"{org_id}","exp":{exp}}}"#);
+    let header = format!(r#"{{"alg":"RS256","typ":"at+jwt","kid":"{kid}"}}"#);
+    let payload =
+        format!(r#"{{"iss":"{TEST_ISS}","aud":"{TEST_AUD}","org_id":"{org_id}","exp":{exp}}}"#);
     let header_b64 = URL_SAFE_NO_PAD.encode(header);
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
     let signing_input = format!("{header_b64}.{payload_b64}");
@@ -90,7 +103,7 @@ impl TenantScopedStore {
 /// 契約のため、`crate::gate::TenantGate` の doc 参照）、`TenantScopedStore` へ
 /// 委ねてテナントスコープ判定・監査記録・404/200 応答の組み立てを行う。
 struct TenantAwareHandler {
-    jwks: SharedJwks,
+    authenticator: Authenticator,
     store: TenantScopedStore,
     sink: Arc<MemoryAuditSink>,
 }
@@ -100,20 +113,20 @@ const NOT_FOUND_BODY: &[u8] = b"not found";
 impl Handler for TenantAwareHandler {
     fn handle(&self, head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
         // `TenantGate` を通過済み（`Authorization: Bearer <valid JWT>`）である
-        // 前提だが、`org_id` はゲート層から渡されないため本ハンドラで再検証する。
-        // 抽出には `TenantGate` と同一の RFC 6750 準拠パーサ（`auth::bearer_token`、
-        // スキーム名の大文字小文字を区別せず、トークン前の複数 SP も許容）を
-        // 用いる。ここで固定長プレフィックス一致（`strip_prefix("Bearer ")`）を
-        // 使うと、ゲートが許可した RFC 6750 準拠だが非正規のヘッダ（例:
-        // `bearer <token>` や `Bearer  <token>`）でパース不一致により
-        // panic し、本来検証すべき 404/監査ログ挙動に到達できなくなる
-        // （Cursor Bugbot 指摘、PR #162）。
-        let token = bearer_token(head).expect("gate already validated the bearer token");
-        let keys = self.jwks.snapshot();
-        let claims = verify_token(token, &keys, 0).expect("gate already validated the token");
+        // 前提だが、`org_id` はゲート層から渡されないため、ゲートと共有した
+        // `Authenticator` で取り出す。ゲートの検証でキャッシュが温まっているので、
+        // 署名検証は再実行されない。トークン抽出（RFC 6750 準拠、スキーム名の
+        // 大文字小文字非区別・トークン前の複数 SP 許容）も `Authenticator` が
+        // `TenantGate` と同一の実装で行うため、ゲートが許可した非正規ヘッダで
+        // パース不一致になり panic することはない（PR #162 Bugbot 指摘の維持）。
+        let claims = self
+            .authenticator
+            .authenticate(head)
+            .expect("gate already validated the token");
+        let org_id = claims.org_id();
 
         let ctx = AuditContext::new(
-            claims.org_id.clone(),
+            org_id.to_owned(),
             head.method(),
             head.target(),
             "tenant-aware-handler",
@@ -121,7 +134,7 @@ impl Handler for TenantAwareHandler {
         let target = head.target();
         let path = target.split_once('?').map_or(target, |(path, _query)| path);
 
-        let response = match self.store.lookup(path, &claims.org_id).resolve(
+        let response = match self.store.lookup(path, org_id).resolve(
             self.sink.as_ref() as &dyn AuditSink,
             &ctx,
             0,
@@ -146,15 +159,15 @@ async fn roundtrip(server: &Server, request: &[u8]) -> String {
 }
 
 fn server_with(keypair: &RsaKeyPair, sink: Arc<MemoryAuditSink>) -> Server {
-    let shared = SharedJwks::from_json(&jwks_json_for(keypair, TEST_KID)).unwrap();
+    let config =
+        TenantGateConfig::from_jwks_json(&jwks_json_for(keypair, TEST_KID), test_policy()).unwrap();
+    // `config` を `TenantGate::new` で消費する前にハンドラ側の認証器を取り出す。
     let handler = TenantAwareHandler {
-        jwks: shared.clone(),
+        authenticator: config.authenticator(),
         store: TenantScopedStore,
         sink,
     };
-    Server::new()
-        .gate(TenantGate::new(TenantGateConfig::new(shared)))
-        .handler(handler)
+    Server::new().gate(TenantGate::new(config)).handler(handler)
 }
 
 fn request_for(token: &str, path: &str) -> String {

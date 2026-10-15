@@ -12,7 +12,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use fandhe_backend_core::{Handler, Server, handle_connection};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
-use fandhe_backend_plugin_hub_wiring::jwks::{JwksKeySet, SharedJwks};
+use fandhe_backend_plugin_hub_wiring::jwt::{
+    Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, KeySet, SharedKeySet, TokenType,
+};
 use fandhe_backend_plugin_hub_wiring::{Authenticator, TenantGate, TenantGateConfig};
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair, RsaKeyPair, RsaPublicKeyComponents};
@@ -20,6 +22,18 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const TEST_KID: &str = "test-kid-1";
 const ROTATED_KID: &str = "test-kid-2";
+const TEST_ISS: &str = "https://issuer.example";
+const TEST_AUD: &str = "hub-api";
+
+/// 全テスト共通の検証ポリシー（RS256・`at+jwt` のみ許可）。
+fn test_policy() -> JwtPolicy {
+    JwtPolicy::new(
+        Issuer::new(TEST_ISS).unwrap(),
+        Audiences::single(TEST_AUD).unwrap(),
+        AllowedAlgorithms::only(Algorithm::Rs256),
+        TokenType::AccessToken,
+    )
+}
 
 fn test_keypair() -> RsaKeyPair {
     RsaKeyPair::from_pkcs8(include_bytes!("fixtures/test-rsa-2048.pk8")).expect("valid pkcs8")
@@ -47,10 +61,26 @@ fn make_token(
     exp: u64,
     alg: &str,
 ) -> String {
-    let header = format!(r#"{{"alg":"{alg}","typ":"JWT","kid":"{kid}"}}"#);
+    make_token_with(keypair, kid, org_id, exp, alg, "at+jwt", TEST_ISS, TEST_AUD)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_token_with(
+    keypair: &RsaKeyPair,
+    kid: &str,
+    org_id: Option<&str>,
+    exp: u64,
+    alg: &str,
+    typ: &str,
+    iss: &str,
+    aud: &str,
+) -> String {
+    let header = format!(r#"{{"alg":"{alg}","typ":"{typ}","kid":"{kid}"}}"#);
     let payload = match org_id {
-        Some(org_id) => format!(r#"{{"org_id":"{org_id}","exp":{exp}}}"#),
-        None => format!(r#"{{"exp":{exp}}}"#),
+        Some(org_id) => {
+            format!(r#"{{"iss":"{iss}","aud":"{aud}","org_id":"{org_id}","exp":{exp}}}"#)
+        }
+        None => format!(r#"{{"iss":"{iss}","aud":"{aud}","exp":{exp}}}"#),
     };
     let header_b64 = URL_SAFE_NO_PAD.encode(header);
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
@@ -98,7 +128,8 @@ async fn roundtrip(server: &Server, request: &[u8]) -> String {
 }
 
 fn server_with(keypair: &RsaKeyPair) -> Server {
-    let config = TenantGateConfig::from_jwks_json(&jwks_json_for(keypair, TEST_KID)).unwrap();
+    let config =
+        TenantGateConfig::from_jwks_json(&jwks_json_for(keypair, TEST_KID), test_policy()).unwrap();
     Server::new()
         .gate(TenantGate::new(config))
         .handler(FixedOkHandler)
@@ -193,7 +224,7 @@ async fn empty_jwks_rejects_all_requests() {
     let request = format!(
         "GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
     );
-    let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#).unwrap();
+    let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#, test_policy()).unwrap();
     let server = Server::new()
         .gate(TenantGate::new(config))
         .handler(FixedOkHandler);
@@ -268,16 +299,19 @@ async fn oversized_token_is_rejected_before_handler() {
 
 #[tokio::test]
 async fn key_rotation_via_shared_jwks_is_reflected_without_restart() {
-    // `SharedJwks::set()` によるローテーション: 旧鍵で署名したトークンは
+    // `SharedKeySet::set()` によるローテーション: 旧鍵で署名したトークンは
     // ローテーション後に拒否され、新鍵で署名したトークンが新たに許可される
     // ことを、サーバ再構築なし（同一 `Server`）で確認する
     // （計画 2.2 節: 再起動なしの鍵ローテーションが受け入れ条件）。
     let old_keypair = test_keypair();
     let new_keypair = rotated_keypair();
 
-    let shared = SharedJwks::from_json(&jwks_json_for(&old_keypair, TEST_KID)).unwrap();
+    let shared = SharedKeySet::from_json(&jwks_json_for(&old_keypair, TEST_KID)).unwrap();
     let server = Server::new()
-        .gate(TenantGate::new(TenantGateConfig::new(shared.clone())))
+        .gate(TenantGate::new(TenantGateConfig::new(
+            shared.clone(),
+            test_policy(),
+        )))
         .handler(FixedOkHandler);
 
     let old_token = make_token(
@@ -297,7 +331,7 @@ async fn key_rotation_via_shared_jwks_is_reflected_without_restart() {
     );
 
     // 新しい鍵セットへ差し替える（`kid` を変えて両立可能性も確認する）。
-    shared.set(JwksKeySet::from_json(&jwks_json_for(&new_keypair, ROTATED_KID)).unwrap());
+    shared.set(KeySet::from_json(&jwks_json_for(&new_keypair, ROTATED_KID)).unwrap());
 
     let response_after_rotation = roundtrip(&server, old_request.as_bytes()).await;
     assert!(
@@ -341,7 +375,7 @@ impl Handler for CachedAuthHandler {
             .expect("gate already allowed this request");
         Box::pin(std::future::ready(Response::new(
             200,
-            claims.org_id.into_bytes(),
+            claims.org_id().as_bytes().to_vec(),
         )))
     }
 }
@@ -349,7 +383,9 @@ impl Handler for CachedAuthHandler {
 #[tokio::test]
 async fn handler_reuses_gate_verification_via_shared_authenticator() {
     let keypair = test_keypair();
-    let config = TenantGateConfig::from_jwks_json(&jwks_json_for(&keypair, TEST_KID)).unwrap();
+    let config =
+        TenantGateConfig::from_jwks_json(&jwks_json_for(&keypair, TEST_KID), test_policy())
+            .unwrap();
     // `config` を `TenantGate::new` へ渡す（消費する）前に `Authenticator` を
     // 取り出しておく（計画 2.3 節の利用手順）。
     let authenticator = config.authenticator();
@@ -371,4 +407,37 @@ async fn handler_reuses_gate_verification_via_shared_authenticator() {
     // 順で呼ばれたことを直接検証する（重複解消の直接証跡）。
     assert_eq!(authenticator.cache_misses(), 1);
     assert_eq!(authenticator.cache_hits(), 1);
+}
+
+/// `iss` 不一致・`aud` 不一致・`typ` 不一致は署名が正しくても 401 で、ハンドラへ
+/// 到達しない（イシュー #820。取り違えトークンによる迂回の防止、OWASP A01）。
+#[tokio::test]
+async fn wrong_iss_aud_or_typ_is_rejected_before_handler() {
+    let keypair = test_keypair();
+    let cases = [
+        ("iss", "at+jwt", "https://evil.example", TEST_AUD),
+        ("aud", "at+jwt", TEST_ISS, "other-api"),
+        ("typ", "JWT", TEST_ISS, TEST_AUD),
+    ];
+    for (name, typ, iss, aud) in cases {
+        let token = make_token_with(
+            &keypair,
+            TEST_KID,
+            Some("org-1"),
+            9_999_999_999,
+            "RS256",
+            typ,
+            iss,
+            aud,
+        );
+        let request = format!(
+            "GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+        );
+        let response = roundtrip(&server_with(&keypair), request.as_bytes()).await;
+        assert!(
+            response.starts_with("HTTP/1.1 401"),
+            "{name} 不一致は 401 のはず: {response}"
+        );
+        assert!(!response.ends_with("ok"), "ハンドラへ到達した: {response}");
+    }
 }

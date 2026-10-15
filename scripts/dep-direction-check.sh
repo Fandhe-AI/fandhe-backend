@@ -220,6 +220,13 @@ else
                 "fandhe-backend-plugin-*:fandhe-backend-http"
                 "fandhe-backend-plugin-*:fandhe-backend-routes"
                 "fandhe-backend-plugin-*:fandhe-backend-core"
+                # イシュー #820（REQ-16 受け入れ基準 5・docs/design/jwt-verify-plugin.md
+                # 2.9 節）: hub-wiring が独自の JWT/JWKS 検証実装を捨て、汎用 JWT 検証
+                # クレート plugin-jwt へ依存する plugin → plugin の例外。一般化せず
+                # (`plugin-*:plugin-*` のワイルドカードは使わない)、新しい plugin 間
+                # エッジは本リストへの明示追加とレビューを要求する。plugin-jwt から
+                # hub-wiring への逆向きエッジは許可しないため、循環は DFS が検出する。
+                "fandhe-backend-plugin-hub-wiring:fandhe-backend-plugin-jwt"
             )
 
             violating_edges=()

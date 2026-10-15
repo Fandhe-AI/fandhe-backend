@@ -10,7 +10,7 @@
 //!
 //! `examples/minimal.rs`（ベースライン）と同一の `GET /`（200・同一 body）のみを
 //! 持ち、`FANDHE_BACKEND_HUB_GATE=off` 未設定時のみ空 JWKS（`TenantGateConfig::from_jwks_json`
-//! の doctest と同一の `{"keys":[]}`、鍵ローテーション・実トークンは計測対象外の
+//! の doctest と同一の `{"keys":[]}` と、ポリシーは必須のため固定値、鍵ローテーション・実トークンは計測対象外の
 //! ため不要）で構成した `TenantGate` を登録する。`hub_service_demo.rs` の
 //! `// --- wiring:begin --- 〜 // --- wiring:end ---` 区間と同型の配線のみを行い、
 //! `/items` 系ハンドラ・シードストア・RSA 鍵は一切持たない
@@ -35,6 +35,9 @@ use std::env;
 
 use fandhe_backend_core::Server;
 use fandhe_backend_http::response::Response;
+use fandhe_backend_plugin_hub_wiring::jwt::{
+    Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, TokenType,
+};
 use fandhe_backend_plugin_hub_wiring::{TenantGate, TenantGateConfig};
 use fandhe_backend_routes::Router;
 
@@ -51,7 +54,13 @@ async fn main() -> std::io::Result<()> {
     // 実データ・実トークンを持たないため空 JWKS で構成する（鍵ローテーション・
     // 認証成否は本 example の計測範囲外。`TenantGateConfig::from_jwks_json` の
     // doctest と同一の `{"keys":[]}`）。
-    let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#)
+    let policy = JwtPolicy::new(
+        Issuer::new("https://link-only.example").expect("valid issuer"),
+        Audiences::single("link-only").expect("valid audience"),
+        AllowedAlgorithms::only(Algorithm::Rs256),
+        TokenType::AccessToken,
+    );
+    let config = TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#, policy)
         .expect("空 JWKS の構築は静的に妥当なので必ず成功する");
     let mut server = Server::new();
     if env::var("FANDHE_BACKEND_HUB_GATE").as_deref() != Ok("off") {
