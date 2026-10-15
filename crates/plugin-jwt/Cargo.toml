@@ -17,7 +17,10 @@ categories = ["authentication", "web-programming"]
 [lints]
 workspace = true
 
-# ポリシー型は標準ライブラリのみで実装する。fandhe-backend-core / http / ring /
-# base64 / serde / serde_json は後続イシュー（#814〜#816）が `{ workspace = true }`
-# で追加する。
+# JWKS 鍵集合の解析（#814）に base64 / serde / serde_json を使う。版は hub-wiring と
+# 同一（workspace 共有）で新しい crate・版を増やさない。ring は署名検証を実装する
+# #815 が `{ workspace = true }` で追加する。
 [dependencies]
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

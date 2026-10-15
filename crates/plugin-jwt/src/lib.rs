@@ -12,7 +12,8 @@
 //!
 //! # 実装状況
 //!
-//! 現状は検証ポリシー型 [`JwtPolicy`] のみ。JWKS 鍵集合・トークン検証・
+//! 現状は検証ポリシー型 [`JwtPolicy`] と JWKS 鍵集合 [`KeySet`]
+//! （RS256・ES256、[`SharedKeySet`] による差し替え）。トークン検証・
 //! `RequestGate` 実装は後続イシューで追加する。設計は
 //! `docs/design/jwt-verify-plugin.md` を参照。
 //!
@@ -24,7 +25,12 @@
 // lint レベルを引き上げ、unsafe を構造的に排除する。
 #![forbid(unsafe_code)]
 
+pub mod jwks;
 pub mod policy;
+
+pub use jwks::{
+    Jwk, JwksError, KeySet, MAX_JWKS_DOC_LEN, MAX_KEYS, MAX_KEYS_PER_KID, MAX_KID_LEN, SharedKeySet,
+};
 
 pub use policy::{
     Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, MAX_AUDIENCES, MAX_CLAIM_VALUE_LEN,

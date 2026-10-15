@@ -8,6 +8,18 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-10-15 — `crates/plugin-jwt` の依存追加（イシュー #814、JWKS 鍵集合）
+
+JWKS の解析のため `crates/plugin-jwt/Cargo.toml` の `[dependencies]` に `base64` /
+`serde` / `serde_json` を追加した。版は `plugin-hub-wiring` と同一の
+`[workspace.dependencies]` を共有する（`{ workspace = true }`）。
+
+### pay-for-what-you-use への影響
+
+新しい crate・版の増分はゼロ（3 つとも既存の解決済み依存）。`unsafe` の追加なし。
+`plugin-jwt` は `crates/core` の feature に未配線のため、core 利用者の依存ツリー・
+バイナリには影響しない。署名検証用の `ring` は #815 で追加する。
+
 ## 2026-09-25 — `crates/plugin-websocket` の `tokio` feature へ `sync` を追加（イシュー #670、`WsSender` 内部配線）
 
 `crate::handler::WsSender`（サーバー起点で任意タイミングに WebSocket メッセージを push
