@@ -60,8 +60,30 @@
 //!
 //! % デコードは行わない（[`crate::query`]・
 //! [`crate::request::RequestHead::path`] と同じ「無正規化のまま返す」契約）。
-//! デコード・信頼判断・同名 Cookie の採否（first-wins 等）・`__Host-`/
-//! `__Secure-` プレフィックス検証は呼び出し元の責務とする。
+//! デコード・信頼判断・同名 Cookie の採否（first-wins 等）・受信した cookie
+//! 名の `__Host-`/`__Secure-` 接頭辞に基づく信頼判断は呼び出し元の責務とする
+//! （読み取り側では接頭辞を検証しない。書き込み側は次節のとおり構築時に強制する）。
+//!
+//! # 書き込み側: cookie 接頭辞の構築時検証（イシュー #810）
+//!
+//! RFC 6265bis の cookie 接頭辞は、ブラウザがサブドメイン・平文経路からの
+//! cookie 上書き（cookie tossing）を拒否する防御機構である。条件を満たさない
+//! 接頭辞付き cookie はブラウザに黙って無視され防御が効かないため、
+//! [`SetCookie`] は条件を満たさない値を型として作れないようにする（fail-closed）。
+//!
+//! | 接頭辞 | 条件 | 構築経路 |
+//! |--------|------|----------|
+//! | `__Host-` | `Secure`・`Path=/`・`Domain` なし | [`SetCookie::host_prefixed`] |
+//! | `__Secure-` | `Secure` | [`SetCookie::secure_prefixed`] |
+//!
+//! - 接頭辞の判定は ASCII 大文字小文字を区別しない（安全側）。名前は与えられた
+//!   とおりに保持し正規化しない
+//! - [`SetCookie::new`] は接頭辞付き名前を [`CookieError::ReservedPrefix`] で拒否する
+//! - `__Host-` cookie の [`SetCookie::path`] は `/` のみ許可する
+//! - `Secure` を外す API は存在しないため、専用関数で構築した cookie は常に `Secure`
+//! - `Domain` 属性は現状存在せず、`__Host-` の「Domain なし」は型で満たされる。
+//!   **将来 `Domain` 属性を追加する場合は、`__Host-` cookie で拒否する不変条件を
+//!   同時に実装しなければならない**
 //!
 //! # 書き込み側: スコープ外
 //!
@@ -84,7 +106,11 @@ pub const MAX_COOKIE_STRING_BYTES: usize = 8 * 1024;
 
 /// [`parse_cookie_header`]（読み取り側）・[`SetCookie`]（書き込み側）が
 /// 返しうるエラー。
+///
+/// `#[non_exhaustive]`: 将来 variant が増えうるため、外部からの `match` には
+/// `_ =>` アームが必要。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CookieError {
     /// Cookie 文字列（累積を含む）が [`MAX_COOKIE_STRING_BYTES`] を超過した。
     CookieStringTooLarge,
@@ -109,6 +135,18 @@ pub enum CookieError {
     /// 絞ったつもりでも実際には絞られない不整合を招くため、構築時点で
     /// フェイルクローズに拒否する）。
     InvalidPath,
+    /// [`SetCookie::new`]（書き込み側）: `__Host-` / `__Secure-` 接頭辞
+    /// （ASCII 大文字小文字無視）で始まる名前が渡された。条件
+    /// （`Secure`・`Path=/`）を構築時に強制する [`SetCookie::host_prefixed`] /
+    /// [`SetCookie::secure_prefixed`] を使う必要がある。
+    ReservedPrefix,
+    /// [`SetCookie::host_prefixed`] / [`SetCookie::secure_prefixed`]（書き込み側）:
+    /// 名前が対応する接頭辞で始まらない（`__Host-` 名を `secure_prefixed` に
+    /// 渡した場合も該当し、`__Host-` の追加条件を欠く cookie を作れない）。
+    PrefixMismatch,
+    /// [`SetCookie::path`]（書き込み側）: `__Host-` cookie に `/` 以外の
+    /// `Path` を指定した。
+    HostPrefixPath,
 }
 
 impl std::fmt::Display for CookieError {
@@ -122,6 +160,11 @@ impl std::fmt::Display for CookieError {
             CookieError::InvalidPath => {
                 "Path 属性値が RFC 6265 path-value の範囲外の文字を含む、または '/' で始まらない"
             }
+            CookieError::ReservedPrefix => {
+                "cookie 名が __Host-/__Secure- 接頭辞で始まる（host_prefixed / secure_prefixed を使うこと）"
+            }
+            CookieError::PrefixMismatch => "cookie 名が専用構築関数に対応する接頭辞で始まらない",
+            CookieError::HostPrefixPath => "__Host- cookie の Path 属性は '/' のみ許可される",
         };
         f.write_str(msg)
     }
@@ -288,6 +331,33 @@ pub struct SetCookie {
     same_site: Option<SameSite>,
     path: Option<String>,
     max_age: Option<i64>,
+    /// 接頭辞付き名前なら `Some`。`Some` の値は接頭辞の条件を満たす不変条件を持つ。
+    prefix: Option<CookiePrefix>,
+}
+
+/// cookie 名接頭辞（RFC 6265bis）。`SetCookie` 内部専用で、条件の強制対象を示す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CookiePrefix {
+    Host,
+    Secure,
+}
+
+const HOST_PREFIX: &[u8] = b"__Host-";
+const SECURE_PREFIX: &[u8] = b"__Secure-";
+
+/// 名前の接頭辞を ASCII 大文字小文字無視で判定する。バイト列比較のため
+/// 文字境界での panic は起きない。
+fn detect_prefix(name: &str) -> Option<CookiePrefix> {
+    let b = name.as_bytes();
+    if b.len() >= HOST_PREFIX.len() && b[..HOST_PREFIX.len()].eq_ignore_ascii_case(HOST_PREFIX) {
+        Some(CookiePrefix::Host)
+    } else if b.len() >= SECURE_PREFIX.len()
+        && b[..SECURE_PREFIX.len()].eq_ignore_ascii_case(SECURE_PREFIX)
+    {
+        Some(CookiePrefix::Secure)
+    } else {
+        None
+    }
 }
 
 /// RFC 6265 path-value: CTL（`0x00`–`0x1F`, `0x7F`）と `;`（`0x3B`）を除く
@@ -307,6 +377,10 @@ impl SetCookie {
     /// - `value`: 全バイトが RFC 6265 cookie-octet
     ///   （`is_cookie_octet` 参照）。空値は許可する（RFC 6265 上
     ///   cookie-value は空でありうる）。違反は [`CookieError::InvalidValue`]
+    ///
+    /// `__Host-` / `__Secure-` で始まる名前（ASCII 大文字小文字無視）は
+    /// [`CookieError::ReservedPrefix`] で拒否する。接頭辞の条件を構築時に強制する
+    /// [`SetCookie::host_prefixed`] / [`SetCookie::secure_prefixed`] を使うこと。
     ///
     /// 既定では `HttpOnly` / `Secure` / `SameSite` / `Path` / `Max-Age` の
     /// いずれも設定しない。**セッション ID 等のシークレットを載せる cookie
@@ -329,27 +403,113 @@ impl SetCookie {
     ///     SetCookie::new("session\r\nX-Evil", "v").unwrap_err(),
     ///     CookieError::InvalidName
     /// );
+    ///
+    /// // 接頭辞付き名前は専用関数経由でのみ構築できる。
+    /// assert_eq!(
+    ///     SetCookie::new("__Host-sid", "v").unwrap_err(),
+    ///     CookieError::ReservedPrefix
+    /// );
     /// ```
     pub fn new(name: impl Into<String>, value: impl Into<String>) -> Result<Self, CookieError> {
         let name = name.into();
         let value = value.into();
+        Self::validate_name_value(&name, &value)?;
+        if detect_prefix(&name).is_some() {
+            return Err(CookieError::ReservedPrefix);
+        }
+        Ok(Self::build(name, value, None))
+    }
 
+    /// 名前（tchar）→ 値（cookie-octet）の共通検証。全構築経路で共有し、
+    /// 検証順序のずれ・バイパス経路を作らない。
+    fn validate_name_value(name: &str, value: &str) -> Result<(), CookieError> {
         if name.is_empty() || !name.bytes().all(crate::request::is_tchar) {
             return Err(CookieError::InvalidName);
         }
         if !value.bytes().all(is_cookie_octet) {
             return Err(CookieError::InvalidValue);
         }
+        Ok(())
+    }
 
-        Ok(Self {
+    fn build(name: String, value: String, prefix: Option<CookiePrefix>) -> Self {
+        let (secure, path) = match prefix {
+            Some(CookiePrefix::Host) => (true, Some("/".to_string())),
+            Some(CookiePrefix::Secure) => (true, None),
+            None => (false, None),
+        };
+        Self {
             name,
             value,
             http_only: false,
-            secure: false,
+            secure,
             same_site: None,
-            path: None,
+            path,
             max_age: None,
-        })
+            prefix,
+        }
+    }
+
+    /// `__Host-` 接頭辞付き cookie を構築する（`Secure` と `Path=/` を自動付与）。
+    ///
+    /// `name` は接頭辞を含む完全な名前（ASCII 大文字小文字無視で `__Host-` 一致、
+    /// 名前は与えたまま保持）。名前・値の基本検証は [`SetCookie::new`] と同一で、
+    /// 接頭辞が一致しなければ [`CookieError::PrefixMismatch`]。以後の
+    /// [`SetCookie::path`] は `/` のみ許可される。`Domain` 属性は存在しないため
+    /// 「Domain なし」の条件は型で満たされる。
+    ///
+    /// ```
+    /// use fandhe_backend_http::cookie::{CookieError, SetCookie};
+    ///
+    /// let cookie = SetCookie::host_prefixed("__Host-sid", "abc").unwrap().http_only();
+    /// assert_eq!(cookie.to_header_value(), "__Host-sid=abc; Path=/; Secure; HttpOnly");
+    ///
+    /// assert_eq!(
+    ///     SetCookie::host_prefixed("sid", "abc").unwrap_err(),
+    ///     CookieError::PrefixMismatch
+    /// );
+    /// ```
+    pub fn host_prefixed(
+        name: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<Self, CookieError> {
+        let name = name.into();
+        let value = value.into();
+        Self::validate_name_value(&name, &value)?;
+        if detect_prefix(&name) != Some(CookiePrefix::Host) {
+            return Err(CookieError::PrefixMismatch);
+        }
+        Ok(Self::build(name, value, Some(CookiePrefix::Host)))
+    }
+
+    /// `__Secure-` 接頭辞付き cookie を構築する（`Secure` を自動付与）。
+    ///
+    /// `name` は接頭辞を含む完全な名前（ASCII 大文字小文字無視で `__Secure-` 一致）。
+    /// 一致しなければ [`CookieError::PrefixMismatch`]。`__Host-` 名は一致しないため、
+    /// `__Host-` の追加条件（`Path=/`）を欠く cookie はこの関数でも作れない。
+    ///
+    /// ```
+    /// use fandhe_backend_http::cookie::{CookieError, SetCookie};
+    ///
+    /// let cookie = SetCookie::secure_prefixed("__Secure-sid", "abc").unwrap();
+    /// assert_eq!(cookie.to_header_value(), "__Secure-sid=abc; Secure");
+    ///
+    /// assert_eq!(
+    ///     SetCookie::secure_prefixed("__Host-sid", "abc").unwrap_err(),
+    ///     CookieError::PrefixMismatch
+    /// );
+    /// ```
+    pub fn secure_prefixed(
+        name: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<Self, CookieError> {
+        let name = name.into();
+        let value = value.into();
+        Self::validate_name_value(&name, &value)?;
+        if detect_prefix(&name) != Some(CookiePrefix::Secure) {
+            return Err(CookieError::PrefixMismatch);
+        }
+        Ok(Self::build(name, value, Some(CookiePrefix::Secure)))
     }
 
     /// `HttpOnly` 属性を付与する（JavaScript からの cookie 読み取りを禁止し、
@@ -420,8 +580,14 @@ impl SetCookie {
     /// （ブラウザからは指定した `Path` が効いていないように見える不整合が
     /// 生じる）ため、構築時点でフェイルクローズに拒否する。
     ///
+    /// `__Host-` cookie（[`SetCookie::host_prefixed`]）は `/` のみ許可し、
+    /// それ以外は [`CookieError::HostPrefixPath`]（検証順は path-value 検証が先）。
+    ///
     /// ```
     /// use fandhe_backend_http::cookie::{CookieError, SetCookie};
+    ///
+    /// let err = SetCookie::host_prefixed("__Host-sid", "v").unwrap().path("/api").unwrap_err();
+    /// assert_eq!(err, CookieError::HostPrefixPath);
     ///
     /// let cookie = SetCookie::new("session", "abc").unwrap().path("/api").unwrap();
     /// assert_eq!(cookie.to_header_value(), "session=abc; Path=/api");
@@ -438,6 +604,9 @@ impl SetCookie {
         let path = path.into();
         if path.is_empty() || !path.starts_with('/') || !path.bytes().all(is_path_value) {
             return Err(CookieError::InvalidPath);
+        }
+        if self.prefix == Some(CookiePrefix::Host) && path != "/" {
+            return Err(CookieError::HostPrefixPath);
         }
         self.path = Some(path);
         Ok(self)
@@ -755,6 +924,139 @@ mod tests {
         assert_eq!(
             CookieError::InvalidCookiePair.to_string(),
             "cookie pair violates RFC 6265 cookie-pair syntax"
+        );
+        assert!(CookieError::ReservedPrefix.to_string().contains("__Host-"));
+        assert!(CookieError::PrefixMismatch.to_string().contains("接頭辞"));
+        assert!(CookieError::HostPrefixPath.to_string().contains("'/'"));
+    }
+
+    // --- cookie 接頭辞（イシュー #810） ---
+
+    #[test]
+    fn new_rejects_prefixed_names_case_insensitively() {
+        for n in [
+            "__Host-a",
+            "__Secure-a",
+            "__host-a",
+            "__HOST-a",
+            "__secure-a",
+            "__SECURE-a",
+            "__hOsT-a",
+            "__Host-",
+            "__Secure-",
+        ] {
+            assert_eq!(
+                SetCookie::new(n, "v").unwrap_err(),
+                CookieError::ReservedPrefix,
+                "{n}"
+            );
+        }
+    }
+
+    #[test]
+    fn new_accepts_lookalike_names() {
+        for n in [
+            "_Host-a",
+            "__Hostx",
+            "x__Host-a",
+            "__Host_a",
+            "__Secure_a",
+            "__Hos",
+        ] {
+            assert!(SetCookie::new(n, "v").is_ok(), "{n}");
+        }
+    }
+
+    #[test]
+    fn non_ascii_name_does_not_panic() {
+        assert_eq!(
+            SetCookie::new("__Hoé-a", "v").unwrap_err(),
+            CookieError::InvalidName
+        );
+        assert_eq!(
+            SetCookie::host_prefixed("é__Host-a", "v").unwrap_err(),
+            CookieError::InvalidName
+        );
+    }
+
+    #[test]
+    fn host_prefixed_sets_secure_and_root_path() {
+        let c = SetCookie::host_prefixed("__Host-sid", "abc").unwrap();
+        assert_eq!(c.to_header_value(), "__Host-sid=abc; Path=/; Secure");
+        let c = c.http_only().same_site(SameSite::Lax).max_age(60);
+        assert_eq!(
+            c.to_header_value(),
+            "__Host-sid=abc; Path=/; Max-Age=60; SameSite=Lax; Secure; HttpOnly"
+        );
+        // 大文字小文字違いでも構築でき、名前は与えたまま出力される。
+        let c = SetCookie::host_prefixed("__host-sid", "abc").unwrap();
+        assert_eq!(c.to_header_value(), "__host-sid=abc; Path=/; Secure");
+    }
+
+    #[test]
+    fn host_prefixed_path_only_root() {
+        let c = SetCookie::host_prefixed("__Host-sid", "v").unwrap();
+        assert!(c.clone().path("/").is_ok());
+        assert_eq!(
+            c.clone().path("/api").unwrap_err(),
+            CookieError::HostPrefixPath
+        );
+        assert_eq!(
+            c.clone().path("/a/").unwrap_err(),
+            CookieError::HostPrefixPath
+        );
+        assert_eq!(c.path("/a;b").unwrap_err(), CookieError::InvalidPath);
+    }
+
+    #[test]
+    fn prefixed_constructors_reject_mismatch() {
+        for n in ["__Secure-x", "x", "__Host"] {
+            assert_eq!(
+                SetCookie::host_prefixed(n, "v").unwrap_err(),
+                CookieError::PrefixMismatch
+            );
+        }
+        for n in ["__Host-x", "x"] {
+            assert_eq!(
+                SetCookie::secure_prefixed(n, "v").unwrap_err(),
+                CookieError::PrefixMismatch
+            );
+        }
+    }
+
+    #[test]
+    fn secure_prefixed_always_secure_once() {
+        let c = SetCookie::secure_prefixed("__Secure-sid", "abc").unwrap();
+        assert_eq!(c.to_header_value(), "__Secure-sid=abc; Secure");
+        let c = c.secure().same_site(SameSite::None);
+        assert_eq!(
+            c.to_header_value(),
+            "__Secure-sid=abc; SameSite=None; Secure"
+        );
+        let c = SetCookie::secure_prefixed("__Secure-sid", "v")
+            .unwrap()
+            .path("/api")
+            .unwrap();
+        assert_eq!(c.to_header_value(), "__Secure-sid=v; Path=/api; Secure");
+    }
+
+    #[test]
+    fn prefixed_constructors_validate_name_and_value() {
+        assert_eq!(
+            SetCookie::host_prefixed("", "v").unwrap_err(),
+            CookieError::InvalidName
+        );
+        assert_eq!(
+            SetCookie::host_prefixed("__Host-a", "a;b").unwrap_err(),
+            CookieError::InvalidValue
+        );
+        assert_eq!(
+            SetCookie::secure_prefixed("__Secure-a\r\n", "v").unwrap_err(),
+            CookieError::InvalidName
+        );
+        assert_eq!(
+            SetCookie::secure_prefixed("__Secure-a", "a,b").unwrap_err(),
+            CookieError::InvalidValue
         );
     }
 

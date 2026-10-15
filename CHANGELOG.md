@@ -7,6 +7,26 @@
 
 ## [Unreleased]
 
+次回リリースは 0.5.0 として出します（破壊的変更を含むため。バージョン bump 自体は
+リリース手順 `docs/design/crates-io-release.md` 側で行います）。
+
+### BREAKING CHANGES
+
+- `fandhe-backend-http`: `SetCookie` に cookie 接頭辞（`__Host-` / `__Secure-`、
+  RFC 6265bis）の構築時検証を追加しました（イシュー #810）。
+  - `SetCookie::new` は `__Host-` / `__Secure-` で始まる名前（ASCII 大文字小文字無視）を
+    `CookieError::ReservedPrefix` で拒否します。移行手順: 接頭辞付き名前は
+    `SetCookie::host_prefixed`（`Secure` と `Path=/` を自動付与）/
+    `SetCookie::secure_prefixed`（`Secure` を自動付与）で構築してください。
+  - `__Host-` cookie の `SetCookie::path` は `/` 以外を `CookieError::HostPrefixPath` で拒否します。
+  - `CookieError` を `#[non_exhaustive]` にし、`ReservedPrefix` / `PrefixMismatch` /
+    `HostPrefixPath` を追加しました。移行手順: `CookieError` を網羅的に `match` している
+    場合は `_ =>` アームを追加してください。
+
+### Added
+
+- `fandhe-backend-http`: `SetCookie::host_prefixed` / `SetCookie::secure_prefixed` を追加しました。
+
 ## [0.4.2] - 2026-09-28
 
 公開対象 13 クレートを lockstep バンプ（`docs/design/crates-io-release.md` 7.6 節）。
