@@ -15,10 +15,11 @@
 #   cargo build --release -p fandhe-backend-core --example webrtc_nfr6 --features webrtc
 #   cargo build --release -p fandhe-backend-core --example graphql_nfr6 --features graphql
 #   cargo build --release -p fandhe-backend-plugin-hub-wiring --example hub_link_only
+#   cargo build --release -p fandhe-backend-plugin-jwt --example jwt_gate_server  # TARGETS=jwt のとき
 #
 # 呼び出し元: 人間が `bash benches/nfr6-exclusive.sh` として直接実行する
 # （CI 常設ジョブへは組み込まない。self-hosted runner 負荷抑制方針、.claude/rules/ci.md）。
-# 対象は `TARGETS`（既定 "webrtc graphql hub"）で選択可。
+# 対象は `TARGETS`（既定 "webrtc graphql hub"。`jwt` は opt-in で `TARGETS=jwt`）で選択可。
 #
 # 終了コード: 0 = 全対象を計測・判定確定（PASS/WARN/FAIL いずれでも判定を
 # 偽らず記録する。FAIL 残存時も 0 で終える —— 判定確定こそが本スクリプトの
@@ -42,6 +43,7 @@ declare -A BENCH_SCRIPT=(
     [webrtc]="webrtc-nfr6-bench.sh"
     [graphql]="graphql-nfr6-bench.sh"
     [hub]="hub-nfr6-bench.sh"
+    [jwt]="jwt-nfr6-bench.sh"
 )
 
 release_exclusive_lock_on_exit() {

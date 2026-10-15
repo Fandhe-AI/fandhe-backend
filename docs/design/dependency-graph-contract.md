@@ -845,6 +845,27 @@ E（閉包違反候補）と判定された（後続コミットで `examples/wi
    ギャップである（分類規則自体の見直しは 4.3 節・4.9 節〜4.15 節と同一の
    別 Issue 対象として据え置く、`.claude/rules/out-of-scope-tracking.md`）
 
+### 4.18 記載例（#821 / PR #845、plugin-jwt の検証コスト計測スクリプト）
+
+`fandhe-backend-plugin-jwt` の `JwtGate`（`RequestGate` 実装）をリンクした最小サーバが
+無関係パス（`GET /`）への RPS・p95 に与える影響を、ベースライン（`examples/minimal`）との
+比較で実測する変更で、4.3 節〜4.6 節と同一の理由（`benches/*` が D 未対応）により
+以下 4 件が E（閉包違反候補）と判定された。
+
+1. **対象コミット/PR**: PR #845（#821）
+2. **E ファイルパス**:
+   - `benches/README.md`
+   - `benches/jwt-nfr6-bench.sh`
+   - `benches/nfr6-exclusive.sh`
+   - `benches/reports/issue821-jwt-verify-performance.md`
+3. **閉じない理由**: 4.3 節〜4.6 節と同一の運用上のギャップ（`benches/*` が D 未対応）
+   により E 判定となる、JWT 検証コストの計測スクリプト・専有枠 wrapper への対象追加・
+   索引・実測結果レポートである（`benches/hub-nfr6-bench.sh` と同型、
+   `benches/jwt-nfr6-bench.sh` 冒頭コメント参照）
+4. **正当性根拠**: いずれも `JwtGate` の契約・依存方向（`server → routes → http::*`、
+   1 節）を変更せず、既存バイナリへの外部負荷生成（`oha`）による計測と結果記録のみを
+   行う。`benches/*` を D に加える是正は 4.3 節〜4.6 節と同一の別 Issue 対象とする
+
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 
 `fandhe-backend-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも

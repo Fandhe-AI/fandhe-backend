@@ -410,6 +410,29 @@ CONNECTIONS=32`）。判定は `scripts/accept/lib/nfr6-ratio.sh`（`evaluate_nf
 参照（本環境は専有環境ではなく、実測値が実務許容帯を外れて FAIL 記録されている点・
 環境注記を含む）。
 
+## jwt-nfr6-bench.sh — JWT 検証プラグインの NFR-6 計測（イシュー #821）
+
+`fandhe-backend-plugin-jwt` の `JwtGate` を登録した最小サーバ
+（`crates/plugin-jwt/examples/jwt_gate_server.rs`）が、無関係パス（`GET /`）への RPS・p95 に
+与える影響を計測する。`JwtGate` は経路を問わず全リクエストに介入し、トークンが無ければ 401
+を返すため、ヘッダ無しで叩くと baseline の 200 と異なる応答形状を比べてしまう。そこで
+サーバが起動時に作る有効トークンを全系統（baseline 含む）に同じ `Authorization: Bearer`
+として付ける。系統は baseline・リンクのみ（ゲート未登録）・ゲート有効 ES256（主判定）・
+ゲート有効 RS256。計測前に 200／401 の正常性確認を行い、外れれば中止する。
+プロセス内のマイクロベンチは `crates/plugin-jwt/examples/jwt_verify_bench.rs`。
+
+```bash
+cargo build --release -p fandhe-backend-core --example minimal --no-default-features
+cargo build --release -p fandhe-backend-plugin-jwt --example jwt_gate_server
+
+./benches/jwt-nfr6-bench.sh            # 直接実行
+TARGETS=jwt ./benches/nfr6-exclusive.sh # 専有枠（既定の TARGETS には含めない opt-in）
+```
+
+NFR-6 の狭義帯は「一致したときだけ介入する拡張点」向けのため、全パス介入のゲートは実務許容帯
+[95%, 105%] で合否を見て、狭義帯外は WARN として記録する。結果は
+`reports/issue821-jwt-verify-performance.md` を参照。
+
 ## tracing-nfr-bench.sh — サンプリング適用後の可観測性 NFR 再計測
 
 TASK-10.4（#59）: `tracing` feature（TASK-10.1〜10.3 の決定的サンプリング・イベント
