@@ -482,6 +482,9 @@ fandhe-backend/
 │   │                                    # できるようにし、重複するルート登録・両方への
 │   │                                    # fallback/options_fallback 登録は `RouterMergeError`
 │   │                                    # でフェイルクローズに検出する（イシュー #722）。
+│   │                                    # イシュー #829 で `Response::with_vary`（全 Vary 行と `*` を
+│   │                                    # 考慮し重複なく足す）/ `with_no_store`（何度呼んでも 1 つ）を
+│   │                                    # 加法的に追加。plugin 側の移行は #830。
 │   │                                    # `SetCookie` は `__Host-`/`__Secure-` 接頭辞を構築時
 │   │                                    # 検証する（イシュー #810。`new` は接頭辞付き名を拒否、
 │   │                                    # `host_prefixed`/`secure_prefixed` が `Secure`・`Path=/`

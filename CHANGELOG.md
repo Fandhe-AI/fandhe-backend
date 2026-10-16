@@ -70,6 +70,11 @@
 
 ### Added
 
+- `fandhe-backend-http`: `Response::with_vary` と `Response::with_no_store` を追加しました
+  （イシュー #829）。`with_vary` はすべての `Vary` 行と `Vary: *` を考慮し、大文字小文字を
+  区別せず重複なくトークンを新しい行として足します。`with_no_store` は `Cache-Control:
+  no-store` を何度呼んでも 1 つだけ付けます。`Set-Cookie` を含む応答へは自動では付けず、
+  doc で `with_no_store` の併用を推奨します。
 - `fandhe-backend-plugin-jwt`: 汎用 JWT 検証クレートを新設しました（REQ-16、0.5.0 で
   初公開）。RS256・ES256 の検証（`JwtPolicy` で `iss`・`aud`・`typ`・許可 `alg` を必須とし、
   `none`・HS 系は型として表現不能）、JWKS 鍵集合（`KeySet` / `SharedKeySet`）、

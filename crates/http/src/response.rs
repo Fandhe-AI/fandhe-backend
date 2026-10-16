@@ -412,6 +412,104 @@ impl Response {
         Ok(self)
     }
 
+    /// `Vary` へ `field_name` を重複なく宣言する（イシュー #829、RFC 9110 §12.5.5）。
+    ///
+    /// 利用者ごと・リクエストヘッダごとに内容が変わる応答が、共有キャッシュで
+    /// 別の利用者へ誤配信されないよう `Vary` を宣言するための補助。`Vary` は
+    /// 複数行でもカンマ区切りの 1 行でも同じ意味になるが、[`Response::header`] は
+    /// 先頭の 1 行しか返さないため、呼び出し側の自前判定では 2 行目以降の
+    /// トークンや `Vary: *` を見落とす。本メソッドは同名の**すべての行**を走査する。
+    ///
+    /// - 既存のいずれかの行に `*` がある、または `field_name` が（大文字小文字を
+    ///   区別せず）既にある場合は何もしない（冪等）
+    /// - 上記以外は既存行へマージせず**新しい `Vary` 行**を足す
+    ///   （既存の行構成を変えないため、他プラグインの出力と干渉しない）
+    /// - `field_name` は `*` 単体、または非空で tchar のみの文字列に限る。
+    ///   カンマ・空白・制御文字を含む入力は [`HeaderError::InvalidValue`]
+    ///   （重複判定の回避とヘッダインジェクションの防止）
+    ///
+    /// 呼び出し元の責務として、外部入力を直接渡さないこと（渡されても上記検証で
+    /// 注入は拒否される）。
+    ///
+    /// ```
+    /// use fandhe_backend_http::response::{HeaderError, Response};
+    ///
+    /// let res = Response::empty(200)
+    ///     .with_vary("Origin").unwrap()
+    ///     .with_vary("origin").unwrap() // 大文字小文字違いは重複扱い
+    ///     .with_vary("Accept-Encoding").unwrap();
+    /// let text = String::from_utf8(res.serialize(true)).unwrap();
+    /// assert_eq!(text.matches("Vary: Origin\r\n").count(), 1);
+    /// assert!(text.contains("Vary: Accept-Encoding\r\n"));
+    ///
+    /// // `Vary: *` があれば何も足さない。
+    /// let res = Response::empty(200).with_vary("*").unwrap().with_vary("Origin").unwrap();
+    /// let text = String::from_utf8(res.serialize(true)).unwrap();
+    /// assert_eq!(text.matches("Vary:").count(), 1);
+    ///
+    /// // カンマ区切りは拒否する。
+    /// let err = Response::empty(200).with_vary("A, B").unwrap_err();
+    /// assert_eq!(err, HeaderError::InvalidValue);
+    /// ```
+    pub fn with_vary(self, field_name: &str) -> Result<Self, HeaderError> {
+        // `*` は tchar でもあるため、特別扱いを tchar 検証より先に判定する。
+        let is_star = field_name == "*";
+        if !is_star && (field_name.is_empty() || !field_name.bytes().all(crate::request::is_tchar))
+        {
+            return Err(HeaderError::InvalidValue);
+        }
+        let already = self
+            .extra_headers
+            .iter()
+            .filter(|(n, _)| n.eq_ignore_ascii_case("vary"))
+            .flat_map(|(_, v)| list_members(v))
+            .any(|m| m == "*" || m.eq_ignore_ascii_case(field_name));
+        if already {
+            return Ok(self);
+        }
+        self.with_header("Vary", field_name)
+    }
+
+    /// `Cache-Control: no-store` を付ける（何度呼んでも 1 つだけ、イシュー #829）。
+    ///
+    /// 利用者ごとに変わる応答（認証済み画面）や `Set-Cookie` を含む応答
+    /// （セッション発行・ログイン応答）が共有キャッシュに保存され、別の利用者へ
+    /// 配信されることを防ぐ。**フレームワークは自動では付けない**ため、
+    /// `Set-Cookie` を含む応答には本メソッドの呼び出しを推奨する。
+    ///
+    /// 同名ヘッダのすべての行のディレクティブ名を大文字小文字を区別せず走査し
+    /// （引用符付き文字列内のカンマ・文字列はディレクティブとして扱わない）、
+    /// `no-store` が既にあれば何もしない。なければ新しい `Cache-Control` 行を足す。
+    /// 既存の `max-age` 等は消さない（RFC 9111 §5.2.2.5 により `no-store` が
+    /// 1 つでもあればキャッシュは保存しないため、行を足すだけで意味が保たれる）。
+    ///
+    /// ```
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// let res = Response::empty(200)
+    ///     .with_header("Cache-Control", "private").unwrap()
+    ///     .with_no_store()
+    ///     .with_no_store();
+    /// let text = String::from_utf8(res.serialize(true)).unwrap();
+    /// assert_eq!(text.matches("Cache-Control: no-store\r\n").count(), 1);
+    /// assert!(text.contains("Cache-Control: private\r\n"));
+    /// ```
+    #[must_use]
+    pub fn with_no_store(mut self) -> Self {
+        let already = self
+            .extra_headers
+            .iter()
+            .filter(|(n, _)| n.eq_ignore_ascii_case("cache-control"))
+            .any(|(_, v)| has_directive(v, "no-store"));
+        if !already {
+            // 名前・値とも固定リテラルで `with_header` の検証を必ず通過するため、
+            // 検証を再実行せず直接積む（`with_set_cookie` と同じ根拠）。
+            self.extra_headers
+                .push(("Cache-Control".to_string(), "no-store".to_string()));
+        }
+        self
+    }
+
     /// 設定済みヘッダの値を読み取る（大文字小文字無視、イシュー #321）。
     ///
     /// レスポンス後処理型プラグイン（`crates/core/src/plugin.rs` の
@@ -500,6 +598,9 @@ impl Response {
     /// let second = text.find("Set-Cookie: b=2\r\n").unwrap();
     /// assert!(first < second);
     /// ```
+    ///
+    /// セッション発行などで `Set-Cookie` を含む応答には、共有キャッシュでの
+    /// 誤配信を防ぐため [`Response::with_no_store`] の併用を推奨する（自動では付けない）。
     ///
     /// `__Host-`/`__Secure-` 接頭辞付き cookie は `SetCookie::host_prefixed` /
     /// `secure_prefixed` で構築済みなら、条件充足が型で保証されるため本メソッドは
@@ -966,9 +1067,64 @@ fn reason_phrase(status: u16) -> &'static str {
     }
 }
 
+/// カンマ区切りのヘッダ値を、前後 OWS（SP / HTAB）を除いた非空要素に分解する。
+///
+/// `Vary` / `Cache-Control` の重複判定（`with_vary` / `with_no_store`）専用。
+fn list_members(value: &str) -> impl Iterator<Item = &str> {
+    value
+        .split(',')
+        .map(|m| m.trim_matches([' ', '\t']))
+        .filter(|m| !m.is_empty())
+}
+
+/// `Cache-Control` 値に指定ディレクティブがあるか判定する。
+/// 引用符付き文字列（`private="a,no-store"` 等）の内部はディレクティブとみなさない。
+fn has_directive(value: &str, name: &str) -> bool {
+    let mut in_quote = false;
+    let mut escaped = false;
+    let mut start = 0;
+    let check = |seg: &str| {
+        seg.split('=')
+            .next()
+            .is_some_and(|d| d.trim_matches([' ', '\t']).eq_ignore_ascii_case(name))
+    };
+    for (i, c) in value.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if in_quote && c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            in_quote = !in_quote;
+        } else if c == ',' && !in_quote {
+            if check(&value[start..i]) {
+                return true;
+            }
+            start = i + 1;
+        }
+    }
+    check(&value[start..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn with_no_store_ignores_directive_inside_quoted_string() {
+        let res = Response::empty(200)
+            .with_header("Cache-Control", "private=\"a,no-store\"")
+            .unwrap()
+            .with_no_store();
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert_wire_ok(&text);
+        assert_eq!(text.matches("\r\nCache-Control: ").count(), 2);
+        assert_eq!(text.matches("\r\nCache-Control: no-store\r\n").count(), 1);
+        assert_eq!(
+            text.matches("\r\nCache-Control: private=\"a,no-store\"\r\n")
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn serialize_includes_status_and_reason() {
@@ -1568,5 +1724,172 @@ mod tests {
         second.serialize_into(true, &mut reused);
 
         assert_eq!(reused, second.serialize(true));
+    }
+
+    /// 通常応答（空 body の 200）の全体形を検証する共通ヘルパー。
+    /// ステータス行・`Content-Length: 0` の 1 回出現・ヘッド終端直後に body が無いことを
+    /// 確認したうえで、`needle` の出現回数を返す。
+    fn assert_wire_ok(text: &str) {
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text:?}");
+        assert_eq!(text.matches("\r\nContent-Length: 0\r\n").count(), 1);
+        assert!(text.ends_with("\r\n\r\n"), "{text:?}");
+        assert_eq!(text.matches("\r\n\r\n").count(), 1);
+    }
+
+    fn count(res: Response, needle: &str) -> usize {
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert_wire_ok(&text);
+        text.matches(needle).count()
+    }
+
+    #[test]
+    fn with_vary_adds_line_when_no_vary_exists() {
+        let r = Response::empty(200).with_vary("Origin").unwrap();
+        assert_eq!(count(r, "\r\nVary: Origin\r\n"), 1);
+    }
+
+    #[test]
+    fn with_vary_noop_when_token_in_single_line_case_insensitive() {
+        let r = Response::empty(200)
+            .with_header("Vary", "Accept-Encoding")
+            .unwrap()
+            .with_vary("accept-encoding")
+            .unwrap();
+        assert_eq!(count(r, "\r\nVary: "), 1);
+    }
+
+    #[test]
+    fn with_vary_appends_new_line_when_other_token_exists() {
+        let r = Response::empty(200)
+            .with_header("Vary", "Origin")
+            .unwrap()
+            .with_vary("Accept-Encoding")
+            .unwrap();
+        assert_eq!(count(r, "\r\nVary: "), 2);
+    }
+
+    #[test]
+    fn with_vary_detects_token_in_later_line() {
+        let r = Response::empty(200)
+            .with_header("Vary", "Origin")
+            .unwrap()
+            .with_header("vary", "Accept-Encoding")
+            .unwrap()
+            .with_vary("ACCEPT-ENCODING")
+            .unwrap();
+        assert_eq!(count(r, "ary: "), 2);
+    }
+
+    #[test]
+    fn with_vary_detects_token_in_comma_list_with_ows() {
+        let r = Response::empty(200)
+            .with_header("Vary", "Origin ,\tAccept-Encoding")
+            .unwrap()
+            .with_vary("accept-encoding")
+            .unwrap();
+        assert_eq!(count(r, "\r\nVary: "), 1);
+    }
+
+    #[test]
+    fn with_vary_noop_when_star_exists() {
+        for v in ["*", "Origin, *"] {
+            let r = Response::empty(200)
+                .with_header("Vary", v)
+                .unwrap()
+                .with_vary("Origin")
+                .unwrap();
+            assert_eq!(count(r, "\r\nVary: "), 1, "{v}");
+        }
+    }
+
+    #[test]
+    fn with_vary_star_adds_once_and_is_idempotent() {
+        let r = Response::empty(200)
+            .with_vary("*")
+            .unwrap()
+            .with_vary("*")
+            .unwrap();
+        assert_eq!(count(r, "\r\nVary: *\r\n"), 1);
+        let r = Response::empty(200)
+            .with_vary("Origin")
+            .unwrap()
+            .with_vary("Origin")
+            .unwrap()
+            .with_vary("Origin")
+            .unwrap();
+        assert_eq!(count(r, "\r\nVary: "), 1);
+    }
+
+    #[test]
+    fn with_vary_rejects_invalid_tokens() {
+        for t in ["", "A, B", "A,B", "A B", "A\r\nX: 1", "é", "a*b\t"] {
+            assert_eq!(
+                Response::empty(200).with_vary(t).unwrap_err(),
+                HeaderError::InvalidValue,
+                "{t:?}"
+            );
+        }
+        assert!(Response::empty(200).with_vary("a*b").is_ok());
+    }
+
+    #[test]
+    fn with_no_store_adds_once() {
+        let r = Response::empty(200).with_no_store().with_no_store();
+        assert_eq!(count(r, "\r\nCache-Control: no-store\r\n"), 1);
+    }
+
+    #[test]
+    fn with_no_store_detects_existing_directive_case_insensitively() {
+        let r = Response::empty(200)
+            .with_header("Cache-Control", "private, No-Store")
+            .unwrap()
+            .with_no_store();
+        assert_eq!(count(r, "\r\nCache-Control: "), 1);
+        let r = Response::empty(200)
+            .with_header("Cache-Control", "max-age=1")
+            .unwrap()
+            .with_header("cache-control", "no-store")
+            .unwrap()
+            .with_no_store();
+        assert_eq!(count(r, "ontrol: "), 2);
+    }
+
+    #[test]
+    fn with_no_store_coexists_with_other_directives() {
+        let r = Response::empty(200)
+            .with_header("Cache-Control", "max-age=60")
+            .unwrap()
+            .with_no_store();
+        assert_eq!(count(r.clone(), "\r\nCache-Control: max-age=60\r\n"), 1);
+        assert_eq!(count(r, "\r\nCache-Control: no-store\r\n"), 1);
+    }
+
+    #[test]
+    fn with_no_store_does_not_match_similar_directive() {
+        let r = Response::empty(200)
+            .with_header("Cache-Control", "no-store-extra")
+            .unwrap()
+            .with_no_store();
+        assert_eq!(count(r, "\r\nCache-Control: "), 2);
+    }
+
+    #[test]
+    fn with_vary_and_no_store_appear_in_chunked_head() {
+        let r = Response::empty(200)
+            .with_vary("Origin")
+            .unwrap()
+            .with_no_store();
+        let text = String::from_utf8(r.serialize_chunked_head(true)).unwrap();
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text:?}");
+        assert_eq!(
+            text.matches("\r\nTransfer-Encoding: chunked\r\n").count(),
+            1
+        );
+        assert!(!text.contains("Content-Length"), "{text:?}");
+        assert_eq!(text.matches("\r\nVary: Origin\r\n").count(), 1);
+        assert_eq!(text.matches("\r\nCache-Control: no-store\r\n").count(), 1);
+        // ヘッドのみで body（チャンク）は出力されない。
+        assert!(text.ends_with("\r\n\r\n"), "{text:?}");
+        assert_eq!(text.matches("\r\n\r\n").count(), 1);
     }
 }
