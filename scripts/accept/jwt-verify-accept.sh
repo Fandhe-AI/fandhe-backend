@@ -119,7 +119,12 @@ check_c() {
 tree_count() {
     # 引数: cargo tree の追加フラグ。core の normal 依存ツリーでの plugin-jwt 行数を返す。
     local out="${TMPDIR_ACCEPT}/tree.$$.out"
-    cargo tree -p fandhe-backend-core -e normal --prefix none "$@" >"${out}" 2>/dev/null || true
+    # fail-closed: cargo tree の失敗・空出力・core 自身の行の欠落は「0 件」ではなく判定不能（ERR）とする
+    if ! cargo tree -p fandhe-backend-core -e normal --prefix none "$@" >"${out}" 2>/dev/null \
+        || ! grep -q '^fandhe-backend-core ' "${out}"; then
+        echo ERR
+        return
+    fi
     count_pkg_in_tree "${out}" "${PKG}"
 }
 
@@ -137,10 +142,11 @@ check_d() {
     # (b) 外部依存 4 種が REQ-16 着手前から hub-wiring に既存の依存であること。
     #     Cargo.lock は本リポジトリで追跡されない（git ls-files に無い）ため lock 差分では
     #     比較できず、着手前コミットの hub-wiring/Cargo.toml に宣言済みかで「新規外部依存なし」を確認する。
-    local ext prior_missing=""
+    local ext prior_missing="" b_skipped=0
     if ! git rev-parse --verify --quiet "${LOCK_BASE_REV}^{commit}" >/dev/null 2>&1; then
         # 履歴欠如（shallow clone 等）は「依存が無い」ことを意味しないため判定せず SKIP を記録する
         record_skip "D(b): 既存依存の確認" "${LOCK_BASE_REV} を解決できない（履歴欠如、shallow clone の可能性）"
+        b_skipped=1
     else
         for ext in ring base64 serde serde_json; do
             if ! git grep -qE "^${ext} *=" "${LOCK_BASE_REV}" -- crates/plugin-hub-wiring/Cargo.toml 2>/dev/null; then
@@ -182,6 +188,9 @@ check_d() {
     fi
     if [ -n "${fail_msgs}" ]; then
         record_fail "${label}" "${fail_msgs}"
+    elif [ "${b_skipped}" = "1" ]; then
+        # 核となる (b) が未実施のまま PASS にしない
+        record_skip "${label}" "(b) 未確認のため判定不能（他項目は充足: ${notes}）"
     else
         record_pass "${label}" "${notes}"
     fi
