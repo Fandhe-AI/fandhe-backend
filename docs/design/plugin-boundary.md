@@ -504,7 +504,50 @@ PoC-6）であり、JWT 検証で抽出した `org_id` 等のクレームはコ�
   `allowed_edge_patterns` に明示追加した唯一の例外で、追加にはレビューを要する。逆向き
   （plugin-jwt → hub-wiring）は禁止で、循環は DFS で検出する
 - 複数ゲートは AND 結合（いずれかが拒否すれば拒否）。REQ-17 の CSRF ゲートとの登録順は
-  #826 で定める予定
+  5.6.6 節で定めた
+
+### 5.6.6 3 例目: `fandhe-backend-plugin-csrf`（REQ-17、#825・#826）と複数ゲートの登録順
+
+状態を変える要求の送信元を `Sec-Fetch-Site` / `Origin` で検査する Gate 型の 3 例目。
+`lib.rs` に `拡張点対応: RequestGate` を宣言し、`Server::gate(CsrfGate::…)` で登録する。
+
+- 依存: plugin → core / http の一方向のみで plugin → plugin の辺は無い。外部依存ゼロ。
+  `[dev-dependencies]`（`tokio`・`fandhe-backend-routes`）はテスト専用で通常依存に現れない
+- 受け入れテスト: `tests/req17_acceptance.rs`（基準 1 の項目別）、統合テスト:
+  `tests/gate.rs`（`Server::gate` + `handle_connection` の実 HTTP 経路）
+
+**推奨の登録順（Cookie 認証の画面）**: CSRF ゲートを先に、認証ゲート（`JwtGate`・
+Cookie セッションを検証する利用者独自のゲート）をその後に登録する。
+
+```rust
+Server::new()
+    .gate(csrf_gate) // 1. 送信元の検査（安価・副作用なし）
+    .gate(jwt_gate); // 2. 資格情報の検査
+```
+
+根拠（コードで確認できる事実のみ。挙動は `tests/gate.rs` で固定）:
+
+1. 許可/拒否の結論は登録順に依らない。`first_rejection` は全ゲートを AND で結合し、順序で
+   変わるのは返る拒否応答と後続ゲートの評価有無だけ（`decision_is_order_independent`）。
+   順序の誤りで CSRF 防御が抜けることはない
+2. 最初の拒否で短絡し後続ゲートの `check` は呼ばれない（`csrf_first_short_circuits_later_gate`）。
+   偽造要求にも Cookie は自動で付くため、資格情報を評価するゲートの副作用（`JwtGate` なら
+   署名検証キャッシュへの書き込みと未知 `kid` の通知）を、送信元の検査に落ちた要求で起こさない
+3. 安価な検査を先に置く。`CsrfGate::check` はロック・確保・暗号処理が無く、状態を変える
+   メソッドで偽造要求に署名検証のコストを払わせない。`GET`/`HEAD`/`OPTIONS` は素通りの
+   ためこの利点は状態を変えるメソッドに限られる
+4. 偽造要求への応答が一様になる。CSRF 先行なら認証状態に関係なく 403・本文なし、逆順では
+   401 + `WWW-Authenticate` が返り認証の状態が見える（`reverse_order_exposes_auth_challenge`）
+
+運用上の注意:
+
+- ゲートはサーバ全体に効き、ルートごとに付け外しできない
+- ブラウザ以外のクライアントが使うパス（OIDC token endpoint、Bearer の API 等）は 2 つの
+  ヘッダを送らず 403 になるため、`CsrfGateBuilder::exempt_path`（完全一致）で除外する。除外は
+  CSRF の検査だけを飛ばし、後続の認証ゲートは評価される（`exempt_path_still_runs_later_auth_gate`）
+- `JwtGate` は `Authorization: Bearer` のみを見て Cookie は見ない。Cookie の画面と Bearer の
+  API を 1 サーバに混在させて `JwtGate` を全体登録すると Cookie の画面も 401 になる。
+  パス単位の使い分けは現状コアにもゲートにも無く、解決策の設計は本節の範囲外
 
 ## 5.7 Middleware 型パターン（TASK-10.1 / #56 で確立）
 

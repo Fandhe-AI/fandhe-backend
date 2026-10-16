@@ -267,8 +267,8 @@ JSON・base64 の自前実装は攻撃表面を増やす（`plugin-hub-wiring/Ca
 - (c) `plugin-jwt` の `拡張点対応: RequestGate` 宣言と `extension-closure-gate.sh` の通過確認。
 - (d) 公開 crate 数 13 → 14 の追随（`CLAUDE.md`・`crates-io-release.md`・ルート `Cargo.toml` の
   コメント・`CHANGELOG.md` 冒頭）。
-- (e) REQ-17 の CSRF ゲートとの登録順は #826 が定める、と相互参照する
-  （`plugin-boundary.md` 5.6.5 節に記載済み）。
+- (e) REQ-17 の CSRF ゲートとの登録順は #826 で `plugin-boundary.md` 5.6.6 節に定めた
+  （CSRF を先、認証ゲートを後。5.6.5 節から相互参照）。
 
 ## 5. セキュリティ考慮（OWASP Top 10・RFC 8725）
 

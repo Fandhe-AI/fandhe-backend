@@ -19,3 +19,13 @@ workspace = true
 [dependencies]
 fandhe-backend-core = { workspace = true }
 fandhe-backend-http = { workspace = true }
+
+# 受け入れテスト・統合テスト専用（通常依存には現れない）。`tokio` は duplex 越しの
+# `handle_connection` 駆動、`routes` は `Handler` 実装に要る `HandlerFuture` のため。
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = [
+  "macros",
+  "rt-multi-thread",
+  "io-util",
+] }
+fandhe-backend-routes = { workspace = true }
