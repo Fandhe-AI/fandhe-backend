@@ -477,7 +477,8 @@ impl Response {
     /// 配信されることを防ぐ。**フレームワークは自動では付けない**ため、
     /// `Set-Cookie` を含む応答には本メソッドの呼び出しを推奨する。
     ///
-    /// 同名ヘッダのすべての行のディレクティブ名を大文字小文字を区別せず走査し、
+    /// 同名ヘッダのすべての行のディレクティブ名を大文字小文字を区別せず走査し
+    /// （引用符付き文字列内のカンマ・文字列はディレクティブとして扱わない）、
     /// `no-store` が既にあれば何もしない。なければ新しい `Cache-Control` 行を足す。
     /// 既存の `max-age` 等は消さない（RFC 9111 §5.2.2.5 により `no-store` が
     /// 1 つでもあればキャッシュは保存しないため、行を足すだけで意味が保たれる）。
@@ -499,12 +500,7 @@ impl Response {
             .extra_headers
             .iter()
             .filter(|(n, _)| n.eq_ignore_ascii_case("cache-control"))
-            .flat_map(|(_, v)| list_members(v))
-            .any(|m| {
-                m.split('=')
-                    .next()
-                    .is_some_and(|d| d.trim_matches([' ', '\t']).eq_ignore_ascii_case("no-store"))
-            });
+            .any(|(_, v)| has_directive(v, "no-store"));
         if !already {
             // 名前・値とも固定リテラルで `with_header` の検証を必ず通過するため、
             // 検証を再実行せず直接積む（`with_set_cookie` と同じ根拠）。
@@ -513,6 +509,7 @@ impl Response {
         }
         self
     }
+
     /// 設定済みヘッダの値を読み取る（大文字小文字無視、イシュー #321）。
     ///
     /// レスポンス後処理型プラグイン（`crates/core/src/plugin.rs` の
@@ -1080,9 +1077,47 @@ fn list_members(value: &str) -> impl Iterator<Item = &str> {
         .filter(|m| !m.is_empty())
 }
 
+/// `Cache-Control` 値に指定ディレクティブがあるか判定する。
+/// 引用符付き文字列（`private="a,no-store"` 等）の内部はディレクティブとみなさない。
+fn has_directive(value: &str, name: &str) -> bool {
+    let mut in_quote = false;
+    let mut escaped = false;
+    let mut start = 0;
+    let check = |seg: &str| {
+        seg.split('=')
+            .next()
+            .is_some_and(|d| d.trim_matches([' ', '\t']).eq_ignore_ascii_case(name))
+    };
+    for (i, c) in value.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if in_quote && c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            in_quote = !in_quote;
+        } else if c == ',' && !in_quote {
+            if check(&value[start..i]) {
+                return true;
+            }
+            start = i + 1;
+        }
+    }
+    check(&value[start..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn with_no_store_ignores_directive_inside_quoted_string() {
+        let res = Response::empty(200)
+            .with_header("Cache-Control", "private=\"a,no-store\"")
+            .unwrap()
+            .with_no_store();
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert!(text.contains("Cache-Control: no-store\r\n"));
+    }
 
     #[test]
     fn serialize_includes_status_and_reason() {
