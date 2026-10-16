@@ -58,6 +58,10 @@
 //! 除き、**検証なしで**動的な値をヘッダとして送出する経路は今後も
 //! 追加しない方針を維持する。
 //!
+//! [`Response::see_other`]（イシュー #828）も `with_set_cookie` と同分類で、
+//! 構築時検証済み専用型 [`crate::location::SameOriginLocation`] のみを受け取り、
+//! 検証なしの動的値を送出する経路を増やさない。
+//!
 //! [`Response::redirect`]（イシュー #302）は新たな送出経路を増やすものでは
 //! なく、上記 3 つ目の例外である [`Response::with_header`] を薄くラップし、
 //! POST-Redirect-GET 等の 3xx リダイレクトパターンを 1 呼び出しで組み立てる
@@ -618,6 +622,34 @@ impl Response {
         self
     }
 
+    /// POST 後の 303 See Other 応答を組み立てる（イシュー #828）。
+    ///
+    /// 構築時検証済みの [`crate::location::SameOriginLocation`]（同一オリジン相対パス）
+    /// のみを受け取るため、オープンリダイレクトとヘッダ注入が型で防がれ infallible。
+    /// body なしで `Location` を設定する。[`Response::redirect`] の挙動は変えない。
+    ///
+    /// ```
+    /// use fandhe_backend_http::location::SameOriginLocation;
+    /// use fandhe_backend_http::response::Response;
+    ///
+    /// let res = Response::see_other(SameOriginLocation::new("/todos").unwrap());
+    /// let text = String::from_utf8(res.serialize(true)).unwrap();
+    /// assert!(text.starts_with("HTTP/1.1 303 See Other\r\n"));
+    /// assert!(text.contains("Location: /todos\r\n"));
+    /// assert!(text.contains("Content-Length: 0\r\n"));
+    /// assert!(SameOriginLocation::new("//evil.com").is_err());
+    /// ```
+    #[must_use]
+    pub fn see_other(location: crate::location::SameOriginLocation) -> Self {
+        let mut res = Self::empty(303);
+        // `SameOriginLocation` の受理集合（制御文字・`\` を含まない）は `with_header` の
+        // 値検証（HTAB 以外の C0 と DEL を拒否）が許可する範囲の真部分集合のため、
+        // 検証を再実行せず直接積む（`with_set_cookie` と同じ根拠）。
+        res.extra_headers
+            .push(("Location".to_string(), location.into_string()));
+        res
+    }
+
     /// 3xx リダイレクト応答を組み立てる（イシュー #302）。
     ///
     /// `status` を 301 / 302 / 303 / 307 / 308 のいずれかに限定し、body なし
@@ -637,7 +669,9 @@ impl Response {
     /// （クエリパラメータ・フォーム値等）に由来する `location` をそのまま
     /// 渡すと、任意サイトへ誘導されるオープンリダイレクト脆弱性
     /// （OWASP Top 10、`.claude/rules/security.md`）につながる。呼び出し元
-    /// で許可リスト（相対パスのみ許可する等）による検証を行うこと。
+    /// で許可リスト（相対パスのみ許可する等）による検証を行うこと。相対パスに
+    /// 限定する場合は [`crate::location::SameOriginLocation`] と
+    /// [`Response::see_other`] を使う。
     ///
     /// # 例（POST-Redirect-GET パターン）
     ///
@@ -1484,6 +1518,33 @@ mod tests {
         // 経路は存在しない（構築失敗する側を確認する）。
         assert!(crate::cookie::SetCookie::new("session\r\nX-Evil", "v").is_err());
         assert!(crate::cookie::SetCookie::new("session", "v\r\nX-Evil: 1").is_err());
+    }
+
+    // --- see_other（イシュー #828） ---
+
+    #[test]
+    fn see_other_sets_303_and_location() {
+        let loc = crate::location::SameOriginLocation::new("/todos?x=1").unwrap();
+        let res = Response::see_other(loc);
+        assert_eq!(res.status, 303);
+        assert!(res.body.is_empty());
+        assert_eq!(res.header("location"), Some("/todos?x=1"));
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert!(text.starts_with("HTTP/1.1 303 See Other\r\n"));
+        assert!(text.contains("Location: /todos?x=1\r\n"));
+        assert!(text.contains("Content-Length: 0\r\n"));
+        assert!(text.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn see_other_does_not_decode_percent_escapes() {
+        let loc = crate::location::SameOriginLocation::new("/%2F%2Fevil.com").unwrap();
+        let text = String::from_utf8(Response::see_other(loc).serialize(true)).unwrap();
+        assert!(text.starts_with("HTTP/1.1 303 See Other\r\n"));
+        assert!(text.contains("Location: /%2F%2Fevil.com\r\n"));
+        assert!(text.contains("Content-Length: 0\r\n"));
+        let (_, body) = text.split_once("\r\n\r\n").expect("ヘッダ終端が存在する");
+        assert!(body.is_empty(), "ボディは空であること");
     }
 
     // --- redirect（イシュー #302） ---

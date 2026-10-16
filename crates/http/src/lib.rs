@@ -47,6 +47,9 @@
 //!     と、JSON エラーボディ標準形を組み立てる [`error::error_response`] を
 //!     提供する。各ハンドラ（`crates/routes` のクロージャ・`crates/plugin-*`）が
 //!     都度自前定義していたエラー応答の定型記述を解消する。
+//! 12. 同一オリジンに限るリダイレクト先の検証済み型（[`location`]、イシュー #828）。
+//!     相対パス（`/` 始まり）のみ受理する [`location::SameOriginLocation`] と
+//!     sans-IO 検証関数を提供し、[`response::Response::see_other`] が受け取る。
 //!
 //! 本クレートの実行時依存は tokio の `io-util`（`AsyncRead`/`AsyncReadExt`）
 //! のみであり、それ以外の依存は持たない（pay-for-what-you-use。
@@ -63,6 +66,7 @@ pub mod connection;
 pub mod cookie;
 pub mod error;
 pub mod form;
+pub mod location;
 pub mod percent;
 pub mod query;
 pub mod request;

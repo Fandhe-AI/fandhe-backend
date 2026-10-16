@@ -89,3 +89,10 @@ path = "fuzz_targets/chunked_roundtrip.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "same_origin_location"
+path = "fuzz_targets/same_origin_location.rs"
+test = false
+doc = false
+bench = false
