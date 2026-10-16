@@ -68,6 +68,14 @@
     #822（公開準備）で解除済みです。`fandhe-backend-plugin-hub-wiring` が依存するため、
     0.5.0 で 2 クレートを同時に初公開します。
 
+### Changed
+
+- `fandhe-backend-plugin-compression` / `fandhe-backend-plugin-cors`: `Vary: Accept-Encoding` /
+  `Vary: Origin` の付与を `fandhe-backend-http` の `Response::with_vary` へ移しました
+  （イシュー #830）。2 行目以降の `Vary` 行にあるトークンと `Vary: *` を考慮するため、
+  行が重複せず、`Vary: *` の応答には足さなくなりました。公開 API は変わらず、破壊的変更では
+  ありません。
+
 ### Added
 
 - `fandhe-backend-http`: `Response::with_vary` と `Response::with_no_store` を追加しました

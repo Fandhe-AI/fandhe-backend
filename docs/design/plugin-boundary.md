@@ -962,7 +962,9 @@ issue468-compression-blocking.md` 4 節を参照。将来ワークロードの�
    (d) `Content-Encoding` 未設定（二重圧縮防止）、
    (e) `accepts_gzip(head)`。`Vary` は非ストリーミング経路と同じく
    条件 (a)〜(c) 成立時点（表現が Accept-Encoding 依存になった時点）で
-   圧縮成否に関わらず付与する。
+   圧縮成否に関わらず付与する。付与は `Response::with_vary`
+   （全 `Vary` 行・`Vary: *`・大文字小文字の違いを考慮、イシュー #830）経由で、
+   `plugin-cors` の `Vary: Origin` も同様。
 7. **エンコーダ失敗時は接続クローズ（fail-closed）**: `Content-Encoding:
    gzip` を広告した後にエンコーダがエラーを返した場合、identity バイトへ
    切り替えるとストリーム破壊になるため、書き込みエラーと同様に

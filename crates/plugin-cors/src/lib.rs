@@ -257,6 +257,13 @@ fn try_add_header(response: Response, name: &str, value: impl Into<String>) -> R
     response.with_header(name, value).unwrap_or(fallback)
 }
 
+/// `Response::with_vary` の `Err` を「`Vary` を付与しない」側へ倒すヘルパ
+/// （イシュー #830）。既存の `Vary`（全行）に同トークンか `*` があれば足さない。
+fn try_add_vary(response: Response, field_name: &str) -> Response {
+    let fallback = response.clone();
+    response.with_vary(field_name).unwrap_or(fallback)
+}
+
 /// リクエストが CORS プリフライトか判定する。
 ///
 /// `OPTIONS` メソッド・`Origin` ヘッダ・`Access-Control-Request-Method`
@@ -384,7 +391,7 @@ pub fn preflight_response(
         CorsOrigins::Any => try_add_header(response, "Access-Control-Allow-Origin", "*"),
         CorsOrigins::List(_) => {
             let response = try_add_header(response, "Access-Control-Allow-Origin", origin);
-            try_add_header(response, "Vary", "Origin")
+            try_add_vary(response, "Origin")
         }
     };
     response = try_add_header(
@@ -466,7 +473,7 @@ pub fn apply_cors_headers(head: &RequestHead, config: &CorsConfig, response: Res
         CorsOrigins::Any => try_add_header(response, "Access-Control-Allow-Origin", "*"),
         CorsOrigins::List(_) => {
             let response = try_add_header(response, "Access-Control-Allow-Origin", origin);
-            try_add_header(response, "Vary", "Origin")
+            try_add_vary(response, "Origin")
         }
     };
     if config.credentials {
@@ -714,6 +721,57 @@ mod tests {
         assert!(text.contains("Access-Control-Allow-Credentials: true\r\n"));
         assert!(text.contains("Access-Control-Expose-Headers: X-Total-Count\r\n"));
         assert!(text.contains("Vary: Origin\r\n"));
+    }
+
+    fn vary_tokens(res: &Response) -> Vec<String> {
+        let text = String::from_utf8(res.serialize(false)).unwrap();
+        text.lines()
+            .filter_map(|l| {
+                let (name, value) = l.split_once(':')?;
+                name.eq_ignore_ascii_case("vary").then_some(value)
+            })
+            .flat_map(|v| v.split(',').map(|t| t.trim().to_ascii_lowercase()))
+            .collect()
+    }
+
+    fn allowed_cfg_and_head() -> (CorsConfig, RequestHead) {
+        let config = CorsConfig::builder()
+            .allow_origin("https://app.example.com")
+            .build()
+            .unwrap();
+        let head = head_from(b"GET /todos HTTP/1.1\r\nOrigin: https://app.example.com\r\n\r\n");
+        (config, head)
+    }
+
+    #[test]
+    fn apply_cors_headers_keeps_vary_cookie_and_adds_origin_once() {
+        let (config, head) = allowed_cfg_and_head();
+        let res = Response::empty(200).with_header("Vary", "Cookie").unwrap();
+        let tokens = vary_tokens(&apply_cors_headers(&head, &config, res));
+        assert_eq!(tokens.iter().filter(|t| *t == "cookie").count(), 1);
+        assert_eq!(tokens.iter().filter(|t| *t == "origin").count(), 1);
+    }
+
+    #[test]
+    fn apply_cors_headers_does_not_duplicate_existing_vary_origin() {
+        // 旧実装（無条件追加）では `Vary` 行が重複していたケースの回帰テスト。
+        let (config, head) = allowed_cfg_and_head();
+        let res = Response::empty(200).with_header("vary", "origin").unwrap();
+        let out = apply_cors_headers(&head, &config, res);
+        let text = String::from_utf8(out.serialize(false)).unwrap();
+        assert_eq!(
+            text.to_ascii_lowercase().matches("vary:").count(),
+            1,
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn apply_cors_headers_does_not_add_vary_when_star_present() {
+        let (config, head) = allowed_cfg_and_head();
+        let res = Response::empty(200).with_header("Vary", "*").unwrap();
+        let tokens = vary_tokens(&apply_cors_headers(&head, &config, res));
+        assert_eq!(tokens, vec!["*".to_string()]);
     }
 
     // レスポンス分割リグレッションテスト（イシュー #305 受け入れ基準・
