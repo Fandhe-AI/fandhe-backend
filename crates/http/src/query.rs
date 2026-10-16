@@ -119,11 +119,25 @@ impl std::error::Error for QueryError {}
 /// assert_eq!(parse_query(&query).unwrap_err(), QueryError::TooManyPairs);
 /// ```
 pub fn parse_query(query: &str) -> Result<QueryPairs<'_>, QueryError> {
-    if query.len() > MAX_QUERY_BYTES {
+    parse_query_with_limits(query, MAX_QUERY_BYTES, MAX_QUERY_PAIRS)
+}
+
+/// [`parse_query`] の上限を引数で受ける crate 内部版。
+///
+/// `crate::form::parse_form_with_limit` が、クエリ文字列の既定上限とは独立した
+/// フォーム上限（既定より大きい値も含む）で `&`/`=` 分解を行うために使う。
+/// 公開 API にはしない（クエリ側の上限可変化は要求外）。検査は
+/// バッファ確保前・fail-closed で、部分結果は返さない。
+pub(crate) fn parse_query_with_limits(
+    query: &str,
+    max_bytes: usize,
+    max_pairs: usize,
+) -> Result<QueryPairs<'_>, QueryError> {
+    if query.len() > max_bytes {
         return Err(QueryError::QueryTooLong);
     }
     let pair_count = query.split('&').filter(|seg| !seg.is_empty()).count();
-    if pair_count > MAX_QUERY_PAIRS {
+    if pair_count > max_pairs {
         return Err(QueryError::TooManyPairs);
     }
     Ok(QueryPairs { remainder: query })
@@ -271,5 +285,27 @@ mod tests {
     fn query_error_implements_std_error() {
         fn assert_error<E: std::error::Error>() {}
         assert_error::<QueryError>();
+    }
+
+    #[test]
+    fn with_limits_accepts_above_default_limits() {
+        let long = "a".repeat(MAX_QUERY_BYTES + 1);
+        assert!(parse_query_with_limits(&long, MAX_QUERY_BYTES + 1, MAX_QUERY_PAIRS).is_ok());
+        let many = vec!["a=1"; MAX_QUERY_PAIRS + 1].join("&");
+        assert!(parse_query_with_limits(&many, 1 << 20, MAX_QUERY_PAIRS + 1).is_ok());
+    }
+
+    #[test]
+    fn with_limits_boundaries_for_small_limits() {
+        assert!(parse_query_with_limits("abcd", 4, 1).is_ok());
+        assert_eq!(
+            parse_query_with_limits("abcde", 4, 1).unwrap_err(),
+            QueryError::QueryTooLong
+        );
+        assert!(parse_query_with_limits("a=1&b=2", 100, 2).is_ok());
+        assert_eq!(
+            parse_query_with_limits("a=1&b=2&c=3", 100, 2).unwrap_err(),
+            QueryError::TooManyPairs
+        );
     }
 }
