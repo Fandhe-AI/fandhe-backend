@@ -138,15 +138,20 @@ check_d() {
     #     Cargo.lock は本リポジトリで追跡されない（git ls-files に無い）ため lock 差分では
     #     比較できず、着手前コミットの hub-wiring/Cargo.toml に宣言済みかで「新規外部依存なし」を確認する。
     local ext prior_missing=""
-    for ext in ring base64 serde serde_json; do
-        if ! git grep -qE "^${ext} *=" "${LOCK_BASE_REV}" -- crates/plugin-hub-wiring/Cargo.toml 2>/dev/null; then
-            prior_missing+="${ext} "
-        fi
-    done
-    if [ -z "${prior_missing}" ]; then
-        notes+="外部依存 ring/base64/serde/serde_json は着手前 ${LOCK_BASE_REV} の hub-wiring に既存; "
+    if ! git rev-parse --verify --quiet "${LOCK_BASE_REV}^{commit}" >/dev/null 2>&1; then
+        # 履歴欠如（shallow clone 等）は「依存が無い」ことを意味しないため判定せず SKIP を記録する
+        record_skip "D(b): 既存依存の確認" "${LOCK_BASE_REV} を解決できない（履歴欠如、shallow clone の可能性）"
     else
-        record_warn "D(b): 既存依存の確認" "${LOCK_BASE_REV} で未確認: ${prior_missing}（履歴欠如の可能性）"
+        for ext in ring base64 serde serde_json; do
+            if ! git grep -qE "^${ext} *=" "${LOCK_BASE_REV}" -- crates/plugin-hub-wiring/Cargo.toml 2>/dev/null; then
+                prior_missing+="${ext} "
+            fi
+        done
+        if [ -z "${prior_missing}" ]; then
+            notes+="外部依存 ring/base64/serde/serde_json は着手前 ${LOCK_BASE_REV} の hub-wiring に既存; "
+        else
+            fail_msgs+="着手前 ${LOCK_BASE_REV} の hub-wiring に無い外部依存: ${prior_missing}; "
+        fi
     fi
     # (c) 未使用構成の依存ツリー
     if check_tool cargo "Rust ツールチェーン一式（rustup 等）"; then
@@ -169,8 +174,12 @@ check_d() {
         fail_msgs+="lib.rs に #![forbid(unsafe_code)] がない; "
     fi
     local baseline
-    baseline="$(jq -c '."plugin-jwt"' scripts/unsafe-baseline.json 2>/dev/null || echo null)"
-    notes+="unsafe-baseline plugin-jwt=${baseline}; "
+    baseline="$(jq -r '."plugin-jwt".unsafe_count // "null"' scripts/unsafe-baseline.json 2>/dev/null || echo null)"
+    if [ "${baseline}" = "0" ]; then
+        notes+="unsafe-baseline plugin-jwt unsafe_count=0; "
+    else
+        fail_msgs+="unsafe-baseline の plugin-jwt.unsafe_count が 0 でない/欠落（${baseline}）; "
+    fi
     if [ -n "${fail_msgs}" ]; then
         record_fail "${label}" "${fail_msgs}"
     else
