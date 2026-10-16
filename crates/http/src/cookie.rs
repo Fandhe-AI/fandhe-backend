@@ -85,6 +85,23 @@
 //!   **将来 `Domain` 属性を追加する場合は、`__Host-` cookie で拒否する不変条件を
 //!   同時に実装しなければならない**
 //!
+//! # 書き込み側: セッション Cookie の安全な既定値（イシュー #827）
+//!
+//! 認証ハンドラが発行するセッション Cookie は、`HttpOnly`・`Secure`・
+//! `SameSite`・`Path` の付け忘れが XSS 窃取・平文送出・CSRF に直結する。
+//! [`SetCookie::session`] は `HttpOnly`・`Secure`・`SameSite=Lax`・`Path=/` を
+//! 既定で付与する（`Max-Age` は付けずブラウザのセッション寿命に任せる）。
+//! `SameSite` は [`SessionSameSite`]（`Lax` / `Strict` のみ）で変更でき、
+//! `SameSite=None` は型として表せない。
+//!
+//! 削除用の [`SetCookie::session_removal`] は発行用と同じ属性に `Max-Age=0` を
+//! 加えて出力する（属性が食い違うとブラウザ上の Cookie が消えない）。
+//!
+//! 接頭辞との組み合わせ: 既定値（`Secure` + `Path=/`、`Domain` なし）は
+//! `__Host-` / `__Secure-` の条件を満たすため、`session("__Host-sid", v)` を
+//! そのまま受け付ける（`__Host-` の必須化はしない）。接頭辞の条件の強制は
+//! 引き続き [`SetCookie::path`] 等の既存検査が担う。
+//!
 //! # 書き込み側: スコープ外
 //!
 //! `Domain` / `Expires` / `Partitioned` 属性は最小サブセット方針によりスコープ外
@@ -147,6 +164,9 @@ pub enum CookieError {
     /// [`SetCookie::path`]（書き込み側）: `__Host-` cookie に `/` 以外の
     /// `Path` を指定した。
     HostPrefixPath,
+    /// [`SessionSameSite::try_from`]（書き込み側）: セッション Cookie に
+    /// `SameSite=None` が指定された。
+    SessionSameSiteNone,
 }
 
 impl std::fmt::Display for CookieError {
@@ -165,6 +185,9 @@ impl std::fmt::Display for CookieError {
             }
             CookieError::PrefixMismatch => "cookie 名が専用構築関数に対応する接頭辞で始まらない",
             CookieError::HostPrefixPath => "__Host- cookie の Path 属性は '/' のみ許可される",
+            CookieError::SessionSameSiteNone => {
+                "セッション cookie では SameSite=None を指定できない"
+            }
         };
         f.write_str(msg)
     }
@@ -315,6 +338,63 @@ impl SameSite {
     }
 }
 
+/// セッション Cookie 用の `SameSite`（`Lax` / `Strict` のみ、イシュー #827）。
+///
+/// `SameSite=None` を表す variant を持たないため、[`SetCookie::session_with`] の
+/// 入口でクロスサイト送出を許可する設定を型として作れない。実行時に得た
+/// [`SameSite`] からは `TryFrom` で変換でき、`None` は
+/// [`CookieError::SessionSameSiteNone`] で拒否する。
+///
+/// ```
+/// use fandhe_backend_http::cookie::{CookieError, SameSite, SessionSameSite};
+///
+/// assert_eq!(SessionSameSite::default(), SessionSameSite::Lax);
+/// assert_eq!(
+///     SessionSameSite::try_from(SameSite::None).unwrap_err(),
+///     CookieError::SessionSameSiteNone
+/// );
+/// assert_eq!(
+///     SessionSameSite::try_from(SameSite::Strict).unwrap(),
+///     SessionSameSite::Strict
+/// );
+/// ```
+///
+/// `None` variant は存在しない:
+///
+/// ```compile_fail
+/// use fandhe_backend_http::cookie::SessionSameSite;
+/// let _ = SessionSameSite::None;
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SessionSameSite {
+    /// `SameSite=Lax`（既定）。
+    #[default]
+    Lax,
+    /// `SameSite=Strict`。
+    Strict,
+}
+
+impl From<SessionSameSite> for SameSite {
+    fn from(v: SessionSameSite) -> Self {
+        match v {
+            SessionSameSite::Lax => SameSite::Lax,
+            SessionSameSite::Strict => SameSite::Strict,
+        }
+    }
+}
+
+impl TryFrom<SameSite> for SessionSameSite {
+    type Error = CookieError;
+
+    fn try_from(v: SameSite) -> Result<Self, Self::Error> {
+        match v {
+            SameSite::Lax => Ok(Self::Lax),
+            SameSite::Strict => Ok(Self::Strict),
+            SameSite::None => Err(CookieError::SessionSameSiteNone),
+        }
+    }
+}
+
 /// 構築時検証済みの `Set-Cookie` 1 件（書き込み側、イシュー #303）。
 ///
 /// フィールドは非公開で、唯一の構築経路が [`SetCookie::new`] であることにより
@@ -448,6 +528,102 @@ impl SetCookie {
             max_age: None,
             prefix,
         }
+    }
+
+    /// セッション Cookie を安全な既定値で構築する（イシュー #827）。
+    ///
+    /// `HttpOnly`・`Secure`・`SameSite=Lax`・`Path=/` を付与する。`Max-Age` は
+    /// 付けない（ブラウザのセッション寿命。永続化するなら [`SetCookie::max_age`]）。
+    /// 名前・値の検証は [`SetCookie::new`] と共通。`__Host-` / `__Secure-` 名も
+    /// 受け付ける（既定値が接頭辞の条件を満たす。必須化はしない）。
+    /// 発行後に [`SetCookie::path`] で `Path` を変えた場合は、削除用
+    /// ([`SetCookie::session_removal`]) にも同じ `path` を付けること。
+    /// TLS はリバースプロキシで終端する前提（`Secure` は外せない）。
+    /// 既知の限界: 後から汎用の [`SetCookie::same_site`] で `SameSite::None` を
+    /// 指定する明示的な opt-out は可能（型による排除は本関数の入口のみ）。
+    ///
+    /// ```
+    /// use fandhe_backend_http::cookie::{CookieError, SetCookie};
+    ///
+    /// assert_eq!(
+    ///     SetCookie::session("sid", "abc").unwrap().to_header_value(),
+    ///     "sid=abc; Path=/; SameSite=Lax; Secure; HttpOnly"
+    /// );
+    /// // __Host- 名との組み合わせ（Path は '/' のみ許可）
+    /// let c = SetCookie::session("__Host-sid", "abc").unwrap();
+    /// assert_eq!(c.to_header_value(), "__Host-sid=abc; Path=/; SameSite=Lax; Secure; HttpOnly");
+    /// assert_eq!(c.path("/api").unwrap_err(), CookieError::HostPrefixPath);
+    /// assert_eq!(SetCookie::session("", "abc").unwrap_err(), CookieError::InvalidName);
+    /// assert_eq!(SetCookie::session("sid", "a;b").unwrap_err(), CookieError::InvalidValue);
+    /// ```
+    pub fn session(name: impl Into<String>, value: impl Into<String>) -> Result<Self, CookieError> {
+        Self::session_with(name, value, SessionSameSite::Lax)
+    }
+
+    /// [`SetCookie::session`] の `SameSite` 指定版。`SameSite=None` は型で排除される。
+    ///
+    /// ```
+    /// use fandhe_backend_http::cookie::{SessionSameSite, SetCookie};
+    ///
+    /// assert_eq!(
+    ///     SetCookie::session_with("sid", "abc", SessionSameSite::Strict)
+    ///         .unwrap()
+    ///         .to_header_value(),
+    ///     "sid=abc; Path=/; SameSite=Strict; Secure; HttpOnly"
+    /// );
+    /// ```
+    pub fn session_with(
+        name: impl Into<String>,
+        value: impl Into<String>,
+        same_site: SessionSameSite,
+    ) -> Result<Self, CookieError> {
+        let name = name.into();
+        let value = value.into();
+        Self::validate_name_value(&name, &value)?;
+        let prefix = detect_prefix(&name);
+        let mut c = Self::build(name, value, prefix);
+        c.http_only = true;
+        c.secure = true;
+        c.path = Some("/".to_string());
+        c.same_site = Some(same_site.into());
+        Ok(c)
+    }
+
+    /// [`SetCookie::session`] で発行した Cookie の削除用 `Set-Cookie` を構築する。
+    ///
+    /// 発行用と同じ属性に `Max-Age=0` を加え、値は空にする（RFC 6265 5.2.2:
+    /// delta-seconds が 0 以下なら直ちに失効する）。発行用の構築関数に構造的に
+    /// 依存するため、既定値が変わっても属性は食い違わない。
+    ///
+    /// ```
+    /// use fandhe_backend_http::cookie::SetCookie;
+    ///
+    /// assert_eq!(
+    ///     SetCookie::session_removal("sid").unwrap().to_header_value(),
+    ///     "sid=; Path=/; Max-Age=0; SameSite=Lax; Secure; HttpOnly"
+    /// );
+    /// ```
+    pub fn session_removal(name: impl Into<String>) -> Result<Self, CookieError> {
+        Self::session_removal_with(name, SessionSameSite::Lax)
+    }
+
+    /// [`SetCookie::session_removal`] の `SameSite` 指定版（発行時と同じ値を渡すこと）。
+    ///
+    /// ```
+    /// use fandhe_backend_http::cookie::{SessionSameSite, SetCookie};
+    ///
+    /// assert_eq!(
+    ///     SetCookie::session_removal_with("sid", SessionSameSite::Strict)
+    ///         .unwrap()
+    ///         .to_header_value(),
+    ///     "sid=; Path=/; Max-Age=0; SameSite=Strict; Secure; HttpOnly"
+    /// );
+    /// ```
+    pub fn session_removal_with(
+        name: impl Into<String>,
+        same_site: SessionSameSite,
+    ) -> Result<Self, CookieError> {
+        Self::session_with(name, "", same_site).map(|c| c.max_age(0))
     }
 
     /// `__Host-` 接頭辞付き cookie を構築する（`Secure` と `Path=/` を自動付与）。
@@ -928,6 +1104,122 @@ mod tests {
         assert!(CookieError::ReservedPrefix.to_string().contains("__Host-"));
         assert!(CookieError::PrefixMismatch.to_string().contains("接頭辞"));
         assert!(CookieError::HostPrefixPath.to_string().contains("'/'"));
+        assert!(
+            CookieError::SessionSameSiteNone
+                .to_string()
+                .contains("SameSite=None")
+        );
+    }
+
+    // --- セッション Cookie（イシュー #827） ---
+
+    #[test]
+    fn session_emits_secure_defaults_without_max_age() {
+        let v = SetCookie::session("sid", "abc").unwrap().to_header_value();
+        assert_eq!(v, "sid=abc; Path=/; SameSite=Lax; Secure; HttpOnly");
+        assert!(!v.contains("Max-Age"));
+    }
+
+    #[test]
+    fn session_with_strict_emits_strict() {
+        let v = SetCookie::session_with("sid", "abc", SessionSameSite::Strict)
+            .unwrap()
+            .to_header_value();
+        assert_eq!(v, "sid=abc; Path=/; SameSite=Strict; Secure; HttpOnly");
+    }
+
+    #[test]
+    fn session_same_site_rejects_none_via_try_from() {
+        assert_eq!(
+            SessionSameSite::try_from(SameSite::None).unwrap_err(),
+            CookieError::SessionSameSiteNone
+        );
+        assert_eq!(
+            SessionSameSite::try_from(SameSite::Lax),
+            Ok(SessionSameSite::Lax)
+        );
+        assert_eq!(
+            SessionSameSite::try_from(SameSite::Strict),
+            Ok(SessionSameSite::Strict)
+        );
+    }
+
+    #[test]
+    fn session_removal_matches_session_attributes_with_max_age_zero() {
+        for ss in [SessionSameSite::Lax, SessionSameSite::Strict] {
+            let issued = SetCookie::session_with("sid", "abc", ss)
+                .unwrap()
+                .to_header_value();
+            let removed = SetCookie::session_removal_with("sid", ss)
+                .unwrap()
+                .to_header_value();
+            let expected = issued.replacen("sid=abc", "sid=", 1).replacen(
+                "; Path=/",
+                "; Path=/; Max-Age=0",
+                1,
+            );
+            assert_eq!(removed, expected);
+        }
+    }
+
+    #[test]
+    fn session_validates_name_and_value() {
+        assert_eq!(
+            SetCookie::session("", "a").unwrap_err(),
+            CookieError::InvalidName
+        );
+        assert_eq!(
+            SetCookie::session("a b", "a").unwrap_err(),
+            CookieError::InvalidName
+        );
+        assert_eq!(
+            SetCookie::session("sid", "a;b").unwrap_err(),
+            CookieError::InvalidValue
+        );
+        assert_eq!(
+            SetCookie::session("sid", "a\r\nb").unwrap_err(),
+            CookieError::InvalidValue
+        );
+        assert_eq!(
+            SetCookie::session_removal("").unwrap_err(),
+            CookieError::InvalidName
+        );
+    }
+
+    #[test]
+    fn session_accepts_host_prefixed_name_and_keeps_host_constraints() {
+        for n in ["__Host-sid", "__host-sid"] {
+            let c = SetCookie::session(n, "abc").unwrap();
+            assert_eq!(
+                c.to_header_value(),
+                format!("{n}=abc; Path=/; SameSite=Lax; Secure; HttpOnly")
+            );
+            assert_eq!(
+                c.clone().path("/api").unwrap_err(),
+                CookieError::HostPrefixPath
+            );
+            assert!(c.path("/").is_ok());
+        }
+    }
+
+    #[test]
+    fn session_accepts_secure_prefixed_name() {
+        let c = SetCookie::session("__Secure-sid", "abc").unwrap();
+        assert_eq!(
+            c.to_header_value(),
+            "__Secure-sid=abc; Path=/; SameSite=Lax; Secure; HttpOnly"
+        );
+        assert!(c.path("/api").is_ok());
+    }
+
+    #[test]
+    fn session_removal_with_host_prefixed_name() {
+        assert_eq!(
+            SetCookie::session_removal("__Host-sid")
+                .unwrap()
+                .to_header_value(),
+            "__Host-sid=; Path=/; Max-Age=0; SameSite=Lax; Secure; HttpOnly"
+        );
     }
 
     // --- cookie 接頭辞（イシュー #810） ---
