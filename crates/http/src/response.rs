@@ -1540,7 +1540,11 @@ mod tests {
     fn see_other_does_not_decode_percent_escapes() {
         let loc = crate::location::SameOriginLocation::new("/%2F%2Fevil.com").unwrap();
         let text = String::from_utf8(Response::see_other(loc).serialize(true)).unwrap();
+        assert!(text.starts_with("HTTP/1.1 303 See Other\r\n"));
         assert!(text.contains("Location: /%2F%2Fevil.com\r\n"));
+        assert!(text.contains("Content-Length: 0\r\n"));
+        let (_, body) = text.split_once("\r\n\r\n").expect("ヘッダ終端が存在する");
+        assert!(body.is_empty(), "ボディは空であること");
     }
 
     // --- redirect（イシュー #302） ---
