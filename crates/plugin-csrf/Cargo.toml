@@ -1,0 +1,21 @@
+[package]
+name = "fandhe-backend-plugin-csrf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "fandhe-backend の CSRF 検査ゲートプラグイン（REQ-17）。状態を変える要求の送信元を Sec-Fetch-Site / Origin でハンドラ到達前に検査する。"
+readme = "../../README.md"
+keywords = ["csrf", "http", "security", "web", "plugin"]
+categories = ["web-programming::http-server", "web-programming"]
+# 公開準備と文書追随（#832）まで crates.io へ公開しない暫定の安全側設定。#832 で削除する。
+publish = false
+
+[lints]
+workspace = true
+
+# `RequestGate` 実装のために core / http に依存する（plugin → core の一方向。core から
+# 本クレートへの辺は作らない）。workspace 内 crate のため外部依存は増えない。
+[dependencies]
+fandhe-backend-core = { workspace = true }
+fandhe-backend-http = { workspace = true }

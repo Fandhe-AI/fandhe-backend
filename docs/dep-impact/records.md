@@ -8,6 +8,35 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-10-16 — `crates/plugin-csrf` の新設（イシュー #825、CSRF 検査ゲート、REQ-17）
+
+`fandhe-backend-plugin-csrf` を新設した。`RequestGate` 実装のため `fandhe-backend-core` /
+`fandhe-backend-http` に依存する（workspace 内クレートのみ。plugin → core の一方向で、core から
+本クレートへの辺は作らない）。暫定で `publish = false`（公開準備・文書追随は #832）。
+
+計測コマンド: `bash scripts/dep-impact.sh`（本ブランチ、cargo-geiger 未導入）
+
+| feature 構成 | 依存クレート数（workspace メンバー除外） |
+|---|---|
+| --no-default-features | 281 |
+| default | 281 |
+| --all-features | 283 |
+
+直前エントリ（plugin-jwt 公開準備時点）と同値で、増分はない。
+
+`cargo tree -e normal --prefix none` の確認結果（`grep -c '^fandhe-backend-plugin-csrf '`）:
+
+- `-p fandhe-backend-core`: `--no-default-features`・既定・`--all-features` のすべてで 0 件
+- `fandhe-backend-http` / `routes` / `plugin-jwt` / `plugin-hub-wiring`: 0 件
+- `-p fandhe-backend-plugin-csrf` の推移依存は core / http / routes と、それらが既に持つ
+  `bytes` / `libc` / `memchr` / `mio` / `pin-project-lite` / `rustc-hash` / `socket2` のみ
+  （csrf 固有の外部依存なし）
+- 新規パッケージ: 0（外部 crate・版の追加なし）
+- `unsafe` の追加: なし（`#![forbid(unsafe_code)]`。`cargo-geiger` 未導入のため機械計測は未実施）
+- リリースバイナリサイズ: 既存 bin（axum-ref 1405480 / ws-load-client 1044600 bytes）は
+  csrf に依存しないため影響なし
+- core 利用者への影響: なし（`crates/core` の feature に未配線）
+
 ## 2026-10-15 — `crates/plugin-jwt` の公開準備（イシュー #822、`publish = false` 解除と pay-for-what-you-use の確認）
 
 `fandhe-backend-plugin-jwt` の暫定 `publish = false` を解除し、公開対象を 14 クレートとした
