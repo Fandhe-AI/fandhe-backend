@@ -8,7 +8,7 @@ AI によるセキュリティ脆弱性発見リスクに備え、Rust で新規
 
 ## インストール
 
-crates.io（v0.4.2、2026-09-28 公開済み。変更履歴は `CHANGELOG.md` 参照）から
+crates.io（v0.5.0、2026-10-16 公開済み。変更履歴は `CHANGELOG.md` 参照）から
 最小コアのみを使う場合は:
 
 ```bash
@@ -28,8 +28,8 @@ cargo add fandhe-backend-core --features graphql,openapi,cors
 公開対象クレートは `fandhe-backend-http` / `fandhe-backend-routes` / `fandhe-backend-core` と
 `fandhe-backend-plugin-*`（websocket / graphql / openapi / webrtc / webrtc-proxy / tracing /
 hub-wiring / jwt / csrf / cors / compression / static）の 15 クレートで、すべて同一バージョン
-（lockstep）で公開します。現時点の crates.io 公開版は 0.4.2（2026-09-28 公開、13 クレート。
-`fandhe-backend-plugin-jwt`・`fandhe-backend-plugin-csrf` は 0.5.0 で初公開予定。
+（lockstep）で公開します。現時点の crates.io 公開版は 0.5.0（2026-10-16 公開、15 クレート。
+`fandhe-backend-plugin-jwt`・`fandhe-backend-plugin-csrf` は 0.5.0 で初公開。
 変更履歴は `CHANGELOG.md`、公開手順は `docs/design/crates-io-release.md` 参照）です。
 通常は `fandhe-backend-core` の feature 経由で利用し、
 個別クレートを直接依存に追加する必要はありません
