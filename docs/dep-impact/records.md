@@ -37,6 +37,14 @@
   csrf に依存しないため影響なし
 - core 利用者への影響: なし（`crates/core` の feature に未配線）
 
+dev-dependencies の追加（イシュー #826、受け入れテスト用）: `crates/plugin-csrf/Cargo.toml` の
+`[dev-dependencies]` に `tokio`（`default-features = false`、feature は `macros` /
+`rt-multi-thread` / `io-util`）と `fandhe-backend-routes`（workspace 内、`Handler` 実装に要る
+`HandlerFuture` のため）を追加した。`tokio` は既に workspace の core / 各 plugin が同じ 1.x で
+解決済みで、`Cargo.lock` に新規パッケージは増えない（依存クレート数の増分 0）。いずれも
+`[dev-dependencies]` のため本クレートの通常依存（公開時の依存宣言）には増えず、リリース
+バイナリにも影響しない（`tokio` / `routes` は core 経由の既存の推移依存として元々解決される）。
+
 ## 2026-10-15 — `crates/plugin-jwt` の公開準備（イシュー #822、`publish = false` 解除と pay-for-what-you-use の確認）
 
 `fandhe-backend-plugin-jwt` の暫定 `publish = false` を解除し、公開対象を 14 クレートとした
