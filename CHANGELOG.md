@@ -1,7 +1,7 @@
 # Changelog
 
-公開対象 14 クレート（`fandhe-backend-http` / `fandhe-backend-routes` / `fandhe-backend-core` /
-`fandhe-backend-plugin-*` 11 種。0.5.0 で `fandhe-backend-plugin-jwt` が加わり、0.4.2 以前は 13 クレート）は lockstep（同一バージョン一斉更新）で運用する
+公開対象 15 クレート（`fandhe-backend-http` / `fandhe-backend-routes` / `fandhe-backend-core` /
+`fandhe-backend-plugin-*` 12 種。0.5.0 で `fandhe-backend-plugin-jwt` と `fandhe-backend-plugin-csrf` が加わり、0.4.2 以前は 13 クレート）は lockstep（同一バージョン一斉更新）で運用する
 （詳細は [`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7 節）。
 恒久非公開クレート（`axum-ref` / `ws-load-client` / `docs-site`）はこの一覧に含めない。
 
@@ -90,6 +90,18 @@
   区別せず重複なくトークンを新しい行として足します。`with_no_store` は `Cache-Control:
   no-store` を何度呼んでも 1 つだけ付けます。`Set-Cookie` を含む応答へは自動では付けず、
   doc で `with_no_store` の併用を推奨します。
+- `fandhe-backend-plugin-csrf`: CSRF 検査ゲートのクレートを新設しました（REQ-17、0.5.0 で
+  初公開）。`CsrfGate`（`RequestGate` 実装）を `CsrfGate::builder()` /
+  `CsrfGateBuilder`（`allow_origin`・`exempt_path`・`build`）で構築します。`GET`・`HEAD`・
+  `OPTIONS` 以外の要求は、`Sec-Fetch-Site` が `same-origin` / `none` のときだけ許可し、
+  このヘッダが無いときは `Origin` が許可リストとバイト完全一致のときだけ許可します。
+  両ヘッダとも無い要求、`Origin: null`、重複ヘッダは拒否します。除外パスは完全一致のみです。
+  拒否は本文なし・理由なしの `403` で、ヘッダ値を反映しません。構築時の不備は
+  `CsrfConfigError` で返し、上限定数 `MAX_ALLOWED_ORIGINS` / `MAX_EXEMPT_PATHS` /
+  `MAX_ENTRY_LEN` を公開します。外部依存はなく、Gate 型のため core の feature は持たず、
+  `Server::gate` で登録します。Cookie 認証の画面では CSRF ゲートを認証ゲートより先に登録する
+  ことを推奨します（設計は
+  [`docs/design/plugin-boundary.md`](docs/design/plugin-boundary.md) 5.6.6 節）。
 - `fandhe-backend-plugin-jwt`: 汎用 JWT 検証クレートを新設しました（REQ-16、0.5.0 で
   初公開）。RS256・ES256 の検証（`JwtPolicy` で `iss`・`aud`・`typ`・許可 `alg` を必須とし、
   `none`・HS 系は型として表現不能）、JWKS 鍵集合（`KeySet` / `SharedKeySet`）、

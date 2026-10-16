@@ -13,8 +13,8 @@ OpenAPI 自動生成 / hub 配線 / 可観測性を段階的に拡張できる�
 - **pay-for-what-you-use**: feature を無効化したら依存・コード・`unsafe`・バイナリ増をゼロにする
 - **AI ファースト保守性**: doc test・網羅テスト・CI ガードレールで AI が安全に保守できる状態を保つ
 
-公開対象 14 クレート（http / routes / core / plugin-* 11 種。0.4.2 までの公開済みは
-13 クレートで、plugin-jwt は 0.5.0 で初公開予定）を crates.io へ lockstep
+公開対象 15 クレート（http / routes / core / plugin-* 12 種。0.4.2 までの公開済みは
+13 クレートで、plugin-jwt・plugin-csrf は 0.5.0 で初公開予定）を crates.io へ lockstep
 バージョニングで公開する（恒久非公開: axum-ref / ws-load-client）。現行公開版は
 0.4.2（2026-09-28）。手順・区分は `docs/design/crates-io-release.md` 参照。
 
@@ -163,7 +163,7 @@ fandhe-backend/
 │                            # 実ブラウザ描画でのみ発見できた CSS カスケード順序バグの検出・修正記録）
 ├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）。
 │                            # `[workspace.package] version` + `[workspace.dependencies]`
-│                            # （内部 14 クレートを path + version で定義）で lockstep
+│                            # （内部 15 クレートを path + version で定義）で lockstep
 │                            # バージョン・path 依存の version 併記を一元管理し、各クレートは
 │                            # `version.workspace = true` + `{ workspace = true }` で継承する
 │                            # （イシュー #452。`docs/design/crates-io-release.md` 7.2 節参照）
@@ -879,6 +879,16 @@ fandhe-backend/
 │   │                                    # `docs/design/jwt-verify-plugin.md`
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、
 │   │                                    # `crates/http/fuzz` と同パターン、イシュー #818）
+│   ├── plugin-csrf                    # CSRF 検査ゲートプラグイン（REQ-17、イシュー #825/#826）。
+│   │                                    # Gate 型・依存逆転型（`RequestGate` 実装 `CsrfGate`、
+│   │                                    # core に feature なし、利用側が直接依存して
+│   │                                    # `Server::gate` で登録）。`GET`/`HEAD`/`OPTIONS` 以外を
+│   │                                    # `Sec-Fetch-Site` / `Origin` で検査し、両ヘッダなしは拒否、
+│   │                                    # 除外パスは完全一致のみ、拒否は本文なしの `403`。外部依存なし・
+│   │                                    # `#![forbid(unsafe_code)]`。推奨は CSRF ゲートを認証ゲートより
+│   │                                    # 先に登録。0.5.0 で初公開予定。設計は
+│   │                                    # `docs/design/plugin-boundary.md` 5.6.6 節、受け入れは
+│   │                                    # `docs/acceptance/req17-csrf-gate.md`
 │   ├── plugin-*                       # 他の feature 着脱プラグイン（TASK-2.1 以降で追加予定）
 │   └── axum-ref                       # 性能比較用参照実装（TASK-1.2 で追加）
 ├── templates/              # 利用者向け配布テンプレート（イシュー #364）

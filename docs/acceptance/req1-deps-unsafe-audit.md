@@ -312,3 +312,62 @@ REQ-1 に追加された要件のうち、`SetCookie` の `__Host-`・`__Secure-
 - 判定: PASS
 - 対象外: 同じ仕様 pin で REQ-1 に加わった他の追加要件（セッション Cookie の既定値、同一オリジンの `Location`、
   `Vary` の補助、`FormError` の応答への対応）は本イシューの対象外で、判定していない
+
+## 追加要件の検証（2026-10-16、イシュー #827〜#831・#832）
+
+REQ-1 に追加された要件のうち、#823 の節で判定していなかった 4 件（セッション Cookie の既定値、同一オリジンの
+`Location`、キャッシュ制御の補助、フォームの上限と応答）を検証した。既存の節と実測値は改変していない。
+対象コミットは `origin/main` の `89de5ae`、rustc / cargo は 1.99.0。いずれも新規の外部依存を追加していない
+（`crates/http/Cargo.toml`・`crates/plugin-cors/Cargo.toml`・`crates/plugin-compression/Cargo.toml`・
+`crates/core/Cargo.toml` に、着手前の `e9ceffd` からの差分はなく、`Cargo.lock` にも差分がない）。
+
+### セッション Cookie の安全な既定値（#827）
+
+- 基準: `HttpOnly`・`Secure`・`SameSite=Lax`・`Path=/` を既定とする構築関数。`Max-Age` は付けない。`Strict` は可、
+  `None` は拒否。同じ属性で `Max-Age=0` を出す削除用の補助。接頭辞の構築関数と責務が重ならない
+- 検証: `cargo test -p fandhe-backend-http cookie`（67 件 PASS）。対象は `session_emits_secure_defaults_without_max_age`／
+  `session_with_strict_emits_strict`／`session_same_site_rejects_none_via_try_from`／
+  `session_removal_matches_session_attributes_with_max_age_zero`／`session_validates_name_and_value`／
+  `session_accepts_host_prefixed_name_and_keeps_host_constraints`／`session_accepts_secure_prefixed_name`／
+  `session_removal_with_host_prefixed_name`（いずれも ok）。あわせて doc test
+- 判定: PASS
+
+### 同一オリジンに限るリダイレクト先（#828）
+
+- 基準: 相対パスだけを受け付ける `Location` の型（空でなく `/` で始まり、2 文字目が `/`・`\` でなく、`\` と制御文字を
+  含まない）。percent デコードしない。絶対 URL は不可。POST 後の 303 の補助。既存 `Response::redirect` は不変。
+  検証は sans-IO の純関数で fuzz の対象
+- 検証: `cargo test -p fandhe-backend-http location`（8 件 PASS）。対象は `location::tests::rejects_with_expected_reason`／
+  `accepts_and_keeps_bytes_unchanged`／`error_display_does_not_echo_input`／`try_from_matches_new`、および
+  `response::tests::see_other_sets_303_and_location`／`see_other_does_not_decode_percent_escapes`。既存
+  `redirect_sets_status_and_location`・`redirect_rejects_crlf_in_location`・`redirect_rejects_empty_location` も ok（不変）
+- fuzz: `crates/http/fuzz/Cargo.toml` に target `same_origin_location` が登録され、`bash scripts/fuzz.sh --list` に現れる
+  （静的確認のみ。本実行では fuzz を回しておらず、実行は**未検証**。CI の `fuzz-smoke` で担保される想定）
+- 判定: PASS（fuzz の実行を除く）
+
+### キャッシュ制御の補助（#829・#830）
+
+- 基準: `Cache-Control: no-store` を付ける補助と、`Vary` へトークンを重複なく足す公開の補助。複数の `Vary` 行と
+  `Vary: *` を考慮。圧縮・CORS のプラグインもこの補助へ移す。`Set-Cookie` を含む応答への自動付与はしない
+- 検証: `cargo test -p fandhe-backend-http --lib with_vary`（9 件）・`with_no_store`（5 件）がすべて ok。通常応答とチャンク応答の
+  ヘッドは `with_vary_and_no_store_appear_in_chunked_head` で確認。プラグイン側は
+  `cargo test -p fandhe-backend-plugin-compression vary`（7 件）・`cargo test -p fandhe-backend-plugin-cors vary`（4 件）が ok。
+  統合は `cargo test -p fandhe-backend-core --features cors,compression --test plugin_compression_boundary`（22 件）の
+  `cors_and_compression_do_not_duplicate_vary_tokens`・`streaming_response_cors_and_compress_streaming_both_apply_vary_tokens`
+- `Set-Cookie` への自動付与はしない（`with_no_store` の doc で併用を推奨するにとどめる）
+- 判定: PASS
+
+### フォームの上限と応答（#831）
+
+- 基準: `FormError` を 413（上限超過）・400（UTF-8・デコードの誤り）に対応づけ、既存 `error::IntoResponse` に載せ、
+  メッセージは固定文字列。上限を引数で渡す解析関数。既定の上限（8 KiB・256 組）は不変
+- 検証: `cargo test -p fandhe-backend-http --lib form`（35 件 PASS）。対象は `form::tests::form_error_maps_to_status_and_fixed_message`／
+  `question_mark_propagates_into_http_error`／`default_limits_are_unchanged`／`with_limit_bytes_boundary_small_and_large`／
+  `with_limit_pairs_boundary_small_and_large`／`with_limit_zero_accepts_only_empty_body`／`parse_form_equals_with_default_limits`。
+  上限を引数で渡す `query` 側は `query::tests::with_limits_accepts_above_default_limits`・`with_limits_boundaries_for_small_limits`
+- 判定: PASS
+
+### 全体の判定と対象外
+
+4 件とも PASS（#828 の fuzz 実行のみ未検証）。仕様が pin `261741e` に含む REQ-1 の追加要件のうち、`__Host-`・`__Secure-`
+接頭辞（#810）は上の節で、上記 4 件は本節で判定した。

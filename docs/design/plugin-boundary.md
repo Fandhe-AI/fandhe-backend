@@ -402,7 +402,7 @@ Upgrade 型パターン確立後もアプリケーションロジックを差し
 
 ## 5.6 Gate 型パターン（依存逆転型、TASK-9.1 / #61 で確立、TASK-9.2 / #62 で
 RS256 + JWKS へ差し替え、#812〜#816 で 2 例目 `fandhe-backend-plugin-jwt` を追加、
-#820 で hub-wiring の検証部を移管）
+#820 で hub-wiring の検証部を移管、#825 で 3 例目 `fandhe-backend-plugin-csrf` を追加）
 
 `fandhe-backend-plugin-hub-wiring`（`TenantGate`、JWT 検証 → `org_id` 抽出 →
 フェイルクローズ）は、4・5 節の 2 パターン（コア → プラグインの optional
@@ -453,7 +453,13 @@ fandhe-backend-core`（`--no-default-features`・既定・`--all-features` の�
 （`--all-features` の `ring` は `webrtc` feature の webrtc-rs 経由であり plugin-jwt とは
 無関係）。hub-wiring を依存に加えた構成では plugin-jwt も入る（設計どおり）。依存の
 解釈（`Cargo.lock` に新しい crate・版を増やさない）は
-`docs/design/jwt-verify-plugin.md` 2.7 節を参照。
+`docs/design/jwt-verify-plugin.md` 2.7 節を参照。`fandhe-backend-plugin-csrf` も同様で、
+`cargo tree -e normal`（`--no-default-features`・既定・`--all-features`）に
+`fandhe-backend-plugin-csrf` が現れないクレートは core・http・routes・plugin-jwt・
+plugin-hub-wiring のほか、plugin-websocket / graphql / openapi / webrtc / webrtc-proxy /
+tracing / cors / compression / static（`--all-features`）と `templates/app`（#832 で実測。
+`docs/acceptance/req17-csrf-gate.md`・`docs/dep-impact/records.md`）。plugin-csrf 自身の
+外部依存は無く、core / http 経由で既に解決される crate だけが現れる。
 
 JWT 検証は TASK-9.1（#61）の HS256（HMAC-SHA256、`hmac`/`sha2`）共有秘密鍵
 スパイクから、TASK-9.2（#62）で RS256（非対称鍵）+ JWKS へ差し替えた
@@ -504,7 +510,7 @@ PoC-6）であり、JWT 検証で抽出した `org_id` 等のクレームはコ�
   `allowed_edge_patterns` に明示追加した唯一の例外で、追加にはレビューを要する。逆向き
   （plugin-jwt → hub-wiring）は禁止で、循環は DFS で検出する
 - 複数ゲートは AND 結合（いずれかが拒否すれば拒否）。REQ-17 の CSRF ゲートとの登録順は
-  5.6.6 節で定めた
+  5.6.6 節で定めた（受け入れ検証は `docs/acceptance/req17-csrf-gate.md`）
 
 ### 5.6.6 3 例目: `fandhe-backend-plugin-csrf`（REQ-17、#825・#826）と複数ゲートの登録順
 

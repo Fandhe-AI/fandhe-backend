@@ -19,6 +19,10 @@
     "allow_unsafe_code_count": 0,
     "unsafe_count": 0
   },
+  "plugin-csrf": {
+    "allow_unsafe_code_count": 0,
+    "unsafe_count": 0
+  },
   "plugin-graphql": {
     "allow_unsafe_code_count": 0,
     "unsafe_count": 0

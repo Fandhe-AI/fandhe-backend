@@ -8,8 +8,6 @@ description = "fandhe-backend の CSRF 検査ゲートプラグイン（REQ-17�
 readme = "../../README.md"
 keywords = ["csrf", "http", "security", "web", "plugin"]
 categories = ["web-programming::http-server", "web-programming"]
-# 公開準備と文書追随（#832）まで crates.io へ公開しない暫定の安全側設定。#832 で削除する。
-publish = false
 
 [lints]
 workspace = true
