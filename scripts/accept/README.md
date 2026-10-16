@@ -636,6 +636,10 @@ E: hub-wiring 移行と `hub-wiring-accept.sh` 再実行、F: fuzz 対象の静�
 ./scripts/accept/jwt-verify-accept.sh
 ```
 
+E・F の静的確認は説明文・コメントでの言及にヒットしないよう、hub-wiring `Cargo.toml` の
+`[dependencies]` 表、`fuzz.sh` の `FUZZ_DIRS` 代入行、`ci.yml` の `fuzz-smoke` ジョブ内の
+コメント以外の `run:` 行に限定して判定する（本物の行を除いたコピーで FAIL する陰性対照つき）。
+
 判定ロジックは `lib/jwt-verify-checks.sh` に純関数として分離し、
 `scripts/tests/run-jwt-verify-accept-tests.sh`（cargo・ネットワーク非依存）で回帰検証する。
 実行結果レポートは `docs/acceptance/req16-jwt-verify.md` に記録する。

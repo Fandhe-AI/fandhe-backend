@@ -87,6 +87,12 @@
 （`verify_token`）を対象とする。`scripts/fuzz.sh` の `FUZZ_DIRS` に `crates/plugin-jwt/fuzz` が登録され、
 `ci.yml` の `fuzz-smoke` ジョブから実行される。
 
+E・F の静的確認も、説明文・コメントの言及による偽陽性を避けるため範囲を限定する:
+E は hub-wiring `Cargo.toml` の `[dependencies]` 表のキーのみ、F は `fuzz.sh` の
+`FUZZ_DIRS=(...)` 代入行（コメント除外）と `ci.yml` の `fuzz-smoke` ジョブ内の
+コメント以外の `run:` 行のみを見る。`scripts/tests/run-jwt-verify-accept-tests.sh` が、
+実ファイルから本物の行だけを除いたコピーで FAIL する陰性対照を常設している。
+
 ## 未計測・フォローアップ
 
 - HTTP の NFR-6（`benches/jwt-nfr6-bench.sh`）と REQ-9 基準 D の移行後再判定: `oha` 導入済みの専有環境で実施

@@ -223,7 +223,7 @@ check_e() {
         return
     fi
     local fail_msgs=""
-    grep -q "fandhe-backend-plugin-jwt" "${hub}/Cargo.toml" || fail_msgs+="hub-wiring が ${PKG} に依存していない; "
+    toml_has_normal_dependency "${hub}/Cargo.toml" "${PKG}" || fail_msgs+="hub-wiring の [dependencies] に ${PKG} が無い; "
     [ ! -e "${hub}/src/jwt.rs" ] && [ ! -e "${hub}/src/jwks.rs" ] || fail_msgs+="旧 jwt.rs/jwks.rs が残存; "
     if [ -x scripts/dep-direction-check.sh ] || [ -f scripts/dep-direction-check.sh ]; then
         bash scripts/dep-direction-check.sh >"${TMPDIR_ACCEPT}/dir.out" 2>&1 || fail_msgs+="dep-direction-check が非 0 終了; "
@@ -255,9 +255,10 @@ check_f() {
     for t in jwks_from_json verify_claims verify_token; do
         case " ${targets}" in *" ${t} "*) ;; *) fail_msgs+="target ${t} が無い; " ;; esac
     done
-    grep -q "crates/plugin-jwt/fuzz" scripts/fuzz.sh || fail_msgs+="scripts/fuzz.sh の FUZZ_DIRS に plugin-jwt/fuzz が無い; "
-    grep -q "scripts/fuzz.sh" .github/workflows/ci.yml || fail_msgs+="ci.yml が scripts/fuzz.sh を実行していない; "
-    grep -q "fuzz-smoke" .github/workflows/ci.yml || fail_msgs+="ci.yml に fuzz-smoke ジョブが無い; "
+    # コメント・description・step 名の文言にヒットしないよう、代入行／ジョブ内の run 行に限定して判定する
+    fuzz_dirs_registers scripts/fuzz.sh "crates/plugin-jwt/fuzz" || fail_msgs+="scripts/fuzz.sh の FUZZ_DIRS 代入行に plugin-jwt/fuzz が無い; "
+    workflow_job_runs_script .github/workflows/ci.yml fuzz-smoke scripts/fuzz.sh \
+        || fail_msgs+="ci.yml の fuzz-smoke ジョブが run で scripts/fuzz.sh を実行していない; "
     if [ -n "${fail_msgs}" ]; then
         record_fail "${label}" "${fail_msgs}"
         return

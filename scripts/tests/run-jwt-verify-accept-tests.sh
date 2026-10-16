@@ -72,6 +72,82 @@ mkdir -p "${TMP}/ft/common"
 touch "${TMP}/ft/x.rs" "${TMP}/ft/y.rs"
 assert_eq "target 名を列挙（サブディレクトリは除外）" "x y" "$(list_fuzz_targets "${TMP}/ft" | tr '\n' ' ' | sed 's/ $//')"
 
+echo "===== toml_has_normal_dependency ====="
+cat > "${TMP}/hub-ok.toml" <<'T'
+[package]
+description = "mentions fandhe-backend-plugin-jwt"
+# fandhe-backend-plugin-jwt in comment
+[dependencies]
+fandhe-backend-plugin-jwt = { workspace = true }
+[dev-dependencies]
+T
+cat > "${TMP}/hub-removed.toml" <<'T'
+[package]
+description = "mentions fandhe-backend-plugin-jwt"
+[dependencies]
+# fandhe-backend-plugin-jwt は一本化した
+serde = { workspace = true }
+[dev-dependencies]
+fandhe-backend-plugin-jwt = { workspace = true }
+T
+if toml_has_normal_dependency "${TMP}/hub-ok.toml" fandhe-backend-plugin-jwt; then pass "[dependencies] の宣言を検出"; else fail "[dependencies] の宣言を検出できない"; fi
+if toml_has_normal_dependency "${TMP}/hub-removed.toml" fandhe-backend-plugin-jwt; then fail "description・コメント・dev 節のヒットで偽陽性"; else pass "宣言行を除去すると FAIL（description・コメント・dev 節は無視）"; fi
+
+echo "===== fuzz_dirs_registers ====="
+cat > "${TMP}/fuzz-ok.sh" <<'T'
+#   - `crates/plugin-jwt/fuzz`: コメントでの言及
+FUZZ_DIRS=("crates/http/fuzz" "crates/plugin-jwt/fuzz")
+T
+cat > "${TMP}/fuzz-removed.sh" <<'T'
+#   - `crates/plugin-jwt/fuzz`: コメントでの言及
+FUZZ_DIRS=("crates/http/fuzz")
+# FUZZ_DIRS=("crates/plugin-jwt/fuzz")
+T
+if fuzz_dirs_registers "${TMP}/fuzz-ok.sh" crates/plugin-jwt/fuzz; then pass "FUZZ_DIRS 登録を検出"; else fail "FUZZ_DIRS 登録を検出できない"; fi
+if fuzz_dirs_registers "${TMP}/fuzz-removed.sh" crates/plugin-jwt/fuzz; then fail "コメントのヒットで偽陽性"; else pass "登録を除去すると FAIL（コメント行は無視）"; fi
+
+echo "===== workflow_job_runs_script ====="
+cat > "${TMP}/ci-ok.yml" <<'T'
+jobs:
+  other:
+    steps:
+      - run: echo other
+  fuzz-smoke:
+    steps:
+      # scripts/fuzz.sh の説明
+      - name: scripts/fuzz.sh
+        run: bash scripts/fuzz.sh --max-total-time 60
+T
+cat > "${TMP}/ci-removed.yml" <<'T'
+jobs:
+  fuzz-smoke:
+    steps:
+      # run: bash scripts/fuzz.sh は廃止
+      - name: scripts/fuzz.sh（名前だけ残存）
+        run: echo skipped
+  other:
+    steps:
+      - run: bash scripts/fuzz.sh
+T
+if workflow_job_runs_script "${TMP}/ci-ok.yml" fuzz-smoke scripts/fuzz.sh; then pass "fuzz-smoke の run を検出"; else fail "fuzz-smoke の run を検出できない"; fi
+if workflow_job_runs_script "${TMP}/ci-removed.yml" fuzz-smoke scripts/fuzz.sh; then fail "コメント・別ジョブ・step 名のヒットで偽陽性"; else pass "run 行を除去すると FAIL（コメント・step 名・別ジョブは無視）"; fi
+
+echo "===== 実ファイルに対する陽性・陰性対照（E・F） ====="
+REPO_ROOT="$(cd "${SCRIPTS_DIR}/.." && pwd)"
+HUB_TOML="${REPO_ROOT}/crates/plugin-hub-wiring/Cargo.toml"
+FUZZ_SH="${REPO_ROOT}/scripts/fuzz.sh"
+CI_YML="${REPO_ROOT}/.github/workflows/ci.yml"
+if toml_has_normal_dependency "${HUB_TOML}" fandhe-backend-plugin-jwt; then pass "実 hub-wiring Cargo.toml: 依存宣言あり"; else fail "実 hub-wiring Cargo.toml に依存宣言が無い"; fi
+if fuzz_dirs_registers "${FUZZ_SH}" crates/plugin-jwt/fuzz; then pass "実 fuzz.sh: FUZZ_DIRS 登録あり"; else fail "実 fuzz.sh に FUZZ_DIRS 登録が無い"; fi
+if workflow_job_runs_script "${CI_YML}" fuzz-smoke scripts/fuzz.sh; then pass "実 ci.yml: fuzz-smoke が fuzz.sh を実行"; else fail "実 ci.yml の fuzz-smoke が fuzz.sh を実行していない"; fi
+# 本物の行だけを除いたコピー（説明・コメントの言及は残る）で FAIL することを確認する
+{ grep -v '^fandhe-backend-plugin-jwt *=' "${HUB_TOML}" || true; } > "${TMP}/real-hub.toml"
+{ grep -v 'run: bash scripts/fuzz.sh' "${CI_YML}" || true; } > "${TMP}/real-ci.yml"
+sed 's|"crates/plugin-jwt/fuzz"||' "${FUZZ_SH}" > "${TMP}/real-fuzz.sh"
+if toml_has_normal_dependency "${TMP}/real-hub.toml" fandhe-backend-plugin-jwt; then fail "陰性対照: 実 Cargo.toml から依存行を除いても検出される（偽陽性）"; else pass "陰性対照: 実 Cargo.toml の依存行を除くと FAIL"; fi
+if fuzz_dirs_registers "${TMP}/real-fuzz.sh" crates/plugin-jwt/fuzz; then fail "陰性対照: 実 fuzz.sh から登録を除いても検出される（偽陽性）"; else pass "陰性対照: 実 fuzz.sh の登録を除くと FAIL"; fi
+if workflow_job_runs_script "${TMP}/real-ci.yml" fuzz-smoke scripts/fuzz.sh; then fail "陰性対照: 実 ci.yml から run 行を除いても検出される（偽陽性）"; else pass "陰性対照: 実 ci.yml の run 行を除くと FAIL"; fi
+
 echo ""
 echo "合計: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT}"
 [ "${FAIL_COUNT}" -eq 0 ]

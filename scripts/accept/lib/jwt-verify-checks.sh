@@ -69,3 +69,38 @@ count_pkg_in_tree() {
 list_fuzz_targets() {
     find "${1}" -maxdepth 1 -type f -name '*.rs' -exec basename {} .rs \; | sort
 }
+
+# Cargo.toml の `[dependencies]` 表に、指定名のキーが宣言されているか判定する（終了コード 0/1）。
+# description・コメント・`[dev-dependencies]` 中の同名文字列には反応しない
+# （REQ-1 レポートの基準 E・F と同型の「コメント・文言ヒットによる偽陽性」対策）。
+# 引数: $1 Cargo.toml、$2 依存名
+toml_has_normal_dependency() {
+    awk -v name="${2}" '
+        /^\[/ { in_deps = ($0 == "[dependencies]"); next }
+        in_deps && /^[[:space:]]*#/ { next }
+        in_deps && /^[A-Za-z0-9_-]+[[:space:]]*=/ {
+            key = $0; sub(/[[:space:]]*=.*/, "", key)
+            if (key == name) found = 1
+        }
+        END { exit(found ? 0 : 1) }
+    ' "${1}"
+}
+
+# scripts/fuzz.sh の `FUZZ_DIRS=(...)` 代入行（コメント行を除く）に指定ディレクトリが
+# 登録されているか判定する（終了コード 0/1）。ヘッダコメントの言及にはヒットさせない。
+# 引数: $1 fuzz.sh、$2 fuzz クレートのディレクトリ
+fuzz_dirs_registers() {
+    grep -vE '^[[:space:]]*#' "${1}" | grep -E '^FUZZ_DIRS=\(' | grep -qF "\"${2}\""
+}
+
+# ワークフロー YAML の指定ジョブ（`jobs:` 直下、2 スペースインデントのキー）の範囲内で、
+# コメント行を除いた `run:` 行が指定スクリプトを実行しているか判定する（終了コード 0/1）。
+# 引数: $1 ワークフロー YAML、$2 ジョブ ID、$3 スクリプトパス
+workflow_job_runs_script() {
+    awk -v job="${2}" -v script="${3}" '
+        /^  [A-Za-z0-9_-]+:/ { in_job = ($0 ~ "^  " job ":"); next }
+        in_job && /^[[:space:]]*#/ { next }
+        in_job && /run:/ && index($0, script) { found = 1 }
+        END { exit(found ? 0 : 1) }
+    ' "${1}"
+}
