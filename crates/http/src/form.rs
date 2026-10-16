@@ -41,33 +41,143 @@
 //! # DoS 耐性（`.claude/rules/security.md` リソース枯渇対策）
 //!
 //! [`chunked`](crate::chunked)・[`query`](crate::query) と同じ「バッファ確保前に
-//! 上限を検査し fail-closed で拒否する」方針を踏襲する。[`MAX_FORM_BYTES`]・
-//! [`MAX_FORM_PAIRS`] は [`crate::query`] の対応する上限と同値で固定し、
-//! `parse_query` への委譲で上限判定が食い違わないようにする（値を分離する
-//! 場合は別イシューとして起票する）。上限超過時は部分結果を一切返さない。
+//! 上限を検査し fail-closed で拒否する」方針を踏襲する。既定値
+//! （[`MAX_FORM_BYTES`] = 8 KiB・[`MAX_FORM_PAIRS`] = 256 組）は据え置きつつ、
+//! 呼び出し側が [`FormLimits`] + [`parse_form_with_limit`] で上限を指定できる
+//! （クエリ文字列の上限とは独立。内部では上限引数版のクエリ分解へ委譲するため
+//! 二重判定で食い違わない）。既定値を本文上限（1 MiB）へ揃える案・ルートごとの
+//! 本文上限は、解析コストと DoS 耐性の後退を理由に採らない。上限超過時は
+//! 部分結果を一切返さない。
+//!
+//! # HTTP 応答への変換
+//!
+//! [`FormError`] は [`IntoResponse`] を実装し、上限超過は 413、UTF-8 不正・
+//! percent-decode 失敗は 400 の固定メッセージ JSON 応答になる。
+//! `Result<Response, HttpError>` を返すハンドラでは `parse_form(body)?` と書ける。
 
+use crate::error::{HttpError, IntoResponse};
 use crate::percent::{PercentDecodeError, decode_str};
-use crate::query::{MAX_QUERY_BYTES, MAX_QUERY_PAIRS, QueryError, parse_query};
+use crate::query::{QueryError, parse_query_with_limits};
+use crate::response::Response;
 
-/// フォームボディとして許容する最大バイト数。
+/// [`parse_form`] / [`FormLimits::DEFAULT`] が使うフォームボディの既定最大バイト数。
 ///
-/// [`crate::query::MAX_QUERY_BYTES`] と同値（本モジュール doc comment 参照）。
-pub const MAX_FORM_BYTES: usize = MAX_QUERY_BYTES;
+/// クエリ文字列の上限（[`crate::query::MAX_QUERY_BYTES`]）とは独立した定数
+/// （現時点では同値）。[`parse_form_with_limit`] で呼び出し側が上書きできる。
+pub const MAX_FORM_BYTES: usize = 8 * 1024;
 
-/// フォームボディとして許容する key-value 組数の上限。
+/// [`parse_form`] / [`FormLimits::DEFAULT`] が使う key-value 組数の既定上限。
 ///
-/// [`crate::query::MAX_QUERY_PAIRS`] と同値（本モジュール doc comment 参照）。
-pub const MAX_FORM_PAIRS: usize = MAX_QUERY_PAIRS;
+/// クエリ文字列の上限（[`crate::query::MAX_QUERY_PAIRS`]）とは独立した定数
+/// （現時点では同値）。[`parse_form_with_limit`] で呼び出し側が上書きできる。
+pub const MAX_FORM_PAIRS: usize = 256;
+
+/// [`parse_form_with_limit`] に渡すフォームの上限（バイト数・組数）。
+///
+/// 取り違えやすい `usize` 2 個を名前付き指定にするための値型。
+/// [`FormLimits::DEFAULT`] は [`parse_form`] と同じ既定値
+/// （[`MAX_FORM_BYTES`]・[`MAX_FORM_PAIRS`]）。
+///
+/// ```
+/// use fandhe_backend_http::form::{FormLimits, MAX_FORM_BYTES, MAX_FORM_PAIRS};
+///
+/// let limits = FormLimits::DEFAULT.with_max_bytes(64 * 1024).with_max_pairs(1024);
+/// assert_eq!(limits.max_bytes(), 64 * 1024);
+/// assert_eq!(limits.max_pairs(), 1024);
+/// assert_eq!(FormLimits::default().max_bytes(), MAX_FORM_BYTES);
+/// assert_eq!(FormLimits::default().max_pairs(), MAX_FORM_PAIRS);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormLimits {
+    max_bytes: usize,
+    max_pairs: usize,
+}
+
+impl FormLimits {
+    /// [`parse_form`] と同じ既定上限（[`MAX_FORM_BYTES`]・[`MAX_FORM_PAIRS`]）。
+    pub const DEFAULT: FormLimits = FormLimits {
+        max_bytes: MAX_FORM_BYTES,
+        max_pairs: MAX_FORM_PAIRS,
+    };
+
+    /// ボディ最大バイト数を差し替えた値を返す。
+    #[must_use]
+    pub const fn with_max_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_bytes = max_bytes;
+        self
+    }
+
+    /// key-value 組数の上限を差し替えた値を返す。
+    #[must_use]
+    pub const fn with_max_pairs(mut self, max_pairs: usize) -> Self {
+        self.max_pairs = max_pairs;
+        self
+    }
+
+    /// ボディ最大バイト数を返す。
+    #[must_use]
+    pub const fn max_bytes(&self) -> usize {
+        self.max_bytes
+    }
+
+    /// key-value 組数の上限を返す。
+    #[must_use]
+    pub const fn max_pairs(&self) -> usize {
+        self.max_pairs
+    }
+}
+
+impl Default for FormLimits {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
 
 /// [`parse_form`] が返しうるエラー。
 ///
 /// `Display` 実装はボディ内容・キー値を含めない（位置情報のみ。ログへの
 /// 機密混入防止、`.claude/rules/security.md`）。
+///
+/// # HTTP 応答への対応づけ（イシュー #831）
+///
+/// [`IntoResponse`] と `From<FormError> for` [`HttpError`] を実装する。
+/// ステータスとボディのメッセージは次の固定表で、`Decode` の位置情報や
+/// ボディ内容は応答に含めない（`error` モジュールと同じ情報漏えい対策）。
+///
+/// | variant | status | message |
+/// |---|---|---|
+/// | `BodyTooLong` | 413 | `form body too large` |
+/// | `TooManyPairs` | 413 | `too many form fields` |
+/// | `InvalidUtf8Body` | 400 | `form body is not valid UTF-8` |
+/// | `Decode(_)` | 400 | `invalid form encoding` |
+///
+/// ```
+/// use fandhe_backend_http::error::{HttpError, IntoResponse};
+/// use fandhe_backend_http::form::{parse_form, FormError, MAX_FORM_BYTES};
+/// use fandhe_backend_http::response::Response;
+///
+/// fn handler(body: &[u8]) -> Result<Response, HttpError> {
+///     let pairs = parse_form(body)?;
+///     Ok(Response::new(200, pairs.len().to_string().into_bytes()))
+/// }
+///
+/// let too_long = "a".repeat(MAX_FORM_BYTES + 1);
+/// let res = handler(too_long.as_bytes()).into_response();
+/// assert_eq!(res.status, 413);
+///
+/// let res = handler(b"a=%ZZ").into_response();
+/// assert_eq!(res.status, 400);
+/// assert_eq!(res.body, br#"{"error":"invalid form encoding"}"#);
+///
+/// assert_eq!(FormError::TooManyPairs.into_response().status, 413);
+/// ```
 #[derive(Debug, PartialEq, Eq)]
 pub enum FormError {
-    /// フォームボディ全体が [`MAX_FORM_BYTES`] を超過した。
+    /// フォームボディ全体が上限（[`parse_form`] では [`MAX_FORM_BYTES`]、
+    /// [`parse_form_with_limit`] では指定値）を超過した。
     BodyTooLong,
-    /// key-value 組数が [`MAX_FORM_PAIRS`] を超過した。
+    /// key-value 組数が上限（[`parse_form`] では [`MAX_FORM_PAIRS`]、
+    /// [`parse_form_with_limit`] では指定値）を超過した。
     TooManyPairs,
     /// 生ボディが UTF-8 として不正（percent-decode 前の検査）。
     InvalidUtf8Body,
@@ -92,6 +202,26 @@ impl std::error::Error for FormError {
             FormError::Decode(err) => Some(err),
             _ => None,
         }
+    }
+}
+
+impl From<FormError> for HttpError {
+    /// 対応表は [`FormError`] の doc を参照。網羅的 `match` により variant 追加時に
+    /// 未対応をコンパイルエラーにする。メッセージは `&'static str` の固定文言のみ。
+    fn from(err: FormError) -> Self {
+        match err {
+            FormError::BodyTooLong => HttpError::new(413, "form body too large"),
+            FormError::TooManyPairs => HttpError::new(413, "too many form fields"),
+            FormError::InvalidUtf8Body => HttpError::new(400, "form body is not valid UTF-8"),
+            FormError::Decode(_) => HttpError::new(400, "invalid form encoding"),
+        }
+    }
+}
+
+impl IntoResponse for FormError {
+    /// [`HttpError`] へ変換して JSON エラー応答（413 / 400）にする。
+    fn into_response(self) -> Response {
+        HttpError::from(self).into_response()
     }
 }
 
@@ -168,11 +298,45 @@ fn decode_form_component(component: &str) -> Result<String, PercentDecodeError> 
 /// assert_eq!(parse_form(body.as_bytes()).unwrap_err(), FormError::BodyTooLong);
 /// ```
 pub fn parse_form(body: &[u8]) -> Result<Vec<(String, String)>, FormError> {
-    if body.len() > MAX_FORM_BYTES {
+    parse_form_with_limit(body, FormLimits::DEFAULT)
+}
+
+/// 上限（バイト数・組数）を呼び出し側が指定する [`parse_form`]。
+///
+/// 処理順・fail-closed 契約は [`parse_form`] と同一で、上限だけを `limits` に
+/// 差し替える。クエリ文字列の上限とは独立に設定できる。
+///
+/// - 実効的な上限は本文層の `MAX_BODY_BYTES`（既定 1 MiB、`Server::max_body_bytes`
+///   で変更可）でも上から抑えられる。`usize::MAX` を渡しても本文自体が有界。
+/// - 大きな上限は解析コスト増につながるため、必要最小にとどめること。
+/// - 上限 0 は空ボディのみ受理する。
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_http::form::{parse_form_with_limit, FormError, FormLimits, MAX_FORM_BYTES};
+///
+/// // 既定より大きい上限なら 8 KiB 超のボディも受理される。
+/// let body = format!("a={}", "x".repeat(MAX_FORM_BYTES));
+/// let big = FormLimits::DEFAULT.with_max_bytes(body.len());
+/// assert!(parse_form_with_limit(body.as_bytes(), big).is_ok());
+///
+/// // 小さい上限では超過で拒否される。
+/// let small = FormLimits::DEFAULT.with_max_pairs(1);
+/// assert_eq!(
+///     parse_form_with_limit(b"a=1&b=2", small).unwrap_err(),
+///     FormError::TooManyPairs
+/// );
+/// ```
+pub fn parse_form_with_limit(
+    body: &[u8],
+    limits: FormLimits,
+) -> Result<Vec<(String, String)>, FormError> {
+    if body.len() > limits.max_bytes() {
         return Err(FormError::BodyTooLong);
     }
     let body_str = std::str::from_utf8(body).map_err(|_| FormError::InvalidUtf8Body)?;
-    let pairs = parse_query(body_str)?;
+    let pairs = parse_query_with_limits(body_str, limits.max_bytes(), limits.max_pairs())?;
 
     let mut out = Vec::new();
     for (key, value) in pairs {
@@ -426,5 +590,131 @@ mod tests {
     #[test]
     fn is_form_content_type_rejects_empty_string() {
         assert!(!is_form_content_type(""));
+    }
+
+    fn json_body(res: &Response) -> String {
+        String::from_utf8(res.body.clone()).unwrap()
+    }
+
+    /// 応答を直列化し、ステータス行・`Content-Type`・`Content-Length`・ボディを検証する。
+    fn assert_wire(res: &Response, status: u16, body: &str) {
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert!(
+            text.starts_with(&format!("HTTP/1.1 {status} ")),
+            "status line: {text}"
+        );
+        assert!(text.contains("Content-Type: application/json\r\n"));
+        assert!(text.contains(&format!("Content-Length: {}\r\n", body.len())));
+        assert!(text.ends_with(&format!("\r\n\r\n{body}")));
+    }
+
+    #[test]
+    fn form_error_maps_to_status_and_fixed_message() {
+        type Case = (fn() -> FormError, u16, &'static str);
+        let cases: [Case; 4] = [
+            (|| FormError::BodyTooLong, 413, "form body too large"),
+            (|| FormError::TooManyPairs, 413, "too many form fields"),
+            (
+                || FormError::InvalidUtf8Body,
+                400,
+                "form body is not valid UTF-8",
+            ),
+            (
+                || FormError::Decode(PercentDecodeError::TruncatedEscape { at: 7 }),
+                400,
+                "invalid form encoding",
+            ),
+        ];
+        for (make, status, msg) in cases {
+            let http = HttpError::from(make());
+            assert_eq!(http.status(), status);
+            assert_eq!(http.message(), msg);
+            let res = make().into_response();
+            assert_eq!(res.status, status);
+            let body = format!("{{\"error\":\"{msg}\"}}");
+            assert_eq!(json_body(&res), body);
+            assert_wire(&res, status, &body);
+        }
+    }
+
+    #[test]
+    fn question_mark_propagates_into_http_error() {
+        fn h(body: &[u8]) -> Result<Response, HttpError> {
+            let p = parse_form(body)?;
+            Ok(Response::new(200, p.len().to_string().into_bytes()))
+        }
+        let long = "a".repeat(MAX_FORM_BYTES + 1);
+        let too_long = h(long.as_bytes()).into_response();
+        assert_eq!(too_long.status, 413);
+        assert_wire(&too_long, 413, "{\"error\":\"form body too large\"}");
+        let bad = h(b"a=%ZZ").into_response();
+        assert_eq!(bad.status, 400);
+        assert_wire(&bad, 400, "{\"error\":\"invalid form encoding\"}");
+        let ok = h(b"a=1").into_response();
+        assert_eq!(ok.status, 200);
+        assert_eq!(ok.body, b"1");
+        let text = String::from_utf8(ok.serialize(true)).unwrap();
+        assert!(text.starts_with("HTTP/1.1 200 "));
+        assert!(text.contains("Content-Length: 1\r\n"));
+        assert!(!text.contains("Content-Type:"));
+    }
+
+    #[test]
+    fn default_limits_are_unchanged() {
+        assert_eq!(MAX_FORM_BYTES, 8 * 1024);
+        assert_eq!(MAX_FORM_PAIRS, 256);
+        assert_eq!(FormLimits::default(), FormLimits::DEFAULT);
+        assert_eq!(FormLimits::DEFAULT.max_bytes(), MAX_FORM_BYTES);
+        assert_eq!(FormLimits::DEFAULT.max_pairs(), MAX_FORM_PAIRS);
+    }
+
+    #[test]
+    fn with_limit_bytes_boundary_small_and_large() {
+        for n in [16usize, MAX_FORM_BYTES + 1, 64 * 1024] {
+            let limits = FormLimits::DEFAULT.with_max_bytes(n);
+            let ok = "a".repeat(n);
+            assert!(parse_form_with_limit(ok.as_bytes(), limits).is_ok());
+            let ng = "a".repeat(n + 1);
+            assert_eq!(
+                parse_form_with_limit(ng.as_bytes(), limits).unwrap_err(),
+                FormError::BodyTooLong
+            );
+        }
+    }
+
+    #[test]
+    fn with_limit_pairs_boundary_small_and_large() {
+        for m in [2usize, MAX_FORM_PAIRS + 1] {
+            let limits = FormLimits::DEFAULT.with_max_pairs(m);
+            let ok = vec!["a=1"; m].join("&");
+            assert_eq!(
+                parse_form_with_limit(ok.as_bytes(), limits).unwrap().len(),
+                m
+            );
+            let ng = vec!["a=1"; m + 1].join("&");
+            assert_eq!(
+                parse_form_with_limit(ng.as_bytes(), limits).unwrap_err(),
+                FormError::TooManyPairs
+            );
+        }
+    }
+
+    #[test]
+    fn with_limit_zero_accepts_only_empty_body() {
+        let zero = FormLimits::DEFAULT.with_max_bytes(0);
+        assert_eq!(parse_form_with_limit(b"", zero).unwrap(), vec![]);
+        assert_eq!(
+            parse_form_with_limit(b"a", zero).unwrap_err(),
+            FormError::BodyTooLong
+        );
+    }
+
+    #[test]
+    fn parse_form_equals_with_default_limits() {
+        let body = b"a=1&b=%E6%97%A5";
+        assert_eq!(
+            parse_form(body).unwrap(),
+            parse_form_with_limit(body, FormLimits::DEFAULT).unwrap()
+        );
     }
 }

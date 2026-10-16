@@ -381,7 +381,11 @@ fandhe-backend/
 │   │                                    # `form::parse_form` で `application/x-www-form-urlencoded`
 │   │                                    # ボディパーサを提供（`query`/`percent` を合成し `+` → 空白
 │   │                                    # 変換等のフォーム固有デコード仕様・DoS 上限・Content-Type
-│   │                                    # 検証ヘルパを内蔵、イシュー #308）。
+│   │                                    # 検証ヘルパを内蔵、イシュー #308）。`form::
+│   │                                    # parse_form_with_limit` + `FormLimits` で上限を呼び出し側が
+│   │                                    # 指定でき（既定 8 KiB・256 組は不変）、`FormError` は
+│   │                                    # `IntoResponse` で 413（上限超過）/ 400（不正入力）の固定
+│   │                                    # メッセージ応答になる（イシュー #831）。
 │   │                                    # `Router::options_fallback` で OPTIONS
 │   │                                    # プリフライトを opt-in フックへ委譲可能にし、明示登録された
 │   │                                    # OPTIONS ルートを常に優先しつつ未登録なら従来どおり
