@@ -1116,7 +1116,14 @@ mod tests {
             .unwrap()
             .with_no_store();
         let text = String::from_utf8(res.serialize(true)).unwrap();
-        assert!(text.contains("Cache-Control: no-store\r\n"));
+        assert_wire_ok(&text);
+        assert_eq!(text.matches("\r\nCache-Control: ").count(), 2);
+        assert_eq!(text.matches("\r\nCache-Control: no-store\r\n").count(), 1);
+        assert_eq!(
+            text.matches("\r\nCache-Control: private=\"a,no-store\"\r\n")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -1719,11 +1726,20 @@ mod tests {
         assert_eq!(reused, second.serialize(true));
     }
 
+    /// 通常応答（空 body の 200）の全体形を検証する共通ヘルパー。
+    /// ステータス行・`Content-Length: 0` の 1 回出現・ヘッド終端直後に body が無いことを
+    /// 確認したうえで、`needle` の出現回数を返す。
+    fn assert_wire_ok(text: &str) {
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text:?}");
+        assert_eq!(text.matches("\r\nContent-Length: 0\r\n").count(), 1);
+        assert!(text.ends_with("\r\n\r\n"), "{text:?}");
+        assert_eq!(text.matches("\r\n\r\n").count(), 1);
+    }
+
     fn count(res: Response, needle: &str) -> usize {
-        String::from_utf8(res.serialize(true))
-            .unwrap()
-            .matches(needle)
-            .count()
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert_wire_ok(&text);
+        text.matches(needle).count()
     }
 
     #[test]
@@ -1864,7 +1880,16 @@ mod tests {
             .unwrap()
             .with_no_store();
         let text = String::from_utf8(r.serialize_chunked_head(true)).unwrap();
-        assert!(text.contains("Vary: Origin\r\n"));
-        assert!(text.contains("Cache-Control: no-store\r\n"));
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text:?}");
+        assert_eq!(
+            text.matches("\r\nTransfer-Encoding: chunked\r\n").count(),
+            1
+        );
+        assert!(!text.contains("Content-Length"), "{text:?}");
+        assert_eq!(text.matches("\r\nVary: Origin\r\n").count(), 1);
+        assert_eq!(text.matches("\r\nCache-Control: no-store\r\n").count(), 1);
+        // ヘッドのみで body（チャンク）は出力されない。
+        assert!(text.ends_with("\r\n\r\n"), "{text:?}");
+        assert_eq!(text.matches("\r\n\r\n").count(), 1);
     }
 }
