@@ -596,6 +596,18 @@ mod tests {
         String::from_utf8(res.body.clone()).unwrap()
     }
 
+    /// 応答を直列化し、ステータス行・`Content-Type`・`Content-Length`・ボディを検証する。
+    fn assert_wire(res: &Response, status: u16, body: &str) {
+        let text = String::from_utf8(res.serialize(true)).unwrap();
+        assert!(
+            text.starts_with(&format!("HTTP/1.1 {status} ")),
+            "status line: {text}"
+        );
+        assert!(text.contains("Content-Type: application/json\r\n"));
+        assert!(text.contains(&format!("Content-Length: {}\r\n", body.len())));
+        assert!(text.ends_with(&format!("\r\n\r\n{body}")));
+    }
+
     #[test]
     fn form_error_maps_to_status_and_fixed_message() {
         type Case = (fn() -> FormError, u16, &'static str);
@@ -619,7 +631,9 @@ mod tests {
             assert_eq!(http.message(), msg);
             let res = make().into_response();
             assert_eq!(res.status, status);
-            assert_eq!(json_body(&res), format!("{{\"error\":\"{msg}\"}}"));
+            let body = format!("{{\"error\":\"{msg}\"}}");
+            assert_eq!(json_body(&res), body);
+            assert_wire(&res, status, &body);
         }
     }
 
@@ -630,9 +644,19 @@ mod tests {
             Ok(Response::new(200, p.len().to_string().into_bytes()))
         }
         let long = "a".repeat(MAX_FORM_BYTES + 1);
-        assert_eq!(h(long.as_bytes()).into_response().status, 413);
-        assert_eq!(h(b"a=%ZZ").into_response().status, 400);
-        assert_eq!(h(b"a=1").into_response().status, 200);
+        let too_long = h(long.as_bytes()).into_response();
+        assert_eq!(too_long.status, 413);
+        assert_wire(&too_long, 413, "{\"error\":\"form body too large\"}");
+        let bad = h(b"a=%ZZ").into_response();
+        assert_eq!(bad.status, 400);
+        assert_wire(&bad, 400, "{\"error\":\"invalid form encoding\"}");
+        let ok = h(b"a=1").into_response();
+        assert_eq!(ok.status, 200);
+        assert_eq!(ok.body, b"1");
+        let text = String::from_utf8(ok.serialize(true)).unwrap();
+        assert!(text.starts_with("HTTP/1.1 200 "));
+        assert!(text.contains("Content-Length: 1\r\n"));
+        assert!(!text.contains("Content-Type:"));
     }
 
     #[test]
