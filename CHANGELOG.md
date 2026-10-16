@@ -7,8 +7,14 @@
 
 ## [Unreleased]
 
-次回リリースは 0.5.0 として出します（破壊的変更を含むため。バージョン bump 自体は
-リリース手順 `docs/design/crates-io-release.md` 側で行います）。
+## [0.5.0] - 2026-10-16
+
+公開対象 15 クレートを lockstep バンプ（`docs/design/crates-io-release.md` 7.7 節）。
+`fandhe-backend-plugin-jwt` と `fandhe-backend-plugin-csrf` はこの版で初公開します。
+実 publish（`v0.5.0` タグ push → verify → dry-run → GitHub Environments
+`crates-io-release` の required reviewers 承認 → `cargo publish --workspace`）は
+準備中（詳細は
+[`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7.7 節・8 節チェックリスト参照）。
 
 ### BREAKING CHANGES
 
