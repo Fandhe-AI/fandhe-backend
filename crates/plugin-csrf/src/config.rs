@@ -142,11 +142,7 @@ fn valid_origin(s: &str) -> bool {
             return false;
         };
         let inner = &after[..end];
-        if inner.is_empty()
-            || !inner
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
-        {
+        if !valid_ipv6_literal(inner) {
             return false;
         }
         let tail = &after[end + 1..];
@@ -168,6 +164,32 @@ fn valid_origin(s: &str) -> bool {
         port
     };
     port.is_none_or(|p| valid_port(p, default_port))
+}
+
+/// IPv6 リテラルがブラウザのシリアライズ形（小文字・ゼロ圧縮の正規形）と一致するかを検証する。
+///
+/// 構文が不正なもの、大文字・非正規形（`0:0:0:0:0:0:0:1` 等）、ブラウザが出力しない
+/// ドット表記（IPv4 射影）は、実行時に決して一致しないため拒否する。
+fn valid_ipv6_literal(inner: &str) -> bool {
+    if inner.contains('.') {
+        return false;
+    }
+    let Ok(addr) = inner.parse::<std::net::Ipv6Addr>() else {
+        return false;
+    };
+    // `Ipv6Addr` の Display は IPv4 射影をドット表記にするが、ブラウザは 16 進で出力する。
+    let canonical = match addr.to_ipv4_mapped() {
+        Some(v4) => {
+            let o = v4.octets();
+            format!(
+                "::ffff:{:x}:{:x}",
+                u16::from_be_bytes([o[0], o[1]]),
+                u16::from_be_bytes([o[2], o[3]])
+            )
+        }
+        None => addr.to_string(),
+    };
+    canonical == inner
 }
 
 fn valid_hostname(h: &str) -> bool {
@@ -209,6 +231,8 @@ mod tests {
             "https://app.example.com",
             "http://localhost:8080",
             "https://[::1]:8443",
+            "https://[2001:db8::1]",
+            "https://[::ffff:102:304]",
             "https://a.example:444",
             "http://a.example:443",
         ] {
@@ -242,6 +266,12 @@ mod tests {
             "https://a.example:",
             "https://",
             "https://[::1",
+            "https://[dead]",
+            "https://[0:0:0:0:0:0:0:1]",
+            "https://[::FFFF]",
+            "https://[2001:DB8::1]",
+            "https://[::ffff:1.2.3.4]",
+            "https://[2001:db8:0:0:0:0:0:1]",
             "https://[]",
             "https://a.example https://b.example",
         ] {
