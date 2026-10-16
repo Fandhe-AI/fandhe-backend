@@ -33,6 +33,8 @@
 | `Response::with_header(name, value)` | method | 検証付き任意ヘッダ追加（追記セマンティクス）。`Result<Self, HeaderError>` |
 | `Response::header(name)` | method | 設定済みヘッダの読み取り（大小文字無視、後処理型プラグイン用） |
 | `Response::with_set_cookie(SetCookie)` | method | 検証済み `Set-Cookie` を infallible に追加。複数回呼び出しで複数行 |
+| `Response::with_vary(field_name)` | method | すべての `Vary` 行と `*` を考慮し大小文字無視で重複なく新しい行を追加。`Result<Self, HeaderError>` |
+| `Response::with_no_store()` | method | `Cache-Control: no-store` を何度呼んでも 1 つだけ付与（既存ディレクティブは保持） |
 | `Response::redirect(status, location)` | fn | 301/302/303/307/308 限定の 3xx 構築。`Result<Self, RedirectError>` |
 | `Response::serialize(keep_alive)` | method | `Content-Length` 付き一括送信のワイヤ直列化 |
 | `Response::serialize_chunked_head(keep_alive)` | method | chunked ストリーミングのヘッド部のみ（`Transfer-Encoding: chunked`、body 非送出） |
@@ -175,6 +177,7 @@
 | JSON インジェクション | `error_response` は RFC 8259 準拠エスケープで常に妥当な JSON を出力 |
 | ReDoS | パーサはすべて線形走査・バックトラックなし（`request` の部分列探索含む） |
 | Cookie セキュリティ | `SetCookie` は `HttpOnly` / `Secure` / `SameSite` を builder で付与可能（セッション ID には `HttpOnly` を強く推奨）。`SameSite=None` は `Secure` を自動付与。`__Host-`/`__Secure-` 接頭辞の条件は `host_prefixed`/`secure_prefixed` が構築時に強制。セッション Cookie は `session`/`session_removal` で安全な既定値と同属性の削除が得られる |
+| キャッシュによる漏えい | 利用者ごとの応答・`Set-Cookie` を含む応答には `Response::with_no_store` を推奨（自動では付与しない）。`Vary` は `with_vary` で重複なく宣言する |
 | オープンリダイレクト | `Response::redirect` はワイヤ妥当性のみ検証する。外部入力由来の `location` の許可リスト検証は呼び出し元の責務 |
 
 ## 5. スコープ外・関連ドキュメント
