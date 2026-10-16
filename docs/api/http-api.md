@@ -50,9 +50,12 @@
 | `SetCookie::new(name, value)` | fn | cookie-name（tchar）/ cookie-value（cookie-octet）を構築時検証。`__Host-`/`__Secure-` 接頭辞付き名前（ASCII 大文字小文字無視）は `ReservedPrefix` で拒否 |
 | `SetCookie::host_prefixed(name, value)` / `secure_prefixed(name, value)` | fn | 接頭辞付き名前専用。`__Host-` は `Secure` + `Path=/` を、`__Secure-` は `Secure` を自動付与。接頭辞不一致は `PrefixMismatch` |
 | `SetCookie::http_only()` / `secure()` / `same_site(SameSite)` / `path(p)` / `max_age(secs)` | builder | 属性付与。`path` のみ fallible（path-value 検証 + `/` 開始必須。`__Host-` cookie は `/` のみ許可、違反は `HostPrefixPath`）。`SameSite::None` 指定時は `Secure` を自動付与 |
+| `SetCookie::session(name, value)` / `session_with(.., SessionSameSite)` | fn | セッション Cookie を `HttpOnly`・`Secure`・`SameSite=Lax`・`Path=/` で構築（`Max-Age` なし）。`__Host-`/`__Secure-` 名も受理 |
+| `SetCookie::session_removal(name)` / `session_removal_with(.., SessionSameSite)` | fn | 発行用と同じ属性に `Max-Age=0`・空値を加えた削除用 |
+| `SessionSameSite` | enum | `Lax` / `Strict` のみ（`SameSite::None` は型にない。`TryFrom<SameSite>` は `SessionSameSiteNone` で拒否） |
 | `SetCookie::to_header_value()` | method | `Path` → `Max-Age` → `SameSite` → `Secure` → `HttpOnly` の固定順で直列化 |
 | `SameSite` | enum | `Strict` / `Lax` / `None`（`None` は属性値であり未設定の意味ではない） |
-| `CookieError` | enum（`#[non_exhaustive]`） | `CookieStringTooLarge` / `TooManyCookies` / `InvalidCookiePair` / `InvalidName` / `InvalidValue` / `InvalidPath` / `ReservedPrefix` / `PrefixMismatch` / `HostPrefixPath` |
+| `CookieError` | enum（`#[non_exhaustive]`） | `CookieStringTooLarge` / `TooManyCookies` / `InvalidCookiePair` / `InvalidName` / `InvalidValue` / `InvalidPath` / `ReservedPrefix` / `PrefixMismatch` / `HostPrefixPath` / `SessionSameSiteNone` |
 
 `Domain` / `Expires` / `Partitioned` 属性は最小サブセット方針によりスコープ外である。
 
@@ -171,7 +174,7 @@
 | 情報漏えい | `HttpError` / `error_response` の `&'static str` 限定、エラー `Display` に拒否対象の値・機密を含めない方針 |
 | JSON インジェクション | `error_response` は RFC 8259 準拠エスケープで常に妥当な JSON を出力 |
 | ReDoS | パーサはすべて線形走査・バックトラックなし（`request` の部分列探索含む） |
-| Cookie セキュリティ | `SetCookie` は `HttpOnly` / `Secure` / `SameSite` を builder で付与可能（セッション ID には `HttpOnly` を強く推奨）。`SameSite=None` は `Secure` を自動付与。`__Host-`/`__Secure-` 接頭辞の条件は `host_prefixed`/`secure_prefixed` が構築時に強制 |
+| Cookie セキュリティ | `SetCookie` は `HttpOnly` / `Secure` / `SameSite` を builder で付与可能（セッション ID には `HttpOnly` を強く推奨）。`SameSite=None` は `Secure` を自動付与。`__Host-`/`__Secure-` 接頭辞の条件は `host_prefixed`/`secure_prefixed` が構築時に強制。セッション Cookie は `session`/`session_removal` で安全な既定値と同属性の削除が得られる |
 | オープンリダイレクト | `Response::redirect` はワイヤ妥当性のみ検証する。外部入力由来の `location` の許可リスト検証は呼び出し元の責務 |
 
 ## 5. スコープ外・関連ドキュメント

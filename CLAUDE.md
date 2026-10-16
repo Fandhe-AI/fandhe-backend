@@ -486,7 +486,10 @@ fandhe-backend/
 │   │                                    # 検証する（イシュー #810。`new` は接頭辞付き名を拒否、
 │   │                                    # `host_prefixed`/`secure_prefixed` が `Secure`・`Path=/`
 │   │                                    # を自動付与、`CookieError` は `#[non_exhaustive]` 化の
-│   │                                    # BREAKING CHANGE、`CHANGELOG.md` 参照）
+│   │                                    # BREAKING CHANGE、`CHANGELOG.md` 参照）。イシュー #827 で
+│   │                                    # `SetCookie::session`/`session_removal`（`HttpOnly`・`Secure`・
+│   │                                    # `SameSite=Lax`・`Path=/` の既定値と同属性の削除用、`SessionSameSite`
+│   │                                    # は `None` を型で排除）を加法的に追加
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）

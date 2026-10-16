@@ -78,6 +78,10 @@
   なく、`Server::gate` で登録します（設計は
   [`docs/design/jwt-verify-plugin.md`](docs/design/jwt-verify-plugin.md)）。
 - `fandhe-backend-http`: `SetCookie::host_prefixed` / `SetCookie::secure_prefixed` を追加しました。
+- `fandhe-backend-http`: セッション Cookie 用に `SetCookie::session` / `session_with` / `session_removal` /
+  `session_removal_with` と `SessionSameSite`（`Lax` / `Strict` のみ）、`CookieError::SessionSameSiteNone` を
+  追加しました（イシュー #827）。`HttpOnly`・`Secure`・`SameSite=Lax`・`Path=/` を既定で付与し、削除用は
+  同じ属性に `Max-Age=0` を加えます。`__Host-` 名とも組み合わせられます（必須ではありません）。
 - `fandhe-backend-plugin-hub-wiring`: `jwt`（`fandhe-backend-plugin-jwt` 全体の再エクスポート）、
   `AuthError` / `TenantClaims` / `HubClaims`、`Authenticator::from_jwt` を追加しました。
 
