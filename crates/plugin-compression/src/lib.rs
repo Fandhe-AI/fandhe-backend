@@ -48,7 +48,8 @@
 //!
 //! 条件 3・4 を満たした時点（= 表現が `Accept-Encoding` に依存して変わり
 //! うる時点）で、圧縮の成否に関わらず `Vary: Accept-Encoding` を付与する
-//! （共有キャッシュでの変異混同防止。重複付与はしない）。圧縮結果が元 body
+//! （共有キャッシュでの変異混同防止。`Response::with_vary` で全 `Vary` 行と
+//! `Vary: *` を考慮し、重複付与はしない）。圧縮結果が元 body
 //! より大きい場合は元のレスポンスをそのまま返す。
 //!
 //! # BREACH 類似の情報漏洩リスク（受け入れ基準、OWASP A02 隣接）
@@ -511,36 +512,16 @@ fn try_add_header(response: Response, name: &str, value: impl Into<String>) -> R
     response.with_header(name, value).unwrap_or(fallback)
 }
 
-/// `Vary` へ `token`（`Accept-Encoding` 想定）を欠落なく反映するヘルパ
-/// （イシュー #461 レビュー指摘の修正）。
+/// `Response::with_vary` の `Err` を「`Vary` を付与しない」側へ倒すヘルパ
+/// （イシュー #830）。
 ///
-/// `Response::header` は同名ヘッダのうち挿入順で最初の 1 件しか返さない
-/// （`crates/http` の doc を参照）ため、`response.header("vary").is_none()`
-/// による「Vary が 1 件でも既にあれば付与しない」判定は、CORS プラグイン
-/// （`crates/plugin-cors`）が `finalize_response` / `finalize_streaming_head`
-/// で先に `Vary: Origin` を確定させる構成（`Server::cors` +
-/// `Server::compression` 併用）で `Vary: Accept-Encoding` を取りこぼす。
-/// 共有キャッシュが `Origin` のみでバリアント判定し、`Accept-Encoding` を
-/// 送らないクライアントへ圧縮済みバイト列を配信しうる不具合につながる。
-///
-/// 本ヘルパは既存 `Vary` 値（先頭 1 件）を `,` 区切りトークンとして走査し
-/// `token` を大文字小文字無視で含むかのみを確認する。含まれなければ
-/// `try_add_header` で新規 `Vary` ヘッダ行を追加する（`Set-Cookie` と同様、
-/// 同名ヘッダの複数行追加は `Response::with_header` が許容する設計であり、
-/// RFC 9110 上も単一ヘッダのカンマ区切り列挙と等価。既存値への上書き
-/// マージではなく別行追加に留めるのは、`extra_headers` フィールドが
-/// `crates/http` 非公開でこのクレートから書き換えられないため）。
-fn add_vary_token(response: Response, token: &str) -> Response {
-    let already_present = response.header("vary").is_some_and(|existing| {
-        existing
-            .split(',')
-            .any(|part| part.trim().eq_ignore_ascii_case(token))
-    });
-    if already_present {
-        response
-    } else {
-        try_add_header(response, "Vary", token)
-    }
+/// `with_vary` は全 `Vary` 行・`Vary: *`・大文字小文字の違いを考慮して
+/// 重複付与を避ける（`crates/http` の公開補助）。失敗時に `self` を返さない
+/// 契約のため `try_add_header` と同様に複製へ倒す。`Err` は不正なトークン時
+/// のみで、定数 `"Accept-Encoding"` では起きない。
+fn try_add_vary(response: Response, field_name: &str) -> Response {
+    let fallback = response.clone();
+    response.with_vary(field_name).unwrap_or(fallback)
 }
 
 /// gzip コンテナ形式で `data` を圧縮する（イシュー #468 で公開化）。
@@ -618,10 +599,10 @@ pub fn plan_compression(
 
     // 表現が Accept-Encoding に依存して変わりうる時点で Vary を付与する
     // （圧縮の成否に関わらず、共有キャッシュでの変異混同防止）。既存の
-    // Vary に Accept-Encoding トークンが含まれる場合のみ重複付与しない
-    // （CORS 由来の `Vary: Origin` 等、別トークンの既存 Vary とは共存
-    // させる、`add_vary_token` の doc・イシュー #461 レビュー指摘を参照）。
-    let response = add_vary_token(response, "Accept-Encoding");
+    // Vary（全行）に Accept-Encoding か `*` がある場合のみ足さない
+    // （CORS 由来の `Vary: Origin` 等とは別行で共存、`Response::with_vary`、
+    // イシュー #461・#830）。
+    let response = try_add_vary(response, "Accept-Encoding");
 
     // 条件 6: 二重圧縮防止。
     if response.header("content-encoding").is_some() {
@@ -826,9 +807,9 @@ pub fn begin_streaming_compression(
     // 表現が Accept-Encoding に依存して変わりうる時点で Vary を付与する
     // （`apply_compression` と同一規則、圧縮の成否に関わらず付与）。CORS
     // （`finalize_streaming_head`）が先に `Vary: Origin` を確定していても
-    // `add_vary_token` が別トークンとして共存させる（イシュー #461
-    // レビュー指摘の修正）。
-    let response = add_vary_token(response, "Accept-Encoding");
+    // `Response::with_vary` が別トークンとして共存させる（イシュー
+    // #461・#830）。
+    let response = try_add_vary(response, "Accept-Encoding");
 
     // 条件 (d): 二重圧縮防止。
     if response.header("content-encoding").is_some() {
@@ -1065,7 +1046,7 @@ mod tests {
         // イシュー #461 レビュー指摘の回帰テスト: CORS 等が `finalize_response`
         // で先に `Vary: Origin` を確定済みの場合でも、圧縮側は
         // `Accept-Encoding` トークンを別 Vary 行として追加し、既存の
-        // `Origin` を失わないこと（`add_vary_token` の doc を参照）。
+        // `Origin` を失わないこと（`Response::with_vary` の doc を参照）。
         let config = CompressionConfig::builder().min_size(1).build();
         let head = head_from(b"GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n");
         let body = "x".repeat(64);
@@ -1120,6 +1101,120 @@ mod tests {
         let text = String::from_utf8(response.serialize_streaming_head_http10()).unwrap();
         assert!(text.contains("Vary: Origin\r\n"), "text: {text}");
         assert!(text.contains("Vary: Accept-Encoding\r\n"), "text: {text}");
+    }
+
+    /// ヘッド文字列の全 `Vary` 行から小文字化済みトークン列を集める。
+    /// `Response::header` は先頭行しか返さないため重複判定にはこちらを使う。
+    fn vary_tokens(head_text: &str) -> Vec<String> {
+        head_text
+            .lines()
+            .filter_map(|l| {
+                let (name, value) = l.split_once(':')?;
+                name.eq_ignore_ascii_case("vary").then_some(value)
+            })
+            .flat_map(|v| v.split(',').map(|t| t.trim().to_ascii_lowercase()))
+            .collect()
+    }
+
+    fn gzip_head() -> RequestHead {
+        head_from(b"GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n")
+    }
+
+    fn text_response() -> Response {
+        Response::new(200, "x".repeat(64).into_bytes()).with_content_type("text/plain")
+    }
+
+    /// 圧縮済み通常応答の契約（200・Content-Type 保持・Content-Encoding: gzip・
+    /// Content-Length が圧縮後 body 長・解凍すると元 body に一致）を確認する。
+    fn assert_gzip_intact(raw: &[u8]) {
+        use std::io::Read;
+
+        let text = head_text(raw);
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
+        assert!(text.contains("Content-Type: text/plain\r\n"), "{text}");
+        assert!(text.contains("Content-Encoding: gzip\r\n"), "{text}");
+        let body = &raw[text.len() + 4..];
+        assert!(
+            text.lines()
+                .any(|l| l == format!("Content-Length: {}", body.len())),
+            "{text}"
+        );
+        let mut decoded = String::new();
+        flate2::read::GzDecoder::new(body)
+            .read_to_string(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, "x".repeat(64));
+    }
+
+    #[test]
+    fn apply_compression_keeps_vary_cookie_and_adds_accept_encoding_once() {
+        // イシュー #830: 既存 `Vary: Cookie` と共存し、各トークンは 1 回だけ。
+        let config = CompressionConfig::builder().min_size(1).build();
+        let response = text_response().with_header("Vary", "Cookie").unwrap();
+        let result = apply_compression(&gzip_head(), &config, response);
+        let raw = result.serialize(true);
+        assert_gzip_intact(&raw);
+        let tokens = vary_tokens(&head_text(&raw));
+        assert_eq!(tokens.iter().filter(|t| *t == "cookie").count(), 1);
+        assert_eq!(tokens.iter().filter(|t| *t == "accept-encoding").count(), 1);
+    }
+
+    #[test]
+    fn apply_compression_detects_accept_encoding_in_later_vary_line() {
+        // 旧実装（先頭 1 行のみ参照）では重複付与していたケースの回帰テスト。
+        let config = CompressionConfig::builder().min_size(1).build();
+        let response = text_response()
+            .with_header("Vary", "Cookie")
+            .unwrap()
+            .with_header("vary", "accept-encoding")
+            .unwrap();
+        let result = apply_compression(&gzip_head(), &config, response);
+        let raw = result.serialize(true);
+        assert_gzip_intact(&raw);
+        let text = head_text(&raw);
+        assert_eq!(
+            text.to_ascii_lowercase().matches("vary:").count(),
+            2,
+            "{text}"
+        );
+        let tokens = vary_tokens(&text);
+        assert_eq!(tokens.iter().filter(|t| *t == "accept-encoding").count(), 1);
+    }
+
+    #[test]
+    fn apply_compression_does_not_add_vary_when_star_present() {
+        // 旧実装では `*` と並べて `Accept-Encoding` を足していたケースの回帰テスト。
+        let config = CompressionConfig::builder().min_size(1).build();
+        let response = text_response().with_header("Vary", "*").unwrap();
+        let result = apply_compression(&gzip_head(), &config, response);
+        let raw = result.serialize(true);
+        assert_gzip_intact(&raw);
+        let text = head_text(&raw);
+        assert_eq!(text.matches("Vary:").count(), 1, "{text}");
+        assert!(!text.contains("Vary: Accept-Encoding"), "{text}");
+    }
+
+    #[test]
+    fn begin_streaming_compression_keeps_vary_cookie_and_adds_accept_encoding_once() {
+        let config = CompressionConfig::builder()
+            .compress_streaming(true)
+            .build();
+        let response = Response::empty(200)
+            .with_content_type("text/event-stream")
+            .with_header("Vary", "Cookie")
+            .unwrap();
+        let (response, encoder) = begin_streaming_compression(&gzip_head(), &config, response);
+        assert!(encoder.is_some());
+        let text = String::from_utf8(response.serialize_streaming_head_http10()).unwrap();
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
+        assert!(
+            text.contains("Content-Type: text/event-stream\r\n"),
+            "{text}"
+        );
+        assert!(text.contains("Content-Encoding: gzip\r\n"), "{text}");
+        let tokens = vary_tokens(&text);
+        assert_eq!(tokens.iter().filter(|t| *t == "cookie").count(), 1);
+        assert_eq!(tokens.iter().filter(|t| *t == "accept-encoding").count(), 1);
     }
 
     #[test]

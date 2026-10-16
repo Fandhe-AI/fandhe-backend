@@ -200,6 +200,92 @@ async fn cors_and_compression_apply_in_sequence() {
     assert_eq!(decoded, "x".repeat(2048));
 }
 
+#[cfg(feature = "cors")]
+#[tokio::test]
+async fn cors_and_compression_do_not_duplicate_vary_tokens() {
+    // イシュー #830: ハンドラが `Vary: Cookie` を宣言していても、CORS と圧縮が
+    // `Response::with_vary` 経由で足す `Origin` / `Accept-Encoding` を含め、
+    // 各トークンはちょうど 1 回だけ現れる。
+    use fandhe_backend_plugin_cors::CorsConfig;
+
+    fn vary_tokens(head: &str) -> Vec<String> {
+        head.lines()
+            .filter_map(|l| {
+                let (name, value) = l.split_once(':')?;
+                name.eq_ignore_ascii_case("vary").then_some(value)
+            })
+            .flat_map(|v| v.split(',').map(|t| t.trim().to_ascii_lowercase()))
+            .collect()
+    }
+
+    let cors_config = CorsConfig::builder()
+        .allow_origin("https://app.example.com")
+        .build()
+        .unwrap();
+    let compression_config = CompressionConfig::builder().min_size(1).build();
+    let router = Router::new()
+        .route("GET", "/vary-cookie", |_head, _body| {
+            Response::new(200, "x".repeat(2048).into_bytes())
+                .with_content_type("text/plain")
+                .with_header("Vary", "Cookie")
+                .unwrap()
+        })
+        .route("GET", "/vary-all", |_head, _body| {
+            Response::new(200, "x".repeat(2048).into_bytes())
+                .with_content_type("text/plain")
+                .with_header("Vary", "Cookie, Origin, Accept-Encoding")
+                .unwrap()
+        });
+    let server = Server::new()
+        .handler(router)
+        .cors(cors_config)
+        .compression(compression_config);
+
+    let request = b"GET /vary-cookie HTTP/1.1\r\nOrigin: https://app.example.com\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n";
+    let raw = roundtrip_raw(&server, request).await;
+    let (head, body) = split_response(&raw);
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "head: {head}");
+    assert!(
+        head.contains("Content-Type: text/plain\r\n"),
+        "head: {head}"
+    );
+    assert!(
+        head.contains(&format!("Content-Length: {}\r\n", body.len())),
+        "head: {head}"
+    );
+    assert!(head.contains("Content-Encoding: gzip\r\n"), "head: {head}");
+    let tokens = vary_tokens(&head);
+    for t in ["cookie", "origin", "accept-encoding"] {
+        assert_eq!(tokens.iter().filter(|x| *x == t).count(), 1, "head: {head}");
+    }
+    let mut decoded = String::new();
+    flate2::read::GzDecoder::new(body.as_slice())
+        .read_to_string(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, "x".repeat(2048));
+
+    // 既に全トークンを宣言済みなら、どちらも行を足さない。
+    let request = b"GET /vary-all HTTP/1.1\r\nOrigin: https://app.example.com\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n";
+    let raw = roundtrip_raw(&server, request).await;
+    let (head, body) = split_response(&raw);
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "head: {head}");
+    assert!(
+        head.contains("Content-Type: text/plain\r\n"),
+        "head: {head}"
+    );
+    assert!(
+        head.contains(&format!("Content-Length: {}\r\n", body.len())),
+        "head: {head}"
+    );
+    assert!(head.contains("Content-Encoding: gzip\r\n"), "head: {head}");
+    assert_eq!(head.matches("Vary:").count(), 1, "head: {head}");
+    let mut decoded = String::new();
+    flate2::read::GzDecoder::new(body.as_slice())
+        .read_to_string(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, "x".repeat(2048));
+}
+
 #[tokio::test]
 async fn blocking_threshold_offload_roundtrips_same_as_inline() {
     // イシュー #468: `blocking_threshold(1)` を指定すると /large（2048
