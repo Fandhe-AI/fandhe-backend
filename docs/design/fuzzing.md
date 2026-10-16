@@ -170,6 +170,15 @@ REQ-16 受入基準 6（NFR-11）への対応として、`fandhe-backend-plugin-
 既存 7 target（http）も同条件で crash/hang なし。実行で libFuzzer が追記した corpus は
 コミット前に削除し、手で用意したシードのみを残した（既存方針）。
 
+## イシュー #828（同一オリジンリダイレクト先）fuzz target 追加
+
+`fandhe_backend_http::location::validate_same_origin_location` / `SameOriginLocation::new` /
+`Response::see_other` を対象に `crates/http/fuzz/fuzz_targets/same_origin_location.rs` を追加した
+（NFR-11）。不変条件は panic しないこと・検証関数と型構築の合否一致・`Ok` 値の形（先頭 `/`、
+2 文字目が `/` `\` でない、`\` と制御文字を含まない）・`see_other` 直列化のヘッダ部に
+行区切り以外の CR/LF が現れないこと。`scripts/fuzz.sh` が `fuzz_targets/*.rs` を自動列挙する
+ため CI `fuzz-smoke` でも実行される。実行結果は CI `fuzz-smoke` で確認する。
+
 ## スコープ外（out-of-scope-tracking）
 
 - corpus の永続化・自動最小化（`cargo fuzz cmin`）・カバレッジ計測の CI 化、

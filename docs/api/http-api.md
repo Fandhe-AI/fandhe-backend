@@ -36,6 +36,7 @@
 | `Response::with_vary(field_name)` | method | すべての `Vary` 行と `*` を考慮し大小文字無視で重複なく新しい行を追加。`Result<Self, HeaderError>` |
 | `Response::with_no_store()` | method | `Cache-Control: no-store` を何度呼んでも 1 つだけ付与（既存ディレクティブは保持） |
 | `Response::redirect(status, location)` | fn | 301/302/303/307/308 限定の 3xx 構築。`Result<Self, RedirectError>` |
+| `Response::see_other(location)` | fn | POST 後の 303 See Other。検証済み `SameOriginLocation` のみ受け取る infallible 構築（`redirect` とは別経路で挙動不変） |
 | `Response::serialize(keep_alive)` | method | `Content-Length` 付き一括送信のワイヤ直列化 |
 | `Response::serialize_chunked_head(keep_alive)` | method | chunked ストリーミングのヘッド部のみ（`Transfer-Encoding: chunked`、body 非送出） |
 | `Response::serialize_streaming_head_http10()` | method | HTTP/1.0 向け EOF 終端ストリーミングヘッド（常に `Connection: close`） |
@@ -43,6 +44,16 @@
 | `AllowedMethods::from_methods(...)` | fn | tchar 検証 + ソート + 重複排除。1 件でも不正なら `None` |
 | `HeaderError` | enum | `InvalidName` / `InvalidValue` / `ReservedName` |
 | `RedirectError` | enum | `UnsupportedStatus` / `EmptyLocation` / `InvalidLocation(HeaderError)` |
+
+### 2.2.1 `location` — 同一オリジンに限るリダイレクト先（イシュー #828）
+
+| API | 種別 | 内容 |
+|-----|------|------|
+| `validate_same_origin_location(&str)` | fn | sans-IO 純関数。空でない・先頭 `/`・2 文字目が `/` `\` でない・`\` と制御文字（HTAB 含む）を含まない、のすべてを満たすときのみ `Ok` |
+| `SameOriginLocation::new` / `TryFrom` | fn | 検証済み値の唯一の構築経路。`as_str` / `into_string` は入力とバイト同一 |
+| `SameOriginLocationError` | enum | `Empty` / `NotRootRelative` / `SchemeRelative` / `Backslash` / `ControlCharacter`（`#[non_exhaustive]`、`Display` は入力値を含めない） |
+
+型は percent デコード・`.` `..` 解決を行わない。`%2F` / `%5C` は不透明なバイトとして受理される。
 
 ### 2.3 `cookie` — 読み取りパーサ + 構築時検証済み書き込み型
 
@@ -142,7 +153,7 @@
 | 非デコード・無正規化 | `RequestHead::path` / `query` / `parse_query` / `parse_cookie_header` は percent-decode を行わず生のまま返す。ルート照合とパーサでデコード有無が食い違う正規化バイパス（OWASP A01）を防ぐ。デコードは照合確定後にハンドラが `percent` / `form` で明示的に行う |
 | 二重デコード禁止 | `decode_bytes` / `decode_str` / `parse_form` は 1 値につき 1 回だけ適用する。デコード結果（`%00`・制御文字・`../` を含みうる）の再検証は呼び出し元の責務 |
 | fail-closed | 上限超過・構文違反時は部分結果を一切返さず `Err`。cookie の不正 pair も黙ってスキップしない |
-| ヘッダ送出経路の限定 | `Response` は無検証の任意ヘッダ送出 API を持たない。経路は `with_content_type`（`&'static str` 限定）・`with_allow` / `with_set_cookie`（構築時検証済み専用型）・`with_header`（構築時検証 + `Result`）の 4 つのみで、CRLF がワイヤに出る経路を型レベルで排除する |
+| ヘッダ送出経路の限定 | `Response` は無検証の任意ヘッダ送出 API を持たない。経路は `with_content_type`（`&'static str` 限定）・`with_allow` / `with_set_cookie` / `see_other`（構築時検証済み専用型）・`with_header`（構築時検証 + `Result`）の 4 つのみで、CRLF がワイヤに出る経路を型レベルで排除する |
 | フレーミングの一元管理 | `Content-Length` / `Connection` / `Transfer-Encoding` は `with_header` で上書き不可（`HeaderError::ReservedName`）。`serialize`（Content-Length のみ）と `serialize_chunked_head`（Transfer-Encoding のみ）は経路分離され、両ヘッダが共存する応答は構造的に生成できない |
 | bodyless ステータス | 1xx・204・304 は `serialize_chunked_head` がフレーミングヘッダを出力せず、呼び出し元も chunked body・終端チャンクを送出しない対の契約（キープアライブ上のレスポンス分割防止） |
 | consumed 前進 | `ParseOutcome::Complete` / `DecodeOutcome` の `consumed` 分だけ呼び出し元がバッファを前進させ、残余（パイプライン済み次リクエスト・body 先頭）を保持する |
@@ -180,7 +191,7 @@
 | ReDoS | パーサはすべて線形走査・バックトラックなし（`request` の部分列探索含む） |
 | Cookie セキュリティ | `SetCookie` は `HttpOnly` / `Secure` / `SameSite` を builder で付与可能（セッション ID には `HttpOnly` を強く推奨）。`SameSite=None` は `Secure` を自動付与。`__Host-`/`__Secure-` 接頭辞の条件は `host_prefixed`/`secure_prefixed` が構築時に強制。セッション Cookie は `session`/`session_removal` で安全な既定値と同属性の削除が得られる |
 | キャッシュによる漏えい | 利用者ごとの応答・`Set-Cookie` を含む応答には `Response::with_no_store` を推奨（自動では付与しない）。`Vary` は `with_vary` で重複なく宣言する |
-| オープンリダイレクト | `Response::redirect` はワイヤ妥当性のみ検証する。外部入力由来の `location` の許可リスト検証は呼び出し元の責務 |
+| オープンリダイレクト | `SameOriginLocation` + `Response::see_other` で相対パスのみを型として許可できる（検証値と送出値はバイト同一で非デコード）。`Response::redirect` はワイヤ妥当性のみ検証し、外部入力由来の `location` の許可リスト検証は呼び出し元の責務 |
 
 ## 5. スコープ外・関連ドキュメント
 

@@ -78,6 +78,13 @@
 
 ### Added
 
+- `fandhe-backend-http`: 同一オリジンに限るリダイレクト先の検証済み型
+  `location::SameOriginLocation`（と sans-IO 検証関数 `validate_same_origin_location`、
+  `#[non_exhaustive]` のエラー型 `SameOriginLocationError`）と、POST 後の 303 を組み立てる
+  `Response::see_other` を追加しました（イシュー #828）。空・`/` 始まりでない値・`//`・`/\`・
+  `\`・制御文字（HTAB 含む）を構築時に拒否し、percent デコード・正規化は行いません
+  （`%2F` / `%5C` は不透明なバイトとして受理）。既存の `Response::redirect` の挙動は
+  変わりません。fuzz target `same_origin_location` を追加しました。
 - `fandhe-backend-http`: `Response::with_vary` と `Response::with_no_store` を追加しました
   （イシュー #829）。`with_vary` はすべての `Vary` 行と `Vary: *` を考慮し、大文字小文字を
   区別せず重複なくトークンを新しい行として足します。`with_no_store` は `Cache-Control:

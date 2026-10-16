@@ -496,7 +496,10 @@ fandhe-backend/
 │   │                                    # BREAKING CHANGE、`CHANGELOG.md` 参照）。イシュー #827 で
 │   │                                    # `SetCookie::session`/`session_removal`（`HttpOnly`・`Secure`・
 │   │                                    # `SameSite=Lax`・`Path=/` の既定値と同属性の削除用、`SessionSameSite`
-│   │                                    # は `None` を型で排除）を加法的に追加
+│   │                                    # は `None` を型で排除）を加法的に追加。イシュー #828 で
+│   │                                    # `location::SameOriginLocation`（`/` 始まりのみ受理・`//`・`\`・制御文字を
+│   │                                    # 拒否・非デコード）と `Response::see_other`（303）、fuzz target
+│   │                                    # `same_origin_location` を加法的に追加
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
