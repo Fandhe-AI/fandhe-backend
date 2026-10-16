@@ -17,8 +17,8 @@
 2. **公開判断**: 2026-07-21 にリポジトリオーナーから公開指示済み。本ブロッカーは解消済み
 3. **公開対象クレートの最終選定**: 公開対象 13 クレートで確定済み（4 節の区分表参照）。
    その後 REQ-16 で `fandhe-backend-plugin-jwt` を加え、現行の公開対象は 14 クレート
-   （イシュー #822。初公開は 0.5.0 の予定）、さらに REQ-17 で `fandhe-backend-plugin-csrf` を
-   加え 15 クレートとなる（イシュー #832。同じく初公開は 0.5.0 の予定）。本ブロッカーは解消済み
+   （イシュー #822。0.5.0 で初公開済み、2026-10-16）、さらに REQ-17 で `fandhe-backend-plugin-csrf` を
+   加え 15 クレートとなる（イシュー #832。同じく 0.5.0 で初公開済み）。本ブロッカーは解消済み
 4. **リポジトリの public 化**: 2026-07-21 に public 化完了済み。README・doc comment 内の
    リンクを crates.io 上で解決可能にするため実施。本ブロッカーは解消済み
 5. **`cargo login`**: crates.io への認証はユーザーが実施済み。トークンをリポジトリ・
@@ -86,14 +86,14 @@
 - **公開対象 13 クレートは crates.io v0.1.0 として公開済み**（2026-07-21 実施。5 節参照）。
   恒久非公開 2 クレート（`axum-ref` / `ws-load-client`）は `publish = false`
   で維持し、workspace `exclude` の `crates/http/fuzz` と合わせて公開物から除外
-- **`fandhe-backend-plugin-jwt`（イシュー #822、0.5.0 で初公開予定）**: 骨格段階の暫定
+- **`fandhe-backend-plugin-jwt`（イシュー #822、0.5.0 で初公開、2026-10-16）**: 骨格段階の暫定
   `publish = false` を #822 で解除した。Gate 型のため core の feature 経由ではなく利用側が
   直接依存する。テスト専用鍵 `tests/fixtures/*.pk8` は hub-wiring と同じ判断で公開物に同梱する
   （`tests/` と `examples/` が `include_bytes!` で参照するため。`tests/fixtures/README.md` に
   テスト専用・秘匿性なしと明記）。`fuzz/` はネストした `Cargo.toml` を持つため package に
   自動的に含まれない。依存順では `fandhe-backend-core`・`fandhe-backend-http` の後、
   `fandhe-backend-plugin-hub-wiring`（plugin-jwt に依存）の前に解決される
-- **`fandhe-backend-plugin-csrf`（イシュー #832、0.5.0 で初公開予定）**: 骨格段階の暫定
+- **`fandhe-backend-plugin-csrf`（イシュー #832、0.5.0 で初公開、2026-10-16）**: 骨格段階の暫定
   `publish = false` を #832 で解除した。Gate 型のため core の feature 経由ではなく利用側が
   直接依存する。依存順では `fandhe-backend-core`・`fandhe-backend-http` の後に解決され、
   plugin-csrf に依存する公開クレートはない（`fandhe-backend-routes` は dev-dependency のみ）。
@@ -439,13 +439,21 @@ v0.4.1 公開（2026-09-26）後に main へ入った変更は breaking change �
   対象外のためマージは阻害しない）。publish 完了後に `workflow_dispatch` で
   再実行し、PASS を確認した（2026-09-28、success。run 36457798408）
 
-### 7.7 v0.5.0 リリース（準備中）
+### 7.7 v0.5.0 リリース（2026-10-16 publish 完了）
 
 v0.4.2 公開（2026-09-28）後に main へ入った変更は breaking change を含むため、
 7 節の Cargo の 0.x 系規則（minor で breaking change を許容）に従い、公開対象
 15 クレートを 0.5.0 へ一括バンプする。`fandhe-backend-plugin-jwt`（REQ-16、
 イシュー #811〜#822）と `fandhe-backend-plugin-csrf`（REQ-17、イシュー #825〜#832）は
 この版で初公開する（lockstep 対象が 13 クレートから 15 クレートへ増える）。
+
+- **実 publish（Phase B）は 2026-10-16 に完了**。`v0.5.0` タグ push により
+  `release.yml`（run 38904246045）の verify → dry-run → GitHub Environments
+  `crates-io-release` の承認を経て `cargo publish --workspace` が実行され、公開
+  対象 15 クレートすべての 0.5.0 が crates.io インデックスへ反映されたことを
+  crates.io API で確認済み（あわせて本ドキュメント・`CHANGELOG.md`・README・
+  `docs/guide/getting-started.md`・`site/index.md`・CLAUDE.md の v0.4.2 表現を
+  「公開済み（2026-10-16）」・v0.5.0 へ切り替えた）。
 
 - **BREAKING CHANGE**（`fandhe-backend-http`）: `SetCookie` の cookie 接頭辞
   （`__Host-` / `__Secure-`）の構築時検証と `CookieError` の `#[non_exhaustive]` 化
@@ -468,10 +476,15 @@ v0.4.2 公開（2026-09-28）後に main へ入った変更は breaking change �
   クレート版追随を行い、`CHANGELOG.md` の `[Unreleased]` 節の内容を
   `[0.5.0] - 2026-10-16` 節へ移して空の `[Unreleased]` を残した
 - README・`docs/guide/getting-started.md`・`site/index.md`・CLAUDE.md の現行公開版
-  表記は、前例どおり Phase B の publish 完了後に追随する
+  表記は、前例どおり Phase B の publish 完了（2026-10-16）を受けて v0.5.0 へ追随済み
 - `standalone-crates-io.yml` は v0.5.0 publish 完了までは構造的に FAIL する
   （7.6 節と同一のニワトリ卵問題、required check 対象外のためマージは阻害しない）。
-  publish 完了後に `workflow_dispatch` で再実行する
+  publish 完了後に `workflow_dispatch` で再実行し、PASS を確認した（2026-10-16、
+  success。run 38912599157、PASS 5 / SKIP 0 / FAIL 0）
+- **team owner の追加は未実施**: 3 節の方針どおり新規 2 クレートへ team owner を
+  追加する予定だったが、`<team>` の具体名が未確定のため実施していない。既存 13
+  クレートも 2026-10-16 時点で owner は個人アカウント 1 件のみであり、team 名の
+  確定後に 15 クレートまとめて `cargo owner --add` する
 
 ## 8. 公開前チェックリスト
 
@@ -573,7 +586,7 @@ v0.4.2 公開（2026-09-28）後に main へ入った変更は breaking change �
       `fandhe-backend-core = "^0.4.2"` 等を crates.io 公開版のみで解決できて PASS することを
       確認する（2026-09-28 実施済み、success。run 36457798408）
 
-### v0.5.0（Phase A 完了、Phase B 未実施）
+### v0.5.0（2026-10-16 publish 完了）
 
 - [x] 公開対象 15 クレートの `version` および workspace 内 path 依存の `version` 併記が
       すべて 0.5.0 に揃っている（2026-10-16 実施済み）
@@ -587,9 +600,15 @@ v0.4.2 公開（2026-09-28）後に main へ入った変更は breaking change �
       （`src/`・`tests/`・`Cargo.toml` のみで秘密情報を含まない。#832 で確認済み、0.5.0 バンプ後に再確認 2026-10-16）
 - [x] `fandhe-backend-plugin-jwt`・`fandhe-backend-plugin-csrf` の名前の空きを publish 直前に再確認する（2 節。
       2026-10-16 に crates.io API がいずれも HTTP 404 であることを確認済み）
-- [ ] Phase B: `v0.5.0` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
-- [ ] 初回 publish の後、`fandhe-backend-plugin-jwt`・`fandhe-backend-plugin-csrf` に team owner を追加する（3 節）
-- [ ] Phase B publish 完了後、`standalone-crates-io.yml` を `workflow_dispatch` で再実行する
+- [x] Phase B: `v0.5.0` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
+      の実行（2026-10-16 実施済み。15 クレートすべての 0.5.0 が crates.io
+      インデックスへ反映されたことを確認済み。release run 38904246045）
+- [ ] 初回 publish の後、`fandhe-backend-plugin-jwt`・`fandhe-backend-plugin-csrf` に team owner を追加する（3 節。
+      `<team>` 名が未確定のため保留。既存 13 クレートも個人 owner のみで、確定後に 15 クレートまとめて追加する。7.7 節）
+- [x] Phase B publish 完了後、`standalone-crates-io.yml` を `workflow_dispatch` で再実行し、
+      `templates/app`・`examples/with-*` 4 件の 5 クレートが `fandhe-backend-core = "^0.5.0"` 等を
+      crates.io 公開版のみで解決できて PASS することを確認する（2026-10-16 実施済み、success。
+      run 38912599157）
 
 ## 参照
 

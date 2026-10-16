@@ -13,7 +13,8 @@
 `fandhe-backend-plugin-jwt` と `fandhe-backend-plugin-csrf` はこの版で初公開します。
 実 publish（`v0.5.0` タグ push → verify → dry-run → GitHub Environments
 `crates-io-release` の required reviewers 承認 → `cargo publish --workspace`）は
-準備中（詳細は
+2026-10-16 に実施完了（release run 38904246045、15 クレートすべてが crates.io
+インデックスへ反映されたことを確認済み。詳細は
 [`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7.7 節・8 節チェックリスト参照）。
 
 ### BREAKING CHANGES
@@ -72,7 +73,7 @@
     検証失敗は 401）。
   - リリース順の注意: `fandhe-backend-plugin-jwt` の暫定の `publish = false` は
     #822（公開準備）で解除済みです。`fandhe-backend-plugin-hub-wiring` が依存するため、
-    0.5.0 で 2 クレートを同時に初公開します。
+    0.5.0 で 2 クレートを同時に初公開しました。
 
 ### Changed
 
