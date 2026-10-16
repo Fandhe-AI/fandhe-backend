@@ -5,8 +5,8 @@
 `webrtc-accept.sh`（REQ-8、TASK-8.4）・`graphql-accept.sh`（REQ-5、TASK-5.2）・
 `openapi-ts-accept.sh`（REQ-6、TASK-6.2）・`tracing-accept.sh`（REQ-10、TASK-10.4 / TASK-10.5）・
 `hub-wiring-accept.sh`（REQ-9、TASK-9.5）・`websocket-accept.sh`（REQ-4、TASK-4.4）・
-`ai-autonomy-accept.sh`（REQ-12/NFR-8、TASK-12.7）・`hub-e2e-accept.sh`（REQ-9 後続、#97）
-の 12 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
+`ai-autonomy-accept.sh`（REQ-12/NFR-8、TASK-12.7）・`hub-e2e-accept.sh`（REQ-9 後続、#97）・`jwt-verify-accept.sh`（REQ-16、#823）
+の 13 スクリプトを収録する。以下はまず REQ-1 側の詳細、他は本ファイル末尾の各節を参照。
 
 `docs/spec/04-requirements.md` REQ-1（最小コア）の受け入れ基準のうち、**性能計測を除く**
 非性能系の受け入れ基準（依存クレート数比・unsafe 根拠・audit / deny・実質コード行数・
@@ -624,3 +624,22 @@ HUB_E2E_ORG_B="org-b-uuid" \
 11.1 節未決事項の確定情報入手、検証用接続情報の安全な受け渡し）が成立し、かつ
 ユーザー承認を得てから実行する（`.claude/rules/feasibility-guardrail.md` 6 節、条件付き
 可の着手ゲート）。実行結果レポートは `docs/acceptance/req9-hub-e2e.md` に記録する。
+
+## `jwt-verify-accept.sh` — REQ-16（汎用 JWT 検証プラグイン）受け入れ検証（#823）
+
+`fandhe-backend-plugin-jwt` の受け入れ基準 1〜6 を A〜F として検証する（A/B: 拒否・受理・鍵回転テストを
+テスト名単位で照合、C: 同期・I/O なしの静的確認と gate テスト、D: 依存・unsafe・audit/deny、
+E: hub-wiring 移行と `hub-wiring-accept.sh` 再実行、F: fuzz 対象の静的確認。fuzz 実行は
+`JWT_ACCEPT_RUN_FUZZ=1` の opt-in）。NFR-6 の HTTP 計測（`oha` 必須）は WARN で未計測と明示する。
+
+```bash
+./scripts/accept/jwt-verify-accept.sh
+```
+
+E・F の静的確認は説明文・コメントでの言及にヒットしないよう、hub-wiring `Cargo.toml` の
+`[dependencies]` 表、`fuzz.sh` の `FUZZ_DIRS` 代入行、`ci.yml` の `fuzz-smoke` ジョブ内の
+コメント以外の `run:` 行に限定して判定する（本物の行を除いたコピーで FAIL する陰性対照つき）。
+
+判定ロジックは `lib/jwt-verify-checks.sh` に純関数として分離し、
+`scripts/tests/run-jwt-verify-accept-tests.sh`（cargo・ネットワーク非依存）で回帰検証する。
+実行結果レポートは `docs/acceptance/req16-jwt-verify.md` に記録する。
