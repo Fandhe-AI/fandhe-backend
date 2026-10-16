@@ -197,7 +197,13 @@ fn valid_ipv6_literal(inner: &str) -> bool {
 /// 絶対 FQDN 形式の末尾ドット 1 個（`app.example.com.`）はブラウザがそのまま送るため許可する。
 /// 空ラベル（`a..b`・先頭ドット・末尾ドット 2 個以上）は拒否する。
 fn valid_hostname(h: &str) -> bool {
+    let had_dot = h.ends_with('.');
     let h = h.strip_suffix('.').unwrap_or(h);
+    if ends_in_number(h) {
+        // ブラウザは IPv4 として解釈されるホストを正規形（ドット 10 進 4 オクテット）へ
+        // シリアライズするため、非正規形・末尾ドット付きは決して一致しない。
+        return !had_dot && canonical_ipv4(h);
+    }
     !h.is_empty()
         && h.split('.').all(|label| {
             !label.is_empty()
@@ -205,6 +211,36 @@ fn valid_hostname(h: &str) -> bool {
                     .bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         })
+}
+
+/// WHATWG URL の「ends in a number」判定: 最後のラベルが 10 進数字列、または `0x` + 16 進数字列。
+fn ends_in_number(h: &str) -> bool {
+    let last = h.rsplit('.').next().unwrap_or("");
+    if last.is_empty() {
+        return false;
+    }
+    if last.bytes().all(|b| b.is_ascii_digit()) {
+        return true;
+    }
+    last.strip_prefix("0x")
+        .is_some_and(|r| r.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// 正規形のドット 10 進 IPv4（4 オクテット・各 0..=255・先行ゼロなし）か。
+fn canonical_ipv4(h: &str) -> bool {
+    let mut n = 0;
+    for part in h.split('.') {
+        n += 1;
+        let ok = !part.is_empty()
+            && part.len() <= 3
+            && part.bytes().all(|b| b.is_ascii_digit())
+            && (part == "0" || !part.starts_with('0'))
+            && part.parse::<u16>().is_ok_and(|v| v <= 255);
+        if !ok {
+            return false;
+        }
+    }
+    n == 4
 }
 
 fn valid_port(p: &str, default_port: &str) -> bool {
@@ -228,6 +264,26 @@ mod tests {
 
     fn origin_err(o: &str) -> Option<CsrfConfigError> {
         CsrfGateBuilder::default().allow_origin(o).build().err()
+    }
+
+    #[test]
+    fn non_canonical_ipv4_hosts_rejected() {
+        for o in [
+            "http://127.1",
+            "http://2130706433",
+            "http://0x7f.1",
+            "http://0x7f000001",
+            "http://127.0.0.01",
+            "http://127.0.0.1.",
+            "http://256.0.0.1",
+            "http://1.2.3",
+            "http://1.2.3.4.5",
+        ] {
+            assert!(origin_err(o).is_some(), "{o} は拒否されるべき");
+        }
+        assert!(origin_err("http://127.0.0.1").is_none());
+        assert!(origin_err("http://127.0.0.1:8080").is_none());
+        assert!(origin_err("https://1a.example.com").is_none());
     }
 
     #[test]
