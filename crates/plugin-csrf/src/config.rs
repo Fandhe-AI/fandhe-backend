@@ -192,7 +192,12 @@ fn valid_ipv6_literal(inner: &str) -> bool {
     canonical == inner
 }
 
+/// ホスト名がブラウザの Origin シリアライズ形（小文字 ASCII）と一致するかを検証する。
+///
+/// 絶対 FQDN 形式の末尾ドット 1 個（`app.example.com.`）はブラウザがそのまま送るため許可する。
+/// 空ラベル（`a..b`・先頭ドット・末尾ドット 2 個以上）は拒否する。
 fn valid_hostname(h: &str) -> bool {
+    let h = h.strip_suffix('.').unwrap_or(h);
     !h.is_empty()
         && h.split('.').all(|label| {
             !label.is_empty()
@@ -235,6 +240,8 @@ mod tests {
             "https://[::ffff:102:304]",
             "https://a.example:444",
             "http://a.example:443",
+            "https://app.example.com.",
+            "http://localhost.:8080",
         ] {
             assert_eq!(origin_err(o), None, "{o}");
         }
@@ -261,6 +268,9 @@ mod tests {
             "https://a.example:08080",
             "https://a..example",
             "https://.a.example",
+            "https://a.example..",
+            "https://.",
+            "https://.:8080",
             "https://a b.example",
             "https://é.example",
             "https://a.example:",
