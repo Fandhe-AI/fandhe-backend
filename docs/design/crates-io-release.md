@@ -439,6 +439,40 @@ v0.4.1 公開（2026-09-26）後に main へ入った変更は breaking change �
   対象外のためマージは阻害しない）。publish 完了後に `workflow_dispatch` で
   再実行し、PASS を確認した（2026-09-28、success。run 36457798408）
 
+### 7.7 v0.5.0 リリース（準備中）
+
+v0.4.2 公開（2026-09-28）後に main へ入った変更は breaking change を含むため、
+7 節の Cargo の 0.x 系規則（minor で breaking change を許容）に従い、公開対象
+15 クレートを 0.5.0 へ一括バンプする。`fandhe-backend-plugin-jwt`（REQ-16、
+イシュー #811〜#822）と `fandhe-backend-plugin-csrf`（REQ-17、イシュー #825〜#832）は
+この版で初公開する（lockstep 対象が 13 クレートから 15 クレートへ増える）。
+
+- **BREAKING CHANGE**（`fandhe-backend-http`）: `SetCookie` の cookie 接頭辞
+  （`__Host-` / `__Secure-`）の構築時検証と `CookieError` の `#[non_exhaustive]` 化
+  （イシュー #810、PR #835）
+- **BREAKING CHANGE**（`fandhe-backend-plugin-hub-wiring`）: JWT 検証部を
+  `fandhe-backend-plugin-jwt` へ移し、検証ポリシーを必須化（イシュー #820、PR #844。
+  旧公開パスの互換層なし）
+- **Added**: `fandhe-backend-plugin-jwt`・`fandhe-backend-plugin-csrf` の新設、
+  `fandhe-backend-http` の `SetCookie::session` 系（#827）・`Response::with_vary` /
+  `with_no_store`（#829）・`FormError` の 413 / 400 対応と `parse_form_with_limit`
+  （#831）・`SameOriginLocation` / `Response::see_other`（#828）
+- **Changed**: `fandhe-backend-plugin-compression` / `fandhe-backend-plugin-cors` の
+  `Vary` 付与を `Response::with_vary` へ移行（#830、公開 API 不変）
+- 変更の全量と移行手順は `CHANGELOG.md` の `[0.5.0]` 節を正とする
+- **実施した機械作業**: 7.6 節と同じ手順で、root `Cargo.toml` の
+  `[workspace.package] version` + `[workspace.dependencies]` の内部 15 クレート
+  `version` 値（計 16 箇所）、standalone workspace（`templates/app`・
+  `examples/with-*` 4 件）の依存 `version` 併記、`crates/plugin-openapi/openapi.json` /
+  `openapi.yaml` の `info.version` 再生成、`benches/microbench/Cargo.lock` の内部
+  クレート版追随を行い、`CHANGELOG.md` の `[Unreleased]` 節の内容を
+  `[0.5.0] - 2026-10-16` 節へ移して空の `[Unreleased]` を残した
+- README・`docs/guide/getting-started.md`・`site/index.md`・CLAUDE.md の現行公開版
+  表記は、前例どおり Phase B の publish 完了後に追随する
+- `standalone-crates-io.yml` は v0.5.0 publish 完了までは構造的に FAIL する
+  （7.6 節と同一のニワトリ卵問題、required check 対象外のためマージは阻害しない）。
+  publish 完了後に `workflow_dispatch` で再実行する
+
 ## 8. 公開前チェックリスト
 
 実際に publish を実行する際に確認すべき項目。
@@ -539,18 +573,20 @@ v0.4.1 公開（2026-09-26）後に main へ入った変更は breaking change �
       `fandhe-backend-core = "^0.4.2"` 等を crates.io 公開版のみで解決できて PASS することを
       確認する（2026-09-28 実施済み、success。run 36457798408）
 
-### v0.5.0（未実施）
+### v0.5.0（Phase A 完了、Phase B 未実施）
 
-- [ ] 公開対象 15 クレートの `version` および workspace 内 path 依存の `version` 併記が
-      すべて 0.5.0 に揃っている
-- [ ] `cargo publish --workspace --dry-run` が公開対象 15 クレート全件で成功する
-      （#822 で 14 クレートを 0.4.2 のまま dry-run 確認済み、2026-10-15。#832 で 15 クレートを確認、全件成功、2026-10-16）
-- [ ] `cargo package --list -p fandhe-backend-plugin-jwt` の同梱内容を確認する
+- [x] 公開対象 15 クレートの `version` および workspace 内 path 依存の `version` 併記が
+      すべて 0.5.0 に揃っている（2026-10-16 実施済み）
+- [x] `cargo publish --workspace --dry-run` が公開対象 15 クレート全件で成功する
+      （#822 で 14 クレートを 0.4.2 のまま dry-run 確認済み、2026-10-15。#832 で 15 クレートを確認、全件成功、2026-10-16。
+      0.5.0 へのバンプ後に 15 クレート全件で再実行し成功、2026-10-16）
+- [x] `cargo package --list -p fandhe-backend-plugin-jwt` の同梱内容を確認する
       （`fuzz/`・秘密情報・`benches/reports/**` を含まず、`tests/fixtures/*.pk8` と
-      `tests/fixtures/README.md` を含む。#822 で確認済み）
-- [ ] `cargo package --list -p fandhe-backend-plugin-csrf` の同梱内容を確認する
-      （`src/`・`tests/`・`Cargo.toml` のみで秘密情報を含まない。#832 で確認済み）
-- [ ] `fandhe-backend-plugin-jwt`・`fandhe-backend-plugin-csrf` の名前の空きを publish 直前に再確認する（2 節）
+      `tests/fixtures/README.md` を含む。#822 で確認済み、0.5.0 バンプ後に再確認 2026-10-16）
+- [x] `cargo package --list -p fandhe-backend-plugin-csrf` の同梱内容を確認する
+      （`src/`・`tests/`・`Cargo.toml` のみで秘密情報を含まない。#832 で確認済み、0.5.0 バンプ後に再確認 2026-10-16）
+- [x] `fandhe-backend-plugin-jwt`・`fandhe-backend-plugin-csrf` の名前の空きを publish 直前に再確認する（2 節。
+      2026-10-16 に crates.io API がいずれも HTTP 404 であることを確認済み）
 - [ ] Phase B: `v0.5.0` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
 - [ ] 初回 publish の後、`fandhe-backend-plugin-jwt`・`fandhe-backend-plugin-csrf` に team owner を追加する（3 節）
 - [ ] Phase B publish 完了後、`standalone-crates-io.yml` を `workflow_dispatch` で再実行する
