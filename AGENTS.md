@@ -168,6 +168,7 @@ crates 一覧と責務（`crates/` 直下、`ls` で最新を確認できる）:
 | `plugin-compression` | レスポンス圧縮（gzip）。`plugin-cors` と同じ `finalize_response` シームの第 2 インスタンス（CORS の後に逐次適用、イシュー #321）。ステータス・`Content-Type`・body サイズ・`Accept-Encoding` の判定基準を満たす場合のみフェイルセーフに圧縮。外部依存は `flate2` のみ、`docs/design/plugin-boundary.md` 5.10 節） |
 | `plugin-static` | 静的ファイル配信（パスインターセプト型 `try_intercept` + `spawn_blocking` 変種、`Server::static_files(config)` 登録時のみ応答。パストラバーサル対策は二層防御（字句検証 + canonicalize 後の root 配下検証）、`docs/design/plugin-boundary.md` 5.11 節、イシュー #318） |
 | `plugin-jwt` | 汎用 JWT 検証（REQ-16。`RequestGate` 上の `JwtGate`、RS256・ES256、`iss`/`aud`/`typ`/許可 `alg` 必須の `JwtPolicy`、JWKS 鍵集合、検証結果キャッシュ。Gate 型・依存逆転型で core に feature なし、`docs/design/plugin-boundary.md` 5.6 節・`docs/design/jwt-verify-plugin.md`） |
+| `plugin-csrf` | CSRF 検査ゲート（REQ-17。`RequestGate` 上の `CsrfGate`。`GET`/`HEAD`/`OPTIONS` 以外を `Sec-Fetch-Site` / `Origin` で検査し、両ヘッダなしは拒否、除外パスは完全一致のみ、拒否は本文なしの `403`。Gate 型で core に feature なし、外部依存なし、`#![forbid(unsafe_code)]`、`docs/design/plugin-boundary.md` 5.6.6 節） |
 | `plugin-hub-wiring` | hub 共通配線（`RequestGate` 上の `TenantGate`。JWT 検証は `plugin-jwt` へ委譲 → `org_id` 抽出 → フェイルクローズ。依存逆転型プラグイン、`docs/design/plugin-boundary.md` 5.6 節）。越境アクセス監査ログ（`audit` モジュール、`cross_tenant_attempt` カテゴリ。「正当な 404」と「越境 404」を外部応答同一のまま監査ログのみで区別、TASK-9.6・#89） |
 | `axum-ref` | 性能比較用参照実装 |
 
@@ -652,7 +653,7 @@ Codex は本ファイルを自動読込する。Codex code review は既定で P
   内部識別子は snake_case、型・trait は UpperCamelCase、定数は SCREAMING_SNAKE_CASE）
 - コミット・PR タイトルは Conventional Commits（`.claude/rules/conventional-commits.md`。
   type/scope は英語規約、description は日本語可）
-- 逸脱は P2。ただし公開 API（crates.io 公開 14 クレートの公開シンボル）の命名逸脱は
+- 逸脱は P2。ただし公開 API（crates.io 公開 15 クレートの公開シンボル）の命名逸脱は
   破壊的変更なしに直せなくなるため P1
 
 ### 禁止事項（明示的に P0/P1 へ格上げ）
@@ -689,7 +690,8 @@ Codex は本ファイルを自動読込する。Codex code review は既定で P
 - fail-closed で設計された既存分岐の fail-open 化
 - 認証・認可・テナント境界の迂回（`plugin-jwt` の JWT 検証（`iss`/`aud`/`typ`/許可 `alg`
   の必須化・JWKS 鍵の分類・検証結果キャッシュ）、`plugin-hub-wiring` の
-  `org_id` テナント境界強制・越境アクセス監査ログを弱める、または迂回経路を追加する差分）
+  `org_id` テナント境界強制・越境アクセス監査ログ、`plugin-csrf` の CSRF 検査（安全なメソッド以外の検査、
+  `Sec-Fetch-Site` / `Origin` の判定、両ヘッダなしの拒否、除外パスの完全一致）を弱める、または迂回経路を追加する差分）
 - 依存監査（サプライチェーン）の後退: `cargo audit` / `cargo deny check` 違反の
   抑止設定（`deny.toml` の ignore 追加等）を根拠の記録なしに入れる差分、および
   新規依存クレートの追加で依存インパクト記録（`docs/dep-impact/records.md`・
@@ -736,7 +738,7 @@ Codex は本ファイルを自動読込する。Codex code review は既定で P
   コアや特定プラグインへ直書きしていないか（pay-for-what-you-use の「コアにとりあえず
   機能を足す」アンチパターンと同根）。逆に、このリポジトリ固有の運用事情（CI 環境・
   組織名等）を公開クレートのコードへ埋め込んでいないか: **P2**
-  （公開 14 クレートの公開 API・既定動作に固有事情が漏れる場合は **P1**）
+  （公開 15 クレートの公開 API・既定動作に固有事情が漏れる場合は **P1**）
 - **ハードコード回避**: パス・URL・ポート・サイズ上限・タイムアウト等の運用値は
   builder / 設定型（`*Config`）・名前付き定数へ寄せ、マジックナンバーの散在を避ける。
   既定値には根拠（doc comment または設計文書参照）を付ける: **P2**

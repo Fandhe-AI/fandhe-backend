@@ -5,7 +5,7 @@
 性能を目標に、**最小コア + Cargo feature 駆動プラグイン**設計で、WebSocket /
 GraphQL / WebRTC / OpenAPI 自動生成 / 可観測性などを段階的に拡張できます。
 
-公開対象の 14 クレート（0.4.2 時点の公開済みは 13 クレート。`fandhe-backend-plugin-jwt` は 0.5.0 で初公開予定）は [crates.io](https://crates.io/crates/fandhe-backend-core) に
+公開対象の 15 クレート（0.4.2 時点の公開済みは 13 クレート。`fandhe-backend-plugin-jwt`・`fandhe-backend-plugin-csrf` は 0.5.0 で初公開予定）は [crates.io](https://crates.io/crates/fandhe-backend-core) に
 v0.4.2 として公開済みです。`cargo add fandhe-backend-core` で導入し、プラグインは
 `cargo add fandhe-backend-core --features websocket` のように feature で有効化します。
 

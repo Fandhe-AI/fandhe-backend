@@ -1,6 +1,6 @@
 # crates.io 公開ワークフロー（イシュー #373、docs/design/crates-io-release.md 6 節の実ファイル化）。
 #
-# 公開対象 14 クレート（publish = false でない全クレート）を verify → dry-run →
+# 公開対象 15 クレート（publish = false でない全クレート）を verify → dry-run →
 # publish の 3 段で crates.io へ公開する。v0.1.0（2026-07-21）は手動 publish だったが、
 # 以後のバージョンは再現性・監査性のため本ワークフローに統一する。
 #
@@ -121,7 +121,7 @@ jobs:
         with:
           toolchain: stable
 
-      # 公開対象 14 クレートを依存順自動解決でパッケージング検証する（トークン不要）
+      # 公開対象 15 クレートを依存順自動解決でパッケージング検証する（トークン不要）
       - name: cargo publish --workspace --dry-run
         run: cargo publish --workspace --dry-run
 
@@ -133,7 +133,7 @@ jobs:
     # セキュリティ境界は変更しない。キャッシュ不使用・専用 CARGO_TARGET_DIR は
     # verify ジョブのコメント参照（release 系共通方針）。
     runs-on: ubuntu-latest
-    # publish は 14 クレートのアップロード + crates.io インデックス反映待ちを含み、
+    # publish は 15 クレートのアップロード + crates.io インデックス反映待ちを含み、
     # ジョブタイムアウトによる途中打ち切りは「一部だけ公開済み」の部分公開状態を
     # 生む（concurrency の cancel-in-progress: false と同じ理由で避けたい失敗様態）。
     # dry-run より大幅に余裕を持たせる（Bugbot 指摘対応）
