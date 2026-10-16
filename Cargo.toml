@@ -76,6 +76,8 @@ fandhe-backend-routes = { path = "crates/routes", version = "0.4.2" }
 fandhe-backend-core = { path = "crates/core", version = "0.4.2" }
 fandhe-backend-plugin-compression = { path = "crates/plugin-compression", version = "0.4.2" }
 fandhe-backend-plugin-cors = { path = "crates/plugin-cors", version = "0.4.2" }
+# plugin-csrf（REQ-17、#825）。公開 crate 件数・文書の追随は #832。
+fandhe-backend-plugin-csrf = { path = "crates/plugin-csrf", version = "0.4.2" }
 fandhe-backend-plugin-graphql = { path = "crates/plugin-graphql", version = "0.4.2" }
 fandhe-backend-plugin-hub-wiring = { path = "crates/plugin-hub-wiring", version = "0.4.2" }
 fandhe-backend-plugin-jwt = { path = "crates/plugin-jwt", version = "0.4.2" }
