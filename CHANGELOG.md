@@ -82,6 +82,11 @@
   `session_removal_with` と `SessionSameSite`（`Lax` / `Strict` のみ）、`CookieError::SessionSameSiteNone` を
   追加しました（イシュー #827）。`HttpOnly`・`Secure`・`SameSite=Lax`・`Path=/` を既定で付与し、削除用は
   同じ属性に `Max-Age=0` を加えます。`__Host-` 名とも組み合わせられます（必須ではありません）。
+- `fandhe-backend-http`: `FormError` に `IntoResponse` と `From<FormError> for HttpError` を追加し、
+  上限超過（`BodyTooLong`・`TooManyPairs`）を 413、UTF-8 不正・percent-decode 失敗
+  （`InvalidUtf8Body`・`Decode`）を 400 の固定メッセージ応答に対応づけました。あわせて上限を
+  引数で渡す `form::parse_form_with_limit` と `form::FormLimits` を追加しました（イシュー #831）。
+  既定値（8 KiB・256 組）と `parse_form` の挙動は変わりません。
 - `fandhe-backend-plugin-hub-wiring`: `jwt`（`fandhe-backend-plugin-jwt` 全体の再エクスポート）、
   `AuthError` / `TenantClaims` / `HubClaims`、`Authenticator::from_jwt` を追加しました。
 

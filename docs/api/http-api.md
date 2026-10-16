@@ -75,7 +75,9 @@
 |-----|------|------|
 | `parse_form(body)` | fn | 生 body `&[u8]` を `Vec<(String, String)>` へ。UTF-8 検証 → `parse_query` 委譲 → `+` → 空白置換 → percent-decode の順で適用 |
 | `is_form_content_type(ct)` | fn | media-type 部分（`;` より前）を OWS trim + 大小文字無視で厳密一致判定。前置一致は `false` |
-| `FormError` | enum | `BodyTooLong` / `TooManyPairs` / `InvalidUtf8Body` / `Decode(PercentDecodeError)` |
+| `parse_form_with_limit(body, limits)` | fn | `parse_form` と同一処理で上限だけを `FormLimits` で指定（クエリ上限とは独立。本文層 `MAX_BODY_BYTES` が上から抑える）。上限 0 は空ボディのみ受理 |
+| `FormLimits` | struct | 上限（バイト数・組数）。`DEFAULT`（= `MAX_FORM_BYTES` / `MAX_FORM_PAIRS`）・`with_max_bytes` / `with_max_pairs` / アクセサ |
+| `FormError` | enum | `BodyTooLong` / `TooManyPairs` / `InvalidUtf8Body` / `Decode(PercentDecodeError)`。`IntoResponse` と `From<FormError> for HttpError` を実装: `BodyTooLong`・`TooManyPairs` は 413、`InvalidUtf8Body`・`Decode` は 400（メッセージは固定文字列のみ、位置情報・ボディは含めない） |
 
 `+` → 空白置換を percent-decode より**先**に適用する順序は不変条件である（逆順だと `%2B` が誤って空白化される）。呼び出し元は `is_form_content_type` で Content-Type を確認した後にのみ `parse_form` を呼ぶ契約。
 
@@ -91,7 +93,7 @@
 
 | API | 種別 | 概要 |
 |-----|------|------|
-| `IntoResponse` | trait | `Response` への変換契約。`Response` / `HttpError` / `Result<T, E>`（両辺が `IntoResponse`）に実装済み |
+| `IntoResponse` | trait | `Response` への変換契約。`Response` / `HttpError` / `FormError` / `Result<T, E>`（両辺が `IntoResponse`）に実装済み |
 | `HttpError::new(status, &'static str)` | fn | ステータス + ユーザー提示メッセージの標準形エラー。`?` で伝播可能 |
 | `error_response(status, &'static str)` | fn | JSON 標準形 `{"error":"..."}` の `Response` を構築。serde 非依存の手実装エスケープ（RFC 8259 準拠） |
 
@@ -156,8 +158,8 @@
 | `MAX_CHUNK_LINE_BYTES` | 256 | `chunked` | `ChunkedError::ChunkLineTooLong` |
 | `MAX_QUERY_BYTES` | 8 KiB | `query` | `QueryError::QueryTooLong` |
 | `MAX_QUERY_PAIRS` | 256 | `query` | `QueryError::TooManyPairs` |
-| `MAX_FORM_BYTES` | 8 KiB（`MAX_QUERY_BYTES` と同値固定） | `form` | `FormError::BodyTooLong` |
-| `MAX_FORM_PAIRS` | 256（`MAX_QUERY_PAIRS` と同値固定） | `form` | `FormError::TooManyPairs` |
+| `MAX_FORM_BYTES` | 8 KiB（既定値。`parse_form_with_limit` で上書き可、`MAX_QUERY_BYTES` とは独立） | `form` | `FormError::BodyTooLong` |
+| `MAX_FORM_PAIRS` | 256（既定値。`parse_form_with_limit` で上書き可、`MAX_QUERY_PAIRS` とは独立） | `form` | `FormError::TooManyPairs` |
 | `MAX_COOKIE_COUNT` | 100 | `cookie` | `CookieError::TooManyCookies` |
 | `MAX_COOKIE_STRING_BYTES` | 8 KiB | `cookie` | `CookieError::CookieStringTooLarge` |
 
