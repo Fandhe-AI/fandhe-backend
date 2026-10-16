@@ -1124,13 +1124,37 @@ mod tests {
         Response::new(200, "x".repeat(64).into_bytes()).with_content_type("text/plain")
     }
 
+    /// 圧縮済み通常応答の契約（200・Content-Type 保持・Content-Encoding: gzip・
+    /// Content-Length が圧縮後 body 長・解凍すると元 body に一致）を確認する。
+    fn assert_gzip_intact(raw: &[u8]) {
+        use std::io::Read;
+
+        let text = head_text(raw);
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
+        assert!(text.contains("Content-Type: text/plain\r\n"), "{text}");
+        assert!(text.contains("Content-Encoding: gzip\r\n"), "{text}");
+        let body = &raw[text.len() + 4..];
+        assert!(
+            text.lines()
+                .any(|l| l == format!("Content-Length: {}", body.len())),
+            "{text}"
+        );
+        let mut decoded = String::new();
+        flate2::read::GzDecoder::new(body)
+            .read_to_string(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, "x".repeat(64));
+    }
+
     #[test]
     fn apply_compression_keeps_vary_cookie_and_adds_accept_encoding_once() {
         // イシュー #830: 既存 `Vary: Cookie` と共存し、各トークンは 1 回だけ。
         let config = CompressionConfig::builder().min_size(1).build();
         let response = text_response().with_header("Vary", "Cookie").unwrap();
         let result = apply_compression(&gzip_head(), &config, response);
-        let tokens = vary_tokens(&head_text(&result.serialize(true)));
+        let raw = result.serialize(true);
+        assert_gzip_intact(&raw);
+        let tokens = vary_tokens(&head_text(&raw));
         assert_eq!(tokens.iter().filter(|t| *t == "cookie").count(), 1);
         assert_eq!(tokens.iter().filter(|t| *t == "accept-encoding").count(), 1);
     }
@@ -1145,7 +1169,9 @@ mod tests {
             .with_header("vary", "accept-encoding")
             .unwrap();
         let result = apply_compression(&gzip_head(), &config, response);
-        let text = head_text(&result.serialize(true));
+        let raw = result.serialize(true);
+        assert_gzip_intact(&raw);
+        let text = head_text(&raw);
         assert_eq!(
             text.to_ascii_lowercase().matches("vary:").count(),
             2,
@@ -1161,9 +1187,11 @@ mod tests {
         let config = CompressionConfig::builder().min_size(1).build();
         let response = text_response().with_header("Vary", "*").unwrap();
         let result = apply_compression(&gzip_head(), &config, response);
-        let text = head_text(&result.serialize(true));
+        let raw = result.serialize(true);
+        assert_gzip_intact(&raw);
+        let text = head_text(&raw);
         assert_eq!(text.matches("Vary:").count(), 1, "{text}");
-        assert!(!text.contains("Accept-Encoding"), "{text}");
+        assert!(!text.contains("Vary: Accept-Encoding"), "{text}");
     }
 
     #[test]
@@ -1178,6 +1206,12 @@ mod tests {
         let (response, encoder) = begin_streaming_compression(&gzip_head(), &config, response);
         assert!(encoder.is_some());
         let text = String::from_utf8(response.serialize_streaming_head_http10()).unwrap();
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
+        assert!(
+            text.contains("Content-Type: text/event-stream\r\n"),
+            "{text}"
+        );
+        assert!(text.contains("Content-Encoding: gzip\r\n"), "{text}");
         let tokens = vary_tokens(&text);
         assert_eq!(tokens.iter().filter(|t| *t == "cookie").count(), 1);
         assert_eq!(tokens.iter().filter(|t| *t == "accept-encoding").count(), 1);

@@ -244,6 +244,15 @@ async fn cors_and_compression_do_not_duplicate_vary_tokens() {
     let request = b"GET /vary-cookie HTTP/1.1\r\nOrigin: https://app.example.com\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n";
     let raw = roundtrip_raw(&server, request).await;
     let (head, body) = split_response(&raw);
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "head: {head}");
+    assert!(
+        head.contains("Content-Type: text/plain\r\n"),
+        "head: {head}"
+    );
+    assert!(
+        head.contains(&format!("Content-Length: {}\r\n", body.len())),
+        "head: {head}"
+    );
     assert!(head.contains("Content-Encoding: gzip\r\n"), "head: {head}");
     let tokens = vary_tokens(&head);
     for t in ["cookie", "origin", "accept-encoding"] {
@@ -258,8 +267,23 @@ async fn cors_and_compression_do_not_duplicate_vary_tokens() {
     // 既に全トークンを宣言済みなら、どちらも行を足さない。
     let request = b"GET /vary-all HTTP/1.1\r\nOrigin: https://app.example.com\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n";
     let raw = roundtrip_raw(&server, request).await;
-    let (head, _body) = split_response(&raw);
+    let (head, body) = split_response(&raw);
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "head: {head}");
+    assert!(
+        head.contains("Content-Type: text/plain\r\n"),
+        "head: {head}"
+    );
+    assert!(
+        head.contains(&format!("Content-Length: {}\r\n", body.len())),
+        "head: {head}"
+    );
+    assert!(head.contains("Content-Encoding: gzip\r\n"), "head: {head}");
     assert_eq!(head.matches("Vary:").count(), 1, "head: {head}");
+    let mut decoded = String::new();
+    flate2::read::GzDecoder::new(body.as_slice())
+        .read_to_string(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, "x".repeat(2048));
 }
 
 #[tokio::test]

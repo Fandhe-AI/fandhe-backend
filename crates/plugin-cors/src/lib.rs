@@ -734,6 +734,24 @@ mod tests {
             .collect()
     }
 
+    /// ステータス・主要ヘッダ・ボディが CORS 付与後も保たれていることを確認する。
+    fn assert_intact(res: &Response) {
+        let raw = res.serialize(false);
+        let text = String::from_utf8(raw).unwrap();
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
+        assert!(text.contains("Content-Type: text/plain\r\n"), "{text}");
+        assert!(text.contains("Content-Length: 5\r\n"), "{text}");
+        assert!(
+            text.contains("Access-Control-Allow-Origin: https://app.example.com\r\n"),
+            "{text}"
+        );
+        assert!(text.ends_with("\r\n\r\nhello"), "{text}");
+    }
+
+    fn body_response() -> Response {
+        Response::new(200, b"hello".to_vec()).with_content_type("text/plain")
+    }
+
     fn allowed_cfg_and_head() -> (CorsConfig, RequestHead) {
         let config = CorsConfig::builder()
             .allow_origin("https://app.example.com")
@@ -746,8 +764,10 @@ mod tests {
     #[test]
     fn apply_cors_headers_keeps_vary_cookie_and_adds_origin_once() {
         let (config, head) = allowed_cfg_and_head();
-        let res = Response::empty(200).with_header("Vary", "Cookie").unwrap();
-        let tokens = vary_tokens(&apply_cors_headers(&head, &config, res));
+        let res = body_response().with_header("Vary", "Cookie").unwrap();
+        let out = apply_cors_headers(&head, &config, res);
+        assert_intact(&out);
+        let tokens = vary_tokens(&out);
         assert_eq!(tokens.iter().filter(|t| *t == "cookie").count(), 1);
         assert_eq!(tokens.iter().filter(|t| *t == "origin").count(), 1);
     }
@@ -756,8 +776,9 @@ mod tests {
     fn apply_cors_headers_does_not_duplicate_existing_vary_origin() {
         // 旧実装（無条件追加）では `Vary` 行が重複していたケースの回帰テスト。
         let (config, head) = allowed_cfg_and_head();
-        let res = Response::empty(200).with_header("vary", "origin").unwrap();
+        let res = body_response().with_header("vary", "origin").unwrap();
         let out = apply_cors_headers(&head, &config, res);
+        assert_intact(&out);
         let text = String::from_utf8(out.serialize(false)).unwrap();
         assert_eq!(
             text.to_ascii_lowercase().matches("vary:").count(),
@@ -769,8 +790,10 @@ mod tests {
     #[test]
     fn apply_cors_headers_does_not_add_vary_when_star_present() {
         let (config, head) = allowed_cfg_and_head();
-        let res = Response::empty(200).with_header("Vary", "*").unwrap();
-        let tokens = vary_tokens(&apply_cors_headers(&head, &config, res));
+        let res = body_response().with_header("Vary", "*").unwrap();
+        let out = apply_cors_headers(&head, &config, res);
+        assert_intact(&out);
+        let tokens = vary_tokens(&out);
         assert_eq!(tokens, vec!["*".to_string()]);
     }
 
