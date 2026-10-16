@@ -247,7 +247,7 @@ JSON・base64 の自前実装は攻撃表面を増やす（`plugin-hub-wiring/Ca
 | 5. REQ-9 の移行と既存基準の維持 | #820 | #822 |
 | 6. JWT 解析部の fuzz（NFR-11） | #818 | — |
 | （横断）性能・キャッシュの効果 | #821 | — |
-| （横断）受け入れ検証レポート | #823 | — |
+| （横断）受け入れ検証レポート | #823 | `docs/acceptance/req16-jwt-verify.md` |
 
 ## 4. `plugin-boundary.md` 5.6 節との整合
 

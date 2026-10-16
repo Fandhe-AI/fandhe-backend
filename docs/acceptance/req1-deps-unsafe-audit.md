@@ -293,3 +293,22 @@ used unsafe（`functions.unsafe_`/`exprs.unsafe_`/`item_impls.unsafe_`/
 - **F（プラグイン非依存）**: `crates/http/Cargo.toml` の **コメント行**（memchr 導入の説明文中の「plugin-graphql」等の文字列）に反応した誤検知。`cargo tree -p fandhe-backend-http -e normal` の依存一覧にプラグインクレートは含まれない
 
 スクリプトの検出ロジック修正（E の関数パターン更新・F のコメント行除外）は別イシューで扱う。
+
+## 追加要件の検証（2026-10-16、イシュー #810・#823）
+
+REQ-1 に追加された要件のうち、`SetCookie` の `__Host-`・`__Secure-` 接頭辞の構築時検証（#810）を検証した。
+既存の節と実測値は改変していない。
+
+- 基準: 接頭辞付き Cookie が条件（`Secure`、`__Host-` は加えて `Path=/` かつ `Domain` なし）を満たさない
+  組み合わせを構築エラーにし、各条件の違反を網羅するテストがあること
+- 検証: `cargo test -p fandhe-backend-http cookie`（59 件 PASS）。対象の単体テストは
+  `new_rejects_prefixed_names_case_insensitively`／`new_accepts_lookalike_names`／`non_ascii_name_does_not_panic`／
+  `host_prefixed_sets_secure_and_root_path`／`host_prefixed_path_only_root`／`prefixed_constructors_reject_mismatch`／
+  `secure_prefixed_always_secure_once`／`prefixed_constructors_validate_name_and_value`（いずれも ok）。
+  `cargo test -p fandhe-backend-http --doc` は 67 件 PASS（`host_prefixed`・`secure_prefixed`・`path` の doc test を含む）
+- 条件と担保手段: `Secure` は専用構築関数（`host_prefixed`・`secure_prefixed`）が自動付与。`Path=/` は自動付与され、
+  それ以外は `HostPrefixPath` で拒否。接頭辞付き名前は `SetCookie::new` が `ReservedPrefix` で拒否（大文字小文字無視）。
+  `Domain` なしは属性自体が存在しないため型で満たされる（テストで検証した条件ではない）
+- 判定: PASS
+- 対象外: 同じ仕様 pin で REQ-1 に加わった他の追加要件（セッション Cookie の既定値、同一オリジンの `Location`、
+  `Vary` の補助、`FormError` の応答への対応）は本イシューの対象外で、判定していない
