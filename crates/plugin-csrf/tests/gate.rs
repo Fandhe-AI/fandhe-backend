@@ -102,7 +102,23 @@ fn assert_bare_403(r: &str) {
 fn assert_200(r: &str) {
     let (lines, body) = split(r);
     assert_eq!(lines[0], "HTTP/1.1 200 OK", "{r}");
+    assert_eq!(header_values(&lines, "Content-Length"), vec!["2"], "{r}");
+    assert!(header_values(&lines, "Content-Type").is_empty(), "{r}");
     assert_eq!(body, "ok", "{r}");
+}
+
+/// 認証スタブの 401 応答（`WWW-Authenticate: Bearer` チャレンジ付き・空ボディ）を網羅検証する。
+fn assert_401(r: &str) {
+    let (lines, body) = split(r);
+    assert_eq!(lines[0], "HTTP/1.1 401 Unauthorized", "{r}");
+    assert_eq!(header_values(&lines, "Content-Length"), vec!["0"], "{r}");
+    assert!(header_values(&lines, "Content-Type").is_empty(), "{r}");
+    assert_eq!(
+        header_values(&lines, "WWW-Authenticate"),
+        vec!["Bearer"],
+        "{r}"
+    );
+    assert_eq!(body, "", "{r}");
 }
 
 fn server_csrf_only() -> (Server, Arc<AtomicUsize>) {
@@ -195,8 +211,7 @@ async fn csrf_first_then_auth_gate_evaluated_when_origin_ok() {
     let (server, auth_calls, hits) = server_ordered(true);
     let same = "Sec-Fetch-Site: same-origin";
     let r = roundtrip(&server, &req("POST", "/f", &[same])).await;
-    let (lines, _) = split(&r);
-    assert_eq!(lines[0], "HTTP/1.1 401 Unauthorized", "{r}");
+    assert_401(&r);
     assert_eq!(auth_calls.load(Ordering::SeqCst), 1);
     let r = roundtrip(
         &server,
@@ -212,8 +227,7 @@ async fn csrf_first_then_auth_gate_evaluated_when_origin_ok() {
 async fn exempt_path_still_runs_later_auth_gate() {
     let (server, auth_calls, hits) = server_ordered(true);
     let r = roundtrip(&server, &req("POST", "/token", &[])).await;
-    let (lines, _) = split(&r);
-    assert_eq!(lines[0], "HTTP/1.1 401 Unauthorized", "{r}");
+    assert_401(&r);
     assert_eq!(auth_calls.load(Ordering::SeqCst), 1);
     assert_eq!(hits.load(Ordering::SeqCst), 0);
 }
@@ -222,13 +236,7 @@ async fn exempt_path_still_runs_later_auth_gate() {
 async fn reverse_order_exposes_auth_challenge() {
     let (server, auth_calls, hits) = server_ordered(false);
     let r = roundtrip(&server, &req("POST", "/f", &CROSS)).await;
-    let (lines, _) = split(&r);
-    assert_eq!(lines[0], "HTTP/1.1 401 Unauthorized", "{r}");
-    assert_eq!(
-        header_values(&lines, "WWW-Authenticate"),
-        vec!["Bearer"],
-        "{r}"
-    );
+    assert_401(&r);
     assert_eq!(auth_calls.load(Ordering::SeqCst), 1);
     assert_eq!(hits.load(Ordering::SeqCst), 0);
 }
