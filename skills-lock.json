@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "better-auth": {
+      "source": "Fandhe-AI/agent-reference-skills",
+      "sourceType": "github",
+      "skillPath": "skills/better-auth/SKILL.md",
+      "computedHash": "3f20d6b03a84ba21652030f62b4255a900cd1550e515172299e56914479497e4"
+    },
     "comment-code": {
       "source": "Fandhe-AI/agent-cli-skills",
       "sourceType": "github",
