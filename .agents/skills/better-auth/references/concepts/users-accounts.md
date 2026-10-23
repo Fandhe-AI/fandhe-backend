@@ -222,30 +222,17 @@ const accounts = await authClient.listAccounts();
 
 ### Token encryption
 
-Better Auth does not encrypt tokens by default. Implement encryption using a database hook:
+Better Auth does not encrypt OAuth tokens by default. Enable the built-in `account.encryptOAuthTokens` option (see `reference/options.md`). Tokens are then encrypted whenever they are stored, including on refresh. Better Auth decrypts them itself when it retrieves or refreshes tokens:
 
 ```typescript
 export const auth = betterAuth({
-  databaseHooks: {
-    account: {
-      create: {
-        before(account, context) {
-          const withEncryptedTokens = { ...account };
-          if (account.accessToken) {
-            withEncryptedTokens.accessToken = encrypt(account.accessToken);
-          }
-          if (account.refreshToken) {
-            withEncryptedTokens.refreshToken = encrypt(account.refreshToken);
-          }
-          return { data: withEncryptedTokens };
-        },
-      },
-    },
+  account: {
+    encryptOAuthTokens: true,
   },
 });
 ```
 
-Decrypt tokens before using them when retrieving an account.
+Do not encrypt tokens yourself in a `databaseHooks.account.create.before` hook. Such a hook only runs when an account is created, so tokens saved on refresh stay unencrypted. Better Auth's internal token retrieval and refresh also cannot decrypt them, and would send the ciphertext to the OAuth provider.
 
 ### Account linking
 
@@ -309,15 +296,13 @@ Use `setPassword` (server) or the "password reset" flow for credential account l
 ### Unlinking an account
 
 ```typescript
-await authClient.unlinkAccount({
-  providerId: "google",
-});
-
-// Unlinking a specific account
-await authClient.unlinkAccount({
-  providerId: "google",
-  accountId: "123",
-});
+// 1.7: pass the local account row `id` from `listAccounts` as `accountId`;
+// `providerId` alone is no longer accepted
+const { data: accounts } = await authClient.listAccounts();
+const google = accounts?.find((a) => a.providerId === "google");
+if (google) {
+  await authClient.unlinkAccount({ accountId: google.id });
+}
 ```
 
 **Safeguard:** unlinking is prevented if a user has only one account remaining (unless `allowUnlinkingAll: true` is set).
@@ -346,7 +331,8 @@ A user must satisfy one of the following:
 - Don't await email sending, to prevent timing attacks
 - For OAuth users without a password, use email verification or a fresh session check
 - Account linking is enabled by default
-- Token encryption is not performed by default — must be implemented via a database hook
+- OAuth tokens are not encrypted by default. Enable `account.encryptOAuthTokens`; do not encrypt them yourself in a database hook
+- `unlinkAccount` in 1.7 takes the local account row `id` from `listAccounts` as `accountId` and no `providerId`; the official sample passes `providerId` plus a made-up `accountId` (Adapted from the official docs)
 
 ## Related
 
