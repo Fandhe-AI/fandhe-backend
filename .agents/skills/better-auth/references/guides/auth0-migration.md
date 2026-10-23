@@ -1,0 +1,24 @@
+# Migrating from Auth0
+
+Auth0 から Better Auth へ移行するためのガイド。ユーザーデータ移行・認証方法の移植・アプリケーションコードの更新を含む。
+
+## Signature / Usage
+
+1. **Better Auth のセットアップ**: プロジェクトに Better Auth をインストールし、PostgreSQL 等の DB に接続する
+2. **認証機能の設定**: メール/パスワード認証・ソーシャルプロバイダー・管理者機能・2FA 等のプラグインを設定する
+3. **ユーザーデータの移行**: Auth0 の Management API からユーザー・OAuth アカウント・パスワードハッシュ・MFA 設定を転送するスクリプトを実行する
+4. **パスワードハッシュの設定**: Auth0 と同じ bcrypt アルゴリズムを使用するよう設定する
+5. **アプリケーションコードの更新**: サインインコンポーネントとミドルウェアを Better Auth クライアントとセッション管理に移行する
+6. **クリーンアップ**: 移行が完了・確認できたら Auth0 の依存関係を削除する
+
+## Notes
+
+- 移行により有効なセッションがすべて無効化される
+- パスワードハッシュのエクスポートは Auth0 Enterprise ユーザーのみ可能（無料プランはサポートに連絡が必要）
+- ロールマッピングやカスタムパスワードアルゴリズムには追加の設定が必要な場合がある
+- 1.7 ドキュメントでの変更: アカウントの `providerId` は `getAccountProviderId(identity)`（`identity.provider === "auth0"` なら `"credential"`、それ以外は `identity.provider.split("-")[0] ?? identity.provider`）で決める。`accountId` は `providerId === "credential"` なら移行後のユーザー ID、それ以外は `identity.user_id`（旧: 常に `identity.user_id`）。サインインコンポーネントは `import { authClient } from "@/lib/auth-client"`（旧: `better-auth/client`）。
+
+## Related
+
+- [Migrating from Clerk](./clerk-migration.md)
+- [Migrating from Auth.js (NextAuth)](./next-auth-migration.md)

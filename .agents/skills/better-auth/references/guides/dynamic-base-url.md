@@ -1,0 +1,32 @@
+# Dynamic Base URL
+
+許可リストベースのアプローチで複数ドメイン・プレビューデプロイメントに対応した動的ベース URL 解決ガイド。公式ドキュメントでは本ガイドが唯一の一次情報源（`concepts/dynamic-base-url` は 2026-08 時点で公式ナビゲーションから削除・404）。設定項目の詳細は `concepts/dynamic-base-url.md` にも記載がある。
+
+Better Auth の動的ベース URL 機能により、複数ホスト名（カスタムドメイン・プレビューデプロイ・ブランチ環境）でアプリケーションを安全に運用できる。リクエストの `x-forwarded-host` または `host` ヘッダーから現在のホスト名を抽出し、許可リストに対して検証してからリクエスト固有のベース URL を構築する。
+
+## Signature / Usage
+
+代表的なパターン:
+
+- プレビューデプロイ用の自ドメインに対するワイルドカード指定（例: `*.preview.myapp.com`）
+- 開発・本番でのプロトコル切り替え
+- 複数地域の本番ドメイン
+- クロスサブドメイン Cookie 共有
+
+## Options / Props
+
+| プロパティ | Type | Default | 説明 |
+| --- | --- | --- | --- |
+| `allowedHosts` | string[] | — | 許可するドメインの配列。ワイルドカードを使える（例: `*.preview.myapp.com`）。`*.vercel.app` のような共有ホスティングのドメインは第三者のサイトまで `trustedOrigins` で信頼してしまうため指定しない |
+| `protocol` | `"http"` \| `"https"` \| `"auto"` | `"auto"` | 使用プロトコル |
+| `fallback` | string | — | 許可リスト外のホスト用のフォールバック URL |
+| `crossSubDomainCookies` | boolean | — | サブドメイン間での Cookie 共有 |
+
+## Notes
+
+- Changed in 1.7: forwarded headers are not trusted by default for `allowedHosts`; set `advanced.trustedProxyHeaders: true` when the proxy exposes the public hostname only through `x-forwarded-host`. Without `baseURL.fallback`, requests with no usable or non-matching host fail closed. See concepts/dynamic-base-url.md.
+
+## Related
+
+- [Dynamic Base URL (concepts)](../concepts/dynamic-base-url.md)
+- [Optimizing for Performance](./optimizing-for-performance.md)
