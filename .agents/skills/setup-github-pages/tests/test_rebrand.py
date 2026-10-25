@@ -1,7 +1,7 @@
 """check_site.py / scaffold.py / build-local.sh（verify_attribution）などの回帰テスト（unittest・標準ライブラリのみ）。
 
 fixtures/ の site-keys・redirect は生成器の実出力（手書き fixture では上流の構造ずれを検知できないため、
-実物を使う）。ファイル名は歴史的経緯で残している。`rebrand.test.mjs` から `node --test` 経由でも実行される。
+実物を使う）。ファイル名は歴史的経緯で残している。CI（ci.yml の skill-tests ジョブ）で `python3 -I -B -m unittest discover` により直接実行される。
 """
 
 import hashlib

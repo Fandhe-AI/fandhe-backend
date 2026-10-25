@@ -35,7 +35,7 @@
    リンク文言、LICENSE リンク 2 件）のままであること。増減していれば上流がフッターを変えている
 6. `references/site-format.md` の制約（nav.toml の書式・予約アセット・Markdown 対応範囲）が変わっていないか上流
    ソースで再確認し、`scripts/check_site.py` の `RESERVED_ASSET_NAMES`（上流 `build.rs` の `RESERVED_ASSET_NAMES`）を更新する。上流ガイド（`docs/guides/docs-site-external-repos.md`・`docs/design/docs-site-external-use.md`）の差分も確認する
-7. `tests/fixtures/site-keys/`・`tests/fixtures/redirect/` を新 rev の生成物で作り直し、`node --test "tests/*.test.mjs"` を通す
+7. `tests/fixtures/site-keys/`・`tests/fixtures/redirect/` を新 rev の生成物で作り直し、`node --test "tests/*.test.mjs"` と `python3 -I -B -m unittest discover -s tests -p 'test_*.py'` を通す
 
 ## 上流改修の追跡
 

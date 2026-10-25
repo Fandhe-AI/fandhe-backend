@@ -406,7 +406,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' "${URL}"              # 200
 - **コミット**: `.claude/rules/conventional-commits.md` に従う。`--no-verify` は使わない
 - **既存の Rust workspace**: 対象リポジトリのルート `Cargo.toml` が広い glob の `members` を持つ場合は `exclude = ["_ff", "tools/docs-site-gen"]` を追加する（新構成の `tools/docs-site-gen` には Cargo パッケージが無い。`_ff` は旧構成の wrapper と `_ff/` が残っているリポジトリでのみ必要）
 - **キャッシュ**: `actions/cache` は `target/docs-site-install` を `FF_REV` と rustc でキー付けして再利用する。同じ rev ではインストールが省略される。初回の `cargo install` は時間がかかるため、実行時間を見て効果が無ければ cache ステップを削除してよい
-- **テスト**: `node --test "skills/setup-github-pages/tests/*.test.mjs"`（rev 固定・workflow 方針・python スクリプトの回帰）。Node.js 24 ではディレクトリ引数が使えないため glob で指定する
+- **テスト**: `node --test "skills/setup-github-pages/tests/*.test.mjs"`（rev 固定・workflow 方針）と `python3 -I -B -m unittest discover -s skills/setup-github-pages/tests -p 'test_*.py'`（python スクリプトの回帰）。Node.js 24 ではディレクトリ引数が使えないため node 側は glob で指定する
 
 ## よくある失敗
 
