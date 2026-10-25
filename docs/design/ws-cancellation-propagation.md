@@ -588,3 +588,8 @@ close()` を伴う非同期 I/O）は `tokio::spawn` した detached タスク�
 - レジストリ（`Active(pc)`）→ `pc` → ドライバ → `SignalingHandler` → `WebRtcConfig` のクローン →
   レジストリ、という参照サイクルが `Active` の間は成立する。サイクルは枠の除去で切れ、除去は
   `close()` と対で行う（`crates/plugin-webrtc/src/config.rs` のモジュール doc）
+- シグナリング中（枠の予約から `activate_slot` まで）の後始末は `handler.rs` の `SignalingGuard` が
+  `Drop` で担う。シグナリングのタイムアウトだけでなく、呼び出し元の Future が途中で drop された場合
+  （`JoinSet::shutdown` / `abort`）も、枠の除去と生成済み pc の `close()`（`Runtime` 外でも panic しない
+  `spawn_close`）が実行される。受容している残余リスク（`build().await` 中のキャンセルでドライバが
+  1 件残りうる等）は `config.rs` のモジュール doc に列挙している

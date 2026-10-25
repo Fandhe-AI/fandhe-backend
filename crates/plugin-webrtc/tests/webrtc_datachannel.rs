@@ -137,8 +137,9 @@ async fn datachannel_roundtrip_over_local_loopback() {
 }
 
 /// レビュー指摘（イシュー #26）の再発防止テスト: `max_peer_connections(1)` で 1 件目の
-/// 接続を確立してからクライアント側 `RTCPeerConnection::close()` を呼び、サーバ側の
-/// クローズ検知（`register_close_handler`）でレジストリの枠が解放されて 2 件目の
+/// Answer を適用した直後に（ICE/DTLS の確立は待たずに）クライアント側
+/// `RTCPeerConnection::close()` を呼び、サーバ側のクローズ検知（ハンドラの
+/// `Closed`/`Failed`）でレジストリの枠が解放されて 2 件目の
 /// シグナリングが `503` を返さず成功することを確認する（正常利用の蓄積のみで恒久的に
 /// 503 化する回帰を防ぐ）。サーバ側 `RTCPeerConnectionState` が `Closed`/`Failed` へ
 /// 遷移するのは ICE/DTLS 経由の非同期検知のため、猶予を長めに取りポーリングする
@@ -162,9 +163,10 @@ async fn peer_connection_slot_is_released_after_close_allowing_reuse() {
 
     let addr = spawn_server(WebRtcConfig::new().with_max_peer_connections(1)).await;
 
-    // 1 件目: 確立してからクローズする（データチャネルを 1 つ持たせないと SDP に
-    // m-line が含まれず `set_remote_description` が失敗するため、
-    // `datachannel_roundtrip_over_local_loopback` と同様にチャネルを作成する）。
+    // 1 件目: Answer を適用したら接続の確立を待たずにクローズする（サーバは相手消失を
+    // ICE checking のまま `Failed`（約 29.5 秒）で検知して枠を解放する）。データチャネルを
+    // 1 つ持たせないと SDP に m-line が含まれず `set_remote_description` が失敗するため、
+    // `datachannel_roundtrip_over_local_loopback` と同様にチャネルを作成する。
     let first_client = TestClient::new().await;
     let _first_dc = first_client
         .pc

@@ -174,10 +174,11 @@ async fn close_active_peers_closes_established_connection() {
 /// 確認する（`WebRtcConfig::activate_slot` のフェイルクローズ判定）。
 ///
 /// 待ち方（所要時間の設計）: 拒否された接続は一度も確立していないため、サーバが close しても
-/// クライアント側は ICE checking のまま `Failed`（実測で約 25 秒）まで終端状態へ遷移しない
-/// （確立済み接続のように `Disconnected`（約 4 秒）を経由せず `Connecting` → `Failed` と遷移する）。
-/// 以前はこの `Failed` を待っていたため約 33 秒かかり、内部の 30 秒 deadline に接近して
-/// いた。「サーバが拒否した pc を実際に close した」ことの検証は、`pub(crate)` のレジストリと
+/// クライアント側は ICE checking のまま `Failed`（macOS の実測で、2 回目のシグナリングから
+/// 約 30 秒。30.3 秒）まで終端状態へ遷移しない（確立済み接続のように `Disconnected`（約 4 秒）を
+/// 経由せず `Connecting` → `Failed` と遷移する）。以前はこの `Failed` を待っていたため
+/// テスト全体で約 31 秒（macOS で 3 回計測、いずれも 30.9 秒前後）かかり、内部の 30 秒 deadline に
+/// 接近していた（現在は約 4 秒、nextest で 3.6 秒）。「サーバが拒否した pc を実際に close した」ことの検証は、`pub(crate)` のレジストリと
 /// pc を直接扱える単体テスト（`config::tests::activate_slot_rejects_pc_even_after_...` /
 /// `activate_slot_returns_false_for_missing_slot`）が決定的に行うため、ここでは公開境界から
 /// 観測できる事実（シグナリングは 200 で完了する・データチャネルが開かない・既存の Active は

@@ -862,8 +862,9 @@ impl Server {
     /// 登録すると `POST /rtc/offer` が `RequestGate` → `UpgradeHandler` の評価を
     /// 通過した後、既定 [`Handler`] より先にパスインターセプトされ、`config` を
     /// 使って `PeerConnection` を生成しシグナリングを完結させる（ICE の UDP ソケットは
-    /// `WebRtcConfig::udp_bind_addrs`、既定 `0.0.0.0:0`（IPv4 のみ）へバインドする。
-    /// 空リストを設定した場合は `500` で拒否する。対象外パスは
+    /// `WebRtcConfig::udp_bind_addrs`、既定 `0.0.0.0:0`（IPv4 のみ。0.17 系の既定は
+    /// IPv4 / IPv6 の両方だった）へバインドする。空リスト、または `SocketAddr` として
+    /// 解釈できない要素（ホスト名を含む）がある設定は `500` で拒否する。対象外パスは
     /// 素通りし、既定 `Handler` へフォールスルーする。`crate::plugin::try_intercept`
     /// の doc を参照）。`webrtc-proxy`（別プロセス切り出し型）と同時に登録した
     /// 場合は `webrtc-proxy` が優先される（`crate::plugin::try_intercept` の doc）。

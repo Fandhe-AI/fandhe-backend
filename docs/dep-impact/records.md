@@ -76,7 +76,7 @@ feature 無効時（`--no-default-features` / `webrtc-proxy` のみ）の増分�
 | バイナリ | 構成 | 変更前 (bytes) | 変更後 (bytes) |
 |---|---|---|---|
 | `examples/minimal` | `--no-default-features`（webrtc 無効） | 981,040 | 981,040 |
-| `examples/webrtc_nfr6` | `--features webrtc` | 8,462,608 | 5,776,992 |
+| `examples/webrtc_nfr6` | `--features webrtc` | 8,462,608 | 5,775,888 |
 
 比率は約 8.63 倍 → 約 5.89 倍（TASK-8.4 時点は約 11.08 倍。ベースライン側が育ったため比は下がっている。
 同じ式での比較は今回の 2 値）。webrtc 無効の `minimal` は完全に同値で、pay-for-what-you-use は保たれている。
@@ -112,10 +112,22 @@ Functions（used）の増分は 140（105 → 245）から 89（105 → 194）�
 NFR-6（無関係パスへの RPS・レイテンシ）は本変更では再計測していない（専有計測環境が要る。
 `benches/webrtc-nfr6-bench.sh`）。TASK-8.4 の「RPS 比 94〜95%」は 0.17 系・バイナリ約 11 倍の値で、
 今回バイナリが約 5.9 倍に縮んだため再計測の余地がある（`docs/acceptance/req8-webrtc-attack-surface.md` の
-2026-10-26 節に記録）。テスト時間: `peer_connection_slot_is_released_after_close_allowing_reuse` は約 31 秒
-（サーバが `Failed`（相手消失後 約 29.5 秒）で枠を解放するため。`.config/nextest.toml` の 240 秒枠内）、
-`drain_for_shutdown_rejects_subsequent_activation` は約 31 秒（試作パッチでの実測。内部 deadline 30 秒に接近）→ 約 4 秒
-（拒否された接続は `Connecting` → `Failed` まで約 25 秒かかるため、その遷移を待たない形に変更）。
+2026-10-26 節に記録）。テスト時間（macOS 開発機の実測）:
+`peer_connection_slot_is_released_after_close_allowing_reuse` は約 30 秒（nextest で 30.1 秒。
+クライアントが接続確立を待たずに `close()` するため、サーバは相手消失を `Failed`（約 29.5 秒）で
+検知して枠を解放する。`.config/nextest.toml` の 240 秒枠内）、
+`drain_for_shutdown_rejects_subsequent_activation` は約 31 秒（`Failed` を待つ旧形で 3 回計測、
+いずれも 30.9 秒前後。内部 deadline 30 秒に接近）→ 約 4 秒（nextest で 3.6 秒。拒否された接続は
+`Connecting` → `Failed` まで約 30 秒（実測 30.3 秒）かかるため、その遷移を待たない形に変更）。
+
+UDP バインド既定の変化（実測）: 0.17 系の既定は IPv4 / IPv6 の両方の候補を集めていた
+（`webrtc-0.17.2/src/ice_transport/ice_gatherer.rs` → `webrtc-ice-0.17.2/src/network_type/mod.rs` の
+`supported_network_types`）。0.21 の既定 `["0.0.0.0:0"]` は IPv4 のみで、IPv6 の ULA を持つ macOS 開発機で
+候補は IPv4 の 2 件だけだった。`["0.0.0.0:0", "[::]:0"]` を明示すると IPv6 の候補が加わり、バインドできない
+アドレス（`[2001:db8::1]:0`）が混じっても webrtc 側でスキップされ、1 つでもバインドできれば接続を生成できた
+（`handler::tests::default_udp_bind_gathers_no_ipv6_candidates` /
+`ipv6_wildcard_alongside_ipv4_builds_even_if_an_address_cannot_be_bound`）。IPv6 自体が無いホストでの実行は
+未実測（上のスキップ挙動から、IPv4 側がバインドできれば生成できる見込み）。
 
 ## 2026-10-16 — `crates/plugin-csrf` の公開準備（イシュー #832、`publish = false` 解除と pay-for-what-you-use の確認）
 

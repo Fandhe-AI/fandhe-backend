@@ -449,8 +449,12 @@ CONNECTIONS=128`）・同一判定ロジック（`evaluate_nfr6_ratio`、閾値�
 `benches/nfr6-exclusive.sh` を再実行して公式判定を更新する余地がある（本移行では実施していない。
 上の非専有値は参考にとどめ、判定を PASS/WARN に更新する根拠にしない）。
 
-関連するテストの挙動変化（受け入れ上の留意点）: 0.21 では確立済み接続のクライアント側 `close()` をサーバが
-`Failed`（約 29.5 秒）で検知するため、`peer_connection_slot_is_released_after_close_allowing_reuse` は約 31 秒
-かかる（`.config/nextest.toml` の 240 秒枠内）。`UDP バインド` は既定 `0.0.0.0:0`（IPv4 のみ）で、空リストは
-`POST /rtc/offer` が `500` で拒否する（`tests/attack_surface.rs` の
-`empty_udp_bind_addrs_is_rejected_fail_closed_with_500` で再アサート）。
+関連するテストの挙動変化（受け入れ上の留意点）: `peer_connection_slot_is_released_after_close_allowing_reuse` は
+クライアントが Answer を適用した直後、接続（ICE/DTLS）の確立を待たずに `close()` する。0.21 ではその相手消失を
+サーバが ICE checking のまま `Failed`（約 29.5 秒）で検知して初めて枠を解放するため、テストは約 30 秒かかる
+（nextest で 30.1 秒。`.config/nextest.toml` の 240 秒枠内）。確立済みの接続を閉じたときの検知時間は
+このテストでは測っていない。`UDP バインド` は既定 `0.0.0.0:0`（IPv4 のみ。0.17 系は IPv4 / IPv6 の両方が既定だったため狭まっている。
+従来の挙動へ戻すには `["0.0.0.0:0", "[::]:0"]` を明示する）で、空リスト・`SocketAddr` として解釈できない要素
+（ホスト名を含む）は `POST /rtc/offer` が `500` で拒否する（`tests/attack_surface.rs` の
+`empty_udp_bind_addrs_is_rejected_fail_closed_with_500` / `hostname_udp_bind_addr_is_rejected_fail_closed_with_500`
+で再アサート）。

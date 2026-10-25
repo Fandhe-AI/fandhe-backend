@@ -34,6 +34,19 @@
 //!   ハンドラから枠の解放が届くとは限らないので**呼び出し側が `release_slot` で枠を
 //!   解放する**。
 //!
+//! 枠を予約してから `activate_slot` までのシグナリング中の経路（失敗・タイムアウト・
+//! 呼び出し元 Future の drop）は、`crate::handler` のガード（`SignalingGuard`）が `Drop` で
+//! `release_slot` と、公開済み pc の close を対で行う。`Active` 以降の経路は上の 2 点が担う。
+//!
+//! ## 受容している残余リスク（回帰ではない）
+//!
+//! - `PeerConnectionBuilder::build().await` の最中にキャンセルされると、webrtc 0.21.1 は
+//!   ドライバを先に spawn するため、公開前の pc のドライバが 1 件残りうる（上流側の課題）。
+//! - ドライバが全 UDP ソケットの再試行不能な受信エラーで異常終了すると（webrtc 0.21.1
+//!   `driver.rs` の受信エラー処理）、`Failed`/`Closed` が届く保証がなく、`Active` の枠が
+//!   残りうる。
+//! - `Server` を drain せずに破棄すると、下記の参照サイクルがリークする（0.17 から同じ）。
+//!
 //! # 参照サイクルとその切断
 //!
 //! `Active(pc)` を保持する間は `pc` → ドライバ → `SignalingHandler` → [`WebRtcConfig`] の
@@ -43,6 +56,7 @@
 //! 破棄するとサイクルがリークするため、最終 shutdown では `crate::drain::drain_for_shutdown`
 //! で全件を除去・close する。
 
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -222,23 +236,35 @@ impl WebRtcConfig {
     ///
     /// 接続ごとに、ここに挙げた全アドレスへ UDP ソケットをバインドする。ワイルドカード
     /// （`0.0.0.0:port` / `[::]:port`）は「その系統の全 interface」を意味し、ループバック・
-    /// link-local を除く interface アドレスごとに 1 ソケットがバインドされる。**IPv6 は既定では
-    /// 使わない**ので、必要な場合は `"[::]:0"` を明示する。ループバックだけで完結させたい
-    /// テストでは `"127.0.0.1:0"` を明示する。
+    /// link-local を除く interface アドレスごとに 1 ソケットがバインドされる。ループバックだけで
+    /// 完結させたいテストでは `"127.0.0.1:0"` を明示する。
     ///
-    /// # 空リスト・不正なアドレスはフェイルクローズ
+    /// # 既定値は IPv4 のみ（0.17 系からの変更）
     ///
-    /// 空のリストを渡しても既定値へは戻らない。`POST /rtc/offer` は `PeerConnection` を
-    /// 生成せずに `500`（`{"error":"peer_connection_init_failed"}`）で拒否する
-    /// （[`crate::handler::try_handle_rtc_offer`]）。解釈できないアドレスを含む場合も
-    /// `PeerConnection` の生成に失敗して同じ `500` になる（枠は解放される）。
+    /// 0.17 系の既定は IPv4（Udp4）と IPv6（Udp6）の両方の ICE 候補を集めていた。0.21 系は
+    /// 明示した UDP アドレスだけにバインドするため、**既定では IPv6 の候補を作らない**
+    /// （既定が IPv4 のみに狭まる）。従来どおり両方で待ち受けるには
+    /// `with_udp_bind_addrs(vec!["0.0.0.0:0".into(), "[::]:0".into()])` を明示する。IPv6 が無い
+    /// 環境での挙動を全環境では確認していないため、既定値自体は IPv6 を含めない保守的な選択とした。
+    /// バインドできなかったアドレスは webrtc 側でスキップされ、1 つでもバインドできれば
+    /// 接続は生成できる（バインドできない IPv6 アドレスを併記しても生成できることは実測済み。
+    /// IPv6 自体が無いホストでの実行は未実測だが、同じスキップ経路を通る見込み）。
+    ///
+    /// # 空リスト・解釈できないアドレスはフェイルクローズ
+    ///
+    /// 各要素は `SocketAddr`（`ip:port`、IPv6 は `[ip]:port`）として解釈できなければならない。
+    /// **ホスト名（`localhost:0` 等）は受け付けない**（webrtc 側で解決させるとブロッキングの
+    /// 名前解決がドライバ上で走るため）。空のリスト、または解釈できない要素が 1 つでもある
+    /// 設定は、既定値へ黙って戻らない。`POST /rtc/offer` は枠の予約も `PeerConnection` の
+    /// 生成も行わずに `500`（`{"error":"peer_connection_init_failed"}`）で拒否する
+    /// （[`crate::handler::try_handle_rtc_offer`]）。
     ///
     /// # Examples
     ///
     /// ```
     /// use fandhe_backend_plugin_webrtc::WebRtcConfig;
     ///
-    /// // IPv4 と IPv6 の両方で待ち受ける。
+    /// // 0.17 系の既定と同じく IPv4 と IPv6 の両方で待ち受ける。
     /// let config = WebRtcConfig::new()
     ///     .with_udp_bind_addrs(vec!["0.0.0.0:0".to_owned(), "[::]:0".to_owned()]);
     /// assert_eq!(
@@ -264,6 +290,21 @@ impl WebRtcConfig {
     /// ```
     pub fn udp_bind_addrs(&self) -> &[String] {
         &self.udp_bind_addrs
+    }
+
+    /// 設定済みの UDP バインドアドレスを `SocketAddr` へ解釈する。空、または解釈できない
+    /// 要素（ホスト名を含む）が 1 つでもあれば `None`（呼び出し元は枠の予約前に 500 で拒否する）。
+    ///
+    /// `SocketAddr` を webrtc へ渡せば名前解決は走らない（`ToSocketAddrs` が文字列のときだけ
+    /// ブロッキングの DNS 解決になるため、文字列のまま渡さない）。
+    pub(crate) fn parsed_udp_bind_addrs(&self) -> Option<Vec<SocketAddr>> {
+        if self.udp_bind_addrs.is_empty() {
+            return None;
+        }
+        self.udp_bind_addrs
+            .iter()
+            .map(|addr| addr.parse::<SocketAddr>().ok())
+            .collect()
     }
 
     /// SDP Offer の最大バイト数。

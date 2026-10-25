@@ -202,14 +202,20 @@ in-process WebRTC（`webrtc-rs` 0.21 系を直接依存）。`POST /rtc/offer` �
 
 - 注意: `webrtc-rs` の依存ツリーが大きく攻撃表面が広いため、クレート境界で完全分離されている。まず `plugin-webrtc-proxy` の採用を検討すること
 - 注意（UDP バインド）: ICE が使う UDP ソケットのバインドアドレスは `with_udp_bind_addrs` で指定する
-  （webrtc 0.21 で必須化）。既定は `["0.0.0.0:0"]` で **IPv4 のみ**。IPv6 でも待ち受ける場合は
-  `"[::]:0"` を加える。ワイルドカードは「その系統の全 interface（ループバック・link-local 除く）」で、
+  （webrtc 0.21 で必須化）。既定は `["0.0.0.0:0"]` で **IPv4 のみ**。0.17 系の既定は IPv4 と IPv6 の
+  両方の候補を集めていたため、**0.21 系では既定が IPv4 のみに狭まる**。従来の挙動に戻すには
+  `with_udp_bind_addrs(vec!["0.0.0.0:0".into(), "[::]:0".into()])` を明示する（バインドできなかった
+  アドレスは webrtc 側でスキップされ、1 つでもバインドできれば接続は生成できる。IPv6 の無い環境での
+  挙動を全環境では確認していないため、既定値には IPv6 を含めない保守的な選択とした）。
+  ワイルドカードは「その系統の全 interface（ループバック・link-local 除く）」で、
   interface ごとに 1 ソケットがバインドされる。公開サービスでは待ち受ける interface を絞るために具体的な
   アドレスを渡すことを推奨する
-- 注意（空リストは拒否）: 他の `with_*` と同様に `WebRtcConfig` はビルダー内で値を検証しない
-  （構築時 `Result` を返す型ではない）。`with_udp_bind_addrs(vec![])` は既定値へ戻らず、
-  `POST /rtc/offer` が `PeerConnection` を作らずに `500`（`{"error":"peer_connection_init_failed"}`）で
-  拒否する（枠も消費しない。フェイルクローズ）。解釈できないアドレスも生成失敗として同じ `500` になる
+- 注意（空リスト・ホスト名は拒否）: 他の `with_*` と同様に `WebRtcConfig` はビルダー内で値を検証しない
+  （構築時 `Result` を返す型ではない）。各要素は `SocketAddr`（`ip:port`、IPv6 は `[ip]:port`）として
+  解釈できなければならず、**ホスト名（`localhost:0` 等）は受け付けない**（webrtc 側で解決させると
+  ブロッキングの名前解決がドライバ上で走るため）。空のリスト、または解釈できない要素が 1 つでも
+  ある設定は既定値へ戻らず、`POST /rtc/offer` が枠の予約も `PeerConnection` の生成も行わずに
+  `500`（`{"error":"peer_connection_init_failed"}`）で拒否する（枠も消費しない。フェイルクローズ）
 - 注意: `close_active_peers` / `drain_for_shutdown` はいずれも `WebRtcConfig::registry`
   上のアクティブな `PeerConnection` を 1 接続あたり `per_close_timeout` の有界
   タイムアウトで並行に明示 close する（待ちの上限を超えても `close()` は中断せず完了まで続ける）。`drain_for_shutdown` のみ

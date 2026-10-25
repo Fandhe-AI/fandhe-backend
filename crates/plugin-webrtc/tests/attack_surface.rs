@@ -183,3 +183,32 @@ async fn empty_udp_bind_addrs_is_rejected_fail_closed_with_500() {
         assert_eq!(response.body, br#"{"error":"peer_connection_init_failed"}"#);
     }
 }
+
+/// UDP バインドアドレスに `SocketAddr` として解釈できない要素（ホスト名を含む）があると、
+/// webrtc 側でブロッキングの名前解決がドライバ上で走るため、枠の予約も `PeerConnection` の
+/// 生成も行わずに `500`（フェイルクローズ）で拒否する。枠を消費しないため、上限 1 でも
+/// 繰り返し同じ `500` を返し `503` には変わらない。
+#[tokio::test]
+async fn hostname_udp_bind_addr_is_rejected_fail_closed_with_500() {
+    let config = WebRtcConfig::new()
+        .with_max_peer_connections(1)
+        .with_udp_bind_addrs(vec!["127.0.0.1:0".to_owned(), "localhost:0".to_owned()]);
+    let body = br#"{"type":"offer","sdp":"v=0"}"#;
+    let head = head_from(
+        format!(
+            "POST /rtc/offer HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .as_bytes(),
+    );
+
+    for _ in 0..3 {
+        let response = try_handle_rtc_offer(&head, body, &config)
+            .await
+            .expect("対象パスなので Some のはず");
+
+        assert_eq!(response.status, 500);
+        assert_eq!(response.header("content-type"), Some("application/json"));
+        assert_eq!(response.body, br#"{"error":"peer_connection_init_failed"}"#);
+    }
+}

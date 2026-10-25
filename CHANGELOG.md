@@ -14,12 +14,18 @@
   `webrtc` の型は公開 API に出ておらず、`POST /rtc/offer` のワイヤ契約（JSON）も変わりません。
   API が全面的に異なるため、イベント処理は `PeerConnectionEventHandler` 実装 1 つ
   （`SignalingHandler`）に集約しました。0.21 は UDP バインドアドレスが必須のため、
-  **`WebRtcConfig` の既定で `0.0.0.0:0`（IPv4 のみ）にバインドします**。IPv6 でも待ち受けたい場合は
-  `with_udp_bind_addrs(vec!["0.0.0.0:0".to_owned(), "[::]:0".to_owned()])` のように明示してください。
-  空のリストを渡した設定は既定値へ戻らず、`POST /rtc/offer` が `500`
+  **`WebRtcConfig` の既定で `0.0.0.0:0` にバインドします。0.17 系の既定は IPv4 と IPv6 の両方の
+  ICE 候補を集めていたので、既定では IPv4 のみに狭まります**（IPv6 の無い環境での挙動を全環境では
+  確認していないため、既定値自体は IPv6 を含めない保守的な選択としています）。従来の挙動に戻すには
+  `with_udp_bind_addrs(vec!["0.0.0.0:0".to_owned(), "[::]:0".to_owned()])` を明示してください
+  （バインドできなかったアドレスは webrtc 側でスキップされ、1 つでもバインドできれば接続は生成できます）。
+  アドレスは `SocketAddr`（`ip:port`）として解釈できる必要があり、**ホスト名は受け付けません**
+  （ブロッキングの名前解決がドライバ上で走るため）。空のリスト、または解釈できない要素を含む設定は
+  既定値へ戻らず、`POST /rtc/offer` が枠の予約前に `500`
   （`{"error":"peer_connection_init_failed"}`）で拒否します（フェイルクローズ）。
   0.21 は `close()` せずに drop するとドライバと UDP ソケットが残るため、接続の枠を除去する全経路
-  （シグナリングの失敗・タイムアウト、終端状態の検知、drain）で `close()` も行うようにしました。
+  （シグナリングの失敗・タイムアウト、呼び出し元 Future の drop、終端状態の検知、drain）で
+  `close()` も行うようにしました。
   `close_active_peers` / `drain_for_shutdown` は、待ち時間の上限を超えても `close()` を
   中断せず切り離したタスクで完了まで続けます。内部の `RTCPeerConnection` 表記の doc は
   `PeerConnection` に改めています。
