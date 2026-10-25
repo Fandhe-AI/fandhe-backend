@@ -8,6 +8,127 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-10-26 — `crates/plugin-webrtc` の webrtc 0.17.2 → 0.21.1 移行（イシュー #870、RUSTSEC-2026-0387 の解消）
+
+`cargo audit / cargo deny (all feature configs)`（required check `dep-audit`）が RUSTSEC-2026-0387
+（`crypto-bigint 0.5.5`、constant-time 演算のタイミング変動）で fail-closed になり、main の schedule CI と
+スキル同期 PR が止まったため、`fandhe-backend-plugin-webrtc` の `webrtc` を `0.17`（lock は 0.17.2）から
+`0.21`（0.21.1）へ移行した（オーナー判断。期限付き ignore は不採用。方針の改訂は
+`docs/design/webrtc-rs-version-strategy.md` の 1.1・3.1 節）。経路は
+`webrtc 0.17.2 → dtls 0.17.2 → p256 / p384 0.13 → elliptic-curve 0.13 → crypto-bigint 0.5.5` の 1 本で、
+`dtls` が `crypto-bigint = "0.5"` を要求し 0.17 系に後継版は無い。0.20 系（`rtc-dtls 0.20.5`）は
+`p256` / `p384` を引くため解消せず、0.21.1 は `crypto-bigint` を依存グラフに含まない。
+
+`crates/plugin-webrtc/Cargo.toml` の変更: `webrtc = "0.21"`、`async-trait = "0.1"` と `bytes = "1"` を
+追加（どちらも `webrtc` が既に引くクレートで、新規パッケージではない）、`tokio` の feature に `sync`
+（`watch`）と `rt`（`spawn`）を追加（新規クレートなし）。`tests-e2e/Cargo.toml` も同系列へ揃えた。
+
+計測条件: macOS arm64、rustc 1.98.1、cargo-geiger 0.13.0。比較対象は `origin/main`（`ebf0be1`）と本ブランチ。
+`Cargo.lock` は `.gitignore` 対象のため、両者に同一のベースライン lock（0.17.2）を与え、本ブランチは
+`webrtc` の変更に必要な分だけ cargo に更新させた（lock の差分は下記）。geiger は 3 回実行して全回同一値だった
+（非決定的な場合に備えた再実行で、今回は揺れなし）。
+
+### 依存クレート数
+
+`bash scripts/dep-impact.sh`（`plugin-webrtc` が workspace メンバーのため 3 構成すべてに webrtc 系が計上される
+既知の制約あり。TASK-8.1 エントリ参照）:
+
+| feature 構成 | 変更前（`ebf0be1`） | 変更後 |
+|---|---|---|
+| --no-default-features | 278 | 241 |
+| default | 278 | 241 |
+| --all-features | 280 | 246 |
+
+`webrtc` feature 単体の実インパクト（`cargo tree -e normal --prefix none -p fandhe-backend-core <feature>` の
+クレート名重複除去、workspace メンバー除外。`dep-impact.sh` の `count_deps` と同じ数え方）:
+
+| 構成 | 変更前 | 変更後 |
+|---|---|---|
+| `--no-default-features` | 8 | 8 |
+| `--features webrtc` | 204 | 161 |
+| `--features webrtc-proxy` | 8 | 8 |
+| `--all-features` | 265 | 226 |
+
+feature 無効時（`--no-default-features` / `webrtc-proxy` のみ）の増分は 0 のまま。webrtc / rtc 系クレートは
+どちらも 0 件（`cargo tree ... | awk '{print $1}' | grep -cE '^(webrtc|rtc)(-|$)'`）。
+
+指標の注意: TASK-8.4 エントリの「webrtc 系依存 23 件」は `cargo tree | grep -c webrtc`（名前に `webrtc` を含む
+行数）で、0.21 系では依存の大半が `rtc` と `rtc-*`（`webrtc` を含まない名前）へ再編されたため、同じ式の値は
+23 → 2（`webrtc` 本体と `fandhe-backend-plugin-webrtc` のみ）に「縮小」して見えるが、実体の縮小ではない。
+`scripts/accept/webrtc-accept.sh` の計数は `webrtc|^rtc` を数える形に直した。クレート名が `webrtc` /
+`webrtc-*` / `rtc` / `rtc-*` のものを数えると 8（`webrtc` + `webrtc-*` 7）→ 17（`webrtc` + `rtc` +
+`rtc-*` 15）で、総数が減ったのは `p256` / `p384` / `crypto-bigint` / `curve25519-dalek` / `aes-gcm` /
+`parking_lot` 系などの暗号・同期プリミティブ群が抜けたことによる。
+
+`Cargo.lock` の差分（本ブランチのパッケージ集合）: 58 件減（`crypto-bigint` / `dtls` / `p256` / `p384` /
+`elliptic-curve` / `interceptor` / `webrtc-ice` / `webrtc-sctp` / `webrtc-srtp` / `webrtc-util` / `stun` /
+`turn` / `rtp` / `rtcp` / `sdp` / `parking_lot` など）、25 件増（`rtc` と `rtc-*` 15 件、`async-broadcast` /
+`async-channel` / `event-listener` / `quinn-udp` / `sansio` など）。共有クレートで版が動いたのは
+`rcgen`（0.13 → 0.14）・`x509-parser` / `asn1-rs` / `der-parser` / `oid-registry` / `pem` / `yasna` /
+`base64`（複数版の併存）・`nix`・`memoffset`・`socket2`（0.5.10 が消えて 0.6.5 に一本化）で、`tokio` / `bytes` /
+`hyper` 系は動いていない。`cargo tree -i crypto-bigint` は「did not match any packages」（グラフに無い）。
+
+### リリースバイナリサイズ
+
+`cargo build --release -p fandhe-backend-core --example minimal --no-default-features` と
+`--example webrtc_nfr6 --features webrtc`（TASK-8.4 エントリと同じ組）:
+
+| バイナリ | 構成 | 変更前 (bytes) | 変更後 (bytes) |
+|---|---|---|---|
+| `examples/minimal` | `--no-default-features`（webrtc 無効） | 981,040 | 981,040 |
+| `examples/webrtc_nfr6` | `--features webrtc` | 8,462,608 | 5,775,888 |
+
+比率は約 8.63 倍 → 約 5.89 倍（TASK-8.4 時点は約 11.08 倍。ベースライン側が育ったため比は下がっている。
+同じ式での比較は今回の 2 値）。webrtc 無効の `minimal` は完全に同値で、pay-for-what-you-use は保たれている。
+workspace の bin（`dep-impact.sh`）は `axum-ref` 1,289,920 → 1,272,992、`ws-load-client` 976,416 → 959,856 で、
+webrtc に依存しない bin だが、workspace 内の feature 統合の差で小さくなった（変更前は `dtls`（webrtc 0.17.2）が
+`tokio` の `parking_lot` feature を有効にしており、その分が `axum-ref` 等にも載っていた。0.21 系は有効にしない）。
+
+### unsafe 件数
+
+`cargo geiger --output-format Ascii --manifest-path "$(pwd)/crates/core/Cargo.toml" <feature>` の合計行
+（列は Functions / Expressions / Impls / Traits / Methods の used/total）:
+
+| 構成 | 変更前 | 変更後 |
+|---|---|---|
+| `--no-default-features` | 105/220 5537/9132 127/176 4/4 225/484 | 同左 |
+| `--features webrtc` | 245/591 21029/34022 620/726 83/87 844/1307 | 194/460 16269/26159 481/601 38/42 633/1037 |
+
+Functions（used）の増分は 140（105 → 245）から 89（105 → 194）に減った（同一ラン内の比較。2026-07 の
+69/170 はリポジトリ側が育つ前の値なので直接比較しない）。自コード（`crates/plugin-webrtc`）の `unsafe` は
+0 件のまま（`scripts/unsafe-triage.sh`、`scripts/accept/webrtc-accept.sh` 基準 B）。
+
+### cargo audit / cargo deny
+
+- 変更前（`ebf0be1`、lock = 0.17.2）: `bash scripts/dep-audit.sh` は終了コード 1。
+  `RUSTSEC-2026-0387 | crypto-bigint | 0.5.5 | >=0.7.6`（自動更新提案 1 件）を検知（再現確認）
+- 変更後（本ブランチ、コピーした lock）: 終了コード 0（`advisories ok, bans ok, licenses ok, sources ok`、
+  自動更新提案 0・要エスカレーション 0・情報 0）
+- 変更後（`Cargo.lock` を外して `cargo generate-lockfile` から解決する CI と同じ形）: 終了コード 0、
+  解決結果は `webrtc 0.21.1`・`crypto-bigint` なし、判定は上と同じ
+
+### 挙動の変化（性能・テスト時間への影響）
+
+NFR-6（無関係パスへの RPS・レイテンシ）は本変更では再計測していない（専有計測環境が要る。
+`benches/webrtc-nfr6-bench.sh`）。TASK-8.4 の「RPS 比 94〜95%」は 0.17 系・バイナリ約 11 倍の値で、
+今回バイナリが約 5.9 倍に縮んだため再計測の余地がある（`docs/acceptance/req8-webrtc-attack-surface.md` の
+2026-10-26 節に記録）。テスト時間（macOS 開発機の実測）:
+`peer_connection_slot_is_released_after_close_allowing_reuse` は約 30 秒（nextest で 30.1 秒。
+クライアントが接続確立を待たずに `close()` するため、サーバは相手消失を `Failed`（約 29.5 秒）で
+検知して枠を解放する。`.config/nextest.toml` の 240 秒枠内）、
+`drain_for_shutdown_rejects_subsequent_activation` は約 31 秒（`Failed` を待つ旧形で 3 回計測、
+いずれも 30.9 秒前後。内部 deadline 30 秒に接近）→ 約 4 秒（nextest で 3.6 秒。拒否された接続は
+`Connecting` → `Failed` まで約 30 秒（実測 30.3 秒）かかるため、その遷移を待たない形に変更）。
+
+UDP バインド既定の変化（実測）: 0.17 系の既定は IPv4 / IPv6 の両方の候補を集めていた
+（`webrtc-0.17.2/src/ice_transport/ice_gatherer.rs` → `webrtc-ice-0.17.2/src/network_type/mod.rs` の
+`supported_network_types`）。0.21 の既定 `["0.0.0.0:0"]` は IPv4 のみで、IPv6 の ULA を持つ macOS 開発機で
+候補は IPv4 の 2 件だけだった。`["0.0.0.0:0", "[::]:0"]` を明示すると IPv6 の候補が加わり、バインドできない
+アドレス（`[2001:db8::1]:0`）が混じっても webrtc 側でスキップされ、1 つでもバインドできれば接続を生成できた
+（`handler::tests::default_udp_bind_gathers_no_ipv6_candidates` /
+`ipv6_wildcard_alongside_ipv4_builds_even_if_an_address_cannot_be_bound`）。IPv6 自体が無いホストでの実行は
+未実測（上のスキップ挙動から、IPv4 側がバインドできれば生成できる見込み）。
+
 ## 2026-10-16 — `crates/plugin-csrf` の公開準備（イシュー #832、`publish = false` 解除と pay-for-what-you-use の確認）
 
 `fandhe-backend-plugin-csrf` の暫定 `publish = false` を解除し、公開対象を 15 クレートとした

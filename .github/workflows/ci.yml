@@ -1074,7 +1074,7 @@ jobs:
   # WebRTC rebind force-close e2e テスト（イシュー #507）。
   # `crates/plugin-webrtc/tests-e2e`（root workspace から exclude 済みの standalone
   # crate、`crates/http/fuzz` と同パターン）を独立 workspace としてビルド・テストする。
-  # `RebindHandle::rebind` が確立済み `RTCPeerConnection` を実際に force-close することを
+  # `RebindHandle::rebind` が確立済み `PeerConnection` を実際に force-close することを
   # 実 ICE/DTLS シグナリングで検証する end-to-end カバレッジ。stable のみで動作する。
   # --------------------------------------------------
   webrtc-e2e:
@@ -1085,7 +1085,8 @@ jobs:
     # ネットワーク前提を持たないため、ホステッドの NAT 環境でも動作に影響しない。
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
-    # webrtc 依存ツリー（約 +189 クレート、PoC-5）の cold build を考慮した上限。
+    # webrtc 依存ツリー（0.17 系は約 +189 クレート（PoC-5）、0.21 系は `rtc-*` 群へ再編され縮小）の
+    # cold build を考慮した上限。
     # キャッシュ miss 時の実測は本移行 PR の CI 実行が兼ねる（イシュー #553 実施内容 3）。
     timeout-minutes: 45
     steps:

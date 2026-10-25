@@ -3,7 +3,7 @@
 #
 # `crates/plugin-webrtc/tests-e2e`（root workspace から exclude 済みの standalone
 # crate、`crates/http/fuzz` と同パターン）を独立 workspace としてビルド・テストする。
-# `RebindHandle::rebind` が確立済み `RTCPeerConnection` を実際に force-close する
+# `RebindHandle::rebind` が確立済み `PeerConnection` を実際に force-close する
 # ことを実 ICE/DTLS シグナリングで検証する（`RebindHandle::rebind` の doc 契約の
 # end-to-end カバレッジ）。stable ツールチェーンのみで動作する（scripts/fuzz.sh と
 # 異なり nightly・追加ツールのインストール不要）。

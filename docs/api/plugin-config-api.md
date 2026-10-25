@@ -191,19 +191,34 @@ WebRTC シグナリングの別プロセス切り出し型プロキシ。`POST /
 
 ### 2.9 plugin-webrtc（`webrtc`）
 
-in-process WebRTC（`webrtc-rs` 直接依存）。`POST /rtc/offer` を同一プロセス内で処理する。
+in-process WebRTC（`webrtc-rs` 0.21 系を直接依存）。`POST /rtc/offer` を同一プロセス内で処理する。
 
 | 項目 | 内容 |
 |------|------|
 | Config 型 | `WebRtcConfig` |
-| 構築・builder | `WebRtcConfig::new()` + `with_max_offer_bytes` / `with_max_peer_connections` / `with_signaling_timeout`（getter: `max_offer_bytes` / `max_peer_connections` / `signaling_timeout`） |
-| 既定値 | `max_offer_bytes = 64 KiB`、`max_peer_connections = 64`、`signaling_timeout = 10 秒` |
+| 構築・builder | `WebRtcConfig::new()` + `with_max_offer_bytes` / `with_max_peer_connections` / `with_signaling_timeout` / `with_udp_bind_addrs`（getter: `max_offer_bytes` / `max_peer_connections` / `signaling_timeout` / `udp_bind_addrs`） |
+| 既定値 | `max_offer_bytes = 64 KiB`、`max_peer_connections = 64`、`signaling_timeout = 10 秒`、`udp_bind_addrs = ["0.0.0.0:0"]`（IPv4 のみ） |
 | drain API | `close_active_peers(&config, per_close_timeout)` / `drain_for_shutdown(&config, per_close_timeout)`（`drain` モジュール） |
 
 - 注意: `webrtc-rs` の依存ツリーが大きく攻撃表面が広いため、クレート境界で完全分離されている。まず `plugin-webrtc-proxy` の採用を検討すること
+- 注意（UDP バインド）: ICE が使う UDP ソケットのバインドアドレスは `with_udp_bind_addrs` で指定する
+  （webrtc 0.21 で必須化）。既定は `["0.0.0.0:0"]` で **IPv4 のみ**。0.17 系の既定は IPv4 と IPv6 の
+  両方の候補を集めていたため、**0.21 系では既定が IPv4 のみに狭まる**。従来の挙動に戻すには
+  `with_udp_bind_addrs(vec!["0.0.0.0:0".into(), "[::]:0".into()])` を明示する（バインドできなかった
+  アドレスは webrtc 側でスキップされ、1 つでもバインドできれば接続は生成できる。IPv6 の無い環境での
+  挙動を全環境では確認していないため、既定値には IPv6 を含めない保守的な選択とした）。
+  ワイルドカードは「その系統の全 interface（ループバック・link-local 除く）」で、
+  interface ごとに 1 ソケットがバインドされる。公開サービスでは待ち受ける interface を絞るために具体的な
+  アドレスを渡すことを推奨する
+- 注意（空リスト・ホスト名は拒否）: 他の `with_*` と同様に `WebRtcConfig` はビルダー内で値を検証しない
+  （構築時 `Result` を返す型ではない）。各要素は `SocketAddr`（`ip:port`、IPv6 は `[ip]:port`）として
+  解釈できなければならず、**ホスト名（`localhost:0` 等）は受け付けない**（webrtc 側で解決させると
+  ブロッキングの名前解決がドライバ上で走るため）。空のリスト、または解釈できない要素が 1 つでも
+  ある設定は既定値へ戻らず、`POST /rtc/offer` が枠の予約も `PeerConnection` の生成も行わずに
+  `500`（`{"error":"peer_connection_init_failed"}`）で拒否する（枠も消費しない。フェイルクローズ）
 - 注意: `close_active_peers` / `drain_for_shutdown` はいずれも `WebRtcConfig::registry`
-  上のアクティブな `RTCPeerConnection` を 1 接続あたり `per_close_timeout` の有界
-  タイムアウトで並行に明示 close する。`drain_for_shutdown` のみ
+  上のアクティブな `PeerConnection` を 1 接続あたり `per_close_timeout` の有界
+  タイムアウトで並行に明示 close する（待ちの上限を超えても `close()` は中断せず完了まで続ける）。`drain_for_shutdown` のみ
   `WebRtcConfig::begin_terminal_drain` で以降の新規登録を拒否するフェイルクローズ
   判定を伴う（`close_active_peers` は rebind 用途を想定し新規登録は拒否しない）。
   コアの `SessionDrain`（`webrtc` feature ゲート、独立シーム）が最終 graceful

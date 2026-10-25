@@ -1,4 +1,4 @@
-//! `RTCPeerConnection` の有界 drain API（イシュー #498）。
+//! `PeerConnection` の有界 drain API（イシュー #498）。
 //!
 //! WS 委譲タスクの世代キャンセル機構（`crates/core/src/plugin.rs` の
 //! `GenerationCancel`/`UpgradeCancel`、イシュー #489〜#497）を WS 以外の長時間委譲
@@ -12,21 +12,26 @@
 //! 最終 graceful shutdown（イシュー #313）・rebind 世代 drain（イシュー #485/#488）の
 //! 両経路から本モジュールの関数を呼ぶ。呼び出しは detached タスクへ切り離されるため、
 //! `run_until` の「grace + ε 以内に必ず戻る」フェイルセーフ（既存の permit 回収
-//! タイムアウト）を妨げない（本モジュールの関数自体も 1 接続あたり
-//! `per_close_timeout` で打ち切る有界処理であることに加え、呼び出し元がさらに
-//! `tokio::spawn` で切り離す）。
+//! タイムアウト）を妨げない（本モジュールの関数は 1 接続あたり `per_close_timeout` で
+//! **close の完了を待つ時間**を打ち切る有界処理であり、呼び出し元がさらに
+//! `tokio::spawn` で切り離す）。打ち切るのは待ちだけで `close()` 自体は中断しない:
+//! 各 `close()` は切り離したタスクで完遂まで走る（webrtc 0.21 は close が中断される、
+//! または close せずに drop されるとドライバと UDP ソケットが残るため）。
 
 use std::time::Duration;
 
 use crate::config::WebRtcConfig;
 
-/// アクティブな `RTCPeerConnection` すべてを、1 接続あたり `per_close_timeout` を
+/// アクティブな `PeerConnection` すべてを、1 接続あたり `per_close_timeout` を
 /// 上限として明示的に `close()` する（イシュー #498）。
 ///
-/// `RTCPeerConnection::close()` は DTLS/SCTP の正規クローズシーケンスを実行する
+/// `PeerConnection::close()` は DTLS/SCTP の正規クローズシーケンスを実行する
 /// （WebSocket の Close frame 送出に相当する正常終了手順）。`WebRtcConfig::
-/// take_active_peers` でレジストリから対象を切り離してから並行に close するため、
-/// close 中に新規の `activate_slot` がこのスナップショットへ割り込むことはない。
+/// take_active_peers` でレジストリから対象を切り離してから（= 枠を除去してから）並行に
+/// close するため、close 中に新規の `activate_slot` がこのスナップショットへ割り込むことは
+/// ない。**待ちが `per_close_timeout` を超えても `close()` 自体は打ち切らず、切り離した
+/// タスクで完了まで継続させる**（webrtc 0.21 は close せずに drop するとドライバと UDP
+/// ソケットが残るため、待ちの上限と close の完遂を分離している）。
 ///
 /// rebind（世代交代のみで `WebRtcConfig` 自体は新世代と共有され続ける）から呼ぶ
 /// ことを想定し、[`drain_for_shutdown`] と異なり以降の新規登録は拒否しない
@@ -60,16 +65,21 @@ pub async fn close_active_peers(config: &WebRtcConfig, per_close_timeout: Durati
     for pc in peers {
         tasks.push(tokio::spawn(async move {
             // close() 自体がハングする可能性（webrtc-rs 内部の I/O 待ち）を想定し、
-            // per_close_timeout で打ち切る。打ち切り時は pc（Arc）をこのタスクの
-            // スコープで手放すのみとし、以降の解放は既存の Drop 経路に委ねる
-            // （呼び出し元 doc の「有界処理」契約を参照）。
-            let _ = tokio::time::timeout(per_close_timeout, pc.close()).await;
+            // 待ちを per_close_timeout で打ち切る。ただし close() の Future を直接
+            // timeout に包むと打ち切り時に Future が drop されて close が中断し、
+            // 0.21 ではドライバが残りうる。そのため close() は別タスクで走らせ、
+            // こちらは JoinHandle の待ちだけに上限を掛ける（上限超過時も close は
+            // 切り離されたタスクで継続する。呼び出し元 doc の「有界処理」契約）。
+            let closer = tokio::spawn(async move {
+                let _ = pc.close().await;
+            });
+            let _ = tokio::time::timeout(per_close_timeout, closer).await;
         }));
     }
     for task in tasks {
         // 個々のタスクの JoinError（panic 等、通常運用では発生しない）は無視する。
         // 本関数の責務は「close を試みること」であり、タスク側の異常終了は
-        // pc の生存管理（Arc の解放）を妨げない。
+        // 他の接続の close を妨げない。
         let _ = task.await;
     }
 }
@@ -79,7 +89,7 @@ pub async fn close_active_peers(config: &WebRtcConfig, per_close_timeout: Durati
 /// `WebRtcConfig::begin_terminal_drain`（`pub(crate)`）を呼んで以降の新規登録
 /// （`WebRtcConfig::activate_slot`）を拒否させたうえで、[`close_active_peers`] で
 /// 既存のアクティブ接続を明示的に close する。`WebRtcConfig` は `Clone` で世代を跨いで
-/// 共有されるため、以降このプロセスで新たに生成される `RTCPeerConnection` は
+/// 共有されるため、以降このプロセスで新たに生成される `PeerConnection` は
 /// （シグナリング自体は継続しても）レジストリへ登録されず即座に close される
 /// （`crate::handler::complete_signaling` の `activate_slot` 呼び出し箇所を参照）。
 ///

@@ -31,12 +31,14 @@ publish = false
 fandhe-backend-core = { path = "../../core", features = ["webrtc"] }
 # クライアント側 `RTCPeerConnection`。plugin-webrtc 本体の依存と同一メジャー系列を
 # 維持する（更新時は両方揃えること）。
-webrtc = "0.17"
+webrtc = "0.21"
 serde_json = "1"
+async-trait = "0.1"
 tokio = { version = "1", default-features = false, features = [
   "net",
   "io-util",
   "time",
+  "sync",
   "macros",
   "rt-multi-thread",
 ] }

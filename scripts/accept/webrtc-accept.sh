@@ -39,6 +39,16 @@ source "${SCRIPT_DIR}/lib/common.sh"
 source "${SCRIPT_DIR}/lib/nfr6-ratio.sh"
 cd "${WORKSPACE_ROOT}"
 
+# webrtc 系依存の判定パターン（`cargo tree --prefix none` の各行は先頭がクレート名）。
+# webrtc 0.17 系は `webrtc` / `webrtc-*` 名だったが、0.21 系は Sans-I/O コアの `rtc` と
+# `rtc-*` 群の上に `webrtc` が載る構成になり、依存の大半が `webrtc` を含まない名前になった。
+# `grep -c webrtc` だけでは `rtc-*` の残留を検出できないため、`rtc` / `rtc-*` も数える
+# （`rtc` 単独を含めるが `rtcp` 等の別クレートは含めない）。照合対象は各行の先頭フィールド
+# （クレート名）だけにする。行全体だと workspace メンバーの絶対パス
+# （例: `.../wt-backend-webrtc021/crates/core`）に `webrtc` を含むチェックアウト先で偽陽性になる。
+# scripts/tests/run-webrtc-accept-tests.sh の evaluate_dep_exclusion と同一パターン。
+WEBRTC_FAMILY_PATTERN='webrtc|^rtc([[:space:]-]|$)'
+
 echo "=== REQ-8 / TASK-8.4 受け入れ検証（WebRTC 攻撃表面評価） ==="
 echo "workspace root: ${WORKSPACE_ROOT}"
 echo ""
@@ -61,28 +71,30 @@ check_dep_exclusion() {
     # `cargo tree` の終了コードを明示的に確認し、失敗時は測定不能として FAIL
     # 扱いにする（`core-deps-unsafe-audit.sh` と同一のフェイルクローズ実装）。
     local tree_output disabled_count
-    if ! tree_output="$(cargo tree -p fandhe-backend-core 2>/dev/null)"; then
+    if ! tree_output="$(cargo tree -p fandhe-backend-core --prefix none 2>/dev/null)"; then
         record_fail "A: webrtc 無効時の依存完全除外" "cargo tree -p fandhe-backend-core 自体が失敗し測定不能（cargo 呼び出しが壊れている可能性）"
         return
     fi
-    disabled_count="$(printf '%s\n' "${tree_output}" | grep -c webrtc || true)"
+    disabled_count="$(printf '%s\n' "${tree_output}" | awk '{print $1}' | grep -cE "${WEBRTC_FAMILY_PATTERN}" || true)"
 
     if [ "${disabled_count}" -eq 0 ]; then
-        record_pass "A: webrtc 無効時の依存完全除外" "cargo tree -p fandhe-backend-core | grep -c webrtc = 0"
+        record_pass "A: webrtc 無効時の依存完全除外" "cargo tree -p fandhe-backend-core --prefix none | grep -cE 'webrtc|^rtc' = 0（webrtc / rtc 系とも 0 件）"
     else
-        record_fail "A: webrtc 無効時の依存完全除外" "webrtc 系依存が ${disabled_count} 件残留（cargo tree -p fandhe-backend-core）"
+        record_fail "A: webrtc 無効時の依存完全除外" "webrtc / rtc 系依存が ${disabled_count} 件残留（cargo tree -p fandhe-backend-core）"
     fi
 
     # 有効時のインパクトも参考値として記録する（docs/dep-impact/records.md に転記済みの値と突合）。
     # PASS/FAIL 判定には使わない参考値だが、同一の cargo tree 失敗を握りつぶす
     # 構文を残さないよう上記 A と同じフェイルクローズパターンで測定不能を明示する。
     local enabled_tree_output enabled_count
-    if ! enabled_tree_output="$(cargo tree -p fandhe-backend-core --features webrtc 2>/dev/null)"; then
+    if ! enabled_tree_output="$(cargo tree -p fandhe-backend-core --features webrtc --prefix none 2>/dev/null)"; then
         record_warn "A補足: webrtc 有効時の依存インパクト" "cargo tree -p fandhe-backend-core --features webrtc 自体が失敗し測定不能"
         return
     fi
-    enabled_count="$(printf '%s\n' "${enabled_tree_output}" | grep -c webrtc || true)"
-    record_warn "A補足: webrtc 有効時の依存インパクト" "cargo tree -p fandhe-backend-core --features webrtc | grep -c webrtc = ${enabled_count}（docs/dep-impact/records.md 参照）"
+    # 重複行（同一クレートの複数出現）を除いたクレート名で数える（webrtc 0.21 以降は
+    # `rtc-*` 群も含める。0.17 系の旧計測値 23 件は `grep -c webrtc` の行数で、定義が異なる）。
+    enabled_count="$(printf '%s\n' "${enabled_tree_output}" | awk '{print $1}' | sort -u | grep -cE "${WEBRTC_FAMILY_PATTERN}" || true)"
+    record_warn "A補足: webrtc 有効時の依存インパクト" "cargo tree -p fandhe-backend-core --features webrtc --prefix none | クレート名の重複除去後 grep -cE 'webrtc|^rtc' = ${enabled_count}（webrtc / rtc 系クレート数。docs/dep-impact/records.md 参照）"
 }
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,45 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `fandhe-backend-plugin-webrtc`: 内部の `webrtc`（webrtc-rs）を 0.17 系から 0.21 系へ
+  移行しました（イシュー [#870](https://github.com/Fandhe-AI/fandhe-backend/issues/870)）。
+  `webrtc` の型は公開 API に出ておらず、`POST /rtc/offer` のワイヤ契約（JSON）も変わりません。
+  API が全面的に異なるため、イベント処理は `PeerConnectionEventHandler` 実装 1 つ
+  （`SignalingHandler`）に集約しました。0.21 は UDP バインドアドレスが必須のため、
+  **`WebRtcConfig` の既定で `0.0.0.0:0` にバインドします。0.17 系の既定は IPv4 と IPv6 の両方の
+  ICE 候補を集めていたので、既定では IPv4 のみに狭まります**（IPv6 の無い環境での挙動を全環境では
+  確認していないため、既定値自体は IPv6 を含めない保守的な選択としています）。従来の挙動に戻すには
+  `with_udp_bind_addrs(vec!["0.0.0.0:0".to_owned(), "[::]:0".to_owned()])` を明示してください
+  （バインドできなかったアドレスは webrtc 側でスキップされ、1 つでもバインドできれば接続は生成できます）。
+  アドレスは `SocketAddr`（`ip:port`）として解釈できる必要があり、**ホスト名は受け付けません**
+  （ブロッキングの名前解決がドライバ上で走るため）。空のリスト、または解釈できない要素を含む設定は
+  既定値へ戻らず、`POST /rtc/offer` が枠の予約前に `500`
+  （`{"error":"peer_connection_init_failed"}`）で拒否します（フェイルクローズ）。
+  0.21 は `close()` せずに drop するとドライバと UDP ソケットが残るため、接続の枠を除去する全経路
+  （シグナリングの失敗・タイムアウト、呼び出し元 Future の drop、終端状態の検知、drain）で
+  `close()` も行うようにしました。`PeerConnection` の生成（`build()`）はキャンセルされない所有タスクで
+  完了まで走らせ、生成中にタイムアウトや呼び出し元のキャンセルが起きても、生成タスクが pc を `close()`
+  して枠を解放します（生成中の枠は同時接続数の上限に数え続けるため、残留するドライバは上限を超えません）。
+  `close_active_peers` / `drain_for_shutdown` は、待ち時間の上限を超えても `close()` を
+  中断せず切り離したタスクで完了まで続けます。内部の `RTCPeerConnection` 表記の doc は
+  `PeerConnection` に改めています。
+
+### Added
+
+- `fandhe-backend-plugin-webrtc`: `WebRtcConfig::with_udp_bind_addrs` / `udp_bind_addrs` を
+  追加しました（ICE が使う UDP バインドアドレス。既定は `["0.0.0.0:0"]`）。追加のみで
+  breaking change ではありません。
+
+### Security
+
+- `fandhe-backend-plugin-webrtc`: `webrtc` 0.17 系が `dtls` 経由で引いていた `crypto-bigint 0.5.5` の
+  脆弱性 RUSTSEC-2026-0387 を、`webrtc` 0.21 系への移行で解消しました（0.21 系は `crypto-bigint` を
+  依存グラフに含みません。イシュー
+  [#870](https://github.com/Fandhe-AI/fandhe-backend/issues/870)、方針は
+  [`docs/design/webrtc-rs-version-strategy.md`](docs/design/webrtc-rs-version-strategy.md)）。
+
 ## [0.5.0] - 2026-10-16
 
 公開対象 15 クレートを lockstep バンプ（`docs/design/crates-io-release.md` 7.7 節）。

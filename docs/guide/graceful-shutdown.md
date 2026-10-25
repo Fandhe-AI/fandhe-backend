@@ -120,7 +120,7 @@ Future を `shutdown` として渡せばよい。
 
 **副作用（`Server::webrtc` 登録時）**: `Server::webrtc` にスキーマ登録済みの
 場合、`rebind` 呼び出しのたびに `WebRtcConfig::registry` 上のアクティブな
-`RTCPeerConnection` が**新旧世代を区別せず全件**強制切断される（WS 委譲
+`PeerConnection` が**新旧世代を区別せず全件**強制切断される（WS 委譲
 セッションのような `shutdown_grace_period` の猶予は適用されない）。単なる
 リスニングポート切り替えのつもりで `rebind` を呼んでも、rebind と無関係な
 進行中の WebRTC 通話まで切断されうる点に注意する（`RebindHandle::rebind`

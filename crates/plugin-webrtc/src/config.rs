@@ -1,9 +1,9 @@
 //! in-process WebRTC プラグインの静的設定（[`WebRtcConfig`]）。
 //!
 //! [`crate::handler::try_handle_rtc_offer`] が参照する。生成した
-//! `RTCPeerConnection` を保持するレジストリ（`WebRtcConfig::registry`、
-//! `pub(crate)` の内部 API）もここで保持し、テスト容易性のため PoC-5 の
-//! `OnceLock` グローバルは使わず [`WebRtcConfig`] インスタンス単位の
+//! `PeerConnection`（webrtc 0.21 の `Arc<dyn PeerConnection>`）を保持するレジストリ
+//! （`WebRtcConfig::registry`、`pub(crate)` の内部 API）もここで保持し、テスト容易性のため
+//! PoC-5 の `OnceLock` グローバルは使わず [`WebRtcConfig`] インスタンス単位の
 //! フィールドとする（`.claude/rules/coding-rust.md` の AI ファースト保守性）。
 //!
 //! レジストリは「同時接続数上限の予約枠（`RegistrySlot::Reserved`）」と
@@ -11,33 +11,122 @@
 //! `Vec` で管理する。上限判定（`reserve_slot`）と枠の登録を同一ロック区間内で行う
 //! ことで、[`crate::handler::try_handle_rtc_offer`] の複数呼び出しが同時に
 //! `len() < max` を通過してから登録する TOCTOU（time-of-check to time-of-use）を
-//! 防ぐ。またシグナリング失敗時（`release_slot`）・接続クローズ時（`on_peer_connection_state_change`
-//! 経由の `release_slot`）に枠を確実に取り除くことで、正常利用の蓄積のみで
-//! `max_peer_connections` に恒久的に到達し続ける問題（レジストリの単調増加）を防ぐ。
+//! 防ぐ。またシグナリング失敗時・タイムアウト時・接続クローズ／失敗検知時
+//! （`SignalingHandler::on_connection_state_change` 経由）に枠を確実に取り除くことで、
+//! 正常利用の蓄積のみで `max_peer_connections` に恒久的に到達し続ける問題（レジストリの
+//! 単調増加）を防ぐ。
+//!
+//! # 枠の除去と `close()` の対（webrtc 0.21 のライフサイクル不変条件）
+//!
+//! webrtc 0.21 の `PeerConnection` は、`close()` せずに最後のハンドルを drop しても
+//! バックグラウンドのドライバと UDP ソケットが残る（0.17 の drop 任せは通用しない）。
+//! また `pc.close()` をローカルで呼んでも、イベントハンドラへ `Closed` が届くとは限らない
+//! （接続の状態によって届いたり届かなかったりすることを実測している。ICE checking 中の
+//! 接続を閉じたときは届き、確立済みの接続を drain で閉じたときは数秒観測しても届かなかった）。
+//! ハンドラの `Closed` に枠の解放を頼れないため、本クレートは次の不変条件を保つ。
+//!
+//! - **`Active` の枠を除去する経路は、必ずその接続を `close()` する**。`release_slot`
+//!   （ハンドラの `Closed`/`Failed` 検知・シグナリング後始末）と、`activate_slot` が
+//!   `false` を返す経路はレジストリ自身が切り離したタスクで `close()` まで行う。
+//!   `take_active_peers`（drain）は枠を除去したうえで接続を呼び出し元へ渡すので、
+//!   **受け取った呼び出し側が `close()` する契約**とする。
+//! - ローカルで `pc.close()` を呼ぶ経路（`crate::handler` の失敗後始末など）は、
+//!   ハンドラから枠の解放が届くとは限らないので**呼び出し側が `release_slot` で枠を
+//!   解放する**。
+//!
+//! 枠を予約してから `activate_slot` までのシグナリング中の経路（失敗・タイムアウト・
+//! 呼び出し元 Future の drop）は、`crate::handler` のガード（`SignalingGuard`）が `Drop` で
+//! `release_slot` と、公開済み pc の close を対で行う。`Active` 以降の経路は上の 2 点が担う。
+//!
+//! ## `build().await` 中のキャンセルでもドライバを回収する
+//!
+//! webrtc 0.21.1 の `PeerConnectionBuilder::build().await` はドライバを先に spawn してから
+//! 初期化の完了を待つため、この `await` の最中に Future を drop すると、ハンドルを得られない
+//! ドライバが残る。そこで `build()` はキャンセルされない所有タスクで完了まで走らせ、
+//! `signaling_timeout` や呼び出し元のキャンセルは結果の**待ち**だけを打ち切る。生成中の枠は
+//! `Reserved` のまま生成タスクが所有し、生成が終わったとき、呼び出し側が消えていれば生成タスクが
+//! pc を close してから枠を解放する（生きていれば従来どおりガードが所有）。したがって残留する
+//! ドライバは常に `max_peer_connections` の内側に収まる。生成タスクにタイムアウトは付けない
+//! （付けると同じキャンセル問題が戻る）ため、**生成がハングすると、その枠は戻らないまま上限を
+//! 食う**（新規は `503` で拒否される＝フェイルクローズ。上限を超えて累積しない）。所有権の
+//! 受け渡しは `crate::handler` の `SignalingGuard` の doc の表を参照。
+//!
+//! ## 受容している残余リスク（回帰ではない）
+//!
+//! - ドライバが全 UDP ソケットの再試行不能な受信エラーで異常終了すると（webrtc 0.21.1
+//!   `driver.rs` の受信エラー処理）、`Failed`/`Closed` が届く保証がなく、`Active` の枠が
+//!   残りうる。
+//! - `Server` を drain せずに破棄すると、下記の参照サイクルがリークする（0.17 から同じ）。
+//!
+//! # 参照サイクルとその切断
+//!
+//! `Active(pc)` を保持する間は `pc` → ドライバ → `SignalingHandler` → [`WebRtcConfig`] の
+//! クローン → `registry` → `Active(pc)` という参照サイクルが成立する。このサイクルは
+//! 枠の除去（`release_slot` / `take_active_peers` / `activate_slot` の拒否）で必ず切れ、
+//! 上の不変条件により同時に `close()` でドライバも止まる。枠を除去せずレジストリごと
+//! 破棄するとサイクルがリークするため、最終 shutdown では `crate::drain::drain_for_shutdown`
+//! で全件を除去・close する。
 
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::peer_connection::PeerConnection;
 
 /// レジストリの 1 エントリ（予約枠 or アクティブな接続）。
 ///
 /// [`crate::handler::try_handle_rtc_offer`] が `reserve_slot` で予約し、シグナリング
 /// 成功で `activate_slot`（`Active` へ遷移）、失敗またはクローズで `release_slot`
-/// （エントリ除去）する。`Active` の間は `Arc<RTCPeerConnection>` を保持することが
-/// 接続を生存させる唯一の経路であり、除去（`release_slot`）は `RTCPeerConnection` の
-/// 破棄・クローズを意味する。
-#[derive(Debug)]
+/// （エントリ除去）する。`Active` の間は `Arc<dyn PeerConnection>` を保持することが
+/// 接続を生存させる唯一の経路であり、`Active` の除去は同時に `close()` を伴う
+/// （モジュール doc「枠の除去と `close()` の対」）。
 pub(crate) enum RegistrySlot {
-    /// シグナリング進行中で `RTCPeerConnection` 未生成の予約枠。
+    /// シグナリング進行中の予約枠。生成中は生成タスク、生成後は呼び出し元（ガード）が接続と枠の
+    /// 後始末を所有する（`crate::handler` の `SignalingGuard` の doc の表）。
     Reserved,
-    /// シグナリング成功で登録済みの接続。
-    ///
-    /// 保持している `Arc<RTCPeerConnection>` を読み出すことはなく、接続を生存させる
-    /// （Drop させない）ためだけに保持する。`dead_code` lint はこの用途を検知できない
-    /// ため許容する。
-    Active(#[allow(dead_code)] Arc<RTCPeerConnection>),
+    /// シグナリング成功で登録済みの接続。`release_slot` が除去と close を行い、
+    /// `take_active_peers`（drain）は除去して呼び出し元へ渡す。
+    Active(Arc<dyn PeerConnection>),
+}
+
+/// `pc` を切り離したタスクで `close()` する（失敗は無視してよい。`close()` は冪等）。
+///
+/// 枠の除去と `close()` を対にするための共通部品。同期関数なので、除去と同じ同期区間で
+/// 呼べばキャンセルされない（`close()` 自体はネットワーク I/O を伴いうるため、呼び出し元の
+/// 応答や `Mutex` ロックを待たせないよう切り離す）。tokio ランタイム外から呼ばれた場合は
+/// 実行先が無いので何もしない（ランタイム無しに接続は生成できないため通常は到達しない）。
+pub(crate) fn spawn_close(pc: Arc<dyn PeerConnection>) {
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        runtime.spawn(async move {
+            let _ = pc.close().await;
+        });
+    }
+}
+
+/// テスト用: `spawn_close` などで切り離された `close()` の完了を有界に待つ。
+///
+/// 0.21 には `connection_state()` が無く、ローカル `close()` で `Closed` が届く保証もない。
+/// close 済みの接続は `create_offer` が `Err` になることで判定する（実時間のスリープで
+/// 「そろそろ閉じたはず」と決め打ちせず、条件が成立するまでポーリングして上限 5 秒で打ち切る）。
+#[cfg(test)]
+pub(crate) async fn wait_until_closed(pc: &Arc<dyn PeerConnection>) -> bool {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while pc.create_offer(None).await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
+impl std::fmt::Debug for RegistrySlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RegistrySlot::Reserved => f.write_str("Reserved"),
+            RegistrySlot::Active(_) => f.write_str("Active(..)"),
+        }
+    }
 }
 
 /// SDP Offer の既定サイズ上限（64 KiB）。
@@ -47,11 +136,11 @@ pub(crate) enum RegistrySlot {
 /// （.claude/rules/security.md）。
 const DEFAULT_MAX_OFFER_BYTES: usize = 64 * 1024;
 
-/// 同時に保持する `RTCPeerConnection` 数の既定上限。
+/// 同時に保持する `PeerConnection` 数の既定上限。
 ///
-/// 生成した `RTCPeerConnection` はプロセス内レジストリ（[`WebRtcConfig::registry`]）
+/// 生成した `PeerConnection` はプロセス内レジストリ（[`WebRtcConfig::registry`]）
 /// で管理され、接続クローズ・失敗（`RTCPeerConnectionState::Closed`/`Failed`）を
-/// 検知次第レジストリから除去される（`crate::handler::register_close_handler`）。
+/// 検知次第レジストリから除去される（`SignalingHandler::on_connection_state_change`）。
 /// 上限を設けず無制限に受理するとメモリ枯渇（DoS）に直結するため、超過時は
 /// [`crate::handler::try_handle_rtc_offer`] が 503 で拒否する
 /// （フェイルクローズ、.claude/rules/security.md）。
@@ -76,6 +165,7 @@ pub struct WebRtcConfig {
     max_offer_bytes: usize,
     max_peer_connections: usize,
     signaling_timeout: Duration,
+    udp_bind_addrs: Vec<String>,
     registry: Arc<Mutex<Vec<(u64, RegistrySlot)>>>,
     next_slot_id: Arc<AtomicU64>,
     /// 最終 graceful shutdown 開始後は `true`（イシュー #498、`drain::drain_for_shutdown`
@@ -120,7 +210,7 @@ impl WebRtcConfig {
         self
     }
 
-    /// 同時に保持する `RTCPeerConnection` 数の上限を上書きする。
+    /// 同時に保持する `PeerConnection` 数の上限を上書きする。
     ///
     /// # Examples
     ///
@@ -138,6 +228,11 @@ impl WebRtcConfig {
 
     /// シグナリング全体のタイムアウトを上書きする。
     ///
+    /// 打ち切るのは `POST /rtc/offer` の**応答を待つ時間**で、`PeerConnection` の生成
+    /// （webrtc 0.21 の `build()`）自体は中断しない。生成は所有タスクで完了まで走り、期限切れ
+    /// （`504`）の場合は生成タスクが pc を close して枠を解放する。それまで枠は
+    /// `max_peer_connections` に数えられる。
+    ///
     /// # Examples
     ///
     /// ```
@@ -153,12 +248,88 @@ impl WebRtcConfig {
         self
     }
 
+    /// ICE が使う UDP バインドアドレスを上書きする（webrtc 0.21 では必須。既定は
+    /// `["0.0.0.0:0"]`、IPv4 のみ）。
+    ///
+    /// 接続ごとに、ここに挙げた全アドレスへ UDP ソケットをバインドする。ワイルドカード
+    /// （`0.0.0.0:port` / `[::]:port`）は「その系統の全 interface」を意味し、ループバック・
+    /// link-local を除く interface アドレスごとに 1 ソケットがバインドされる。ループバックだけで
+    /// 完結させたいテストでは `"127.0.0.1:0"` を明示する。
+    ///
+    /// # 既定値は IPv4 のみ（0.17 系からの変更）
+    ///
+    /// 0.17 系の既定は IPv4（Udp4）と IPv6（Udp6）の両方の ICE 候補を集めていた。0.21 系は
+    /// 明示した UDP アドレスだけにバインドするため、**既定では IPv6 の候補を作らない**
+    /// （既定が IPv4 のみに狭まる）。従来どおり両方で待ち受けるには
+    /// `with_udp_bind_addrs(vec!["0.0.0.0:0".into(), "[::]:0".into()])` を明示する。IPv6 が無い
+    /// 環境での挙動を全環境では確認していないため、既定値自体は IPv6 を含めない保守的な選択とした。
+    /// バインドできなかったアドレスは webrtc 側でスキップされ、1 つでもバインドできれば
+    /// 接続は生成できる（バインドできない IPv6 アドレスを併記しても生成できることは実測済み。
+    /// IPv6 自体が無いホストでの実行は未実測だが、同じスキップ経路を通る見込み）。
+    ///
+    /// # 空リスト・解釈できないアドレスはフェイルクローズ
+    ///
+    /// 各要素は `SocketAddr`（`ip:port`、IPv6 は `[ip]:port`）として解釈できなければならない。
+    /// **ホスト名（`localhost:0` 等）は受け付けない**（webrtc 側で解決させるとブロッキングの
+    /// 名前解決がドライバ上で走るため）。空のリスト、または解釈できない要素が 1 つでもある
+    /// 設定は、既定値へ黙って戻らない。`POST /rtc/offer` は枠の予約も `PeerConnection` の
+    /// 生成も行わずに `500`（`{"error":"peer_connection_init_failed"}`）で拒否する
+    /// （[`crate::handler::try_handle_rtc_offer`]）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_webrtc::WebRtcConfig;
+    ///
+    /// // 0.17 系の既定と同じく IPv4 と IPv6 の両方で待ち受ける。
+    /// let config = WebRtcConfig::new()
+    ///     .with_udp_bind_addrs(vec!["0.0.0.0:0".to_owned(), "[::]:0".to_owned()]);
+    /// assert_eq!(
+    ///     config.udp_bind_addrs(),
+    ///     ["0.0.0.0:0".to_owned(), "[::]:0".to_owned()]
+    /// );
+    /// ```
+    #[must_use]
+    pub fn with_udp_bind_addrs(mut self, addrs: Vec<String>) -> Self {
+        self.udp_bind_addrs = addrs;
+        self
+    }
+
+    /// 設定済みの UDP バインドアドレス（既定は `["0.0.0.0:0"]`）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_webrtc::WebRtcConfig;
+    ///
+    /// let config = WebRtcConfig::new();
+    /// assert_eq!(config.udp_bind_addrs(), ["0.0.0.0:0".to_owned()]);
+    /// ```
+    pub fn udp_bind_addrs(&self) -> &[String] {
+        &self.udp_bind_addrs
+    }
+
+    /// 設定済みの UDP バインドアドレスを `SocketAddr` へ解釈する。空、または解釈できない
+    /// 要素（ホスト名を含む）が 1 つでもあれば `None`（呼び出し元は枠の予約前に 500 で拒否する）。
+    ///
+    /// `SocketAddr` を webrtc へ渡せば名前解決は走らない（`ToSocketAddrs` が文字列のときだけ
+    /// ブロッキングの DNS 解決になるため、文字列のまま渡さない）。
+    pub(crate) fn parsed_udp_bind_addrs(&self) -> Option<Vec<SocketAddr>> {
+        if self.udp_bind_addrs.is_empty() {
+            return None;
+        }
+        self.udp_bind_addrs
+            .iter()
+            .map(|addr| addr.parse::<SocketAddr>().ok())
+            .collect()
+    }
+
     /// SDP Offer の最大バイト数。
     pub fn max_offer_bytes(&self) -> usize {
         self.max_offer_bytes
     }
 
-    /// 同時に保持する `RTCPeerConnection` 数の上限。
+    /// 同時に保持する `PeerConnection` 数の上限。
     pub fn max_peer_connections(&self) -> usize {
         self.max_peer_connections
     }
@@ -173,7 +344,7 @@ impl WebRtcConfig {
     /// `len() >= max_peer_connections` の判定と `Reserved` エントリの push を同じ
     /// `Mutex` ロック内で完結させることで、複数リクエストが同時に上限未達と判定して
     /// から登録する TOCTOU を防ぐ（[`crate::handler::try_handle_rtc_offer`] から
-    /// `RTCPeerConnection` 生成前に呼ばれる）。上限に達している場合は `None` を返し、
+    /// `PeerConnection` 生成前に呼ばれる）。上限に達している場合は `None` を返し、
     /// 呼び出し元は 503 で拒否する（フェイルクローズ、.claude/rules/security.md）。
     /// 予約に成功した場合は一意な枠 ID を返す。この ID は必ず
     /// [`WebRtcConfig::activate_slot`] または [`WebRtcConfig::release_slot`] のいずれか
@@ -192,7 +363,7 @@ impl WebRtcConfig {
     ///
     /// [`crate::handler::complete_signaling`] がシグナリング成功時に呼ぶ。対象の
     /// `slot_id` が既に除去済み（タイムアウト等との競合）の場合はレジストリを変更せず
-    /// `false` を返す（呼び出し元が `pc` の生存管理に責任を持つ契約、下記参照）。
+    /// `false` を返す（このとき `pc` は閉じられる、下記参照）。
     ///
     /// # 終端 drain との競合（イシュー #498）
     ///
@@ -213,48 +384,66 @@ impl WebRtcConfig {
     /// フラグが `true`（`drain::drain_for_shutdown` 呼び出し済み）の場合、または対象
     /// `slot_id` が既に除去済み（タイムアウト等との競合）の場合は登録を拒否し、
     /// 予約枠も即座に解放したうえで `false` を返す（フェイルクローズ。
-    /// `.claude/rules/security.md`）。呼び出し元は戻り値が `false` の場合、受け取った
-    /// `pc` を自身で明示的に `close()` する契約とする（最終 shutdown 開始後に生成された、
-    /// またはレジストリに枠が存在しない `RTCPeerConnection` をレジストリの生存管理外へ
-    /// 漏らさないため）。戻り値が `true` の場合のみレジストリが `pc` の生存を保持する。
+    /// `.claude/rules/security.md`）。**`false` を返す経路では、受け取った `pc` をこの
+    /// メソッド自身が [`spawn_close`] で `close()` する**（0.21 は close せず drop すると
+    /// ドライバとソケットが残るため、枠の除去と `close()` を対にする。呼び出し元は
+    /// `false` を受けて自前で close する必要がない）。戻り値が `true` の場合のみ
+    /// レジストリが `pc` の生存を保持する。
     #[must_use]
-    pub(crate) fn activate_slot(&self, slot_id: u64, pc: Arc<RTCPeerConnection>) -> bool {
-        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-        if self.terminal_draining.load(Ordering::Acquire) {
-            registry.retain(|(id, _)| *id != slot_id);
-            return false;
-        }
-        match registry.iter_mut().find(|(id, _)| *id == slot_id) {
-            Some(entry) => {
-                entry.1 = RegistrySlot::Active(pc);
-                true
+    pub(crate) fn activate_slot(&self, slot_id: u64, pc: Arc<dyn PeerConnection>) -> bool {
+        let rejected = {
+            let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+            if self.terminal_draining.load(Ordering::Acquire) {
+                registry.retain(|(id, _)| *id != slot_id);
+                Some(pc)
+            } else {
+                match registry.iter_mut().find(|(id, _)| *id == slot_id) {
+                    Some(entry) => {
+                        entry.1 = RegistrySlot::Active(pc);
+                        None
+                    }
+                    None => Some(pc),
+                }
             }
-            None => false,
+        };
+        match rejected {
+            Some(pc) => {
+                spawn_close(pc);
+                false
+            }
+            None => true,
         }
     }
 
-    /// 枠（予約中・アクティブ問わず）をレジストリから除去する。
+    /// 枠（予約中・アクティブ問わず）をレジストリから除去し、`Active` だった接続は
+    /// [`spawn_close`] で `close()` する。
     ///
-    /// シグナリング失敗・タイムアウト時（予約枠の解放）と、接続クローズ・失敗検知時
-    /// （`crate::handler::register_close_handler` 経由、アクティブ接続の除去）の両方
-    /// から呼ばれる。`Active` エントリの除去は保持していた最後の
-    /// `Arc<RTCPeerConnection>` を手放すことを意味し、他に強参照がなければ
-    /// `RTCPeerConnection` はここで破棄される。存在しない `slot_id` は無視する
-    /// （多重解放を許容する冪等な操作）。
+    /// シグナリング失敗・タイムアウト時（予約枠の解放。この場合 `pc` は呼び出し元が保持して
+    /// いるので呼び出し元が `close()` する）と、接続クローズ・失敗検知時
+    /// （`SignalingHandler::on_connection_state_change` 経由、アクティブ接続の除去）の
+    /// 両方から呼ばれる。`Active` の除去は参照サイクル（モジュール doc）を切ると同時に
+    /// 接続を閉じる。存在しない `slot_id` は無視する（多重解放を許容する冪等な操作）。
     pub(crate) fn release_slot(&self, slot_id: u64) {
-        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-        registry.retain(|(id, _)| *id != slot_id);
+        let removed = {
+            let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+            registry
+                .iter()
+                .position(|(id, _)| *id == slot_id)
+                .map(|pos| registry.remove(pos).1)
+        };
+        if let Some(RegistrySlot::Active(pc)) = removed {
+            spawn_close(pc);
+        }
     }
 
     /// レジストリから `Active` エントリのみをすべて除去し、保持していた
-    /// `Arc<RTCPeerConnection>` を返す（イシュー #498）。
+    /// `Arc<dyn PeerConnection>` を返す（イシュー #498）。
     ///
     /// `crate::drain::close_active_peers` から呼ばれ、返された `Arc` は呼び出し元が
-    /// 明示的に `close()` する契約とする（`RegistrySlot::Active` の doc の生存管理
-    /// 契約を参照。除去済みなのでこの呼び出し以降 `release_slot` を重ねて呼ぶ必要は
-    /// ない）。`Reserved`（シグナリング進行中）エントリは対象外とし、そのまま
+    /// 明示的に `close()` する契約とする（モジュール doc「枠の除去と `close()` の対」。
+    /// 除去済みなのでこの呼び出し以降 `release_slot` を重ねて呼ぶ必要はない）。`Reserved`（シグナリング進行中）エントリは対象外とし、そのまま
     /// レジストリに残す（[`WebRtcConfig::activate_slot`] の終端 drain 判定に委ねる）。
-    pub(crate) fn take_active_peers(&self) -> Vec<Arc<RTCPeerConnection>> {
+    pub(crate) fn take_active_peers(&self) -> Vec<Arc<dyn PeerConnection>> {
         let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         let mut taken = Vec::new();
         registry.retain(|(_, slot)| match slot {
@@ -285,6 +474,7 @@ impl Default for WebRtcConfig {
             max_offer_bytes: DEFAULT_MAX_OFFER_BYTES,
             max_peer_connections: DEFAULT_MAX_PEER_CONNECTIONS,
             signaling_timeout: DEFAULT_SIGNALING_TIMEOUT,
+            udp_bind_addrs: vec!["0.0.0.0:0".to_owned()],
             registry: Arc::new(Mutex::new(Vec::new())),
             next_slot_id: Arc::new(AtomicU64::new(0)),
             terminal_draining: Arc::new(AtomicBool::new(false)),
@@ -295,6 +485,23 @@ impl Default for WebRtcConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use webrtc::peer_connection::{PeerConnectionBuilder, PeerConnectionEventHandler};
+
+    struct NoopHandler;
+    #[async_trait::async_trait]
+    impl PeerConnectionEventHandler for NoopHandler {}
+
+    /// ループバックだけにバインドした何もしない PeerConnection（0.21 は UDP アドレスとハンドラが必須）。
+    async fn loopback_pc() -> Arc<dyn PeerConnection> {
+        Arc::new(
+            PeerConnectionBuilder::new()
+                .with_handler(Arc::new(NoopHandler))
+                .with_udp_addrs(vec!["127.0.0.1:0"])
+                .build()
+                .await
+                .unwrap(),
+        )
+    }
 
     #[test]
     fn builder_overrides_apply() {
@@ -314,6 +521,14 @@ mod tests {
         assert_eq!(config.max_offer_bytes(), DEFAULT_MAX_OFFER_BYTES);
         assert_eq!(config.max_peer_connections(), DEFAULT_MAX_PEER_CONNECTIONS);
         assert_eq!(config.signaling_timeout(), DEFAULT_SIGNALING_TIMEOUT);
+        assert_eq!(config.udp_bind_addrs(), ["0.0.0.0:0".to_owned()]);
+    }
+
+    #[test]
+    fn empty_udp_bind_addrs_is_kept_as_is_and_not_replaced_by_default() {
+        // 空リストを既定値へ黙って戻さない（フェイルクローズは handler 側で 500 にする）。
+        let config = WebRtcConfig::new().with_udp_bind_addrs(Vec::new());
+        assert!(config.udp_bind_addrs().is_empty());
     }
 
     #[test]
@@ -360,16 +575,14 @@ mod tests {
     #[test]
     fn activate_slot_rejected_after_terminal_drain_begins() {
         // イシュー #498: begin_terminal_drain 後の activate_slot はフェイルクローズで
-        // false を返し、予約枠も解放する（呼び出し元が pc を明示的に close する契約）。
+        // false を返し、予約枠も解放する（pc は activate_slot 自身が close する）。
         let config = WebRtcConfig::new().with_max_peer_connections(1);
         let slot_id = config.reserve_slot().expect("1 件目は予約できる");
         config.begin_terminal_drain();
 
-        // activate_slot は webrtc-rs の RTCPeerConnection 生成を要求しないため、
-        // ダミーではなく実際の型が必要。ユニットテストでは生成コストを避けるため、
-        // レジストリの状態変化のみを検証する統合テストを
-        // crates/plugin-webrtc/tests へ別途追加する（本テストは begin_terminal_drain
-        // 単体での予約枠解放を確認する）。
+        // activate_slot は実際の PeerConnection を要求する。生成コストを避けるため、
+        // 本テストは begin_terminal_drain 単体での予約枠の挙動のみを確認し、実接続での
+        // 拒否は下の async テスト（activate_slot_rejects_pc_even_after_...）が担う。
         assert!(
             config.reserve_slot().is_none(),
             "上限到達時（1/1 予約中）は新規予約できないはず"
@@ -394,7 +607,7 @@ mod tests {
     ///
     /// `take_active_peers`（`drain_for_shutdown` が呼ぶ）が完了した**後**に
     /// `activate_slot` が呼ばれても、`begin_terminal_drain` 済みであれば `Active` へ
-    /// 遷移させず `false` を返し、予約枠も解放することを実 `RTCPeerConnection` で
+    /// 遷移させず `false` を返し、予約枠も解放することを実 `PeerConnection` で
     /// 確認する。修正前の実装（ロック外で `terminal_draining` を読む）ではこの
     /// 呼び出し順でも `activate_slot` が独立にロック外でフラグを読む一瞬前に
     /// フラグが立っていなければ `true` を返しうる契約不備があったため、本テストは
@@ -404,13 +617,7 @@ mod tests {
     /// マルチスレッド注入によるレース再現テストは行わない）。
     #[tokio::test]
     async fn activate_slot_rejects_pc_even_after_take_active_peers_already_ran() {
-        use webrtc::api::APIBuilder;
-        use webrtc::api::interceptor_registry::register_default_interceptors;
-        use webrtc::api::media_engine::MediaEngine;
-        use webrtc::interceptor::registry::Registry;
-        use webrtc::peer_connection::configuration::RTCConfiguration;
-
-        let config = WebRtcConfig::new();
+        let config = WebRtcConfig::new().with_max_peer_connections(1);
         let slot_id = config.reserve_slot().expect("予約できる");
 
         // 終端 drain 開始 → 既存 Active の drain（0 件、no-op）を、
@@ -420,19 +627,7 @@ mod tests {
         config.begin_terminal_drain();
         assert!(config.take_active_peers().is_empty());
 
-        let mut media_engine = MediaEngine::default();
-        media_engine.register_default_codecs().unwrap();
-        let mut registry = Registry::new();
-        registry = register_default_interceptors(registry, &mut media_engine).unwrap();
-        let api = APIBuilder::new()
-            .with_media_engine(media_engine)
-            .with_interceptor_registry(registry)
-            .build();
-        let pc = Arc::new(
-            api.new_peer_connection(RTCConfiguration::default())
-                .await
-                .unwrap(),
-        );
+        let pc = loopback_pc().await;
 
         let activated = config.activate_slot(slot_id, Arc::clone(&pc));
         assert!(
@@ -444,8 +639,15 @@ mod tests {
             "activate_slot が false を返した以上、pc は Active としてレジストリに\
              残っていないはず（残っていれば #498 の TOCTOU が再発している）"
         );
-
-        let _ = pc.close().await;
+        assert!(
+            config.reserve_slot().is_some(),
+            "拒否時は予約枠も除去されているはず（残っていれば上限 1 で予約できない）"
+        );
+        assert!(
+            wait_until_closed(&pc).await,
+            "拒否された pc は activate_slot 自身が close するはず（close せず drop すると\
+             0.21 ではドライバとソケットが残る）"
+        );
     }
 
     /// レビュー対応（イシュー #498、Cursor Bugbot 指摘）: 対象 `slot_id` が
@@ -458,43 +660,66 @@ mod tests {
     /// complete_signaling`）が明示 `close()` パスをスキップしてしまっていた。
     #[tokio::test]
     async fn activate_slot_returns_false_for_missing_slot() {
-        use webrtc::api::APIBuilder;
-        use webrtc::api::interceptor_registry::register_default_interceptors;
-        use webrtc::api::media_engine::MediaEngine;
-        use webrtc::interceptor::registry::Registry;
-        use webrtc::peer_connection::configuration::RTCConfiguration;
-
         let config = WebRtcConfig::new();
         let slot_id = config.reserve_slot().expect("予約できる");
         // タイムアウト等の競合により、activate_slot 到達前に枠が除去済みの状況を再現する。
         config.release_slot(slot_id);
 
-        let mut media_engine = MediaEngine::default();
-        media_engine.register_default_codecs().unwrap();
-        let mut registry = Registry::new();
-        registry = register_default_interceptors(registry, &mut media_engine).unwrap();
-        let api = APIBuilder::new()
-            .with_media_engine(media_engine)
-            .with_interceptor_registry(registry)
-            .build();
-        let pc = Arc::new(
-            api.new_peer_connection(RTCConfiguration::default())
-                .await
-                .unwrap(),
-        );
+        let pc = loopback_pc().await;
 
         let activated = config.activate_slot(slot_id, Arc::clone(&pc));
         assert!(
             !activated,
-            "既に除去済みの slot_id への activate_slot は false を返すはず\
-             （呼び出し元が pc を明示的に close する契約）"
+            "既に除去済みの slot_id への activate_slot は false を返すはず"
         );
         assert!(
             config.take_active_peers().is_empty(),
             "activate_slot が false を返した以上、pc は Active としてレジストリに\
              登録されていないはず"
         );
+        assert!(
+            wait_until_closed(&pc).await,
+            "枠が無いまま拒否された pc も activate_slot 自身が close するはず"
+        );
+    }
 
-        let _ = pc.close().await;
+    /// 枠の除去と `close()` の対（モジュール doc）: `Active` の枠を `release_slot` で除去すると
+    /// 接続も閉じられ、枠は再利用できる（ハンドラの `Closed`/`Failed` 検知経路の本体）。
+    #[tokio::test]
+    async fn release_slot_closes_active_peer_and_frees_capacity() {
+        let config = WebRtcConfig::new().with_max_peer_connections(1);
+        let slot_id = config.reserve_slot().expect("予約できる");
+        let pc = loopback_pc().await;
+        assert!(
+            config.activate_slot(slot_id, Arc::clone(&pc)),
+            "terminal drain 前の activate_slot は登録に成功するはず"
+        );
+        assert!(config.reserve_slot().is_none(), "1/1 使用中");
+        assert!(
+            pc.create_offer(None).await.is_ok(),
+            "Active の間は pc は開いている（本テストの前提）"
+        );
+
+        config.release_slot(slot_id);
+
+        assert!(
+            wait_until_closed(&pc).await,
+            "Active の枠を除去したら pc も close されるはず"
+        );
+        assert!(
+            config.reserve_slot().is_some(),
+            "除去後は枠を再利用できるはず"
+        );
+    }
+
+    /// 多重解放は冪等で、`Reserved` の除去は接続に触れない（`pc` は呼び出し元の所有）。
+    #[test]
+    fn release_slot_is_idempotent_for_reserved_and_unknown_slots() {
+        let config = WebRtcConfig::new().with_max_peer_connections(1);
+        let slot_id = config.reserve_slot().expect("予約できる");
+        config.release_slot(slot_id);
+        config.release_slot(slot_id);
+        config.release_slot(u64::MAX);
+        assert!(config.reserve_slot().is_some());
     }
 }

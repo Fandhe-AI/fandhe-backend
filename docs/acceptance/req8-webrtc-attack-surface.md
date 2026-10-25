@@ -422,3 +422,39 @@ CONNECTIONS=128`）・同一判定ロジック（`evaluate_nfr6_ratio`、閾値�
 記述、および本節より前の「2026-07 再実行」節・「2026-07-20・ローカル macOS 環境」節の
 既存記述・実測値はいずれも改変しない。過去の記録として保持したうえで、本節が最新かつ
 公式の基準 E 判定を確定させる）。
+
+## 2026-10-26 再評価（webrtc 0.17.2 → 0.21.1 移行、イシュー #870）
+
+`crates/plugin-webrtc` を `webrtc` 0.21.1 へ移行した（RUSTSEC-2026-0387 の解消。経緯は
+`docs/design/webrtc-rs-version-strategy.md` の 1.1・3.1 節、依存・バイナリ・`unsafe` の実測は
+`docs/dep-impact/records.md` の 2026-10-26 エントリ）。本節より前の記述・実測値は 0.17 系の
+時点の記録であり改変しない。
+
+実行環境: macOS arm64、rustc 1.98.1、cargo-audit 0.22.2 系、cargo-deny 0.19 系、cargo-geiger 0.13.0、
+`oha` 導入済み。`bash scripts/accept/webrtc-accept.sh` の判定（本ブランチ、終了コード 0）:
+
+| 判定 | 基準 | 詳細 |
+|------|------|------|
+| PASS | A: webrtc 無効時の依存完全除外 | `cargo tree -p fandhe-backend-core --prefix none` の webrtc / `rtc` 系クレート名が 0 件。計数式を `webrtc\|^rtc` に拡張した（0.21 系は `rtc-*` が `webrtc` を含まない名前のため。`grep -c webrtc` だけでは残留を見逃す） |
+| WARN（参考値） | A補足: webrtc 有効時の依存インパクト | 重複除去後の webrtc / rtc 系クレート名 18 件（`webrtc` + `rtc` + `rtc-*` 15 + 自クレート `fandhe-backend-plugin-webrtc`。旧計測の「23 件」は別の数え方で比較不可、`records.md` 参照） |
+| PASS | B: plugin-webrtc 自コード unsafe 0件 | `crates/plugin-webrtc/src` に unsafe 0 件 |
+| SKIP | B補足: 依存側 unsafe 増分（cargo geiger） | スクリプトの呼び出しが共有 `target/` で geiger を実行し出力解析に失敗した（本スクリプト既存の環境依存。`dep-impact.sh` のように専用 `CARGO_TARGET_DIR` を使えば成功する）。代わりに専用 target で手動実測した値を `records.md` に記録: Functions used 105 → 245（0.17）が 105 → 194（0.21）、Expressions 21029/34022 → 16269/26159 |
+| PASS | C: cargo audit / deny 0件 | `scripts/dep-audit.sh`（全 feature 構成）が終了コード 0。変更前（`ebf0be1`）は同じ手順で終了コード 1（RUSTSEC-2026-0387）になることを再現済み。`Cargo.lock` を外した fresh 解決でも 0 |
+| PASS | D: webrtc/webrtc-proxy 2 feature の存在 | 両 feature が存在 |
+| PASS | D補足: in-process/proxy のクレート境界分離 | 相互依存なし |
+| WARN（参考値・非専有） | E: NFR-6 無関係パス影響 | 実行ごとに RPS 比 100.24% / p95 比 100.75%、RPS 比 101.17% / p95 比 99.80%（既定 `CONNECTIONS=32 DURATION=5s`、macOS 開発機・他プロセス稼働中の非専有計測。run 間のばらつきが大きく確定値として扱わない） |
+
+**基準 E は未確定のまま**: 2026-07-20 の専有 Linux ホスト確定計測（RPS 比 95.54% / p95 比 104.94%、WARN）は
+0.17 系・バイナリ約 11 倍の値である。0.21 系ではバイナリが約 5.9 倍に縮んだため、専有ホストで
+`benches/nfr6-exclusive.sh` を再実行して公式判定を更新する余地がある（本移行では実施していない。
+上の非専有値は参考にとどめ、判定を PASS/WARN に更新する根拠にしない）。
+
+関連するテストの挙動変化（受け入れ上の留意点）: `peer_connection_slot_is_released_after_close_allowing_reuse` は
+クライアントが Answer を適用した直後、接続（ICE/DTLS）の確立を待たずに `close()` する。0.21 ではその相手消失を
+サーバが ICE checking のまま `Failed`（約 29.5 秒）で検知して初めて枠を解放するため、テストは約 30 秒かかる
+（nextest で 30.1 秒。`.config/nextest.toml` の 240 秒枠内）。確立済みの接続を閉じたときの検知時間は
+このテストでは測っていない。`UDP バインド` は既定 `0.0.0.0:0`（IPv4 のみ。0.17 系は IPv4 / IPv6 の両方が既定だったため狭まっている。
+従来の挙動へ戻すには `["0.0.0.0:0", "[::]:0"]` を明示する）で、空リスト・`SocketAddr` として解釈できない要素
+（ホスト名を含む）は `POST /rtc/offer` が `500` で拒否する（`tests/attack_surface.rs` の
+`empty_udp_bind_addrs_is_rejected_fail_closed_with_500` / `hostname_udp_bind_addr_is_rejected_fail_closed_with_500`
+で再アサート）。

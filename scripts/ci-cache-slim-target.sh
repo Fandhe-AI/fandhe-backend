@@ -82,7 +82,9 @@ command -v jq >/dev/null 2>&1 || { echo "エラー: jq が見つかりません"
 # ハイフンをアンダースコアへ正規化）を集める。依存グラフ込みの metadata（ビルド直後なので
 # Cargo.lock と registry が揃っており --offline で解決できる）を優先し、`source` が null の
 # パッケージ（ワークスペース・path 依存）を削除対象、それ以外（crates.io 等の第三者依存）と
-# 名前が衝突するもの（例: テスト名 interceptor と webrtc 依存の interceptor クレート）を
+# 名前が衝突するもの（例: テスト名 interceptor と、webrtc 0.17 系が依存していた
+# interceptor クレート。0.21 系は rtc-interceptor に改名されたため現在は衝突しないが、
+# 第三者依存と衝突し得る一般的な防御として維持する）を
 # 削除対象から外す。依存込みで解決できない場合は --no-deps へフォールバックする（衝突分は
 # 次回再ビルドされるだけ）。
 metadata_json() {

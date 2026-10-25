@@ -285,7 +285,7 @@ fandhe-backend/
 │   │                                    # イシュー #489〜#497）に続き、イシュー #498 で
 │   │                                    # `SessionDrain`（`webrtc` feature ゲート、独立
 │   │                                    # シーム）を新設し、`Server::webrtc` 登録済みの
-│   │                                    # `RTCPeerConnection`（`plugin-webrtc` の
+│   │                                    # `PeerConnection`（`plugin-webrtc` の
 │   │                                    # `WebRtcConfig::registry`）へも最終 graceful
 │   │                                    # shutdown・rebind 世代 drain 両経路から有界な
 │   │                                    # 明示 close を伝播するようにした（WS 以外の
@@ -317,7 +317,7 @@ fandhe-backend/
 │   │                                    # `crates/plugin-webrtc/src/config.rs` の
 │   │                                    # `activate_slot_rejects_pc_even_after_
 │   │                                    # take_active_peers_already_ran` として
-│   │                                    # 引き続き実 `RTCPeerConnection` で検証する）。
+│   │                                    # 引き続き実 `PeerConnection` で検証する）。
 │   │                                    # イシュー #518 で、drain（最終 graceful
 │   │                                    # shutdown・rebind 旧世代 drain の両経路）
 │   │                                    # 開始時点で idle（リクエスト待ち）状態にある
@@ -503,11 +503,17 @@ fandhe-backend/
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）
-│   ├── plugin-webrtc                  # in-process WebRTC プラグイン（`webrtc-rs` 直接依存、TASK-8.1、#26。
+│   ├── plugin-webrtc                  # in-process WebRTC プラグイン（`webrtc-rs` 0.21 系を直接依存、TASK-8.1、#26。
 │   │                                    # `crates/core` の `webrtc` feature 経由で配線。攻撃表面が大きいため
 │   │                                    # `plugin-webrtc-proxy` が MVP 推奨、クレート境界で完全分離）。
+│   │                                    # イシュー #870 で webrtc 0.17 → 0.21 へ移行し RUSTSEC-2026-0387 を解消した
+│   │                                    # （`webrtc` の型は公開 API に出さず `handler.rs` の `SignalingHandler` に閉じ込める。
+│   │                                    # UDP バインドアドレスが必須化され `WebRtcConfig::with_udp_bind_addrs`
+│   │                                    # を追加、既定は `0.0.0.0:0`（IPv4 のみ）で空リストは `POST /rtc/offer` が 500 で拒否。
+│   │                                    # 0.21 は `close()` せず drop するとドライバが残るため、枠の除去と `close()` は必ず対。
+│   │                                    # 方針は `docs/design/webrtc-rs-version-strategy.md` 3.1 節）。
 │   │                                    # `close_active_peers` / `drain_for_shutdown`（`drain` モジュール）で
-│   │                                    # `WebRtcConfig::registry` 上のアクティブな `RTCPeerConnection` を
+│   │                                    # `WebRtcConfig::registry` 上のアクティブな `PeerConnection` を
 │   │                                    # 1 接続あたり有界タイムアウトで明示的に close する API を追加した
 │   │                                    # （イシュー #498。WS 委譲タスクの世代キャンセル機構（#489〜#497）を
 │   │                                    # WS 以外の長時間委譲プラグインへ水平展開する第 1 弾。`crates/core` 側は
