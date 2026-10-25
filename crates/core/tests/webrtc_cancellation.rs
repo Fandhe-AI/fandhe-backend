@@ -13,7 +13,7 @@
 //! `webrtc-rs` 由来の dev-dep を持ち込まない」）を踏襲し、本ファイルも実 ICE/DTLS
 //! ハンドシェイクを行う `webrtc` クレートを core の dev-dependencies に追加しない。
 //!
-//! `SessionDrain::fire` が実際にアクティブな `RTCPeerConnection` を close する
+//! `SessionDrain::fire` が実際にアクティブな `PeerConnection` を close する
 //! （`WebRtcConfig::begin_terminal_drain`・`take_active_peers`・`activate_slot` の
 //! フェイルクローズ判定を含む）という核心の振る舞いは
 //! `crates/plugin-webrtc/tests/session_drain.rs`

@@ -373,7 +373,7 @@ fandhe-backend は WebRTC を 2 つの独立クレートで提供し、**クレ�
 
 | クレート | feature | 依存モデル | 攻撃表面 |
 |---------|---------|-----------|---------|
-| `crates/plugin-webrtc` | `webrtc` | `webrtc-rs`（0.17.1 系）を**プロセス内**に直接組み込む（in-process） | 大（`webrtc` feature 単体で `cargo tree -p fandhe-backend-core --features webrtc` に webrtc 系依存 23 件、release バイナリサイズ約 11 倍、TASK-8.4 実測。`docs/dep-impact/records.md`） |
+| `crates/plugin-webrtc` | `webrtc` | `webrtc-rs`（0.21 系。2026-10-26 に 0.17 系から移行、#870）を**プロセス内**に直接組み込む（in-process） | 大（`webrtc` feature 単体で `cargo tree -e normal --prefix none -p fandhe-backend-core --features webrtc` に非 workspace クレート 161 件（うち `webrtc` / `rtc` / `rtc-*` 系 17 件）、release バイナリサイズ約 5.9 倍（`examples/minimal` 981,040 B に対し `webrtc_nfr6` 5,776,992 B）、2026-10-26 実測。同じ式での 0.17 系は 204 件・約 8.6 倍で、TASK-8.4 当時の記録は約 11 倍。`docs/dep-impact/records.md`） |
 | `crates/plugin-webrtc-proxy` | `webrtc-proxy` | `webrtc-rs` に**一切依存しない**軽量シグナリングプロキシ。重い WebRTC サービスは別プロセスへ切り出す | 小（`webrtc-rs` 依存が本体プロセスに一切現れない） |
 
 `crates/core/src/plugin.rs` の `try_intercept` は両 feature が同時に有効な場合
@@ -395,7 +395,9 @@ fandhe-backend は WebRTC を 2 つの独立クレートで提供し、**クレ�
   運用コスト（プロセス間通信・デプロイ構成の複雑化）が許容できない場合に限り検討する。
   有効化すると `webrtc-rs` の巨大な依存グラフ・パーサ群がコアプロセスに直接組み込まれ、
   ICE 接続性チェックはクライアント SDP 由来のアドレスへ UDP 送信を発生させ得る（WebRTC
-  の構造上不可避）。STUN/TURN は既定で設定しない（`RTCConfiguration::default()`）。
+  の構造上不可避）。STUN/TURN は既定で設定しない（既定の `RTCConfiguration`）。ICE の UDP ソケットは
+  `WebRtcConfig::udp_bind_addrs`（既定 `0.0.0.0:0`、IPv4 のみ。IPv6 は `with_udp_bind_addrs` で明示）へ
+  バインドする。待ち受ける interface を絞りたい公開サービスでは具体的なアドレスを渡す。
   Offer サイズ上限・接続数上限（503 フェイルクローズ）・シグナリングタイムアウト
   （504）は維持されている（`crates/plugin-webrtc/tests/attack_surface.rs` で受け入れ
   観点から再アサート済み）が、依存グラフそのものの大きさは変わらない。
@@ -407,10 +409,12 @@ NFR-6 は「パス一致時のみ介入する拡張点は、無関係なパス�
 インパクトが軽微なパスインターセプト型）由来の実測に基づく。TASK-8.4 の empirical
 計測（`benches/webrtc-nfr6-bench.sh`、`benches/reports/task-8.4-webrtc-nfr6.md`）では、
 `webrtc` feature 有効時の無関係パス（`GET /`）RPS が baseline 比おおむね 94〜95%、
-p95 レイテンシがおおむね 106〜108% となり、狭義の 100.3〜100.8% 帯には収まらなかった。
+p95 レイテンシがおおむね 106〜108% となり、狭義の 100.3〜100.8% 帯には収まらなかった
+（0.17 系での実測。0.21 系への移行後は未再計測で、バイナリサイズは縮んだ）。
 `try_intercept` 自体は対象外パスに対して 1 回のパス比較のみでフォールスルーするため
 （`crates/core/src/plugin.rs`）、この差は拡張点の呼び出しコストではなく、バイナリ
-サイズが約 11 倍に達すること（icache/TLB 圧迫等）に起因すると考えられる。**WebRTC を
+サイズが約 11 倍（0.17 系の TASK-8.4 当時。0.21 系では約 5.9 倍）に達すること（icache/TLB 圧迫等）に
+起因すると考えられる。**WebRTC を
 使うサービスがこの性能影響を避けたい場合も、`plugin-webrtc-proxy` による別プロセス
 切り出しが有効な緩和策となる**（プロキシプロセスとコアプロセスが分離するため、コア
 プロセスのバイナリサイズ・性能特性は影響を受けない）。

@@ -1269,7 +1269,7 @@ plugin_static;` 等）。利用者は `fandhe-backend-core` への依存 + featu
 ## 5.13 パスインターセプト型のセッション drain 変種（イシュー #498）
 
 `webrtc`（4 節のパスインターセプト型パターン）は応答が完結した後も、応答返却の
-契機とは非同期に生存し続けるリソース（`RTCPeerConnection`）をプロセス内レジストリ
+契機とは非同期に生存し続けるリソース（`PeerConnection`）をプロセス内レジストリ
 （`WebRtcConfig::registry`）で保持する点が、他のパスインターセプト型プラグイン
 （graphql・openapi・static、いずれも接続タスク内で完結）と異なる。この「応答完結後も
 生存するリソース」は、`crates/core` の `CancelSafeJoinSet`（接続タスク単位の grace

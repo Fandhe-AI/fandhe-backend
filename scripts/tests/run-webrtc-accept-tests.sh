@@ -111,15 +111,17 @@ echo "===== 基準A: cargo tree 失敗時のフェイルクローズ（Bugbot �
 # webrtc-accept.sh check_dep_exclusion と同一の判定パターン（cargo tree の終了コードを
 # 明示確認し、失敗時は測定不能として FAIL/WARN を返す）を検証する。実 cargo は使わず、
 # 成功/失敗をシミュレートするダミー関数の出力をパイプラインへ渡す。
+# webrtc-accept.sh の WEBRTC_FAMILY_PATTERN と同一（webrtc 0.21 以降は `rtc` / `rtc-*` 群も数える）。
+WEBRTC_FAMILY_PATTERN='webrtc|^rtc([[:space:]-]|$)'
 evaluate_dep_exclusion() {
-    # $1: cargo tree 相当の標準出力
+    # $1: cargo tree --prefix none 相当の標準出力
     # $2: cargo tree 相当の終了コード（0=成功、非 0=失敗）
     local tree_output="$1" exit_code="$2" disabled_count
     if [ "${exit_code}" -ne 0 ]; then
         echo "FAIL"
         return
     fi
-    disabled_count="$(printf '%s\n' "${tree_output}" | grep -c webrtc || true)"
+    disabled_count="$(printf '%s\n' "${tree_output}" | awk '{print $1}' | grep -cE "${WEBRTC_FAMILY_PATTERN}" || true)"
     if [ "${disabled_count}" -eq 0 ]; then
         echo "PASS"
     else
@@ -137,6 +139,19 @@ tokio v1.40.0" 0)"
 # cargo tree が成功し webrtc 系依存が残留している場合は FAIL。
 assert_eq "cargo tree 成功・webrtc 依存残留は FAIL" "FAIL" "$(evaluate_dep_exclusion "fandhe-backend-core v0.1.0
 webrtc v0.11.0" 0)"
+# webrtc 0.21 系は `webrtc` の下に `rtc` / `rtc-*` 群が並ぶ。`webrtc` を含まない名前の残留も
+# 検出できること（`grep -c webrtc` だけでは見逃す旧実装のリグレッション防止）。
+assert_eq "rtc-* のみ残留（webrtc 行なし）は FAIL" "FAIL" "$(evaluate_dep_exclusion "fandhe-backend-core v0.1.0
+rtc-ice v0.21.1" 0)"
+assert_eq "rtc 単独のみ残留は FAIL" "FAIL" "$(evaluate_dep_exclusion "fandhe-backend-core v0.1.0
+rtc v0.21.1" 0)"
+# workspace メンバーの絶対パスに `webrtc` を含むチェックアウト先でも誤検出しない
+# （照合はクレート名の列だけに限る）。
+assert_eq "パスに webrtc を含むだけの workspace メンバーは誤検出せず PASS" "PASS" "$(evaluate_dep_exclusion "fandhe-backend-core v0.5.0 (/work/wt-webrtc021/crates/core)
+fandhe-backend-http v0.5.0 (/work/wt-webrtc021/crates/http)" 0)"
+# `rtcp` 等、`rtc` で始まるだけの別クレートは誤検出しない。
+assert_eq "rtcp（別クレート）は誤検出せず PASS" "PASS" "$(evaluate_dep_exclusion "fandhe-backend-core v0.1.0
+rtcp v0.1.0" 0)"
 
 echo ""
 echo "===== 結果: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} ====="

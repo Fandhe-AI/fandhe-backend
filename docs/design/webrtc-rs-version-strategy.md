@@ -5,6 +5,10 @@
 - **前提タスク**: TASK-8.1（PoC-5、`docs/spec/03-poc/webrtc-plugin/`）、TASK-8.2（[別プロセス切り出し設計](./webrtc-process-isolation.md)、設計確定）
 - **ステータス**: ドラフト（担当は `docs/spec/05-tasks.md` 上「人間」。自動運転モードでの実装であるため、
   本ドキュメントは安全側の保守的推奨として作成したドラフトであり、**最終承認は人間レビュー（本タスクの PR レビュー）で行う**）
+- **改訂 2026-10-26**: 移行トリガー 2（webrtc 系クレートに未修正の RUSTSEC advisory）が成立し、
+  オーナー判断で **0.21 系へ移行**した（イシュー #870、RUSTSEC-2026-0387）。改訂後の決定事項は
+  「3.1」、経緯と 0.20 の見立ての訂正は「1.1」。以下の 2026-07 時点の記述（「当面 v0.17.x 継続」など）は
+  当時の判断記録として残す
 
 本フレームワークの正式名称は `fandhe-backend`（#200 で確定）のため、本ドキュメントでは「本フレームワーク（fandhe-backend）」と表記する。
 
@@ -44,6 +48,27 @@
 「`webrtc` v0.20」ではなく「`rtc` クレートへの分離」という構造変化は移行トリガーの評価対象を精緻化する必要が
 あるため、「2. 決定事項」の移行トリガー基準に反映する。
 
+### 1.1 2026-10-26 の改訂: 移行トリガー 2 の成立と 0.20 の見立ての訂正
+
+- **RUSTSEC-2026-0387**（`crypto-bigint`）が `cargo audit / cargo deny (all feature configs)`
+  （required check `dep-audit`）で検出され、main の schedule CI とスキル同期 PR が止まった
+  （自動起票イシュー #870）。経路は 1 本のみで、
+  `webrtc 0.17.2 → dtls 0.17.2 → p256 / p384 0.13 → elliptic-curve 0.13 → crypto-bigint 0.5.5`。
+  `dtls` が `crypto-bigint = "0.5"` を要求し、0.17 系に後継版は無い。0.17 系の維持では解消できず、
+  「3. 決定事項」の移行トリガー 2 に該当する
+- **「1. 背景」の見立ての訂正**: 2026-07-17 時点の再確認で「Sans-I/O 移行は `webrtc` 本体の v0.20 系では
+  なく別クレート `rtc` への分離である可能性が高い」と記したが、実態は異なる。`webrtc` 0.20 以降は
+  **Sans-I/O の `rtc` クレートの上に載った async 層**として同じ `webrtc` クレート名で継続している
+  （`webrtc` 0.21.1 は `rtc` 0.21.1 に依存し、tokio / smol の両方に対応する。`rtc-dtls` 0.21.1 は
+  `p256` / `p384` を引かない）。`rtc` と `webrtc` は並行維持の別系列ではなく、`webrtc` が `rtc` を内包する
+  2 層構造である
+- 0.20 系では解消しなかった（`rtc-dtls` 0.20.5 が `p256` / `p384` を引くため）。0.21.1 は
+  `crypto-bigint` を依存グラフに含まない。移行後の `cargo audit` は exit 0、`cargo deny` の
+  advisories / bans / licenses / sources は ok（検証結果は `docs/dep-impact/records.md` の
+  2026-10-26 エントリと PR 本文）
+- 移行対象は in-process の `crates/plugin-webrtc` のみ。`crates/plugin-webrtc-proxy` は `webrtc-rs` に
+  依存しないため影響を受けない（「2.」の前提どおり）。ワイヤ契約（`POST /rtc/offer` の JSON）は不変
+
 ## 2. 判断の前提（影響範囲の整理）
 
 [TASK-8.2 別プロセス切り出し設計](./webrtc-process-isolation.md)により、本フレームワーク側の実装
@@ -82,7 +107,33 @@
 - **再評価サイクル**: 四半期ごとの定期再評価に加え、`cargo audit`（CI schedule 実行）で webrtc 系 advisory を
   検知した場合は即時再評価する
 
+### 3.1 改訂後の決定事項（2026-10-26・移行トリガー 2 成立・オーナー判断）
+
+「3.」の「当面 v0.17.x 継続」は本節で置き換える。期限付きの `cargo audit` ignore で 0.17 系を延命する
+案は採らない（オーナー判断）。
+
+- **`webrtc = "0.21"`（0.21.x に固定）へ移行**する。`crates/plugin-webrtc` と
+  `crates/plugin-webrtc/tests-e2e` の両方で同じ系列を維持する（更新時は両方揃える）
+- Sans-I/O 系を「安定版（非 alpha/beta）まで不採用」とした方針は維持する。0.21.1 は安定版であり、
+  この方針に反しない
+- 0.21 は 0.17 と API が全面的に異なる（構築は `PeerConnectionBuilder`、戻り値は
+  `Arc<dyn PeerConnection>`、コールバックは `PeerConnectionEventHandler` trait に集約、
+  データチャネルは `poll().await` ループ、`connection_state()` 無し）。そのため `webrtc` の型は
+  `plugin-webrtc` の公開 API に出さず、`handler.rs` の `SignalingHandler`（`PeerConnectionEventHandler`
+  実装）と `build_peer_connection` に閉じ込める。0.22 以降へ再移行するときの変更箇所をここに限定する
+- 公開 API の追加は `WebRtcConfig::with_udp_bind_addrs` / `udp_bind_addrs` のみ。0.21 は UDP バインド
+  アドレスが必須（空だと生成に失敗する）ため、既定値は `["0.0.0.0:0"]`（IPv4 のみ）とし、IPv6 は利用者が
+  明示する。空リストは既定値へ黙って戻さず、`POST /rtc/offer` が `500` で拒否する（フェイルクローズ）
+- 0.21 のライフサイクル上の注意（実測）: `close()` せずに drop するとドライバと UDP ソケットがリークする
+  （`Failed` 後も同様）。ローカルの `pc.close()` でイベントハンドラへ `Closed` が届く保証はない。
+  このため枠の除去と `close()` を必ず対にする（`crates/plugin-webrtc/src/config.rs` のモジュール doc）
+- 移行トリガー（「3.」の 1〜3）の再評価サイクルは維持する。移行トリガー 2（未修正 advisory）は
+  引き続き `cargo audit`（CI schedule 実行）で検知する
+
 ## 4. スコープ外機能の実装フェーズでの扱い
+
+> 注記（2026-10-26）: 本節は 0.17.x 前提の記述（当時の判断記録）。移行後の API 対応は
+> 「3.1」を参照。
 
 トリクル ICE・STUN/TURN 対応（NAT 越え）・複数データチャネル・接続クローズ時のリソース解放処理は、REQ-8 の
 スコープ外事項（[04-requirements.md](../spec/04-requirements.md)205 行目、[webrtc-process-isolation.md「2. 設計目標・非目標」](./webrtc-process-isolation.md)）
@@ -123,6 +174,12 @@ SDP/ICE/SCTP/DataChannel が単一 feature 構成で不可分に結合してお�
 - **DoS・入力検証**: シグナリング境界（`POST /rtc/offer`）の SSRF 対策・ボディサイズ上限・タイムアウトは
   [webrtc-process-isolation.md「5. セキュリティ設計」](./webrtc-process-isolation.md)・
   `crates/plugin-webrtc-proxy` 側の責務であり、本ドキュメントでは参照に留めてスコープを混入させない
+
+> 注記（2026-10-26）: 上記の `+189` クレート・`unsafe` Functions 約 2.2 倍は 0.17.1 系の PoC-5 時点の
+> 数値（当時の判断記録）。0.21 系への移行後の実測値は `docs/dep-impact/records.md` の
+> 2026-10-26 エントリを参照。依存グラフが縮小した（`rtc-*` 群へ再編され、ネイティブ暗号の
+> `p256` / `p384` / `crypto-bigint` 系を引かない）が、本フレームワークの方針（別プロセス切り出しを
+> MVP 推奨とする）は変えない。
 
 ## 6. 関連タスク・スコープ外
 

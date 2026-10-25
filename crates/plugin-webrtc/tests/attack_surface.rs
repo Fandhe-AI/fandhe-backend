@@ -9,7 +9,7 @@
 //! 破られていないことを別視点で継続検証する。`docs/acceptance/req8-webrtc-attack-surface.md`
 //! が参照する成果物）。
 //!
-//! `RTCPeerConnection` の実生成を伴わない（不正 SDP・容量超過・上限到達で早期
+//! `PeerConnection` の実生成を伴わない（不正 SDP・容量超過・上限到達で早期
 //! リターンする）シナリオのみを対象とし、`tests/webrtc_datachannel.rs`
 //! （実ネットワーク疎通）とは責務を分離する。実装変更は行わない。
 
@@ -48,7 +48,7 @@ async fn unrelated_path_and_method_fall_through() {
 }
 
 /// `config.max_offer_bytes()` を超える SDP Offer はリソース枯渇（DoS）対策として
-/// `RTCPeerConnection` を一切生成せず `413` で拒否する（`.claude/rules/security.md`）。
+/// `PeerConnection` を一切生成せず `413` で拒否する（`.claude/rules/security.md`）。
 #[tokio::test]
 async fn offer_exceeding_max_bytes_is_rejected_with_413() {
     let config = WebRtcConfig::new().with_max_offer_bytes(8);
@@ -65,7 +65,7 @@ async fn offer_exceeding_max_bytes_is_rejected_with_413() {
     assert_eq!(response.body, br#"{"error":"offer_too_large"}"#);
 }
 
-/// `config.max_peer_connections()` に達している場合、新規 `RTCPeerConnection` を
+/// `config.max_peer_connections()` に達している場合、新規 `PeerConnection` を
 /// 生成せずレジストリ判定のみで `503`（フェイルクローズ）を返す。
 #[tokio::test]
 async fn peer_connection_limit_is_enforced_fail_closed() {
@@ -97,7 +97,9 @@ async fn peer_connection_limit_is_enforced_fail_closed() {
 /// 同じ緩和方針、PoC-9 教訓）。
 #[tokio::test]
 async fn signaling_timeout_is_enforced() {
-    let config = WebRtcConfig::new().with_signaling_timeout(Duration::from_nanos(1));
+    let config = WebRtcConfig::new()
+        .with_signaling_timeout(Duration::from_nanos(1))
+        .with_udp_bind_addrs(vec!["127.0.0.1:0".to_owned()]);
     let body = br#"{"type":"offer","sdp":"not a valid sdp"}"#;
     let head = head_from(
         format!(
@@ -118,7 +120,7 @@ async fn signaling_timeout_is_enforced() {
     );
 }
 
-/// 不正な JSON（Offer 形式ですらない）は `RTCPeerConnection` 生成前に `400` で拒否する。
+/// 不正な JSON（Offer 形式ですらない）は `PeerConnection` 生成前に `400` で拒否する。
 #[tokio::test]
 async fn malformed_json_offer_is_rejected_with_400() {
     let config = WebRtcConfig::new();
@@ -139,7 +141,7 @@ async fn malformed_json_offer_is_rejected_with_400() {
     assert_eq!(response.body, br#"{"error":"invalid_offer_json"}"#);
 }
 
-/// `Content-Length` ヘッダと実ボディ長の不一致は `RTCPeerConnection` 生成前に
+/// `Content-Length` ヘッダと実ボディ長の不一致は `PeerConnection` 生成前に
 /// `400` で拒否する（リクエストスマグリング類の不整合対策）。
 #[tokio::test]
 async fn content_length_mismatch_is_rejected_with_400() {
@@ -152,4 +154,32 @@ async fn content_length_mismatch_is_rejected_with_400() {
 
     assert_eq!(response.status, 400);
     assert_eq!(response.body, br#"{"error":"content_length_mismatch"}"#);
+}
+
+/// UDP バインドアドレスが空（webrtc 0.21 では必須）の設定は、既定値へ黙って戻さず
+/// `PeerConnection` を生成せずに `500`（フェイルクローズ）で拒否する。枠も消費しないため、
+/// 上限 1 でも繰り返し同じ `500` を返し `503` には変わらない。
+#[tokio::test]
+async fn empty_udp_bind_addrs_is_rejected_fail_closed_with_500() {
+    let config = WebRtcConfig::new()
+        .with_max_peer_connections(1)
+        .with_udp_bind_addrs(Vec::new());
+    let body = br#"{"type":"offer","sdp":"v=0"}"#;
+    let head = head_from(
+        format!(
+            "POST /rtc/offer HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .as_bytes(),
+    );
+
+    for _ in 0..3 {
+        let response = try_handle_rtc_offer(&head, body, &config)
+            .await
+            .expect("対象パスなので Some のはず");
+
+        assert_eq!(response.status, 500);
+        assert_eq!(response.header("content-type"), Some("application/json"));
+        assert_eq!(response.body, br#"{"error":"peer_connection_init_failed"}"#);
+    }
 }

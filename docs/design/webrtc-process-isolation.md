@@ -10,7 +10,7 @@
 
 ## 1. 背景と設計判断の根拠
 
-`webrtc-rs`（0.17.1 系）は本フレームワークの他プラグインと比較して桁違いの依存インパクトを持つことが
+`webrtc-rs`（PoC-5 当時は 0.17.1 系）は本フレームワークの他プラグインと比較して桁違いの依存インパクトを持つことが
 PoC-5 で実測されている（`docs/spec/03-poc/webrtc-plugin/README.md`「結果」7 節、`docs/spec/04-requirements.md`
 Conditional Go 条件(2)、196〜214 行の REQ-8 詳細）。
 
@@ -21,6 +21,11 @@ Conditional Go 条件(2)、196〜214 行の REQ-8 詳細）。
 | `unsafe` Functions 増分比 | — | — | — | 約 3.0 倍 | **約 2.2 倍** |
 | `cargo audit` 既知脆弱性 | — | — | — | 0 件 | **0 件** |
 
+> 注記（2026-10-26）: 上表の WebRTC 列は 0.17.1 系の PoC-5 時点の実測（当時の判断記録）。
+> `crates/plugin-webrtc` は 0.21 系へ移行済みで、移行後の実測値は `docs/dep-impact/records.md` の
+> 2026-10-26 エントリを参照（依存グラフは縮小したが、別プロセス切り出しを MVP 推奨とする結論は変えない。
+> 経緯は [webrtc-rs-version-strategy.md](./webrtc-rs-version-strategy.md) 3.1 節）。
+
 （WebSocket・GraphQL・hub 配線・WebRTC の増分クレート数、`unsafe` Functions 約 2.2 倍、既知脆弱性 0 件は
 `docs/spec/04-requirements.md` 38 行目 Conditional Go 条件(2) の記載による。OpenAPI の比較値
 （バイナリサイズ +0.03%・`unsafe` Functions 約 3.0 倍・既知脆弱性 0 件）は `docs/spec/03-poc/webrtc-plugin/README.md`
@@ -29,7 +34,7 @@ Conditional Go 条件(2)、196〜214 行の REQ-8 詳細）。
 feature `plugin-webrtc` を無効化すればコアの依存ツリー・バイナリ・`unsafe` に一切影響しないこと
 （pay-for-what-you-use の成立）は PoC-5 で確認済みである（同 README「成功基準との照合」表、107 行目）。
 一方で、**`plugin-webrtc` を有効化したサービス自身**は、DTLS/SCTP/ICE の低レイヤー実装（`ring`・`rustls`・
-`webrtc-ice`・`webrtc-sctp` 等）を直接抱えることになり、本フレームワークの核となる安全性動機
+0.17 系では `webrtc-ice`・`webrtc-sctp`、0.21 系では `rtc-ice`・`rtc-sctp` 等の `rtc-*` 群）を直接抱えることになり、本フレームワークの核となる安全性動機
 （攻撃表面最小化・監査容易性）の恩恵を実質的に受けられない。これは feature 設計の巧拙で解消できる問題ではなく、
 WebRTC というプロトコルスタック自体の複雑さに起因する構造的な制約である
 （`docs/spec/03-poc/webrtc-plugin/README.md`「発見事項」112 行目）。
@@ -54,7 +59,7 @@ WebRTC というプロトコルスタック自体の複雑さに起因する構�
 
 - コアおよび WebRTC を使わない大多数のサービスの監査対象範囲（依存ツリー・`unsafe`・バイナリ）を汚染しない
 - `plugin-webrtc`（シグナリングプロキシ）自体は軽量に保つ。依存増分は WebSocket 級（+35 クレート程度）以下に
-  抑える方針とし、`webrtc-rs` 本体・その低レイヤー依存（`webrtc-ice`・`webrtc-sctp`・`dtls`・`turn`・`stun` 等）
+  抑える方針とし、`webrtc-rs` 本体・その低レイヤー依存（`webrtc-ice`・`webrtc-sctp`・`dtls`・`turn`・`stun` 等。0.21 系では `rtc` と `rtc-*` 群）
   には一切依存しない
 - feature `plugin-webrtc` 無効時の pay-for-what-you-use を維持する（`.claude/rules/pay-for-what-you-use.md`、本ドキュメント
   「6. pay-for-what-you-use 検証方針」）
@@ -105,7 +110,7 @@ flowchart LR
    `POST /rtc/offer` を受理し、`RequestGate` を通過したリクエストのみを独立 WebRTC サービスへ転送する
    （PoC-5・REQ-8 で確立済みの拡張パターンをそのまま踏襲し、新しい拡張点は追加しない）。
    `webrtc-rs` には依存しない。
-2. **独立 WebRTC サービス**: `webrtc-rs`（または将来の v0.20 系）を抱え、`RTCPeerConnection` 生成・
+2. **独立 WebRTC サービス**: `webrtc-rs`（0.21 系。当初設計時は 0.17 系または将来の v0.20 系を想定）を抱え、`PeerConnection` 生成・
    SDP Answer 生成・ICE 候補収集・DTLS ハンドシェイク・SCTP セッション確立を担う別プロセス。
    本ドキュメントでは Fandhe の共用 WebRTC マイクロサービス構想がこの役割を担う前提とする
    （詳細は「7. Fandhe 共用 WebRTC マイクロサービス構想との整合」参照）。
@@ -192,7 +197,7 @@ flowchart LR
   （既存プラグインと同様の検証。REQ-8 受け入れ基準「WebRTC プラグイン無効時、その依存・`unsafe`・コードが
   コアのバイナリ・依存ツリーに 0 件で載らない」に対応）
 - `plugin-webrtc` feature **有効時**であっても、プロキシ自体が `webrtc-rs`（および `webrtc-ice`・
-  `webrtc-sctp`・`dtls` 等の低レイヤークレート）に**依存しない**こと。これは本設計（別プロセス切り出し）の
+  `webrtc-sctp`・`dtls` 等の低レイヤークレート。0.21 系では `rtc` と `rtc-*` 群）に**依存しない**こと。これは本設計（別プロセス切り出し）の
   前提条件そのものであり、この不変条件が破られるとプロキシプラグインが実質的に `webrtc-rs` を抱え込み、
   本設計の攻撃表面分離効果が失われる
 
@@ -201,7 +206,7 @@ flowchart LR
 | 検証 | コマンド | 期待結果 |
 |---|---|---|
 | feature 無効時の依存残留確認 | `cargo tree --edges normal --prefix none`（`plugin-webrtc` 無効構成） | `webrtc` 系クレートが 0 件 |
-| feature 有効時の `webrtc-rs` 非依存確認 | `cargo tree --edges normal --prefix none`（`plugin-webrtc` 有効構成） | `webrtc`・`webrtc-ice`・`webrtc-sctp`・`dtls` 等の低レイヤークレートが 0 件 |
+| feature 有効時の `webrtc-rs` 非依存確認 | `cargo tree --edges normal --prefix none`（`plugin-webrtc` 有効構成） | `webrtc`・`webrtc-ice`・`webrtc-sctp`・`dtls` 等の低レイヤークレート（0.21 系では `rtc` と `rtc-*` 群を含む）が 0 件 |
 | `unsafe` 増減 | `cargo geiger` | `plugin-webrtc` 有効時の増分が WebSocket 級（+35 クレート相当）以下に収まる |
 | バイナリサイズ比較 | feature 有効/無効でのリリースビルドサイズ差 | PoC-5 実測の約 10.4 倍増（`webrtc-rs` 直接統合時の値）を大きく下回る |
 | 全構成ビルド | feature なし・`plugin-webrtc` 単独・全 feature の各構成で `cargo build` | 全構成でビルド成功 |

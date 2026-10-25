@@ -7,6 +7,37 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `fandhe-backend-plugin-webrtc`: 内部の `webrtc`（webrtc-rs）を 0.17 系から 0.21 系へ
+  移行しました（イシュー [#870](https://github.com/Fandhe-AI/fandhe-backend/issues/870)）。
+  `webrtc` の型は公開 API に出ておらず、`POST /rtc/offer` のワイヤ契約（JSON）も変わりません。
+  API が全面的に異なるため、イベント処理は `PeerConnectionEventHandler` 実装 1 つ
+  （`SignalingHandler`）に集約しました。0.21 は UDP バインドアドレスが必須のため、
+  **`WebRtcConfig` の既定で `0.0.0.0:0`（IPv4 のみ）にバインドします**。IPv6 でも待ち受けたい場合は
+  `with_udp_bind_addrs(vec!["0.0.0.0:0".to_owned(), "[::]:0".to_owned()])` のように明示してください。
+  空のリストを渡した設定は既定値へ戻らず、`POST /rtc/offer` が `500`
+  （`{"error":"peer_connection_init_failed"}`）で拒否します（フェイルクローズ）。
+  0.21 は `close()` せずに drop するとドライバと UDP ソケットが残るため、接続の枠を除去する全経路
+  （シグナリングの失敗・タイムアウト、終端状態の検知、drain）で `close()` も行うようにしました。
+  `close_active_peers` / `drain_for_shutdown` は、待ち時間の上限を超えても `close()` を
+  中断せず切り離したタスクで完了まで続けます。内部の `RTCPeerConnection` 表記の doc は
+  `PeerConnection` に改めています。
+
+### Added
+
+- `fandhe-backend-plugin-webrtc`: `WebRtcConfig::with_udp_bind_addrs` / `udp_bind_addrs` を
+  追加しました（ICE が使う UDP バインドアドレス。既定は `["0.0.0.0:0"]`）。追加のみで
+  breaking change ではありません。
+
+### Security
+
+- `fandhe-backend-plugin-webrtc`: `webrtc` 0.17 系が `dtls` 経由で引いていた `crypto-bigint 0.5.5` の
+  脆弱性 RUSTSEC-2026-0387 を、`webrtc` 0.21 系への移行で解消しました（0.21 系は `crypto-bigint` を
+  依存グラフに含みません。イシュー
+  [#870](https://github.com/Fandhe-AI/fandhe-backend/issues/870)、方針は
+  [`docs/design/webrtc-rs-version-strategy.md`](docs/design/webrtc-rs-version-strategy.md)）。
+
 ## [0.5.0] - 2026-10-16
 
 公開対象 15 クレートを lockstep バンプ（`docs/design/crates-io-release.md` 7.7 節）。

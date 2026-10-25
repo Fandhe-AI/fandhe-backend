@@ -457,7 +457,7 @@ pub struct Server {
     webrtc_proxy_config: Option<fandhe_backend_plugin_webrtc_proxy::ProxyConfig>,
     /// `webrtc` feature（TASK-8.1 / #26）有効時のみ意味を持つ設定。
     /// `crate::plugin::try_intercept` がこのフィールドを参照して `POST /rtc/offer`
-    /// を in-process の `RTCPeerConnection` シグナリングへ委譲するかどうかを判定
+    /// を in-process の `PeerConnection` シグナリングへ委譲するかどうかを判定
     /// する。feature 無効時はフィールド自体が構造体から消え、依存・コードとも
     /// ゼロコストになる（pay-for-what-you-use、.claude/rules/pay-for-what-you-use.md）。
     #[cfg(feature = "webrtc")]
@@ -861,7 +861,9 @@ impl Server {
     ///
     /// 登録すると `POST /rtc/offer` が `RequestGate` → `UpgradeHandler` の評価を
     /// 通過した後、既定 [`Handler`] より先にパスインターセプトされ、`config` を
-    /// 使って `RTCPeerConnection` を生成しシグナリングを完結させる（対象外パスは
+    /// 使って `PeerConnection` を生成しシグナリングを完結させる（ICE の UDP ソケットは
+    /// `WebRtcConfig::udp_bind_addrs`、既定 `0.0.0.0:0`（IPv4 のみ）へバインドする。
+    /// 空リストを設定した場合は `500` で拒否する。対象外パスは
     /// 素通りし、既定 `Handler` へフォールスルーする。`crate::plugin::try_intercept`
     /// の doc を参照）。`webrtc-proxy`（別プロセス切り出し型）と同時に登録した
     /// 場合は `webrtc-proxy` が優先される（`crate::plugin::try_intercept` の doc）。
@@ -1417,7 +1419,7 @@ impl RebindHandle {
     ///
     /// [`Server::webrtc`] にスキーマ登録済みの場合、`rebind` 呼び出しのたびに
     /// `crate::plugin::SessionDrain` が発火し、`fandhe_backend_plugin_webrtc::
-    /// WebRtcConfig` のプロセス内レジストリ上の**アクティブな `RTCPeerConnection` を
+    /// WebRtcConfig` のプロセス内レジストリ上の**アクティブな `PeerConnection` を
     /// 全件**明示的に `close()` する（イシュー #498）。この drain は
     /// リスニングアドレスの世代（新旧）を区別せず、rebind 発火時点でレジストリに
     /// 存在するアクティブ接続すべてが対象になる。したがって、単なるリスニング

@@ -50,7 +50,7 @@ pay-for-what-you-use）。いずれも「設定登録型」であり、**feature
 | メソッド | feature | シグネチャ概略 | 説明 |
 |---------|---------|---------------|------|
 | `webrtc_proxy` | `webrtc-proxy` | `fn (ProxyConfig) -> Server` | `POST /rtc/offer` を上流 WebRTC サービスへ中継（別プロセス切り出し型） |
-| `webrtc` | `webrtc` | `fn (WebRtcConfig) -> Server` | `POST /rtc/offer` を in-process の `RTCPeerConnection` で処理。`webrtc-proxy` と同時登録時は `webrtc-proxy` 優先 |
+| `webrtc` | `webrtc` | `fn (WebRtcConfig) -> Server` | `POST /rtc/offer` を in-process の `PeerConnection` で処理。`webrtc-proxy` と同時登録時は `webrtc-proxy` 優先 |
 | `websocket` | `websocket` | `fn (WebSocketConfig) -> Server` | 指定パス（既定 `/ws`）への WebSocket アップグレードを受理。複数回呼び出しで複数パス登録可 |
 | `graphql` | `graphql` | `fn (GraphQlConfig) -> Server` | `POST /graphql` を登録スキーマで実行 |
 | `openapi` | `openapi` | `fn () -> Server` | フレームワーク固定スキーマで `GET /openapi.json` / `GET /openapi.yaml` を配信 |

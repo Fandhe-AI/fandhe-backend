@@ -12,8 +12,9 @@
 //! （コアの接続受理ループ・feature 配線は別途 `crates/core/tests/plugin_boundary_webrtc.rs`
 //! が検証する。本テストはハンドラ単体の実疎通に責務を限定する）。
 
+mod common;
+
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 
 use fandhe_backend_http::buffer::RecvBuffer;
@@ -21,20 +22,16 @@ use fandhe_backend_http::connection::read_request;
 use fandhe_backend_plugin_webrtc::{WebRtcConfig, try_handle_rtc_offer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
-use webrtc::api::APIBuilder;
-use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::MediaEngine;
-use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use webrtc::interceptor::registry::Registry;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+
+use common::{TestClient, watch_data_channel};
 
 /// `POST /rtc/offer` のみに応答する最小 HTTP/1.1 サーバをループバックへ立てる。
 ///
 /// 1 接続 1 リクエストのみを処理し、応答後に接続を閉じる（本テストの疎通確認には
 /// keep-alive が不要なため、コア接続ループの複雑さを持ち込まない最小実装）。
 async fn spawn_server(config: WebRtcConfig) -> SocketAddr {
+    // 0.21 は UDP バインドアドレスが必須。ループバックのみで完結させる。
+    let config = config.with_udp_bind_addrs(vec!["127.0.0.1:0".to_owned()]);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -94,26 +91,6 @@ async fn post_offer(addr: SocketAddr, offer_json: &str) -> (String, String) {
     (status_line, body)
 }
 
-/// クライアント側の `RTCPeerConnection`・データチャネルを構築するヘルパー。
-async fn build_client_peer_connection() -> Arc<webrtc::peer_connection::RTCPeerConnection> {
-    let mut media_engine = MediaEngine::default();
-    media_engine.register_default_codecs().unwrap();
-    let mut registry = Registry::new();
-    registry = register_default_interceptors(registry, &mut media_engine).unwrap();
-    let api = APIBuilder::new()
-        .with_media_engine(media_engine)
-        .with_interceptor_registry(registry)
-        .build();
-
-    // STUN/TURN サーバは設定しない（ホスト候補のみでループバック内疎通させる、
-    // `crate` ルート doc「セキュリティ上の位置づけ」を参照）。
-    Arc::new(
-        api.new_peer_connection(RTCConfiguration::default())
-            .await
-            .unwrap(),
-    )
-}
-
 /// ローカル 2 ピア（クライアント側は本テスト内で構築、サーバ側は
 /// [`try_handle_rtc_offer`] が応答）で 1 対 1 の DataChannel を確立し、
 /// メッセージ往復（エコー）が成立することを確認する（受け入れ条件: `/rtc/offer` で
@@ -122,33 +99,15 @@ async fn build_client_peer_connection() -> Arc<webrtc::peer_connection::RTCPeerC
 async fn datachannel_roundtrip_over_local_loopback() {
     let addr = spawn_server(WebRtcConfig::new()).await;
 
-    let client_pc = build_client_peer_connection().await;
-    let data_channel = client_pc
+    let client = TestClient::new().await;
+    let data_channel = client
+        .pc
         .create_data_channel("task-8-1", None)
         .await
         .unwrap();
+    let (mut open_rx, mut msg_rx) = watch_data_channel(data_channel.clone());
 
-    let (open_tx, mut open_rx) = mpsc::channel::<()>(1);
-    data_channel.on_open(Box::new(move || {
-        let _ = open_tx.try_send(());
-        Box::pin(async {})
-    }));
-
-    let (msg_tx, mut msg_rx) = mpsc::channel::<String>(1);
-    data_channel.on_message(Box::new(move |msg: DataChannelMessage| {
-        let msg_tx = msg_tx.clone();
-        Box::pin(async move {
-            let text = String::from_utf8(msg.data.to_vec()).unwrap_or_default();
-            let _ = msg_tx.send(text).await;
-        })
-    }));
-
-    let offer = client_pc.create_offer(None).await.unwrap();
-    let mut gather_complete = client_pc.gathering_complete_promise().await;
-    client_pc.set_local_description(offer).await.unwrap();
-    let _ = gather_complete.recv().await;
-    let local_desc = client_pc.local_description().await.unwrap();
-    let offer_json = serde_json::to_string(&local_desc).unwrap();
+    let offer_json = client.offer_json().await;
 
     // シグナリング: 本クレートの `try_handle_rtc_offer` へ実際に HTTP 経由で送る。
     let (status_line, answer_body) =
@@ -160,8 +119,7 @@ async fn datachannel_roundtrip_over_local_loopback() {
         "unexpected status: {status_line}, body: {answer_body}"
     );
 
-    let answer: RTCSessionDescription = serde_json::from_str(&answer_body).unwrap();
-    client_pc.set_remote_description(answer).await.unwrap();
+    client.apply_answer(&answer_body).await;
 
     tokio::time::timeout(Duration::from_secs(10), open_rx.recv())
         .await
@@ -175,7 +133,7 @@ async fn datachannel_roundtrip_over_local_loopback() {
         .expect("channel closed without message");
     assert_eq!(echoed, "task-8-1 hello");
 
-    let _ = client_pc.close().await;
+    let _ = client.pc.close().await;
 }
 
 /// レビュー指摘（イシュー #26）の再発防止テスト: `max_peer_connections(1)` で 1 件目の
@@ -207,17 +165,13 @@ async fn peer_connection_slot_is_released_after_close_allowing_reuse() {
     // 1 件目: 確立してからクローズする（データチャネルを 1 つ持たせないと SDP に
     // m-line が含まれず `set_remote_description` が失敗するため、
     // `datachannel_roundtrip_over_local_loopback` と同様にチャネルを作成する）。
-    let first_client = build_client_peer_connection().await;
+    let first_client = TestClient::new().await;
     let _first_dc = first_client
+        .pc
         .create_data_channel("slot-release-1", None)
         .await
         .unwrap();
-    let offer = first_client.create_offer(None).await.unwrap();
-    let mut gather_complete = first_client.gathering_complete_promise().await;
-    first_client.set_local_description(offer).await.unwrap();
-    let _ = gather_complete.recv().await;
-    let local_desc = first_client.local_description().await.unwrap();
-    let offer_json = serde_json::to_string(&local_desc).unwrap();
+    let offer_json = first_client.offer_json().await;
 
     let (status_line, answer_body) =
         tokio::time::timeout(Duration::from_secs(10), post_offer(addr, &offer_json))
@@ -227,31 +181,26 @@ async fn peer_connection_slot_is_released_after_close_allowing_reuse() {
         status_line.starts_with("HTTP/1.1 200 OK"),
         "1 件目のシグナリングに失敗: {status_line}, body: {answer_body}"
     );
-    let answer: RTCSessionDescription = serde_json::from_str(&answer_body).unwrap();
-    first_client.set_remote_description(answer).await.unwrap();
-    first_client.close().await.unwrap();
+    first_client.apply_answer(&answer_body).await;
+    first_client.pc.close().await.unwrap();
 
     // クローズ通知（サーバ側 RTCPeerConnectionState の Closed/Failed への遷移）が
     // 届くまで、ICE/DTLS の非同期検知の猶予を持たせつつポーリングする。
     let poll_start = tokio::time::Instant::now();
     let (second_status, second_body) = loop {
-        let second_client = build_client_peer_connection().await;
+        let second_client = TestClient::new().await;
         let _second_dc = second_client
+            .pc
             .create_data_channel("slot-release-2", None)
             .await
             .unwrap();
-        let offer = second_client.create_offer(None).await.unwrap();
-        let mut gather_complete = second_client.gathering_complete_promise().await;
-        second_client.set_local_description(offer).await.unwrap();
-        let _ = gather_complete.recv().await;
-        let local_desc = second_client.local_description().await.unwrap();
-        let offer_json = serde_json::to_string(&local_desc).unwrap();
+        let offer_json = second_client.offer_json().await;
 
         let (status_line, body) =
             tokio::time::timeout(Duration::from_secs(10), post_offer(addr, &offer_json))
                 .await
                 .unwrap();
-        let _ = second_client.close().await;
+        let _ = second_client.pc.close().await;
 
         let succeeded = status_line.starts_with("HTTP/1.1 200 OK");
         let budget_exceeded = poll_start.elapsed() >= SLOT_RELEASE_BUDGET;

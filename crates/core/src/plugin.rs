@@ -187,7 +187,7 @@ impl UpgradeCancel {
     }
 }
 
-/// WebRTC セッション（`RTCPeerConnection`）の有界 drain シーム（イシュー #498、
+/// WebRTC セッション（`PeerConnection`）の有界 drain シーム（イシュー #498、
 /// `docs/design/ws-cancellation-propagation.md` 10 節「WS 以外への水平展開」）。
 ///
 /// [`GenerationCancel`]/[`UpgradeCancel`]（WS 委譲タスク向け、`watch` チャネルによる
@@ -210,7 +210,9 @@ pub(crate) struct SessionDrain {
     config: Option<fandhe_backend_plugin_webrtc::WebRtcConfig>,
 }
 
-/// 1 接続あたりの `RTCPeerConnection::close()` 打ち切りタイムアウト（イシュー #498）。
+/// 1 接続あたりの `PeerConnection::close()` 待ちの上限（イシュー #498）。上限を超えても
+/// `close()` 自体は中断せず、`fandhe_backend_plugin_webrtc` 側の切り離したタスクで完了まで続く
+/// （webrtc 0.21 は close せずに drop するとドライバが残るため、待ちの上限と close の完遂を分離している）。
 ///
 /// `run_until` の「grace + ε 以内に必ず戻る」保証（既存の permit 回収タイムアウト、
 /// `server.rs` の doc を参照）を [`SessionDrain::fire`] 自体が妨げないよう、`fire` は
@@ -251,7 +253,7 @@ impl SessionDrain {
     /// 呼び出し元（`run_until`・`spawn_generation_drain`）をブロックしないよう、実際の
     /// drain 処理は `tokio::spawn` した detached タスクへ切り離す（`GenerationCancel::
     /// fire` が同期的に `watch::Sender::send_replace` するだけで完結するのとは異なり、
-    /// 本シームの drain 処理は `RTCPeerConnection::close()` という有界だが非ゼロ時間の
+    /// 本シームの drain 処理は `PeerConnection::close()` という有界だが非ゼロ時間の
     /// 非同期 I/O を伴うため）。`Server::webrtc` 未登録（`config` が `None`）の場合は
     /// 何もしない。
     pub(crate) fn fire(&self, is_final: bool) {
@@ -1013,7 +1015,7 @@ mod cancel_tests {
 /// [`SessionDrain`]（イシュー #498、世代キャンセル機構の WS 以外への水平展開第 1 弾）
 /// のユニットテスト。
 ///
-/// 実 `RTCPeerConnection` を close する核心の振る舞い（`WebRtcConfig::
+/// 実 `PeerConnection` を close する核心の振る舞い（`WebRtcConfig::
 /// begin_terminal_drain`・`activate_slot` のフェイルクローズ判定・
 /// `take_active_peers`）は `crates/plugin-webrtc/tests/session_drain.rs` が実
 /// ICE/DTLS で直接検証する（`crates/core` に `webrtc-rs` 由来の dev-dep を持ち込ま

@@ -7,9 +7,10 @@
 //!
 //! # 背景・別プロセス切り出しとの対照
 //!
-//! `webrtc-rs`（0.17.1 系）は依存クレート +189・バイナリサイズ約 10.4 倍・
-//! `unsafe` Functions 約 2.2 倍という桁違いの依存インパクトを持つ（PoC-5、
-//! docs/spec の Conditional Go 条件(2)）。REQ-8 / `docs/spec/05-tasks.md` TASK-8.2 は
+//! `webrtc-rs` は桁違いの依存インパクトを持つ（PoC-5 の 0.17.1 系で依存クレート +189・
+//! バイナリサイズ約 10.4 倍・`unsafe` Functions 約 2.2 倍、docs/spec の Conditional Go
+//! 条件(2)。0.21 系への移行後の実測値は `docs/dep-impact/records.md` を参照）。
+//! REQ-8 / `docs/spec/05-tasks.md` TASK-8.2 は
 //! これを踏まえ、WebRTC を要するサービスを **別プロセス・別サービスへ切り出す** ことを
 //! MVP の推奨設計とし、`crates/plugin-webrtc-proxy`（TASK-8.2-2）がその軽量シグナリング
 //! プロキシを担う。
@@ -26,7 +27,7 @@
 //! `crates/plugin-webrtc-proxy`・PoC-5（`docs/spec/03-poc/webrtc-plugin/`）と同型の
 //! 「リクエスト/レスポンス完結型ハンドラ（パスインターセプト）」パターンを踏襲し、
 //! 新しい拡張点は追加しない。[`handler::try_handle_rtc_offer`] が `POST /rtc/offer` を
-//! パスインターセプトで受け、SDP Offer から `RTCPeerConnection` を生成、データチャネル
+//! パスインターセプトで受け、SDP Offer から `PeerConnection` を生成、データチャネル
 //! 到着を待ち受けるエコーハンドラを登録したうえで、非トリクル ICE による SDP Answer を
 //! 返す。
 //!
@@ -58,7 +59,7 @@
 //! 本プラグインを有効化すると、`webrtc-rs` の巨大な依存グラフ・パーサ群がコア
 //! プロセスに直接組み込まれる。ICE 接続性チェックはクライアント SDP 由来のアドレスへ
 //! UDP 送信を発生させ得る（WebRTC の構造上不可避）。本タスクでは STUN/TURN を一切
-//! 設定せず（`RTCConfiguration::default()`）、この特性を踏まえたうえで
+//! 設定せず（既定の `RTCConfiguration`）、この特性を踏まえたうえで
 //! **「in-process 有効化は攻撃表面を大きく広げるため、別プロセス切り出し
 //! （`crates/plugin-webrtc-proxy`）を MVP 推奨とする」** という REQ-8 の方針を維持する。
 //! 詳細な攻撃表面評価は TASK-8.4（#29）のスコープ。
