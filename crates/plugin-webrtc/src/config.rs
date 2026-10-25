@@ -38,10 +38,21 @@
 //! 呼び出し元 Future の drop）は、`crate::handler` のガード（`SignalingGuard`）が `Drop` で
 //! `release_slot` と、公開済み pc の close を対で行う。`Active` 以降の経路は上の 2 点が担う。
 //!
+//! ## `build().await` 中のキャンセルでもドライバを回収する
+//!
+//! webrtc 0.21.1 の `PeerConnectionBuilder::build().await` はドライバを先に spawn してから
+//! 初期化の完了を待つため、この `await` の最中に Future を drop すると、ハンドルを得られない
+//! ドライバが残る。そこで `build()` はキャンセルされない所有タスクで完了まで走らせ、
+//! `signaling_timeout` や呼び出し元のキャンセルは結果の**待ち**だけを打ち切る。生成中の枠は
+//! `Reserved` のまま生成タスクが所有し、生成が終わったとき、呼び出し側が消えていれば生成タスクが
+//! pc を close してから枠を解放する（生きていれば従来どおりガードが所有）。したがって残留する
+//! ドライバは常に `max_peer_connections` の内側に収まる。生成タスクにタイムアウトは付けない
+//! （付けると同じキャンセル問題が戻る）ため、**生成がハングすると、その枠は戻らないまま上限を
+//! 食う**（新規は `503` で拒否される＝フェイルクローズ。上限を超えて累積しない）。所有権の
+//! 受け渡しは `crate::handler` の `SignalingGuard` の doc の表を参照。
+//!
 //! ## 受容している残余リスク（回帰ではない）
 //!
-//! - `PeerConnectionBuilder::build().await` の最中にキャンセルされると、webrtc 0.21.1 は
-//!   ドライバを先に spawn するため、公開前の pc のドライバが 1 件残りうる（上流側の課題）。
 //! - ドライバが全 UDP ソケットの再試行不能な受信エラーで異常終了すると（webrtc 0.21.1
 //!   `driver.rs` の受信エラー処理）、`Failed`/`Closed` が届く保証がなく、`Active` の枠が
 //!   残りうる。
@@ -71,7 +82,8 @@ use webrtc::peer_connection::PeerConnection;
 /// 接続を生存させる唯一の経路であり、`Active` の除去は同時に `close()` を伴う
 /// （モジュール doc「枠の除去と `close()` の対」）。
 pub(crate) enum RegistrySlot {
-    /// シグナリング進行中の予約枠。接続は呼び出し元（`complete_signaling`）が保持する。
+    /// シグナリング進行中の予約枠。生成中は生成タスク、生成後は呼び出し元（ガード）が接続と枠の
+    /// 後始末を所有する（`crate::handler` の `SignalingGuard` の doc の表）。
     Reserved,
     /// シグナリング成功で登録済みの接続。`release_slot` が除去と close を行い、
     /// `take_active_peers`（drain）は除去して呼び出し元へ渡す。
@@ -215,6 +227,11 @@ impl WebRtcConfig {
     }
 
     /// シグナリング全体のタイムアウトを上書きする。
+    ///
+    /// 打ち切るのは `POST /rtc/offer` の**応答を待つ時間**で、`PeerConnection` の生成
+    /// （webrtc 0.21 の `build()`）自体は中断しない。生成は所有タスクで完了まで走り、期限切れ
+    /// （`504`）の場合は生成タスクが pc を close して枠を解放する。それまで枠は
+    /// `max_peer_connections` に数えられる。
     ///
     /// # Examples
     ///

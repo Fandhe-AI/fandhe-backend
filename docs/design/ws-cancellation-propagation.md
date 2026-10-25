@@ -591,5 +591,10 @@ close()` を伴う非同期 I/O）は `tokio::spawn` した detached タスク�
 - シグナリング中（枠の予約から `activate_slot` まで）の後始末は `handler.rs` の `SignalingGuard` が
   `Drop` で担う。シグナリングのタイムアウトだけでなく、呼び出し元の Future が途中で drop された場合
   （`JoinSet::shutdown` / `abort`）も、枠の除去と生成済み pc の `close()`（`Runtime` 外でも panic しない
-  `spawn_close`）が実行される。受容している残余リスク（`build().await` 中のキャンセルでドライバが
-  1 件残りうる等）は `config.rs` のモジュール doc に列挙している
+  `spawn_close`）が実行される。`PeerConnectionBuilder::build().await` 中のキャンセルでも
+  ドライバを回収する（0.21.1 は `build()` がドライバを先に spawn するため、`build()` はキャンセル
+  されない所有タスクで完了まで走らせ、呼び出し側が消えていれば生成タスクが pc を close してから
+  枠を解放する。生成中の枠は `Reserved` のまま上限に数えられ、生成がハングしても枠が戻らないだけで
+  上限を超えて溜まらない。drain は `Reserved` を待たない従来の挙動のまま、生成が drain 中に終われば
+  `activate_slot` の拒否または生成タスクが close する）。受容している残余リスク（ドライバの
+  異常終了時に `Active` の枠が残りうる等）は `config.rs` のモジュール doc に列挙している

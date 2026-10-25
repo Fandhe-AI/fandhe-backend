@@ -25,7 +25,9 @@
   （`{"error":"peer_connection_init_failed"}`）で拒否します（フェイルクローズ）。
   0.21 は `close()` せずに drop するとドライバと UDP ソケットが残るため、接続の枠を除去する全経路
   （シグナリングの失敗・タイムアウト、呼び出し元 Future の drop、終端状態の検知、drain）で
-  `close()` も行うようにしました。
+  `close()` も行うようにしました。`PeerConnection` の生成（`build()`）はキャンセルされない所有タスクで
+  完了まで走らせ、生成中にタイムアウトや呼び出し元のキャンセルが起きても、生成タスクが pc を `close()`
+  して枠を解放します（生成中の枠は同時接続数の上限に数え続けるため、残留するドライバは上限を超えません）。
   `close_active_peers` / `drain_for_shutdown` は、待ち時間の上限を超えても `close()` を
   中断せず切り離したタスクで完了まで続けます。内部の `RTCPeerConnection` 表記の doc は
   `PeerConnection` に改めています。

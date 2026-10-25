@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use bytes::BytesMut;
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 use webrtc::data_channel::{DataChannel, DataChannelEvent};
 use webrtc::peer_connection::{
     MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
@@ -61,6 +61,12 @@ fn error_response(status: u16, body: &'static [u8]) -> Response {
 /// - 枠を予約してから `activate_slot` までの後始末（枠の除去と、生成済みなら `close()`）は
 ///   `SignalingGuard` が `Drop` で保証する。タイムアウト（504）だけでなく、呼び出し元の
 ///   Future が途中で drop された場合（`JoinSet::shutdown` / `JoinHandle::abort` 等）も同じ
+/// - `PeerConnection` の生成（`build().await`）は、キャンセルされない所有タスクで完了まで走る。
+///   生成中にタイムアウトや呼び出し元の drop が起きても、生成タスクが完了時に pc を `close()`
+///   して枠を解放する。生成中の枠は `Reserved` のまま残るので、残留するドライバは常に
+///   `max_peer_connections` の内側に収まる（生成がハングした場合は枠が戻らないが、上限を
+///   超えて溜まらず、新規は `503` で拒否される）。生成タスクにタイムアウトは付けない
+///   （`SignalingGuard` の doc の「所有権の受け渡し」を参照）
 /// - JSON/SDP のパース失敗・シグナリング内部エラーは `400`/`500`（内部情報を含まない
 ///   固定 JSON body）
 /// - シグナリング全体（`set_remote_description` から ICE 候補収集完了まで）が
@@ -177,36 +183,97 @@ where
     }
 }
 
+/// [`SignalingGuard`] が共有する、`PeerConnection` の生成と所有の状態。枠と pc の所有者を
+/// 決める遷移はすべて 1 つの `Mutex` の下で行う（所有権の受け渡し表は [`SignalingGuard`] の doc）。
+enum PcState {
+    /// pc も生成タスクも無い。枠は呼び出し側（ガード）が所有する。
+    Empty,
+    /// 生成タスクが走行中。**枠は生成タスクが所有**し、ガードは触れない。
+    Building,
+    /// 生成の完了前に呼び出し側（ガード）が消えた。生成タスクが完了時に pc を close して枠を
+    /// 解放する。
+    Abandoned,
+    /// 生成済みの pc（生成タスクが公開して以降〜`finish` / `activate` / `Drop` まで）。
+    Held(Arc<dyn PeerConnection>),
+}
+
+/// `PcState` を取り出す（`Mutex` の poison は無視する。状態は単純な enum で、途中で壊れない）。
+fn lock_state(state: &Mutex<PcState>) -> std::sync::MutexGuard<'_, PcState> {
+    state.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 生成タスクが返す値（生成済みの pc と、ICE 収集完了を待つ `watch`）。
+type BuiltPc = (Arc<dyn PeerConnection>, watch::Receiver<bool>);
+
 /// 枠の予約から `activate_slot` までの間、枠と生成済み `PeerConnection` の後始末を所有する
 /// ガード（枠の除去と `close()` の対。`crate::config` モジュール doc 参照）。
 ///
 /// [`try_handle_rtc_offer`] が `reserve_slot` の直後に作り、[`complete_signaling`] が次の
 /// 3 つで使う。
 ///
-/// - [`SignalingGuard::publish`]: pc を生成した直後に公開する（以降 `Drop` が close できる）
+/// - [`SignalingGuard::build_owned`]: pc の生成を**キャンセルされない所有タスク**で完了させ、
+///   その結果を待つ（待ちだけがキャンセル対象。後述）
 /// - [`SignalingGuard::finish`]: 失敗経路。pc を close してから枠を解放し、ガードを解除する
 /// - [`SignalingGuard::activate`]: 成功経路。ガードを解除して `activate_slot` へ引き渡す
 ///
 /// ガードが有効なまま drop された場合（タイムアウト・呼び出し元 Future の drop・panic の
-/// unwind）、`Drop` が `release_slot` で枠を除去し、公開済みの pc を [`spawn_close`] で
-/// 切り離して close する。`Drop` は同期関数なので `.await` できないが、`spawn_close` が
-/// 実行を tokio ランタイムへ引き渡す。ランタイム外で drop された場合は実行先が無いので
-/// close は行われない（枠の除去だけ行い panic しない。ランタイム無しに pc は生成できないため
-/// 通常は到達しない）。`release_slot` と `close()` は冪等なので、解除前の失敗経路と
-/// 二重に走っても安全。
+/// unwind）、`Drop` が後始末を行う。`Drop` は同期関数なので `.await` できないが、
+/// [`spawn_close`] が close を tokio ランタイムへ引き渡す。ランタイム外で drop された場合は
+/// 実行先が無いので close は行われない（枠の除去だけ行い panic しない。ランタイム無しに pc は
+/// 生成できないため通常は到達しない）。`release_slot` と `close()` は冪等なので、解除前の
+/// 失敗経路と二重に走っても安全。
 ///
-/// # 残余リスク
+/// # pc の生成は所有タスクで完了させる（生成中のキャンセルでもドライバを回収する）
 ///
-/// `PeerConnectionBuilder::build().await` の途中でキャンセルされると、webrtc 0.21.1 は
-/// ドライバを先に spawn してから初期化の完了を待つため、公開前の pc のドライバが 1 件残りうる
-/// （`peer_connection/mod.rs` の Drop が closing を立てるのは dedicated reactor のときだけ）。
-/// 公開前の pc には本ガードから触れないため防げない。上流（webrtc-rs）側の課題として扱う。
+/// webrtc 0.21.1 の `PeerConnectionBuilder::build().await` は、ドライバ（と UDP ソケット）を
+/// **先に spawn** してから初期化の完了を待つ（`peer_connection/mod.rs`。`Drop` が closing を
+/// 立てるのは dedicated reactor のときだけ）。この `await` の最中に Future を drop すると、
+/// 呼び出し側は pc のハンドルを得られないまま、ドライバだけが残る。そのため `build()` を
+/// `tokio::spawn` した所有タスクで**最後まで走らせ**、`signaling_timeout` や呼び出し元の
+/// キャンセルが打ち切るのはその結果の**待ち**だけにする。生成タスク自体にタイムアウトは
+/// 付けない（付けると同じキャンセル問題が戻る）。
+///
+/// ## 所有権の受け渡し
+///
+/// 枠（`Reserved`）と pc の所有者は次の表のとおり。遷移はすべて `PcState` の `Mutex` の下で
+/// 行い、**`Building` / `Held` から抜ける遷移を行った側が、そのときの枠の解放と pc の close を
+/// 担う**。pc は `oneshot` などのチャネルでは受け渡さない（送信に成功しても受け手が先に
+/// drop されると、pc が close されないまま落ちるため）。通知は起こすためだけに使い、pc の
+/// 受け渡しは常に共有の状態で行う。
+///
+/// | 状態 | 枠の所有者 | pc の所有者 | この状態でガードが drop されたら |
+/// |------|-----------|------------|--------------------------------|
+/// | `Empty`（生成前・失敗後） | ガード | 無し | 枠を解放する |
+/// | `Building`（生成中） | **生成タスク** | 生成タスク（まだハンドルが無い） | 枠には触れず `Abandoned` へ |
+/// | `Abandoned`（生成中に呼び出し側が消えた） | 生成タスク | 生成タスク | （ガードは既に無い。生成タスクが完了時に pc を close してから枠を解放） |
+/// | `Held`（生成済み） | ガード | ガード（状態の中） | 枠を解放し、pc を切り離して close |
+///
+/// 生成タスクは完了時に状態を見て、`Building` なら pc を `Held` として公開してガードを
+/// 起こす（以降は従来どおりガードが所有）。`Abandoned` なら pc を自分で `close()` してから
+/// 枠を解放する。生成が `Err` なら、ドライバは初期化の失敗で既に止まっている（0.21.1 の
+/// `driver.rs` の `event_loop` が初期化結果を送って return し、`run_driver` が後片付けまで
+/// 走る）ので close するものは無く、枠だけ解放して `Empty` へ戻す。
+///
+/// 枠 ID は単調増加で再利用されないため、二重の `release_slot` は no-op になり、解放した枠を
+/// 後から別の接続が使った場合に誤って除去することは無い（ABA を起こさない）。
+///
+/// ## 上限への効き方
+///
+/// 生成中は枠が `Reserved` のまま残る（呼び出し側が消えても解放しない）ので、残留するドライバは
+/// 常に `max_peer_connections` の内側に収まる。生成が長時間ハングした場合は、その枠が戻らない
+/// まま上限を食う（新規は `503` で拒否される＝フェイルクローズ）。上限を超えて累積することは
+/// ない。
+///
+/// ## 終端 drain との関係
+///
+/// 生成中の枠は `Reserved` なので `take_active_peers` の対象外（従来どおり）。drain 中に生成が
+/// 終わった場合は、呼び出し側が生きていれば `activate_slot` が拒否して close し、消えていれば
+/// 生成タスクが close する。どちらも既存の drain の挙動（`Reserved` を待たない）は変えない。
 struct SignalingGuard {
     config: WebRtcConfig,
     slot_id: u64,
-    /// 生成済みの pc（公開後〜解除まで）。`Drop` から取り出して close するための置き場で、
-    /// 失敗経路は取り出さずに複製して close する（close の最中にキャンセルされても残る）。
-    pc_cell: Arc<Mutex<Option<Arc<dyn PeerConnection>>>>,
+    /// 生成と pc の所有の状態（遷移はすべてこの `Mutex` の下で行う）。
+    state: Arc<Mutex<PcState>>,
     /// `true` の間は `Drop` が後始末を行う。`finish` / `activate` が解除する。
     armed: bool,
 }
@@ -216,14 +283,45 @@ impl SignalingGuard {
         Self {
             config: config.clone(),
             slot_id,
-            pc_cell: Arc::new(Mutex::new(None)),
+            state: Arc::new(Mutex::new(PcState::Empty)),
             armed: true,
         }
     }
 
-    /// 生成した pc を公開する。`build().await` の完了から本呼び出しまでに await 点は無い。
-    fn publish(&self, pc: Arc<dyn PeerConnection>) {
-        *self.pc_cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(pc);
+    /// `build` を所有タスク（`tokio::spawn`）で完了まで走らせ、その結果を待つ。
+    ///
+    /// キャンセルされるのは**待ちだけ**で、`build` は走り続ける。この呼び出しが await 中に
+    /// drop されたら、枠と生成中の pc の後始末は生成タスクが担う（型 doc の表）。`Err` は
+    /// 生成の失敗、またはランタイム外（`spawn` できない）で、呼び出し側は
+    /// [`SignalingGuard::finish`] で枠を解放する。ランタイム外では `build` を実行しない
+    /// （その場で `await` するとキャンセル時の回収が効かないため）。
+    async fn build_owned<Fut>(&self, build: Fut) -> Result<BuiltPc, ()>
+    where
+        Fut: std::future::Future<Output = webrtc::error::Result<BuiltPc>> + Send + 'static,
+    {
+        let runtime = tokio::runtime::Handle::try_current().map_err(|_| ())?;
+        let (tx, rx) = oneshot::channel();
+        // 生成タスクを起こす前に `Building` にする（タスクが先に完了判定へ進んでも、
+        // 状態が `Empty` のまま pc を取りこぼさない）。この同期区間に await 点は無い。
+        *lock_state(&self.state) = PcState::Building;
+        // `JoinHandle` は捨てる（detach）。abort も、タスクへのタイムアウトも付けない。
+        drop(runtime.spawn(run_build(
+            Arc::clone(&self.state),
+            self.config.clone(),
+            self.slot_id,
+            build,
+            tx,
+        )));
+        let gather_rx = match rx.await {
+            Ok(Ok(gather_rx)) => gather_rx,
+            // 生成の失敗、または生成タスクの異常終了（panic）。後者も枠は生成タスクの後始末が
+            // 解放済みで、`finish` が重ねて呼んでも冪等。
+            Ok(Err(())) | Err(_) => return Err(()),
+        };
+        match &*lock_state(&self.state) {
+            PcState::Held(pc) => Ok((Arc::clone(pc), gather_rx)),
+            _ => Err(()),
+        }
     }
 
     /// 失敗経路の後始末。公開済みの pc を `close()`（結果は無視してよい。close 失敗は
@@ -231,12 +329,12 @@ impl SignalingGuard {
     ///
     /// `close().await` の途中でキャンセルされてもガードは有効なままで pc も残っているので、
     /// `Drop` が枠の除去と再 close を行う。解除は枠の解放と同じ同期区間（await 無し）で行う。
+    /// 生成の結果を受け取った後（`build_owned` が `Err` を返した後を含む）にだけ呼ぶ。
     async fn finish(&mut self) {
-        let pc = self
-            .pc_cell
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let pc = match &*lock_state(&self.state) {
+            PcState::Held(pc) => Some(Arc::clone(pc)),
+            _ => None,
+        };
         if let Some(pc) = pc {
             let _ = pc.close().await;
         }
@@ -248,11 +346,17 @@ impl SignalingGuard {
     /// 自身が枠の除去と close を行う）。解除から `activate_slot` までに await 点は無く、
     /// キャンセルされない。pc が未公開なら何もせず `false`（ガードは有効なまま `Drop` が枠を除去）。
     fn activate(&mut self) -> bool {
-        let pc = self
-            .pc_cell
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
+        let pc = {
+            let mut state = lock_state(&self.state);
+            if matches!(*state, PcState::Held(_)) {
+                match std::mem::replace(&mut *state, PcState::Empty) {
+                    PcState::Held(pc) => Some(pc),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        };
         match pc {
             Some(pc) => {
                 self.armed = false;
@@ -268,16 +372,104 @@ impl Drop for SignalingGuard {
         if !self.armed {
             return;
         }
+        let pc = {
+            let mut state = lock_state(&self.state);
+            match std::mem::replace(&mut *state, PcState::Empty) {
+                // 生成中: 枠も生成中の pc も生成タスクが所有する。引き継ぎを伝えて終わる
+                // （ここで枠を解放すると、残留するドライバが上限の外に出てしまう）。
+                PcState::Building => {
+                    *state = PcState::Abandoned;
+                    return;
+                }
+                PcState::Held(pc) => Some(pc),
+                PcState::Empty | PcState::Abandoned => None,
+            }
+        };
         self.config.release_slot(self.slot_id);
-        let pc = self
-            .pc_cell
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
         if let Some(pc) = pc {
             spawn_close(pc);
         }
     }
+}
+
+/// 生成タスクが異常終了（panic の unwind）したときに、枠を確実に解放する保険。正常終了では
+/// `completed` を立てて何もしない。
+struct BuildTaskCleanup {
+    state: Arc<Mutex<PcState>>,
+    config: WebRtcConfig,
+    slot_id: u64,
+    completed: bool,
+}
+
+impl Drop for BuildTaskCleanup {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        {
+            let mut state = lock_state(&self.state);
+            if matches!(*state, PcState::Building) {
+                *state = PcState::Empty;
+            }
+        }
+        self.config.release_slot(self.slot_id);
+    }
+}
+
+/// pc の生成を完了まで走らせる所有タスクの本体（[`SignalingGuard::build_owned`] が spawn する）。
+///
+/// 完了時に `PcState` を見て、枠と pc の所有を決める（遷移はロックの下、close の `await` は
+/// ロックの外）。呼び出し側へは結果の到着だけを `tx` で知らせ、pc は渡さない（受け手が
+/// 先に消えていても `tx.send` の失敗は無視してよい。pc は `Held` として状態に残り、ガードの
+/// `Drop` が回収する）。
+async fn run_build<Fut>(
+    state: Arc<Mutex<PcState>>,
+    config: WebRtcConfig,
+    slot_id: u64,
+    build: Fut,
+    tx: oneshot::Sender<Result<watch::Receiver<bool>, ()>>,
+) where
+    Fut: std::future::Future<Output = webrtc::error::Result<BuiltPc>>,
+{
+    let mut cleanup = BuildTaskCleanup {
+        state: Arc::clone(&state),
+        config: config.clone(),
+        slot_id,
+        completed: false,
+    };
+    match build.await {
+        Ok((pc, gather_rx)) => {
+            let abandoned = {
+                let mut state = lock_state(&state);
+                if matches!(*state, PcState::Building) {
+                    *state = PcState::Held(Arc::clone(&pc));
+                    false
+                } else {
+                    true
+                }
+            };
+            if abandoned {
+                // 呼び出し側は既に消えた。close を完了させてから枠を解放する（close 中も
+                // 枠は `Reserved` のままなので、残留は上限の内側）。
+                let _ = pc.close().await;
+                config.release_slot(slot_id);
+            } else {
+                let _ = tx.send(Ok(gather_rx));
+            }
+        }
+        Err(_) => {
+            // 初期化に失敗した pc のドライバは既に止まっている（close するものが無い）。
+            {
+                let mut state = lock_state(&state);
+                if matches!(*state, PcState::Building) {
+                    *state = PcState::Empty;
+                }
+            }
+            config.release_slot(slot_id);
+            let _ = tx.send(Err(()));
+        }
+    }
+    cleanup.completed = true;
 }
 
 /// SDP Offer の JSON パースから Answer 生成までのシグナリング本体。
@@ -306,17 +498,20 @@ async fn complete_signaling(
         }
     };
 
-    let (pc, mut gather_rx) = match build_peer_connection(config, guard.slot_id).await {
+    // 生成は所有タスクで完了まで走らせ、ここで待つのは結果だけ（タイムアウトや呼び出し元の
+    // キャンセルが打ち切るのはこの待ちで、生成と、生成中の pc・枠の後始末は打ち切られない。
+    // `SignalingGuard` の doc の「所有権の受け渡し」を参照）。成功時の pc は既にガードが
+    // 保持している（以降の await 点でキャンセルされても `Drop` が回収する）。
+    let (pc, mut gather_rx) = match guard
+        .build_owned(build_peer_connection_owned(config.clone(), guard.slot_id))
+        .await
+    {
         Ok(built) => built,
-        Err(_) => {
+        Err(()) => {
             guard.finish().await;
             return error_response(500, br#"{"error":"peer_connection_init_failed"}"#);
         }
     };
-
-    // 以降の await 点でキャンセルされる可能性があるため、pc をガードへ公開する
-    // （`SignalingGuard` の doc を参照）。
-    guard.publish(Arc::clone(&pc));
 
     if pc.set_remote_description(offer).await.is_err() {
         guard.finish().await;
@@ -409,8 +604,9 @@ impl PeerConnectionEventHandler for SignalingHandler {
         // ローカル呼び出しで `Closed` が届く保証がないので、ローカルで close する経路
         // （`SignalingGuard` / drain）は呼び出し側が枠を解放する。ここは相手起因の
         // `Closed`/`Failed` 専用で、`Active` なら `release_slot` が close まで行う
-        // （`Reserved` の間は pc を `complete_signaling` が保持しているので枠の除去だけ。
-        // その後の `activate_slot` が枠なしで拒否して pc を close する）。
+        // （`Reserved` の間は pc を生成タスク／`SignalingGuard` が保持しているので枠の除去だけ。
+        // その後の `activate_slot` が枠なしで拒否して pc を close する。生成タスクが
+        // 呼び出し側の消失を見て close する経路も、枠を `release_slot` するだけで冪等）。
         if matches!(
             state,
             RTCPeerConnectionState::Closed | RTCPeerConnectionState::Failed
@@ -447,7 +643,10 @@ async fn echo_loop(dc: Arc<dyn DataChannel>) {
 /// （文字列のまま渡すとホスト名のブロッキング DNS 解決がドライバ上で走る）。解釈できない
 /// 要素があれば生成せず `Err`（通常は `try_handle_rtc_offer` が枠の予約前に拒否済み）。
 ///
-/// 生成に失敗した場合は接続が存在しないので、呼び出し元は枠の解放のみ行う。
+/// 生成に失敗した場合は接続が存在しないので、呼び出し元は枠の解放のみ行う（0.21.1 は初期化に
+/// 失敗するとドライバも止まる）。**この Future を途中で drop しない**こと: 0.21.1 の
+/// `build()` はドライバを先に spawn してから初期化の完了を待つため、await 中に drop すると
+/// ドライバが残る。本番では [`SignalingGuard::build_owned`] の所有タスクが完了まで走らせる。
 async fn build_peer_connection(
     config: &WebRtcConfig,
     slot_id: u64,
@@ -475,6 +674,15 @@ async fn build_peer_connection(
         .build()
         .await?;
     Ok((Arc::new(pc), gather_rx))
+}
+
+/// [`build_peer_connection`] を、所有タスク（`tokio::spawn`）へ渡せる `'static` な Future にする
+/// （[`SignalingGuard::build_owned`]）。
+async fn build_peer_connection_owned(
+    config: WebRtcConfig,
+    slot_id: u64,
+) -> webrtc::error::Result<BuiltPc> {
+    build_peer_connection(&config, slot_id).await
 }
 
 #[cfg(test)]
@@ -703,11 +911,7 @@ mod tests {
         let response = complete_signaling(body, &config, &mut guard).await;
 
         assert_json_error(&response, 400, br#"{"error":"invalid_remote_description"}"#);
-        let pc = guard
-            .pc_cell
-            .lock()
-            .unwrap()
-            .clone()
+        let pc = held_pc(&guard.state)
             .expect("失敗経路でも pc はガードに残る（close 中のキャンセルに備える）");
         assert!(
             pc.create_offer(None).await.is_err(),
@@ -867,11 +1071,52 @@ mod tests {
     ) -> (SignalingGuard, u64, Arc<dyn PeerConnection>) {
         let slot_id = config.reserve_slot().expect("予約できる");
         let guard = SignalingGuard::new(config, slot_id);
-        let (pc, _gather_rx) = build_peer_connection(config, slot_id)
+        let (pc, _gather_rx) = guard
+            .build_owned(build_peer_connection_owned(config.clone(), slot_id))
             .await
             .expect("PeerConnection の生成に失敗した");
-        guard.publish(Arc::clone(&pc));
         (guard, slot_id, pc)
+    }
+
+    /// ガードが保持している（生成済みで未引き渡しの）pc。
+    fn held_pc(state: &Mutex<PcState>) -> Option<Arc<dyn PeerConnection>> {
+        match &*lock_state(state) {
+            PcState::Held(pc) => Some(Arc::clone(pc)),
+            _ => None,
+        }
+    }
+
+    fn is_building(state: &Mutex<PcState>) -> bool {
+        matches!(*lock_state(state), PcState::Building)
+    }
+
+    /// 枠が 1 つ空いているか（空いていれば取って直ちに返す。上限 1 の設定で使う）。
+    fn slot_is_free(config: &WebRtcConfig) -> bool {
+        match config.reserve_slot() {
+            Some(id) => {
+                config.release_slot(id);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 条件が成り立つまで有界（5 秒）に待つ。固定時間の sleep で「そろそろ終わったはず」と
+    /// 決め打ちせず、成立した時点で戻る。
+    async fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !cond() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
+    /// `fut` を 1 回だけポーリングする（スポーンした生成タスクは、ここで yield するまで走らない）。
+    async fn poll_once<F: std::future::Future + Unpin>(fut: &mut F) -> std::task::Poll<F::Output> {
+        std::future::poll_fn(|cx| std::task::Poll::Ready(std::pin::Pin::new(&mut *fut).poll(cx)))
+            .await
     }
 
     fn loopback_config() -> WebRtcConfig {
@@ -1010,21 +1255,17 @@ mod tests {
         let config = loopback_config();
         let slot_id = config.reserve_slot().expect("予約できる");
         let mut guard = SignalingGuard::new(&config, slot_id);
-        let pc_cell = Arc::clone(&guard.pc_cell);
+        let state = Arc::clone(&guard.state);
 
         let mut fut = Box::pin(complete_signaling(offer.as_bytes(), &config, &mut guard));
-        let cancelled_mid_flight = poll_until(&mut fut, || pc_cell.lock().unwrap().is_some()).await;
+        let cancelled_mid_flight = poll_until(&mut fut, || held_pc(&state).is_some()).await;
         assert!(
             cancelled_mid_flight,
             "pc の公開前、または公開後に完走してしまった（キャンセル経路を通っていない）"
         );
         drop(fut); // タイムアウト・呼び出し元の drop と同じ: 以降の本体コードは実行されない
 
-        let pc = pc_cell
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("pc は公開済みのはず");
+        let pc = held_pc(&state).expect("pc は公開済みのはず");
         assert!(guard.armed, "Future の drop だけではガードは解除されない");
         assert!(
             config.reserve_slot().is_none(),
@@ -1072,11 +1313,17 @@ mod tests {
                 dropped_mid_flight += 1;
             }
             drop(fut);
-            for pc in config.take_active_peers() {
-                let _ = pc.close().await;
-            }
+            // 生成中に drop された反復は、生成タスクが完了時に pc を close して枠を解放する
+            // （それまで枠は `Reserved` のまま残る）ので、有界に待つ。
             assert!(
-                config.reserve_slot().is_some(),
+                wait_for(|| slot_is_free(&config) || {
+                    // 完走した反復は Active の接続が残るので閉じる。
+                    for pc in config.take_active_peers() {
+                        spawn_close(pc);
+                    }
+                    false
+                })
+                .await,
                 "{polls} 回ポーリングして drop しても枠が残らないはず"
             );
         }
@@ -1107,6 +1354,292 @@ mod tests {
         drop(guard);
         assert!(config.reserve_slot().is_some(), "Drop で枠が解放される");
         assert!(wait_until_closed(&pc).await, "Drop で pc が close される");
+    }
+
+    /// 生成中の再現用: 本物の `build_peer_connection` を完了させたあと（= 0.21.1 のドライバが
+    /// spawn 済み）、結果を呼び出し側へ返す前の地点で止まる Future。`entered` が立った時点で
+    /// 「生成の await の最中」であることが確定し、`gate.notify_one()` で先へ進む。
+    /// 生成した pc は `built` に控える（テストが close を確認するため）。
+    struct GatedBuild {
+        entered: Arc<std::sync::atomic::AtomicBool>,
+        gate: Arc<tokio::sync::Notify>,
+        built: Arc<Mutex<Option<Arc<dyn PeerConnection>>>>,
+    }
+
+    impl GatedBuild {
+        fn new() -> Self {
+            Self {
+                entered: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                gate: Arc::new(tokio::sync::Notify::new()),
+                built: Arc::new(Mutex::new(None)),
+            }
+        }
+
+        fn future(
+            &self,
+            config: &WebRtcConfig,
+            slot_id: u64,
+        ) -> impl std::future::Future<Output = webrtc::error::Result<BuiltPc>> + Send + 'static
+        {
+            let (entered, gate, built) = (
+                Arc::clone(&self.entered),
+                Arc::clone(&self.gate),
+                Arc::clone(&self.built),
+            );
+            let config = config.clone();
+            async move {
+                let (pc, gather_rx) = build_peer_connection(&config, slot_id).await?;
+                *built.lock().unwrap() = Some(Arc::clone(&pc));
+                entered.store(true, std::sync::atomic::Ordering::SeqCst);
+                gate.notified().await;
+                Ok((pc, gather_rx))
+            }
+        }
+
+        fn entered(&self) -> bool {
+            self.entered.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn pc(&self) -> Arc<dyn PeerConnection> {
+            self.built.lock().unwrap().clone().expect("生成済みのはず")
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_wait_mid_build_makes_the_build_task_close_the_pc_then_release_the_slot()
+    {
+        // 生成の await の最中に呼び出し側（待ち）と、そのガードが消える場合。生成タスクが
+        // 生成済みの pc を close してから枠を解放する。それまで枠は `Reserved` のまま
+        // 上限に数えられる（早期解放しない）。
+        let config = loopback_config(); // 上限 1
+        let slot_id = config.reserve_slot().expect("予約できる");
+        let guard = SignalingGuard::new(&config, slot_id);
+        let state = Arc::clone(&guard.state);
+        let build = GatedBuild::new();
+
+        let mut waiting = Box::pin(guard.build_owned(build.future(&config, slot_id)));
+        assert!(poll_once(&mut waiting).await.is_pending());
+        assert!(is_building(&state), "待ちの開始で生成中になるはず");
+        // 生成が実際に await の最中（ドライバ spawn 済み・結果は未返却）になるまで待つ。
+        assert!(
+            wait_for(|| build.entered()).await,
+            "生成が gate に到達しなかった（キャンセル地点が空振り）"
+        );
+        let pc = build.pc();
+        assert!(
+            pc.create_offer(None).await.is_ok(),
+            "生成した pc は開いている"
+        );
+
+        // 呼び出し側の消失: 待ちの Future とガードを drop する。
+        drop(waiting);
+        drop(guard);
+
+        assert!(
+            config.reserve_slot().is_none(),
+            "生成中は呼び出し側が消えても枠は `Reserved` のまま上限に数えられるはず"
+        );
+        assert!(
+            pc.create_offer(None).await.is_ok(),
+            "生成タスクの完了前に pc は閉じられない"
+        );
+
+        build.gate.notify_one(); // 生成を完了させる
+        assert!(
+            wait_for(|| slot_is_free(&config)).await,
+            "生成タスクが完了後に枠を解放するはず"
+        );
+        // close してから枠を解放する順序（枠が空いた時点で close は完了している）。
+        assert!(
+            pc.create_offer(None).await.is_err(),
+            "生成タスクが pc を close してから枠を解放するはず"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_build_in_flight_after_the_caller_vanished_still_counts_against_the_limit() {
+        // 上限 1 で、生成中に呼び出し側が消えても枠は戻らないので、2 件目は 503（フェイルクローズ）。
+        // 生成が終わって枠が戻れば、再び受け付ける。
+        let config = loopback_config();
+        let slot_id = config.reserve_slot().expect("予約できる");
+        let guard = SignalingGuard::new(&config, slot_id);
+        let build = GatedBuild::new();
+        let mut waiting = Box::pin(guard.build_owned(build.future(&config, slot_id)));
+        assert!(poll_once(&mut waiting).await.is_pending());
+        assert!(
+            wait_for(|| build.entered()).await,
+            "生成が gate に到達しなかった"
+        );
+        drop(waiting);
+        drop(guard);
+
+        let body = br#"{"type":"offer","sdp":"not a valid sdp"}"#;
+        let response = try_handle_rtc_offer(&offer_request(body), body, &config)
+            .await
+            .unwrap();
+        assert_json_error(
+            &response,
+            503,
+            br#"{"error":"peer_connection_limit_reached"}"#,
+        );
+
+        build.gate.notify_one();
+        assert!(wait_for(|| slot_is_free(&config)).await);
+        assert!(
+            wait_until_closed(&build.pc()).await,
+            "生成タスクが pc を close するはず"
+        );
+        let response = try_handle_rtc_offer(&offer_request(body), body, &config)
+            .await
+            .unwrap();
+        assert_ne!(response.status, 503, "枠が戻れば再び受け付ける");
+    }
+
+    #[tokio::test]
+    async fn a_pc_published_after_the_wait_was_cancelled_is_reclaimed_by_the_guard() {
+        // 競合のもう一方: 生成が先に終わって pc が `Held` になり、呼び出し側の待ちが結果を
+        // 受け取る前に消えた場合。チャネルで pc を渡す設計だと、ここで close されない pc が
+        // 落ちる。pc は状態に残り、ガードの `Drop` が close して枠を解放する。
+        let config = loopback_config();
+        let slot_id = config.reserve_slot().expect("予約できる");
+        let guard = SignalingGuard::new(&config, slot_id);
+        let state = Arc::clone(&guard.state);
+
+        let mut waiting =
+            Box::pin(guard.build_owned(build_peer_connection_owned(config.clone(), slot_id)));
+        assert!(poll_once(&mut waiting).await.is_pending());
+        assert!(
+            wait_for(|| held_pc(&state).is_some()).await,
+            "生成が完了して pc が公開されるはず"
+        );
+        drop(waiting); // 結果を受け取らずに待ちが消える
+        let pc = held_pc(&state).expect("pc は状態に残っているはず");
+        assert!(
+            config.reserve_slot().is_none(),
+            "ガードが有効な間は枠が残る"
+        );
+        assert!(pc.create_offer(None).await.is_ok());
+
+        drop(guard);
+
+        assert!(
+            config.reserve_slot().is_some(),
+            "ガードの Drop で枠が解放される"
+        );
+        assert!(
+            wait_until_closed(&pc).await,
+            "ガードの Drop で pc が close される"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_the_guard_right_after_the_build_started_leaves_no_driver_behind() {
+        // 生成タスクがまだ走り出す前（spawn 直後）にキャンセルされる場合も、実際の生成を完了
+        // させたうえで pc を close し、枠を解放する（生成の到達点を問わない）。
+        let config = loopback_config();
+        let slot_id = config.reserve_slot().expect("予約できる");
+        let guard = SignalingGuard::new(&config, slot_id);
+        let state = Arc::clone(&guard.state);
+        let built: Arc<Mutex<Option<Arc<dyn PeerConnection>>>> = Arc::new(Mutex::new(None));
+        let build = {
+            let (config, built) = (config.clone(), Arc::clone(&built));
+            async move {
+                let (pc, gather_rx) = build_peer_connection(&config, slot_id).await?;
+                *built.lock().unwrap() = Some(Arc::clone(&pc));
+                Ok((pc, gather_rx))
+            }
+        };
+        let mut waiting = Box::pin(guard.build_owned(build));
+        assert!(poll_once(&mut waiting).await.is_pending());
+        assert!(
+            is_building(&state),
+            "キャンセル時点で生成中のはず（空振り防止）"
+        );
+        drop(waiting);
+        drop(guard);
+        assert!(
+            matches!(*lock_state(&state), PcState::Abandoned),
+            "生成中のドロップは生成タスクへ引き継ぐはず"
+        );
+
+        assert!(wait_for(|| slot_is_free(&config)).await);
+        let pc = built.lock().unwrap().clone().expect("生成は完了するはず");
+        assert!(
+            pc.create_offer(None).await.is_err(),
+            "pc は close 済みのはず"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_build_releases_the_slot_and_reports_the_failure() {
+        // 生成が `Err` なら、ドライバは初期化の失敗で止まっているので close するものは無く、
+        // 枠だけを解放する。呼び出し側の `finish` が重ねて解放しても冪等。
+        let config = loopback_config();
+        let slot_id = config.reserve_slot().expect("予約できる");
+        let mut guard = SignalingGuard::new(&config, slot_id);
+
+        let result = guard
+            .build_owned(async { Err(webrtc::error::Error::Other("test".to_owned())) })
+            .await;
+
+        assert!(result.is_err());
+        assert!(
+            slot_is_free(&config),
+            "生成タスクが失敗時に枠を解放しているはず"
+        );
+        guard.finish().await;
+        assert!(slot_is_free(&config), "finish の重ねた解放は冪等");
+        assert!(!guard.armed);
+    }
+
+    #[tokio::test]
+    async fn a_panicking_build_still_releases_the_slot() {
+        // 生成タスクが panic しても枠が永久に残らない（`BuildTaskCleanup`）。
+        let config = loopback_config();
+        let slot_id = config.reserve_slot().expect("予約できる");
+        let guard = SignalingGuard::new(&config, slot_id);
+
+        let result = guard
+            .build_owned(async {
+                if true {
+                    panic!("test: 生成タスクの panic");
+                }
+                Err(webrtc::error::Error::Other("unreachable".to_owned()))
+            })
+            .await;
+
+        assert!(result.is_err(), "異常終了は失敗として返るはず");
+        assert!(
+            wait_for(|| slot_is_free(&config)).await,
+            "枠が解放されるはず"
+        );
+        drop(guard);
+    }
+
+    #[test]
+    fn build_owned_outside_a_tokio_runtime_fails_without_running_the_build_or_panicking() {
+        // ランタイム外（spawn 先が無い）では panic せず、生成も走らせずに失敗を返す。
+        // その場で await する経路に倒すと、キャンセル時にドライバを回収できなくなる。
+        let config = loopback_config();
+        let slot_id = config.reserve_slot().expect("予約できる");
+        let guard = SignalingGuard::new(&config, slot_id);
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran_in_build = Arc::clone(&ran);
+        let mut fut = Box::pin(guard.build_owned(async move {
+            ran_in_build.store(true, std::sync::atomic::Ordering::SeqCst);
+            Err(webrtc::error::Error::Other("must not run".to_owned()))
+        }));
+
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match fut.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(Err(())) => {}
+            other => panic!("ランタイム外は即座に失敗するはず: {:?}", other.is_ready()),
+        }
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+        drop(fut);
+        assert!(matches!(*lock_state(&guard.state), PcState::Empty));
+        drop(guard); // Empty の drop は枠の解放だけ（panic しない）
+        assert!(config.reserve_slot().is_some());
     }
 
     /// 指定した UDP バインドアドレスで `PeerConnection` を作り、ICE 収集を終えて得た
