@@ -893,7 +893,13 @@ fandhe-backend/
 │   │                                    # 鍵集合（`SharedKeySet` で差し替え）、検証結果キャッシュ、
 │   │                                    # 未知 `kid` 通知口。hub-wiring から唯一の plugin→plugin
 │   │                                    # 依存を受ける。0.5.0 で初公開。設計は
-│   │                                    # `docs/design/jwt-verify-plugin.md`
+│   │                                    # `docs/design/jwt-verify-plugin.md`。opt-in feature
+│   │                                    # `jwks-refresh`（イシュー #893〜#898、0.5.0 には未収録）で
+│   │                                    # ゲートの外の JWKS 取り直しタスク（`JwksRefresher`・
+│   │                                    # 取得関数 trait `JwksFetcher`・`RefreshConfig`・
+│   │                                    # `RefreshTrigger`）を提供。HTTP・TLS は持たず取得関数は
+│   │                                    # アプリが書く（実装例 `docs/guide/jwks-refresh.md`）。
+│   │                                    # 追加依存は optional の `tokio`（time・sync）のみ
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、
 │   │                                    # `crates/http/fuzz` と同パターン、イシュー #818）
 │   ├── plugin-csrf                    # CSRF 検査ゲートプラグイン（REQ-17、イシュー #825/#826）。

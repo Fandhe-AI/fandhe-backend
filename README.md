@@ -36,6 +36,13 @@ hub-wiring / jwt / csrf / cors / compression / static）の 15 クレートで�
 （Gate 型の `fandhe-backend-plugin-hub-wiring` ・`fandhe-backend-plugin-jwt`・`fandhe-backend-plugin-csrf` は
 core の feature を持たない独立クレートで、直接依存に加えて `Server::gate` で登録します）。
 
+`fandhe-backend-plugin-jwt` には、JWKS を定期的・未知の `kid` を契機に取り直す opt-in の
+feature `jwks-refresh` があります（`cargo add fandhe-backend-plugin-jwt --features jwks-refresh`。
+crates.io 公開版 0.5.0 には未収録で、次の公開から使えます）。HTTP クライアントは持たず、取得関数を
+アプリが渡します。書き方は
+[JWKS の取り直しガイド](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/guide/jwks-refresh.md)
+を参照してください。
+
 ## Getting Started
 
 crates.io からの依存追加〜最小サーバ起動までの最短手順は [`docs/guide/getting-started.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/guide/getting-started.md) を、

@@ -573,3 +573,11 @@ spec の式 `ceil(T / L) + 定期の取得回数` はこれ以上なので満た
 - HTTP クライアントの同梱（別の opt-in feature）は、取得関数を書くサービスが複数になり書き方の違いが問題になった時点で
   `fandhe-auth.md` の見直し条件に従う。
 - `rt` を使う `spawn` 便宜関数は追加しない（8.2）。`plugin-boundary.md` 5.6 節への追記の要否は #898 で判断する。
+
+#### 実装時の決定（#898）
+
+- 取得関数の実装例は `docs/guide/jwks-refresh.md` に置いた。HTTP クライアントは利用側の依存でフレームワークの依存にできず、
+  example にすると dev-dependency として lock と dep-audit の対象に入るため、説明用でコンパイル検証の対象外のコードとした
+  （`docs/guide/README.md` の「サンプルコードの原則」の例外。フレームワーク API の正は doc test）。
+- `plugin-boundary.md` 5.6.5 節には 1 項目だけ追記した（取り直しタスクはゲートの外で動き、Gate 型の契約を変えない）。
+- `plugin-hub-wiring` の doc comment にある「JWKS 取得は責務外」への案内追加は別クレートの変更のため範囲外とした。

@@ -4,7 +4,8 @@
 //! 知らない `kid` のトークンはその場で 401 にし（フェイルクローズ）、鍵ローテーションの
 //! 可能性があることだけを、利用側が登録した同期の通知口 [`UnknownKeyNotifier`] へ知らせる。
 //! 取り直し（HTTP 取得・[`SharedKeySet::set`](crate::SharedKeySet::set)）は利用側の
-//! 非同期タスクが担う。呼び出し元は `crate::auth::JwtAuthenticator`（判定確定後に呼ぶ）。
+//! 非同期タスクが担う（`jwks-refresh` feature 有効時は `JwtAuthenticatorBuilder::jwks_refresh_trigger`
+//! で取り直しタスクへ直接合図できる）。呼び出し元は `crate::auth::JwtAuthenticator`（判定確定後に呼ぶ）。
 
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};

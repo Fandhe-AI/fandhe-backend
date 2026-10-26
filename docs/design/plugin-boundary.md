@@ -509,6 +509,9 @@ PoC-6）であり、JWT 検証で抽出した `org_id` 等のクレームはコ�
 - plugin → plugin 依存の規則: hub-wiring → plugin-jwt は `scripts/dep-direction-check.sh` の
   `allowed_edge_patterns` に明示追加した唯一の例外で、追加にはレビューを要する。逆向き
   （plugin-jwt → hub-wiring）は禁止で、循環は DFS で検出する
+- opt-in の `jwks-refresh` feature の取り直しタスクはゲートの外でアプリが spawn する。
+  `RequestGate::check` の同期・I/O なしの契約もコアも変えず、Gate 型パターンの枠内に収まる
+  （詳細は `jwt-verify-plugin.md` 8 章）
 - 複数ゲートは AND 結合（いずれかが拒否すれば拒否）。REQ-17 の CSRF ゲートとの登録順は
   5.6.6 節で定めた（受け入れ検証は `docs/acceptance/req17-csrf-gate.md`）
 

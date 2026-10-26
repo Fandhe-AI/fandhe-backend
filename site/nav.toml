@@ -66,6 +66,11 @@ title = "graceful shutdown"
 source = "docs/guide/graceful-shutdown.md"
 path = "/guides/graceful-shutdown/"
 
+[[section.page]]
+title = "JWKS の取り直し（jwks-refresh）"
+source = "docs/guide/jwks-refresh.md"
+path = "/guides/jwks-refresh/"
+
 [[section]]
 title = "Examples"
 index_path = "/examples/"
