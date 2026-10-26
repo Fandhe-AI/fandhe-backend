@@ -64,6 +64,21 @@ async fn spawn_server(config: WebRtcConfig) -> SocketAddr {
 
 /// `POST /rtc/offer` を送り、`(ステータス行, レスポンスボディ)` を返す。
 async fn post_offer(addr: SocketAddr, offer_json: &str) -> (String, String) {
+    let (status_line, _headers, body) = post_offer_full(addr, offer_json).await;
+    (status_line, body)
+}
+
+/// ヘッダ部から名前（大文字小文字非区別）に一致する値を返す。
+fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
+    headers.lines().find_map(|line| {
+        let (k, v) = line.split_once(':')?;
+        k.trim().eq_ignore_ascii_case(name).then(|| v.trim())
+    })
+}
+
+/// `POST /rtc/offer` を送り、`(ステータス行, ヘッダ部, レスポンスボディ)` を返す。
+/// ヘッダ部はステータス行を除いた生のヘッダ行（`\r\n` 区切り）。
+async fn post_offer_full(addr: SocketAddr, offer_json: &str) -> (String, String, String) {
     let mut stream = TcpStream::connect(addr).await.unwrap();
     let raw = format!(
         "POST /rtc/offer HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -86,15 +101,10 @@ async fn post_offer(addr: SocketAddr, offer_json: &str) -> (String, String) {
     }
     let text = String::from_utf8(buf).unwrap();
     let mut parts = text.splitn(2, "\r\n\r\n");
-    let status_line = parts
-        .next()
-        .unwrap()
-        .lines()
-        .next()
-        .unwrap_or("")
-        .to_string();
+    let head = parts.next().unwrap();
+    let (status_line, headers) = head.split_once("\r\n").unwrap_or((head, ""));
     let body = parts.next().unwrap_or("").to_string();
-    (status_line, body)
+    (status_line.to_string(), headers.to_string(), body)
 }
 
 /// ローカル 2 ピア（クライアント側は本テスト内で構築、サーバ側は
@@ -265,13 +275,26 @@ async fn establish(config: WebRtcConfig) -> (TestClient, Arc<dyn DataChannel>) {
         .await
         .unwrap();
     let offer_json = client.offer_json().await;
-    let (status_line, answer_body) =
-        tokio::time::timeout(Duration::from_secs(10), post_offer(addr, &offer_json))
+    let (status_line, headers, answer_body) =
+        tokio::time::timeout(Duration::from_secs(10), post_offer_full(addr, &offer_json))
             .await
             .unwrap();
     assert!(
         status_line.starts_with("HTTP/1.1 200 OK"),
         "unexpected status: {status_line}, body: {answer_body}"
+    );
+    let content_type = header_value(&headers, "content-type")
+        .unwrap_or_else(|| panic!("Content-Type ヘッダがない: {headers}"));
+    assert!(
+        content_type.starts_with("application/json"),
+        "unexpected Content-Type: {content_type}"
+    );
+    let content_length = header_value(&headers, "content-length")
+        .unwrap_or_else(|| panic!("Content-Length ヘッダがない: {headers}"));
+    assert_eq!(
+        content_length,
+        answer_body.len().to_string(),
+        "Content-Length が実ボディ長と一致しない"
     );
     client.apply_answer(&answer_body).await;
     tokio::time::timeout(Duration::from_secs(10), async {
