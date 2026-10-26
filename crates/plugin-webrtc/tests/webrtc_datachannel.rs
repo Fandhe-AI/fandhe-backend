@@ -430,3 +430,117 @@ async fn unbounded_send_buffer_lets_client_outstanding_drain_without_reading() {
 
     let _ = client.pc.close().await;
 }
+
+// ---- 1 接続あたりのデータチャネル数上限（イシュー #877） ----
+
+/// 追加のデータチャネルを作り、`OnOpen` まで待つ。サーバ側が即 close する場合でも
+/// 先に `OnOpen` が届きうるため、`OnClose` が先に来たら `None` を返す。
+async fn open_extra(client: &TestClient, label: &str) -> Option<Arc<dyn DataChannel>> {
+    let dc = client.pc.create_data_channel(label, None).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = dc.poll().await {
+            match event {
+                DataChannelEvent::OnOpen => return Some(dc.clone()),
+                DataChannelEvent::OnClose => return None,
+                _ => {}
+            }
+        }
+        None
+    })
+    .await
+    .expect("extra data channel neither opened nor closed in time")
+}
+
+/// テキストを送り、エコーが返るかを返す（タイムアウトまたは close なら `false`）。
+async fn echoes(dc: &Arc<dyn DataChannel>, text: &str, wait: Duration) -> bool {
+    if dc.send_text(text).await.is_err() {
+        return false;
+    }
+    tokio::time::timeout(wait, async {
+        while let Some(event) = dc.poll().await {
+            match event {
+                DataChannelEvent::OnMessage(msg) => return msg.data[..] == *text.as_bytes(),
+                DataChannelEvent::OnClose => return false,
+                _ => {}
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false)
+}
+
+const ECHO_WAIT: Duration = Duration::from_secs(10);
+
+/// 上限 2: 3 本目は閉じられるが、接続と既存 2 本のエコーは維持される。
+#[tokio::test]
+async fn data_channel_limit_closes_excess_channels_but_keeps_connection() {
+    let (client, dc1) =
+        establish(WebRtcConfig::new().with_max_data_channels_per_connection(2)).await;
+    let dc2 = open_extra(&client, "second")
+        .await
+        .expect("2 本目は受理される");
+    assert!(echoes(&dc2, "second", ECHO_WAIT).await);
+
+    // 3 本目: サーバ側が即 close する（OnOpen が先に届いても、最終的に OnClose になる）。
+    let dc3 = client.pc.create_data_channel("third", None).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = dc3.poll().await {
+            if matches!(event, DataChannelEvent::OnClose) {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("excess channel was not closed in time");
+
+    assert!(echoes(&dc1, "first", ECHO_WAIT).await, "既存チャネルは継続");
+    assert!(
+        echoes(&dc2, "second-again", ECHO_WAIT).await,
+        "既存チャネルは継続"
+    );
+    assert_eq!(
+        client.state(),
+        RTCPeerConnectionState::Connected,
+        "接続は切らない"
+    );
+    let _ = client.pc.close().await;
+}
+
+/// 上限 1: 閉じたチャネルの枠は空き、新しいチャネルを受理できる。
+#[tokio::test]
+async fn closing_a_channel_frees_a_slot_for_a_new_one() {
+    let (client, dc1) =
+        establish(WebRtcConfig::new().with_max_data_channels_per_connection(1)).await;
+    dc1.close().await.unwrap();
+    // サーバ側の枠解放は非同期。受理されるまで有界にリトライする。
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut n = 0;
+    loop {
+        n += 1;
+        if let Some(dc) = open_extra(&client, &format!("again-{n}")).await
+            && echoes(&dc, "reopened", ECHO_WAIT).await
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "枠が解放されず新規チャネルが受理されない"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let _ = client.pc.close().await;
+}
+
+/// `0` は無制限: 3 本とも受理されエコーする。
+#[tokio::test]
+async fn zero_means_unlimited_data_channels() {
+    let (client, dc1) =
+        establish(WebRtcConfig::new().with_max_data_channels_per_connection(0)).await;
+    let dc2 = open_extra(&client, "b").await.expect("受理される");
+    let dc3 = open_extra(&client, "c").await.expect("受理される");
+    assert!(echoes(&dc1, "1", ECHO_WAIT).await);
+    assert!(echoes(&dc2, "2", ECHO_WAIT).await);
+    assert!(echoes(&dc3, "3", ECHO_WAIT).await);
+    let _ = client.pc.close().await;
+}

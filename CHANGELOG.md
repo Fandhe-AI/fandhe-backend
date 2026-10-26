@@ -9,6 +9,14 @@
 
 ### Added
 
+- `fandhe-backend-plugin-webrtc`: `WebRtcConfig::with_max_data_channels_per_connection` と
+  `max_data_channels_per_connection()` を追加しました（イシュー
+  [#877](https://github.com/Fandhe-AI/fandhe-backend/issues/877)、親
+  [#883](https://github.com/Fandhe-AI/fandhe-backend/issues/883)、関連
+  [#871](https://github.com/Fandhe-AI/fandhe-backend/issues/871)）。1 接続あたりに同時に開けるデータ
+  チャネル数の上限で、超過分は即 close します（接続は維持）。`0` は無制限です。既定値の変更は
+  下の Changed を参照してください。API の追加のみで型は壊れません。
+
 - `fandhe-backend-plugin-webrtc`: `WebRtcConfig::with_data_channel_send_buffer_limit` と
   `data_channel_send_buffer_limit()` を追加しました（イシュー
   [#874](https://github.com/Fandhe-AI/fandhe-backend/issues/874)、親
@@ -18,6 +26,14 @@
   下の Changed を参照してください。API の追加のみで型は壊れません。
 
 ### Changed
+
+- `fandhe-backend-plugin-webrtc`: **1 接続あたりのデータチャネル数の既定が、従来の無制限から
+  16 本になりました**（送信バッファ上限はチャネルごとに効くため、チャネル数が無制限だと 1 接続の
+  メモリが青天井になる）。同時に開いている本数が上限を超えるチャネルは即 close され、接続と既存
+  チャネルは維持されます。従来の無制限に戻すには `with_max_data_channels_per_connection(0)` を指定して
+  ください（型は壊れない追加ですが、17 本以上を使う既存利用者は挙動が変わります）。
+  イシュー [#877](https://github.com/Fandhe-AI/fandhe-backend/issues/877)、親
+  [#883](https://github.com/Fandhe-AI/fandhe-backend/issues/883)。
 
 - `fandhe-backend-plugin-webrtc`: **データチャネルの送信バッファ上限の既定が、従来の無制限から
   1 チャネルあたり 1 MiB になりました**（遅い相手によるメモリ枯渇の抑止）。上限到達時は

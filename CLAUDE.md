@@ -515,6 +515,9 @@ fandhe-backend/
 │   │                                    # イシュー #874 で `WebRtcConfig::with_data_channel_send_buffer_limit`
 │   │                                    # （1 チャネルあたりの送信バッファ上限、既定 1 MiB、`0` は無制限）を追加し、
 │   │                                    # `PeerConnection` 生成時に webrtc へ配線した（上限到達時は `send` が待つバックプレッシャ）。
+│   │                                    # イシュー #877 で `WebRtcConfig::with_max_data_channels_per_connection`
+│   │                                    # （1 接続あたりの同時データチャネル数、既定 16、`0` は無制限）を追加した。超過分は
+│   │                                    # `on_data_channel` で即 close し接続は維持（webrtc 0.21 に設定 API がないため自前計数）。
 │   │                                    # `close_active_peers` / `drain_for_shutdown`（`drain` モジュール）で
 │   │                                    # `WebRtcConfig::registry` 上のアクティブな `PeerConnection` を
 │   │                                    # 1 接続あたり有界タイムアウトで明示的に close する API を追加した
