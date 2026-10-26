@@ -134,7 +134,7 @@
   このため枠の除去と `close()` を必ず対にする（`crates/plugin-webrtc/src/config.rs` のモジュール doc）
 - 移行トリガー（「3.」の 1〜3）の再評価サイクルは維持する。移行トリガー 2（未修正 advisory）は
   引き続き `cargo audit`（CI schedule 実行）で検知する
-- webrtc を更新するときは 3.2 節の確認（`SettingEngineBuilder` に SCTP ストリーム数の setter があるか）をやり直す
+- webrtc を更新するときは 3.2 節（SCTP ストリーム数の setter）と 3.3 節（SCTP の RTO・タイマの setter）の確認をやり直す
 
 
 ### 3.2 データチャネル数上限と webrtc 側設定 API の再検討（#888）
@@ -170,6 +170,54 @@
 
 **未確認**: `rtc-sctp` が `my_max_num_inbound_streams` 以上のストリーム ID の受信 DATA を実際に拒否するか
 （`get_or_create_stream` の境界判定）。API 公開時の再検討で確認する。
+
+### 3.3 SCTP の RTO 等と webrtc 側設定 API の再検討（#889）
+
+#882 の調査で、送信バッファ上限テストの受信再開後の回収に約 16〜32 秒かかることが分かった。原因は帯域ではなく、
+rtc-sctp の RTO 指数バックオフ（初期 1 秒・最大 60 秒）とゼロウィンドウプローブのタイマ待ちである。
+`WebRtcConfig` から RTO 等を設定できるようにする案を検討した。
+
+**確認結果（2026-10-27）**
+
+- 使用中は `webrtc` / `rtc` / `rtc-sctp` いずれも 0.21.1。障害は 3 層ある
+  1. `rtc-sctp` の `association/timer.rs` で `RTO_INITIAL=1000` / `RTO_MIN=1000` / `RTO_MAX=60000`（ms）はモジュール内の
+     `const` で、構造体のフィールドではない。公開の `TimerConfig` は再送の回数上限（`max_t3_rtx_retrans` 等）だけで、RTO の値を持たない
+  2. `rtc` の `transport/sctp/mod.rs` は `TransportConfig::default()` に message size・port・receive buffer を足すだけで、
+     `with_timer_config` を呼ばない。回数だけの `TimerConfig` も外から届かない
+  3. `rtc` の `SettingEngineBuilder` の SCTP 設定口は `with_sctp_max_message_size` / `with_sctp_max_receive_buffer_size` /
+     `with_sctp_mtu` の 3 つだけで、`webrtc` の `PeerConnectionBuilder` にも設定口はない
+- ゼロウィンドウプローブは `rtc-sctp` の `association/mod.rs` に固定で実装されており、設定する手段はない
+- upstream の `webrtc-rs/rtc` main（cd3f08a、2026-10-26）でも RTO は `const` のままで、設定口も上記 3 つだけ
+- 部分採用の余地もない。仮に `TimerConfig` が配線されても `max_t3_rtx_retrans` は「N 回再送したら association を失敗させる」
+  設定で、回収を早める手段にならず逆に切断を招く。`with_sctp_max_receive_buffer_size` は窓が詰まるまでの量を変えるだけで、
+  受信再開後のタイマ待ちは縮まない
+
+**判断: 不採用（現状維持）**。対象バージョンにも upstream main にも RTO の設定口がなく、`WebRtcConfig` から配線できない。
+コードと公開 API は変えない。
+
+- 効いていない設定 API は追加しない。`with_sctp_rto` のような setter を先に用意すると、運用者は調整したつもりで何も変わらず、
+  fail-open の API になる（pay-for-what-you-use・公開 API の安定性にも反する）
+- `rtc-sctp` の fork や `[patch.crates-io]` による差し替えも採らない。upstream 追従と `cargo audit` による advisory 検知の追跡性を損なう
+- 影響はテストの所要時間が中心。#882 の実測は最悪 32.5 秒で、nextest の slow-timeout 240 秒に約 7 倍の余裕がある。
+  本番では受信が止まった相手の再開後の回復遅延にあたるが、RFC 9260 準拠の既定どおりで、安全性は後退しない
+
+**採用する場合の暫定設計（提案）**
+
+- `WebRtcConfig::with_sctp_rto(initial: Duration, max: Duration)` と getter `sctp_rto_initial()` / `sctp_rto_max()`。既定は現状と同じ 1 秒 / 60 秒
+- 範囲は RFC 9260 に合わせる。`initial` が 1 秒未満、`max` が 60 秒超、`initial > max` は不正。拒否にするか丸めるかは、
+  既存の `with_*`（ビルダー内で検証しない方針、`docs/api/plugin-config-api.md` 2.9 節）との整合をその時点で決める。
+  下限を外すと不要な再送が相手とネットワークを枯渇させ（DoS）、上限を超えるとゼロウィンドウ下で状態を保持する時間が延びる
+- 配線先は `handler.rs` の `build_peer_connection`（`PeerConnectionBuilder::with_setting_engine`）。テストは `webrtc_datachannel.rs`
+  のバックプレッシャテストの派生で、受信再開後の回収が既定より短くなることを確かめる。CHANGELOG と `docs/api/plugin-config-api.md` も更新する
+
+**再検討条件**（いずれかが成立したら）
+
+- (a) `rtc` / `webrtc` の `SettingEngineBuilder` か `PeerConnectionBuilder` に RTO またはタイマの setter が追加された
+- (b) `rtc` が `TransportConfig::with_timer_config` を配線し、かつ `rtc-sctp` の `TimerConfig` に RTO の値が入った
+- (c) `rtc-sctp` の更新で RTO またはゼロウィンドウプローブの挙動が変わった
+- (d) CI で `send_buffer_limit_applies_backpressure_without_disconnecting` の所要時間が nextest の slow-timeout に近づいた（#882 の条件を引き継ぐ）
+
+**未確認**: ゼロウィンドウ解除時に受信側からウィンドウ更新の SACK が出ているか。回収がプローブのタイマ待ちになる直接の原因の切り分けにあたる。
 
 ## 4. スコープ外機能の実装フェーズでの扱い
 

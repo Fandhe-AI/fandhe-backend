@@ -521,6 +521,8 @@ fandhe-backend/
 │   │                                    # `on_data_channel` で即 close し接続は維持（webrtc 0.21 に設定 API がないため自前計数）。
 │   │                                    # イシュー #888 で webrtc 0.21.1 にもストリーム数の設定 API がないことを確認し自前計数を維持
 │   │                                    # （API 公開時の併用方針は `docs/design/webrtc-rs-version-strategy.md` 3.2 節）。
+│   │                                    # イシュー #889 で webrtc 0.21.1 にも SCTP の RTO の設定 API がない（rtc-sctp の const 固定）ことを確認して不採用
+│   │                                    # （再検討条件は `docs/design/webrtc-rs-version-strategy.md` 3.3 節）。
 │   │                                    # `close_active_peers` / `drain_for_shutdown`（`drain` モジュール）で
 │   │                                    # `WebRtcConfig::registry` 上のアクティブな `PeerConnection` を
 │   │                                    # 1 接続あたり有界タイムアウトで明示的に close する API を追加した
