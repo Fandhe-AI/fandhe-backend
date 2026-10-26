@@ -908,6 +908,10 @@ mod tests {
     #[tokio::test]
     async fn build_peer_connection_succeeds_with_default_and_zero_send_buffer_limit() {
         // 既定（1 MiB）と 0（無制限扱い）のどちらでも生成が失敗しない。
+        // 注: webrtc 0.21 は設定済みの送信バッファ上限を PeerConnection から読み出す公開 getter を
+        // 持たず、実際のバックプレッシャ挙動の検証は大容量送信を伴う実接続 e2e が必要になる。
+        // ここでは配線後も生成が壊れないこと（スモーク）のみを確認し、設定値の保持は config.rs の
+        // テストが担う。
         for limit in [None, Some(0)] {
             let mut config =
                 WebRtcConfig::new().with_udp_bind_addrs(vec!["127.0.0.1:0".to_owned()]);
