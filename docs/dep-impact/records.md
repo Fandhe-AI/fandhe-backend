@@ -8,6 +8,23 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-10-27 — `crates/plugin-jwt` に `jwks-refresh` feature と optional な `tokio` を追加（イシュー #894）
+
+`crates/plugin-jwt/Cargo.toml` に `[features]`（`default = []`、`jwks-refresh = ["dep:tokio"]`）と
+optional な `tokio`（`default-features = false`、`time`・`sync` のみ）を追加した。本 issue のコードは
+`tokio` をまだ使わない（trait・型・設定は std のみ。使うのは後続の取り直しタスク #895）。
+設計 `docs/design/jwt-verify-plugin.md` 8.2 の (a)〜(c) で確認した。
+
+- 新規パッケージ: 0（`cargo metadata` のパッケージ数は変更前後とも 317）。`unsafe` の追加: なし
+  （`#![forbid(unsafe_code)]` を維持）
+- (a) feature 無効: `cargo tree -p fandhe-backend-plugin-jwt -e normal --depth 1` に `tokio` の行なし。
+  `--features jwks-refresh` では `tokio v1.54.1` が現れる
+- (b) feature 有効: 新規パッケージなし。`tokio` の feature は `core` が既に有効にしている `time`・`sync` のみで増えない
+- (c) feature 無効: `refresh` モジュールは `#[cfg(feature = "jwks-refresh")]` でコンパイルされず、
+  3 構成（feature なし・`jwks-refresh`・全 feature）で build・clippy・test・doc が通る
+
+計測条件: macOS arm64（darwin）、stable rustc。
+
 ## 2026-10-26 — `crates/plugin-webrtc` の webrtc 0.17.2 → 0.21.1 移行（イシュー #870、RUSTSEC-2026-0387 の解消）
 
 `cargo audit / cargo deny (all feature configs)`（required check `dep-audit`）が RUSTSEC-2026-0387

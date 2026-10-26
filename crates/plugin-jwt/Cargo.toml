@@ -27,6 +27,18 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 ring = { workspace = true }
 
+# JWKS の取り直し（`jwks-refresh` feature、設計 `docs/design/jwt-verify-plugin.md` 8.2）。
+# opt-in の optional 依存で、feature 無効時は本クレートから tokio への直接の通常依存辺を
+# 持たない。`rt`・`macros` は使わない（crate 内で `tokio::spawn` も `tokio::select!` も
+# 使わない）。`core` が既に `time`・`sync` を有効にしているため、有効化しても新しい
+# パッケージも feature 集合の増加も生じない。
+tokio = { version = "1", default-features = false, features = ["time", "sync"], optional = true }
+
+[features]
+default = []
+# JWKS 取り直しの土台（取得関数の trait・設定型）。既定では無効。
+jwks-refresh = ["dep:tokio"]
+
 # 統合テスト（tests/gate.rs）が `handle_connection` を `tokio::io::duplex` 越しに駆動し、
 # ハンドラの戻り値に `HandlerFuture` を使うためだけに必要（hub-wiring と同一パターン）。
 [dev-dependencies]
