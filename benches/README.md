@@ -50,6 +50,7 @@ cargo build --release --bin axum-ref
 | `compression-e2e-exclusive.sh` | `compression-e2e-bench.sh` の専有計測 wrapper（flock 相互排他・静穏確認・環境スナップショット。`bench-accept-exclusive.sh` と同型。PASS/FAIL 判定は持たない） |
 | `microbench.sh` | 決定的マイクロベンチ（`benches/microbench/`、per-request alloc カウンタ）のビルド・実行・ベースライン比較（イシュー #615）。実時間計測（本 README の他スクリプト）とは異なり VM ノイズに依存しない 1 回実行の退行検知。詳細は「microbench.sh — 決定的マイクロベンチ」節参照 |
 | `bench-compare.sh` | 複数フレームワークの参照実装（axum-ref / core-bench / `benches/refs/` の actix-ref・rocket-ref）を `NAME=BIN` の組で受け取り、`bench-http.sh` / `bench-rss.sh` / `bench-footprint.sh` を順に実行して横並びの比較表（Markdown）を出力する。**PASS/FAIL 判定は持たない**情報提供用。詳細は「bench-compare.sh — 他フレームワーク横並び比較」節参照 |
+| `webrtc-dc-churn.sh` | 上限超過で拒否されるデータチャネルの大量開閉時に、`crates/plugin-webrtc` の example `datachannel_churn`（server 役）の RSS を長時間採取する（イシュー #887）。PASS/FAIL 判定を持たない情報提供用で CI には組み込まない。詳細は「webrtc-dc-churn.sh — 拒否データチャネルの開閉と RSS」節参照 |
 
 共通関数は `lib/common.sh` に集約している（サーバ起動/停止・前提ツール検査・中央値算出・
 `RESULT_JSON` 機械可読出力ヘルパー・数値バリデーション）。
@@ -1003,3 +1004,26 @@ bash benches/microbench.sh --update-baseline
 CI（`.github/workflows/ci.yml` の `microbench` ジョブ）は PR/push ごとに
 `bash benches/microbench.sh --check` を実行し、`ci-complete` の判定対象に
 含まれる。
+
+## webrtc-dc-churn.sh — 拒否データチャネルの開閉と RSS（イシュー #887）
+
+`WebRtcConfig::with_max_data_channels_per_connection`（#877）は同時に開いている本数だけを
+数える。1 接続で「開く → 拒否される → 閉じる」を大量に繰り返したときに、webrtc 0.21 / rtc
+内部の状態が溜まらずプロセス RSS が有界に収まるかを確かめる、DoS 観点の長時間計測。
+**PASS/FAIL 判定は持たない情報提供用**で、長時間かつ環境依存のため CI には組み込まない
+（CI では `crates/plugin-webrtc/tests/webrtc_datachannel.rs` の短時間回帰テストが枠の漏れと
+接続維持だけを見る）。結果は `benches/reports/issue887-webrtc-dc-churn.md`。
+
+```bash
+# 前景実行（動作確認向け、短縮例）
+DURATION_SEC=30 POST_CLOSE_IDLE_SEC=10 bash benches/webrtc-dc-churn.sh
+
+# 長時間実行は切り離して起動し、完了を有界に待つ（--wait は最長 SEC 秒で戻る）
+DURATION_SEC=900 bash benches/webrtc-dc-churn.sh --detach   # OUT_DIR=... を表示
+bash benches/webrtc-dc-churn.sh --wait <OUT_DIR> 540
+```
+
+環境変数は `OUT_DIR`・`SAMPLE_INTERVAL_SEC`（既定 5）・`IDLE_SEC`・`MAX_CHANNELS`（既定 1）と、
+client 役へ渡る `DURATION_SEC`・`CONCURRENCY`・`LABEL_BYTES`・`REPORT_INTERVAL_SEC`・
+`CLOSE_PC_AT_END`・`POST_CLOSE_IDLE_SEC`（既定値は example の doc 参照）。出力先に
+`rss.csv`・`client.csv`・`summary.txt`・`done` を書く。

@@ -1063,6 +1063,12 @@ fandhe-backend/
 │   │                                    # bench-http / bench-rss / bench-footprint を順に実行して
 │   │                                    # Markdown 比較表を出力）。PASS/FAIL 判定を持たない
 │   │                                    # 情報提供用で CI には組み込まない（記事・対外説明用）
+│   ├── webrtc-dc-churn.sh              # 拒否データチャネルの大量開閉時の server RSS 長時間採取
+│   │                                    # （イシュー #887。`crates/plugin-webrtc/examples/
+│   │                                    # datachannel_churn.rs` の server/client 役を使い、
+│   │                                    # `--detach` / `--wait` で長時間実行。PASS/FAIL 判定を
+│   │                                    # 持たない情報提供用で CI には組み込まない。結果は
+│   │                                    # `benches/reports/issue887-webrtc-dc-churn.md`）
 │   ├── refs/                           # 他フレームワーク参照実装（actix-web / Rocket、standalone
 │   │                                    # workspace。`microbench/` と同パターンで root workspace
 │   │                                    # から exclude 済み。受け入れ判定の baseline は axum-ref
