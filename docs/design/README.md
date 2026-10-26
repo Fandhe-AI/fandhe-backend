@@ -237,4 +237,5 @@
   `fandhe-backend-plugin-jwt`（REQ-16）の設計（イシュー #811。Gate 型の配置・
   必須引数ポリシー型・RS256/ES256 の JWK 分類と同一 `kid` 複数鍵・未知 `kid` 通知口・
   依存の解釈・fuzz の置き場所・hub-wiring 移行・REQ-16 受け入れ基準と
-  Phase 2・3 issue の対応表を記述。設計のみでコード変更なし）
+  Phase 2・3 issue の対応表を記述。設計のみでコード変更なし。8 章に `jwks-refresh`
+  （JWKS の取り直しの仕組み、イシュー #893）の設計と Phase 1 の対応表を追記）
