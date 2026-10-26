@@ -19,9 +19,19 @@
 //! [`UnknownKeyNotifier`]。設計は
 //! `docs/design/jwt-verify-plugin.md` を参照。
 //!
+//! `jwks-refresh` feature（既定では無効）を有効にすると、ゲートの外で [`SharedKeySet`] を
+//! 最新に保つ取り直しタスク（定期取得・未知 `kid` 契機・失敗時の現行鍵保持）が使える。
+//! HTTP クライアントも TLS も持たず、取得関数（`JwksFetcher`）をアプリが渡す。
+//! 取得関数の書き方は `docs/guide/jwks-refresh.md` を参照。
+//!
 //! `iss`・`aud`・`typ`・許可 `alg` の欠けた構成は型の段階で作れない。`none`・HS 系は
 //! [`Algorithm`] に変種がなく、型として表現できない（RFC 8725 3.1・3.8・3.9・3.11・3.12、
 //! RFC 9068 4 節）。
+//!
+//! # Cargo feature
+//!
+//! - `jwks-refresh`: optional の `tokio`（`time`・`sync`）のみを足す。無効時は依存も
+//!   コードもバイナリ増もゼロ。タスクはアプリが `tokio::spawn` する（本クレートは spawn しない）。
 
 // workspace lint の `unsafe_code = "warn"` と併記してよい。ソース側の forbid が
 // lint レベルを引き上げ、unsafe を構造的に排除する。

@@ -24,6 +24,9 @@ Guides セクションは fandhe-backend を**使う**ための利用者向け�
   ストリーミング送信（`handle_streaming`）の使い方
 - [graceful shutdown](../docs/guide/graceful-shutdown.md) —
   `BoundServer::run_until` による安全な停止手順と grace 上限設定
+- [JWKS の取り直し（jwks-refresh）](../docs/guide/jwks-refresh.md) —
+  `fandhe-backend-plugin-jwt` の opt-in feature。取得関数（HTTP クライアント）の
+  安全な書き方と、取り直しタスクの配線手順
 
 GitHub 上の実体は
 [`docs/guide/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/docs/guide)

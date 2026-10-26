@@ -9,6 +9,19 @@
 
 ### Added
 
+- `fandhe-backend-plugin-jwt`: opt-in の feature `jwks-refresh` を追加しました（イシュー
+  [#898](https://github.com/Fandhe-AI/fandhe-backend/issues/898)、親
+  [#892](https://github.com/Fandhe-AI/fandhe-backend/issues/892)、ルート
+  [#891](https://github.com/Fandhe-AI/fandhe-backend/issues/891)）。ゲートの外で `SharedKeySet` を
+  最新に保つ取り直しタスク（`JwksRefresher::new` が返す `RefreshTask` をアプリが `tokio::spawn` し、
+  `RefreshHandle` で停止と状態参照）、取得関数の trait `JwksFetcher`（`JwksResponse`・`FetchError`・
+  `FetchFuture`）、設定型 `RefreshConfig`（周期は必須。最小間隔・時間切れ・`max_stale`）、観測口
+  `RefreshObserver`・`RefreshEvent`・`RefreshStatus`、未知 `kid` を契機とする合図 `RefreshTrigger` と
+  `JwtAuthenticatorBuilder::jwks_refresh_trigger` が対象です。HTTP クライアントと TLS は持たず、
+  取得関数をアプリが渡します（実装例は `docs/guide/jwks-refresh.md`）。既定では無効で、有効時に
+  加わるのは workspace に既にある `tokio`（`time`・`sync`）への optional 依存だけです。追加のみで
+  型は壊れません。
+
 - `fandhe-backend-plugin-webrtc`: `WebRtcConfig::with_max_data_channels_per_connection` と
   `max_data_channels_per_connection()` を追加しました（イシュー
   [#877](https://github.com/Fandhe-AI/fandhe-backend/issues/877)、親

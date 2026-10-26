@@ -249,7 +249,7 @@ hub 共通配線（テナント境界強制・同意ゲート・outbox・監査�
 | 登録 | `Server::gate(TenantGate::new(TenantGateConfig::from_jwks_json(jwks_json, policy)?))`（`policy` は `jwt::JwtPolicy`。`iss`・`aud`・`typ`・許可 `alg` の指定が必須） |
 | `TenantGate` | `RequestGate` 実装。Bearer JWT の検証（`iss`・`aud`・`typ`・`exp`・`nbf`・署名）と `org_id` によるテナント境界強制を同期・I/O なしで行う |
 | `TenantGateConfig` | `new(SharedKeySet, JwtPolicy)` / `from_jwks_json(&str, JwtPolicy)` で構築（ポリシーなしでは作れない）。`authenticator()` で `Authenticator`（検証結果キャッシュ。ゲート通過時に温まり、ハンドラ側の再検証で RS256 署名検証を再実行しない）を取得 |
-| `SharedKeySet`（`jwt::`） | 再起動なしの鍵ローテーション対応 JWKS 保持（`snapshot` / `set`）。JWKS の HTTP 取得・自動リフレッシュは利用側の責務 |
+| `SharedKeySet`（`jwt::`） | 再起動なしの鍵ローテーション対応 JWKS 保持（`snapshot` / `set`）。JWKS の HTTP 取得は利用側の責務。取り直し（定期取得・未知 `kid` 契機）は `fandhe-backend-plugin-jwt` の opt-in feature `jwks-refresh` で使える |
 | `ConsentStore` / `OutboxStore` | ゲート通過後にハンドラ層から呼ぶストレージ抽象 trait。同梱はテスト用インメモリ実装（`InMemoryConsentStore` / `InMemoryOutboxStore`）のみで、DB 実装は利用側が提供 |
 | `AuditSink` | 越境アクセス監査ログの出力先 trait（`MemoryAuditSink` 同梱）。外部応答は正当な 404 と越境 404 で完全同一のまま、監査ログのみで区別する |
 

@@ -21,6 +21,7 @@
 | [`getting-started.md`](./getting-started.md) | crates.io からの依存追加〜最小サーバ起動〜動作確認までの最短手順 |
 | [`feature-samples.md`](./feature-samples.md) | Cargo feature（websocket / graphql / openapi / webrtc 系 / tracing / hub-wiring）ごとの最小サンプルと実行手順 |
 | [`tutorial.md`](./tutorial.md) | 最小サーバ→拡張点の実装→feature 有効化まで段階的に学ぶチュートリアル |
+| [`jwks-refresh.md`](./jwks-refresh.md) | `fandhe-backend-plugin-jwt` の `jwks-refresh` feature。JWKS 取得関数の実装例（SSRF・サイズ上限・時間切れの契約）と取り直しタスクの配線 |
 
 ## サンプルコードの原則（二重管理をしない）
 
@@ -31,6 +32,10 @@
 markdown に複製したコードは `cargo test --doc` の検証対象にならずドリフトするため
 （AI ファースト保守性、[`AGENTS.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/AGENTS.md) 参照）、変更が入った場合は
 サンプル側を更新すればガイドの記載（コマンド・パス・feature 名）はそのまま有効です。
+
+例外として [`jwks-refresh.md`](./jwks-refresh.md) の取得関数の例は、利用側が選ぶ HTTP
+クライアントに依存するためフレームワークの依存に加えられず、コンパイル検証の対象外の
+説明用コードです。フレームワーク側の API の呼び出し形は rustdoc の doc test を「正」とします。
 
 `crates/core/examples/*` は feature 単体の実装パターンを示す最小 example ですが、
 独立したプロジェクトとしてそのまま `cargo run` したい場合は
