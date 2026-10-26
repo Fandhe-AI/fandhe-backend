@@ -20,10 +20,19 @@ JWT_FORBIDDEN_IO_PATTERN='async fn|\.await|tokio::|std::fs|std::net|thread::slee
 # 禁止パターンに当たった行を `file:line:text` で出す。0 件なら何も出さない。
 # gate.rs の module doc に「`.await` なし」と書かれており、コメントを除かないと
 # 基準 3 が偽陽性で FAIL する（REQ-1 レポートの基準 E・F と同型の誤検知の前例）。
-# 引数: $1 ディレクトリ
+# 引数: $1 ディレクトリ、$2.. 走査から除くパス接頭辞（任意）。
+# 除外は「ゲートの外」の `jwks-refresh` 取り直しタスク（`src/refresh/`、設計 8.1。NFR-7 は
+# `RequestGate::check` の契約で、タスクは設計上ゲートの外）に限って使う。除外した範囲が
+# feature で閉じていることは `module_is_cfg_gated` で別途確かめる（fail-closed）。
 detect_forbidden_io_in_sources() {
-    local dir="${1}" f
+    local dir="${1}" f ex skip
+    shift
     while IFS= read -r f; do
+        skip=0
+        for ex in "$@"; do
+            case "${f}" in "${ex}"*) skip=1 ;; esac
+        done
+        [ "${skip}" = "1" ] && continue
         { grep -vnE '^[[:space:]]*//' "${f}" || true; } \
             | { grep -E "${JWT_FORBIDDEN_IO_PATTERN}" || true; } \
             | sed "s|^|${f}:|"
@@ -103,4 +112,46 @@ workflow_job_runs_script() {
         in_job && /run:/ && index($0, script) { found = 1 }
         END { exit(found ? 0 : 1) }
     ' "${1}"
+}
+
+# `[dependencies]` の指定依存が feature でのみ有効になる optional 依存かを判定する（終了コード 0/1）。
+# 次の 3 点をすべて満たすときだけ成功する（`jwks-refresh` の tokio、設計 8.2）:
+#   1. `[dependencies]` の `<dep>` が `optional = true`
+#   2. `[features]` の `<feature>` が `"dep:<dep>"` を含む
+#   3. `default` に `<feature>` が含まれない
+# 引数: $1 Cargo.toml、$2 依存名、$3 feature 名
+optional_dep_gated_by_feature() {
+    awk -v dep="${2}" -v feat="${3}" '
+        /^\[/ { sect = $0; next }
+        /^[[:space:]]*#/ { next }
+        sect == "[dependencies]" && $0 ~ "^" dep "[[:space:]]*=" {
+            if ($0 ~ /optional[[:space:]]*=[[:space:]]*true/) optional = 1
+        }
+        sect == "[features]" && $0 ~ "^" feat "[[:space:]]*=" {
+            if (index($0, "\"dep:" dep "\"")) dep_in_feature = 1
+        }
+        sect == "[features]" && /^default[[:space:]]*=/ {
+            if (index($0, "\"" feat "\"")) in_default = 1
+        }
+        END { exit((optional && dep_in_feature && !in_default) ? 0 : 1) }
+    ' "${1}"
+}
+
+# lib.rs で指定モジュールの宣言が `#[cfg(feature = "<feature>")]` の直後に置かれているか判定する
+# （終了コード 0/1）。コメント行は無視する。
+# 引数: $1 lib.rs、$2 モジュール名、$3 feature 名
+module_is_cfg_gated() {
+    awk -v mod="${2}" -v feat="${3}" '
+        /^[[:space:]]*\/\// { next }
+        $0 ~ "^(pub )?mod " mod ";" { if (prev_cfg) ok = 1; prev_cfg = 0; next }
+        { prev_cfg = (index($0, "#[cfg(feature = \"" feat "\")]") > 0) }
+        END { exit(ok ? 0 : 1) }
+    ' "${1}"
+}
+
+# `cargo tree -e features -i tokio --prefix none` の出力から、tokio 自身の feature 行
+# （`tokio feature "..."`）だけを重複なく並べて出す。feature 有無の比較に使う。
+# 引数: $1 出力ファイル
+tokio_feature_lines() {
+    { grep -E '^tokio feature "' "${1}" || true; } | sed 's/ (\*)$//' | sort -u
 }
