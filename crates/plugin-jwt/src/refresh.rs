@@ -7,13 +7,14 @@
 //! 本モジュールの trait を介してアプリから JWKS 本文を
 //! 受け取り、設定型の値で周期・最小間隔・時間切れを決める。本クレートは HTTP
 //! クライアントも TLS も持たない（取得はアプリ側の責務。除外事項 #8・#11）。
+//! 未知 `kid` を契機とする合図の送り口は [`RefreshTrigger`]。
 //! 設計は `docs/design/jwt-verify-plugin.md` 8 章を参照。
 
 mod task;
 
 pub use task::{
     JwksRefresher, RefreshEvent, RefreshFailure, RefreshHandle, RefreshObserver, RefreshStatus,
-    RefreshTask,
+    RefreshTask, RefreshTrigger,
 };
 
 use std::fmt;
