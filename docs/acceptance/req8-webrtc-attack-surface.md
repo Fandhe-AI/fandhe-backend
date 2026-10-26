@@ -458,3 +458,14 @@ CONNECTIONS=128`）・同一判定ロジック（`evaluate_nfr6_ratio`、閾値�
 （ホスト名を含む）は `POST /rtc/offer` が `500` で拒否する（`tests/attack_surface.rs` の
 `empty_udp_bind_addrs_is_rejected_fail_closed_with_500` / `hostname_udp_bind_addr_is_rejected_fail_closed_with_500`
 で再アサート）。
+
+## 2026-10-27 追記（データチャネル送信バッファ上限、イシュー #871 / #874 / #876）
+
+DoS 対策として、データチャネル 1 本あたりの送信バッファ上限 `WebRtcConfig::data_channel_send_buffer_limit`
+を追加し、既定を 1 MiB とした。0.17 系・0.21 系の webrtc 自体の既定は無制限で、相手の受信が遅いと
+`echo_loop` の送信が積み上がりメモリを使い続けうる。上限到達時はバックプレッシャ（`send` が空きを待つ）で、
+エラーも切断も起きない。`0` を指定すると無制限に戻せるが、このリスクを再び負う。メモリ上限は
+チャネル数 × 上限 × 接続数（`max_peer_connections`）に比例する。
+
+検証は #875 の統合テスト（バックプレッシャ）と `config.rs` のテスト・doc test が担う。メモリ使用量や
+スループットへの影響の実測は本イシューでは行っていない（未実施）。

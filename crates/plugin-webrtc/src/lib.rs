@@ -31,6 +31,12 @@
 //! 到着を待ち受けるエコーハンドラを登録したうえで、非トリクル ICE による SDP Answer を
 //! 返す。
 //!
+//! エコーは受信したメッセージをそのまま送り返す。データチャネルの送信バッファが
+//! [`WebRtcConfig::data_channel_send_buffer_limit`]（既定 1 MiB、チャネル 1 本あたり）に達すると、
+//! `send` は空きが出るまで待つバックプレッシャになる（待機中は受信も止まる。エラーも切断も起きない）。
+//! `0` で無制限に戻せるが、遅い相手によるメモリ枯渇のリスクを再び負う。上限は
+//! [`WebRtcConfig::with_data_channel_send_buffer_limit`] で変更する。
+//!
 //! WebRTC の DataChannel は SDP 交換後、SCTP/DTLS/ICE の独立した UDP セッション上で
 //! 動作し、シグナリングに使った HTTP/TCP 接続そのものを奪取する必要がない。そのため
 //! [`crate::handler::try_handle_rtc_offer`] は `UpgradeHandler`（接続奪取）ではなく、
