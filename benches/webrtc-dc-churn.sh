@@ -81,7 +81,8 @@ summarize() {
         printf "post_close_first_rss_kb=%d\npost_close_min_rss_kb=%d\npost_close_last_rss_kb=%d\n", post[1], mn, last
       }
     }' "$dir/rss.csv"
-  grep -E '^[0-9]+,' "$dir/client.csv" | sed 's/^[0-9]*,//' | grep -E '^[0-9]+,[0-9]+,' | tail -n 1 |
+  # 数値行が 1 行もなくても（client が早期終了した場合）pipefail で落とさない。
+  { grep -E '^[0-9]+,' "$dir/client.csv" | sed 's/^[0-9]*,//' | grep -E '^[0-9]+,[0-9]+,' | tail -n 1 || true; } |
     awk -F, '{ printf "cycles=%s\ncreate_errors=%s\ntimeouts=%s\nfirst_echo_ok(last)=%s\nstate(last)=%s\nclient_dc_stats(last)=%s\n", $2, $3, $4, $5, $6, $7 }'
 }
 
@@ -133,7 +134,7 @@ run_mode() {
   nap "$IDLE_SEC"
   date +%s >"$dir/t_client_start"
   : >"$dir/client.csv"
-  # client の標準出力へ行ごとに epoch を付ける（PC_CLOSED の時刻を close 境界に使う）。
+  # client の標準出力へ行ごとに epoch を付ける（PC_CLOSED / PC_KEPT の時刻を close 境界に使う）。
   # client の終了コードは握りつぶさず記録し、後始末後に summary へ明示して非ゼロ終了する。
   local client_rc=0
   set +e
@@ -143,7 +144,7 @@ run_mode() {
   client_rc="${PIPESTATUS[0]}"
   set -e
   local t_close
-  t_close="$(grep ',PC_CLOSED$' "$dir/client.csv" | head -n 1 | cut -d, -f1 || true)"
+  t_close="$(grep -E ',(PC_CLOSED|PC_KEPT)$' "$dir/client.csv"| head -n 1 | cut -d, -f1 || true)"
   [ -n "$t_close" ] || t_close="$(date +%s)"
   echo "$t_close" >"$dir/t_close"
 
