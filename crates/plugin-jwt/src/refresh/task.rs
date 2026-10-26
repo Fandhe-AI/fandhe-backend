@@ -24,7 +24,7 @@ use tokio::sync::Notify;
 use tokio::time::{Instant, Sleep, sleep_until, timeout};
 
 use super::{FetchError, FetchFuture, JwksFetcher, JwksResponse, RefreshConfig};
-use crate::{JwksError, KeySet, SharedKeySet};
+use crate::{JwksError, KeySet, SharedKeySet, UnknownKeyEvent, UnknownKeyNotifier};
 
 /// 取り直し 1 回の失敗の分類。本文・`kid`・URL を持たない（ログ安全）。
 ///
@@ -364,6 +364,16 @@ impl RefreshHandle {
         self.shared.stop.notify_one();
     }
 
+    /// 未知 `kid` を契機とする取り直しの合図ハンドルを得る（`Clone` 可）。
+    ///
+    /// 得たハンドルはタスクの寿命に影響しない。
+    #[must_use]
+    pub fn trigger(&self) -> RefreshTrigger {
+        RefreshTrigger {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
     /// 現在の状態のスナップショット。
     #[must_use]
     pub fn status(&self) -> RefreshStatus {
@@ -372,6 +382,64 @@ impl RefreshHandle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+}
+
+/// 未知 `kid` を契機に取り直しタスクへ合図を送る軽量ハンドル。`Clone` できる。
+///
+/// 対象 feature: `jwks-refresh`。[`RefreshHandle::trigger`] で得る。合図は
+/// `tokio::sync::Notify` の許可 1 つに畳まれ、ブロックも I/O もしない（ゲートの
+/// 同期・I/O なし契約を守る）。最小間隔より短い間に届いた合図は、タスクが
+/// 「直前の取得開始 + 最小間隔」の 1 回の取得にまとめる（設計 8.7）。
+///
+/// # 注意
+///
+/// - 通知に含まれる `kid` は信頼しない値であり、本型は読まない（取得先は構築時に固定）。
+/// - 停止後（[`RefreshHandle::shutdown`] / drop 後）の合図は何もしない。
+/// - 本型を保持してもタスクは生きない・止まらない（停止は [`RefreshHandle`] が担う）。
+/// - [`UnknownKeyNotifier`] も実装するが、`unknown_key_notifier` で登録すると
+///   `NotifyThrottle`（既定 10 秒・秒精度）の後ろに並び、取り直しの遅延が延びる。
+///   認証器へは `JwtAuthenticatorBuilder::jwks_refresh_trigger` で登録すること。
+///
+/// # Examples
+///
+/// ```
+/// # use fandhe_backend_plugin_jwt::{FetchFuture, JwksFetcher, JwksRefresher, JwksResponse, KeySet, RefreshConfig, SharedKeySet};
+/// # struct F;
+/// # impl JwksFetcher for F {
+/// #     fn fetch(&self) -> FetchFuture<'_> { Box::pin(async { Ok(JwksResponse::new(String::new(), None)) }) }
+/// # }
+/// # let cfg = RefreshConfig::new(std::time::Duration::from_secs(60)).unwrap();
+/// let (_task, handle) = JwksRefresher::new(SharedKeySet::new(KeySet::empty()), F, cfg);
+/// let trigger = handle.trigger();
+/// handle.shutdown();
+/// // 停止後でも保持・複製できる。
+/// let _ = trigger.clone();
+/// ```
+#[derive(Clone)]
+pub struct RefreshTrigger {
+    shared: Arc<Shared>,
+}
+
+impl fmt::Debug for RefreshTrigger {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RefreshTrigger")
+    }
+}
+
+impl RefreshTrigger {
+    /// 合図を 1 つ送る。停止後は何もしない。ブロックせず panic もしない。
+    pub(crate) fn fire(&self) {
+        if !self.shared.is_stopped() {
+            self.shared.wake.notify_one();
+        }
+    }
+}
+
+/// `kid` は読まず合図だけを送る。契約と登録先の注意は [`RefreshTrigger`] を参照。
+impl UnknownKeyNotifier for RefreshTrigger {
+    fn notify(&self, _event: &UnknownKeyEvent<'_>) {
+        self.fire();
     }
 }
 
@@ -638,12 +706,13 @@ mod tests {
             Count(Arc::clone(&n)),
             cfg,
         );
+        let trigger = handle.trigger();
         let join = tokio::spawn(task);
         tokio::time::sleep(Duration::from_millis(1)).await;
         assert_eq!(n.load(Ordering::SeqCst), 1);
         // 下限（10 秒）内に合図を何度送っても、下限が来るまで取得しない。
         for _ in 0..5 {
-            handle.shared.wake.notify_one();
+            trigger.fire();
             tokio::task::yield_now().await;
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -652,5 +721,38 @@ mod tests {
         assert_eq!(n.load(Ordering::SeqCst), 2);
         drop(handle);
         join.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn notifier_ignores_kid_and_stops_after_shutdown() {
+        use std::sync::atomic::AtomicUsize;
+        struct Count(Arc<AtomicUsize>);
+        impl JwksFetcher for Count {
+            fn fetch(&self) -> FetchFuture<'_> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(JwksResponse::new(r#"{"keys":[]}"#.into(), None)) })
+            }
+        }
+        let n = Arc::new(AtomicUsize::new(0));
+        let cfg = RefreshConfig::new(Duration::from_secs(3600)).unwrap();
+        let (task, handle) = JwksRefresher::new(
+            SharedKeySet::new(KeySet::empty()),
+            Count(Arc::clone(&n)),
+            cfg,
+        );
+        let trigger = handle.trigger();
+        assert_eq!(format!("{trigger:?}"), "RefreshTrigger");
+        let join = tokio::spawn(task);
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        trigger.notify(&UnknownKeyEvent::new("attacker-kid", 0));
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        assert_eq!(n.load(Ordering::SeqCst), 2);
+        handle.shutdown();
+        join.await.unwrap();
+        for _ in 0..100 {
+            trigger.notify(&UnknownKeyEvent::new("x", 0));
+        }
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        assert_eq!(n.load(Ordering::SeqCst), 2);
     }
 }
