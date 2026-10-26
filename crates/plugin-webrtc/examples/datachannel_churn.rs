@@ -196,7 +196,12 @@ async fn run_client(addr: &str) {
         .unwrap_or(4);
     let label_bytes = (env_u64("LABEL_BYTES", 8) as usize).min(60_000);
     let interval = Duration::from_secs(env_u64("REPORT_INTERVAL_SEC", 10));
-    let close_at_end = env_u64("CLOSE_PC_AT_END", 1) != 0;
+    // 0 は「接続を維持する」を意味する有効値のため env_u64（0 を既定値へ戻す）を使わない。
+    let close_at_end = env::var("CLOSE_PC_AT_END")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(1)
+        != 0;
     let post_close_idle = Duration::from_secs(env_u64("POST_CLOSE_IDLE_SEC", 60));
 
     let mut media_engine = MediaEngine::default();

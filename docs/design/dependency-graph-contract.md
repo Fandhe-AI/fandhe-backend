@@ -925,6 +925,22 @@ E（閉包違反候補）と判定された（後続コミットで `examples/wi
    メタデータの解除だけである。plugin-csrf は plugin → core / http（通常依存）と routes（dev 依存）
    のみで plugin → plugin の辺を持たず、`scripts/dep-direction-check.sh` の許可パターンに収まる
 
+### 4.21 記載例（#887、拒否データチャネル大量開閉の長時間検証スクリプト）
+
+`fandhe-backend-plugin-webrtc` の上限超過で拒否したデータチャネルを大量に開閉したときの
+残留とメモリ使用量を長時間検証する変更で、4.3 節〜4.6 節・4.18 節と同一の理由
+（`benches/*` が D 未対応）により以下 2 件が E（閉包違反候補）と判定された。
+
+1. **対象コミット/PR**: PR #911（#887）
+2. **E ファイルパス**:
+   - `benches/reports/issue887-webrtc-dc-churn.md`
+   - `benches/webrtc-dc-churn.sh`
+3. **閉じない理由**: 4.3 節〜4.6 節と同一の運用上のギャップ（`benches/*` が D 未対応）
+   により E 判定となる、長時間検証スクリプト（RSS 採取・結果集計）と実測結果レポートである
+4. **正当性根拠**: いずれも拡張点・依存方向（1 節）を変更せず、既存の公開 API
+   （`WebRtcConfig`）を example 経由で外部から駆動して計測・記録するのみである。
+   `benches/*` を D に加える是正は 4.3 節〜4.6 節と同一の別 Issue 対象とする
+
 ## 5. `fandhe-backend-plugin-openapi` の非該当理由
 
 `fandhe-backend-plugin-openapi` は 3 拡張点 trait・`try_intercept` 固定シームのいずれも

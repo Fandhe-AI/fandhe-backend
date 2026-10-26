@@ -154,6 +154,7 @@ run_mode() {
 case "${1:-}" in
   --detach)
     dir="${OUT_DIR:-$(mktemp -d)}"
+    mkdir -p "$dir"
     OUT_DIR="$dir" nohup bash "$0" >"$dir/run.log" 2>&1 </dev/null &
     echo "OUT_DIR=$dir"
     ;;
