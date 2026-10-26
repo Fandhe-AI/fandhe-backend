@@ -620,16 +620,24 @@ impl DataChannelLimiter {
 
     /// 空きがあるときだけ原子的に 1 枠確保する（CAS。並行到着でも上限を超えない）。
     fn try_acquire(self: &Arc<Self>) -> Option<DataChannelPermit> {
-        self.open
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                if self.max != 0 && n >= self.max {
-                    None
-                } else {
-                    n.checked_add(1)
-                }
-            })
-            .ok()
-            .map(|_| DataChannelPermit(Arc::clone(self)))
+        // `fetch_update` は新しい toolchain で deprecated（`try_update` へ改名）のため、
+        // toolchain 差に依存しない `compare_exchange_weak` ループで同じ CAS を実装する。
+        let mut current = self.open.load(Ordering::Acquire);
+        loop {
+            if self.max != 0 && current >= self.max {
+                return None;
+            }
+            let next = current.checked_add(1)?;
+            match self.open.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(DataChannelPermit(Arc::clone(self))),
+                Err(actual) => current = actual,
+            }
+        }
     }
 }
 
