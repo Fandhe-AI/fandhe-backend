@@ -127,7 +127,7 @@ cargo test -p fandhe-backend-plugin-jwt --features jwks-refresh --test refresh_g
 |------|------|------|
 | G | 取り直しタスクの時刻制御テスト（周期・`max-age`・下限・失敗時の保持・`max_stale`・未知 `kid` のまとめ） | `--features jwks-refresh --test refresh_task` の 13 件を名前単位で照合 |
 | H-R1 | JWKS に無い `kid` を大量に送っても、期間 T の取得の開始回数が「T ÷ 下限 の切り上げ + 定期の取得回数」以下で、偽トークンの受理が 0 件 | `--test refresh_gate` の `r1_*` 5 件 |
-| H-R2 | 事前公開なしで鍵を切り替えた後、切替の時点ではその場で 401、「下限 + 取得にかかる時間」以内に受理し始める | 同 `r2_*` 3 件 |
+| H-R2 | 事前公開なしで鍵を切り替えた後、切替の時点ではその場で 401、「下限 + 取得にかかる時間」以内に受理し始める | 同 `r2_*` 4 件 |
 | H-R3（補足） | 事前公開 → 署名鍵の切替 → 旧鍵の退役という正しい運用では、正当なトークンの拒否が 0 件で未知 `kid` による追加の取得もない | 同 `r3_*` 1 件 |
 | C・D（見直し） | 同期・I/O なし（NFR-7）と依存ゼロ | 下記「検証器の見直し」 |
 
@@ -150,7 +150,7 @@ cargo test -p fandhe-backend-plugin-jwt --features jwks-refresh --test refresh_g
 | PASS | D | 許可集合（tokio は optional + `dep:` + default 外のときのみ許可）。設計 8.2 の (a)(b) を `cargo tree` で判定して PASS。`forbid(unsafe_code)`・`unsafe-baseline` は 0 |
 | PASS | D(e) | `cargo audit` 既知脆弱性 0 件／`cargo deny check` 違反 0 件 |
 | PASS | G | `refresh_task` の 13 件が名前単位で ok |
-| PASS | H | `refresh_gate` の 9 件が名前単位で ok |
+| PASS | H | `refresh_gate` の 10 件が名前単位で ok |
 | SKIP | F 実行 | opt-in。CI の `fuzz-smoke` で担保（未検証） |
 | WARN | NFR-6 | `oha` 未導入のため未計測 |
 
@@ -209,7 +209,7 @@ cargo test -p fandhe-backend-plugin-jwt --features jwks-refresh --test refresh_g
 
 - (a) `cargo tree -p fandhe-backend-plugin-jwt -e normal --depth 1`: 無効時は `tokio` への直接の辺なし、
   `--features jwks-refresh` で現れる（陽性対照）。
-- (b) 同 `-e normal` の全体のパッケージ集合は有効・無効で同一。`cargo tree -e features -i tokio` の tokio の
+- (b) 同 `-e normal` の全体のパッケージ集合は有効・無効で同一。`cargo tree -e normal,build,features -i tokio`（dev 依存を除く） の tokio の
   feature 集合も同一（`core` が既に `time`・`sync` を有効にしているため）。`jwt-verify-accept.sh` が自動判定する。
 - (c) feature なし・`--features jwks-refresh`・`--all-features` の 3 構成で `cargo build -p fandhe-backend-plugin-jwt`
   と `RUSTDOCFLAGS="-D warnings" cargo doc -p fandhe-backend-plugin-jwt --no-deps` が成功。feature なしと

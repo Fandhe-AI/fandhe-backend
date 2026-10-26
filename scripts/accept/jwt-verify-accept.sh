@@ -57,7 +57,9 @@ H_TESTS=(r1_unknown_kid_flood_is_bounded_by_min_interval
     r1_bound_holds_over_every_half_open_window r1_bound_holds_with_failures_and_slow_fetches
     r1_bound_holds_with_non_default_min_interval r1_shared_trigger_across_two_gates_keeps_one_bound
     r2_unannounced_rotation_is_followed_within_min_interval_plus_fetch_time
-    r2_follow_bound_for_various_switch_offsets r2_attacker_noise_does_not_delay_following
+    r2_follow_bound_for_various_switch_offsets
+    r2_switch_during_in_flight_fetch_is_followed_by_next_fetch
+    r2_attacker_noise_does_not_delay_following
     r3_announced_rotation_has_no_verification_failures)
 
 echo "=== REQ-16 受け入れ検証（汎用 JWT 検証プラグイン、#823） ==="
@@ -179,15 +181,16 @@ check_jwks_refresh_dep_cost() {
     if grep -qE '^tokio ' "${off_d}"; then echo "feature 無効時に tokio への直接の辺がある"; return; fi
     if ! grep -qE '^tokio ' "${on_d}"; then echo "feature 有効時にも tokio の辺が現れない（陽性対照が成立しない）"; return; fi
     # (b) パッケージ集合・tokio の feature 集合が変わらない。
-    cargo tree -p "${PKG}" -e normal --prefix none 2>/dev/null | sort -u >"${d}/off.all" || true
-    cargo tree -p "${PKG}" --features jwks-refresh -e normal --prefix none 2>/dev/null | sort -u >"${d}/on.all" || true
+    # パイプラインの失敗（cargo tree の非 0 終了）は部分出力が残っても判定不能にする（pipefail を局所適用）。
+    ( set -o pipefail; cargo tree -p "${PKG}" -e normal --prefix none 2>/dev/null | sort -u >"${d}/off.all" ) || { echo "判定不能: 全体の cargo tree（無効）が失敗"; return; }
+    ( set -o pipefail; cargo tree -p "${PKG}" --features jwks-refresh -e normal --prefix none 2>/dev/null | sort -u >"${d}/on.all" ) || { echo "判定不能: 全体の cargo tree（有効）が失敗"; return; }
     [ -s "${d}/off.all" ] && [ -s "${d}/on.all" ] || { echo "判定不能: 全体の cargo tree が空"; return; }
     if ! diff -q "${d}/off.all" "${d}/on.all" >/dev/null; then
         echo "feature 有効化でパッケージ集合が変わる: $(diff "${d}/off.all" "${d}/on.all" | grep '^[<>]' | head -3 | tr '\n' ' ')"
         return
     fi
-    cargo tree -p "${PKG}" -e features -i tokio --prefix none >"${d}/off.feat" 2>/dev/null || { echo "判定不能: tokio の feature 木（無効）が失敗"; return; }
-    cargo tree -p "${PKG}" --features jwks-refresh -e features -i tokio --prefix none >"${d}/on.feat" 2>/dev/null || { echo "判定不能: tokio の feature 木（有効）が失敗"; return; }
+    cargo tree -p "${PKG}" -e normal,build,features -i tokio --prefix none >"${d}/off.feat" 2>/dev/null || { echo "判定不能: tokio の feature 木（無効）が失敗"; return; }
+    cargo tree -p "${PKG}" --features jwks-refresh -e normal,build,features -i tokio --prefix none >"${d}/on.feat" 2>/dev/null || { echo "判定不能: tokio の feature 木（有効）が失敗"; return; }
     tokio_feature_lines "${d}/off.feat" >"${d}/off.fl"
     tokio_feature_lines "${d}/on.feat" >"${d}/on.fl"
     [ -s "${d}/off.fl" ] || { echo "判定不能: tokio の feature 行が空"; return; }
