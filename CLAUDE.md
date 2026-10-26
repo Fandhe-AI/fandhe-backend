@@ -144,7 +144,7 @@ fandhe-backend/
 │   │   │                            # RS256/ES256 の JWK 分類・hub-wiring 移行方針・
 │   │   │                            # REQ-16 受け入れ基準と Phase 2・3 issue の対応表
 │   │   │                            # 8 章に `jwks-refresh`（JWKS の取り直し、#893）の設計と Phase 1 の対応表
-│   │                            # 9 章に `dpop`（DPoP 結合トークンの検証、#900）の設計と Phase 2 の対応表
+│   │   │                            # 9 章に `dpop`（DPoP 結合トークンの検証、#900）の設計と Phase 2 の対応表
 │   │   └── diagnostics-sink.md  # ライブラリ内部の実行時診断（accept 失敗・
 │   │                            # TCP_NODELAY 設定失敗・graceful shutdown / rebind の
 │   │                            # grace 超過強制クローズの 4 箇所）を `eprintln!` 直書きから
