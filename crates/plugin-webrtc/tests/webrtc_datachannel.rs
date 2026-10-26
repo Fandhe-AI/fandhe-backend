@@ -17,11 +17,17 @@ mod common;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use std::sync::Arc;
+
+use bytes::BytesMut;
 use fandhe_backend_http::buffer::RecvBuffer;
 use fandhe_backend_http::connection::read_request;
 use fandhe_backend_plugin_webrtc::{WebRtcConfig, try_handle_rtc_offer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+
+use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelState};
+use webrtc::peer_connection::RTCPeerConnectionState;
 
 use common::{TestClient, watch_data_channel};
 
@@ -58,6 +64,21 @@ async fn spawn_server(config: WebRtcConfig) -> SocketAddr {
 
 /// `POST /rtc/offer` を送り、`(ステータス行, レスポンスボディ)` を返す。
 async fn post_offer(addr: SocketAddr, offer_json: &str) -> (String, String) {
+    let (status_line, _headers, body) = post_offer_full(addr, offer_json).await;
+    (status_line, body)
+}
+
+/// ヘッダ部から名前（大文字小文字非区別）に一致する値を返す。
+fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
+    headers.lines().find_map(|line| {
+        let (k, v) = line.split_once(':')?;
+        k.trim().eq_ignore_ascii_case(name).then(|| v.trim())
+    })
+}
+
+/// `POST /rtc/offer` を送り、`(ステータス行, ヘッダ部, レスポンスボディ)` を返す。
+/// ヘッダ部はステータス行を除いた生のヘッダ行（`\r\n` 区切り）。
+async fn post_offer_full(addr: SocketAddr, offer_json: &str) -> (String, String, String) {
     let mut stream = TcpStream::connect(addr).await.unwrap();
     let raw = format!(
         "POST /rtc/offer HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -80,15 +101,10 @@ async fn post_offer(addr: SocketAddr, offer_json: &str) -> (String, String) {
     }
     let text = String::from_utf8(buf).unwrap();
     let mut parts = text.splitn(2, "\r\n\r\n");
-    let status_line = parts
-        .next()
-        .unwrap()
-        .lines()
-        .next()
-        .unwrap_or("")
-        .to_string();
+    let head = parts.next().unwrap();
+    let (status_line, headers) = head.split_once("\r\n").unwrap_or((head, ""));
     let body = parts.next().unwrap_or("").to_string();
-    (status_line, body)
+    (status_line.to_string(), headers.to_string(), body)
 }
 
 /// ローカル 2 ピア（クライアント側は本テスト内で構築、サーバ側は
@@ -230,4 +246,187 @@ async fn invalid_offer_over_http_returns_400() {
             .unwrap();
     assert!(status_line.starts_with("HTTP/1.1 400"), "{status_line}");
     assert_eq!(body, r#"{"error":"invalid_offer_json"}"#);
+}
+
+// ---------------------------------------------------------------------------
+// 送信バッファ上限超過時のバックプレッシャ（イシュー #875）
+// ---------------------------------------------------------------------------
+
+/// バックプレッシャ検証で送るメッセージ数。1 通 1 KiB で合計約 8 MiB となり、相手の SCTP
+/// 受信窓・イベントキューに収まらない量にする（内部定数には依存せず「十分に大きい」だけを
+/// 前提にする）。
+const BP_MESSAGES: u64 = 8192;
+/// 1 通のサイズ。先頭 8 バイトにビッグエンディアンの連番を入れ、残りは埋め草。
+const BP_MESSAGE_SIZE: usize = 1024;
+/// サーバ側 `echo_loop` を詰まらせるための送信バッファ上限。
+const BP_SEND_LIMIT: usize = 64 * 1024;
+
+/// ローカル 2 ピアでデータチャネルを確立し、`OnOpen` を消費した状態で返す。
+///
+/// `watch_data_channel` は別タスクで `poll` を回し続けて受信を止められないため使わない。
+/// 本検証ではクライアントが `poll` を止めること自体が前提（相手が読まない状況を作る）なので、
+/// 呼び出し側が `dc.poll()` を直接駆動する。
+async fn establish(config: WebRtcConfig) -> (TestClient, Arc<dyn DataChannel>) {
+    let addr = spawn_server(config).await;
+    let client = TestClient::new().await;
+    let dc = client
+        .pc
+        .create_data_channel("backpressure", None)
+        .await
+        .unwrap();
+    let offer_json = client.offer_json().await;
+    let (status_line, headers, answer_body) =
+        tokio::time::timeout(Duration::from_secs(10), post_offer_full(addr, &offer_json))
+            .await
+            .unwrap();
+    assert!(
+        status_line.starts_with("HTTP/1.1 200 OK"),
+        "unexpected status: {status_line}, body: {answer_body}"
+    );
+    let content_type = header_value(&headers, "content-type")
+        .unwrap_or_else(|| panic!("Content-Type ヘッダがない: {headers}"));
+    assert!(
+        content_type.starts_with("application/json"),
+        "unexpected Content-Type: {content_type}"
+    );
+    let content_length = header_value(&headers, "content-length")
+        .unwrap_or_else(|| panic!("Content-Length ヘッダがない: {headers}"));
+    assert_eq!(
+        content_length,
+        answer_body.len().to_string(),
+        "Content-Length が実ボディ長と一致しない"
+    );
+    client.apply_answer(&answer_body).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = dc.poll().await {
+            if matches!(event, DataChannelEvent::OnOpen) {
+                return;
+            }
+        }
+        panic!("data channel closed before open");
+    })
+    .await
+    .expect("data channel did not open in time");
+    (client, dc)
+}
+
+/// 連番付きメッセージ `0..BP_MESSAGES` を全て積む（クライアント側の送信上限は無制限で、
+/// `send` は待たない）。
+async fn send_numbered(dc: &Arc<dyn DataChannel>) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        for i in 0..BP_MESSAGES {
+            let mut buf = BytesMut::zeroed(BP_MESSAGE_SIZE);
+            buf[..8].copy_from_slice(&i.to_be_bytes());
+            dc.send(buf).await.unwrap();
+        }
+    })
+    .await
+    .expect("sending queued messages timed out");
+}
+
+/// `outstanding_bytes` を 200 ms 間隔で採取し、直近 2 秒（10 サンプル）の変動が 16 KiB 以内に
+/// なる（= 進行が止まった）まで待って、その最小値を返す。
+async fn wait_outstanding_stable(dc: &Arc<dyn DataChannel>) -> usize {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let mut samples: Vec<usize> = Vec::new();
+        loop {
+            samples.push(dc.outstanding_bytes().await.unwrap());
+            if samples.len() >= 10 {
+                let recent = &samples[samples.len() - 10..];
+                let (min, max) = (*recent.iter().min().unwrap(), *recent.iter().max().unwrap());
+                if max - min <= 16 * 1024 {
+                    return min;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("outstanding_bytes did not stabilise in time")
+}
+
+/// 上限 `BP_SEND_LIMIT` のサーバへ、クライアントが受信しないまま大量送信すると、サーバの
+/// エコーが止まる一方で接続・データチャネルは切れず、受信を再開すると欠落・重複・順序入れ
+/// 替えなく全件のエコーが戻ることを確認する（`echo_loop` のバックプレッシャ契約）。
+///
+/// 「エコーが止まった」ことは、クライアント側の `outstanding_bytes`（SCTP が未解放の送信
+/// バイト数）が総送信量の半分以上で安定することで観測する。SCTP の窓サイズ等の内部定数には
+/// 依存しない比率判定にしている。
+#[tokio::test]
+async fn send_buffer_limit_applies_backpressure_without_disconnecting() {
+    let (client, dc) =
+        establish(WebRtcConfig::new().with_data_channel_send_buffer_limit(BP_SEND_LIMIT)).await;
+
+    send_numbered(&dc).await;
+
+    let total = BP_MESSAGES as usize * BP_MESSAGE_SIZE;
+    let stalled = wait_outstanding_stable(&dc).await;
+    assert!(
+        stalled >= 1024 * 1024,
+        "エコーが詰まっていない: outstanding={stalled}, total={total}"
+    );
+
+    // 詰まったまま複数の再送タイマ周期をまたいでも、接続は生きたまま進行しない。
+    for _ in 0..25 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(client.state(), RTCPeerConnectionState::Connected);
+        assert_eq!(dc.ready_state().await.unwrap(), RTCDataChannelState::Open);
+        let now = dc.outstanding_bytes().await.unwrap();
+        assert!(
+            now + 16 * 1024 >= stalled,
+            "詰まっている間に outstanding が減った: {now} < {stalled}"
+        );
+    }
+
+    // 受信を再開すると、全件が連番どおりに戻る。
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let mut expected = 0u64;
+        while expected < BP_MESSAGES {
+            match dc.poll().await {
+                Some(DataChannelEvent::OnMessage(msg)) => {
+                    assert_eq!(msg.data.len(), BP_MESSAGE_SIZE);
+                    let seq = u64::from_be_bytes(msg.data[..8].try_into().unwrap());
+                    assert_eq!(seq, expected, "欠落・重複・順序入れ替えを検出");
+                    expected += 1;
+                }
+                Some(DataChannelEvent::OnClose) | None => {
+                    panic!("data channel closed after {expected} echoes")
+                }
+                Some(_) => {}
+            }
+        }
+    })
+    .await
+    .expect("echo did not resume in time");
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while dc.outstanding_bytes().await.unwrap() > 0 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("outstanding_bytes did not drain after resume");
+    assert_eq!(client.state(), RTCPeerConnectionState::Connected);
+
+    let _ = client.pc.close().await;
+}
+
+/// 対照実験: 送信バッファ上限を 0（無制限）にすると、同じ量をクライアントが受信しないまま
+/// 送っても、サーバが全件を読み切るためクライアントの `outstanding_bytes` が 0 まで減る。
+/// 主テストの詰まりが受信側の都合ではなく送信バッファ上限によるものだと示す。
+#[tokio::test]
+async fn unbounded_send_buffer_lets_client_outstanding_drain_without_reading() {
+    let (client, dc) = establish(WebRtcConfig::new().with_data_channel_send_buffer_limit(0)).await;
+
+    send_numbered(&dc).await;
+
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while dc.outstanding_bytes().await.unwrap() > 0 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("outstanding_bytes did not drain with unbounded server buffer");
+
+    let _ = client.pc.close().await;
 }
