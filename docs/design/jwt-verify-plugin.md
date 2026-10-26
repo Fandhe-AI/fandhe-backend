@@ -5,7 +5,8 @@
 除外事項（第 8・10・11 項）と `docs/spec/requests/fandhe-auth.md`。
 
 > ドラフト。最終承認は PR レビューで行う。本書は設計判断の記録のみで、コード変更を
-> 含まない。実装は Phase 2（#812〜#818）・Phase 3（#819〜#823）が担う。
+> 含まない。実装は Phase 2（#812〜#818）・Phase 3（#819〜#823）が担う。`jwks-refresh`
+> （追加要件、ツリー #891）の設計は 8 章に記録し、実装は Phase 1（#894〜#898）が担う。
 
 ## 1. 背景・目的
 
@@ -163,7 +164,8 @@ I/O しない・panic しない」で、panic 境界は diagnostics-sink 5 節�
 `kid` は攻撃者制御値なので、(i) ヘッダ `kid` に長さ上限（例 256 B）を設け超過は `Malformed`
 で拒否し通知しない、(ii) イベントでは信頼できない値と明記する、(iii) 本 crate 側で
 `AtomicU64` による最小通知間隔（既定 10 秒、設定可）で通知をまとめる。未知 `kid` のトークンは
-その場で 401。鍵の取り直しはアプリの非同期タスクが差し替え API で行う。
+その場で 401。鍵の取り直しはアプリの非同期タスクが差し替え API で行う（`jwks-refresh` feature 有効時は
+feature のタスクとトリガーでも行える。8 章）。
 
 **理由**: ゲートの同期・I/O なし契約（NFR-7、`RequestGate` の doc）を守り、通知の嵐が DoS を
 増幅しないようにする。**影響先**: #814・#816。
@@ -229,7 +231,8 @@ JSON・base64 の自前実装は攻撃表面を増やす（`plugin-hub-wiring/Ca
 ### 2.10 見直しの条件
 
 - **JWKS の HTTP 取得（`jwks-remote`）**は本ツリー（Phase 2・3）の範囲外。v1 は通知口＋
-  差し替え API＋アプリ側取得。見直す条件は、`fandhe-auth-backend` の鍵ローテーションを運用で
+  差し替え API＋アプリ側取得。なお spec#26 で、HTTP を持たない取り直しの仕組みのみ `jwks-refresh`
+  として採用した（8 章）。HTTP クライアント同梱を見直す条件は、`fandhe-auth-backend` の鍵ローテーションを運用で
   始める段階で、複数の下流サービスが同じ取得コードを書くようになったとき。形は `plugin-jwt` の
   opt-in feature（既定無効、無効時は依存ゼロ）。必須要件: 設定固定 URL のみ（SSRF 対策）、
   HTTPS 必須、応答サイズ上限（64 KiB）、タイムアウト、最小再取得間隔、取得失敗時は旧鍵を保持。
@@ -286,8 +289,8 @@ JSON・base64 の自前実装は攻撃表面を増やす（`plugin-hub-wiring/Ca
 - **A05**: 検証が抜けた構成を作れない構築 API。leeway は既定 0・上限 300 秒。JWK 矛盾は文書全体拒否。
 - **A06**: 新しい crate・版を増やさない（`Cargo.lock` 差分で確認）。`rsa` crate
   （RUSTSEC-2023-0071）は使わない。`cargo audit`・`cargo deny` は #822・#823 で確認。
-- **A08**: JWKS 差し替えは利用側が取得した文書のみ。将来 `jwks-remote` を入れる場合は固定 URL と
-  HTTPS 必須（SSRF 対策）。
+- **A08**: JWKS 差し替えは利用側が取得した文書のみ。`jwks-refresh` の取得関数にも固定 URL と
+  HTTPS 必須（SSRF 対策、8.11）を契約として課す。
 - **A09**: エラーは秘密を含まない種別のみ。ログに生トークンを出さない。
 - 本 PR は docs のみで、秘密情報・鍵・`.env` を含めない。fixture 鍵は #817 でテスト専用と明記する。
 
@@ -332,4 +335,228 @@ Phase 2・3 の各 issue は着手時にそれぞれ 3 軸を判定する。
 - `plugin-boundary.md`・`dependency-graph-contract.md`・`dep-direction-check.sh` の追随は #822（対応済み）。
 - crate 新設と実装は #813〜#816、テストは #817、fuzz 配線は #818、hub 移行は #820、計測は #821、
   受け入れレポートは #823。
-- 見直しの条件は 2.10 節を参照。
+- 見直しの条件は 2.10 節を参照。`jwks-refresh` 固有のスコープ外は 8.15 節を参照。
+
+## 8. JWKS の取り直しの仕組み（`jwks-refresh`、イシュー #893）
+
+イシュー #893（ツリーのルートは #891、Phase 1 の親は #892）。根拠の仕様は `docs/spec/04-requirements.md` の
+REQ-16「JWKS の取り直しの仕組み（追加要件）」と `docs/spec/requests/fandhe-auth.md` の「#22」節。
+本章は設計の記録のみでコード変更を含まない。実装は #894〜#898 が担う。
+
+### 8.1 範囲と前提
+
+**結論**: opt-in feature `jwks-refresh` は、ゲートの外で `SharedKeySet` を最新に保つ非同期タスクを提供する。
+HTTP の取得・クライアント・TLS は持たず、アプリが渡す非同期の取得関数に任せる（除外事項 #8・#11）。単位は
+`SharedKeySet` 1 つにつきタスク 1 つ（発行者ごと）。`RequestGate::check` の同期・I/O なし契約（NFR-7）は
+変えず、ゲートは未知 `kid` を従来どおりその場で 401 にする。
+
+**理由**: 2.5 節の「鍵の取り直しはアプリの非同期タスクが行う」を、追従の速さと偽の `kid` に対する取得回数の
+増え方がサービスごとに分かれないよう共通化するため。**影響先**: #894〜#898。
+
+### 8.2 依存と feature の配線
+
+**結論**: `crates/plugin-jwt/Cargo.toml` に `jwks-refresh = ["dep:tokio"]` を足し、
+`tokio = { version = "1", default-features = false, features = ["time", "sync"], optional = true }` とする。
+既定 feature には入れない。`rt`・`macros` は使わないため、crate 内で `tokio::spawn` も `tokio::select!` も
+使わない（複数待機の競合は `plugin-websocket` の `race2` と同じ手書き方式）。コードは
+`#[cfg(feature = "jwks-refresh")]` のモジュール（例 `refresh`）に閉じ、公開 API の doc に対象 feature を明記する。
+
+**「無効時ゼロ」の検証可能な定義**: `plugin-jwt` は `core` 経由で `tokio`（`time`・`sync` を含む）を推移依存として
+既に持つ。このため「`cargo tree -p fandhe-backend-plugin-jwt` に `tokio` が現れない」は、そのままでは満たせない
+（dev-dependency の `tokio` も表示される）。次の 3 点で判定する（#894 の受け入れ条件の文言をこれに補正する）。
+
+- (a) feature 無効時に `cargo tree -p fandhe-backend-plugin-jwt -e normal --depth 1` で `plugin-jwt` から `tokio` への
+  直接の辺がない。
+- (b) feature 有効時に `Cargo.lock` の `[[package]]` が増えず、統合ビルドで有効になる `tokio` の feature 集合も増えない
+  （`core` が既に `time`・`sync` を有効にしている）。
+- (c) feature 無効時は `cfg` によって `refresh` モジュールと関連シンボルがコンパイルされない（`cargo build`・`cargo doc` を
+  feature なし・有効・全 feature の 3 構成で確認する）。
+
+`rt` を要する `spawn()` 便宜関数は、spec の「時刻・同期の機能だけ」に反するため足さない。足す場合は別 issue で
+spec と合わせて再判定する。**影響先**: #894（Cargo・`docs/dep-impact/records.md`）、#897（確認方法）。
+
+### 8.3 取得関数の trait とエラー型
+
+**結論**: `JwksFetcher: Send + Sync + 'static` を定め、`fn fetch(&self) -> FetchFuture<'_>` とする。
+`FetchFuture<'a> = Pin<Box<dyn Future<Output = Result<JwksResponse, FetchError>> + Send + 'a>>`。`futures`・
+`async-trait` への依存は足さず dyn 互換にする（`routes::HandlerFuture`・websocket の `BoxFuture` と同方針）。
+クロージャ `Fn() -> Fut` への blanket 実装は、型推論の失敗と契約の見えにくさがあるため v1 では採らず、
+必要になれば非破壊で追加する。
+
+- `JwksResponse`: 本文 `String`（UTF-8 検査は取得関数側の責務。`KeySet::from_json` が `&str` を受けるため）と
+  `max_age: Option<Duration>`。`Cache-Control` の解析は取得関数の責務で、`no-store`・`no-cache`・`max-age` なしは `None`。
+- `FetchError`: `#[non_exhaustive]`。文字列も攻撃者入力も持たない種別のみ（`Transport`・`Status`・`TooLarge`・`Other`）。
+  `Display` は固定文言（2.4 節の `VerifyError` と同じ。OWASP A09）。
+- **キャンセル契約**: 時間切れ・停止のとき、取得の future は任意の `await` 点で drop される（websocket の `on_message` と同形）。
+
+**代替案**: `async fn` in trait は dyn 互換でないため不採用。**影響先**: #894。
+
+### 8.4 起動・停止の API
+
+**結論**: `JwksRefresher::new(shared: SharedKeySet, fetcher, config) -> (RefreshTask, RefreshHandle)`。`RefreshTask` は
+`Future<Output = ()> + Send + 'static` で、アプリが自分のランタイムで `tokio::spawn` する（`time` ドライバ必須と doc に明記）。
+`RefreshHandle` の drop または明示の `shutdown()` で停止状態と `Notify` を立て、タスクは取得中でも抜ける（取得の future は
+drop）。停止の合図はハンドルと共有する `Arc` の状態で持ち、トリガー（8.6）を保持していても停止は妨げない。
+
+- **注意**: タスクを止める・spawn しない・drop すると、定期の取得に加え **`max_stale` によるフェイルクローズも働かなくなる**。
+- 取得関数の panic は、取得の future を `catch_unwind` するポーリング用ラッパ（`unsafe` なし）で包み、取得失敗として扱い
+  タスクを生かす。`panic = "abort"` では効かない（2.5 節・`diagnostics-sink.md` と同じ書き方）。
+
+**代替案**: crate 内で `spawn` する形は `rt` が要るため不採用。`async fn run(self)` のみの形は停止手段が drop に限られるため
+ハンドル併用を採用。**影響先**: #894・#895。
+
+### 8.5 設定型と値の検査
+
+**結論**: `RefreshConfig::new(period: Duration)` で周期を必須引数にする（既定値なし。発行者の回転運用で決まる値のため）。
+builder で設定するのは次の 3 つ。
+
+| 項目 | 既定 | 備考 |
+|------|------|------|
+| `min_interval`（取り直しの間隔の下限） | 10 秒（`DEFAULT_UNKNOWN_KEY_MIN_INTERVAL` と同値） | `Duration` 精度。秒精度の `NotifyThrottle` とは別物 |
+| `fetch_timeout`（1 回の取得の時間の上限） | 5 秒 | 取得関数側の時間切れとの多層防御 |
+| `max_stale` | なし（opt-in） | 超過で鍵集合を空にする（8.9） |
+
+検査はすべて構築時で、失敗は `RefreshConfigError`（`#[non_exhaustive]`）で返す。0 は拒否する（下限が 0 だと 8.7 の
+回数の上限式が崩れる）。過大値も拒否する（周期 ≤ 24 時間、下限 ≤ 1 時間、`fetch_timeout` ≤ 60 秒、`max_stale` ≤ 30 日。
+`clock_skew` の 300 秒上限と同じ流儀で、`tokio::time::Instant + Duration` のオーバーフロー panic も防ぐ）。
+関係の検査として `min_interval <= period`（超えると周期の意味が失われるため丸めず拒否）と
+`max_stale >= period + fetch_timeout`（通常の周期の間に空にならないよう）、
+`fetch_timeout <= min_interval`（取得は直列で開始は下限ごとのため、取得が次の開始を押し出さず 8.7 の遅延式が成り立つ）を求める。必須の周期の欠落は型で防ぎ、
+#894 のテストで示す。**影響先**: #894。
+
+### 8.6 未知 `kid` の通知口への接続
+
+**結論**: feature が `RefreshTrigger`（`Clone`）を提供し、`UnknownKeyNotifier` を実装する。`notify` は
+`tokio::sync::Notify::notify_one()` を呼ぶだけ（許可 1 つに畳まれる合図で、同期・ブロックなし・I/O なし。タスク終了後は
+no-op）。キューを持つ mpsc は、満杯の扱いが不要でまとめの意味論に一致する `Notify` を優先し採らない。`kid` は使わず
+取得先の決定にも使わない。
+
+**2 つの間引きが直列になる問題**: 既存の `NotifyThrottle`（秒精度、10 秒、間引いた通知は捨てる）の後ろにトリガーを置くと、
+「偽の `kid` で通知 → 直後に事前公開なしで鍵が切り替わる → 新しい `kid` の通知が最大 10 秒間引かれる → さらにタスクの
+下限を待つ」となり、最悪で「通知の間隔 + 下限 + 取得時間」になって「下限 + 取得時間以内」を満たせない。
+
+**推奨**: feature ゲートした `JwtAuthenticatorBuilder::jwks_refresh_trigger(trigger)` を足す。トリガーは利用者の通知口とは
+別の枠に入れ、`NotifyThrottle` を通さず未知 `kid` のたびに呼ぶ（原子操作 1 回で DoS の増幅はなく、取得回数の上限は
+タスク側の下限だけで成り立つ）。利用者の通知口は従来どおり間引く。複数の `JwtAuthenticator` が同じ `SharedKeySet` を
+共有しても、トリガーの clone 共有で上限は保たれる。
+
+**代替案**: 「`unknown_key_min_interval(ZERO)` を設定すること」を doc で求める形は、誤設定できてしまうため不採用。
+**影響先**: #896（`auth.rs` の cfg 付き変更）、#897（遅延の基準が本推奨を前提とする）。
+
+### 8.7 合図のまとめと取得回数の上限の根拠
+
+**結論**: 取得は常に直列（同時に 1 件）。定期・合図・再試行のどれでも、取得の開始は
+`next_allowed_at = 直前の取得の開始 + 下限` 以降に限る（単一の状態）。下限の間に届いた合図は `Notify` の許可 1 つに
+まとまり、`next_allowed_at` で 1 回の取得になる。
+
+**根拠**: すべての取得の開始時刻が互いに下限 L 以上離れているので、長さ T の半開区間に入る開始は高々 `ceil(T / L)` 回。
+spec の式 `ceil(T / L) + 定期の取得回数` はこれ以上なので満たす（閉区間で数えると +1 だが定期の項の範囲に収まる）。
+#897 のテストは半開区間で数え、この式と一致させる。**追従の遅延**: 時刻 s に合図が届くと開始は
+`max(s, 直前の開始 + L) <= s + L`、反映は `+ 取得時間`（`fetch_timeout` 以内）。これが「下限 + 取得時間」の根拠で、
+8.6 の推奨形が前提になる。
+
+**周期**: 成功時の次回は `max(L, min(period, max-age))`、失敗時は L 後に再試行（開始時刻から引き直す）。起動直後に
+1 回取得する（初期の鍵集合が空でも早く埋めるため）。**影響先**: #895・#896・#897。
+
+### 8.8 失敗のときの扱い
+
+**結論**: 取得関数の `Err`・時間切れ（`fetch_timeout`）・`KeySet::from_json` のエラー（文書長・件数・`kid` あたり 3 件・
+`NoUsableKeys`・完全同一鍵の重複を含む）のいずれでも `SharedKeySet` を変えず、再試行は下限 L の間隔（8.7 の
+`next_allowed_at` で揃う）。指数バックオフは、spec が「下限の間隔」と定めているため採らない。
+
+反映は `SharedKeySet::set` のみで、ゲートと同じ JWK の検査（`KeySet::from_json`）を通った集合だけを反映する。明示の
+`{"keys":[]}` は 2.3 節で正当な空集合と定めたため、**成功として反映し全件拒否になる**（発行者の明示の意思）。`kid` の
+重複を全体の失敗にしたい場合は、取得関数側で検査を足す（`fandhe-auth.md` の回答と一致）。
+
+**観測口**: 同期の観測 trait `RefreshObserver`（既定 no-op。「ブロックしない・panic しない」契約で `Diagnostics`・
+`UnknownKeyNotifier` と同形）と、`RefreshHandle` から取れる状態のスナップショット（最後の成功時刻・連続失敗回数）の
+両方を設ける。イベントに秘密も攻撃者入力も載せない。**影響先**: #895。
+
+### 8.9 `max_stale` の判定の時点
+
+**結論**: 起点は「最後に取得に成功した時刻」で、起動直後は「タスクの開始時刻」（初期の鍵集合は開始時点で新しいとみなす。
+起点を持たないと初回失敗が永久に空にできず、フェイルクローズが働かない）。タスクは `last_success + max_stale` の期限
+タイマーを他の待機と競合させ、**期限に達した時点で**（次の取得の結果を待たずに）`SharedKeySet::set(KeySet::empty())` を行う。
+取得失敗の直後にも同じ判定を行う。空にすると既存の `Arc::ptr_eq` の契約で検証キャッシュも無効になり、キャッシュ経由の
+受理が残らない。以後に成功すれば鍵集合は戻る。未設定（既定）なら空にしない。時刻はすべて `tokio::time::Instant`
+（単調時刻）で測る。**影響先**: #895。
+
+### 8.10 時刻を制御するテストの方針
+
+`tokio::time::pause` / `#[tokio::test(start_paused = true)]` を使う。dev-dependencies の `tokio` に `test-util` と `rt`
+（current_thread）を足す（`rt-multi-thread` では pause が使えない）。dev 専用なので 8.2 の通常依存の基準に影響しない。
+`NotifyThrottle` は `SystemTime` のため pause では進まないが、8.6 の推奨形ではトリガーの経路が通らないので問題にならない。
+取得関数の偽物（呼び出し回数のカウンタ、応答・失敗・遅延を台本で返す）で次を確かめる: 周期・`max-age` が短い場合・
+下限での下からの抑え、失敗 3 種での保持と L 間隔での再試行、`max_stale`、停止、大量の合図のまとめ、回数の上限式。
+割り当ては #895〜#897。
+
+### 8.11 取得関数の実装者への契約
+
+`JwksFetcher` の doc に次の文言を書く（#894 がそのまま転記し、#898 のガイドも一致させる）。
+
+- 取得先の URL は構築時に固定し、`kid`・リクエスト由来の値から組み立てない（SSRF 対策。`kid` は攻撃者が決められる値）。
+- HTTPS を使い、証明書の検証を無効にしない。
+- リダイレクトは追わないか、同じオリジンに限る。
+- 本文を読む量に上限を設ける（64 KiB を目安。crate 側の `from_json` 上限は解析の防御で、受信メモリの防御にならない）。
+- 取得関数自身にも時間切れを設ける（crate 側の `fetch_timeout` との多層防御）。
+- 認証情報・本文をログに出さない。
+- future は任意の時点で drop されうる。
+
+### 8.12 REQ-16 `jwks-refresh` 受け入れ基準と Phase 1 issue の対応表
+
+| REQ-16 の基準 | 主に満たす issue | 補助する issue |
+|---|---|---|
+| 依存ゼロ（有効時は既存 `tokio` の時刻・同期のみ、無効時は依存・コードゼロ。検証は 8.2 の (a)〜(c)） | #894 | #897（レポート）、#898（dep-impact・文書） |
+| 時刻制御テスト: 定期の取得・`max-age` が短い場合・下限による抑え | #895 | #894（設定の検査） |
+| 時刻制御テスト: 失敗・時間切れ・解析失敗で保持、`max_stale` で空にする | #895 | — |
+| 時刻制御テスト: 未知 `kid` を契機にした取り直し・合図のまとめ・回数の上限式 | #896（単体） | #897（ゲートを通した統合） |
+| 事前公開なしの切替後、「下限 + 取得時間」以内に受理し始める | #897 | #896（8.6 の推奨形） |
+| （横断）設計の記録 | #893 | — |
+| （横断）取得関数の実装例・CHANGELOG・文書 | #898 | — |
+
+### 8.13 セキュリティ考慮（OWASP Top 10）
+
+- **A01**: フェイルクローズは維持する（未知 `kid` は即 401、`max_stale` 超過で全件拒否）。失敗時に鍵を保持する既定は
+  spec の決定（可用性を優先）で、利用側が `max_stale` で切り替えられる。
+- **A04（DoS）**: 合図は単一許可にまとめ、取得は直列で、回数を 8.7 の式で抑える。時間切れあり。値の上限で `Instant` の
+  オーバーフローを防ぐ。通知はブロックしない。
+- **A05**: 周期は必須、値は構築時に検査する。
+- **A06**: 新しい crate・版を増やさない（8.2 (b)）。
+- **A08**: ゲートと同じ JWK の検査を通った集合だけを反映する。
+- **A09**: エラーとイベントに秘密・攻撃者入力を載せない。
+- **A10（SSRF）**: URL は固定し、`kid` から組み立てない（8.11）。
+- 本章は docs のみで、秘密情報・鍵・`.env` を含めない。
+
+### 8.14 対応可否判定記録（#893 分）
+
+`.claude/rules/feasibility-guardrail.md` に従う。#894〜#898 は着手時にそれぞれ 3 軸を判定する。
+
+#### 判定区分
+
+可
+
+#### 該当カテゴリと判断根拠
+
+なし
+
+#### 要人間判断事項
+
+なし
+
+#### 代替案
+
+なし
+
+#### 3 軸判定結果
+
+- 実施可能か: 可。受け入れ条件（各論点の決定と理由、対応表、依存の配線方針）は本章の存在で検証できる。
+- 安全か: 可。docs のみで、内容は 8.13 のとおりフェイルクローズと OWASP に沿う。
+- 影響範囲が許容内か: 可。影響は `docs/design/` の追記と索引・`CLAUDE.md` の 1 行に限られ、コード・Cargo・CI は変更しない。
+
+### 8.15 スコープ外・見直しの条件
+
+- `hub-wiring` は `plugin-jwt` を `jwt` として再エクスポートするが、`jwks-refresh` の feature 転送は #891 ツリーの範囲外。
+  利用側は `fandhe-backend-plugin-jwt` に直接 feature を指定すれば feature 統合で有効になる。転送が必要になれば別 issue で判断する。
+- HTTP クライアントの同梱（別の opt-in feature）は、取得関数を書くサービスが複数になり書き方の違いが問題になった時点で
+  `fandhe-auth.md` の見直し条件に従う。
+- `rt` を使う `spawn` 便宜関数は追加しない（8.2）。`plugin-boundary.md` 5.6 節への追記の要否は #898 で判断する。

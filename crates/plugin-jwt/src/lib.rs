@@ -32,6 +32,8 @@ pub mod gate;
 pub mod jwks;
 pub mod notify;
 pub mod policy;
+#[cfg(feature = "jwks-refresh")]
+pub mod refresh;
 pub mod verify;
 
 pub use auth::{CACHE_CAPACITY, JwtAuthenticator, JwtAuthenticatorBuilder, bearer_token};
@@ -40,6 +42,13 @@ pub use notify::{DEFAULT_UNKNOWN_KEY_MIN_INTERVAL, UnknownKeyEvent, UnknownKeyNo
 
 pub use jwks::{
     Jwk, JwksError, KeySet, MAX_JWKS_DOC_LEN, MAX_KEYS, MAX_KEYS_PER_KID, MAX_KID_LEN, SharedKeySet,
+};
+
+#[cfg(feature = "jwks-refresh")]
+pub use refresh::{
+    DEFAULT_FETCH_TIMEOUT, DEFAULT_REFRESH_MIN_INTERVAL, FetchError, FetchFuture, JwksFetcher,
+    JwksResponse, MAX_FETCH_TIMEOUT, MAX_REFRESH_MIN_INTERVAL, MAX_REFRESH_PERIOD, MAX_STALE_LIMIT,
+    RefreshConfig, RefreshConfigBuilder, RefreshConfigError,
 };
 
 pub use policy::{
