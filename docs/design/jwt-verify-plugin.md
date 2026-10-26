@@ -420,7 +420,8 @@ builder で設定するのは次の 3 つ。
 回数の上限式が崩れる）。過大値も拒否する（周期 ≤ 24 時間、下限 ≤ 1 時間、`fetch_timeout` ≤ 60 秒、`max_stale` ≤ 30 日。
 `clock_skew` の 300 秒上限と同じ流儀で、`tokio::time::Instant + Duration` のオーバーフロー panic も防ぐ）。
 関係の検査として `min_interval <= period`（超えると周期の意味が失われるため丸めず拒否）と
-`max_stale >= period + fetch_timeout`（通常の周期の間に空にならないよう）を求める。必須の周期の欠落は型で防ぎ、
+`max_stale >= period + fetch_timeout`（通常の周期の間に空にならないよう）、
+`fetch_timeout <= min_interval`（取得は直列で開始は下限ごとのため、取得が次の開始を押し出さず 8.7 の遅延式が成り立つ）を求める。必須の周期の欠落は型で防ぎ、
 #894 のテストで示す。**影響先**: #894。
 
 ### 8.6 未知 `kid` の通知口への接続
