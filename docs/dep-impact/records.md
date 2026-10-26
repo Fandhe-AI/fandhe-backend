@@ -25,6 +25,11 @@ optional な `tokio`（`default-features = false`、`time`・`sync` のみ）を
 
 計測条件: macOS arm64（darwin）、stable rustc。
 
+追記（イシュー #895、取り直しタスク本体の実装）: タスク本体が `tokio`（`time`・`sync`）を使い始めた。
+`[dependencies]` と `[features]` は不変。`[dev-dependencies]` の `tokio` に `test-util`・`time`・`sync` を
+追加した（仮想時間テスト専用。`plugin-websocket` が既に dev で `test-util` を使っている）。新規パッケージ: 0、
+`unsafe` の追加: なし。(a)〜(c) は上記から不変（`cargo tree -e normal --depth 1` で feature 無効時に `tokio` の行なし）。
+
 ## 2026-10-26 — `crates/plugin-webrtc` の webrtc 0.17.2 → 0.21.1 移行（イシュー #870、RUSTSEC-2026-0387 の解消）
 
 `cargo audit / cargo deny (all feature configs)`（required check `dep-audit`）が RUSTSEC-2026-0387
