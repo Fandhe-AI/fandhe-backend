@@ -30,6 +30,14 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 filter = 'package(fandhe-backend-plugin-webrtc) and test(=peer_connection_slot_is_released_after_close_allowing_reuse)'
 slow-timeout = { period = "240s", terminate-after = 1 }
 
+# イシュー #875: `send_buffer_limit_applies_backpressure_without_disconnecting`
+# （crates/plugin-webrtc）は、受信を止めたまま約 8 MiB を積んだ後に受信を再開して全件を
+# 回収する。再開後の回収に実測 20 秒超かかり（SCTP の窓再開待ち）、テスト内の締切（再開側
+# 90 秒）が既定 slow-timeout（60s × 2 = 120s）と近接するため、このテストに限定して延長する。
+[[profile.default.overrides]]
+filter = 'package(fandhe-backend-plugin-webrtc) and test(=send_buffer_limit_applies_backpressure_without_disconnecting)'
+slow-timeout = { period = "240s", terminate-after = 1 }
+
 # CI 実行用プロファイル（[profile.default] を継承）。
 # 本設定の目的はハング型退行の検知であり、1 件のテスト失敗で残りのテスト結果が
 # 得られなくなるのを避けるため、CI では fail-fast を無効化して全テストの結果を収集する。
@@ -46,4 +54,12 @@ fail-fast = false
 [[profile.ci.overrides]]
 filter = 'package(fandhe-backend-plugin-webrtc) and test(=peer_connection_slot_is_released_after_close_allowing_reuse)'
 retries = 2
+slow-timeout = { period = "240s", terminate-after = 1 }
+
+# イシュー #875: `send_buffer_limit_applies_backpressure_without_disconnecting`
+# （crates/plugin-webrtc）は、受信を止めたまま約 8 MiB を積んだ後に受信を再開して全件を
+# 回収する。再開後の回収に実測 20 秒超かかり（SCTP の窓再開待ち）、テスト内の締切（再開側
+# 90 秒）が既定 slow-timeout（60s × 2 = 120s）と近接するため、このテストに限定して延長する。
+[[profile.ci.overrides]]
+filter = 'package(fandhe-backend-plugin-webrtc) and test(=send_buffer_limit_applies_backpressure_without_disconnecting)'
 slow-timeout = { period = "240s", terminate-after = 1 }
