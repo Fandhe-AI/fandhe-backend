@@ -14,13 +14,19 @@
   [#874](https://github.com/Fandhe-AI/fandhe-backend/issues/874)、親
   [#871](https://github.com/Fandhe-AI/fandhe-backend/issues/871)）。データチャネル 1 本あたりの
   送信バッファ上限（バイト）を設定し、`PeerConnection` の生成時に webrtc へ配線します。
+  N 本のチャネルを持つ接続は最大 N × 上限を保持しうります。`0` は無制限です。既定値の変更は
+  下の Changed を参照してください。API の追加のみで型は壊れません。
 
 ### Changed
 
 - `fandhe-backend-plugin-webrtc`: **データチャネルの送信バッファ上限の既定が、従来の無制限から
   1 チャネルあたり 1 MiB になりました**（遅い相手によるメモリ枯渇の抑止）。上限到達時は
   `DataChannel::send` が空きを待つバックプレッシャで、エラーや切断は起きません。従来の無制限に
-  戻すには `with_data_channel_send_buffer_limit(0)` を指定してください。
+  戻すには `with_data_channel_send_buffer_limit(0)` を指定してください（型は壊れない追加ですが、
+  既定の挙動が変わります。1 MiB を超える単一メッセージもバッファが空なら送信されます）。
+  イシュー [#874](https://github.com/Fandhe-AI/fandhe-backend/issues/874)、
+  [#876](https://github.com/Fandhe-AI/fandhe-backend/issues/876)、親
+  [#871](https://github.com/Fandhe-AI/fandhe-backend/issues/871)。
 
 - `fandhe-backend-plugin-webrtc`: 内部の `webrtc`（webrtc-rs）を 0.17 系から 0.21 系へ
   移行しました（イシュー [#870](https://github.com/Fandhe-AI/fandhe-backend/issues/870)）。

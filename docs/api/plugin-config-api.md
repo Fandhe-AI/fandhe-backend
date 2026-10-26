@@ -196,8 +196,8 @@ in-process WebRTC（`webrtc-rs` 0.21 系を直接依存）。`POST /rtc/offer` �
 | 項目 | 内容 |
 |------|------|
 | Config 型 | `WebRtcConfig` |
-| 構築・builder | `WebRtcConfig::new()` + `with_max_offer_bytes` / `with_max_peer_connections` / `with_signaling_timeout` / `with_udp_bind_addrs`（getter: `max_offer_bytes` / `max_peer_connections` / `signaling_timeout` / `udp_bind_addrs`） |
-| 既定値 | `max_offer_bytes = 64 KiB`、`max_peer_connections = 64`、`signaling_timeout = 10 秒`、`udp_bind_addrs = ["0.0.0.0:0"]`（IPv4 のみ） |
+| 構築・builder | `WebRtcConfig::new()` + `with_max_offer_bytes` / `with_max_peer_connections` / `with_signaling_timeout` / `with_udp_bind_addrs` / `with_data_channel_send_buffer_limit`（getter: `max_offer_bytes` / `max_peer_connections` / `signaling_timeout` / `udp_bind_addrs` / `data_channel_send_buffer_limit`） |
+| 既定値 | `max_offer_bytes = 64 KiB`、`max_peer_connections = 64`、`signaling_timeout = 10 秒`、`udp_bind_addrs = ["0.0.0.0:0"]`（IPv4 のみ）、`data_channel_send_buffer_limit = 1 MiB`（データチャネル 1 本あたり） |
 | drain API | `close_active_peers(&config, per_close_timeout)` / `drain_for_shutdown(&config, per_close_timeout)`（`drain` モジュール） |
 
 - 注意: `webrtc-rs` の依存ツリーが大きく攻撃表面が広いため、クレート境界で完全分離されている。まず `plugin-webrtc-proxy` の採用を検討すること
@@ -210,6 +210,14 @@ in-process WebRTC（`webrtc-rs` 0.21 系を直接依存）。`POST /rtc/offer` �
   ワイルドカードは「その系統の全 interface（ループバック・link-local 除く）」で、
   interface ごとに 1 ソケットがバインドされる。公開サービスでは待ち受ける interface を絞るために具体的な
   アドレスを渡すことを推奨する
+- 注意（送信バッファ上限）: `with_data_channel_send_buffer_limit` はデータチャネル **1 本あたり** の送信
+  バッファ上限（バイト）で、既定は 1 MiB。webrtc の既定（無制限）では遅い相手に対して送信が積み上がり
+  メモリを使い続けるため、**既定が従来の無制限から 1 MiB に変わった**。N 本のチャネルを持つ接続は最大
+  N × 上限を保持しうり、さらに `max_peer_connections`（既定 64）個の接続分が掛かる。上限に達すると
+  `DataChannel::send` が空きを待つバックプレッシャで、エラーも切断も起きない（待機中は受信も止まり、
+  相手の送信も抑えられる）。単一メッセージが上限より大きくても、バッファが空なら送信される。
+  `0` は無制限で、従来の挙動に戻せるが遅い相手によるメモリ枯渇のリスクを再び負う。他の `with_*` と同様に
+  ビルダー内では値を検証しない
 - 注意（空リスト・ホスト名は拒否）: 他の `with_*` と同様に `WebRtcConfig` はビルダー内で値を検証しない
   （構築時 `Result` を返す型ではない）。各要素は `SocketAddr`（`ip:port`、IPv6 は `[ip]:port`）として
   解釈できなければならず、**ホスト名（`localhost:0` 等）は受け付けない**（webrtc 側で解決させると
@@ -258,7 +266,7 @@ hub 共通配線（テナント境界強制・同意ゲート・outbox・監査�
 | compression | BREACH 類似リスク（秘密 + 反映値の同居 body）を rustdoc に明記。判定不能は無圧縮側へ倒す |
 | static | 二層防御によるパストラバーサル・シンボリックリンク脱出拒否、機密ファイル（先頭ドット）遮断、一律 404 による存在秘匿 |
 | tracing | 除外は完全一致のみ（可観測性の穴の拡大防止）。ログに機密を出さない運用前提 |
-| webrtc / webrtc-proxy | ペイロードサイズ・接続数・タイムアウト上限。攻撃表面の観点で proxy 型を推奨 |
+| webrtc / webrtc-proxy | ペイロードサイズ・接続数・タイムアウト上限（`webrtc` はデータチャネル送信バッファ上限も内蔵。既定 1 MiB・到達時はバックプレッシャ）。攻撃表面の観点で proxy 型を推奨 |
 | hub-wiring | RS256 + JWKS・鍵ローテーション・検証失敗の非キャッシュ・越境アクセスのフェイルクローズ遮断と監査 |
 
 ## 5. スコープ外・関連ドキュメント
