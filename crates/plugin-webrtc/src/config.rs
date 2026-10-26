@@ -538,13 +538,23 @@ impl WebRtcConfig {
         taken
     }
 
-    /// 最終 graceful shutdown の開始を記録する（イシュー #498）。
+    /// 1 接続あたりに同時に保持できるデータチャネル数の上限を返す。`0` は無制限。
     ///
-    /// 1 接続あたりに同時に保持できるデータチャネル数の上限。`0` は無制限。
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_webrtc::WebRtcConfig;
+    ///
+    /// assert_eq!(WebRtcConfig::new().max_data_channels_per_connection(), 16);
+    /// let config = WebRtcConfig::new().with_max_data_channels_per_connection(0);
+    /// assert_eq!(config.max_data_channels_per_connection(), 0);
+    /// ```
     pub fn max_data_channels_per_connection(&self) -> usize {
         self.max_data_channels_per_connection
     }
 
+    /// 最終 graceful shutdown の開始を記録する（イシュー #498）。
+    ///
     /// 以降の [`WebRtcConfig::activate_slot`] は新規登録を拒否し、フェイルクローズで
     /// `false` を返すようになる。`registry` は `Clone` で世代を跨いで共有されるため、
     /// この呼び出しは `WebRtcConfig` の全クローンに波及する（`rebind` のような
