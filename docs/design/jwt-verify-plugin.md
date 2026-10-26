@@ -7,6 +7,7 @@
 > ドラフト。最終承認は PR レビューで行う。本書は設計判断の記録のみで、コード変更を
 > 含まない。実装は Phase 2（#812〜#818）・Phase 3（#819〜#823）が担う。`jwks-refresh`
 > （追加要件、ツリー #891）の設計は 8 章に記録し、実装は Phase 1（#894〜#898）が担う。
+> `dpop`（追加要件、ツリー #891 の Phase 2）の設計は 9 章に記録し、実装は #901〜#907 が担う。
 
 ## 1. 背景・目的
 
@@ -279,7 +280,8 @@ JSON・base64 の自前実装は攻撃表面を増やす（`plugin-hub-wiring/Ca
   必須にし、トークン取り違え（ID トークン・logout トークン・別 client 向け）による迂回を防ぐ。
 - **A02**: 署名検証は `ring`。RS256 は `RSA_PKCS1_2048_8192_SHA256`（2048 bit 未満拒否）、
   ES256 は `ECDSA_P256_SHA256_FIXED`（R‖S 64 B）。ヘッダ `alg` を信用せず、許可リストと鍵に
-  固定した方式の両方に一致させる。`jku`・`x5u`・`jwk` 等のヘッダ引数は無視し取得も利用もしない。
+  固定した方式の両方に一致させる。アクセストークンでは `jku`・`x5u`・`jwk` 等のヘッダ引数は無視し取得も利用もしない
+  （DPoP proof では `jwk` が検証鍵になる点が異なる。9 章）。
   `crit` があれば拒否。公開 JWKS 中の秘密鍵成分と `oct` を拒否。キャッシュキーは SHA-256。
 - **A03**: 拒否本文と `WWW-Authenticate` は固定文字列。エラー型・`Display` にトークン・`kid` を
   含めない。通知口へ渡す `kid` は長さ上限付きで信頼できない値と明記。
@@ -335,7 +337,7 @@ Phase 2・3 の各 issue は着手時にそれぞれ 3 軸を判定する。
 - `plugin-boundary.md`・`dependency-graph-contract.md`・`dep-direction-check.sh` の追随は #822（対応済み）。
 - crate 新設と実装は #813〜#816、テストは #817、fuzz 配線は #818、hub 移行は #820、計測は #821、
   受け入れレポートは #823。
-- 見直しの条件は 2.10 節を参照。`jwks-refresh` 固有のスコープ外は 8.15 節を参照。
+- 見直しの条件は 2.10 節を参照。`jwks-refresh` 固有のスコープ外は 8.15 節、`dpop` 固有は 9.13 節を参照。
 
 ## 8. JWKS の取り直しの仕組み（`jwks-refresh`、イシュー #893）
 
@@ -581,3 +583,250 @@ spec の式 `ceil(T / L) + 定期の取得回数` はこれ以上なので満た
   （`docs/guide/README.md` の「サンプルコードの原則」の例外。フレームワーク API の正は doc test）。
 - `plugin-boundary.md` 5.6.5 節には 1 項目だけ追記した（取り直しタスクはゲートの外で動き、Gate 型の契約を変えない）。
 - `plugin-hub-wiring` の doc comment にある「JWKS 取得は責務外」への案内追加は別クレートの変更のため範囲外とした。
+
+## 9. DPoP 結合のアクセストークンの検証（`dpop`、イシュー #900）
+
+イシュー #900（ツリーのルートは #891、Phase 2 の親は #899）。根拠の仕様は
+`docs/spec/04-requirements.md` の REQ-16「DPoP 結合のアクセストークンの検証（追加要件）」と
+`docs/spec/requests/fandhe-auth.md` の「#23」節。本章は設計の記録のみでコード変更を含まない。
+実装は #901〜#907 が担う。以下の数値と名前は推奨案で、最終承認は PR レビューで行う
+（#903・#906 の計測結果で見直す余地を残す）。
+
+`fandhe-auth` はエージェントに DPoP 結合の資格情報を発行する。下流が資格情報の写しを使えなく
+する効果つきでそれを受け付けられるよう、`plugin-jwt` に opt-in の feature `dpop`（RFC 9449）を足す。
+
+### 9.1 範囲と前提
+
+- **結論**: `dpop` は既定で無効の opt-in feature とする。RFC 9449 の resource server 側の検査
+  （proof の検証・`cnf.jkt` との結合・`jti` の再使用検知）だけを担う。`DPoP-Nonce` とインスタンス間の
+  `jti` 共有は扱わない（9.13）。
+- `RequestGate::check` の同期・I/O なしの契約（NFR-7）を保つ。proof の署名は要求ごとに検証し、
+  キャッシュしない。アクセストークンの検証結果のキャッシュ（2.6 節）は維持する。
+- feature が有効でも、`JwtAuthenticatorBuilder` に DPoP の設定を渡さなければ従来どおり Bearer だけの
+  挙動で、`cnf` は見ない。**理由**: feature 統合（別 crate が `dpop` を有効にした場合）で、opt-in
+  していないゲートの挙動が変わらないようにするため。
+- feature を無効にした下流は、DPoP 結合のトークンも bearer として受理する（従来の挙動）。この点は doc に注意として明記する。
+- **影響先**: #904・#907。
+
+### 9.2 依存と feature の配線
+
+- **結論**: `dpop = []` とし `dep:` は使わない。新規依存・新しい版はない（受け入れ条件 (c)）。
+  `ring`・`base64`・`serde`・`serde_json` は既に通常の依存で、次の API で足りる。
+  - `ring::digest::{digest, SHA256}`: `ath`・サムプリント・`jti` のキー。
+  - `ring::signature::{RsaPublicKeyComponents, RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey, ECDSA_P256_SHA256_FIXED}`: proof の署名検証。
+  - `base64` の `URL_SAFE_NO_PAD`、std の `Mutex`・`HashMap`・`BinaryHeap`。
+- 「無効時ゼロ」の判定は 8.2 節とは異なる。optional 依存がないので依存の残留は自明に起きず、確認するのは次の 3 点。
+  - `cfg(feature = "dpop")` のモジュール（例: `dpop`）と関連シンボルが無効時にコンパイルされない。
+  - `Cargo.lock` の `[[package]]` が増えない。
+  - feature なし・`dpop`・全 feature の 3 構成で `cargo build` と `cargo doc` が通る。
+- 2.7 節の依存の解釈を引き継ぐ。
+- **影響先**: #901・#904・#907。
+
+### 9.3 方式と構築の API
+
+- **結論**: `#[non_exhaustive] enum DpopMode { Required, AllowUnboundBearer }` とし、`Default` は実装しない。
+  構築子は `DpopConfig::new(mode, origin: PublicOrigin, algs: AllowedAlgorithms)` で、3 引数すべて必須
+  （既定値を持たない）。proof の許可 `alg` も 2.2 節の「検証が抜けた構成を作れない」に揃えて必須にする。
+- 配線は `JwtAuthenticatorBuilder::dpop(config)`（`cfg(feature = "dpop")`）。`JwtGate` 側と `authenticate` の
+  シグネチャは変えない。メソッドとパスは `RequestHead` から取る。
+- **1 要求 1 回の契約**: DPoP 有効時の `authenticate` は `jti` 登録を伴うため、同一要求内で 2 回呼ぶと 2 回目は
+  replay 扱いで失敗する。`authenticate` を呼ぶのはゲート 1 箇所だけにし、ゲートが得た検証済みの `Claims` を
+  `GateContext` 等の後段への受け渡し経路でハンドラへ渡す。ハンドラは再検証せず受け取った値を読むだけにする
+  （受け渡しの具体形は #901・#904 で決める。`authenticate` のシグネチャは変えない）。
+- 方式と公開オリジンが欠けた構成を作れないことは、#904 で `compile_fail` の doc test により示す。
+- **理由**: spec の「構築時に明示して選ばせ、既定は持たない」に従う。`non_exhaustive` は将来の nonce 方式の余地。
+- **影響先**: #901・#904。
+
+### 9.4 proof の解析と鍵の検査
+
+- **入力の上限**: `DPoP` ヘッダはちょうど 1 つ（0 個も 2 個以上も拒否。名前は大文字小文字を区別しない）。
+  proof 長は `MAX_TOKEN_LEN`（8192 B）と同じ値を上限とする（RSA 8192 bit の `jwk` も収まる）。
+- **ヘッダ**: `typ` は `dpop+jwt`（`application/` 接頭辞の有無・ASCII 大文字小文字は 2.2 節の `at+jwt` と同じ流儀）。
+  `alg` は proof の許可リスト内。`crit` があれば拒否。`jwk` は必須。`jku`・`x5u`・`x5c`・`kid` は読まない。
+- **`jwk`**: `kty` は `EC`（`crv` = `P-256`、`x`・`y` は 32 B ちょうど）か `RSA`。秘密鍵の要素
+  （`d`/`p`/`q`/`dp`/`dq`/`qi`/`oth`/`k`）と `oct` は拒否。鍵の種別とヘッダ `alg` が一致しなければ拒否。
+  `jwk` に `alg` があればヘッダ `alg` との一致を要する。
+- **RSA の最小鍵長**は 2048 bit。根拠は `RSA_PKCS1_2048_8192_SHA256` が検証時に 2048〜8192 bit を強制する点で、
+  解析時にも `n` を 256〜1024 B として先に弾く。
+- **実装方針**: `jwks::classify` から鍵材料の復号（秘密鍵要素の拒否・kty/crv と alg の一致・座標長・`n`/`e` の上限）を
+  内部の共有関数に切り出す。JWKS 経路は `kid`・`alg` 必須で包み、proof 経路は不要で呼ぶ。`signature_ok` は
+  `(Algorithm, &KeyMaterial)` を受ける形へ寄せる。内部のリファクタで公開 API は変えない。
+- **順序**: 署名を検証するまでクレームは解析しない（3 章と同じ）。必須クレームは `jti`・`htm`・`htu`・`iat`・`ath`。
+  `jti` は 1〜256 B。それ以外（`nonce` 等）は読まない。
+- **sans-IO の公開面**（#902 の fuzz の入口）: 純関数
+  `verify_proof(proof: &str, ctx: &ProofContext<'_>, now_unix: u64) -> Result<VerifiedProof, DpopError>`。
+  `ProofContext` は method・正規化済みの期待 `htu`・アクセストークン・許可 `alg`・窓を持ち、
+  `VerifiedProof` はサムプリント・`jti`・`iat` を持つ。
+- `DpopError` は `#[non_exhaustive]`・`Copy` で文字列を持たず、`Display` は固定文言（`VerifyError` と同方針）。
+- **影響先**: #901・#902。
+
+### 9.5 公開オリジンと `htu`
+
+- **結論**: `PublicOrigin::new(&str) -> Result<PublicOrigin, OriginError>`。
+  - scheme は `https`（`http` も許すが doc で https を推奨）。
+  - host は ASCII のみ（IDN は punycode で渡させる）で小文字に正規化。IPv6 は角括弧の形。
+  - port は 1〜65535 で、既定ポート（443/80）は省いた正規形にする。
+  - userinfo・パス（空と `/` 以外）・クエリ・フラグメントがあれば拒否。長さに上限を設ける。
+  - `Host` と `X-Forwarded-*` は使わない（spec と #20 の保留に従う）。
+- 期待する `htu` は「正規化済みオリジン + `RequestHead::path()`」。target が origin-form（`/` 始まり）以外
+  （absolute-form・`*`）なら proof を拒否する（フェイルクローズ）。
+- proof の `htu` は絶対 URI として解析し、クエリとフラグメントを除く。RFC 3986 6.2.2・6.2.3 のうち次だけ正規化する:
+  scheme・host の小文字化、既定ポートの省略、空パスを `/` にする、パーセントエンコードの 16 進を大文字にそろえる。
+  パーセントデコードはしない。ドットセグメントと不正な `%` は拒否。その上で同じ正規化をかけたリクエスト側とバイト一致で比べる。
+- `htm` は `method()` と大文字小文字を区別して完全一致で比べる。
+- **理由**: デコードと比較の差を突く迂回の余地をなくし、フェイルクローズにする。前段プロキシがパス接頭辞を剥がす構成は対象外（9.13）。
+- **影響先**: #901・#904。
+
+### 9.6 `iat` の窓と `jti` の保持
+
+- **`iat` の窓**: 受理範囲は `now − past ≤ iat ≤ now + future`。推奨値は `past` が既定 60 秒・上限 300 秒
+  （`MAX_CLOCK_SKEW` と同じ）・0 は拒否、`future` が既定 5 秒・上限 60 秒。すべて構築時に検査し
+  `DpopConfigError`（`#[non_exhaustive]`）で返す。窓を短くするほど写しを使い回せる余地が減る。
+- **`jti` の保持**:
+  - 単位は (サムプリント, `jti`)。保持キーは SHA-256(jkt ‖ jti) の 32 B で、生の `jti` は持たない。
+  - 期限は `iat + past`。期限切れは時刻順に取り除く（例: `BinaryHeap` + `HashMap`）。
+  - 容量は既定（例: 131,072）と設定可能な上限（例: 4,194,304）を持つ。1 項目あたりのメモリ見積りと、
+    容量の目安（ピーク時の DPoP の rps × (past + future)）を doc に載せる。
+  - 期限切れを掃いても満杯なら新しい proof を拒否する（フェイルクローズ。`ReplayStoreFull` → `invalid_dpop_proof`）。
+  - 1 つの `JwtAuthenticator`（clone で共有）につき 1 つ持つ。
+- **ロック**: `Mutex` を短時間だけ持ち、保持中に `.await`・I/O・署名検証をしない。poison は `into_inner` で回復（`TokenCache` と同じ規律）。
+- **検査の順序**: `jti` の確認と登録は、他のすべての検査（トークン検証・proof 署名・`ath`/`htm`/`htu`/`iat`・`cnf.jkt` 一致）が
+  成功した**最後**に、同じロック区間で原子的に行う。署名のない入力で保持を埋められないようにするため（A04）。失敗した要求は登録しない。
+- **同一要求内の再 `authenticate` は禁止**: 登録は 1 要求につきゲートの `authenticate` 1 回のみ。同じ要求で再度呼ぶと
+  replay と判定されて失敗する。ハンドラが claims を必要とする場合は 9.3 節の受け渡し経路で読む（再検証しない）。
+- **既知の限界の doc 文言案**: 「`jti` の一度だけの検査はゲート（`JwtAuthenticator`）ごと・プロセスごとで、複数インスタンス間では
+  共有しない。写した proof を `iat` の窓の中で別インスタンスへ送る使い回しは防げない。窓を短くして余地を限ること。
+  アクセストークンだけの写しは、鍵を持たない者には proof を作れないため使えない」。
+- **影響先**: #903・#904。
+
+### 9.7 サムプリントと `cnf.jkt`
+
+- **サムプリント**: RFC 7638 に従い必須メンバーだけを辞書順に並べた空白なしの JSON（EC は `{"crv","kty","x","y"}`、
+  RSA は `{"e","kty","n"}`）の SHA-256 を base64url（パディングなし）にする。値は復号済みバイト列を正規形で
+  再符号化する（EC 座標は 32 B、RSA の `n`/`e` は先頭 0 を除く）。正規形でない入力は拒否。値は base64url 文字のみなので JSON の手組みでも安全。
+- **`cnf`**: 解析は `cfg(feature = "dpop")` かつ **`JwtAuthenticatorBuilder` に DPoP の設定が登録されている場合だけ**行う（9.1 節に揃える。
+  feature 無効時のコードはゼロ）。DPoP 設定が未登録の認証器では `cnf` を解析せず、不正な `cnf` があっても従来どおり受理する
+  （`Malformed` 判定も行わない。opt-in していないゲートの挙動を変えないため）。以下の `Malformed` 判定と `jkt` なしの拒否は、
+  DPoP 設定の登録時のみ適用する。`Claims` に `cnf_jkt()` を足してキャッシュのヒット時も結合を検査できるようにする。
+  `cnf` がオブジェクトでない・`jkt` が文字列でない・43 文字の base64url でないものは `Malformed`。
+  `cnf` があっても `jkt` がないもの（`x5t#S256` など別方式の結合）は、どちらの方式でも拒否する。検証できない結合を bearer に格下げしないため。
+- 比較は完全一致。`jkt` は秘密ではないので定数時間比較は不要（その旨を doc に書く）。
+- **影響先**: #901・#904。
+
+### 9.8 ゲートでの判定の流れと方式
+
+- `Authorization` はちょうど 1 つ。スキームの解析は `bearer_token` を拡張した内部関数で `(Scheme::{Bearer, Dpop}, token)` を返す。
+  既存 `bearer_token` の公開挙動は変えない。
+- 順序: (1) スキームとトークンの取り出し、(2) アクセストークン検証（キャッシュ含む）、(3) 方式とスキームによる振り分け、
+  (4) proof 検証（毎回）、(5) `cnf.jkt` とサムプリントの比較、(6) `jti` 登録。
+- 判定表:
+
+| スキーム | トークンの `cnf.jkt` | `Required` | `AllowUnboundBearer` |
+|---|---|---|---|
+| `Bearer` | あり | 拒否（格下げ防止、RFC 9449 7.2） | 拒否 |
+| `Bearer` | なし | 拒否 | 従来どおり受理 |
+| `DPoP` | なし | 拒否 | 拒否 |
+| `DPoP` | あり | proof の全検査を通れば受理 | 同左 |
+
+- 手順 (6) の `jti` 登録は 1 要求につき 1 回だけ。同一要求内で `authenticate` を再実行しない（replay 扱いで失敗する）。
+  ゲート通過後にハンドラが claims を読む場合は、ゲートが検証済みの `Claims` を後段へ渡す（9.3 節）。
+- `VerifyError` に `cfg(feature = "dpop")` の変種 `Dpop(DpopError)` を足す。非破壊の追加で、`#[non_exhaustive]` のため
+  下流の match は既存のまま 401 に倒れる。
+- **影響先**: #904。
+
+### 9.9 拒否の応答
+
+- 状態は 401。本文は固定 JSON（`{"error":"invalid_token"}` か `{"error":"invalid_dpop_proof"}`）。
+  `algs` は構築時の許可 `alg` から空白区切り・固定順で作り、リクエスト由来の値は入れない。`error_description` は付けない。
+- `error` の対応:
+  - トークン側（署名・`exp`・`iss` など、Bearer への格下げ、結合のないトークン、`cnf` の不正）→ `invalid_token`。
+  - proof 側（`DPoP` ヘッダの欠落・重複、解析、`typ`/`alg`、`jwk`、署名、`htm`/`htu`/`iat`/`ath`、`jkt` 不一致、`jti` 再使用、保持が満杯）→ `invalid_dpop_proof`。
+    `jkt` 不一致を proof 側に置くのは、提示された鍵が結合した鍵と違うという proof の問題だから。
+- `WWW-Authenticate`: `Required` は `DPoP` の 1 行（資格情報なしなら `DPoP algs="ES256 RS256"`、失敗なら `DPoP error="…", algs="…"`）。
+  `AllowUnboundBearer` は `DPoP` と `Bearer` の 2 行（`with_header` は重ねて足せる）。`error` は使われたスキームの行にだけ付け、
+  格下げのときは `DPoP` の行に `error="invalid_token"` を付ける。
+- DPoP を設定していない構成の応答（2.4 節の `Bearer` 1 行）は変えない。
+- #904 では、`gate.rs` の `assert_full` が 1 行を前提にしているため、DPoP 設定経路のテストを分ける必要がある。
+- **影響先**: #904・#905。
+
+### 9.10 `plugin-hub-wiring` から使う形
+
+- **結論**: hub-wiring に `dpop = ["fandhe-backend-plugin-jwt/dpop"]` を足して転送する。無効時は依存もコードもゼロ。
+- `TenantGateConfig` に `Authenticator`（`Authenticator::from_jwt(JwtAuthenticator::<HubClaims>::builder(..).dpop(cfg).build())`）から
+  作る構築子を足す（非破壊の追加）。
+- DPoP を設定したときだけ `TenantGate` の 401 に 9.9 と同じ `WWW-Authenticate` を付ける。チャレンジの組み立ては
+  `plugin-jwt` 側の公開補助関数（認証器と `VerifyError` から 401 の `Response` を作るもの）に寄せ、hub で二重実装しない。
+- `org_id` の 403 判定は DPoP 検査の後。REQ-9 の既存応答は変えない。
+- **8.15 節との違い**: `jwks-refresh` の転送は範囲外としたが、`dpop` は spec が「REQ-9 の hub 共通配線からも同じ設定で使える」ことを
+  求め、hub 側にも cfg 付きコード（チャレンジ）が要るため、転送を範囲内とする。
+- **影響先**: #905。
+
+### 9.11 REQ-16 `dpop` 受け入れ基準と Phase 2 issue の対応表
+
+| 基準の細目 | 主に満たす issue | 補助する issue |
+|---|---|---|
+| `typ`・`alg` の不正、秘密鍵要素を含む `jwk`、署名の不正、`ath`・`htm`・`htu` の不一致、窓外の `iat` の拒否、RS256・ES256 の受理 | #901 | #907（レポート） |
+| 再使用の `jti` の拒否（保持の上限を含む） | #903 | #904 |
+| `Bearer` での DPoP 結合トークン、`DPoP` ヘッダの欠落・重複、`cnf.jkt` 不一致の拒否、401 と `WWW-Authenticate: DPoP` | #904 | #905（hub 経路） |
+| hub 共通配線からの利用と REQ-9 の維持 | #905 | — |
+| proof 解析部の fuzz（NFR-11） | #902 | — |
+| 性能への影響の計測（NFR-6） | #906 | — |
+| 新規依存なし・無効時ゼロ（9.2） | #904（Cargo） | #907（dep-impact・レポート） |
+| （横断）設計の記録 | #900 | — |
+| （横断）CHANGELOG・受け入れレポート・文書 | #907 | — |
+
+### 9.12 セキュリティ考慮（OWASP Top 10）
+
+- **A01**: 両方式で Bearer への格下げを拒否する。`jkt` のない `cnf` を拒否する。全異常は 401 のフェイルクローズ。
+- **A02**: proof の署名は `ring` で毎回検証する。RSA は 2048 bit 以上、EC は P-256 のみで点の検証は ring が行う。
+  秘密鍵要素と `oct` は拒否。アクセストークンでは `jwk` ヘッダを無視し（5 章）、proof では `jwk` だけを検証鍵とする。
+- **A03/A09**: チャレンジと本文は固定文字列か構築時設定から作った値だけ。エラー型は文字列を持たない。`jti`・トークン・`jwk` をログに出さない。
+- **A04**: proof 長・`jti` 長・`htu` 長に上限を設ける。保持が満杯なら拒否し、`jti` の登録は最後に行う。ロック保持は短くする。
+- **A05**: 方式に既定を持たせず、公開オリジンを必須にし、窓の値は構築時に検査する。
+- **A06**: 新しい crate も版も増えない。
+- **A07**: proof の再使用は窓とゲートごとの `jti` で防ぎ、インスタンス間の限界は明記する（9.6）。
+- 本章は docs のみで、秘密情報・鍵・`.env` を含めない。
+
+### 9.13 対応可否判定記録（#900 分）と、スコープ外・見直しの条件
+
+`.claude/rules/feasibility-guardrail.md` に従う。#901〜#907 は着手時にそれぞれ 3 軸を判定する。
+
+#### 判定区分
+
+可
+
+#### 該当カテゴリと判断根拠
+
+なし
+
+#### 要人間判断事項
+
+なし
+
+#### 代替案
+
+なし
+
+#### 3 軸判定結果
+
+##### 実施可能か
+
+可。受け入れ条件（各論点の決定と理由、対応表、依存の配線方針）は本章の存在で検証できる。
+
+##### 安全か
+
+可。docs のみで、内容は 9.12 のとおりフェイルクローズと OWASP に沿う。
+
+##### 影響範囲が許容内か
+
+可。影響は `docs/design/` の追記と索引・`CLAUDE.md` の 1 行に限られ、コード・Cargo・CI は変更しない。
+
+#### スコープ外・見直しの条件
+
+見直しの条件は `docs/spec/requests/fandhe-auth.md` の「見直しの条件」表を引用元とする。
+
+- `DPoP-Nonce` は扱わない。
+- インスタンス間で共有する `jti` の保持（利用側が渡す trait）は、ゲートの同期・I/O なしの契約と両立させることを前提に再検討する。
+- パス接頭辞を剥がすプロキシ構成と、信頼するプロキシからの転送ヘッダは扱わない。
+- PS256・EdDSA など proof の方式の追加は扱わない。
+- `plugin-boundary.md` 5.6 節への追記と利用者向けガイドは #907 が担う。
