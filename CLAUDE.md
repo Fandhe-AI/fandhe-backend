@@ -512,6 +512,9 @@ fandhe-backend/
 │   │                                    # を追加、既定は `0.0.0.0:0`（IPv4 のみ）で空リストは `POST /rtc/offer` が 500 で拒否。
 │   │                                    # 0.21 は `close()` せず drop するとドライバが残るため、枠の除去と `close()` は必ず対。
 │   │                                    # 方針は `docs/design/webrtc-rs-version-strategy.md` 3.1 節）。
+│   │                                    # イシュー #874 で `WebRtcConfig::with_data_channel_send_buffer_limit`
+│   │                                    # （1 チャネルあたりの送信バッファ上限、既定 1 MiB、`0` は無制限）を追加し、
+│   │                                    # `PeerConnection` 生成時に webrtc へ配線した（上限到達時は `send` が待つバックプレッシャ）。
 │   │                                    # `close_active_peers` / `drain_for_shutdown`（`drain` モジュール）で
 │   │                                    # `WebRtcConfig::registry` 上のアクティブな `PeerConnection` を
 │   │                                    # 1 接続あたり有界タイムアウトで明示的に close する API を追加した

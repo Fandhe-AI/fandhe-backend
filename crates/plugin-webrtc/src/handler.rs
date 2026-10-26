@@ -621,6 +621,11 @@ impl PeerConnectionEventHandler for SignalingHandler {
 }
 
 /// 相手から到着したデータチャネルの受信メッセージをそのまま送り返す。
+///
+/// 送信バッファが `WebRtcConfig::data_channel_send_buffer_limit` に達すると `send` は空きが
+/// 出るまで待つ（バックプレッシャ）。その間 `poll` も止まるので相手の送信も抑えられ、エラーも
+/// 切断も起きない。待機中にチャネルが close されると `send` は `Err` を返すが無視し、次の
+/// `poll` の `None`/`OnClose` でループを抜ける。
 async fn echo_loop(dc: Arc<dyn DataChannel>) {
     while let Some(event) = dc.poll().await {
         match event {
@@ -642,6 +647,9 @@ async fn echo_loop(dc: Arc<dyn DataChannel>) {
 /// `WebRtcConfig::udp_bind_addrs`（既定 `["0.0.0.0:0"]`）を `SocketAddr` に解釈して渡す
 /// （文字列のまま渡すとホスト名のブロッキング DNS 解決がドライバ上で走る）。解釈できない
 /// 要素があれば生成せず `Err`（通常は `try_handle_rtc_offer` が枠の予約前に拒否済み）。
+///
+/// データチャネルの送信バッファ上限は `WebRtcConfig::data_channel_send_buffer_limit` から
+/// 配線する（既定 1 MiB。`0` は webrtc 側で無制限扱い）。
 ///
 /// 生成に失敗した場合は接続が存在しないので、呼び出し元は枠の解放のみ行う（0.21.1 は初期化に
 /// 失敗するとドライバも止まる）。**この Future を途中で drop しない**こと: 0.21.1 の
@@ -670,6 +678,7 @@ async fn build_peer_connection(
             config: config.clone(),
             slot_id,
         }))
+        .with_data_channel_send_buffer_limit(config.data_channel_send_buffer_limit())
         .with_udp_addrs(udp_addrs)
         .build()
         .await?;
@@ -894,6 +903,26 @@ mod tests {
         let offer = client.create_offer(None).await.unwrap();
         client.set_local_description(offer.clone()).await.unwrap();
         (client, serde_json::to_string(&offer).unwrap())
+    }
+
+    #[tokio::test]
+    async fn build_peer_connection_succeeds_with_default_and_zero_send_buffer_limit() {
+        // 既定（1 MiB）と 0（無制限扱い）のどちらでも生成が失敗しない。
+        // 注: webrtc 0.21 は設定済みの送信バッファ上限を PeerConnection から読み出す公開 getter を
+        // 持たず、実際のバックプレッシャ挙動の検証は大容量送信を伴う実接続 e2e が必要になる。
+        // ここでは配線後も生成が壊れないこと（スモーク）のみを確認し、設定値の保持は config.rs の
+        // テストが担う。
+        for limit in [None, Some(0)] {
+            let mut config =
+                WebRtcConfig::new().with_udp_bind_addrs(vec!["127.0.0.1:0".to_owned()]);
+            if let Some(n) = limit {
+                config = config.with_data_channel_send_buffer_limit(n);
+            }
+            let (pc, _rx) = build_peer_connection(&config, 0)
+                .await
+                .expect("生成に成功する");
+            pc.close().await.unwrap();
+        }
     }
 
     #[tokio::test]

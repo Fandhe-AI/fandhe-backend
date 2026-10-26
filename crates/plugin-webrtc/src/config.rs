@@ -146,6 +146,14 @@ const DEFAULT_MAX_OFFER_BYTES: usize = 64 * 1024;
 /// （フェイルクローズ、.claude/rules/security.md）。
 const DEFAULT_MAX_PEER_CONNECTIONS: usize = 64;
 
+/// データチャネル 1 本あたりの送信バッファ上限（バイト）の既定値（1 MiB）。
+///
+/// webrtc 0.21 の既定は無制限（`usize::MAX`）で、相手の受信速度を超えて `DataChannel::send`
+/// を続けると送信バッファがメモリを使い続ける（DoS 観点のリソース枯渇）。サーバ側の
+/// `echo_loop` が遅い相手に対して無制限に積み上げないよう、既定で有限値に絞る
+/// （.claude/rules/security.md）。`WebRtcConfig::with_data_channel_send_buffer_limit` で上書きする。
+const DEFAULT_DATA_CHANNEL_SEND_BUFFER_LIMIT: usize = 1024 * 1024;
+
 /// シグナリング全体（`set_remote_description` → 非トリクル ICE 候補収集完了 →
 /// `set_local_description`）に許すタイムアウトの既定値。
 ///
@@ -164,6 +172,7 @@ const DEFAULT_SIGNALING_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct WebRtcConfig {
     max_offer_bytes: usize,
     max_peer_connections: usize,
+    data_channel_send_buffer_limit: usize,
     signaling_timeout: Duration,
     udp_bind_addrs: Vec<String>,
     registry: Arc<Mutex<Vec<(u64, RegistrySlot)>>>,
@@ -223,6 +232,36 @@ impl WebRtcConfig {
     #[must_use]
     pub fn with_max_peer_connections(mut self, max: usize) -> Self {
         self.max_peer_connections = max;
+        self
+    }
+
+    /// データチャネル 1 本あたりの送信バッファ上限（バイト）を上書きする。
+    ///
+    /// - 単位は **1 データチャネルあたり** のバイト数。N 本のチャネルを開いた接続は最大
+    ///   N×上限を保持しうる（さらに [`WebRtcConfig::max_peer_connections`] 個の接続分が掛かる）。
+    /// - 既定は 1 MiB。従来（webrtc 0.21 の既定）の無制限からの挙動変更である。
+    /// - `0` は検証せず webrtc へそのまま渡す。webrtc 側が無制限（`usize::MAX`）へ正規化する
+    ///   ため、従来挙動へ戻せるが、遅い相手によるメモリ枯渇のリスクを再び負う。
+    /// - 上限到達時はバックプレッシャで、エラーも切断も起きない。`DataChannel::send` が
+    ///   バッファに空きが出るまで待ち、待機中はそのチャネルの `echo_loop` の `poll` も止まる
+    ///   ため相手の送信も抑えられる。単一メッセージが上限より大きくても、バッファが空なら
+    ///   送信される（永久には待たない）。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_webrtc::WebRtcConfig;
+    ///
+    /// assert_eq!(
+    ///     WebRtcConfig::new().data_channel_send_buffer_limit(),
+    ///     1024 * 1024
+    /// );
+    /// let config = WebRtcConfig::new().with_data_channel_send_buffer_limit(4096);
+    /// assert_eq!(config.data_channel_send_buffer_limit(), 4096);
+    /// ```
+    #[must_use]
+    pub fn with_data_channel_send_buffer_limit(mut self, bytes: usize) -> Self {
+        self.data_channel_send_buffer_limit = bytes;
         self
     }
 
@@ -332,6 +371,11 @@ impl WebRtcConfig {
     /// 同時に保持する `PeerConnection` 数の上限。
     pub fn max_peer_connections(&self) -> usize {
         self.max_peer_connections
+    }
+
+    /// データチャネル 1 本あたりの送信バッファ上限（バイト）。`0` は無制限。
+    pub fn data_channel_send_buffer_limit(&self) -> usize {
+        self.data_channel_send_buffer_limit
     }
 
     /// シグナリング全体のタイムアウト。
@@ -473,6 +517,7 @@ impl Default for WebRtcConfig {
         Self {
             max_offer_bytes: DEFAULT_MAX_OFFER_BYTES,
             max_peer_connections: DEFAULT_MAX_PEER_CONNECTIONS,
+            data_channel_send_buffer_limit: DEFAULT_DATA_CHANNEL_SEND_BUFFER_LIMIT,
             signaling_timeout: DEFAULT_SIGNALING_TIMEOUT,
             udp_bind_addrs: vec!["0.0.0.0:0".to_owned()],
             registry: Arc::new(Mutex::new(Vec::new())),
@@ -508,10 +553,12 @@ mod tests {
         let config = WebRtcConfig::new()
             .with_max_offer_bytes(2048)
             .with_max_peer_connections(2)
+            .with_data_channel_send_buffer_limit(4096)
             .with_signaling_timeout(Duration::from_millis(500));
 
         assert_eq!(config.max_offer_bytes(), 2048);
         assert_eq!(config.max_peer_connections(), 2);
+        assert_eq!(config.data_channel_send_buffer_limit(), 4096);
         assert_eq!(config.signaling_timeout(), Duration::from_millis(500));
     }
 
@@ -520,8 +567,22 @@ mod tests {
         let config = WebRtcConfig::default();
         assert_eq!(config.max_offer_bytes(), DEFAULT_MAX_OFFER_BYTES);
         assert_eq!(config.max_peer_connections(), DEFAULT_MAX_PEER_CONNECTIONS);
+        assert_eq!(
+            config.data_channel_send_buffer_limit(),
+            DEFAULT_DATA_CHANNEL_SEND_BUFFER_LIMIT
+        );
+        assert_eq!(config.data_channel_send_buffer_limit(), 1024 * 1024);
         assert_eq!(config.signaling_timeout(), DEFAULT_SIGNALING_TIMEOUT);
         assert_eq!(config.udp_bind_addrs(), ["0.0.0.0:0".to_owned()]);
+    }
+
+    #[test]
+    fn zero_and_max_send_buffer_limit_are_kept_as_is() {
+        // 0 は webrtc 側が無制限へ正規化するため、既定へ黙って戻さず素通しする。
+        let zero = WebRtcConfig::new().with_data_channel_send_buffer_limit(0);
+        assert_eq!(zero.data_channel_send_buffer_limit(), 0);
+        let max = WebRtcConfig::new().with_data_channel_send_buffer_limit(usize::MAX);
+        assert_eq!(max.data_channel_send_buffer_limit(), usize::MAX);
     }
 
     #[test]
