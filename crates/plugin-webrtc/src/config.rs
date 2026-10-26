@@ -154,6 +154,14 @@ const DEFAULT_MAX_PEER_CONNECTIONS: usize = 64;
 /// （.claude/rules/security.md）。`WebRtcConfig::with_data_channel_send_buffer_limit` で上書きする。
 const DEFAULT_DATA_CHANNEL_SEND_BUFFER_LIMIT: usize = 1024 * 1024;
 
+/// 1 接続あたりに同時に保持できるデータチャネル数の既定値（16 本）。
+///
+/// 送信バッファ上限（[`DEFAULT_DATA_CHANNEL_SEND_BUFFER_LIMIT`]）はチャネルごとに効くため、
+/// チャネル数が無制限だと 1 接続の最悪メモリは `チャネル数 × 上限` で青天井になる。既定では
+/// 64 接続 × 16 本 × 1 MiB = 1 GiB に収める（.claude/rules/security.md のリソース枯渇対策）。
+/// `WebRtcConfig::with_max_data_channels_per_connection` で上書きする。
+const DEFAULT_MAX_DATA_CHANNELS_PER_CONNECTION: usize = 16;
+
 /// シグナリング全体（`set_remote_description` → 非トリクル ICE 候補収集完了 →
 /// `set_local_description`）に許すタイムアウトの既定値。
 ///
@@ -173,6 +181,7 @@ pub struct WebRtcConfig {
     max_offer_bytes: usize,
     max_peer_connections: usize,
     data_channel_send_buffer_limit: usize,
+    max_data_channels_per_connection: usize,
     signaling_timeout: Duration,
     udp_bind_addrs: Vec<String>,
     registry: Arc<Mutex<Vec<(u64, RegistrySlot)>>>,
@@ -262,6 +271,35 @@ impl WebRtcConfig {
     #[must_use]
     pub fn with_data_channel_send_buffer_limit(mut self, bytes: usize) -> Self {
         self.data_channel_send_buffer_limit = bytes;
+        self
+    }
+
+    /// 1 接続あたりに同時に保持できるデータチャネル数の上限を上書きする。
+    ///
+    /// - 既定は 16 本。送信バッファ上限はチャネルごとに効くため、最悪メモリは
+    ///   `max_peer_connections × 本設定 × data_channel_send_buffer_limit`（既定で 1 GiB）になる。
+    /// - 上限を超えて相手が開いたチャネルは**すぐ close する。接続自体は切らない**。既存の
+    ///   チャネルのエコーは継続する。数えるのは「現在開いている本数」で、閉じたチャネルの枠は
+    ///   空き、後から開き直せる。
+    /// - `0` は無制限（`with_data_channel_send_buffer_limit(0)` と同じ意味）。従来挙動へ戻せるが、
+    ///   1 接続のメモリが `チャネル数 × 送信バッファ上限` まで増えるリスクを再び負う。
+    /// - webrtc 0.21 にはストリーム数を設定する公開 API がないため、プラグイン側で計数している。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_webrtc::WebRtcConfig;
+    ///
+    /// assert_eq!(WebRtcConfig::new().max_data_channels_per_connection(), 16);
+    /// let config = WebRtcConfig::new().with_max_data_channels_per_connection(4);
+    /// assert_eq!(config.max_data_channels_per_connection(), 4);
+    /// // 0 は無制限
+    /// let unlimited = WebRtcConfig::new().with_max_data_channels_per_connection(0);
+    /// assert_eq!(unlimited.max_data_channels_per_connection(), 0);
+    /// ```
+    #[must_use]
+    pub fn with_max_data_channels_per_connection(mut self, max: usize) -> Self {
+        self.max_data_channels_per_connection = max;
         self
     }
 
@@ -502,6 +540,11 @@ impl WebRtcConfig {
 
     /// 最終 graceful shutdown の開始を記録する（イシュー #498）。
     ///
+    /// 1 接続あたりに同時に保持できるデータチャネル数の上限。`0` は無制限。
+    pub fn max_data_channels_per_connection(&self) -> usize {
+        self.max_data_channels_per_connection
+    }
+
     /// 以降の [`WebRtcConfig::activate_slot`] は新規登録を拒否し、フェイルクローズで
     /// `false` を返すようになる。`registry` は `Clone` で世代を跨いで共有されるため、
     /// この呼び出しは `WebRtcConfig` の全クローンに波及する（`rebind` のような
@@ -518,6 +561,7 @@ impl Default for WebRtcConfig {
             max_offer_bytes: DEFAULT_MAX_OFFER_BYTES,
             max_peer_connections: DEFAULT_MAX_PEER_CONNECTIONS,
             data_channel_send_buffer_limit: DEFAULT_DATA_CHANNEL_SEND_BUFFER_LIMIT,
+            max_data_channels_per_connection: DEFAULT_MAX_DATA_CHANNELS_PER_CONNECTION,
             signaling_timeout: DEFAULT_SIGNALING_TIMEOUT,
             udp_bind_addrs: vec!["0.0.0.0:0".to_owned()],
             registry: Arc::new(Mutex::new(Vec::new())),
@@ -583,6 +627,22 @@ mod tests {
         assert_eq!(zero.data_channel_send_buffer_limit(), 0);
         let max = WebRtcConfig::new().with_data_channel_send_buffer_limit(usize::MAX);
         assert_eq!(max.data_channel_send_buffer_limit(), usize::MAX);
+    }
+
+    #[test]
+    fn max_data_channels_default_override_and_edge_values() {
+        assert_eq!(
+            WebRtcConfig::new().max_data_channels_per_connection(),
+            DEFAULT_MAX_DATA_CHANNELS_PER_CONNECTION
+        );
+        assert_eq!(WebRtcConfig::new().max_data_channels_per_connection(), 16);
+        let c = WebRtcConfig::new().with_max_data_channels_per_connection(3);
+        assert_eq!(c.max_data_channels_per_connection(), 3);
+        assert_eq!(c.clone().max_data_channels_per_connection(), 3);
+        let zero = WebRtcConfig::new().with_max_data_channels_per_connection(0);
+        assert_eq!(zero.max_data_channels_per_connection(), 0);
+        let max = WebRtcConfig::new().with_max_data_channels_per_connection(usize::MAX);
+        assert_eq!(max.max_data_channels_per_connection(), usize::MAX);
     }
 
     #[test]

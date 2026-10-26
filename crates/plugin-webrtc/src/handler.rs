@@ -11,6 +11,7 @@
 //! [`fandhe_backend_http::response::Response`] を直接組み立てて返す（変換層を省く。
 //! `docs/design/plugin-boundary.md` 4.3 節）。
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -577,7 +578,9 @@ async fn complete_signaling(
 /// - `Closed`/`Failed` で `WebRtcConfig::release_slot` により枠を除去する。`Active` だった
 ///   接続は `release_slot` が**明示 close** する（0.21 はハンドルを close せず drop すると
 ///   driver・UDP ソケットが残るため）
-/// - 受信データチャネルへエコーループを spawn（ハンドラはドライバ上で走るので await で塞がない）
+/// - 受信データチャネルへエコーループを spawn（ハンドラはドライバ上で走るので await で塞がない）。
+///   同時に開いている本数が `max_data_channels_per_connection` を超えるチャネルは即 close する
+///   （接続は維持。計数は現在開いている本数で、閉じれば枠が空く）
 ///
 /// # 参照サイクル
 ///
@@ -589,6 +592,51 @@ struct SignalingHandler {
     gather_tx: watch::Sender<bool>,
     config: WebRtcConfig,
     slot_id: u64,
+    /// この接続で開いているデータチャネル数の計数（上限は
+    /// `WebRtcConfig::max_data_channels_per_connection`）。
+    channels: Arc<DataChannelLimiter>,
+}
+
+/// 1 接続あたりの同時データチャネル数の計数器。`SignalingHandler`（接続ごとに 1 つ）が持ち、
+/// `on_data_channel` から呼ばれる。webrtc 0.21 にストリーム数の設定 API がないための自前計数で、
+/// 送信バッファ上限（チャネルごとに効く）と合わせて 1 接続のメモリ最悪値を有限にする。
+/// `max == 0` は無制限。
+struct DataChannelLimiter {
+    open: AtomicUsize,
+    max: usize,
+}
+
+/// 枠 1 つ分の RAII ガード。drop で枠を返すので、タスクの中断・panic でも枠がリークしない
+/// （リークすると正当なチャネルを恒久的に拒否する自己 DoS になる）。
+struct DataChannelPermit(Arc<DataChannelLimiter>);
+
+impl DataChannelLimiter {
+    fn new(max: usize) -> Arc<Self> {
+        Arc::new(Self {
+            open: AtomicUsize::new(0),
+            max,
+        })
+    }
+
+    /// 空きがあるときだけ原子的に 1 枠確保する（CAS。並行到着でも上限を超えない）。
+    fn try_acquire(self: &Arc<Self>) -> Option<DataChannelPermit> {
+        self.open
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                if self.max != 0 && n >= self.max {
+                    None
+                } else {
+                    n.checked_add(1)
+                }
+            })
+            .ok()
+            .map(|_| DataChannelPermit(Arc::clone(self)))
+    }
+}
+
+impl Drop for DataChannelPermit {
+    fn drop(&mut self) {
+        self.0.open.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[async_trait]
@@ -616,7 +664,22 @@ impl PeerConnectionEventHandler for SignalingHandler {
     }
 
     async fn on_data_channel(&self, data_channel: Arc<dyn DataChannel>) {
-        tokio::spawn(echo_loop(data_channel));
+        // 枠の確保は spawn の前に同期で行い、並行到着でも上限を超えさせない。
+        match self.channels.try_acquire() {
+            Some(permit) => {
+                tokio::spawn(async move {
+                    echo_loop(data_channel).await;
+                    drop(permit);
+                });
+            }
+            None => {
+                // 上限超過: チャネルだけ閉じ、接続は維持する。ハンドラはドライバ上で走るため
+                // close は await せず別タスクへ切り出す。
+                tokio::spawn(async move {
+                    let _ = data_channel.close().await;
+                });
+            }
+        }
     }
 }
 
@@ -677,6 +740,7 @@ async fn build_peer_connection(
             gather_tx,
             config: config.clone(),
             slot_id,
+            channels: DataChannelLimiter::new(config.max_data_channels_per_connection()),
         }))
         .with_data_channel_send_buffer_limit(config.data_channel_send_buffer_limit())
         .with_udp_addrs(udp_addrs)
@@ -700,6 +764,38 @@ mod tests {
     use crate::config::wait_until_closed;
     use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
     use std::time::Duration;
+
+    #[test]
+    fn limiter_caps_releases_and_treats_zero_as_unlimited() {
+        let l = DataChannelLimiter::new(2);
+        let a = l.try_acquire().expect("1 本目");
+        let _b = l.try_acquire().expect("2 本目");
+        assert!(l.try_acquire().is_none(), "上限ちょうどで拒否");
+        drop(a);
+        assert!(l.try_acquire().is_some(), "drop で 1 枠戻る");
+
+        let unlimited = DataChannelLimiter::new(0);
+        let permits: Vec<_> = (0..1000)
+            .map(|_| unlimited.try_acquire().unwrap())
+            .collect();
+        assert_eq!(permits.len(), 1000);
+    }
+
+    #[test]
+    fn limiter_never_exceeds_cap_under_concurrency() {
+        let l = DataChannelLimiter::new(5);
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let l = Arc::clone(&l);
+                std::thread::spawn(move || l.try_acquire())
+            })
+            .collect();
+        let got: Vec<_> = handles
+            .into_iter()
+            .filter_map(|h| h.join().unwrap())
+            .collect();
+        assert_eq!(got.len(), 5, "成功数は上限ちょうど");
+    }
 
     fn head_from(buf: &[u8]) -> RequestHead {
         match parse_request_head(buf).unwrap() {
@@ -1001,6 +1097,7 @@ mod tests {
             gather_tx,
             config: config.clone(),
             slot_id,
+            channels: DataChannelLimiter::new(0),
         };
         handler.on_connection_state_change(state).await;
 
@@ -1044,6 +1141,7 @@ mod tests {
             gather_tx,
             config: config.clone(),
             slot_id,
+            channels: DataChannelLimiter::new(0),
         };
         handler
             .on_connection_state_change(RTCPeerConnectionState::Disconnected)
@@ -1068,6 +1166,7 @@ mod tests {
             gather_tx,
             config: config.clone(),
             slot_id,
+            channels: DataChannelLimiter::new(0),
         };
         handler
             .on_connection_state_change(RTCPeerConnectionState::Failed)

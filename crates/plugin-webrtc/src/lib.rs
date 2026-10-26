@@ -37,6 +37,11 @@
 //! `0` で無制限に戻せるが、遅い相手によるメモリ枯渇のリスクを再び負う。上限は
 //! [`WebRtcConfig::with_data_channel_send_buffer_limit`] で変更する。
 //!
+//! 1 接続あたりに同時に開けるデータチャネル数は
+//! [`WebRtcConfig::max_data_channels_per_connection`]（既定 16、`0` は無制限）で制限する。
+//! 超過分のチャネルは即 close し、接続と既存チャネルは維持する
+//! （[`WebRtcConfig::with_max_data_channels_per_connection`]）。
+//!
 //! WebRTC の DataChannel は SDP 交換後、SCTP/DTLS/ICE の独立した UDP セッション上で
 //! 動作し、シグナリングに使った HTTP/TCP 接続そのものを奪取する必要がない。そのため
 //! [`crate::handler::try_handle_rtc_offer`] は `UpgradeHandler`（接続奪取）ではなく、
