@@ -1023,7 +1023,7 @@ DURATION_SEC=900 bash benches/webrtc-dc-churn.sh --detach   # OUT_DIR=... を表
 bash benches/webrtc-dc-churn.sh --wait <OUT_DIR> 540
 ```
 
-環境変数は `OUT_DIR`・`SAMPLE_INTERVAL_SEC`（既定 5）・`IDLE_SEC`・`MAX_CHANNELS`（既定 1）と、
+環境変数は `OUT_DIR`・`SAMPLE_INTERVAL_SEC`（既定 5）・`IDLE_SEC`（server の同時チャネル数上限は 1 固定）と、
 client 役へ渡る `DURATION_SEC`・`CONCURRENCY`・`LABEL_BYTES`・`REPORT_INTERVAL_SEC`・
 `CLOSE_PC_AT_END`・`POST_CLOSE_IDLE_SEC`（既定値は example の doc 参照）。出力先に
-`rss.csv`・`client.csv`・`summary.txt`・`done` を書く。
+`rss.csv`・`client.csv`・`summary.txt`・`done` を書く（前回成果物が残る `OUT_DIR` は拒否する）。

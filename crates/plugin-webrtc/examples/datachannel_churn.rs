@@ -19,8 +19,10 @@
 //! cargo run --release -p fandhe-backend-plugin-webrtc --example datachannel_churn -- client 127.0.0.1:PORT
 //! ```
 //!
+//! server の同時データチャネル数上限は 1 に固定する（client は 1 本目だけを維持するため、上限を
+//! 上げると churn 側のチャネルが受理され拒否経路を計測できなくなる）。
+//!
 //! 環境変数（任意。0・解析不能な値は既定値に戻す。`CONCURRENCY` のみ 0 を許可し churn なしの対照になる）:
-//! - `FANDHE_DC_CHURN_MAX_CHANNELS`（server、既定 1）: 1 接続あたりの同時データチャネル数上限
 //! - `DURATION_SEC`（client、既定 600）、`CONCURRENCY`（既定 4）、`LABEL_BYTES`（既定 8、最大 60000）
 //! - `REPORT_INTERVAL_SEC`（既定 10）、`CLOSE_PC_AT_END`（既定 1）、`POST_CLOSE_IDLE_SEC`（既定 60）
 //!
@@ -79,7 +81,8 @@ async fn main() {
 // ---------------------------------------------------------------------------
 
 async fn run_server() {
-    let max = env_u64("FANDHE_DC_CHURN_MAX_CHANNELS", 1) as usize;
+    // 1 本目だけを維持する client と対で、churn 側を必ず拒否させるため 1 固定。
+    let max = 1_usize;
     let config = WebRtcConfig::new()
         .with_udp_bind_addrs(vec!["127.0.0.1:0".to_owned()])
         .with_max_data_channels_per_connection(max);

@@ -12,10 +12,10 @@
 #   bash benches/webrtc-dc-churn.sh --wait DIR SEC   # DIR の完了を最長 SEC 秒待ち summary.txt を表示
 #
 # 環境変数（任意）:
-#   OUT_DIR             出力先（未指定は mktemp -d）。rss.csv / client.csv / summary.txt / done
+#   OUT_DIR             出力先（未指定は mktemp -d）。rss.csv / client.csv / summary.txt / done。
+#                       前回の実行成果物が残る OUT_DIR は拒否する（別ディレクトリを指定するか削除する）
 #   SAMPLE_INTERVAL_SEC RSS 採取間隔（既定 5）
 #   IDLE_SEC            churn 前の待機時 RSS 採取秒数（既定 15）
-#   MAX_CHANNELS        server の同時データチャネル数上限（既定 1）
 #   DURATION_SEC / CONCURRENCY / LABEL_BYTES / REPORT_INTERVAL_SEC / CLOSE_PC_AT_END /
 #   POST_CLOSE_IDLE_SEC は client 役へそのまま渡る（既定は example の doc 参照）
 #
@@ -25,7 +25,6 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SAMPLE_INTERVAL_SEC="${SAMPLE_INTERVAL_SEC:-5}"
 IDLE_SEC="${IDLE_SEC:-15}"
-MAX_CHANNELS="${MAX_CHANNELS:-1}"
 
 # sleep を使わない有界待機（fifo の read -t）。
 nap() {
@@ -91,6 +90,14 @@ run_mode() {
   mkdir -p "$dir"
   # cd 後も同じ場所を指すよう、cd の前に絶対パスへ正規化する（相対 OUT_DIR の食い違い防止）。
   dir="$(cd "$dir" && pwd)"
+  # 前回の done / stop_sampler / stdin.fifo が残ると --wait が前回結果を即返し sampler も止まるため拒否する。
+  local stale
+  for stale in done stop_sampler stdin.fifo summary.txt rss.csv client.csv; do
+    if [ -e "$dir/$stale" ]; then
+      echo "OUT_DIR に前回の実行成果物が残っている（$dir/$stale）。別ディレクトリを指定するか削除すること" >&2
+      exit 1
+    fi
+  done
   echo "OUT_DIR=$dir"
   cd "$REPO_ROOT"
   cargo build --release -p fandhe-backend-plugin-webrtc --example datachannel_churn >"$dir/build.log" 2>&1
@@ -102,13 +109,13 @@ run_mode() {
     echo "uname=$(uname -srm)"
     echo "rustc=$(rustc --version)"
     echo "uptime=$(uptime)"
-    echo "max_channels=$MAX_CHANNELS"
+    echo "max_channels=1"
     echo "DURATION_SEC=${DURATION_SEC:-600} CONCURRENCY=${CONCURRENCY:-4} LABEL_BYTES=${LABEL_BYTES:-8}"
   } >"$dir/env.txt"
 
   local fifo="$dir/stdin.fifo"
   mkfifo "$fifo"
-  FANDHE_DC_CHURN_MAX_CHANNELS="$MAX_CHANNELS" "$bin" server <"$fifo" >"$dir/server.out" 2>"$dir/server.err" &
+  "$bin" server <"$fifo" >"$dir/server.out" 2>"$dir/server.err" &
   local server_wrapper=$!
   exec 5>"$fifo"
   local pid="" addr="" i
