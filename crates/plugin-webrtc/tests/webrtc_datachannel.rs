@@ -544,3 +544,59 @@ async fn zero_means_unlimited_data_channels() {
     assert!(echoes(&dc3, "3", ECHO_WAIT).await);
     let _ = client.pc.close().await;
 }
+
+/// 拒否されるチャネルを続けて開閉する回数（イシュー #887）。長時間の RSS 計測は
+/// `benches/webrtc-dc-churn.sh` が担い、本テストは CI で常時回せる軽量な回帰確認に限る。
+const CHURN_CYCLES: usize = 100;
+
+/// 上限 1 のまま、拒否されるチャネルを `CHURN_CYCLES` 回連続で開閉しても、既存チャネルの
+/// エコーと接続が維持され、許可枠（permit）が漏れず後続の受理が成立することを確認する。
+/// 内部状態の残留（メモリ）の有界性は本テストの対象外で、`benches/webrtc-dc-churn.sh` と
+/// `benches/reports/issue887-webrtc-dc-churn.md` を参照。
+#[tokio::test]
+async fn rejected_channel_churn_keeps_connection_and_does_not_leak_permits() {
+    let (client, dc1) =
+        establish(WebRtcConfig::new().with_max_data_channels_per_connection(1)).await;
+
+    for n in 0..CHURN_CYCLES {
+        let dc = client
+            .pc
+            .create_data_channel(&format!("churn-{n}"), None)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(event) = dc.poll().await {
+                if matches!(event, DataChannelEvent::OnClose) {
+                    return;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("excess channel {n} was not closed in time"));
+    }
+
+    assert!(
+        echoes(&dc1, "still-alive", ECHO_WAIT).await,
+        "既存チャネルは継続"
+    );
+    assert_eq!(client.state(), RTCPeerConnectionState::Connected);
+
+    // 枠が漏れていなければ、1 本目を閉じた後に新しいチャネルが受理される。
+    dc1.close().await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut n = 0;
+    loop {
+        n += 1;
+        if let Some(dc) = open_extra(&client, &format!("after-churn-{n}")).await
+            && echoes(&dc, "reopened", ECHO_WAIT).await
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "拒否を繰り返した後に枠が漏れ、新規チャネルが受理されない"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let _ = client.pc.close().await;
+}
