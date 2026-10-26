@@ -17,6 +17,10 @@
   N 本のチャネルを持つ接続は最大 N × 上限を保持しうります。`0` は無制限です。既定値の変更は
   下の Changed を参照してください。API の追加のみで型は壊れません。
 
+- `fandhe-backend-plugin-webrtc`: `WebRtcConfig::with_udp_bind_addrs` / `udp_bind_addrs` を
+  追加しました（ICE が使う UDP バインドアドレス。既定は `["0.0.0.0:0"]`）。追加のみで
+  breaking change ではありません。
+
 ### Changed
 
 - `fandhe-backend-plugin-webrtc`: **データチャネルの送信バッファ上限の既定が、従来の無制限から
@@ -50,12 +54,6 @@
   `close_active_peers` / `drain_for_shutdown` は、待ち時間の上限を超えても `close()` を
   中断せず切り離したタスクで完了まで続けます。内部の `RTCPeerConnection` 表記の doc は
   `PeerConnection` に改めています。
-
-### Added
-
-- `fandhe-backend-plugin-webrtc`: `WebRtcConfig::with_udp_bind_addrs` / `udp_bind_addrs` を
-  追加しました（ICE が使う UDP バインドアドレス。既定は `["0.0.0.0:0"]`）。追加のみで
-  breaking change ではありません。
 
 ### Security
 
