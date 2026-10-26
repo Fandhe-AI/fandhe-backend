@@ -38,6 +38,98 @@ RS
 assert_eq "コメント中の .await/tokio:: は検出しない（偽陽性回帰防止）" "" "$(detect_forbidden_io_in_sources "${TMP}/src-clean")"
 assert_eq "コード行の async fn と std::fs を検出する（2 件）" "2" "$(detect_forbidden_io_in_sources "${TMP}/src-bad" | wc -l | tr -d ' ')"
 
+mkdir -p "${TMP}/src-mixed/refresh"
+cat > "${TMP}/src-mixed/gate.rs" <<'RS'
+pub fn check() -> u32 { 1 }
+RS
+cat > "${TMP}/src-mixed/refresh/task.rs" <<'RS'
+pub async fn run() { sleep().await; }
+RS
+assert_eq "除外なしなら refresh/ の async fn・.await を検出する（1 行）" "1" "$(detect_forbidden_io_in_sources "${TMP}/src-mixed" | wc -l | tr -d ' ')"
+assert_eq "refresh/ を除外すれば違反なし" "" "$(detect_forbidden_io_in_sources "${TMP}/src-mixed" "${TMP}/src-mixed/refresh/")"
+printf 'pub async fn leak() {}\n' > "${TMP}/src-mixed/auth.rs"
+assert_eq "除外しても refresh/ 以外の違反は検出する（陰性対照）" "1" "$(detect_forbidden_io_in_sources "${TMP}/src-mixed" "${TMP}/src-mixed/refresh/" | wc -l | tr -d ' ')"
+
+echo "===== optional_dep_gated_by_feature ====="
+cat > "${TMP}/gated-ok.toml" <<'T'
+[dependencies]
+# tokio = { version = "1" }
+base64 = { workspace = true }
+tokio = { version = "1", default-features = false, features = ["time"], optional = true }
+[features]
+default = []
+jwks-refresh = ["dep:tokio"]
+T
+cat > "${TMP}/gated-no-optional.toml" <<'T'
+[dependencies]
+tokio = { version = "1", default-features = false }
+[features]
+default = []
+jwks-refresh = ["dep:tokio"]
+T
+cat > "${TMP}/gated-no-dep-ref.toml" <<'T'
+[dependencies]
+tokio = { version = "1", optional = true }
+[features]
+default = []
+jwks-refresh = []
+T
+cat > "${TMP}/gated-in-default.toml" <<'T'
+[dependencies]
+tokio = { version = "1", optional = true }
+[features]
+default = ["jwks-refresh"]
+jwks-refresh = ["dep:tokio"]
+T
+cat > "${TMP}/gated-dev-only.toml" <<'T'
+[dependencies]
+base64 = { workspace = true }
+[dev-dependencies]
+tokio = { version = "1", optional = true }
+[features]
+jwks-refresh = ["dep:tokio"]
+T
+if optional_dep_gated_by_feature "${TMP}/gated-ok.toml" tokio jwks-refresh; then pass "optional + dep: + default 外は成功"; else fail "正しい配線を検出できない"; fi
+if optional_dep_gated_by_feature "${TMP}/gated-no-optional.toml" tokio jwks-refresh; then fail "optional でないのに成功"; else pass "optional でなければ失敗"; fi
+if optional_dep_gated_by_feature "${TMP}/gated-no-dep-ref.toml" tokio jwks-refresh; then fail "dep: 参照なしで成功"; else pass "feature が dep: を含まなければ失敗"; fi
+if optional_dep_gated_by_feature "${TMP}/gated-in-default.toml" tokio jwks-refresh; then fail "default に入っていて成功"; else pass "default に入っていれば失敗"; fi
+if optional_dep_gated_by_feature "${TMP}/gated-dev-only.toml" tokio jwks-refresh; then fail "dev-dependencies のみで成功"; else pass "[dependencies] に無ければ失敗（dev 節は無視）"; fi
+
+echo "===== module_is_cfg_gated ====="
+cat > "${TMP}/lib-ok.rs" <<'RS'
+//! doc
+#[cfg(feature = "jwks-refresh")]
+pub mod refresh;
+RS
+cat > "${TMP}/lib-nocfg.rs" <<'RS'
+pub mod refresh;
+RS
+cat > "${TMP}/lib-otherfeat.rs" <<'RS'
+#[cfg(feature = "other")]
+pub mod refresh;
+RS
+cat > "${TMP}/lib-comment.rs" <<'RS'
+#[cfg(feature = "jwks-refresh")]
+// pub mod refresh;
+pub mod other;
+RS
+if module_is_cfg_gated "${TMP}/lib-ok.rs" refresh jwks-refresh; then pass "cfg 直後の mod を検出"; else fail "cfg 付き mod を検出できない"; fi
+if module_is_cfg_gated "${TMP}/lib-nocfg.rs" refresh jwks-refresh; then fail "cfg なしで成功"; else pass "cfg なしなら失敗"; fi
+if module_is_cfg_gated "${TMP}/lib-otherfeat.rs" refresh jwks-refresh; then fail "別 feature の cfg で成功"; else pass "別 feature の cfg なら失敗"; fi
+if module_is_cfg_gated "${TMP}/lib-comment.rs" refresh jwks-refresh; then fail "コメント中の mod で成功"; else pass "コメント中の mod 宣言は無視"; fi
+REAL_LIB="${SCRIPTS_DIR}/../crates/plugin-jwt/src/lib.rs"
+if module_is_cfg_gated "${REAL_LIB}" refresh jwks-refresh; then pass "実 lib.rs: refresh は jwks-refresh の cfg 内"; else fail "実 lib.rs の refresh が cfg で閉じていない"; fi
+sed 's|^#\[cfg(feature = "jwks-refresh")\]$||' "${REAL_LIB}" > "${TMP}/real-lib.rs"
+if module_is_cfg_gated "${TMP}/real-lib.rs" refresh jwks-refresh; then fail "陰性対照: 実 lib.rs から cfg を除いても成功"; else pass "陰性対照: 実 lib.rs の cfg を除くと失敗"; fi
+REAL_JWT_TOML="${SCRIPTS_DIR}/../crates/plugin-jwt/Cargo.toml"
+if optional_dep_gated_by_feature "${REAL_JWT_TOML}" tokio jwks-refresh; then pass "実 plugin-jwt Cargo.toml: tokio は jwks-refresh 限定の optional"; else fail "実 Cargo.toml の tokio 配線が設計 8.2 と異なる"; fi
+sed 's/, optional = true//' "${REAL_JWT_TOML}" > "${TMP}/real-jwt.toml"
+if optional_dep_gated_by_feature "${TMP}/real-jwt.toml" tokio jwks-refresh; then fail "陰性対照: optional を除いても成功"; else pass "陰性対照: 実 Cargo.toml の optional を除くと失敗"; fi
+
+echo "===== tokio_feature_lines ====="
+printf 'tokio feature "time"\ntokio feature "time" (*)\ntokio feature "sync"\nfandhe-backend-plugin-jwt feature "jwks-refresh"\n' > "${TMP}/feat.txt"
+assert_eq "tokio の feature 行だけを重複なく並べる" 'tokio feature "sync" tokio feature "time"' "$(tokio_feature_lines "${TMP}/feat.txt" | tr '\n' ' ' | sed 's/ $//')"
+
 echo "===== check_dependency_allowlist ====="
 cat > "${TMP}/ok.toml" <<'T'
 [dependencies]

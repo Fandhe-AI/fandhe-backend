@@ -640,6 +640,14 @@ E・F の静的確認は説明文・コメントでの言及にヒットしな�
 `[dependencies]` 表、`fuzz.sh` の `FUZZ_DIRS` 代入行、`ci.yml` の `fuzz-smoke` ジョブ内の
 コメント以外の `run:` 行に限定して判定する（本物の行を除いたコピーで FAIL する陰性対照つき）。
 
+追加要件 `jwks-refresh`（#897）として G（取り直しタスクの時刻制御テスト `tests/refresh_task.rs`）と
+H（ゲート経路の回数の上限・事前公開なしの切替への追従・通常の回転 `tests/refresh_gate.rs`）を
+`--features jwks-refresh` でテスト名単位に照合する。C は取り直しタスク `src/refresh/`（ゲートの外、
+設計 8.1）を走査から除くが、`refresh` モジュールが `#[cfg(feature = "jwks-refresh")]` の内側にあることを
+別途確かめる。D は tokio を「`jwks-refresh` だけが有効にする optional 依存」のときに限り許可し、
+設計 8.2 の (a)(b)（無効時に直接の辺なし・有効時もパッケージ集合と tokio feature 集合が不変）を
+`cargo tree` で判定する。
+
 判定ロジックは `lib/jwt-verify-checks.sh` に純関数として分離し、
 `scripts/tests/run-jwt-verify-accept-tests.sh`（cargo・ネットワーク非依存）で回帰検証する。
 実行結果レポートは `docs/acceptance/req16-jwt-verify.md` に記録する。
