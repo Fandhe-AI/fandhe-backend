@@ -481,6 +481,9 @@ spec の式 `ceil(T / L) + 定期の取得回数` はこれ以上なので満た
 受理が残らない。以後に成功すれば鍵集合は戻る。未設定（既定）なら空にしない。時刻はすべて `tokio::time::Instant`
 （単調時刻）で測る。**影響先**: #895。
 
+**実装時の決定（#895）**: 「最後に取得に成功した時刻」は取得の**開始時刻**とした（完了時刻より早く、フェイルクローズ寄りで、
+仮想時間のテストで決定的になる）。`RefreshStatus::last_success` も同じ時刻を指す。
+
 ### 8.10 時刻を制御するテストの方針
 
 `tokio::time::pause` / `#[tokio::test(start_paused = true)]` を使う。dev-dependencies の `tokio` に `test-util` と `rt`

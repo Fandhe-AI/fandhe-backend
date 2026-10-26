@@ -46,5 +46,10 @@ tokio = { version = "1", default-features = false, features = [
   "macros",
   "rt-multi-thread",
   "io-util",
+  # `jwks-refresh` のタスクテスト（tests/refresh_task.rs）が仮想時間（`start_paused`）で
+  # 周期・時間切れ・max_stale を決定的に検証するためだけに使う（dev 専用）。
+  "test-util",
+  "time",
+  "sync",
 ] }
 fandhe-backend-routes = { workspace = true }

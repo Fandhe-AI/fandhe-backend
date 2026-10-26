@@ -47,8 +47,9 @@ pub use jwks::{
 #[cfg(feature = "jwks-refresh")]
 pub use refresh::{
     DEFAULT_FETCH_TIMEOUT, DEFAULT_REFRESH_MIN_INTERVAL, FetchError, FetchFuture, JwksFetcher,
-    JwksResponse, MAX_FETCH_TIMEOUT, MAX_REFRESH_MIN_INTERVAL, MAX_REFRESH_PERIOD, MAX_STALE_LIMIT,
-    RefreshConfig, RefreshConfigBuilder, RefreshConfigError,
+    JwksRefresher, JwksResponse, MAX_FETCH_TIMEOUT, MAX_REFRESH_MIN_INTERVAL, MAX_REFRESH_PERIOD,
+    MAX_STALE_LIMIT, RefreshConfig, RefreshConfigBuilder, RefreshConfigError, RefreshEvent,
+    RefreshFailure, RefreshHandle, RefreshObserver, RefreshStatus, RefreshTask,
 };
 
 pub use policy::{
