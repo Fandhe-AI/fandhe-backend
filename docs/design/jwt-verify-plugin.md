@@ -443,6 +443,16 @@ no-op）。キューを持つ mpsc は、満杯の扱いが不要でまとめの
 **代替案**: 「`unknown_key_min_interval(ZERO)` を設定すること」を doc で求める形は、誤設定できてしまうため不採用。
 **影響先**: #896（`auth.rs` の cfg 付き変更）、#897（遅延の基準が本推奨を前提とする）。
 
+**実装時の決定（#896）**:
+- トリガーは `RefreshHandle::trigger()` で得る（非破壊の追加。`JwksRefresher::new` の戻り値の形は変えない）。
+  `Drop` は実装せず、保持してもタスクは生きない・止まらない（停止は `RefreshHandle` のみ）。
+- 合図の入口は `UnknownKeyNotifier` と `jwks_refresh_trigger` に絞り、`fire` は公開しない。ゲートは判定確定後に
+  inherent の `fire()` を直接呼ぶため `UnknownKeyEvent`（`kid`）は合図の経路へ届かない。`JwksFetcher::fetch` も
+  引数を持たず、取得先を `kid` から決める余地が構造的にない。
+- 停止後の合図は何もしない（`is_stopped` を見てから `notify_one`）。`Notify` はキューを持たないため「満杯」状態がない。
+- `unknown_key_notifier` へ登録すると `NotifyThrottle` の後ろに並ぶ。doc で `jwks_refresh_trigger` を案内する。
+- タスクの挙動は変えない。取得中に届いた合図は許可として残り、「取得開始 + 下限」に 1 回だけ追加取得する。
+
 ### 8.7 合図のまとめと取得回数の上限の根拠
 
 **結論**: 取得は常に直列（同時に 1 件）。定期・合図・再試行のどれでも、取得の開始は

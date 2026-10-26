@@ -531,3 +531,164 @@ async fn observer_panic_does_not_stop_task() {
     fx.until(65_500).await;
     assert_eq!(fx.starts(), [0, 60]);
 }
+
+// ---- #896: 未知 kid を契機にした取り直しと、下限によるまとめ ----
+
+/// 合図ハンドルを登録した認証器。`counter` は利用者の通知口の呼び出し回数。
+fn triggered_authenticator(
+    shared: &SharedKeySet,
+    trigger: RefreshTrigger,
+    counter: Arc<AtomicUsize>,
+) -> JwtAuthenticator {
+    let policy = JwtPolicy::new(
+        Issuer::new(ISS).unwrap(),
+        Audiences::single("api").unwrap(),
+        AllowedAlgorithms::only(Algorithm::Es256),
+        TokenType::AccessToken,
+    );
+    JwtAuthenticator::builder(shared.clone(), policy)
+        .jwks_refresh_trigger(trigger)
+        .unknown_key_notifier(move |_: &UnknownKeyEvent<'_>| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })
+        .build()
+}
+
+#[tokio::test(start_paused = true)]
+async fn unknown_kid_rejects_immediately_then_refetch_accepts_new_key() {
+    let ec = Ec::new();
+    let shared = SharedKeySet::new(KeySet::empty());
+    let fx = Fx::start(
+        shared.clone(),
+        cfg(3600),
+        vec![ok(&ec, "k1"), ok(&ec, "k2")],
+    );
+    let auth = triggered_authenticator(&shared, fx.handle.trigger(), Arc::default());
+    fx.until(500).await;
+    assert_eq!(fx.starts(), [0]);
+    // 取り直しを待たず、その場で拒否される（フェイルクローズ）。
+    assert!(!accepts(&auth, &ec, "k2"));
+    // 合図は最小間隔（10 秒）にそろえられて取得される。
+    fx.until(15_500).await;
+    assert_eq!(fx.starts(), [0, 10]);
+    assert!(accepts(&auth, &ec, "k2"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn trigger_is_not_throttled_like_user_notifier() {
+    let ec = Ec::new();
+    let shared = SharedKeySet::new(KeySet::empty());
+    let fx = Fx::start(
+        shared.clone(),
+        cfg(3600),
+        vec![ok(&ec, "k1"), ok(&ec, "k2")],
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let auth = triggered_authenticator(&shared, fx.handle.trigger(), Arc::clone(&calls));
+    fx.until(500).await;
+    // 同じ now_unix で 2 回。利用者の通知口は間引かれて 1 回、合図は毎回送られる。
+    assert!(!accepts(&auth, &ec, "evil"));
+    assert!(!accepts(&auth, &ec, "k2"));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    fx.until(15_500).await;
+    assert_eq!(fx.starts(), [0, 10]);
+    assert!(accepts(&auth, &ec, "k2"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn many_signals_within_min_interval_collapse_into_one_fetch() {
+    let ec = Ec::new();
+    let shared = SharedKeySet::new(KeySet::empty());
+    let fx = Fx::start(shared.clone(), cfg(3600), vec![ok(&ec, "k1")]);
+    let auth = triggered_authenticator(&shared, fx.handle.trigger(), Arc::default());
+    fx.until(1_000).await;
+    for _ in 0..1000 {
+        assert!(!accepts(&auth, &ec, "evil"));
+    }
+    fx.until(9_500).await;
+    assert_eq!(fx.starts(), [0]);
+    fx.until(10_500).await;
+    assert_eq!(fx.starts(), [0, 10]);
+    fx.until(100_000).await;
+    assert_eq!(fx.starts(), [0, 10]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn signals_during_in_flight_fetch_collapse_into_one_more_fetch() {
+    let ec = Ec::new();
+    let shared = SharedKeySet::new(KeySet::empty());
+    let fx = Fx::start(
+        shared.clone(),
+        cfg(3600),
+        vec![ok(&ec, "k1"), Step::Slow(s(3), ec.jwks("k2"))],
+    );
+    let auth = triggered_authenticator(&shared, fx.handle.trigger(), Arc::default());
+    fx.until(500).await;
+    assert!(!accepts(&auth, &ec, "evil"));
+    // 10 秒で始まった取得（3 秒かかる）の最中に合図を連打する。
+    fx.until(11_500).await;
+    assert_eq!(fx.starts(), [0, 10]);
+    for _ in 0..1000 {
+        assert!(!accepts(&auth, &ec, "evil"));
+    }
+    // 追加の取得は「取得開始 + 最小間隔」の 1 回だけ。
+    fx.until(19_500).await;
+    assert_eq!(fx.starts(), [0, 10]);
+    fx.until(25_500).await;
+    assert_eq!(fx.starts(), [0, 10, 20]);
+    fx.until(100_000).await;
+    assert_eq!(fx.starts(), [0, 10, 20]);
+}
+
+/// 通知はブロックしない。`Notify` は許可を 1 つしか持たずキューがないため、
+/// 「満杯で待つ」状態がそもそも存在しない。タスク未 poll・停止後・終了後でも即座に戻る。
+#[test]
+fn signalling_never_blocks_without_runtime_or_task() {
+    struct Never;
+    impl JwksFetcher for Never {
+        fn fetch(&self) -> FetchFuture<'_> {
+            Box::pin(std::future::pending())
+        }
+    }
+    let ec = Ec::new();
+    let shared = SharedKeySet::new(KeySet::empty());
+    let (task, handle) = JwksRefresher::new(shared.clone(), Never, cfg(3600));
+    let auth = triggered_authenticator(&shared, handle.trigger(), Arc::default());
+    let tok = head(&ec.token("evil"));
+    for _ in 0..10_000 {
+        assert!(auth.authenticate_at(&tok, NOW).is_err());
+    }
+    handle.shutdown();
+    for _ in 0..10_000 {
+        assert!(auth.authenticate_at(&tok, NOW).is_err());
+    }
+    assert!(handle.status().is_stopped());
+    drop(task);
+    for _ in 0..10_000 {
+        assert!(auth.authenticate_at(&tok, NOW).is_err());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn signalling_after_task_finished_is_noop() {
+    let ec = Ec::new();
+    let shared = SharedKeySet::new(KeySet::empty());
+    let fx = Fx::start(shared.clone(), cfg(3600), vec![ok(&ec, "k1")]);
+    let auth = triggered_authenticator(&shared, fx.handle.trigger(), Arc::default());
+    fx.until(500).await;
+    fx.handle.shutdown();
+    let Fx {
+        starts,
+        join,
+        t0,
+        handle,
+        ..
+    } = fx;
+    tokio::time::timeout(s(1), join).await.unwrap().unwrap();
+    for _ in 0..1000 {
+        assert!(!accepts(&auth, &ec, "evil"));
+    }
+    sleep_until(t0 + s(100)).await;
+    assert_eq!(starts.lock().unwrap().len(), 1);
+    assert!(handle.status().is_stopped());
+}

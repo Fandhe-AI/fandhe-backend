@@ -173,6 +173,8 @@ struct Inner<E> {
     policy: JwtPolicy,
     cache: TokenCache<E>,
     notifier: Option<Box<dyn UnknownKeyNotifier>>,
+    #[cfg(feature = "jwks-refresh")]
+    refresh_trigger: Option<crate::refresh::RefreshTrigger>,
     throttle: NotifyThrottle,
     hits: AtomicU64,
     misses: AtomicU64,
@@ -221,6 +223,8 @@ pub struct JwtAuthenticatorBuilder<E> {
     keys: SharedKeySet,
     policy: JwtPolicy,
     notifier: Option<Box<dyn UnknownKeyNotifier>>,
+    #[cfg(feature = "jwks-refresh")]
+    refresh_trigger: Option<crate::refresh::RefreshTrigger>,
     min_interval: Duration,
     _extra: PhantomData<fn() -> E>,
 }
@@ -239,6 +243,41 @@ impl<E> JwtAuthenticatorBuilder<E> {
         self
     }
 
+    /// 未知 `kid` を契機に JWKS を取り直す合図ハンドルを登録する（枠は 1 つ。再度呼ぶと後勝ち）。
+    ///
+    /// 対象 feature: `jwks-refresh`。通知の間引き（`NotifyThrottle`）を通さず、
+    /// 未知 `kid` のたびに [`RefreshTrigger`](crate::RefreshTrigger) へ合図する
+    /// （まとめはタスク側の最小間隔が担う）。合図は判定確定後に同期・非ブロックで送られ、
+    /// 未知 `kid` のトークンは取り直しを待たず従来どおりその場で拒否される。
+    /// `kid` は合図の経路へ渡らない。
+    ///
+    /// ```
+    /// # use fandhe_backend_plugin_jwt::*;
+    /// # struct F;
+    /// # impl JwksFetcher for F {
+    /// #     fn fetch(&self) -> FetchFuture<'_> { Box::pin(async { Ok(JwksResponse::new(String::new(), None)) }) }
+    /// # }
+    /// # let policy = JwtPolicy::new(
+    /// #     Issuer::new("https://issuer.example")?,
+    /// #     Audiences::single("api")?,
+    /// #     AllowedAlgorithms::only(Algorithm::Es256),
+    /// #     TokenType::AccessToken,
+    /// # );
+    /// let keys = SharedKeySet::new(KeySet::empty());
+    /// let cfg = RefreshConfig::new(std::time::Duration::from_secs(60)).unwrap();
+    /// let (_task, handle) = JwksRefresher::new(keys.clone(), F, cfg);
+    /// let _auth = JwtAuthenticator::<NoExtraClaims>::builder(keys, policy)
+    ///     .jwks_refresh_trigger(handle.trigger())
+    ///     .build();
+    /// # Ok::<(), PolicyError>(())
+    /// ```
+    #[cfg(feature = "jwks-refresh")]
+    #[must_use]
+    pub fn jwks_refresh_trigger(mut self, t: crate::refresh::RefreshTrigger) -> Self {
+        self.refresh_trigger = Some(t);
+        self
+    }
+
     /// 認証器を作る。
     pub fn build(self) -> JwtAuthenticator<E>
     where
@@ -250,6 +289,8 @@ impl<E> JwtAuthenticatorBuilder<E> {
                 policy: self.policy,
                 cache: TokenCache::new(),
                 notifier: self.notifier,
+                #[cfg(feature = "jwks-refresh")]
+                refresh_trigger: self.refresh_trigger,
                 throttle: NotifyThrottle::new(self.min_interval),
                 hits: AtomicU64::new(0),
                 misses: AtomicU64::new(0),
@@ -265,6 +306,8 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> JwtAuthenticator<E> {
             keys,
             policy,
             notifier: None,
+            #[cfg(feature = "jwks-refresh")]
+            refresh_trigger: None,
             min_interval: DEFAULT_UNKNOWN_KEY_MIN_INTERVAL,
             _extra: PhantomData,
         }
@@ -311,6 +354,13 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> JwtAuthenticator<E> {
             unknown = Some(kid.to_owned());
         });
         // 判定が確定した後に通知する。通知口の遅延・panic は判定結果を変えない。
+        // 取り直しの合図は間引きを通さない（まとめはタスク側の最小間隔が担う）。`kid` は渡さない。
+        #[cfg(feature = "jwks-refresh")]
+        if unknown.is_some()
+            && let Some(t) = inner.refresh_trigger.as_ref()
+        {
+            t.fire();
+        }
         if let (Some(kid), Some(n)) = (unknown, inner.notifier.as_deref())
             && let Some(suppressed) = inner.throttle.try_acquire(now_unix)
         {
