@@ -88,6 +88,8 @@ summarize() {
 run_mode() {
   local dir="${OUT_DIR:-$(mktemp -d)}"
   mkdir -p "$dir"
+  # cd 後も同じ場所を指すよう、cd の前に絶対パスへ正規化する（相対 OUT_DIR の食い違い防止）。
+  dir="$(cd "$dir" && pwd)"
   echo "OUT_DIR=$dir"
   cd "$REPO_ROOT"
   cargo build --release -p fandhe-backend-plugin-webrtc --example datachannel_churn >"$dir/build.log" 2>&1
@@ -132,9 +134,14 @@ run_mode() {
   date +%s >"$dir/t_client_start"
   : >"$dir/client.csv"
   # client の標準出力へ行ごとに epoch を付ける（PC_CLOSED の時刻を close 境界に使う）。
+  # client の終了コードは握りつぶさず記録し、後始末後に summary へ明示して非ゼロ終了する。
+  local client_rc=0
+  set +e
   "$bin" client "$addr" 2>"$dir/client.err" | while IFS= read -r line; do
     echo "$(date +%s),$line" >>"$dir/client.csv"
-  done || true
+  done
+  client_rc="${PIPESTATUS[0]}"
+  set -e
   local t_close
   t_close="$(grep ',PC_CLOSED$' "$dir/client.csv" | head -n 1 | cut -d, -f1 || true)"
   [ -n "$t_close" ] || t_close="$(date +%s)"
@@ -146,15 +153,23 @@ run_mode() {
   wait "$server_wrapper" 2>/dev/null || true
   trap - EXIT
 
-  { cat "$dir/env.txt"; echo "---"; summarize "$dir"; } >"$dir/summary.txt"
+  {
+    cat "$dir/env.txt"
+    echo "---"
+    echo "client_exit_code=$client_rc"
+    if [ "$client_rc" -ne 0 ]; then echo "WARNING: client が異常終了したため、以下は途中経過の集計であり計測完了ではない"; fi
+    summarize "$dir"
+  } >"$dir/summary.txt"
   touch "$dir/done"
   cat "$dir/summary.txt"
+  return "$client_rc"
 }
 
 case "${1:-}" in
   --detach)
     dir="${OUT_DIR:-$(mktemp -d)}"
     mkdir -p "$dir"
+    dir="$(cd "$dir" && pwd)"
     OUT_DIR="$dir" nohup bash "$0" >"$dir/run.log" 2>&1 </dev/null &
     echo "OUT_DIR=$dir"
     ;;
