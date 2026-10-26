@@ -157,8 +157,9 @@ const DEFAULT_DATA_CHANNEL_SEND_BUFFER_LIMIT: usize = 1024 * 1024;
 /// 1 接続あたりに同時に保持できるデータチャネル数の既定値（16 本）。
 ///
 /// 送信バッファ上限（[`DEFAULT_DATA_CHANNEL_SEND_BUFFER_LIMIT`]）はチャネルごとに効くため、
-/// チャネル数が無制限だと 1 接続の最悪メモリは `チャネル数 × 上限` で青天井になる。既定では
-/// 64 接続 × 16 本 × 1 MiB = 1 GiB に収める（.claude/rules/security.md のリソース枯渇対策）。
+/// チャネル数が無制限だと送信バッファ設定値の積 `チャネル数 × 上限` が青天井になる。既定では
+/// 64 接続 × 16 本 × 1 MiB = 1 GiB を目安に抑える（.claude/rules/security.md のリソース枯渇対策）。
+/// 設定上限を超える単一メッセージもバッファが空なら送信できるため、この積は厳密な最大値ではない。
 /// `WebRtcConfig::with_max_data_channels_per_connection` で上書きする。
 const DEFAULT_MAX_DATA_CHANNELS_PER_CONNECTION: usize = 16;
 
@@ -276,8 +277,9 @@ impl WebRtcConfig {
 
     /// 1 接続あたりに同時に保持できるデータチャネル数の上限を上書きする。
     ///
-    /// - 既定は 16 本。送信バッファ上限はチャネルごとに効くため、最悪メモリは
-    ///   `max_peer_connections × 本設定 × data_channel_send_buffer_limit`（既定で 1 GiB）になる。
+    /// - 既定は 16 本。送信バッファ上限はチャネルごとに効くため、送信バッファ設定値の積は
+    ///   `max_peer_connections × 本設定 × data_channel_send_buffer_limit`（既定で 1 GiB）が目安になる。
+    ///   ただし上限超過の単一メッセージやその他のバッファは含まず、メモリ使用量の厳密な最大値ではない。
     /// - 上限を超えて相手が開いたチャネルは**すぐ close する。接続自体は切らない**。既存の
     ///   チャネルのエコーは継続する。数えるのは「現在開いている本数」で、閉じたチャネルの枠は
     ///   空き、後から開き直せる。

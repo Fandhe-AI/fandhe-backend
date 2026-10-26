@@ -220,9 +220,9 @@ in-process WebRTC（`webrtc-rs` 0.21 系を直接依存）。`POST /rtc/offer` �
   ビルダー内では値を検証しない
 - 注意（データチャネル数上限）: `with_max_data_channels_per_connection` は 1 接続で**同時に開いている**
   データチャネル数の上限で、既定は 16（**従来の無制限からの挙動変更**）。上限を超えて相手が開いたチャネルは
-  すぐ close し、接続と既存チャネルは維持する。閉じたチャネルの枠は空き、後から開き直せる。最悪メモリは
+  すぐ close し、接続と既存チャネルは維持する。閉じたチャネルの枠は空き、後から開き直せる。送信バッファ設定値の積は
   `max_peer_connections × max_data_channels_per_connection × data_channel_send_buffer_limit`（既定で
-  64 × 16 × 1 MiB = 1 GiB）。`0` は無制限で、従来の挙動に戻せるがこの上限を失う。webrtc 0.21 時点では
+  64 × 16 × 1 MiB = 1 GiB）が目安で、上限超過の単一メッセージやその他のバッファは含まず、メモリ使用量の厳密な最大値ではない。`0` は無制限で、従来の挙動に戻せるがこの上限を失う。webrtc 0.21 時点では
   ストリーム数を設定する公開 API がないため、プラグイン側で計数して close している
 - 注意（空リスト・ホスト名は拒否）: 他の `with_*` と同様に `WebRtcConfig` はビルダー内で値を検証しない
   （構築時 `Result` を返す型ではない）。各要素は `SocketAddr`（`ip:port`、IPv6 は `[ip]:port`）として
