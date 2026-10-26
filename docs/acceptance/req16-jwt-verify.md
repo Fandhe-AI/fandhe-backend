@@ -175,7 +175,7 @@ cargo test -p fandhe-backend-plugin-jwt --features jwks-refresh --test refresh_g
 ### R1: 取得回数の上限（`r1_*`）
 
 数え方は設計 8.7 のとおり半開区間 `[a, a + T)`。攻撃者の鍵で正しく署名したトークンと署名が出鱈目なトークンを、
-未知の `kid` で毎秒送り続けた。全応答が 401（偽トークンの受理 0 件）。
+未知の `kid` で毎秒送り続けた。全応答が 401（偽トークンの受理 0 件）。応答はステータスだけでなくヘッダ（`Content-Length`・`Content-Type`）とボディも毎回検証する（200 は本文 `ok`、401 は固定の JSON `{"error":"invalid_token"}`）。
 
 | テスト | 条件 | 結果 |
 |------|------|------|
@@ -193,7 +193,8 @@ cargo test -p fandhe-backend-plugin-jwt --features jwks-refresh --test refresh_g
 | テスト | 結果 |
 |------|------|
 | `r2_unannounced_rotation_is_followed_within_min_interval_plus_fetch_time` | 切替の時点で 401（取り直しを待たない）。切替から受理までは約 12 s で、上限 13 s 以内、取得の完了より前には受理されない |
-| `r2_follow_bound_for_various_switch_offsets` | 切替が 3.05・6.05・9.95・10.05・10.5 s のいずれでも、受理までは 13 s 以内（10.05 s が最悪で、実際の受理は 12.95 s 後。100 ms 刻みの観測で 13.0 s と測れ、上限ちょうど） |
+| `r2_follow_bound_for_various_switch_offsets` | 取得が進行中でない状態で、切替が 3.05・6.05・9.95 s のいずれでも、受理までは 13 s 以内 |
+| `r2_switch_during_in_flight_fetch_is_followed_by_next_fetch` | 5 s の未知 `kid` で取得を予約し、10 s に始まった旧本文の取得（10〜13 s）の最中（切替 10.05・10.5・12.9 s）に切り替える。その取得は旧本文のまま完了するので受理されず、取得中に出た合図による次回の取得（20 s 開始、23 s 完了）で追従する。切替 10.05 s からは約 12.95 s（100 ms 刻みの観測で 13.0 s 前後）で、上限 13 s に最も近い最悪ケース |
 | `r2_attacker_noise_does_not_delay_following` | 切替の直前に未知 `kid` の大量送信で利用者の通知口が間引かれていても、合図は独立に働き 13 s 以内に追従 |
 
 ### R3: 通常の回転（`r3_*`、補足）

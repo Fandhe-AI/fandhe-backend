@@ -8,7 +8,8 @@
 //!   「T ÷ 下限 の切り上げ + 定期の取得回数」以下に収まり、偽トークンは 1 件も受理されない。
 //!   数えるのは設計 8.7 のとおり半開区間 `[a, a + T)`。
 //! - R2（事前公開なしの鍵切替への追従）: 切替の時点ではその場で 401、
-//!   「下限 + 取得にかかる時間」以内に 200 を返し始める。
+//!   「下限 + 取得にかかる時間」以内に 200 を返し始める。旧本文の取得の最中に切り替わる
+//!   場合は、事前に未知 `kid` で取得を予約して進行中であることを確かめてから切り替える。
 //! - R3（通常の回転）: 事前公開 → 署名鍵の切替 → 旧鍵の退役という正しい運用では、
 //!   正当なトークンの拒否が 0 件で、未知 `kid` による追加の取得も起きない。
 //!
@@ -166,8 +167,24 @@ fn gate_server(
     Server::new().gate(JwtGate::new(b.build())).handler(Ok200)
 }
 
-/// 1 リクエストを `handle_connection` 経由で往復し、ステータスコードを返す。
-async fn status(server: &Server, token: &str) -> u16 {
+/// 往復した応答の全体（ステータス・ヘッダ・ボディ）。
+struct Reply {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl Reply {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+/// 1 リクエストを `handle_connection` 経由で往復し、応答全体を解析する。
+async fn reply(server: &Server, token: &str) -> Reply {
     let req = format!(
         "GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
     );
@@ -177,8 +194,62 @@ async fn status(server: &Server, token: &str) -> u16 {
     handle_connection(server, server_stream).await;
     let mut out = Vec::new();
     client.read_to_end(&mut out).await.unwrap();
-    let text = String::from_utf8(out).unwrap();
-    text.split_whitespace().nth(1).unwrap().parse().unwrap()
+    let split = out
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("ヘッダ終端がない");
+    let head = String::from_utf8(out[..split].to_vec()).unwrap();
+    let body = out[split + 4..].to_vec();
+    let mut lines = head.split("\r\n");
+    let status = lines
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let headers = lines
+        .map(|l| {
+            let (k, v) = l.split_once(':').expect("ヘッダ行の形式");
+            (k.to_string(), v.trim().to_string())
+        })
+        .collect();
+    Reply {
+        status,
+        headers,
+        body,
+    }
+}
+
+/// ステータスを返す。ただし 200 と 401 は、ヘッダ（Content-Type / Content-Length）と
+/// ボディも期待どおりであることを毎回確かめる（それ以外のステータスは想定外で失敗）。
+async fn status(server: &Server, token: &str) -> u16 {
+    let r = reply(server, token).await;
+    match r.status {
+        200 => {
+            assert_eq!(r.body, b"ok", "200 のボディ");
+            assert_eq!(r.header("Content-Length"), Some("2"), "{:?}", r.headers);
+            // `Ok200` は Content-Type を付けない（ゲートが余計なヘッダを足していない）。
+            assert!(r.header("Content-Type").is_none(), "{:?}", r.headers);
+            assert_eq!(r.header("Connection"), Some("close"));
+            assert!(r.header("WWW-Authenticate").is_none(), "{:?}", r.headers);
+        }
+        401 => {
+            // 拒否理由は固定の JSON（トークンやキーの情報を含まない）。
+            let expected = br#"{"error":"invalid_token"}"#;
+            assert_eq!(r.body, expected, "401 のボディ");
+            let len = expected.len().to_string();
+            assert_eq!(r.header("Content-Length"), Some(len.as_str()));
+            assert!(
+                r.header("Content-Type").is_some_and(|v| v.contains("json")),
+                "{:?}",
+                r.headers
+            );
+        }
+        other => panic!("想定外のステータス {other}: {:?}", r.headers),
+    }
+    r.status
 }
 
 // ---- 実験台 ----
@@ -408,12 +479,27 @@ const LIMIT_MS: u64 = 10_000 + FETCH_MS;
 
 /// 発行者が `switch_ms` に本文を {k2} へ切り替える。k2 のトークンを 100 ms ごとに
 /// 送り、切替の時点で 401 になること・最初に 200 になるまでの時間を返す。
-async fn follow_switch(switch_ms: u64) -> u64 {
+/// `prime_at_ms` を渡すと、その時刻に未知 kid のトークンを送って取得を予約し、
+/// 切替の時点で「旧本文の取得が進行中」であることを確かめてから切り替える。
+async fn follow_switch(switch_ms: u64, prime_at_ms: Option<u64>) -> u64 {
     let k1 = Ec::new();
     let k2 = Ec::new();
     let rig = Rig::start(cfg(3600), jwks(&[(&k1, "k1")]), FETCH_MS);
     let server = rig.server();
+    if let Some(p) = prime_at_ms {
+        rig.until(p).await;
+        assert_eq!(status(&server, &forged_token("prime")).await, 401);
+    }
     rig.until(switch_ms).await;
+    if prime_at_ms.is_some() {
+        // 予約した取得は下限（起動から 10 s）に始まり、切替の時点で進行中（旧本文を取得中）。
+        let starts = rig.starts_ms();
+        assert_eq!(starts, [0, 10_000], "取得の予約が始まっていない");
+        assert!(
+            switch_ms > 10_000 && switch_ms < 10_000 + FETCH_MS,
+            "切替が取得中でない"
+        );
+    }
     rig.set_body(jwks(&[(&k2, "k2")]));
     let s = rig.now_ms();
     // 取り直しを待たず、その場で拒否される（フェイルクローズ）。
@@ -430,7 +516,7 @@ async fn follow_switch(switch_ms: u64) -> u64 {
 #[tokio::test(start_paused = true)]
 async fn r2_unannounced_rotation_is_followed_within_min_interval_plus_fetch_time() {
     // 起動時の取得（0〜3 秒）の完了後、直前の開始 f=0 から数えて最悪に近い切替。
-    let took = follow_switch(1_050).await;
+    let took = follow_switch(1_050, None).await;
     // 合図は f + L = 10 s に取得を始め、3 秒後の 13 s に反映される。
     assert!(took <= LIMIT_MS, "追従に {took} ms（上限 {LIMIT_MS} ms）");
     // 反映前（取得の完了前）は 200 にならない: 13 s の完了より前の追従はあり得ない。
@@ -439,12 +525,31 @@ async fn r2_unannounced_rotation_is_followed_within_min_interval_plus_fetch_time
 
 #[tokio::test(start_paused = true)]
 async fn r2_follow_bound_for_various_switch_offsets() {
-    // 起動時取得の直後・中間・次の許可の直前・取得開始の直後（旧本文を得る最悪）・取得の最中。
-    for switch_ms in [3_050, 6_050, 9_950, 10_050, 10_500] {
-        let took = follow_switch(switch_ms).await;
+    // 起動時取得の直後・中間・次の許可の直前・予約した取得の開始直前。
+    for switch_ms in [3_050, 6_050, 9_950] {
+        let took = follow_switch(switch_ms, None).await;
         assert!(
             took <= LIMIT_MS,
             "切替 {switch_ms} ms: 追従に {took} ms（上限 {LIMIT_MS} ms）"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn r2_switch_during_in_flight_fetch_is_followed_by_next_fetch() {
+    // 5 s の未知 kid で取得を予約すると、取得は下限の 10 s に始まり旧本文を得る（3 s 間）。
+    // 切替がその取得の最中（10.05 s・10.5 s・12.9 s）に起きると、その取得は旧本文のまま
+    // 完了するので、追従は取得中に出た合図による次回の取得（下限 20 s、完了 23 s）になる。
+    for switch_ms in [10_050, 10_500, 12_900] {
+        let took = follow_switch(switch_ms, Some(5_000)).await;
+        assert!(
+            took <= LIMIT_MS,
+            "切替 {switch_ms} ms: 追従に {took} ms（上限 {LIMIT_MS} ms）"
+        );
+        // 進行中の取得は旧本文なので、その完了（13 s）では受理されず、次回（23 s）以降。
+        assert!(
+            took >= 23_000 - switch_ms,
+            "切替 {switch_ms} ms: 旧本文の取得で受理された: {took}"
         );
     }
 }
