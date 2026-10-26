@@ -134,6 +134,42 @@
   このため枠の除去と `close()` を必ず対にする（`crates/plugin-webrtc/src/config.rs` のモジュール doc）
 - 移行トリガー（「3.」の 1〜3）の再評価サイクルは維持する。移行トリガー 2（未修正 advisory）は
   引き続き `cargo audit`（CI schedule 実行）で検知する
+- webrtc を更新するときは 3.2 節の確認（`SettingEngineBuilder` に SCTP ストリーム数の setter があるか）をやり直す
+
+
+### 3.2 データチャネル数上限と webrtc 側設定 API の再検討（#888）
+
+`WebRtcConfig::with_max_data_channels_per_connection`（#877）は、webrtc 0.21 にデータチャネル数
+（SCTP ストリーム数）の上限を設定する API がないため、`handler.rs` の `DataChannelLimiter` で自前に数え、
+超過分を `on_data_channel` で即 close している。webrtc 側に設定 API が出たときの扱いを再検討した。
+
+**確認結果（2026-10-27）**
+
+- 使用中は `webrtc 0.21.1`（`Cargo.lock` で `rtc-*` も 0.21.1）。crates.io の最新安定版も `webrtc` `rtc` ともに 0.21.1
+- 下位の `rtc-sctp` の `TransportConfig` には `with_max_num_inbound_streams` / `with_max_num_outbound_streams`
+  （既定は `u16::MAX`）がある。しかし `rtc` の `SettingEngineBuilder` が公開する SCTP 設定は
+  `with_sctp_max_message_size` / `with_sctp_max_receive_buffer_size` / `with_sctp_mtu` の 3 つだけで、
+  `transport/sctp/mod.rs` はストリーム数を配線せず `TransportConfig::default()` を使う。`webrtc` の
+  `PeerConnectionBuilder` にも設定口はない（`with_setting_engine` が上記に委ねるのみ）
+- upstream の `webrtc-rs/rtc` main（cd3f08a、2026-10-26）にも setter はない
+
+**判断: 現状維持**。対象バージョンにも upstream main にも設定 API がないため、併用・置き換えの前提が成り立たない。
+コードと公開 API（`with_max_data_channels_per_connection` / `max_data_channels_per_connection`）は変えない。
+1 接続あたりのチャネル数を抑える手段は引き続き自前の計数だけであり、DoS 耐性は後退しない。
+
+**API が公開された場合の暫定方針（提案）: 併用**
+
+- SCTP 側の上限は硬い天井として `build_peer_connection` で配線する（`PeerConnectionBuilder::with_setting_engine`）。
+  `0`（無制限）と `65535` 超は `u16::MAX` に丸める
+- 自前の計数は残す。SCTP のストリーム数は INIT で交渉される `u16` で、相手の広告値との `min` を取り、
+  association の存続中は固定である。自前の計数は「今開いている本数」を数え、閉じれば枠が空き、`0` を無制限として扱う
+- 置き換えは、次の意味の違いが互換を壊しうるため、確かめるまで採らない。(1) 今開いている本数ではなくストリーム ID 範囲の制限になる
+  (2) 失敗の仕方が変わる（現行は超過チャネルが一度開いてから close され `POST /rtc/offer` は 200 のまま。
+  SCTP 側では相手の `createDataChannel` が失敗する）(3) `negotiated_max_streams()` が inbound / outbound の `min`
+  のため、サーバー起点のチャネルにも効く
+
+**未確認**: `rtc-sctp` が `my_max_num_inbound_streams` 以上のストリーム ID の受信 DATA を実際に拒否するか
+（`get_or_create_stream` の境界判定）。API 公開時の再検討で確認する。
 
 ## 4. スコープ外機能の実装フェーズでの扱い
 
