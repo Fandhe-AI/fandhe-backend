@@ -242,7 +242,11 @@ impl<E: Clone> TokenCache<E> {
 #[cfg(feature = "dpop")]
 struct DpopState {
     config: DpopConfig,
+    /// ゲート（`authenticate`）が `jti` を登録する保持器。
     replay: ReplayStore,
+    /// ハンドラ（`authenticate_after_gate`）が `jti` を登録する、`replay` とは別の保持器。
+    /// ゲートの通過を共有履歴で証明することはできないため、両者は互いの登録を参照しない。
+    handler_replay: ReplayStore,
     /// `WWW-Authenticate` の `algs` 値。構築時に 1 回だけ正準順（`ES256 RS256`）で作り、
     /// リクエスト由来の値は入れない。
     challenge_algs: Box<str>,
@@ -405,11 +409,12 @@ impl<E> JwtAuthenticatorBuilder<E> {
             // 容量は `DpopConfig` が構築時に検証済みで、ここでの失敗は起きない。
             // 起きても panic させず既定の保持器に倒す。
             let window = config.iat_window();
-            let replay = match config.replay_capacity() {
+            let make = || match config.replay_capacity() {
                 Some(c) => ReplayStore::with_capacity(window, c)
                     .unwrap_or_else(|_| ReplayStore::new(window)),
                 None => ReplayStore::new(window),
             };
+            let (replay, handler_replay) = (make(), make());
             let challenge_algs = [Algorithm::Es256, Algorithm::Rs256]
                 .into_iter()
                 .filter(|a| config.algorithms().contains(*a))
@@ -420,6 +425,7 @@ impl<E> JwtAuthenticatorBuilder<E> {
             DpopState {
                 config,
                 replay,
+                handler_replay,
                 challenge_algs,
             }
         });
@@ -475,7 +481,7 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> JwtAuthenticator<E> {
     ) -> Result<Claims<E>, VerifyError> {
         #[cfg(feature = "dpop")]
         if let Some(d) = self.inner.dpop.as_ref() {
-            return self.authenticate_dpop(d, head, now_unix, Admission::Register);
+            return self.authenticate_dpop(d, head, now_unix, Admission::Gate);
         }
         let token = bearer_token(head).ok_or(VerifyError::MissingToken)?;
         self.verify_token_cached(token, now_unix)
@@ -530,17 +536,16 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> JwtAuthenticator<E> {
     ///
     /// DPoP を設定していない認証器では [`authenticate`](Self::authenticate) と同じ。設定している
     /// 認証器では、ゲートと同じ検査（格下げの拒否・proof の検証・サムプリントの比較）を行い、
-    /// `jti` の登録の代わりに「ゲートが登録済みであること」を要求する。ゲートを通っていない
-    /// 要求は `DpopError::NotAdmitted`（`dpop` feature）で拒否される（フェイルクローズ）。
+    /// `jti` を**ゲート用とは別のハンドラ用の保持器**へ登録する。core には要求ごとの通過証明を
+    /// 運ぶ領域がなく、共有履歴の「登録済み」はその要求がゲートを通った証明にならないため、
+    /// ゲートの登録を参照しない。ゲートが受理した後に後続ゲートが拒否した要求の登録も、ここの
+    /// 判定には影響しない。
     ///
-    /// 受け取りは **proof 1 つにつき一度だけ**成功する（ゲートが登録した項目を原子的に
-    /// 「受け取り済み」にする）。同じ proof をもう一度渡す（ゲートを通らない経路への再送を含む）
-    /// と `NotAdmitted` になる。このため 1 要求のハンドラで 2 回以上呼ばないこと。クレームは
-    /// 最初の戻り値を使い回す。
-    ///
-    /// 同じ proof の写しはゲートが `Replayed` で止めるため、ここへ届くのはゲートが受理した
-    /// 要求だけになる。proof の署名をここでもう一度検証するため、費用は 1 要求につき 2 回になる。
-    /// ゲートとハンドラの間で `iat` の窓の端を越えた要求は、ここで拒否されうる。
+    /// 同じ proof はハンドラ側でも一度しか受理されない（2 回目は `Replayed`）。1 要求のハンドラで
+    /// 2 回以上呼ばず、クレームは最初の戻り値を使い回すこと。ゲートなしの経路でも、新しい proof なら
+    /// 通常どおり検査して受理する（ゲートを通った事実は要求しない）。費用は 1 要求につき proof の
+    /// 署名検証が 2 回で、保持器もゲート・ハンドラで 2 つ持つ。ゲートとハンドラの間で `iat` の窓の
+    /// 端を越えた要求は、ここで拒否されうる。
     pub fn authenticate_after_gate(&self, head: &RequestHead) -> Result<Claims<E>, VerifyError> {
         self.authenticate_after_gate_at(head, unix_now())
     }
@@ -553,7 +558,7 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> JwtAuthenticator<E> {
     ) -> Result<Claims<E>, VerifyError> {
         #[cfg(feature = "dpop")]
         if let Some(d) = self.inner.dpop.as_ref() {
-            return self.authenticate_dpop(d, head, now_unix, Admission::AlreadyRegistered);
+            return self.authenticate_dpop(d, head, now_unix, Admission::Handler);
         }
         self.authenticate_at(head, now_unix)
     }
@@ -611,12 +616,8 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> JwtAuthenticator<E> {
             return Err(DpopError::ThumbprintMismatch.into());
         }
         match admission {
-            Admission::Register => d.replay.register(&verified, now_unix)?,
-            Admission::AlreadyRegistered => {
-                if !d.replay.claim(&verified, now_unix) {
-                    return Err(DpopError::NotAdmitted.into());
-                }
-            }
+            Admission::Gate => d.replay.register(&verified, now_unix)?,
+            Admission::Handler => d.handler_replay.register(&verified, now_unix)?,
         }
         Ok(claims)
     }
@@ -675,12 +676,12 @@ fn unix_now() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-/// `jti` の保持器へ登録するか、ゲートが登録済みであることを確かめるか。
+/// `jti` をどちらの保持器へ登録するか（ゲート用とハンドラ用は別の保持器）。
 #[cfg(feature = "dpop")]
 #[derive(Clone, Copy)]
 enum Admission {
-    Register,
-    AlreadyRegistered,
+    Gate,
+    Handler,
 }
 
 /// `cnf.jkt` の形式（SHA-256 の base64url、43 文字）。

@@ -283,12 +283,12 @@ fn dpop_err(error: &str) -> String {
     format!("DPoP error=\"{error}\", {ALGS}")
 }
 
-fn assert_not_admitted(r: &str) {
+fn assert_replayed_in_handler(r: &str) {
     assert_response(
         r,
         "HTTP/1.1 200 OK",
         None,
-        "sub=ERR:この要求は DPoP の検査を通っていません",
+        "sub=ERR:DPoP proof の jti は既に使われています",
         &["connection"],
     );
 }
@@ -621,53 +621,46 @@ async fn binding_is_checked_on_cache_hits() {
 }
 
 #[tokio::test]
-async fn handler_without_gate_is_fail_closed() {
+async fn gate_and_handler_do_not_share_replay_history() {
     let issuer = IssuerKey::new();
     let key = Key::ec();
     let a = auth(&issuer, DpopMode::Required);
-    // ゲートなし: jti が登録されないので、ハンドラ側の再検証は常に拒否になる。
-    let s = Server::new().handler(WhoAmI(a.clone()));
-    let t = issuer.token(&key.cnf());
-    let r = roundtrip(
-        &s,
-        &req(
-            PATH,
-            Some(&format!("DPoP {t}")),
-            &[&key.good_proof(&t, "j1")],
-        ),
-    )
-    .await;
-    assert_not_admitted(&r);
-
-    // ゲート経由で受理済みの proof を、同じ認証器を共有するゲートなしの経路へ再送しても通らない。
     let gated = server(&a);
     let ungated = Server::new().handler(WhoAmI(a.clone()));
+    let t = issuer.token(&key.cnf());
     let hdr = format!("DPoP {t}");
-    let p = key.good_proof(&t, "j2");
-    // ゲートは受理するがハンドラが受け取る前（ここではゲート単体の登録）を再現するため、
-    // ゲートが登録した後にゲートなしの経路が先に来る順序を直接作る。
+
+    // ゲート付き: 受理後の再送はゲートでもハンドラでも通らない。
+    let p1 = key.good_proof(&t, "j1");
+    ok_sub(&roundtrip(&gated, &req(PATH, Some(&hdr), &[&p1])).await);
+    assert_401(
+        &roundtrip(&gated, &req(PATH, Some(&hdr), &[&p1])).await,
+        &[&dpop_err("invalid_dpop_proof")],
+        "invalid_dpop_proof",
+    );
+    assert_replayed_in_handler(&roundtrip(&ungated, &req(PATH, Some(&hdr), &[&p1])).await);
+
+    // ゲートだけが登録した proof（後続ゲートの拒否で、ハンドラへ届かなかった要求）を
+    // ゲートなしの経路へ送っても、ゲートの登録を通過の証明にはしない: ハンドラ側の履歴で一度だけ
+    // 検査され、受理は一度きり。ゲート付きの経路へは再送できない。
+    let p2 = key.good_proof(&t, "j2");
     let ParseOutcome::Complete { head, .. } =
-        parse_request_head(req(PATH, Some(&hdr), &[&p]).as_bytes()).unwrap()
+        parse_request_head(req(PATH, Some(&hdr), &[&p2]).as_bytes()).unwrap()
     else {
         panic!()
     };
-    assert!(a.authenticate(&head).is_ok()); // ゲート相当: jti を登録
-    // 受け取りは一度だけ。ゲートなしの経路が先に受け取ると、本来のハンドラは通らない。
+    assert!(a.authenticate(&head).is_ok()); // ゲートの登録のみ
     assert!(a.authenticate_after_gate(&head).is_ok());
-    assert_not_admitted(&roundtrip(&ungated, &req(PATH, Some(&hdr), &[&p])).await);
-    // 完全な往復で受理された proof の再送も、ゲートありは Replayed、ゲートなしは NotAdmitted。
-    let p3 = key.good_proof(&t, "j3");
-    ok_sub(&roundtrip(&gated, &req(PATH, Some(&hdr), &[&p3])).await);
-    assert_not_admitted(&roundtrip(&ungated, &req(PATH, Some(&hdr), &[&p3])).await);
+    assert_replayed_in_handler(&roundtrip(&ungated, &req(PATH, Some(&hdr), &[&p2])).await);
     assert_401(
-        &roundtrip(&gated, &req(PATH, Some(&hdr), &[&p3])).await,
+        &roundtrip(&gated, &req(PATH, Some(&hdr), &[&p2])).await,
         &[&dpop_err("invalid_dpop_proof")],
         "invalid_dpop_proof",
     );
 }
 
 #[test]
-fn authenticate_after_gate_requires_prior_registration() {
+fn handler_registration_is_once_per_proof() {
     let issuer = IssuerKey::new();
     let key = Key::ec();
     let a = auth(&issuer, DpopMode::Required);
@@ -680,15 +673,15 @@ fn authenticate_after_gate_requires_prior_registration() {
         panic!()
     };
     let n = now();
-    assert_eq!(
-        a.authenticate_after_gate_at(&head, n).unwrap_err(),
-        VerifyError::Dpop(DpopError::NotAdmitted)
-    );
     assert!(a.authenticate_at(&head, n).is_ok());
     assert!(a.authenticate_after_gate_at(&head, n).is_ok());
-    // ゲートと同じ呼び出しを繰り返すと jti の再使用になる。
+    // ゲート・ハンドラとも、同じ proof の 2 回目は再使用になる。
     assert_eq!(
         a.authenticate_at(&head, n).unwrap_err(),
+        VerifyError::Dpop(DpopError::Replayed)
+    );
+    assert_eq!(
+        a.authenticate_after_gate_at(&head, n).unwrap_err(),
         VerifyError::Dpop(DpopError::Replayed)
     );
 }
