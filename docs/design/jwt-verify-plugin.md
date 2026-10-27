@@ -919,73 +919,6 @@ hub-wiring への転送は #905、計測は #906、CHANGELOG・ガイド・受�
   DPoP を設定していない場合の応答は従来とバイト単位で同じ。
 - **ハンドラへの受け渡し**: core には要求ごとの受け渡し領域がなく、`authenticate` を再度呼ぶと
   `jti` の 2 回目の登録で `Replayed` になる。そこで `authenticate_after_gate(_at)` を足した。
-  同じ検査を行い、`jti` を**ゲート用とは別のハンドラ用の保持器**へ登録する。共有履歴の
-  「登録済み」は、その要求がゲートを通った証明にならない（ゲート付きとゲートなしの経路が同じ
-  認証器を共有するとき、また後続ゲートの拒否で登録だけが残るとき、共有履歴を通過の証明にすると
-  再送が通ってしまう）ため、ゲートの登録を参照しない。ゲートの経路・ハンドラの経路のそれぞれで
-  同じ proof は一度しか受理されず、ゲートなしの経路でも新しい proof は通常どおり検査して受理する。
-  1 要求のハンドラでは 1 回だけ呼ぶ。費用は 1 要求あたり proof の署名検証が 2 回、保持器が 2 つ
-  （#906 で計測）。ゲートとハンドラの間で `iat` の窓の端を越えるとハンドラ側で拒否されうる。
-  DPoP 未設定の認証器では `authenticate` と同じ。
-- **新規依存なし**: `Cargo.lock` に差分はない。`signature_ok` は `KeyMaterial` を受ける形にして
-  JWT 検証と共有した（挙動は変えていない）。
-
-#### 実装時の決定（#903）
-
-9.6 節の `jti` の保持を `dpop::ReplayStore`（`crates/plugin-jwt/src/dpop/replay.rs`）で実装した。
-ゲート配線（`JwtAuthenticator` への保持と 401 への対応づけ）は #904 が担う。
-
-- **入口は `register` だけ**: `register(&VerifiedProof, now_unix)` が確認と登録を同じロック区間で
-  原子的に行う。`contains` と `insert` は公開しない（TOCTOU を作らない）。`VerifiedProof` だけを
-  受けるので、署名のない入力で保持を埋められない。
-- **キー**: SHA-256(サムプリント ‖ `jti`) の 32 B。生の `jti` は保持しない。サムプリントは常に
-  43 文字の固定長なので区切りなしの連結でも曖昧さはない。ハッシュはロックの外で計算する。
-  `HashMap` は std の既定（SipHash・ランダム鍵）を使い、要求由来の値に対する HashDoS 耐性を保つ
-  （`rustc-hash` は plugin-jwt に足さない。新規依存なし）。
-- **期限と掃除の境界**: 期限は `iat + past`。`verify_proof` は `iat + past >= now` の間受理するので、
-  掃除は `期限 < now` の項目だけを除く（`<=` にすると同じ秒に 2 回受理されうる）。掃除は
-  `BinaryHeap`（期限の昇順）の先頭から行い、`map` と 1 対 1 に保つ。償却では 1 項目あたり
-  O(log n) だが、長い無通信の後の最初の `register` だけ取り出しが多くなる（#906 の計測で見直す）。
-- **満杯**: 掃除の後に判定するので、期限切れで埋まった偽の満杯は起こさない。満杯なら
-  `DpopError::ReplayStoreFull`、再使用なら `DpopError::Replayed`。拒否した proof は登録しない。
-- **容量**: 既定 `DEFAULT_REPLAY_CAPACITY` = 131,072、上限 `MAX_REPLAY_CAPACITY` = 4,194,304。
-  0 と上限超は構築時に `DpopConfigError` で拒否。上限分は事前に確保しない。保持数が減っても
-  確保済みの容量は縮めない（高水位）。
-- **契約**: 構築時の `IatWindow` と `register` の `now_unix` は、同じ要求で `verify_proof` に渡した
-  ものと揃える（#904 は 1 つの `DpopConfig` から両方を作る）。
-- **ロック規律**: ロック区間は `HashMap`/`BinaryHeap` の操作だけ。非同期待機・I/O・署名検証・
-  ハッシュ計算を含まず、モジュールは tokio に依存しない。poison は `TokenCache` と同じく
-  `into_inner` で回復する。
-- **既知の限界**: ゲートごと・プロセスごとの保持で、複数インスタンス間では共有しない（9.13 節）。
-
-#### 実装時の決定（#904）
-
-9.3・9.7〜9.9 節の配線を `JwtAuthenticatorBuilder::dpop(DpopConfig)` と `JwtAuthenticator` で
-実装した（`crates/plugin-jwt/src/{auth,gate,verify}.rs`、設定型は `dpop/config.rs`）。
-hub-wiring への転送は #905、計測は #906、CHANGELOG・ガイド・受け入れレポートは #907 が担う。
-
-- **設定型**: `DpopMode`（`Required` / `AllowUnboundBearer`、`#[non_exhaustive]`、`Default` なし）と
-  `DpopConfig::new(mode, origin, algs)`（3 引数すべて必須）。`with_iat_window`・
-  `with_replay_capacity`（0 と上限超は構築時に拒否）は任意。省いた構築がコンパイルできないことと
-  `DpopMode::default()` が存在しないことは `compile_fail` の doc test で固定した。`build()` は
-  失敗しないまま。
-- **`cnf` の取り込み**: `RawClaims.cnf` は失敗しない寛容なデシリアライザで `Absent` / `Jkt` /
-  `Unusable` に分類する。DPoP を設定しない認証器と `verify()` は値を見ないため、不正な `cnf` を含む
-  トークンも従来どおり受理する（9.1 節の注意）。設定した認証器は `Unusable`・43 文字の base64url で
-  ない `jkt` を `Malformed`（`invalid_token`）で拒否する。キャッシュには `Claims` ごと載るので、
-  ヒット時も結合の検査が働く。公開アクセサは `Claims::cnf_jkt`。
-- **判定**: 9.8 節の表のとおり。`now` はトークン検証・`verify_proof`・`register` で同じ値を使う。
-  サムプリントの比較は公開値同士なので定数時間比較にしない。`DPoP` ヘッダの個数は `DPoP`
-  スキームを採ったときだけ検査し、`AllowUnboundBearer` の `Bearer` + 結合なしでは余分な `DPoP`
-  ヘッダを無視する。
-- **応答**: `JwtAuthenticator::unauthorized_response(head, err)` に集約した（`JwtGate::check` と
-  #905 の hub が共有）。シグネチャは設計時の案に `head` を足した。`AllowUnboundBearer` の併記で
-  `error` をどちらの行に付けるかを、使われたスキームから決めるため。`algs` は構築時に正準順
-  `ES256 RS256` で 1 回だけ作る（`AllowedAlgorithms::iter` は挿入順のため）。`error` は
-  `BoundTokenAsBearer`・`UnboundToken` が `invalid_token`、他の `Dpop(_)` が `invalid_dpop_proof`。
-  DPoP を設定していない場合の応答は従来とバイト単位で同じ。
-- **ハンドラへの受け渡し**: core には要求ごとの受け渡し領域がなく、`authenticate` を再度呼ぶと
-  `jti` の 2 回目の登録で `Replayed` になる。そこで `authenticate_after_gate(_at)` を足した。
   同じ検査を行い、`register` の代わりに crate 内の非公開 `ReplayStore::claim` で
   「ゲートが登録済みで、まだ受け取られていないこと」を要求し、同じロック区間で受け取り済みに印を
   付ける（proof 1 つにつき一度だけ成功）。未登録・受け取り済みは `DpopError::NotAdmitted`
@@ -995,5 +928,9 @@ hub-wiring への転送は #905、計測は #906、CHANGELOG・ガイド・受�
   「`contains` と `insert` を分けた公開の入口を持たない」契約を保つ。1 要求のハンドラでは 1 回だけ呼ぶ。費用は 1 要求あたり proof の
   署名検証が 2 回（#906 で計測）。ゲートとハンドラの間で `iat` の窓の端を越えるとハンドラ側で
   拒否されうる。DPoP 未設定の認証器では `authenticate` と同じ。
+  ゲート用とハンドラ用で履歴を分ける案は、ゲートが受理した proof をゲートなしの経路で再度受理できて
+  しまうため採らない（共有履歴 + 一度きりの受け取りを維持）。残る限界は、ゲートが受理した後に後続
+  ゲートが拒否して受け取られず残った項目を、ゲートを通らない経路が一度だけ受け取れる点（同じ
+  認証器を共有する別経路にだけ生じ、ゲート付きの経路への再送は `Replayed` で止まる）。
 - **新規依存なし**: `Cargo.lock` に差分はない。`Lookup::Hit` は `Claims` が `cnf` で大きくなったため
   `Box` 化した。
