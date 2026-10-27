@@ -366,7 +366,13 @@ fandhe-backend/
 │   │                                    # `on_response`（同じく既定 no-op を新設）へ
 │   │                                    # 委譲するため、`on_response` だけを実装した
 │   │                                    # 既存コードは無変更で動作する（コアは新フックの
-│   │                                    # みを呼び出す非破壊追加）。
+│   │                                    # みを呼び出す非破壊追加）。イシュー #924 で
+│   │                                    # `RequestGate::check` に第 3 引数
+│   │                                    # `extensions: &mut RequestExtensions` を追加した
+│   │                                    # （**BREAKING**）。ゲートが得た検証結果を同じリクエストの
+│   │                                    # ハンドラへ渡す経路で、コアは全ゲート `Allow` 時のみ器を
+│   │                                    # `RequestHead` へ移す（移行手順は `CHANGELOG.md`、
+│   │                                    # 設計は `docs/design/gate-request-extensions.md`）。
 │   ├── http / routes                  # HTTP プリミティブ・ルーティング（`Router::route_param` で
 │   │                                    # `{name}` パスパラメータ対応、TASK-176、#176。末尾
 │   │                                    # ワイルドカードセグメント `{*name}` にも対応し、`/` を含む
@@ -502,6 +508,10 @@ fandhe-backend/
 │   │                                    # `location::SameOriginLocation`（`/` 始まりのみ受理・`//`・`\`・制御文字を
 │   │                                    # 拒否・非デコード）と `Response::see_other`（303）、fuzz target
 │   │                                    # `same_origin_location` を加法的に追加
+│   │                                    # イシュー #924 で `extensions::RequestExtensions` と
+│   │                                    # `RequestHead::extensions()` / `extensions_mut()` を加法的に追加
+│   │                                    # （ゲートが入れたリクエスト単位の値の器。パーサは常に空で構築、
+│   │                                    # `Debug` は件数のみ、`PartialEq` の比較対象外）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、TASK-15.3-1、#87）
 │   ├── plugin-webrtc-proxy            # WebRTC シグナリングプロキシプラグイン（別プロセス切り出し型、
 │   │                                    # TASK-8.2-2、#74。`crates/core` の `webrtc-proxy` feature 経由で配線、TASK-2.1、#18）

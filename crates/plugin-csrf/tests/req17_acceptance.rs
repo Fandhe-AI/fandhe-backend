@@ -44,7 +44,11 @@ fn check(request_line: &str, headers: &[&str]) -> GateOutcome {
     let ParseOutcome::Complete { head, .. } = parse_request_head(raw.as_bytes()).unwrap() else {
         unreachable!()
     };
-    gate().check(&head, &GateContext::new(None))
+    gate().check(
+        &head,
+        &GateContext::new(None),
+        &mut fandhe_backend_core::extension::RequestExtensions::new(),
+    )
 }
 
 fn post(headers: &[&str]) -> GateOutcome {

@@ -30,7 +30,12 @@ impl RequestGate for AuthStub {
     fn name(&self) -> &'static str {
         "auth-stub"
     }
-    fn check(&self, head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+    fn check(
+        &self,
+        head: &RequestHead,
+        _ctx: &GateContext,
+        _extensions: &mut fandhe_backend_core::extension::RequestExtensions,
+    ) -> GateOutcome {
         self.0.fetch_add(1, Ordering::SeqCst);
         if head.header("Authorization").is_some() {
             return GateOutcome::Allow;

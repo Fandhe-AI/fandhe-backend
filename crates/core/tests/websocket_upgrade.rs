@@ -42,7 +42,12 @@ impl RequestGate for DenyAllGate {
     fn name(&self) -> &'static str {
         "deny-all"
     }
-    fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+    fn check(
+        &self,
+        _head: &RequestHead,
+        _ctx: &GateContext,
+        _extensions: &mut fandhe_backend_core::extension::RequestExtensions,
+    ) -> GateOutcome {
         GateOutcome::reject(403, Vec::new())
     }
 }

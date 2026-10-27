@@ -18,7 +18,7 @@ fandhe-backend のコアは、拡張点を 4 種の trait（`Middleware` / `Upgr
 
 | trait | 呼ばれるタイミング | できること | できないこと |
 |-------|-------------------|-----------|-------------|
-| `RequestGate` | ルーティング・アップグレード判定より**前** | `GateOutcome::Allow` / `Reject` による早期拒否（認証・認可・同意ゲート等、拒否応答は `Retry-After` 等ヘッダ付きも可） | 判定根拠データ（JWT クレーム等）をコアへ持ち出すこと |
+| `RequestGate` | ルーティング・アップグレード判定より**前** | `GateOutcome::Allow` / `Reject` による早期拒否（認証・認可・同意ゲート等、拒否応答は `Retry-After` 等ヘッダ付きも可） | `GateOutcome` に判定根拠データ（JWT クレーム等）を載せること（ハンドラへ渡す値は `RequestExtensions` 経由） |
 | `UpgradeHandler` | `RequestGate` 通過後、既定 `Handler` より前 | 長時間接続（WebSocket 等）への**委譲判定**（`matches` が `bool` を返す） | フレーミング・接続奪取後の読み書き（プラグイン側の責務） |
 | `Middleware` | `on_request`: ヘッド受理後・ルーティング前 / `on_response` / `on_response_with_status`: レスポンス送出後（後者は送出ステータス付き） | ロギング・メトリクス等の**観測** | リクエスト・レスポンスの変更（`head` は不変参照のみ） |
 | `Interceptor` | `intercept`: `UpgradeHandler` 通過後・パスインターセプト型プラグインより前 / `map_response`: 既定 `Handler` 確定後・レスポンス後処理型プラグインより前 | `Some(response)` によるリダイレクト等の応答確定、確定済み `Response` の書き換え | `RequestGate` 拒否応答・パースエラー応答・Upgrade 委譲失敗応答への適用（fail-closed 除外） |
@@ -48,7 +48,7 @@ async 契約であり、この非対称は意図的な設計である（`crates/
 検証済み `Response` を直接運ぶ設計になっている。
 
 ```rust,ignore
-use fandhe_backend_core::{GateContext, GateOutcome, RequestGate};
+use fandhe_backend_core::{GateContext, GateOutcome, RequestExtensions, RequestGate};
 use fandhe_backend_http::request::RequestHead;
 
 /// `X-Api-Key` ヘッダの有無だけを見る例（フェイルクローズ）。
@@ -59,7 +59,7 @@ impl RequestGate for ApiKeyGate {
         "api-key-gate"
     }
 
-    fn check(&self, head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+    fn check(&self, head: &RequestHead, _ctx: &GateContext, _extensions: &mut RequestExtensions) -> GateOutcome {
         match head.header("x-api-key") {
             Some(_) => GateOutcome::Allow,
             // 判定不能・情報欠落時は必ず Reject（フェイルクローズ）。
@@ -76,7 +76,7 @@ let server = Server::new().handler(router).gate(ApiKeyGate);
 （`with_header` / `with_content_type`）で組み立ててから `Reject` へ渡す。
 
 ```rust,ignore
-use fandhe_backend_core::{GateContext, GateOutcome, RequestGate};
+use fandhe_backend_core::{GateContext, GateOutcome, RequestExtensions, RequestGate};
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
 
@@ -87,7 +87,7 @@ impl RequestGate for RateLimitGate {
         "rate-limit-gate"
     }
 
-    fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+    fn check(&self, _head: &RequestHead, _ctx: &GateContext, _extensions: &mut RequestExtensions) -> GateOutcome {
         let response = Response::new(429, b"{\"error\":\"rate limited\"}".to_vec())
             .with_content_type("application/json")
             .with_header("Retry-After", "30")
@@ -96,6 +96,36 @@ impl RequestGate for RateLimitGate {
     }
 }
 ```
+
+ゲートが得た検証結果（認証済みの主体など）を同じリクエストのハンドラへ渡すには、
+第 3 引数 `extensions: &mut RequestExtensions` へ型付きで入れる。全ゲートが `Allow` を
+返したときだけ、コアが `RequestHead` へ移し、ハンドラは `head.extensions().get::<T>()` で読む
+（`GateOutcome` は判定だけを運ぶ）。
+
+```rust,ignore
+struct Principal(String);
+
+// ゲート側: 同じ型が既にあれば（`Err`）、検証結果の差し替えを避けて拒否する。
+fn check(&self, head: &RequestHead, _ctx: &GateContext, extensions: &mut RequestExtensions) -> GateOutcome {
+    let Some(user) = head.header("x-user") else {
+        return GateOutcome::reject(401, Vec::new());
+    };
+    match extensions.insert(Principal(user.to_string())) {
+        Ok(()) => GateOutcome::Allow,
+        Err(_) => GateOutcome::reject(500, Vec::new()),
+    }
+}
+
+// ハンドラ側: そのリクエストのゲートが入れた値だけが見える。
+router.route("GET", "/me", |head, _body| match head.extensions().get::<Principal>() {
+    Some(p) => Response::new(200, p.0.clone().into_bytes()),
+    None => Response::empty(401),
+});
+```
+
+値はリクエストと同じ寿命で、keep-alive の次のリクエスト・別接続・`Reject` 後には届かない
+（`docs/design/gate-request-extensions.md`）。他のゲートや利用者コードによるなりすましを避けるため、
+プラグインは外部から構築できない型を入れることを推奨する。
 
 守るべき契約は次のとおり。
 

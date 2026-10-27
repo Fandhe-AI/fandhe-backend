@@ -77,7 +77,7 @@
 //!     fn name(&self) -> &'static str {
 //!         "auth"
 //!     }
-//!     fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+//!     fn check(&self, _head: &RequestHead, _ctx: &GateContext, _extensions: &mut fandhe_backend_core::extension::RequestExtensions) -> GateOutcome {
 //!         GateOutcome::Allow
 //!     }
 //! }

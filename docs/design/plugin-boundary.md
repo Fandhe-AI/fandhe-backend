@@ -482,6 +482,11 @@ PoC-6）であり、JWT 検証で抽出した `org_id` 等のクレームはコ�
 コアは hub 固有シンボル（JWT・`org_id`・JWKS）へ一切依存しないまま、
 依存逆転型プラグインからの利用を受け付けられる。
 
+判定根拠データをハンドラへ渡す必要がある場合は、`GateOutcome` ではなく、イシュー #924 で
+追加したリクエスト単位の `RequestExtensions`（`RequestGate::check` の第 3 引数）へ型付きで入れる。
+コアは型消去した値を `RequestHead` へ中継するだけで中身の型には依存せず、依存方向と
+hub 固有シンボル非依存は保たれる（`docs/design/gate-request-extensions.md`）。
+
 イシュー #424 で `GateOutcome::Reject` は `status: u16` / `body: Vec<u8>` の
 個別フィールドではなく、検証済み `Response`（`crates/http/src/response.rs`）を
 そのまま運ぶ形へ変更した（レート制限の `429 + Retry-After` 等、ヘッダ付き拒否

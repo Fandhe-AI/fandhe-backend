@@ -151,7 +151,9 @@ pub mod streaming;
 // 3 拡張点はクレート直下からも参照できるよう re-export する。プラグイン側
 // （`crates/plugin-*`）はこの再エクスポート経由で `fandhe_backend_core::Middleware`
 // のように参照でき、`extension` モジュールの存在を意識せずに実装できる。
-pub use extension::{GateContext, GateOutcome, Middleware, RequestGate, UpgradeHandler};
+pub use extension::{
+    GateContext, GateOutcome, Middleware, RequestExtensions, RequestGate, UpgradeHandler,
+};
 
 // ユーザー向けインターセプト・レスポンス改変拡張点（イシュー #420）。
 // 既存 3 拡張点（Middleware/RequestGate/UpgradeHandler）で表現できないリダイレクト・
