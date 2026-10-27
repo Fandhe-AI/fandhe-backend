@@ -24,12 +24,17 @@
 //! HTTP クライアントも TLS も持たず、取得関数（`JwksFetcher`）をアプリが渡す。
 //! 取得関数の書き方は `docs/guide/jwks-refresh.md` を参照。
 //!
+//! `dpop` feature（既定では無効）を有効にすると、DPoP proof（RFC 9449）の解析と検査
+//! （`jwk`・サムプリント・`ath`・`htm`・`htu`・`iat`）の純関数 `dpop::verify_proof` が使える。
+//! 状態（`jti` の保持）もゲート配線も含まない sans-IO の部品で、新規依存を足さない。
+//!
 //! `iss`・`aud`・`typ`・許可 `alg` の欠けた構成は型の段階で作れない。`none`・HS 系は
 //! [`Algorithm`] に変種がなく、型として表現できない（RFC 8725 3.1・3.8・3.9・3.11・3.12、
 //! RFC 9068 4 節）。
 //!
 //! # Cargo feature
 //!
+//! - `dpop`: 新規依存なし。DPoP proof の純関数（`dpop` モジュール）だけを有効にする。
 //! - `jwks-refresh`: optional の `tokio`（`time`・`sync`）のみを足す。無効時は依存も
 //!   コードもバイナリ増もゼロ。タスクはアプリが `tokio::spawn` する（本クレートは spawn しない）。
 
@@ -38,6 +43,8 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+#[cfg(feature = "dpop")]
+pub mod dpop;
 pub mod gate;
 pub mod jwks;
 pub mod notify;

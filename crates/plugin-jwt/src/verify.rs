@@ -290,8 +290,11 @@ fn b64(s: &str) -> Result<Vec<u8>, VerifyError> {
 }
 
 /// 1 鍵での署名検証。方式と鍵成分が食い違う組は（鍵集合の不変条件上起きないが）失敗扱い。
-fn signature_ok(alg: Algorithm, jwk: &Jwk, msg: &[u8], sig: &[u8]) -> bool {
-    match (alg, jwk.material()) {
+///
+/// `dpop` feature の DPoP proof 検証（`crate::dpop`）も、ヘッダ `jwk` から組み立てた
+/// 鍵成分でこの関数を共有する（署名検証の実装を二重化しない）。
+pub(crate) fn signature_ok(alg: Algorithm, material: &KeyMaterial, msg: &[u8], sig: &[u8]) -> bool {
+    match (alg, material) {
         (Algorithm::Rs256, KeyMaterial::Rsa { n, e }) => RsaPublicKeyComponents {
             n: &n[..],
             e: &e[..],
@@ -436,7 +439,7 @@ pub(crate) fn verify_inner<E: DeserializeOwned, F: FnOnce(&str)>(
     let msg = &token[..h.len() + 1 + p.len()];
     if !candidates
         .iter()
-        .any(|k| signature_ok(alg, k, msg.as_bytes(), &sig))
+        .any(|k| signature_ok(alg, k.material(), msg.as_bytes(), &sig))
     {
         return Err(VerifyError::InvalidSignature);
     }

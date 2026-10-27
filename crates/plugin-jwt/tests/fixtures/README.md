@@ -12,7 +12,7 @@
 
 | ファイル | 用途 | 使用テスト |
 |---|---|---|
-| `test-rsa-2048.pk8` | RS256 の署名鍵（回転の「旧」） | `examples/jwt_verify_bench.rs`・`examples/jwt_gate_server.rs`、`verify.rs`、`req16_acceptance.rs`、`fuzz/fuzz_targets/`（`verify_claims`・`verify_token`・`jwks_from_json` が `common/mod.rs` 経由で参照） |
+| `test-rsa-2048.pk8` | RS256 の署名鍵（回転の「旧」） | `examples/jwt_verify_bench.rs`・`examples/jwt_gate_server.rs`、`verify.rs`、`dpop_proof.rs`、`req16_acceptance.rs`、`fuzz/fuzz_targets/`（`verify_claims`・`verify_token`・`jwks_from_json` が `common/mod.rs` 経由で参照） |
 | `test-rsa-2048-rotated.pk8` | RS256 回転の「新」鍵 | `req16_acceptance.rs` |
 | `test-ec-p256.pk8` | ES256 の署名鍵（回転の「旧」） | `examples/jwt_verify_bench.rs`・`examples/jwt_gate_server.rs`、`req16_acceptance.rs`、`fuzz/fuzz_targets/`（`verify_token`・`jwks_from_json`） |
 | `test-ec-p256-rotated.pk8` | ES256 回転の「新」鍵 | `req16_acceptance.rs` |
