@@ -19,6 +19,39 @@
   `docs/design/gate-request-extensions.md`。追加のみで型は壊れません（`RequestHead` の新フィールドは
   非公開）。
 
+- `fandhe-backend-plugin-jwt`: opt-in の feature `dpop` を追加しました（RFC 9449 の DPoP で結合された
+  アクセストークンの検証。イシュー [#901](https://github.com/Fandhe-AI/fandhe-backend/issues/901)〜
+  [#906](https://github.com/Fandhe-AI/fandhe-backend/issues/906)・
+  [#907](https://github.com/Fandhe-AI/fandhe-backend/issues/907)、親
+  [#899](https://github.com/Fandhe-AI/fandhe-backend/issues/899)、ルート
+  [#891](https://github.com/Fandhe-AI/fandhe-backend/issues/891)）。既定は無効で、新規依存はありません
+  （暗号は既存の `ring`。無効時はコードもバイナリ増もゼロ）。`dpop` モジュール（`verify_proof`・
+  `ProofContext`・`VerifiedProof`・`DpopError`・`DpopConfig`・`DpopMode`（`Required` /
+  `AllowUnboundBearer`、既定値なし）・`DpopConfigError`・`IatWindow`・`PublicOrigin`・`ExpectedHtu`・
+  `OriginError`・`ReplayStore`・`JwkThumbprint`・`jwk_thumbprint`）と、
+  `JwtAuthenticatorBuilder::dpop`・`JwtAuthenticator::dpop_mode`・`JwtAuthenticator::unauthorized_response`・
+  `Claims::cnf_jkt`・`VerifyError::Dpop`（`#[non_exhaustive]` への追加）が対象です。拒否は 401 と
+  `WWW-Authenticate: DPoP`（`invalid_token` / `invalid_dpop_proof`、`algs`）で返し、DPoP で結合された
+  トークンの `Bearer` 提示は拒否します。**`jti` の保持はゲートごと・プロセスごとで、複数インスタンス間では
+  共有しません**（写した proof を窓の中で別インスタンスへ送る使い回しは防げないため、窓を短くして余地を
+  限ります）。**feature が無効、または DPoP を設定していないゲートは、結合トークンも bearer として
+  受理します**。DPoP を強制したい下流は必ず設定してください。設定例は `docs/guide/dpop.md`、設計は
+  `docs/design/jwt-verify-plugin.md` 9 章。crates.io 公開版 0.5.0 には未収録です。追加のみで型は
+  壊れません。
+
+- `fandhe-backend-plugin-jwt`: ゲートの検証結果をハンドラへ渡す `GateVerified<E>`・`NotAdmitted`・
+  `JwtGate::verified` を追加しました（feature によらない。イシュー
+  [#904](https://github.com/Fandhe-AI/fandhe-backend/issues/904)）。同じ型のゲートを二重に登録した
+  ときは、上書きせず 500 で拒否します。追加のみで型は壊れません。
+
+- `fandhe-backend-plugin-hub-wiring`: opt-in の feature `dpop`（`fandhe-backend-plugin-jwt/dpop` の
+  転送のみ、新規依存なし）を追加しました（イシュー
+  [#905](https://github.com/Fandhe-AI/fandhe-backend/issues/905)）。あわせて feature によらない
+  `TenantGateConfig::from_authenticator`・`TenantVerified`・`NotAdmitted`・`TenantGate::verified` を
+  追加しました。有効にしただけでは挙動は変わらず、DPoP を設定した認証器を
+  `TenantGateConfig::from_authenticator` に渡したときだけ DPoP の検証と `WWW-Authenticate: DPoP` が
+  働きます。0.5.0 には未収録で、追加のみで型は壊れません。
+
 - `fandhe-backend-plugin-jwt`: opt-in の feature `jwks-refresh` を追加しました（イシュー
   [#898](https://github.com/Fandhe-AI/fandhe-backend/issues/898)、親
   [#892](https://github.com/Fandhe-AI/fandhe-backend/issues/892)、ルート

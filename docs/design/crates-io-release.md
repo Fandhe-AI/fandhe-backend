@@ -86,7 +86,7 @@
 - **公開対象 13 クレートは crates.io v0.1.0 として公開済み**（2026-07-21 実施。5 節参照）。
   恒久非公開 2 クレート（`axum-ref` / `ws-load-client`）は `publish = false`
   で維持し、workspace `exclude` の `crates/http/fuzz` と合わせて公開物から除外
-- **`fandhe-backend-plugin-jwt`（イシュー #822、0.5.0 で初公開、2026-10-16）**（0.5.0 には opt-in feature `jwks-refresh` を含まない。次の lockstep 公開で加わる。optional の `tokio` のみで新規 crate なし）: 骨格段階の暫定
+- **`fandhe-backend-plugin-jwt`（イシュー #822、0.5.0 で初公開、2026-10-16）**（0.5.0 には opt-in feature `jwks-refresh` と `dpop` を含まない。次の lockstep 公開で加わる。`jwks-refresh` は optional の `tokio` のみで新規 crate なし、`dpop` は新規依存なし。`fandhe-backend-plugin-hub-wiring` の `dpop` feature〔`fandhe-backend-plugin-jwt/dpop` の転送のみ〕も同じく次の公開から）: 骨格段階の暫定
   `publish = false` を #822 で解除した。Gate 型のため core の feature 経由ではなく利用側が
   直接依存する。テスト専用鍵 `tests/fixtures/*.pk8` は hub-wiring と同じ判断で公開物に同梱する
   （`tests/` と `examples/` が `include_bytes!` で参照するため。`tests/fixtures/README.md` に

@@ -8,6 +8,20 @@
 > `bf-plugin-*` 等）表記のまま保持している。実測値本文は改変せず、履歴記録として残す
 > （`docs/design/framework-naming.md` 7 節の推奨方針）。
 
+## 2026-10-27 — `crates/plugin-jwt` / `crates/plugin-hub-wiring` に `dpop` feature を追加（新規依存なし、イシュー #901・#904・#905・#907）
+
+`crates/plugin-jwt/Cargo.toml` に `dpop = []`、`crates/plugin-hub-wiring/Cargo.toml` に
+`dpop = ["fandhe-backend-plugin-jwt/dpop"]` を追加した。暗号は既存の `ring` を使い、`[dependencies]` への
+追加はない（着手前 `1f15019` の直前から現在までの `Cargo.toml` 差分に追加された依存行はなく、feature・
+example・fuzz の `[[bin]]` の宣言だけ）。設計 `docs/design/jwt-verify-plugin.md` 9.2 を確認した。
+
+- 新規パッケージ: 0。`unsafe` の追加: なし（`#![forbid(unsafe_code)]` を維持）
+- `cargo tree -p fandhe-backend-plugin-jwt -e normal` のパッケージ集合は、`--features dpop` の有無で同一
+  （`scripts/accept/jwt-verify-accept.sh` の M で自動判定）。`Cargo.lock` は本リポジトリで追跡されないため、
+  lock 差分ではなくこの比較で確認した
+- feature 無効時は `dpop` モジュールが `#[cfg(feature = "dpop")]` でコンパイルされない
+- 性能影響は `benches/reports/issue906-jwt-dpop-gate-performance.md`（#906）に記録
+
 ## 2026-10-27 — `crates/plugin-jwt` に `jwks-refresh` feature と optional な `tokio` を追加（イシュー #894）
 
 `crates/plugin-jwt/Cargo.toml` に `[features]`（`default = []`、`jwks-refresh = ["dep:tokio"]`）と

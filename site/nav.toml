@@ -71,6 +71,11 @@ title = "JWKS の取り直し（jwks-refresh）"
 source = "docs/guide/jwks-refresh.md"
 path = "/guides/jwks-refresh/"
 
+[[section.page]]
+title = "DPoP 結合トークンの検証（dpop）"
+source = "docs/guide/dpop.md"
+path = "/guides/dpop/"
+
 [[section]]
 title = "Examples"
 index_path = "/examples/"

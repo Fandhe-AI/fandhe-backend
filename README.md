@@ -43,11 +43,20 @@ crates.io 公開版 0.5.0 には未収録で、次の公開から使えます）
 [JWKS の取り直しガイド](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/guide/jwks-refresh.md)
 を参照してください。
 
+`fandhe-backend-plugin-jwt` には、DPoP（RFC 9449）で結合されたアクセストークンを検証する opt-in の
+feature `dpop` もあります（`cargo add fandhe-backend-plugin-jwt --features dpop`。新規依存なし。
+crates.io 公開版 0.5.0 には未収録で、次の公開から使えます）。DPoP を設定していないゲートは結合
+トークンも bearer として受理するため、強制したい下流は必ず設定してください。`jti` の保持は
+インスタンス間で共有しない既知の限界があります。設定例は
+[DPoP ガイド](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/guide/dpop.md)
+を参照してください。
+
 `fandhe-backend-plugin-hub-wiring` には、DPoP の検証を使える opt-in の feature `dpop` があります
 （`cargo add fandhe-backend-plugin-hub-wiring --features dpop`。`fandhe-backend-plugin-jwt/dpop` の
 転送のみで新規依存はありません）。有効にしただけでは挙動は変わらず、DPoP を設定した認証器を別途
 `TenantGateConfig::from_authenticator` に渡したときだけ DPoP の検証と `WWW-Authenticate: DPoP` の
-チャレンジが働きます。
+チャレンジが働きます（設定例は上記の
+[DPoP ガイド](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/guide/dpop.md)）。
 
 ## Getting Started
 

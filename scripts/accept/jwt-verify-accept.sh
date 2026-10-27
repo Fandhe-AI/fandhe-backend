@@ -10,6 +10,13 @@
 # 追加要件 `jwks-refresh`（イシュー #897）:
 #   G: 取り直しタスクの時刻制御テスト（周期・失敗・未知 kid のまとめ）が名前単位で ok
 #   H: ゲート経路の回数の上限・事前公開なしの切替への追従・通常の回転が名前単位で ok
+# 追加要件 `dpop`（イシュー #907、設計 9 章）:
+#   I: proof 検査（受理・各拒否・RFC 7638 ベクタ）が名前単位で ok（tests/dpop_proof.rs）
+#   J: jti の再使用拒否と保持の上限（tests/dpop_replay.rs）
+#   K: ゲート経路の 401 + WWW-Authenticate: DPoP・Bearer への格下げ拒否（tests/dpop_gate.rs）
+#   L: hub 共通配線からの利用と REQ-9 の維持（hub-wiring の tests/dpop_tenant_gate.rs）
+#   M: 無効時のコストゼロ（dpop の cfg ゲートと、feature の有無で cargo tree の集合が不変）
+#   F は dpop の fuzz target 3 種も必須とする（D-2、NFR-11）。
 #   C・D は #894〜#896 以降、`jwks-refresh` の取り直しタスク（ゲートの外、設計 8.1）と optional な
 #   tokio（設計 8.2）を前提に判定する。ゲート側の NFR-7 検査は弱めていない。
 #
@@ -61,6 +68,39 @@ H_TESTS=(r1_unknown_kid_flood_is_bounded_by_min_interval
     r2_switch_during_in_flight_fetch_is_followed_by_next_fetch
     r2_attacker_noise_does_not_delay_following
     r3_announced_rotation_has_no_verification_failures)
+# `dpop`（#901〜#906）。I: proof 検査（tests/dpop_proof.rs）。
+I_TESTS=(accepts_valid_es256_and_rs256_proofs accepts_typ_and_htu_variants
+    rejects_bad_typ_alg_and_crit rejects_bad_jwk rejects_bad_signature
+    rejects_claim_mismatches iat_window_boundaries rejects_bad_structure
+    rfc7638_thumbprint_vector)
+# J: jti の再使用拒否と保持の上限（tests/dpop_replay.rs）。
+J_TESTS=(rejects_reuse_within_window_for_es256_and_rs256 unit_is_thumbprint_and_jti_pair
+    expired_entries_are_removed_and_reusable len_never_exceeds_capacity_as_time_advances
+    rejects_new_proof_when_full_then_recovers capacity_is_validated
+    concurrent_registration_accepts_exactly_one)
+# K: ゲート経路（tests/dpop_gate.rs）。
+K_TESTS=(valid_dpop_request_is_admitted_for_es256_and_rs256 query_string_does_not_affect_htu
+    bound_token_presented_as_bearer_is_rejected_in_both_modes missing_dpop_header_is_rejected
+    duplicate_dpop_header_is_rejected thumbprint_mismatch_is_rejected
+    unbound_token_in_required_mode_is_rejected_for_both_schemes
+    unbound_token_in_allow_mode_is_accepted_only_as_bearer unusable_cnf_is_rejected_as_invalid_token
+    challenge_without_credentials invalid_access_token_puts_error_on_the_used_scheme_line
+    proof_failures_are_invalid_dpop_proof absolute_form_target_is_rejected
+    reused_proof_is_rejected_on_second_connection binding_is_checked_on_cache_hits
+    handler_without_gate_is_not_admitted
+    proof_of_a_request_rejected_by_a_later_gate_is_not_admitted_elsewhere
+    replayed_proof_is_rejected_at_the_gate_not_the_handler
+    authenticator_without_dpop_accepts_bound_token_as_bearer claims_expose_cnf_jkt)
+# L: hub 共通配線（crates/plugin-hub-wiring/tests/dpop_tenant_gate.rs）。
+L_TESTS=(bound_token_with_valid_proof_is_admitted_and_org_id_is_readable
+    bound_token_presented_as_bearer_is_rejected
+    missing_duplicate_or_mismatched_proof_is_rejected
+    missing_org_id_after_valid_dpop_is_403_without_challenge
+    reused_proof_is_rejected_on_a_second_connection no_credentials_challenge_lists_schemes_per_mode
+    unbound_bearer_is_accepted_when_bearer_is_allowed feature_enabled_without_dpop_config_keeps_legacy_wire
+    authenticating_the_same_request_twice_fails_with_replayed)
+# dpop の fuzz target（D-2、NFR-11）。
+DPOP_FUZZ_TARGETS=(dpop_jwk_htu dpop_proof_claims dpop_verify_proof)
 
 echo "=== REQ-16 受け入れ検証（汎用 JWT 検証プラグイン、#823） ==="
 echo "workspace root: ${WORKSPACE_ROOT}"
@@ -74,6 +114,7 @@ trap 'rm -rf "${TMPDIR_ACCEPT}"' EXIT
 #       $4 追加 feature（無ければ `-`）、$5.. 期待するテスト名。
 run_named_tests() {
     local label="${1}" outfile="${TMPDIR_ACCEPT}/${2}" bin="${3}" feat="${4}" status missing
+    local pkg="${RUN_PKG:-${PKG}}"
     local -a feat_args=()
     shift 4
     [ "${feat}" = "-" ] || feat_args=(--features "${feat}")
@@ -82,7 +123,7 @@ run_named_tests() {
         return
     fi
     set +e
-    cargo test -p "${PKG}" ${feat_args[@]+"${feat_args[@]}"} --test "${bin}" >"${outfile}" 2>&1
+    cargo test -p "${pkg}" ${feat_args[@]+"${feat_args[@]}"} --test "${bin}" >"${outfile}" 2>&1
     status=$?
     set -e
     if [ "${status}" -ne 0 ]; then
@@ -93,7 +134,7 @@ run_named_tests() {
     if [ -n "${missing}" ]; then
         record_fail "${label}" "期待テストが ok で現れない: ${missing}"
     else
-        record_pass "${label}" "指定 $# 件のテストが名前単位で ok（cargo test -p ${PKG} ${feat_args[*]-} --test ${bin}）"
+        record_pass "${label}" "指定 $# 件のテストが名前単位で ok（cargo test -p ${pkg} ${feat_args[*]-} --test ${bin}）"
     fi
 }
 
@@ -105,6 +146,37 @@ check_g() {
 check_h() {
     run_named_tests "H: jwks-refresh ゲート経路の回数上限・切替への追従・通常の回転" h.out refresh_gate jwks-refresh "${H_TESTS[@]}"
 }
+check_i() { run_named_tests "I: dpop proof 検査（受理・各拒否・RFC 7638）" i.out dpop_proof dpop "${I_TESTS[@]}"; }
+check_j() { run_named_tests "J: dpop jti の再使用拒否・保持の上限" j.out dpop_replay dpop "${J_TESTS[@]}"; }
+check_k() { run_named_tests "K: dpop ゲート経路（401 + WWW-Authenticate: DPoP、Bearer 格下げ拒否）" k.out dpop_gate dpop "${K_TESTS[@]}"; }
+check_l() {
+    RUN_PKG="fandhe-backend-plugin-hub-wiring" run_named_tests "L: hub 共通配線からの dpop 利用" l.out dpop_tenant_gate dpop "${L_TESTS[@]}"
+}
+
+# 設計 9.2: dpop の無効時コストゼロ。モジュールが cfg で閉じ、feature の有無で
+# `cargo tree -e normal` のパッケージ集合が変わらない。失敗・空出力は判定不能（0 件扱いにしない）。
+check_m() {
+    local label="M: dpop 無効時のコストゼロ（設計 9.2）" d="${TMPDIR_ACCEPT}/dp"
+    if ! check_tool cargo "Rust ツールチェーン一式（rustup 等）"; then
+        record_skip "${label}" "cargo 未導入"
+        return
+    fi
+    module_is_cfg_gated "${CRATE_DIR}/src/lib.rs" dpop dpop || {
+        record_fail "${label}" "lib.rs の dpop モジュールが #[cfg(feature = \"dpop\")] の直後にない"
+        return
+    }
+    mkdir -p "${d}"
+    ( set -o pipefail; cargo tree -p "${PKG}" -e normal --prefix none 2>/dev/null | sort -u >"${d}/off" ) \
+        || { record_skip "${label}" "判定不能: cargo tree（無効）が失敗"; return; }
+    ( set -o pipefail; cargo tree -p "${PKG}" --features dpop -e normal --prefix none 2>/dev/null | sort -u >"${d}/on" ) \
+        || { record_skip "${label}" "判定不能: cargo tree（有効）が失敗"; return; }
+    [ -s "${d}/off" ] && [ -s "${d}/on" ] || { record_skip "${label}" "判定不能: cargo tree が空"; return; }
+    if ! diff -q "${d}/off" "${d}/on" >/dev/null; then
+        record_fail "${label}" "dpop 有効化でパッケージ集合が変わる: $(diff "${d}/off" "${d}/on" | grep '^[<>]' | head -3 | tr '\n' ' ')"
+        return
+    fi
+    record_pass "${label}" "dpop は cfg で閉じ、有効・無効で cargo tree -e normal のパッケージ集合が同一（新規依存なし）"
+}
 
 check_c() {
     local label="C: 基準3 同期・I/O なし"
@@ -114,7 +186,9 @@ check_c() {
     fi
     local fail_msgs=""
     # (a) RequestGate::check が同期 fn
-    if ! grep -qE '^[[:space:]]*fn check\(&self, head: &RequestHead, ctx: &GateContext\)' crates/core/src/extension.rs; then
+    #     #924 以降は引数が複数行に折り返されるため、改行を畳んでから照合する（引数の追加で旧パターンが外れる）。
+    if ! tr '\n' ' ' <crates/core/src/extension.rs | tr -s ' ' \
+        | grep -qE '(^|[^a-z_])fn check\( ?&self, head: &RequestHead, ctx: &GateContext,( extensions: &mut RequestExtensions,)? ?\) -> GateOutcome;'; then
         fail_msgs+="RequestGate::check が同期 fn のシグネチャで見つからない; "
     fi
     # (b) コメントを除いたソースに I/O・非同期の痕跡なし。ただし `jwks-refresh` の取り直し
@@ -341,7 +415,7 @@ check_f() {
     fi
     targets="$(list_fuzz_targets "${ft}" | tr '\n' ' ')"
     local t
-    for t in jwks_from_json verify_claims verify_token; do
+    for t in jwks_from_json verify_claims verify_token "${DPOP_FUZZ_TARGETS[@]}"; do
         case " ${targets}" in *" ${t} "*) ;; *) fail_msgs+="target ${t} が無い; " ;; esac
     done
     # コメント・description・step 名の文言にヒットしないよう、代入行／ジョブ内の run 行に限定して判定する
@@ -372,8 +446,13 @@ check_e
 check_f
 check_g
 check_h
+check_i
+check_j
+check_k
+check_l
+check_m
 
 record_warn "NFR-6（HTTP 計測）" "benches/jwt-nfr6-bench.sh は oha が必要。本スクリプトでは未計測（判定を丸めない）"
 
-print_summary "REQ-16、#823・#897"
+print_summary "REQ-16、#823・#897・#907"
 exit "$(summary_exit_code)"
