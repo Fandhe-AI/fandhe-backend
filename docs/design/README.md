@@ -30,7 +30,8 @@
   よる機構組み込み・機械検証を 11 節に追記）
 - [`gate-request-extensions.md`](./gate-request-extensions.md): ゲートの検証結果をリクエスト単位で
   ハンドラへ渡す経路（イシュー #924。`RequestGate::check` の第 3 引数 `RequestExtensions` と
-  `RequestHead::extensions`。候補比較・可視性の契約・BREAKING 判定と移行手順を記述）
+  `RequestHead::extensions`。候補比較・可視性の契約・BREAKING 判定と移行手順、および WebSocket の
+  接続コンテキストから読む設計（イシュー #933）を記述）
 - [`unsafe-deny-lints.md`](./unsafe-deny-lints.md): 危険な `unsafe` パターンの deny lint 設定
   （TASK-14.2、#40、REQ-14。forbid/deny 2 層 lint テーブルの選定根拠とネガティブ検証）
 - [`review-gate.md`](./review-gate.md): レビューゲート運用定義・受け入れテスト
