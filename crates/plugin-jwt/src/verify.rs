@@ -89,6 +89,16 @@ pub enum VerifyError {
     MissingClaim,
     /// 追加クレーム型 `E` への読み込みに失敗した。
     InvalidExtraClaims,
+    /// DPoP の検査で拒否された（`dpop` feature、`JwtAuthenticatorBuilder::dpop` を設定した場合のみ）。
+    #[cfg(feature = "dpop")]
+    Dpop(crate::dpop::DpopError),
+}
+
+#[cfg(feature = "dpop")]
+impl From<crate::dpop::DpopError> for VerifyError {
+    fn from(e: crate::dpop::DpopError) -> Self {
+        Self::Dpop(e)
+    }
 }
 
 impl fmt::Display for VerifyError {
@@ -110,6 +120,8 @@ impl fmt::Display for VerifyError {
             Self::NotYetValid => "トークンはまだ有効ではありません",
             Self::MissingClaim => "必須クレームがありません",
             Self::InvalidExtraClaims => "追加クレームの形式が不正です",
+            #[cfg(feature = "dpop")]
+            Self::Dpop(e) => return fmt::Display::fmt(e, f),
         };
         f.write_str(msg)
     }
@@ -155,14 +167,43 @@ pub struct Claims<E = NoExtraClaims> {
     jti: Option<String>,
     client_id: Option<String>,
     scope: Option<String>,
+    #[cfg(feature = "dpop")]
+    cnf: Confirmation,
     extra: E,
+}
+
+/// `cnf`（確認クレーム、RFC 7800）の分類。DPoP を設定した認証器だけが解釈する。
+///
+/// デシリアライズ自体は失敗しない（`dpop` を設定していない認証器が、不正な `cnf` を含む
+/// トークンを従来どおり受理するため。9.7 節）。
+#[cfg(feature = "dpop")]
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum Confirmation {
+    /// `cnf` がない（結合なし）。
+    Absent,
+    /// `cnf.jkt` が文字列として存在する（形式の検査は解釈する側）。
+    Jkt(Box<str>),
+    /// `cnf` はあるが `jkt` として使えない（`x5t#S256` のみ・型違い・`null` など）。
+    Unusable,
+}
+
+#[cfg(feature = "dpop")]
+fn lenient_cnf<'de, D: Deserializer<'de>>(d: D) -> Result<Confirmation, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(match v {
+        serde_json::Value::Object(m) => match m.get("jkt") {
+            Some(serde_json::Value::String(s)) => Confirmation::Jkt(s.as_str().into()),
+            _ => Confirmation::Unusable,
+        },
+        _ => Confirmation::Unusable,
+    })
 }
 
 /// `sub`・`jti`・`client_id`・`scope`・`extra` の値は出さず、有無だけを示す（ログ漏洩防止）。
 impl<E> fmt::Debug for Claims<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Claims")
-            .field("iss", &self.iss)
+        let mut d = f.debug_struct("Claims");
+        d.field("iss", &self.iss)
             .field("aud_count", &self.aud.len())
             .field("exp", &self.exp)
             .field("nbf", &self.nbf)
@@ -170,8 +211,10 @@ impl<E> fmt::Debug for Claims<E> {
             .field("has_sub", &self.sub.is_some())
             .field("has_jti", &self.jti.is_some())
             .field("has_client_id", &self.client_id.is_some())
-            .field("has_scope", &self.scope.is_some())
-            .finish_non_exhaustive()
+            .field("has_scope", &self.scope.is_some());
+        #[cfg(feature = "dpop")]
+        d.field("has_cnf", &!matches!(self.cnf, Confirmation::Absent));
+        d.finish_non_exhaustive()
     }
 }
 
@@ -211,6 +254,22 @@ impl<E> Claims<E> {
     /// スコープ（空白区切りの生文字列）。
     pub fn scope(&self) -> Option<&str> {
         self.scope.as_deref()
+    }
+    /// DPoP 結合の鍵のサムプリント（`cnf.jkt`）。結合なし、または `jkt` として使えない
+    /// `cnf` のときは `None`。値の形式は DPoP を設定した認証器の経路でのみ検証される。
+    ///
+    /// 対象 feature: `dpop`。
+    #[cfg(feature = "dpop")]
+    pub fn cnf_jkt(&self) -> Option<&str> {
+        match &self.cnf {
+            Confirmation::Jkt(j) => Some(j),
+            _ => None,
+        }
+    }
+    /// `cnf` の分類（認証器が方式の判定に使う）。
+    #[cfg(feature = "dpop")]
+    pub(crate) fn confirmation(&self) -> &Confirmation {
+        &self.cnf
     }
     /// 追加クレーム。
     pub fn extra(&self) -> &E {
@@ -281,6 +340,14 @@ struct RawClaims {
     jti: Option<String>,
     client_id: Option<String>,
     scope: Option<String>,
+    #[cfg(feature = "dpop")]
+    #[serde(default = "absent_cnf", deserialize_with = "lenient_cnf")]
+    cnf: Confirmation,
+}
+
+#[cfg(feature = "dpop")]
+fn absent_cnf() -> Confirmation {
+    Confirmation::Absent
 }
 
 fn b64(s: &str) -> Result<Vec<u8>, VerifyError> {
@@ -483,6 +550,8 @@ pub(crate) fn verify_inner<E: DeserializeOwned, F: FnOnce(&str)>(
         jti: raw.jti,
         client_id: raw.client_id,
         scope: raw.scope,
+        #[cfg(feature = "dpop")]
+        cnf: raw.cnf,
         extra,
     })
 }

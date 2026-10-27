@@ -207,3 +207,14 @@ async fn non_bearer_scheme_is_401() {
     let r = roundtrip(&server, &req(Some("Basic dXNlcjpwYXNz"))).await;
     assert_401(&r, "Bearer");
 }
+
+/// `dpop` feature の有無によらず、DPoP を設定していない認証器は `Authorization: DPoP` を
+/// 資格情報なしとして扱い、従来どおり Bearer のチャレンジを返す（#904）。
+#[tokio::test]
+async fn dpop_scheme_is_not_a_credential_without_dpop_config() {
+    let ec = Ec::new();
+    let (server, _, _) = setup(&ec);
+    let t = ec.token("k", now() + 300);
+    let r = roundtrip(&server, &req(Some(&format!("DPoP {t}")))).await;
+    assert_401(&r, "Bearer");
+}

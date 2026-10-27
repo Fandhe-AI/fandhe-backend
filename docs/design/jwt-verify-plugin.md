@@ -890,3 +890,40 @@ spec の式 `ceil(T / L) + 定期の取得回数` はこれ以上なので満た
   ハッシュ計算を含まず、モジュールは tokio に依存しない。poison は `TokenCache` と同じく
   `into_inner` で回復する。
 - **既知の限界**: ゲートごと・プロセスごとの保持で、複数インスタンス間では共有しない（9.13 節）。
+
+#### 実装時の決定（#904）
+
+9.3・9.7〜9.9 節の配線を `JwtAuthenticatorBuilder::dpop(DpopConfig)` と `JwtAuthenticator` で
+実装した（`crates/plugin-jwt/src/{auth,gate,verify}.rs`、設定型は `dpop/config.rs`）。
+hub-wiring への転送は #905、計測は #906、CHANGELOG・ガイド・受け入れレポートは #907 が担う。
+
+- **設定型**: `DpopMode`（`Required` / `AllowUnboundBearer`、`#[non_exhaustive]`、`Default` なし）と
+  `DpopConfig::new(mode, origin, algs)`（3 引数すべて必須）。`with_iat_window`・
+  `with_replay_capacity`（0 と上限超は構築時に拒否）は任意。省いた構築がコンパイルできないことと
+  `DpopMode::default()` が存在しないことは `compile_fail` の doc test で固定した。`build()` は
+  失敗しないまま。
+- **`cnf` の取り込み**: `RawClaims.cnf` は失敗しない寛容なデシリアライザで `Absent` / `Jkt` /
+  `Unusable` に分類する。DPoP を設定しない認証器と `verify()` は値を見ないため、不正な `cnf` を含む
+  トークンも従来どおり受理する（9.1 節の注意）。設定した認証器は `Unusable`・43 文字の base64url で
+  ない `jkt` を `Malformed`（`invalid_token`）で拒否する。キャッシュには `Claims` ごと載るので、
+  ヒット時も結合の検査が働く。公開アクセサは `Claims::cnf_jkt`。
+- **判定**: 9.8 節の表のとおり。`now` はトークン検証・`verify_proof`・`register` で同じ値を使う。
+  サムプリントの比較は公開値同士なので定数時間比較にしない。`DPoP` ヘッダの個数は `DPoP`
+  スキームを採ったときだけ検査し、`AllowUnboundBearer` の `Bearer` + 結合なしでは余分な `DPoP`
+  ヘッダを無視する。
+- **応答**: `JwtAuthenticator::unauthorized_response(head, err)` に集約した（`JwtGate::check` と
+  #905 の hub が共有）。シグネチャは設計時の案に `head` を足した。`AllowUnboundBearer` の併記で
+  `error` をどちらの行に付けるかを、使われたスキームから決めるため。`algs` は構築時に正準順
+  `ES256 RS256` で 1 回だけ作る（`AllowedAlgorithms::iter` は挿入順のため）。`error` は
+  `BoundTokenAsBearer`・`UnboundToken` が `invalid_token`、他の `Dpop(_)` が `invalid_dpop_proof`。
+  DPoP を設定していない場合の応答は従来とバイト単位で同じ。
+- **ハンドラへの受け渡し**: core には要求ごとの受け渡し領域がなく、`authenticate` を再度呼ぶと
+  `jti` の 2 回目の登録で `Replayed` になる。そこで `authenticate_after_gate(_at)` を足した。
+  同じ検査を行い、`register` の代わりに crate 内の読み取り専用 `ReplayStore::is_registered` で
+  「ゲートが登録済みであること」を要求し、未登録は `DpopError::NotAdmitted`（フェイルクローズ）。
+  `is_registered` は非公開で、挿入と対にならない照会のため TOCTOU は生じず、9.6 節の
+  「`contains` と `insert` を分けた公開の入口を持たない」契約を保つ。費用は 1 要求あたり proof の
+  署名検証が 2 回（#906 で計測）。ゲートとハンドラの間で `iat` の窓の端を越えるとハンドラ側で
+  拒否されうる。DPoP 未設定の認証器では `authenticate` と同じ。
+- **新規依存なし**: `Cargo.lock` に差分はない。`Lookup::Hit` は `Claims` が `cnf` で大きくなったため
+  `Box` 化した。

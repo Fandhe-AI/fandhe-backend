@@ -9,8 +9,8 @@
 //! 状態を持つ部品は [`ReplayStore`]（`jti` の再使用検知、#903）だけで、`verify_proof` とは
 //! 分けてある。呼び出し側が `verify_proof` の成功後に `register` を呼ぶ。
 //!
-//! 含まないもの（後続のイシュー）: `cnf.jkt` との比較・`Authorization: DPoP` の解析・
-//! ゲート配線（#904）。
+//! ゲートへの配線（`cnf.jkt` との比較・`Authorization: DPoP` の解析・方式の適用）は
+//! `JwtAuthenticatorBuilder::dpop` が担い、その設定は [`DpopConfig`]・[`DpopMode`]（#904）。
 //!
 //! # 検査の順序（契約）
 //!
@@ -40,6 +40,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod config;
 mod key;
 mod origin;
 mod replay;
@@ -56,6 +57,7 @@ use serde::{Deserialize, Deserializer};
 use crate::policy::{Algorithm, AllowedAlgorithms};
 use crate::verify::{MAX_TOKEN_LEN, signature_ok};
 
+pub use config::{DpopConfig, DpopMode};
 pub use key::{JwkThumbprint, jwk_thumbprint};
 pub use origin::{ExpectedHtu, MAX_HTU_LEN, MAX_ORIGIN_LEN, OriginError, PublicOrigin};
 pub use replay::{DEFAULT_REPLAY_CAPACITY, MAX_REPLAY_CAPACITY, ReplayStore};
@@ -226,6 +228,23 @@ pub enum DpopError {
     Replayed,
     /// `jti` の保持が上限に達している（[`ReplayStore::register`]）。
     ReplayStoreFull,
+    /// `DPoP` ヘッダが複数ある（ちょうど 1 つでなければ拒否する）。
+    MultipleProofs,
+    /// proof のサムプリントがアクセストークンの `cnf.jkt` と一致しない。
+    ThumbprintMismatch,
+    /// `cnf.jkt` を持つ DPoP 結合のトークンが `Bearer` で提示された（格下げの拒否）。
+    BoundTokenAsBearer,
+    /// `cnf.jkt` を持たないトークンが、DPoP を要する経路で提示された。
+    UnboundToken,
+    /// ゲートを通っていない要求（`jti` が登録されていない）。`authenticate_after_gate` が返す。
+    NotAdmitted,
+}
+
+impl DpopError {
+    /// アクセストークン側の拒否（`invalid_token`）か。それ以外は proof 側（`invalid_dpop_proof`）。
+    pub(crate) fn is_token_side(self) -> bool {
+        matches!(self, Self::BoundTokenAsBearer | Self::UnboundToken)
+    }
 }
 
 impl fmt::Display for DpopError {
@@ -252,6 +271,13 @@ impl fmt::Display for DpopError {
             Self::InvalidRequestTarget => "リクエストターゲットから期待 URI を作れません",
             Self::Replayed => "DPoP proof の jti は既に使われています",
             Self::ReplayStoreFull => "DPoP proof の jti の保持が上限に達しています",
+            Self::MultipleProofs => "DPoP ヘッダが複数あります",
+            Self::ThumbprintMismatch => {
+                "DPoP proof の鍵がアクセストークンの cnf.jkt と一致しません"
+            }
+            Self::BoundTokenAsBearer => "DPoP 結合のトークンは Bearer では受け付けません",
+            Self::UnboundToken => "DPoP に結合されていないトークンは受け付けません",
+            Self::NotAdmitted => "この要求は DPoP の検査を通っていません",
         };
         f.write_str(msg)
     }
