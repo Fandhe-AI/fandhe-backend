@@ -1,5 +1,7 @@
 # ゲートの検証結果をリクエスト単位でハンドラへ渡す経路（イシュー #924）
 
+WebSocket の接続コンテキストから同じ値を読む拡張は 14 節（イシュー #933、親 #932）で扱う。
+
 ## 1. 背景・目的
 
 `RequestGate` が得た検証結果（例: `plugin-jwt` が検証した Claims）を後段のハンドラへ渡す、
@@ -75,7 +77,7 @@
 |---|---|---|
 | `Middleware::on_request`（ゲート前） | 空 | 不可 |
 | `RequestGate::check` | 進行中の器（先行ゲートの値） | 可（唯一の書き込み口） |
-| `UpgradeHandler::matches`・Upgrade 委譲先 | 値あり | 不可（`&RequestHead`） |
+| `UpgradeHandler::matches`・Upgrade 委譲先 | 値あり（WebSocket では `WsHandshakeContext::head()` から読める。`WsOpenContext` / `WsConnContext` からは 14 節の実装後に読める） | 不可（`&RequestHead`） |
 | `Interceptor::intercept` / `map_response` | 値あり | 不可 |
 | `try_intercept`・`Handler`・Router のハンドラ | 値あり | 不可 |
 | `Middleware::on_response_with_status` | 通過時は値あり、拒否時は空 | 不可 |
@@ -133,10 +135,13 @@ feature ゲートは不要（外部依存ゼロ）。ゲート未使用の構成
 
 - `plugin-jwt` の `JwtGate` が検証済み Claims を `GateVerified` として入れる件、および
   `jwt-verify-plugin.md` 9.3 節の文言更新: #904（実装済み）。
-- `plugin-hub-wiring` の `TenantGate` が `HubClaims` を同じ経路で渡す件。
-- `plugin-websocket` の `WsOpenContext` / `WsConnContext` から値を読めるようにする件（head は委譲先へ
-  clone されて渡るので技術的には届くが、公開 API にするのは別の判断）。
-- 0.6.0 への版上げとリリース作業。
+- `plugin-hub-wiring` の `TenantGate` が `TenantVerified` を同じ経路で渡す件: #905（実装済み、
+  `TenantGate::verified`）。
+- `plugin-websocket` の `WsOpenContext` / `WsConnContext` から値を読めるようにする件: 14 節で設計する。
+  実装は本ツリー（#932）の #934、実 TCP テスト・文書は #935。
+- 0.6.0 への版上げとリリース作業（#930 / #931 で完了済み）。
+- `&RequestExtensions` を受ける `verified` 系の補助関数（hub-wiring / plugin-jwt）。
+- セッション中の `exp` 再検証やセッション寿命の上限を設ける機構。
 
 ## 13. 拡張点閉包ゲート（`extension-closure-gate.sh`）への理由記載
 
@@ -158,3 +163,89 @@ feature ゲートは不要（外部依存ゼロ）。ゲート未使用の構成
    置けない（3 節 E-3 の採用理由）。
 4. **正当性根拠**: 追加は外部依存ゼロの加法的な型と、`RequestGate::check` への引数追加のみである。
    依存方向（`server → routes → http`）と拡張点の種類数は変わらない。移行手順は `CHANGELOG.md` に記す。
+
+## 14. WebSocket の接続コンテキストから読む（イシュー #933、親 #932）
+
+### 14.1 経路の事実
+
+- コアは全ゲートが `Allow` のあと、Upgrade 判定より前に器を `request.head` へ移す。`Reject` は Upgrade
+  の分岐より前に応答して抜けるので、拒否された upgrade は `handle_upgrade*` に届かない。`on_open` は
+  呼ばれず 101 も返らない（fail-closed）。
+- `plugin::try_handle_upgrade` は head を clone して `handle_upgrade_with_peer_addr` へ渡す。
+  `RequestExtensions` の clone は `Arc` の参照カウントを増やすだけである。
+- plugin-websocket では `ConnRequestInfo::from_head` が head を消費する唯一の地点で、101 応答の送出に
+  成功したあと 1 回だけ構築し、`Arc` で両コンテキストに共有する（`ws-connection-context-and-close.md`
+  17 節）。許可リストの 5 項目だけを抜き出して head を捨てるため、値はそこで失われる。
+- 現状の読み口: `WsHandshakeContext::head().extensions()` は `WsHandshakeCheck` のフック内（101 応答の
+  前）で既に読める。`WsOpenContext` / `WsConnContext` からは読めない。
+
+### 14.2 採用案
+
+- `ConnRequestInfo` に `extensions: RequestExtensions` を足し、`from_head` で `head.extensions().clone()`
+  を保持する。
+- `WsOpenContext::extensions(&self) -> &RequestExtensions` と
+  `WsConnContext::extensions(&self) -> &RequestExtensions` を追加する。書き込み口は持たない。
+- `RequestExtensions` は `Clone` と `Default` を実装しているので、`ConnRequestInfo` の既存の derive と
+  テストにある `ConnRequestInfo::default()` はそのままコンパイルできる。`Arc<dyn Any + Send + Sync>`
+  を持つため、両コンテキストの `Send` / `Sync` も変わらない。
+
+### 14.3 退けた案
+
+- **`RequestHead` を丸ごと保持する**: 17 節の許可リスト方式と、保持量の上限という論拠に反する。
+- **`handle_upgrade*` のシグネチャに引数を足す**: BREAKING であり、head が既に運んでいるので不要。
+- **`on_open` などからゲートや認証を呼び直す**: DPoP の `jti` は 1 回しか使えない（1 節と同じ理由）。
+- **plugin-websocket が plugin-jwt / hub-wiring の具体型に依存する**: plugin から plugin への依存を
+  増やさない方針に反する。型消去した器を中継するだけにする。
+
+### 14.4 許可リスト方針との整合
+
+- 許可リストが抑えているのは、クライアントが制御するバイト列（任意ヘッダの取得口と保持量）である。
+- `RequestExtensions` はパーサが常に空で構築し、書けるのは登録済みのゲート（信頼コード）の `check`
+  だけである。件数はゲートの数で上限が決まり、任意ヘッダの汎用取得口は増えない。
+- 差分は正直に記す。保持量の上限は、byte 定数（`MAX_CONTEXT_*`）からゲート実装が決める大きさへ移る。
+  ゲートは検証済みの小さな値（Claims など）だけを入れる前提とする。
+
+### 14.5 公開 API への影響と版
+
+- 追加するのは、`#[non_exhaustive]` で非公開フィールドの型へのメソッドだけである。
+  `crates/core`・`handle_upgrade*`・拡張点の trait は変えない。新規依存なし、`unsafe` なし。
+- 非破壊の追加として扱う（7 節の BREAKING とは区別する）。版上げはリリース手順側で行う。
+
+### 14.6 利用者の読み方
+
+- `TenantGate::verified` と `JwtGate::verified` は `&RequestHead` を取るので、WebSocket のコンテキスト
+  からは呼べない。
+- WebSocket では `ctx.extensions().get::<TenantVerified>()` から `TenantVerified::tenant`、または
+  `get::<GateVerified<E>>()` から `GateVerified::claims` を読む。`E` はゲート登録時と同じ型でないと
+  `TypeId` が一致せず `None` になる。`None` は拒否側に倒す（fail-closed）。
+- `&RequestExtensions` を受ける補助関数は 12 節のとおりスコープ外とする。
+
+### 14.7 既知の限界
+
+- 値は WebSocket セッションが続く間ずっと保持される。
+- JWT の `exp` はハンドシェイク時点で検証するだけで、セッション中には再検証しない。鍵のローテーション
+  や失効も、張ったあとのセッションには反映されない。
+- アプリ側の緩和策: `JwtGate` を使う場合は `on_open` で `Claims::exp()` を読み、`WsSender::close` を
+  期限に予約する。ping と idle timeout も併用する。
+- `TenantClaims` は `org_id()` だけを公開し `exp` を出さない。`TenantGate` 単独ではアプリが期限を
+  読めない。
+- コアの `max_connection_lifetime` が upgrade 後の委譲セッションにも効くかは本節では断定しない。
+  #935 の文書化の前に `crates/core/src/server.rs` で確かめる。
+
+### 14.8 `Debug` とセキュリティ（OWASP）
+
+- `Debug` には 2 層で値を出さない。`RequestExtensions` の `Debug` は件数だけを出し、両コンテキストの
+  `Debug` は `info` 自体を出さない（17 節）。#934 でもこの出力項目を変えない（A09）。
+- A01 / A07: リクエストへの束縛は 9 節と同じで、ゲートを通った head に限る。WebSocket 側は読み取り専用。
+- DoS: 件数はゲート数で上限が決まる。セッション中の常駐は 14.7 に記した。A06: 新規依存なし。
+  メモリ安全: `unsafe` なし。
+
+### 14.9 #934 / #935 への申し送り
+
+- #934: 両アクセサと doc test。`on_open` / `on_message_with_ctx` / `on_close` で値を読めること、
+  ゲートがなければ空であること、別の接続に現れないことをユニットテストで確かめる。`Debug` の出力は
+  不変とする。
+- #935: 実 TCP の統合テスト（`Server::gate` と `Server::websocket`）で、上記 3 箇所と
+  `WsHandshakeContext::head().extensions()` から読めること、ゲートが拒否した upgrade では `on_open` も
+  101 もないこと、続けて張った別の接続に値が漏れないことを確かめる。あわせて CHANGELOG・ガイド
+  （`exp` の限界を含む）・CLAUDE.md を更新し、`ws-connection-context-and-close.md` 17 節から逆参照を張る。
