@@ -458,8 +458,29 @@ impl Handler for VerifiedOrgHandler {
             Ok(t) => format!("org={}", t.org_id()),
             Err(e) => format!("ERR:{e}"),
         };
-        Box::pin(std::future::ready(Response::new(200, body.into_bytes())))
+        Box::pin(std::future::ready(
+            Response::new(200, body.into_bytes()).with_content_type("text/plain"),
+        ))
     }
+}
+
+/// 応答のステータス行・`Content-Type`・`Content-Length`・本文をすべて検証する
+/// （AGENTS.md「アサーション網羅性」）。
+fn assert_wire(response: &str, status: u16, content_type: &str, expected_body: &str) {
+    let (head, body) = response.split_once("\r\n\r\n").expect("ヘッダ終端がない");
+    assert!(
+        head.starts_with(&format!("HTTP/1.1 {status} ")),
+        "ステータス行が {status} でない: {response}"
+    );
+    assert!(
+        head.contains(&format!("Content-Type: {content_type}\r\n")),
+        "Content-Type が {content_type} でない: {response}"
+    );
+    assert!(
+        head.contains(&format!("Content-Length: {}\r\n", expected_body.len())),
+        "Content-Length が本文長と一致しない: {response}"
+    );
+    assert_eq!(body, expected_body, "本文が一致しない: {response}");
 }
 
 fn bearer_request(keypair: &RsaKeyPair, org_id: &str) -> String {
@@ -479,8 +500,7 @@ async fn handler_reads_org_id_via_tenant_gate_verified() {
         .gate(TenantGate::new(config))
         .handler(VerifiedOrgHandler);
     let response = roundtrip(&server, bearer_request(&keypair, "org-1").as_bytes()).await;
-    assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
-    assert!(response.ends_with("org=org-1"), "response: {response}");
+    assert_wire(&response, 200, "text/plain", "org=org-1");
 }
 
 #[tokio::test]
@@ -488,9 +508,11 @@ async fn handler_without_gate_gets_not_admitted() {
     let keypair = test_keypair();
     let server = Server::new().handler(VerifiedOrgHandler);
     let response = roundtrip(&server, bearer_request(&keypair, "org-1").as_bytes()).await;
-    assert!(
-        response.ends_with("ERR:この要求は TenantGate を通っていません"),
-        "response: {response}"
+    assert_wire(
+        &response,
+        200,
+        "text/plain",
+        "ERR:この要求は TenantGate を通っていません",
     );
 }
 
@@ -508,8 +530,12 @@ async fn duplicate_tenant_gate_is_rejected_with_500_before_handler() {
         .gate(mk())
         .handler(VerifiedOrgHandler);
     let response = roundtrip(&server, bearer_request(&keypair, "org-1").as_bytes()).await;
-    assert!(response.starts_with("HTTP/1.1 500"), "response: {response}");
-    assert!(!response.contains("org="), "response: {response}");
+    assert_wire(
+        &response,
+        500,
+        "application/json",
+        r#"{"error":"internal_error"}"#,
+    );
 }
 
 #[tokio::test]
@@ -521,12 +547,17 @@ async fn from_authenticator_behaves_like_new() {
         .gate(TenantGate::new(config))
         .handler(VerifiedOrgHandler);
     let ok = roundtrip(&server, bearer_request(&keypair, "org-2").as_bytes()).await;
-    assert!(ok.ends_with("org=org-2"), "response: {ok}");
+    assert_wire(&ok, 200, "text/plain", "org=org-2");
     let bad = roundtrip(
         &server,
         b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
     )
     .await;
-    assert!(bad.starts_with("HTTP/1.1 401"), "response: {bad}");
+    assert_wire(
+        &bad,
+        401,
+        "application/json",
+        r#"{"error":"invalid_token"}"#,
+    );
     assert!(!bad.contains("WWW-Authenticate"), "response: {bad}");
 }

@@ -175,12 +175,42 @@ impl TenantGateConfig {
 /// フィールドは非公開で公開コンストラクタも `Clone` もなく、ゲート以外には作れない。
 /// このため値が存在すること自体が「[`TenantGate`] を通った」ことの証明になる。
 /// ハンドラは [`TenantGate::verified`] で読む。`Debug` は値を出さない。
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+/// use fandhe_backend_plugin_hub_wiring::gate::TenantVerified;
+///
+/// let ParseOutcome::Complete { head, .. } = parse_request_head(b"GET / HTTP/1.1\r\n\r\n")?
+/// else { unreachable!() };
+/// // `RequestExtensions` から取り出す。ゲートを通った要求にだけ値がある。
+/// assert!(head.extensions().get::<TenantVerified>().is_none());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct TenantVerified {
     tenant: TenantClaims,
 }
 
 impl TenantVerified {
     /// 検証済みのテナント情報。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+    /// use fandhe_backend_plugin_hub_wiring::gate::TenantVerified;
+    ///
+    /// let ParseOutcome::Complete { head, .. } = parse_request_head(b"GET / HTTP/1.1\r\n\r\n")?
+    /// else { unreachable!() };
+    /// // 取り出した検証済み値から `tenant()` 経由で `org_id` を読む。
+    /// let org = head
+    ///     .extensions()
+    ///     .get::<TenantVerified>()
+    ///     .map(|v| v.tenant().org_id());
+    /// assert_eq!(org, None); // ゲート未通過の要求には値がない
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn tenant(&self) -> &TenantClaims {
         &self.tenant
     }

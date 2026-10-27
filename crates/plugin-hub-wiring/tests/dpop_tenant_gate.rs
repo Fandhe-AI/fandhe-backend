@@ -246,6 +246,22 @@ fn body(r: &str) -> &str {
     r.split_once("\r\n\r\n").unwrap().1
 }
 
+/// ステータス行・`Content-Type`・`Content-Length`・本文をすべて検証する
+/// （AGENTS.md「アサーション網羅性」）。
+fn assert_wire(r: &str, status: u16, content_type: &str, expected_body: &str) {
+    let (head, body) = r.split_once("\r\n\r\n").expect("ヘッダ終端がない");
+    assert!(head.starts_with(&format!("HTTP/1.1 {status} ")), "{r}");
+    assert!(
+        head.contains(&format!("Content-Type: {content_type}\r\n")),
+        "{r}"
+    );
+    assert!(
+        head.contains(&format!("Content-Length: {}\r\n", expected_body.len())),
+        "{r}"
+    );
+    assert_eq!(body, expected_body, "{r}");
+}
+
 const ALGS: &str = "algs=\"ES256 RS256\"";
 
 fn assert_401(r: &str, challenges: &[String], error: &str) {
@@ -269,8 +285,7 @@ async fn bound_token_with_valid_proof_is_admitted_and_org_id_is_readable() {
                 &req(Some(&format!("DPoP {t}")), &[&key.proof(&t, "j1")]),
             )
             .await;
-            assert!(r.starts_with("HTTP/1.1 200"), "{r}");
-            assert_eq!(body(&r), "org=org-1", "{r}");
+            assert_wire(&r, 200, "text/plain", "org=org-1");
             assert!(www_authenticate(&r).is_empty(), "{r}");
         }
     }
@@ -295,8 +310,7 @@ async fn bound_token_presented_as_bearer_is_rejected() {
     // Bearer を併用する方式でも、結合トークンは Bearer では受け付けない。
     let s = server(authenticator(DpopMode::AllowUnboundBearer));
     let r = roundtrip(&s, &req(Some(&bearer), &[])).await;
-    assert!(r.starts_with("HTTP/1.1 401"), "{r}");
-    assert_eq!(body(&r), r#"{"error":"invalid_token"}"#, "{r}");
+    assert_wire(&r, 401, "application/json", r#"{"error":"invalid_token"}"#);
     assert_eq!(www_authenticate(&r).len(), 2, "{r}");
     assert!(!r.contains("org="), "{r}");
 }
@@ -342,15 +356,24 @@ async fn missing_org_id_after_valid_dpop_is_403_without_challenge() {
             &req(Some(&format!("DPoP {t}")), &[&key.proof(&t, "j-403")]),
         )
         .await;
-        assert!(r.starts_with("HTTP/1.1 403"), "{r}");
-        assert_eq!(body(&r), r#"{"error":"tenant_scope_required"}"#, "{r}");
+        assert_wire(
+            &r,
+            403,
+            "application/json",
+            r#"{"error":"tenant_scope_required"}"#,
+        );
         assert!(www_authenticate(&r).is_empty(), "{r}");
     }
     // DPoP の検査に落ちる要求は、org_id がなくても 401（403 にはならない）。
     let s = server(authenticator(DpopMode::Required));
     let t = token(None, &key.cnf());
     let r = roundtrip(&s, &req(Some(&format!("DPoP {t}")), &[])).await;
-    assert!(r.starts_with("HTTP/1.1 401"), "{r}");
+    assert_wire(
+        &r,
+        401,
+        "application/json",
+        r#"{"error":"invalid_dpop_proof"}"#,
+    );
 }
 
 // ---- jti の再使用 ----
@@ -362,10 +385,14 @@ async fn reused_proof_is_rejected_on_a_second_connection() {
     let t = token(Some("org-1"), &key.cnf());
     let request = req(Some(&format!("DPoP {t}")), &[&key.proof(&t, "same")]);
     let first = roundtrip(&s, &request).await;
-    assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+    assert_wire(&first, 200, "text/plain", "org=org-1");
     let second = roundtrip(&s, &request).await;
-    assert!(second.starts_with("HTTP/1.1 401"), "{second}");
-    assert!(!second.contains("org="), "{second}");
+    assert_wire(
+        &second,
+        401,
+        "application/json",
+        r#"{"error":"invalid_dpop_proof"}"#,
+    );
 }
 
 // ---- 資格情報なし ----
@@ -392,8 +419,7 @@ async fn unbound_bearer_is_accepted_when_bearer_is_allowed() {
     let s = server(authenticator(DpopMode::AllowUnboundBearer));
     let t = token(Some("org-9"), "");
     let r = roundtrip(&s, &req(Some(&format!("Bearer {t}")), &[])).await;
-    assert!(r.starts_with("HTTP/1.1 200"), "{r}");
-    assert_eq!(body(&r), "org=org-9", "{r}");
+    assert_wire(&r, 200, "text/plain", "org=org-9");
 }
 
 #[tokio::test]
@@ -406,12 +432,11 @@ async fn feature_enabled_without_dpop_config_keeps_legacy_wire() {
     // 結合トークンも Bearer として受理される（DPoP を設定していない下流の従来動作）。
     let t = token(Some("org-1"), &key.cnf());
     let r = roundtrip(&s, &req(Some(&format!("Bearer {t}")), &[])).await;
-    assert!(r.starts_with("HTTP/1.1 200"), "{r}");
+    assert_wire(&r, 200, "text/plain", "org=org-1");
     // 拒否の 401 に WWW-Authenticate は付かない。
     let r = roundtrip(&s, &req(None, &[])).await;
-    assert!(r.starts_with("HTTP/1.1 401"), "{r}");
+    assert_wire(&r, 401, "application/json", r#"{"error":"invalid_token"}"#);
     assert!(www_authenticate(&r).is_empty(), "{r}");
-    assert_eq!(body(&r), r#"{"error":"invalid_token"}"#, "{r}");
 }
 
 // ---- 1 要求 1 回の契約 ----
