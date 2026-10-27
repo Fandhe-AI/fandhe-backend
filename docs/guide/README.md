@@ -23,6 +23,7 @@
 | [`tutorial.md`](./tutorial.md) | 最小サーバ→拡張点の実装→feature 有効化まで段階的に学ぶチュートリアル |
 | [`jwks-refresh.md`](./jwks-refresh.md) | `fandhe-backend-plugin-jwt` の `jwks-refresh` feature。JWKS 取得関数の実装例（SSRF・サイズ上限・時間切れの契約）と取り直しタスクの配線 |
 | [`dpop.md`](./dpop.md) | `fandhe-backend-plugin-jwt` の `dpop` feature。DPoP 結合トークンの検証の設定・配線例、`jti` を共有しない既知の限界 |
+| [`ws-gate-extensions.md`](./ws-gate-extensions.md) | ゲートの検証結果を WebSocket のフック・`on_open`・`on_message_with_ctx`・`on_close` から読む方法と、セッション中は `exp` を再検証しない既知の限界 |
 
 ## サンプルコードの原則（二重管理をしない）
 
@@ -39,6 +40,8 @@ markdown に複製したコードは `cargo test --doc` の検証対象になら
 説明用コードです。フレームワーク側の API の呼び出し形は rustdoc の doc test を「正」とします。
 [`dpop.md`](./dpop.md) の設定・配線の例も同様に、コンパイル検証の対象外の説明用コード
 （`rust,ignore`）で、`JwtAuthenticatorBuilder::dpop` などの doc test が「正」です。
+[`ws-gate-extensions.md`](./ws-gate-extensions.md) の例も、hub-wiring・plugin-jwt の型を使うため
+コンパイル検証の対象外（`rust,ignore`）で、`WsOpenContext::extensions` などの doc test が「正」です。
 
 `crates/core/examples/*` は feature 単体の実装パターンを示す最小 example ですが、
 独立したプロジェクトとしてそのまま `cargo run` したい場合は

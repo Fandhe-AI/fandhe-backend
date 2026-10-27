@@ -7,6 +7,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- `fandhe-backend-plugin-websocket`: `WsOpenContext::extensions()` / `WsConnContext::extensions()` を
+  追加しました（イシュー [#934](https://github.com/Fandhe-AI/fandhe-backend/issues/934)、
+  実 TCP の統合テストと文書は [#935](https://github.com/Fandhe-AI/fandhe-backend/issues/935)）。
+  `RequestGate` が入れた検証結果を `on_open`・`on_message_with_ctx`・`on_close` から読み取り専用で
+  参照できます（ハンドシェイクのフックは従来どおり `WsHandshakeContext::head().extensions()`）。
+  `Debug` は値を出しません。ゲートが拒否した upgrade は 101 にもハンドラにも届きません。
+  **限界**: 値はセッションの間ずっと保持され、JWT の `exp` はハンドシェイク時点でしか検証しません。
+  コアの `Server::max_connection_lifetime` は upgrade 後の委譲セッションには効きません。緩和策は
+  ガイド `docs/guide/ws-gate-extensions.md` を参照してください。新規依存・`unsafe` はなく、追加のみで
+  既存の型は壊れません。crates.io 公開版 0.6.0 には含まれません。
+
 ## [0.6.0] - 2026-10-27
 
 公開対象 15 クレートを lockstep バンプ（`docs/design/crates-io-release.md` 7.8 節）。

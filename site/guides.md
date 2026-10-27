@@ -30,6 +30,9 @@ Guides セクションは fandhe-backend を**使う**ための利用者向け�
 - [DPoP 結合トークンの検証（dpop）](../docs/guide/dpop.md) —
   `fandhe-backend-plugin-jwt` の opt-in feature。DPoP の設定・配線例と、`jti` を
   インスタンス間で共有しない既知の限界
+- [ゲートの値を WebSocket で使う](../docs/guide/ws-gate-extensions.md) —
+  `RequestGate` の検証結果を WebSocket のフックとハンドラから読む方法と、セッション中は
+  `exp` を再検証しない既知の限界
 
 GitHub 上の実体は
 [`docs/guide/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/docs/guide)
