@@ -9,8 +9,17 @@
 //! - 追加クレーム `org_id` の取り出し（[`HubClaims`]）
 //! - `org_id` の欠落・空・空白のみを [`AuthError::MissingOrgId`]（ゲートでは 403）にする
 //!
-//! [`Authenticator`] を [`TenantGate`](crate::gate::TenantGate) とハンドラで共有すると、
-//! ゲート通過時点でキャッシュが温まり、ハンドラ側の呼び出しは署名検証を再実行しない。
+//! Bearer だけの構成では、[`Authenticator`] を [`TenantGate`](crate::gate::TenantGate) と
+//! ハンドラで共有すると、ゲート通過時点でキャッシュが温まり、ハンドラ側の呼び出しは
+//! 署名検証を再実行しない。ただし推奨の経路は、ゲートが検証結果を要求に載せ、ハンドラが
+//! [`TenantGate::verified`](crate::gate::TenantGate::verified) で読む方法である。
+//!
+//! # DPoP を設定した認証器（`dpop` feature、イシュー #905）
+//!
+//! `JwtAuthenticator` に DPoP を設定して [`Authenticator::from_jwt`] で渡すと、
+//! [`Authenticator::authenticate`] は proof の `jti` を登録する。このため**1 要求につき 1 回、
+//! ゲートでだけ**呼ぶこと。同じ要求でハンドラが再度呼ぶと `Replayed` で失敗する。ハンドラは
+//! `TenantGate::verified` を使う。
 //!
 //! # フェイルクローズ（.claude/rules/security.md A01）
 //!
@@ -299,6 +308,12 @@ pub struct Authenticator {
 }
 
 impl Authenticator {
+    /// 内部の汎用認証器。ゲートが DPoP の設定有無の判定と 401 応答の組み立てに使う。
+    #[cfg(feature = "dpop")]
+    pub(crate) fn jwt(&self) -> &JwtAuthenticator<HubClaims> {
+        &self.inner
+    }
+
     /// 鍵集合と検証ポリシーから認証器を作る。ポリシーなしでは作れない。
     pub fn new(keys: SharedKeySet, policy: JwtPolicy) -> Self {
         Self {
@@ -334,6 +349,10 @@ impl Authenticator {
     }
 
     /// トークンを検証してテナント情報を返す。検証結果はキャッシュされる。
+    ///
+    /// DPoP を設定した認証器（`dpop` feature）では proof の `jti` を登録するため、
+    /// **1 要求につきゲートで 1 回だけ**呼ぶこと。ハンドラで再度呼ぶと `Replayed` で失敗する。
+    /// ハンドラは [`TenantGate::verified`](crate::gate::TenantGate::verified) を使う。
     ///
     /// # Errors
     ///

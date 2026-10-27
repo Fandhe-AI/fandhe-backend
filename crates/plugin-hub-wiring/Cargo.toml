@@ -45,6 +45,15 @@ fandhe-backend-plugin-jwt = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# `dpop`（イシュー #905）: `fandhe-backend-plugin-jwt/dpop` の転送のみ。新規依存・
+# 新規 crate はなく（Cargo.lock に差分なし）、無効時は DPoP のコードも依存も増えない。
+# 有効にしただけでは挙動は変わらず、DPoP を設定した認証器を
+# `TenantGateConfig::from_authenticator` に渡したときだけ DPoP の検証と
+# `WWW-Authenticate: DPoP` チャレンジが働く（`docs/design/jwt-verify-plugin.md` 9.10 節）。
+[features]
+default = []
+dpop = ["fandhe-backend-plugin-jwt/dpop"]
+
 # 統合テスト（tests/tenant_gate.rs・tests/hub_acceptance.rs）で
 # `handle_connection` を `tokio::io::duplex` 越しに駆動する E2E 確認、および
 # 受け入れ検証用ダミー hub サービス（examples/hub_service_demo.rs、TASK-9.5 /

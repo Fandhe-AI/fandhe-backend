@@ -938,3 +938,30 @@ hub-wiring への転送は #905、計測は #906、CHANGELOG・ガイド・受�
   が、後続ゲートの拒否 → 別経路への再送（ゲートあり: replay で 401、ゲートなし: `NotAdmitted`）を実 HTTP 経路で固定する。
 - **新規依存なし**: `Cargo.lock` に差分はない。`Lookup::Hit` は `Claims` が `cnf` で大きくなったため
   `Box` 化した。
+
+#### 実装時の決定（#905）
+
+hub 共通配線（`plugin-hub-wiring`）から DPoP の検証を使えるようにした。9.10 節の方針に沿う。
+
+- **feature 転送**: hub の `dpop` は `fandhe-backend-plugin-jwt/dpop` を転送するだけで、新規依存はない
+  （`Cargo.lock` に差分なし）。無効時は DPoP のコードも依存も増えない。
+- **入口**: `TenantGateConfig::from_authenticator(Authenticator)` を feature によらず加法的に追加した。
+  DPoP は `JwtAuthenticator::<HubClaims>::builder(..).dpop(cfg).build()` を `Authenticator::from_jwt` で
+  包んで渡す。cfg 付きの便宜構築子は作らない（入口を 1 つに保つ）。
+- **DPoP 設定済みかの判定**: `from_jwt` 経由の認証器は hub から設定が見えないため、plugin-jwt に
+  `JwtAuthenticator::dpop_mode() -> Option<DpopMode>`（`dpop` feature）を足し、ゲートが参照する。
+  hub 側にフラグを持つ案は、`from_jwt` で渡された DPoP 設定済み認証器を見落とすため採らなかった。
+  DPoP を設定した認証器のときだけ、拒否の 401 を `JwtAuthenticator::unauthorized_response`（9.9 節）で
+  組み立てる。設定しない構成の 401/403 はバイト単位で従来と同じ（`WWW-Authenticate` なし）。
+  既知の限界: hub の `dpop` が無効のまま、feature 統合で plugin-jwt の `dpop` だけが有効になり DPoP 設定済みの
+  認証器を渡した場合は、チャレンジは付かないが拒否は 401 のまま（フェイルクローズ）。
+- **ゲートからハンドラへの受け渡し**: DPoP を設定した `authenticate` は `jti` を登録するため 1 要求 1 回しか
+  呼べず、従来の「ハンドラで再度 `authenticate` してキャッシュヒット」は使えない。`JwtGate` の
+  `GateVerified` と同じ形で、`TenantVerified`（外部から構築・複製できない）を `RequestExtensions` に入れ、
+  ハンドラは `TenantGate::verified(head)` で読む。ゲート未通過は hub 独自の `NotAdmitted`、二重挿入
+  （`TenantGate` の二重登録）は上書きせず `500` で拒否する。Bearer のみの構成では従来の使い方も動き続ける。
+- **順序**: `org_id` 欠落の `403` は `authenticate` の内部で DPoP の検査が済んだ後にだけ返る。
+  DPoP の検査に落ちる要求は `org_id` の有無によらず `401`。
+- **テスト**: `tests/dpop_tenant_gate.rs`（実 HTTP 経路で、受理・`Bearer` への格下げ拒否・proof の欠陥・
+  `403` の順序・`jti` の再使用・互換・再 `authenticate` が `Replayed` になること）、`tests/tenant_gate.rs`
+  （feature によらない受け渡しと二重登録）。`jti` はプロセス内でのみ保持する（9.6・9.13 節の既知の限界）。
