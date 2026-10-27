@@ -49,6 +49,18 @@
 //! 再実行しない。鍵ローテーション後は自動的に無効化され、`exp` は毎回再判定され、
 //! 検証失敗はキャッシュされない。
 //!
+//! # Cargo feature
+//!
+//! - `dpop`（既定は無効、イシュー #905）: `fandhe-backend-plugin-jwt/dpop` を転送するだけで、
+//!   新規依存はない。DPoP を設定した `JwtAuthenticator` を
+//!   [`gate::TenantGateConfig::from_authenticator`] に渡したときだけ DPoP の検証と
+//!   `WWW-Authenticate: DPoP` チャレンジが働き、設定しない構成の応答は変わらない。
+//!   DPoP の認証器は `jti` を登録するため 1 要求につきゲートで 1 回だけ検証される。
+//!   ハンドラは [`gate::TenantGate::verified`] で結果を読む。`jti` はプロセス内でのみ
+//!   保持し、複数インスタンス間では共有しない（`docs/design/jwt-verify-plugin.md` 9.6・9.13 節）。
+//!   DPoP を強制したい場合は必ず DPoP を設定すること（未設定の下流は結合トークンも
+//!   Bearer として受理する）。
+//!
 //! # pay-for-what-you-use
 //!
 //! 本クレートを依存に追加しないサービスには、`fandhe-backend-plugin-jwt`・`ring`・
@@ -99,5 +111,5 @@ pub use audit::{
 };
 pub use auth::{AuthError, Authenticator, HubClaims, TenantClaims};
 pub use consent::{ConsentError, ConsentStore, InMemoryConsentStore};
-pub use gate::{TenantGate, TenantGateConfig};
+pub use gate::{NotAdmitted, TenantGate, TenantGateConfig, TenantVerified};
 pub use outbox::{InMemoryOutboxStore, OutboxError, OutboxEvent, OutboxStore};

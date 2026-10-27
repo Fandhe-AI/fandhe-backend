@@ -616,6 +616,43 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> JwtAuthenticator<E> {
         unauthorized(BODY_INVALID_TOKEN, &[challenge])
     }
 
+    /// DPoP の方式。DPoP を設定していない認証器では `None`。
+    ///
+    /// 対象 feature: `dpop`。`from_jwt` などで認証器を受け取る側（hub 共通配線）が、
+    /// DPoP 用のチャレンジを付けるかどうかを決めるために使う。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_jwt::dpop::{DpopConfig, DpopMode, PublicOrigin};
+    /// use fandhe_backend_plugin_jwt::{
+    ///     Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtAuthenticator, JwtPolicy, KeySet,
+    ///     NoExtraClaims, SharedKeySet, TokenType,
+    /// };
+    ///
+    /// let policy = || JwtPolicy::new(
+    ///     Issuer::new("https://issuer.example").unwrap(),
+    ///     Audiences::single("api").unwrap(),
+    ///     AllowedAlgorithms::only(Algorithm::Es256),
+    ///     TokenType::AccessToken,
+    /// );
+    /// let keys = || SharedKeySet::new(KeySet::empty());
+    /// let plain = JwtAuthenticator::<NoExtraClaims>::builder(keys(), policy()).build();
+    /// assert_eq!(plain.dpop_mode(), None);
+    ///
+    /// let cfg = DpopConfig::new(
+    ///     DpopMode::Required,
+    ///     PublicOrigin::new("https://api.example").unwrap(),
+    ///     AllowedAlgorithms::only(Algorithm::Es256),
+    /// );
+    /// let bound = JwtAuthenticator::<NoExtraClaims>::builder(keys(), policy()).dpop(cfg).build();
+    /// assert_eq!(bound.dpop_mode(), Some(DpopMode::Required));
+    /// ```
+    #[cfg(feature = "dpop")]
+    pub fn dpop_mode(&self) -> Option<DpopMode> {
+        self.inner.dpop.as_ref().map(|d| d.config.mode())
+    }
+
     /// キャッシュヒット件数（計測・テスト用）。
     pub fn cache_hits(&self) -> u64 {
         self.inner.hits.load(Ordering::Relaxed)

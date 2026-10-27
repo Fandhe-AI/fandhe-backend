@@ -449,3 +449,84 @@ async fn wrong_iss_aud_or_typ_is_rejected_before_handler() {
         );
     }
 }
+
+/// ゲートが `RequestExtensions` に載せた検証結果から `org_id` を読んで返すハンドラ（イシュー #905）。
+struct VerifiedOrgHandler;
+impl Handler for VerifiedOrgHandler {
+    fn handle(&self, head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
+        let body = match TenantGate::verified(head) {
+            Ok(t) => format!("org={}", t.org_id()),
+            Err(e) => format!("ERR:{e}"),
+        };
+        Box::pin(std::future::ready(Response::new(200, body.into_bytes())))
+    }
+}
+
+fn bearer_request(keypair: &RsaKeyPair, org_id: &str) -> String {
+    let token = make_token(keypair, TEST_KID, Some(org_id), 9_999_999_999, "RS256");
+    format!(
+        "GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+    )
+}
+
+#[tokio::test]
+async fn handler_reads_org_id_via_tenant_gate_verified() {
+    let keypair = test_keypair();
+    let config =
+        TenantGateConfig::from_jwks_json(&jwks_json_for(&keypair, TEST_KID), test_policy())
+            .unwrap();
+    let server = Server::new()
+        .gate(TenantGate::new(config))
+        .handler(VerifiedOrgHandler);
+    let response = roundtrip(&server, bearer_request(&keypair, "org-1").as_bytes()).await;
+    assert!(response.starts_with("HTTP/1.1 200"), "response: {response}");
+    assert!(response.ends_with("org=org-1"), "response: {response}");
+}
+
+#[tokio::test]
+async fn handler_without_gate_gets_not_admitted() {
+    let keypair = test_keypair();
+    let server = Server::new().handler(VerifiedOrgHandler);
+    let response = roundtrip(&server, bearer_request(&keypair, "org-1").as_bytes()).await;
+    assert!(
+        response.ends_with("ERR:この要求は TenantGate を通っていません"),
+        "response: {response}"
+    );
+}
+
+#[tokio::test]
+async fn duplicate_tenant_gate_is_rejected_with_500_before_handler() {
+    let keypair = test_keypair();
+    let mk = || {
+        TenantGate::new(
+            TenantGateConfig::from_jwks_json(&jwks_json_for(&keypair, TEST_KID), test_policy())
+                .unwrap(),
+        )
+    };
+    let server = Server::new()
+        .gate(mk())
+        .gate(mk())
+        .handler(VerifiedOrgHandler);
+    let response = roundtrip(&server, bearer_request(&keypair, "org-1").as_bytes()).await;
+    assert!(response.starts_with("HTTP/1.1 500"), "response: {response}");
+    assert!(!response.contains("org="), "response: {response}");
+}
+
+#[tokio::test]
+async fn from_authenticator_behaves_like_new() {
+    let keypair = test_keypair();
+    let keys = SharedKeySet::from_json(&jwks_json_for(&keypair, TEST_KID)).unwrap();
+    let config = TenantGateConfig::from_authenticator(Authenticator::new(keys, test_policy()));
+    let server = Server::new()
+        .gate(TenantGate::new(config))
+        .handler(VerifiedOrgHandler);
+    let ok = roundtrip(&server, bearer_request(&keypair, "org-2").as_bytes()).await;
+    assert!(ok.ends_with("org=org-2"), "response: {ok}");
+    let bad = roundtrip(
+        &server,
+        b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(bad.starts_with("HTTP/1.1 401"), "response: {bad}");
+    assert!(!bad.contains("WWW-Authenticate"), "response: {bad}");
+}

@@ -9,8 +9,11 @@
 //! （`crates/core/src/server.rs` doc）ため、WebSocket アップグレード等の
 //! 長時間接続もこの認証をバイパスできない。
 
-use crate::auth::{AuthError, Authenticator};
+use std::fmt;
+
+use crate::auth::{AuthError, Authenticator, TenantClaims};
 use fandhe_backend_core::extension::{GateContext, GateOutcome, RequestGate};
+use fandhe_backend_http::error::error_response;
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
 use fandhe_backend_plugin_jwt::{JwksError, JwtPolicy, SharedKeySet};
@@ -102,6 +105,36 @@ impl TenantGateConfig {
         Ok(Self::new(SharedKeySet::from_json(json)?, policy))
     }
 
+    /// 構築済みの [`Authenticator`] から設定を組み立てる。
+    ///
+    /// DPoP（`dpop` feature）を使うときの入口。`JwtAuthenticator::<HubClaims>::builder(..)
+    /// .dpop(cfg).build()` を [`Authenticator::from_jwt`] で包んで渡す。DPoP を設定した
+    /// 認証器のときだけ、拒否の 401 に `WWW-Authenticate: DPoP` チャレンジが付く。
+    /// 設定しない認証器では [`Self::new`] と同じ応答になる。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_plugin_hub_wiring::auth::Authenticator;
+    /// use fandhe_backend_plugin_hub_wiring::gate::TenantGateConfig;
+    /// use fandhe_backend_plugin_hub_wiring::jwt::{
+    ///     Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, SharedKeySet, TokenType,
+    /// };
+    ///
+    /// let policy = JwtPolicy::new(
+    ///     Issuer::new("https://issuer.example")?,
+    ///     Audiences::single("hub-api")?,
+    ///     AllowedAlgorithms::only(Algorithm::Rs256),
+    ///     TokenType::AccessToken,
+    /// );
+    /// let keys = SharedKeySet::from_json(r#"{"keys":[]}"#)?;
+    /// let _config = TenantGateConfig::from_authenticator(Authenticator::new(keys, policy));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn from_authenticator(authenticator: Authenticator) -> Self {
+        Self { authenticator }
+    }
+
     /// 内部で共有する [`Authenticator`] を取得する（`Clone`、`Arc` 共有）。
     ///
     /// 利用側サービスがハンドラ内で `org_id` 等のクレームを再利用したい場合、
@@ -110,6 +143,9 @@ impl TenantGateConfig {
     /// ハンドラで同一トークンについて [`Authenticator::authenticate`] を
     /// 呼ぶと、ゲートの検証でキャッシュ済みのためヒットし、署名検証を
     /// 再実行しない（TASK-9.3 / #63 の主目的）。
+    ///
+    /// DPoP を設定した認証器では、ハンドラでの再呼び出しは `jti` の再使用（`Replayed`）で
+    /// 失敗する。その構成では [`TenantGate::verified`] でゲートの検証結果を読むこと。
     ///
     /// # Examples
     ///
@@ -133,6 +169,50 @@ impl TenantGateConfig {
         self.authenticator.clone()
     }
 }
+
+/// [`TenantGate`] が検証した結果。ゲートだけが `RequestExtensions` に入れる（イシュー #905）。
+///
+/// フィールドは非公開で公開コンストラクタも `Clone` もなく、ゲート以外には作れない。
+/// このため値が存在すること自体が「[`TenantGate`] を通った」ことの証明になる。
+/// ハンドラは [`TenantGate::verified`] で読む。`Debug` は値を出さない。
+pub struct TenantVerified {
+    tenant: TenantClaims,
+}
+
+impl TenantVerified {
+    /// 検証済みのテナント情報。
+    pub fn tenant(&self) -> &TenantClaims {
+        &self.tenant
+    }
+}
+
+impl fmt::Debug for TenantVerified {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TenantVerified").finish_non_exhaustive()
+    }
+}
+
+/// この要求は [`TenantGate`] を通っていない（`RequestHead` に [`TenantVerified`] がない）。
+///
+/// ゲート未登録や別経路の要求を、ハンドラが拒否するために使う（フェイルクローズ）。
+///
+/// # Examples
+///
+/// ```
+/// use fandhe_backend_plugin_hub_wiring::gate::NotAdmitted;
+///
+/// assert_eq!(NotAdmitted.to_string(), "この要求は TenantGate を通っていません");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotAdmitted;
+
+impl fmt::Display for NotAdmitted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("この要求は TenantGate を通っていません")
+    }
+}
+
+impl std::error::Error for NotAdmitted {}
 
 /// `Authorization: Bearer <JWT>` を検証し、テナントスコープをフェイルクローズで
 /// 強制する [`RequestGate`] 実装。
@@ -189,6 +269,31 @@ impl TenantGate {
     pub fn new(config: TenantGateConfig) -> Self {
         Self { config }
     }
+
+    /// ゲートが検証した結果をハンドラから読む。検証は繰り返さない（イシュー #905）。
+    ///
+    /// DPoP を設定した認証器では、ハンドラが `Authenticator::authenticate` を呼び直せない
+    /// （`jti` の再使用になる）ため、この経路で `org_id` を取り出す。ゲートを通っていない
+    /// 要求は [`NotAdmitted`]。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+    /// use fandhe_backend_plugin_hub_wiring::gate::{NotAdmitted, TenantGate};
+    ///
+    /// let ParseOutcome::Complete { head, .. } = parse_request_head(b"GET / HTTP/1.1\r\n\r\n")?
+    /// else { unreachable!() };
+    /// // ゲートを通っていない要求には値がない。
+    /// assert_eq!(TenantGate::verified(&head).err(), Some(NotAdmitted));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn verified(head: &RequestHead) -> Result<&TenantClaims, NotAdmitted> {
+        head.extensions()
+            .get::<TenantVerified>()
+            .map(TenantVerified::tenant)
+            .ok_or(NotAdmitted)
+    }
 }
 
 /// `401` 応答の固定 body。トークン内容・ヘッダ値・`kid` を一切反映しない
@@ -219,7 +324,7 @@ impl RequestGate for TenantGate {
         &self,
         head: &RequestHead,
         _ctx: &GateContext,
-        _extensions: &mut fandhe_backend_core::extension::RequestExtensions,
+        extensions: &mut fandhe_backend_core::extension::RequestExtensions,
     ) -> GateOutcome {
         // `check()` は同期・非ブロッキング（I/O なし）で Tokio ワーカーを
         // 塞がない契約を維持する（`crates/core/src/extension.rs` doc）。
@@ -232,8 +337,27 @@ impl RequestGate for TenantGate {
         // address は本ゲートの判定に使用しない（イシュー #486、`GateContext`
         // 追加は既存 gate 実装への影響を最小化する非対応追随のみ）。
         match self.config.authenticator.authenticate(head) {
-            Ok(_) => GateOutcome::Allow,
+            // 検証結果を要求に載せ、ハンドラが `TenantGate::verified` で読めるようにする。
+            // 既に値がある（TenantGate の二重登録など）場合は上書きせず拒否する。
+            Ok(tenant) => match extensions.insert(TenantVerified { tenant }) {
+                Ok(()) => GateOutcome::Allow,
+                Err(_) => GateOutcome::Reject {
+                    response: error_response(500, "internal_error"),
+                },
+            },
             Err(AuthError::MissingOrgId) => reject_json(403, FORBIDDEN_BODY),
+            // DPoP を設定した認証器だけ、DPoP のチャレンジ付き 401 にする（設計 9.9 節。
+            // 組み立ては plugin-jwt に寄せる）。設定しない構成の応答は従来と同一。
+            #[cfg(feature = "dpop")]
+            Err(AuthError::Jwt(e)) if self.config.authenticator.jwt().dpop_mode().is_some() => {
+                GateOutcome::Reject {
+                    response: self
+                        .config
+                        .authenticator
+                        .jwt()
+                        .unauthorized_response(head, &e),
+                }
+            }
             // 検証失敗のすべて。`AuthError`・`VerifyError` は `#[non_exhaustive]` のため、
             // 将来の変種も 401 に倒す（フェイルクローズ、Allow へは落ちない）。
             Err(_) => reject_json(401, UNAUTHORIZED_BODY),
@@ -520,6 +644,8 @@ mod tests {
         assert!(wire.contains("Content-Length: "));
         assert!(wire.contains("Content-Type: application/json\r\n"));
         assert!(!wire.contains("Retry-After:"));
+        // DPoP を設定しない構成では WWW-Authenticate を付けない（応答不変）。
+        assert!(!wire.contains("WWW-Authenticate"));
         assert!(wire.ends_with(&String::from_utf8_lossy(UNAUTHORIZED_BODY).into_owned()));
 
         let token = make_token(&keypair, TEST_KID, None, 9_999_999_999);
@@ -607,5 +733,47 @@ mod tests {
             ),
             GateOutcome::Allow
         );
+    }
+
+    #[test]
+    fn allow_inserts_tenant_verified_and_second_insert_is_500() {
+        let keypair = test_keypair();
+        let token = make_token(&keypair, TEST_KID, Some(" org-1 "), 9_999_999_999);
+        let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
+        let gate = gate_for(&keypair);
+        let mut ext = fandhe_backend_core::extension::RequestExtensions::new();
+        assert_eq!(
+            gate.check(&head_from(&raw), &GateContext::new(None), &mut ext),
+            GateOutcome::Allow
+        );
+        assert_eq!(
+            ext.get::<TenantVerified>().unwrap().tenant().org_id(),
+            "org-1"
+        );
+        // 同じ要求に既に値がある（二重登録）場合は上書きせず 500 で拒否する。
+        assert_eq!(
+            gate.check(&head_from(&raw), &GateContext::new(None), &mut ext),
+            GateOutcome::Reject {
+                response: error_response(500, "internal_error")
+            }
+        );
+    }
+
+    #[test]
+    fn rejection_does_not_insert_tenant_verified() {
+        let keypair = test_keypair();
+        let mut ext = fandhe_backend_core::extension::RequestExtensions::new();
+        let _ = gate_for(&keypair).check(
+            &head_from(b"GET / HTTP/1.1\r\n\r\n"),
+            &GateContext::new(None),
+            &mut ext,
+        );
+        assert!(ext.get::<TenantVerified>().is_none());
+    }
+
+    #[test]
+    fn tenant_verified_debug_hides_values() {
+        assert_eq!(format!("{NotAdmitted:?}"), "NotAdmitted");
+        assert!(!NotAdmitted.to_string().is_empty());
     }
 }
