@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::Poll;
 
+use fandhe_backend_http::extensions::RequestExtensions;
 use fandhe_backend_http::request::RequestHead;
 use tokio::sync::{mpsc, watch};
 
@@ -809,6 +810,9 @@ pub const MAX_CONTEXT_QUERY_BYTES: usize = 2048;
 ///   無視した [`RequestHead::header`] と同一の検索意味論。重複ヘッダは
 ///   先頭値のみを保持する）
 /// - `query`: [`RequestHead::query`] の値をそのまま複製した非デコード文字列
+/// - `extensions`（イシュー #934）: ゲートが入れた検証結果の器。上記 5 項目
+///   とは異なりクライアント由来ではなく、byte 上限の対象外（件数はゲート数
+///   で決まる）
 ///
 /// `crate::handle_upgrade_with_peer_addr` が 101 応答送出成功後に一度だけ
 /// [`Self::from_head`] で構築し、`Arc` として [`WsOpenContext`] /
@@ -827,6 +831,13 @@ pub(crate) struct ConnRequestInfo {
     origin: Option<Box<str>>,
     user_agent: Option<Box<str>>,
     query: Option<Box<str>>,
+    /// 登録済みゲート（`RequestGate::check`）が入れた検証結果の器
+    /// （イシュー #934）。クライアント由来のバイト列ではなく信頼コード
+    /// （ゲート）だけが書く値で、clone は `Arc` の参照カウント増加のみ。
+    /// 件数はゲート数で上限が決まり、保持量は byte 定数ではなくゲート実装が
+    /// 入れる値の大きさに依存する（`docs/design/gate-request-extensions.md`
+    /// 14.4）。ゲート未登録・未挿入なら空。
+    extensions: RequestExtensions,
 }
 
 impl ConnRequestInfo {
@@ -845,6 +856,8 @@ impl ConnRequestInfo {
                 .query()
                 .filter(|q| q.len() <= MAX_CONTEXT_QUERY_BYTES)
                 .map(Box::from),
+            // 参照カウントの増加のみ（値のコピーはしない）。
+            extensions: head.extensions().clone(),
         }
     }
 }
@@ -1204,12 +1217,102 @@ impl WsOpenContext {
     pub fn query(&self) -> Option<&str> {
         self.info.query.as_deref()
     }
+
+    /// ゲート（`RequestGate::check`）が入れた検証結果の器を返す（イシュー
+    /// #934）。読み取り専用で、書き込み口は無い。
+    ///
+    /// 同じリクエストの HTTP ハンドラと同様に、ゲートが
+    /// `RequestExtensions` へ入れた値（Claims・テナント等）を型で引ける。
+    /// ゲート未登録・未挿入なら空で、`get::<T>()` の `T` がゲートの入れた
+    /// 型と一致しない場合も `None` になる。`None` は拒否側に倒すこと
+    /// （fail-closed）。`TenantGate::verified` / `JwtGate::verified` は
+    /// `&RequestHead` を取るため使えず、`get::<TenantVerified>()` /
+    /// `get::<GateVerified<E>>()` のように型で読む。
+    ///
+    /// 値はセッション中ずっと保持される。JWT の `exp` 等はハンドシェイク
+    /// 時点でしか検証されないため、長寿命接続では `on_open` で期限を読み
+    /// `WsSender::close` を予約する、ping / idle timeout を併用する、などで
+    /// 利用側が失効に備えること（設計 `docs/design/gate-request-extensions.md`
+    /// 14.7）。`Debug` 出力には値を含めない。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+    /// use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade};
+    /// use fandhe_backend_plugin_websocket::handler::{
+    ///     WsHandlerError, WsMessage, WsMessageHandler, WsOpenContext, WsOutcome,
+    /// };
+    /// use fandhe_backend_plugin_websocket::BoxFuture;
+    /// use std::sync::{Arc, Mutex};
+    ///
+    /// // ゲートが入れる値の代わりのマーカー型。
+    /// #[derive(Debug)]
+    /// struct Principal(&'static str);
+    ///
+    /// struct ReadGateValue(Arc<Mutex<Option<&'static str>>>);
+    ///
+    /// impl WsMessageHandler for ReadGateValue {
+    ///     fn name(&self) -> &'static str {
+    ///         "read-gate-value"
+    ///     }
+    ///
+    ///     fn on_open(&self, ctx: WsOpenContext) {
+    ///         *self.0.lock().unwrap() = ctx.extensions().get::<Principal>().map(|p| p.0);
+    ///     }
+    ///
+    ///     fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+    ///         Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+    ///     }
+    /// }
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// let buf = b"GET /ws HTTP/1.1\r\n\
+    ///     Host: example.test\r\n\
+    ///     Upgrade: websocket\r\n\
+    ///     Connection: Upgrade\r\n\
+    ///     Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+    ///     Sec-WebSocket-Version: 13\r\n\
+    ///     \r\n";
+    /// let mut head = match parse_request_head(buf).unwrap() {
+    ///     ParseOutcome::Complete { head, .. } => head,
+    ///     ParseOutcome::Incomplete => unreachable!(),
+    /// };
+    /// // 実運用ではコアがゲート通過後に載せる。ここではゲート相当を直接入れる。
+    /// head.extensions_mut().insert(Principal("alice")).unwrap();
+    ///
+    /// let seen = Arc::new(Mutex::new(None));
+    /// let config = WebSocketConfig::default().with_handler(ReadGateValue(seen.clone()));
+    ///
+    /// let (server_side, mut client_side) = tokio::io::duplex(4096);
+    /// use tokio::io::AsyncWriteExt;
+    /// tokio::spawn(async move {
+    ///     client_side.write_all(&[0x88, 0x80, 0, 0, 0, 0]).await.unwrap();
+    /// });
+    ///
+    /// let result = handle_upgrade(
+    ///     server_side,
+    ///     &head,
+    ///     Vec::new(),
+    ///     &config,
+    ///     std::future::pending::<()>(),
+    /// )
+    /// .await;
+    /// assert!(result.is_ok());
+    /// assert_eq!(*seen.lock().unwrap(), Some("alice"));
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn extensions(&self) -> &RequestExtensions {
+        &self.info.extensions
+    }
 }
 
 impl fmt::Debug for WsOpenContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // パスパラメータ・`info`（接続元アドレス・Host/Origin/User-Agent・
-        // query）は Debug 出力に含めない（`.claude/rules/security.md`
+        // query・ゲートの検証結果 `extensions`）は Debug 出力に含めない（`.claude/rules/security.md`
         // 「ログに PII を出さない」）。パスパラメータ・Host・Origin・
         // User-Agent・query は攻撃者（クライアント）が自由に制御できる
         // 入力であり、接続元アドレスは偽装できないが PII に近い情報の
@@ -1349,13 +1452,89 @@ impl WsConnContext {
     pub fn query(&self) -> Option<&str> {
         self.info.query.as_deref()
     }
+
+    /// ゲートが入れた検証結果の器を返す（イシュー #934）。契約は
+    /// [`WsOpenContext::extensions`] と同一で、同じ `Arc` を共有するため
+    /// `on_open` と常に同じ値になる。`on_message_with_ctx` / `on_close` から
+    /// 型で引ける。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_http::request::{ParseOutcome, parse_request_head};
+    /// use fandhe_backend_plugin_websocket::{WebSocketConfig, handle_upgrade};
+    /// use fandhe_backend_plugin_websocket::handler::{
+    ///     CloseReason, WsConnContext, WsHandlerError, WsMessage, WsMessageHandler, WsOutcome,
+    /// };
+    /// use fandhe_backend_plugin_websocket::BoxFuture;
+    /// use std::sync::{Arc, Mutex};
+    ///
+    /// #[derive(Debug)]
+    /// struct Principal(&'static str);
+    ///
+    /// struct ReadAtClose(Arc<Mutex<Option<&'static str>>>);
+    ///
+    /// impl WsMessageHandler for ReadAtClose {
+    ///     fn name(&self) -> &'static str {
+    ///         "read-at-close"
+    ///     }
+    ///
+    ///     fn on_close(&self, ctx: &WsConnContext, _reason: CloseReason) {
+    ///         *self.0.lock().unwrap() = ctx.extensions().get::<Principal>().map(|p| p.0);
+    ///     }
+    ///
+    ///     fn on_message(&self, msg: WsMessage) -> BoxFuture<'_, Result<WsOutcome, WsHandlerError>> {
+    ///         Box::pin(async move { Ok(WsOutcome::Reply(vec![msg])) })
+    ///     }
+    /// }
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// let buf = b"GET /ws HTTP/1.1\r\n\
+    ///     Host: example.test\r\n\
+    ///     Upgrade: websocket\r\n\
+    ///     Connection: Upgrade\r\n\
+    ///     Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+    ///     Sec-WebSocket-Version: 13\r\n\
+    ///     \r\n";
+    /// let mut head = match parse_request_head(buf).unwrap() {
+    ///     ParseOutcome::Complete { head, .. } => head,
+    ///     ParseOutcome::Incomplete => unreachable!(),
+    /// };
+    /// head.extensions_mut().insert(Principal("alice")).unwrap();
+    ///
+    /// let seen = Arc::new(Mutex::new(None));
+    /// let config = WebSocketConfig::default().with_handler(ReadAtClose(seen.clone()));
+    ///
+    /// let (server_side, mut client_side) = tokio::io::duplex(4096);
+    /// use tokio::io::AsyncWriteExt;
+    /// tokio::spawn(async move {
+    ///     client_side.write_all(&[0x88, 0x80, 0, 0, 0, 0]).await.unwrap();
+    /// });
+    ///
+    /// let result = handle_upgrade(
+    ///     server_side,
+    ///     &head,
+    ///     Vec::new(),
+    ///     &config,
+    ///     std::future::pending::<()>(),
+    /// )
+    /// .await;
+    /// assert!(result.is_ok());
+    /// assert_eq!(*seen.lock().unwrap(), Some("alice"));
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn extensions(&self) -> &RequestExtensions {
+        &self.info.extensions
+    }
 }
 
 impl fmt::Debug for WsConnContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // WsOpenContext::Debug と同一のセキュリティ根拠: パスパラメータ・
-        // `info`（接続元アドレス・Host/Origin/User-Agent・query）は
-        // 出力しない（イシュー #717）。conn_id はサーバー側発行のため
+        // `info`（接続元アドレス・Host/Origin/User-Agent・query・ゲートの
+        // 検証結果 `extensions`）は出力しない（イシュー #717・#934）。conn_id はサーバー側発行のため
         // 出力する。
         f.debug_struct("WsConnContext")
             .field("conn_id", &self.conn_id)
@@ -3477,6 +3656,7 @@ mod tests {
     async fn from_head_returns_none_for_absent_fields() {
         let head = head_from(b"GET /ws HTTP/1.1\r\n\r\n");
         let info = ConnRequestInfo::from_head(&head, None);
+        assert!(info.extensions.is_empty());
         assert_eq!(info.peer_addr, None);
         assert_eq!(info.host, None);
         assert_eq!(info.origin, None);
@@ -3649,6 +3829,79 @@ mod tests {
                 !debug.contains(leaked),
                 "WsConnContext::Debug leaked {leaked:?}: {debug}"
             );
+        }
+    }
+
+    // --- イシュー #934: ゲートの検証結果（extensions）の中継 ---
+
+    /// ゲート相当の値（`Debug` に番兵文字列が出る型）。
+    #[derive(Debug)]
+    struct GateMarker(&'static str);
+
+    fn contexts_from(info: ConnRequestInfo) -> (WsOpenContext, WsConnContext) {
+        let info = Arc::new(info);
+        let (sender, _rx) = channel(DEFAULT_OUTBOUND_CAPACITY);
+        let conn_id = WsConnId::next();
+        (
+            WsOpenContext::new(conn_id, sender.clone(), Vec::new(), info.clone()),
+            WsConnContext::new(conn_id, sender, Vec::new(), info),
+        )
+    }
+
+    #[tokio::test]
+    async fn from_head_keeps_gate_extensions() {
+        let mut head = head_from(b"GET /ws HTTP/1.1\r\n\r\n");
+        head.extensions_mut()
+            .insert(GateMarker("tenant-a"))
+            .unwrap();
+        let info = ConnRequestInfo::from_head(&head, None);
+        assert_eq!(
+            info.extensions.get::<GateMarker>().map(|m| m.0),
+            Some("tenant-a")
+        );
+    }
+
+    #[tokio::test]
+    async fn separate_connections_do_not_share_extensions() {
+        let mut head_a = head_from(b"GET /ws HTTP/1.1\r\n\r\n");
+        head_a.extensions_mut().insert(GateMarker("a")).unwrap();
+        let head_b = head_from(b"GET /ws HTTP/1.1\r\n\r\n");
+        let (open_a, _) = contexts_from(ConnRequestInfo::from_head(&head_a, None));
+        let (open_b, conn_b) = contexts_from(ConnRequestInfo::from_head(&head_b, None));
+        assert_eq!(
+            open_a.extensions().get::<GateMarker>().map(|m| m.0),
+            Some("a")
+        );
+        assert!(open_b.extensions().get::<GateMarker>().is_none());
+        assert!(conn_b.extensions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn open_and_conn_context_share_same_extensions() {
+        let mut head = head_from(b"GET /ws HTTP/1.1\r\n\r\n");
+        head.extensions_mut().insert(GateMarker("shared")).unwrap();
+        let (open_ctx, conn_ctx) = contexts_from(ConnRequestInfo::from_head(&head, None));
+        let a = open_ctx.extensions().get_shared::<GateMarker>().unwrap();
+        let b = conn_ctx.extensions().get_shared::<GateMarker>().unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
+        assert_eq!(a.0, "shared");
+    }
+
+    /// 値が `Debug` 出力に漏れないこと（コンテキスト自身と器の 2 層）。
+    #[tokio::test]
+    async fn debug_redacts_gate_extensions() {
+        let mut head = head_from(b"GET /ws HTTP/1.1\r\n\r\n");
+        head.extensions_mut()
+            .insert(GateMarker("SECRET-CLAIM"))
+            .unwrap();
+        let (open_ctx, conn_ctx) = contexts_from(ConnRequestInfo::from_head(&head, None));
+        for dbg in [
+            format!("{open_ctx:?}"),
+            format!("{conn_ctx:?}"),
+            format!("{:?}", open_ctx.extensions()),
+            format!("{:?}", conn_ctx.extensions()),
+        ] {
+            assert!(!dbg.contains("SECRET-CLAIM"), "leaked: {dbg}");
         }
     }
 
