@@ -129,9 +129,10 @@ pub struct IatWindow {
 }
 
 impl IatWindow {
-    /// 窓を構築する。上限超過と過去側 0 を拒否する。
+    /// 窓を構築する。上限超過と過去側 0（1 秒未満を含む）を拒否する。
     pub fn new(past: Duration, future: Duration) -> Result<Self, DpopConfigError> {
-        if past.is_zero() {
+        // 検証は秒単位（`as_secs()`）で窓を適用するため、1 秒未満は 0 秒窓と同義として拒否する。
+        if past.as_secs() == 0 {
             return Err(DpopConfigError::IatPastZero);
         }
         if past > MAX_IAT_PAST {
@@ -375,8 +376,14 @@ fn require_json_object(bytes: &[u8]) -> Result<(), DpopError> {
 }
 
 fn typ_is_dpop(typ: &str) -> bool {
-    let t = typ.strip_prefix("application/").unwrap_or(typ);
-    t.eq_ignore_ascii_case("dpop+jwt")
+    const PREFIX: &[u8] = b"application/";
+    let b = typ.as_bytes();
+    let t = if b.len() >= PREFIX.len() && b[..PREFIX.len()].eq_ignore_ascii_case(PREFIX) {
+        &b[PREFIX.len()..]
+    } else {
+        b
+    };
+    t.eq_ignore_ascii_case(b"dpop+jwt")
 }
 
 /// DPoP proof を検証し、鍵のサムプリントを返す。順序と拒否理由はモジュール doc の契約に従う。

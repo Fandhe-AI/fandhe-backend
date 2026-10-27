@@ -141,7 +141,12 @@ fn accepts_valid_es256_and_rs256_proofs() {
 #[test]
 fn accepts_typ_and_htu_variants() {
     let s = Signer::ec();
-    for typ in ["application/dpop+jwt", "DPoP+JWT"] {
+    for typ in [
+        "application/dpop+jwt",
+        "DPoP+JWT",
+        "APPLICATION/dpop+jwt",
+        "Application/DPoP+JWT",
+    ] {
         make(&s, &header(&s, typ, &s.jwk()), &good_payload());
         assert!(run_both(&make(&s, &header(&s, typ, &s.jwk()), &good_payload())).is_ok());
     }
@@ -162,7 +167,16 @@ fn accepts_typ_and_htu_variants() {
 fn rejects_bad_typ_alg_and_crit() {
     let s = Signer::ec();
     let p = good_payload();
-    for typ in ["JWT", "at+jwt", ""] {
+    for typ in [
+        "JWT",
+        "at+jwt",
+        "",
+        "text/dpop+jwt",
+        "application/application/dpop+jwt",
+        "application/dpop+jwt ",
+        "application/",
+        "applicationdpop+jwt",
+    ] {
         let h = header(&s, typ, &s.jwk());
         assert_eq!(
             run_both(&make(&s, &h, &p)),
@@ -448,6 +462,10 @@ fn config_types() {
     let secs = Duration::from_secs;
     assert_eq!(
         IatWindow::new(secs(0), secs(0)),
+        Err(DpopConfigError::IatPastZero)
+    );
+    assert_eq!(
+        IatWindow::new(Duration::from_millis(500), secs(0)),
         Err(DpopConfigError::IatPastZero)
     );
     assert_eq!(
