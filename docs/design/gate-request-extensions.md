@@ -131,8 +131,8 @@ feature ゲートは不要（外部依存ゼロ）。ゲート未使用の構成
 
 ## 12. スコープ外
 
-- `plugin-jwt` の `JwtGate` が検証済み Claims を入れ、`authenticate_after_gate` を組み直す件、および
-  `jwt-verify-plugin.md` 9.3 節の文言更新: #904。
+- `plugin-jwt` の `JwtGate` が検証済み Claims を `GateVerified` として入れる件、および
+  `jwt-verify-plugin.md` 9.3 節の文言更新: #904（実装済み）。
 - `plugin-hub-wiring` の `TenantGate` が `HubClaims` を同じ経路で渡す件。
 - `plugin-websocket` の `WsOpenContext` / `WsConnContext` から値を読めるようにする件（head は委譲先へ
   clone されて渡るので技術的には届くが、公開 API にするのは別の判断）。

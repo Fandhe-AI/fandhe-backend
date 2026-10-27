@@ -64,21 +64,19 @@ fn policy() -> JwtPolicy {
     )
 }
 
-/// ゲート通過後にだけ到達する。共有した認証器から `sub` を取り出して本文に返す。
-struct WhoAmI(JwtAuthenticator);
+/// ゲートが `RequestExtensions` に入れた検証結果から `sub` を取り出して本文に返す。
+/// ゲートを通っていない要求は `NotAdmitted` を本文に出す（フェイルクローズの確認用）。
+struct WhoAmI;
 
 impl Handler for WhoAmI {
     fn handle(&self, head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
-        let sub = self
-            .0
-            .authenticate(head)
-            .ok()
-            .and_then(|c| c.sub().map(str::to_owned))
-            .unwrap_or_default();
-        Box::pin(std::future::ready(Response::new(
-            200,
-            format!("sub={sub}").into_bytes(),
-        )))
+        let body = match JwtGate::<NoExtraClaims>::verified(head) {
+            Ok(c) => format!("sub={}", c.sub().unwrap_or_default()),
+            Err(e) => format!("ERR:{e}"),
+        };
+        Box::pin(std::future::ready(
+            Response::new(200, body.into_bytes()).with_content_type("text/plain"),
+        ))
     }
 }
 
@@ -136,42 +134,42 @@ fn assert_401(r: &str, challenge: &str) {
 
 type Log = Arc<Mutex<Vec<String>>>;
 
-fn setup(ec: &Ec) -> (Server, JwtAuthenticator, Log) {
+fn setup(ec: &Ec) -> (Server, Log) {
     let log: Log = Arc::default();
     let l = Arc::clone(&log);
-    let auth = JwtAuthenticator::builder(SharedKeySet::new(ec.keyset("k")), policy())
-        .unknown_key_notifier(move |e: &UnknownKeyEvent<'_>| {
-            l.lock().unwrap().push(e.kid().to_owned());
-        })
-        .unknown_key_min_interval(Duration::ZERO)
-        .build();
-    let gate = JwtGate::new(auth);
-    let handler_auth = gate.authenticator();
-    let server = Server::new()
-        .gate(gate)
-        .handler(WhoAmI(handler_auth.clone()));
-    (server, handler_auth, log)
+    let auth =
+        JwtAuthenticator::<NoExtraClaims>::builder(SharedKeySet::new(ec.keyset("k")), policy())
+            .unknown_key_notifier(move |e: &UnknownKeyEvent<'_>| {
+                l.lock().unwrap().push(e.kid().to_owned());
+            })
+            .unknown_key_min_interval(Duration::ZERO)
+            .build();
+    let server = Server::new().gate(JwtGate::new(auth)).handler(WhoAmI);
+    (server, log)
 }
 
 #[tokio::test]
 async fn valid_token_reaches_handler_and_claims_are_shared() {
     let ec = Ec::new();
-    let (server, auth, _) = setup(&ec);
+    let (server, _) = setup(&ec);
     let t = ec.token("k", now() + 300);
     let r = roundtrip(&server, &req(Some(&format!("Bearer {t}")))).await;
     let (lines, body) = split(&r);
     assert_eq!(lines[0], "HTTP/1.1 200 OK", "{r}");
     assert!(header_values(&lines, "WWW-Authenticate").is_empty(), "{r}");
     assert_eq!(header_values(&lines, "Content-Length"), vec!["10"], "{r}");
+    assert_eq!(
+        header_values(&lines, "Content-Type"),
+        vec!["text/plain"],
+        "{r}"
+    );
     assert_eq!(body, "sub=user-1", "{r}");
-    // ゲートで温まったキャッシュをハンドラが再利用する。
-    assert!(auth.cache_hits() >= 1);
 }
 
 #[tokio::test]
 async fn missing_token_is_401_with_bare_challenge() {
     let ec = Ec::new();
-    let (server, _, _) = setup(&ec);
+    let (server, _) = setup(&ec);
     let r = roundtrip(&server, &req(None)).await;
     assert_401(&r, "Bearer");
     assert!(!r.contains("sub="), "{r}");
@@ -181,7 +179,7 @@ async fn missing_token_is_401_with_bare_challenge() {
 async fn bad_signature_and_expired_are_401_invalid_token() {
     let ec = Ec::new();
     let other = Ec::new();
-    let (server, _, _) = setup(&ec);
+    let (server, _) = setup(&ec);
     for t in [other.token("k", now() + 300), ec.token("k", now() - 3600)] {
         let r = roundtrip(&server, &req(Some(&format!("Bearer {t}")))).await;
         assert_401(&r, "Bearer error=\"invalid_token\"");
@@ -192,7 +190,7 @@ async fn bad_signature_and_expired_are_401_invalid_token() {
 #[tokio::test]
 async fn unknown_kid_is_rejected_and_notified() {
     let ec = Ec::new();
-    let (server, _, log) = setup(&ec);
+    let (server, log) = setup(&ec);
     let t = ec.token("rotated", now() + 300);
     let r = roundtrip(&server, &req(Some(&format!("Bearer {t}")))).await;
     assert_401(&r, "Bearer error=\"invalid_token\"");
@@ -203,7 +201,69 @@ async fn unknown_kid_is_rejected_and_notified() {
 #[tokio::test]
 async fn non_bearer_scheme_is_401() {
     let ec = Ec::new();
-    let (server, _, _) = setup(&ec);
+    let (server, _) = setup(&ec);
     let r = roundtrip(&server, &req(Some("Basic dXNlcjpwYXNz"))).await;
     assert_401(&r, "Bearer");
+}
+
+/// `dpop` feature の有無によらず、DPoP を設定していない認証器は `Authorization: DPoP` を
+/// 資格情報なしとして扱い、従来どおり Bearer のチャレンジを返す（#904）。
+#[tokio::test]
+async fn dpop_scheme_is_not_a_credential_without_dpop_config() {
+    let ec = Ec::new();
+    let (server, _) = setup(&ec);
+    let t = ec.token("k", now() + 300);
+    let r = roundtrip(&server, &req(Some(&format!("DPoP {t}")))).await;
+    assert_401(&r, "Bearer");
+}
+
+/// ゲートを通らない経路（ゲート未登録）のハンドラは、トークンが有効でもクレームを読めない。
+#[tokio::test]
+async fn handler_without_gate_is_not_admitted() {
+    let ec = Ec::new();
+    let server = Server::new().handler(WhoAmI);
+    let t = ec.token("k", now() + 300);
+    let r = roundtrip(&server, &req(Some(&format!("Bearer {t}")))).await;
+    let (lines, body) = split(&r);
+    assert_eq!(lines[0], "HTTP/1.1 200 OK", "{r}");
+    assert_eq!(
+        header_values(&lines, "Content-Type"),
+        vec!["text/plain"],
+        "{r}"
+    );
+    assert_eq!(
+        header_values(&lines, "Content-Length"),
+        vec![body.len().to_string()],
+        "{r}"
+    );
+    assert_eq!(body, format!("ERR:{NotAdmitted}"), "{r}");
+}
+
+/// 同じ追加クレーム型のゲートを二重に登録すると、2 つ目が既存の値を上書きせず 500 で拒否する。
+#[tokio::test]
+async fn duplicate_gate_of_same_type_fails_closed() {
+    let ec = Ec::new();
+    let mk = || {
+        JwtGate::new(
+            JwtAuthenticator::<NoExtraClaims>::builder(SharedKeySet::new(ec.keyset("k")), policy())
+                .build(),
+        )
+    };
+    let server = Server::new().gate(mk()).gate(mk()).handler(WhoAmI);
+    let t = ec.token("k", now() + 300);
+    let r = roundtrip(&server, &req(Some(&format!("Bearer {t}")))).await;
+    let (lines, body) = split(&r);
+    assert_eq!(lines[0], "HTTP/1.1 500 Internal Server Error", "{r}");
+    assert_eq!(
+        header_values(&lines, "Content-Type"),
+        vec!["application/json"],
+        "{r}"
+    );
+    assert_eq!(body, r#"{"error":"internal_error"}"#, "{r}");
+    assert_eq!(
+        header_values(&lines, "Content-Length"),
+        vec![body.len().to_string()],
+        "{r}"
+    );
+    assert!(!r.contains("sub="), "{r}");
 }

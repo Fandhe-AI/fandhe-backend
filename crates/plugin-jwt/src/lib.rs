@@ -26,8 +26,14 @@
 //!
 //! `dpop` feature（既定では無効）を有効にすると、DPoP proof（RFC 9449）の解析と検査
 //! （`jwk`・サムプリント・`ath`・`htm`・`htu`・`iat`）の純関数 `dpop::verify_proof` が使える。
-//! あわせて `jti` の再使用を窓の間だけ有界に保持して拒否する `dpop::ReplayStore` を含む
-//! （ゲート配線は含まない。新規依存を足さない）。
+//! あわせて `jti` の再使用を窓の間だけ有界に保持して拒否する `dpop::ReplayStore` を含み、
+//! 新規依存を足さない。
+//! 認証器へは `JwtAuthenticatorBuilder::dpop`（`dpop::DpopConfig`・`dpop::DpopMode` を必須引数に取る）で配線し、
+//! 設定した認証器は `Authorization: DPoP` と `DPoP` ヘッダを検査する。
+//! ゲートは受理した要求の検証済み `Claims` を `GateVerified` として `RequestExtensions` に入れ、
+//! ハンドラは `JwtGate::verified` で読む（再検証せず、ゲートを通っていない要求は `NotAdmitted`）。
+//! **`dpop` を無効にした、または設定しない下流は、DPoP 結合のトークン（`cnf.jkt` 付き）も
+//! bearer として受理する**。DPoP を強制したい下流は必ず設定すること。
 //!
 //! `iss`・`aud`・`typ`・許可 `alg` の欠けた構成は型の段階で作れない。`none`・HS 系は
 //! [`Algorithm`] に変種がなく、型として表現できない（RFC 8725 3.1・3.8・3.9・3.11・3.12、
@@ -35,7 +41,7 @@
 //!
 //! # Cargo feature
 //!
-//! - `dpop`: 新規依存なし。DPoP proof の純関数と `jti` の保持器（`dpop` モジュール）だけを有効にする。
+//! - `dpop`: 新規依存なし。DPoP proof の純関数・`jti` の保持器・認証器への配線（`dpop` モジュールと `JwtAuthenticatorBuilder::dpop`）を有効にする。
 //! - `jwks-refresh`: optional の `tokio`（`time`・`sync`）のみを足す。無効時は依存も
 //!   コードもバイナリ増もゼロ。タスクはアプリが `tokio::spawn` する（本クレートは spawn しない）。
 
@@ -55,7 +61,7 @@ pub mod refresh;
 pub mod verify;
 
 pub use auth::{CACHE_CAPACITY, JwtAuthenticator, JwtAuthenticatorBuilder, bearer_token};
-pub use gate::JwtGate;
+pub use gate::{GateVerified, JwtGate, NotAdmitted};
 pub use notify::{DEFAULT_UNKNOWN_KEY_MIN_INTERVAL, UnknownKeyEvent, UnknownKeyNotifier};
 
 pub use jwks::{
