@@ -29,8 +29,9 @@
 //! あわせて `jti` の再使用を窓の間だけ有界に保持して拒否する `dpop::ReplayStore` を含み、
 //! 新規依存を足さない。
 //! 認証器へは `JwtAuthenticatorBuilder::dpop`（`dpop::DpopConfig`・`dpop::DpopMode` を必須引数に取る）で配線し、
-//! 設定した認証器は `Authorization: DPoP` と `DPoP` ヘッダを検査する（ハンドラは
-//! `JwtAuthenticator::authenticate_after_gate` を使う）。
+//! 設定した認証器は `Authorization: DPoP` と `DPoP` ヘッダを検査する。
+//! ゲートは受理した要求の検証済み `Claims` を `GateVerified` として `RequestExtensions` に入れ、
+//! ハンドラは `JwtGate::verified` で読む（再検証せず、ゲートを通っていない要求は `NotAdmitted`）。
 //! **`dpop` を無効にした、または設定しない下流は、DPoP 結合のトークン（`cnf.jkt` 付き）も
 //! bearer として受理する**。DPoP を強制したい下流は必ず設定すること。
 //!
@@ -60,7 +61,7 @@ pub mod refresh;
 pub mod verify;
 
 pub use auth::{CACHE_CAPACITY, JwtAuthenticator, JwtAuthenticatorBuilder, bearer_token};
-pub use gate::JwtGate;
+pub use gate::{GateVerified, JwtGate, NotAdmitted};
 pub use notify::{DEFAULT_UNKNOWN_KEY_MIN_INTERVAL, UnknownKeyEvent, UnknownKeyNotifier};
 
 pub use jwks::{

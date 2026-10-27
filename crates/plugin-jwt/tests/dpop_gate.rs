@@ -6,13 +6,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B;
+use fandhe_backend_core::extension::{GateContext, GateOutcome, RequestExtensions, RequestGate};
 use fandhe_backend_core::{Handler, Server, handle_connection};
-use fandhe_backend_http::request::{ParseOutcome, RequestHead, parse_request_head};
+use fandhe_backend_http::error::error_response;
+use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
 use fandhe_backend_plugin_jwt::dpop::*;
 use fandhe_backend_plugin_jwt::{
     Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtAuthenticator, JwtGate, JwtPolicy, KeySet,
-    SharedKeySet, TokenType, VerifyError,
+    NoExtraClaims, NotAdmitted, SharedKeySet, TokenType,
 };
 use ring::digest::{SHA256, digest};
 use ring::rand::SystemRandom;
@@ -158,19 +160,38 @@ impl Key {
     }
 }
 
-/// ゲート通過後にだけ到達する。ゲートと共有した認証器から `sub` を取り出して本文に返す。
-struct WhoAmI(JwtAuthenticator);
+/// ゲートが `RequestExtensions` に入れた検証結果から `sub` を取り出して本文に返す。
+/// ゲートを通っていない要求は `NotAdmitted` を本文に出す。
+struct WhoAmI;
 
 impl Handler for WhoAmI {
     fn handle(&self, head: &RequestHead, _body: &[u8]) -> fandhe_backend_routes::HandlerFuture {
-        let sub = match self.0.authenticate_after_gate(head) {
-            Ok(c) => c.sub().map(str::to_owned).unwrap_or_default(),
+        let body = match JwtGate::<NoExtraClaims>::verified(head) {
+            Ok(c) => format!("sub={}", c.sub().unwrap_or_default()),
             Err(e) => format!("ERR:{e}"),
         };
-        Box::pin(std::future::ready(Response::new(
-            200,
-            format!("sub={sub}").into_bytes(),
-        )))
+        Box::pin(std::future::ready(
+            Response::new(200, body.into_bytes()).with_content_type("text/plain"),
+        ))
+    }
+}
+
+/// 常に 403 で拒否する後続ゲート（JwtGate が受理した後に別のゲートが拒否する経路の再現用）。
+struct DenyAll;
+
+impl RequestGate for DenyAll {
+    fn name(&self) -> &'static str {
+        "deny-all"
+    }
+    fn check(
+        &self,
+        _head: &RequestHead,
+        _ctx: &GateContext,
+        _extensions: &mut RequestExtensions,
+    ) -> GateOutcome {
+        GateOutcome::Reject {
+            response: error_response(403, "forbidden"),
+        }
     }
 }
 
@@ -196,9 +217,9 @@ fn auth(issuer: &IssuerKey, mode: DpopMode) -> JwtAuthenticator {
 }
 
 fn server(auth: &JwtAuthenticator) -> Server {
-    let gate = JwtGate::new(auth.clone());
-    let handler_auth = gate.authenticator();
-    Server::new().gate(gate).handler(WhoAmI(handler_auth))
+    Server::new()
+        .gate(JwtGate::new(auth.clone()))
+        .handler(WhoAmI)
 }
 
 async fn roundtrip(server: &Server, request: &str) -> String {
@@ -242,6 +263,11 @@ fn assert_401(r: &str, challenges: &[&str], error: &str) {
         "{r}"
     );
     assert_eq!(body, format!(r#"{{"error":"{error}"}}"#), "{r}");
+    assert_eq!(
+        header_values(&lines, "Content-Length"),
+        vec![body.len().to_string()],
+        "{r}"
+    );
     assert!(!r.contains("sub="), "{r}");
 }
 
@@ -254,6 +280,12 @@ fn dpop_err(error: &str) -> String {
 fn ok_sub(r: &str) {
     let (lines, body) = split(r);
     assert_eq!(lines[0], "HTTP/1.1 200 OK", "{r}");
+    assert_eq!(
+        header_values(&lines, "Content-Type"),
+        vec!["text/plain"],
+        "{r}"
+    );
+    assert_eq!(header_values(&lines, "Content-Length"), vec!["10"], "{r}");
     assert_eq!(body, "sub=user-1", "{r}");
 }
 
@@ -580,13 +612,12 @@ async fn binding_is_checked_on_cache_hits() {
     assert!(a.cache_hits() > hits);
 }
 
+/// ゲートなしの経路では、有効な token と proof があってもハンドラはクレームを読めない。
 #[tokio::test]
-async fn handler_without_gate_is_fail_closed() {
+async fn handler_without_gate_is_not_admitted() {
     let issuer = IssuerKey::new();
     let key = Key::ec();
-    let a = auth(&issuer, DpopMode::Required);
-    // ゲートなし: jti が登録されないので、ハンドラ側の再検証は常に拒否になる。
-    let s = Server::new().handler(WhoAmI(a.clone()));
+    let s = Server::new().handler(WhoAmI);
     let t = issuer.token(&key.cnf());
     let r = roundtrip(
         &s,
@@ -597,38 +628,81 @@ async fn handler_without_gate_is_fail_closed() {
         ),
     )
     .await;
-    let (_, body) = split(&r);
-    assert_eq!(
-        body, "sub=ERR:この要求は DPoP の検査を通っていません",
-        "{r}"
-    );
+    assert_not_admitted(&r);
 }
 
-#[test]
-fn authenticate_after_gate_requires_prior_registration() {
+fn assert_not_admitted(r: &str) {
+    let (lines, body) = split(r);
+    assert_eq!(lines[0], "HTTP/1.1 200 OK", "{r}");
+    assert_eq!(
+        header_values(&lines, "Content-Type"),
+        vec!["text/plain"],
+        "{r}"
+    );
+    assert_eq!(
+        header_values(&lines, "Content-Length"),
+        vec![body.len().to_string()],
+        "{r}"
+    );
+    assert_eq!(body, format!("ERR:{NotAdmitted}"), "{r}");
+}
+
+/// 後続ゲートが拒否した要求の proof を、ゲートを通らない別経路へ再送しても認証は通らない。
+/// 共有された `jti` の履歴をゲート通過の証明に使う設計では、2 つ目の経路が受理されてしまう。
+#[tokio::test]
+async fn proof_of_a_request_rejected_by_a_later_gate_is_not_admitted_elsewhere() {
     let issuer = IssuerKey::new();
     let key = Key::ec();
     let a = auth(&issuer, DpopMode::Required);
+    // A: JwtGate の後に別のゲートが拒否する。B: JwtGate のみ。C: ゲートなし。認証器は共有する。
+    let server_a = Server::new()
+        .gate(JwtGate::new(a.clone()))
+        .gate(DenyAll)
+        .handler(WhoAmI);
+    let server_b = server(&a);
+    let server_c = Server::new().handler(WhoAmI);
     let t = issuer.token(&key.cnf());
-    let raw = format!(
-        "GET {PATH} HTTP/1.1\r\nAuthorization: DPoP {t}\r\nDPoP: {}\r\n\r\n",
-        key.good_proof(&t, "j1")
-    );
-    let ParseOutcome::Complete { head, .. } = parse_request_head(raw.as_bytes()).unwrap() else {
-        panic!()
-    };
-    let n = now();
+    let hdr = format!("DPoP {t}");
+    let request = req(PATH, Some(&hdr), &[&key.good_proof(&t, "j1")]);
+
+    let r = roundtrip(&server_a, &request).await;
+    let (lines, body) = split(&r);
+    assert_eq!(lines[0], "HTTP/1.1 403 Forbidden", "{r}");
     assert_eq!(
-        a.authenticate_after_gate_at(&head, n).unwrap_err(),
-        VerifyError::Dpop(DpopError::NotAdmitted)
+        header_values(&lines, "Content-Type"),
+        vec!["application/json"],
+        "{r}"
     );
-    assert!(a.authenticate_at(&head, n).is_ok());
-    assert!(a.authenticate_after_gate_at(&head, n).is_ok());
-    // ゲートと同じ呼び出しを繰り返すと jti の再使用になる。
+    assert_eq!(body, r#"{"error":"forbidden"}"#, "{r}");
     assert_eq!(
-        a.authenticate_at(&head, n).unwrap_err(),
-        VerifyError::Dpop(DpopError::Replayed)
+        header_values(&lines, "Content-Length"),
+        vec![body.len().to_string()],
+        "{r}"
     );
+    assert!(!r.contains("sub="), "{r}");
+
+    // 同じ proof を JwtGate のある別経路へ: jti は登録済みなので replay として拒否される。
+    let r = roundtrip(&server_b, &request).await;
+    assert_401(&r, &[&dpop_err("invalid_dpop_proof")], "invalid_dpop_proof");
+    // ゲートのない経路へ: 履歴があっても受理されない。
+    assert_not_admitted(&roundtrip(&server_c, &request).await);
+}
+
+/// 同じ proof の再送は、同じ経路でもゲートで replay として拒否され、ハンドラへ届かない。
+#[tokio::test]
+async fn replayed_proof_is_rejected_at_the_gate_not_the_handler() {
+    let issuer = IssuerKey::new();
+    let key = Key::ec();
+    let s = server(&auth(&issuer, DpopMode::Required));
+    let t = issuer.token(&key.cnf());
+    let request = req(
+        PATH,
+        Some(&format!("DPoP {t}")),
+        &[&key.good_proof(&t, "j1")],
+    );
+    ok_sub(&roundtrip(&s, &request).await);
+    let r = roundtrip(&s, &request).await;
+    assert_401(&r, &[&dpop_err("invalid_dpop_proof")], "invalid_dpop_proof");
 }
 
 // ---- DPoP を設定していない認証器は従来どおり ----
@@ -637,10 +711,10 @@ fn authenticate_after_gate_requires_prior_registration() {
 async fn authenticator_without_dpop_accepts_bound_token_as_bearer() {
     let issuer = IssuerKey::new();
     let key = Key::ec();
-    let plain = JwtAuthenticator::builder(SharedKeySet::new(issuer.keyset()), policy()).build();
-    let gate = JwtGate::new(plain);
-    let handler_auth = gate.authenticator();
-    let s = Server::new().gate(gate).handler(WhoAmI(handler_auth));
+    let plain =
+        JwtAuthenticator::<NoExtraClaims>::builder(SharedKeySet::new(issuer.keyset()), policy())
+            .build();
+    let s = Server::new().gate(JwtGate::new(plain)).handler(WhoAmI);
     let t = issuer.token(&key.cnf());
     ok_sub(&roundtrip(&s, &req(PATH, Some(&format!("Bearer {t}")), &[])).await);
     // `DPoP` スキームは資格情報なし扱いで、従来どおり Bearer のチャレンジを返す。

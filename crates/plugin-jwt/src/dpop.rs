@@ -236,8 +236,6 @@ pub enum DpopError {
     BoundTokenAsBearer,
     /// `cnf.jkt` を持たないトークンが、DPoP を要する経路で提示された。
     UnboundToken,
-    /// ゲートを通っていない要求（`jti` が登録されていない）。`authenticate_after_gate` が返す。
-    NotAdmitted,
 }
 
 impl DpopError {
@@ -277,7 +275,6 @@ impl fmt::Display for DpopError {
             }
             Self::BoundTokenAsBearer => "DPoP 結合のトークンは Bearer では受け付けません",
             Self::UnboundToken => "DPoP に結合されていないトークンは受け付けません",
-            Self::NotAdmitted => "この要求は DPoP の検査を通っていません",
         };
         f.write_str(msg)
     }

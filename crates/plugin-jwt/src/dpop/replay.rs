@@ -183,18 +183,6 @@ impl ReplayStore {
         Ok(())
     }
 
-    /// この証明が期限内に登録済みか（読み取り専用）。`authenticate_after_gate` 専用。
-    ///
-    /// 挿入と対にならない照会なので、`contains` + `insert` の TOCTOU は生じない。ゲートが
-    /// `register` に成功した要求だけがハンドラへ届く、という前提を確かめるためだけに使い、
-    /// 公開 API にはしない（確認と登録を原子的に行う唯一の入口は `register` のまま）。
-    pub(crate) fn is_registered(&self, proof: &VerifiedProof, now_unix: u64) -> bool {
-        // ハッシュ計算はロックの外で行う。
-        let key = replay_key(proof.thumbprint().as_str(), proof.jti());
-        let g = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        g.map.get(&key).is_some_and(|&exp| exp >= now_unix)
-    }
-
     /// 現在の保持数。
     pub fn len(&self) -> usize {
         self.state

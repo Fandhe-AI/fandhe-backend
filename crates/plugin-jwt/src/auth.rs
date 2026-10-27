@@ -1,9 +1,9 @@
 //! 認証器 [`JwtAuthenticator`]（署名検証結果のキャッシュ・未知 `kid` 通知、イシュー #816）。
 //!
-//! `JwtGate`（`RequestGate` 実装）とアプリのハンドラが同一インスタンスを共有する。
-//! `GateOutcome` はクレームを運べない契約のため、ハンドラは本型の
-//! [`authenticate`](JwtAuthenticator::authenticate) を呼んでクレームを得る。ゲート通過時に
-//! キャッシュが温まっているので、ハンドラ側の呼び出しは署名検証を再実行しない。
+//! `JwtGate`（`RequestGate` 実装）が [`authenticate`](JwtAuthenticator::authenticate) を
+//! 1 要求につき 1 回呼ぶ。`GateOutcome` はクレームを運べないため、受理した要求のクレームは
+//! `JwtGate` が `RequestExtensions` 経由でハンドラへ渡す（`gate` モジュール、`GateVerified`）。
+//! ハンドラは本型を呼んで検証し直さない。
 //!
 //! # キャッシュヒットを許す条件（fail-closed）
 //!
@@ -19,9 +19,9 @@
 //! 見る（`Authorization: DPoP` は資格情報なし扱い）。判定は、アクセストークンの検証（キャッシュ
 //! を含む）→ `cnf` の解釈 → 方式とスキームによる振り分け → proof の検証 → `cnf.jkt` との
 //! サムプリント比較 → `jti` の登録、の順（設計 9.8 節）。proof の署名はキャッシュせず毎回検証する。
-//! DPoP を設定した場合、ゲートが 1 要求につき [`authenticate`](JwtAuthenticator::authenticate) を
-//! 1 回だけ呼び（`jti` の登録を伴う）、ハンドラは
-//! [`authenticate_after_gate`](JwtAuthenticator::authenticate_after_gate) を呼ぶ。
+//! DPoP を設定した場合、`authenticate` は `jti` の登録を伴うため
+//! 1 要求につきゲートが 1 回だけ呼ぶ。`jti` の履歴はこの重複登録の検出だけに使い、ゲートを
+//! 通った証明には使わない。
 //!
 //! キャッシュキーはトークンの SHA-256 で、生トークンは保持しない。容量は
 //! [`CACHE_CAPACITY`]。満杯時は期限切れを先に掃き、なお満杯なら FIFO で追い出す。
@@ -461,8 +461,8 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> JwtAuthenticator<E> {
     ///
     /// DPoP を設定した認証器（`dpop` feature）では `Authorization: DPoP` も受け、proof の
     /// 検証と `jti` の登録まで行う。登録を伴うため、**1 要求につきゲートで 1 回だけ**呼ぶこと
-    /// （同じ要求でもう一度呼ぶと `Replayed` で失敗する）。ハンドラは
-    /// [`authenticate_after_gate`](Self::authenticate_after_gate) を使う。
+    /// （同じ要求でもう一度呼ぶと `Replayed` で失敗する）。ハンドラは呼ばず、`JwtGate` が
+    /// `RequestExtensions` に入れた検証結果を `JwtGate::verified` で読む。
     pub fn authenticate(&self, head: &RequestHead) -> Result<Claims<E>, VerifyError> {
         self.authenticate_at(head, unix_now())
     }
@@ -475,7 +475,7 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> JwtAuthenticator<E> {
     ) -> Result<Claims<E>, VerifyError> {
         #[cfg(feature = "dpop")]
         if let Some(d) = self.inner.dpop.as_ref() {
-            return self.authenticate_dpop(d, head, now_unix, Admission::Register);
+            return self.authenticate_dpop(d, head, now_unix);
         }
         let token = bearer_token(head).ok_or(VerifyError::MissingToken)?;
         self.verify_token_cached(token, now_unix)
@@ -526,33 +526,6 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> JwtAuthenticator<E> {
         Ok(claims)
     }
 
-    /// ゲート通過後のハンドラ用に、クレームを返す。
-    ///
-    /// DPoP を設定していない認証器では [`authenticate`](Self::authenticate) と同じ。設定している
-    /// 認証器では、ゲートと同じ検査（格下げの拒否・proof の検証・サムプリントの比較）を行い、
-    /// `jti` の登録の代わりに「ゲートが登録済みであること」を要求する。ゲートを通っていない
-    /// 要求は `DpopError::NotAdmitted`（`dpop` feature）で拒否される（フェイルクローズ）。
-    ///
-    /// 同じ proof の写しはゲートが `Replayed` で止めるため、ここへ届くのはゲートが受理した
-    /// 要求だけになる。proof の署名をここでもう一度検証するため、費用は 1 要求につき 2 回になる。
-    /// ゲートとハンドラの間で `iat` の窓の端を越えた要求は、ここで拒否されうる。
-    pub fn authenticate_after_gate(&self, head: &RequestHead) -> Result<Claims<E>, VerifyError> {
-        self.authenticate_after_gate_at(head, unix_now())
-    }
-
-    /// [`authenticate_after_gate`](Self::authenticate_after_gate) の時刻注入版。
-    pub fn authenticate_after_gate_at(
-        &self,
-        head: &RequestHead,
-        now_unix: u64,
-    ) -> Result<Claims<E>, VerifyError> {
-        #[cfg(feature = "dpop")]
-        if let Some(d) = self.inner.dpop.as_ref() {
-            return self.authenticate_dpop(d, head, now_unix, Admission::AlreadyRegistered);
-        }
-        self.authenticate_at(head, now_unix)
-    }
-
     /// DPoP を設定した認証器の判定（設計 9.8 節の表）。
     #[cfg(feature = "dpop")]
     fn authenticate_dpop(
@@ -560,7 +533,6 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> JwtAuthenticator<E> {
         d: &DpopState,
         head: &RequestHead,
         now_unix: u64,
-        admission: Admission,
     ) -> Result<Claims<E>, VerifyError> {
         use crate::verify::Confirmation;
 
@@ -605,14 +577,7 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> JwtAuthenticator<E> {
         if verified.thumbprint().as_str() != &*jkt {
             return Err(DpopError::ThumbprintMismatch.into());
         }
-        match admission {
-            Admission::Register => d.replay.register(&verified, now_unix)?,
-            Admission::AlreadyRegistered => {
-                if !d.replay.is_registered(&verified, now_unix) {
-                    return Err(DpopError::NotAdmitted.into());
-                }
-            }
-        }
+        d.replay.register(&verified, now_unix)?;
         Ok(claims)
     }
 
@@ -668,14 +633,6 @@ fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(u64::MAX)
-}
-
-/// `jti` の保持器へ登録するか、ゲートが登録済みであることを確かめるか。
-#[cfg(feature = "dpop")]
-#[derive(Clone, Copy)]
-enum Admission {
-    Register,
-    AlreadyRegistered,
 }
 
 /// `cnf.jkt` の形式（SHA-256 の base64url、43 文字）。

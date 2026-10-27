@@ -1,23 +1,73 @@
-//! `RequestGate` 実装 [`JwtGate`]（イシュー #816）。
+//! `RequestGate` 実装 [`JwtGate`]（イシュー #816）と、検証結果の受け渡し型 [`GateVerified`]（#904）。
 //!
 //! コアの `Server::gate` に登録する。`check` は同期・I/O なし・`.await` なし
 //! （`crates/core/src/extension.rs` の契約）。使う同期プリミティブは短時間保持の
 //! `RwLock`（署名検証中は保持しない）・`AtomicU64`・`SystemTime::now()` だけ。
 //! 検証は [`JwtAuthenticator`] に委ね、拒否は 401 の `GateOutcome::Reject` で返す
 //! （応答の組み立ては [`JwtAuthenticator::unauthorized_response`]）。
-//! クレームは `GateOutcome` に載せられないため、ハンドラは
-//! [`JwtGate::authenticator`] で取り出した共有ハンドルから得る。DPoP（`dpop` feature）を
-//! 設定した認証器では、ゲートが `jti` を登録するため、ハンドラは `authenticate` ではなく
-//! [`authenticate_after_gate`](JwtAuthenticator::authenticate_after_gate) を呼ぶ。
+//!
+//! # 検証結果のハンドラへの受け渡し
+//!
+//! `check` は検証（DPoP を設定した認証器では proof の検証と `jti` の登録を含む）に成功すると、
+//! 検証済みの `Claims` を [`GateVerified`] に包んで `RequestExtensions` へ入れる。入れた値は
+//! 同じリクエストの `RequestHead` だけに載り、ハンドラは [`JwtGate::verified`] で読む。
+//! ハンドラは検証を繰り返さない（DPoP では `jti` の 2 回目の登録が `Replayed` になるため
+//! 繰り返せない）。[`GateVerified`] は外部から構築できないので、値が存在することが
+//! 「このゲートがこのリクエストを受理した」ことの証明になる。ゲートを通っていない要求
+//! （ゲート未登録・別経路）では値がなく、[`NotAdmitted`] で拒否される（フェイルクローズ）。
+//! 共有状態（`jti` の履歴など）はゲート通過の証明に使わない。
 
-use fandhe_backend_core::extension::{GateContext, GateOutcome, RequestGate};
+use std::fmt;
+
+use fandhe_backend_core::extension::{GateContext, GateOutcome, RequestExtensions, RequestGate};
+use fandhe_backend_http::error::error_response;
 use fandhe_backend_http::request::RequestHead;
 use serde::de::DeserializeOwned;
 
 use crate::auth::JwtAuthenticator;
-use crate::verify::NoExtraClaims;
+use crate::verify::{Claims, NoExtraClaims};
+
+/// [`JwtGate`] が受理したリクエストに付く、検証済みクレームの入れ物。
+///
+/// 外部から構築できない（フィールドもコンストラクタも非公開）。`RequestExtensions` へ入れられるのは
+/// [`JwtGate::check`](RequestGate::check) だけで、読み取りは [`JwtGate::verified`] を使う。
+/// `Debug` はクレームの値を出さない。
+pub struct GateVerified<E = NoExtraClaims> {
+    claims: Claims<E>,
+}
+
+impl<E> GateVerified<E> {
+    /// 検証済みのクレーム。
+    pub fn claims(&self) -> &Claims<E> {
+        &self.claims
+    }
+}
+
+impl<E> fmt::Debug for GateVerified<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GateVerified").finish_non_exhaustive()
+    }
+}
+
+/// このリクエストは [`JwtGate`] を通っていない（`RequestHead` に [`GateVerified`] がない）。
+///
+/// ゲートが登録されていない、またはゲートを通らない経路に届いた要求。ハンドラは認証失敗として
+/// 扱い、クレームを推測や再検証で補わないこと（フェイルクローズ）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotAdmitted;
+
+impl fmt::Display for NotAdmitted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("この要求は JwtGate を通っていません")
+    }
+}
+
+impl std::error::Error for NotAdmitted {}
 
 /// `Authorization: Bearer` の JWT を検証する `RequestGate`。
+///
+/// DPoP（`dpop` feature）を設定した認証器では `Authorization: DPoP` も受ける。受理した要求の
+/// クレームは [`GateVerified`] として `RequestHead` に載り、ハンドラは [`JwtGate::verified`] で読む。
 ///
 /// ```
 /// use fandhe_backend_core::extension::RequestGate;
@@ -30,10 +80,8 @@ use crate::verify::NoExtraClaims;
 /// );
 /// let auth = JwtAuthenticator::<NoExtraClaims>::builder(SharedKeySet::new(KeySet::empty()), policy)
 ///     .build();
-/// let handler_side = auth.clone(); // ハンドラ用。Server::gate へ渡す前に取り出す
 /// let gate = JwtGate::new(auth);
 /// assert_eq!(gate.name(), "jwt-gate");
-/// # let _ = handler_side;
 /// # Ok::<(), PolicyError>(())
 /// ```
 pub struct JwtGate<E = NoExtraClaims> {
@@ -46,9 +94,20 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> JwtGate<E> {
         Self { auth }
     }
 
-    /// ハンドラと共有する認証器（clone）を返す。
+    /// ゲートと共有する認証器（clone）を返す。
     pub fn authenticator(&self) -> JwtAuthenticator<E> {
         self.auth.clone()
+    }
+
+    /// ハンドラ用: このリクエストを受理したゲートが入れた検証済みクレームを返す。
+    ///
+    /// 検証は繰り返さない。ゲートを通っていない要求は [`NotAdmitted`]（フェイルクローズ）。
+    /// `E` は登録したゲートの追加クレーム型と同じにすること（違うと値が見つからず `NotAdmitted`）。
+    pub fn verified(head: &RequestHead) -> Result<&Claims<E>, NotAdmitted> {
+        head.extensions()
+            .get::<GateVerified<E>>()
+            .map(GateVerified::claims)
+            .ok_or(NotAdmitted)
     }
 }
 
@@ -61,10 +120,16 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> RequestGate for JwtGat
         &self,
         head: &RequestHead,
         _ctx: &GateContext,
-        _extensions: &mut fandhe_backend_core::extension::RequestExtensions,
+        extensions: &mut RequestExtensions,
     ) -> GateOutcome {
         match self.auth.authenticate(head) {
-            Ok(_) => GateOutcome::Allow,
+            // 同じ `E` のゲートが二重に登録されているなど、既に値がある場合は上書きせず拒否する。
+            Ok(claims) => match extensions.insert(GateVerified { claims }) {
+                Ok(()) => GateOutcome::Allow,
+                Err(_) => GateOutcome::Reject {
+                    response: error_response(500, "internal_error"),
+                },
+            },
             Err(e) => GateOutcome::Reject {
                 response: self.auth.unauthorized_response(head, &e),
             },

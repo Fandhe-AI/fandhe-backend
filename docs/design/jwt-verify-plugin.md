@@ -630,9 +630,20 @@ spec の式 `ceil(T / L) + 定期の取得回数` はこれ以上なので満た
 - 配線は `JwtAuthenticatorBuilder::dpop(config)`（`cfg(feature = "dpop")`）。`JwtGate` 側と `authenticate` の
   シグネチャは変えない。メソッドとパスは `RequestHead` から取る。
 - **1 要求 1 回の契約**: DPoP 有効時の `authenticate` は `jti` 登録を伴うため、同一要求内で 2 回呼ぶと 2 回目は
-  replay 扱いで失敗する。`authenticate` を呼ぶのはゲート 1 箇所だけにし、ゲートが得た検証済みの `Claims` を
-  `GateContext` 等の後段への受け渡し経路でハンドラへ渡す。ハンドラは再検証せず受け取った値を読むだけにする
-  （受け渡しの具体形は #901・#904 で決める。`authenticate` のシグネチャは変えない）。
+  replay 扱いで失敗する。`authenticate` を呼ぶのはゲート 1 箇所だけにする。
+- **ハンドラへの受け渡し**（コア #924 の `RequestExtensions`、`gate-request-extensions.md`）: `JwtGate::check` は検証
+  （DPoP では proof の検証と `jti` 登録を含む）に成功したときだけ、検証済みの `Claims` を `GateVerified<E>` に包んで
+  `extensions` へ入れる。`GateVerified` はフィールドもコンストラクタも非公開で、`plugin-jwt` の外からは構築できない
+  （他のゲートや利用者コードによるなりすまし防止）。ハンドラは `JwtGate::<E>::verified(head)` で
+  `RequestHead::extensions()` から読むだけで、再検証しない。`E` は登録したゲートの追加クレーム型と一致させる。
+  - **フェイルクローズ**: ゲートを通っていない要求（ゲート未登録・別経路・`E` 不一致）は値がなく、`verified` が
+    `NotAdmitted` を返す。拒否された要求の器は破棄されるので値は残らない。同じ `E` のゲートの二重登録は
+    `insert` が `Err` になり、上書きせず 500 で拒否する。
+  - **ゲート通過の証明に共有状態を使わない**: `jti` の履歴（`ReplayStore`）は「1 要求につきゲートが 1 回登録する」
+    ためだけに使う。履歴を「ゲートを通った証拠」として読む入口（旧案の `authenticate_after_gate`・履歴の
+    照会）は持たない。履歴は正当な要求と同じ proof の再送を区別できず、後続ゲートが拒否した要求の proof を
+    ゲートのない別経路へ再送すると認証が通ってしまうため。
+  - `authenticate` のシグネチャは変えない。受け渡しは DPoP の有無によらず（Bearer のみの認証器でも）同じ。
 - 方式と公開オリジンが欠けた構成を作れないことは、#904 で `compile_fail` の doc test により示す。
 - **理由**: spec の「構築時に明示して選ばせ、既定は持たない」に従う。`non_exhaustive` は将来の nonce 方式の余地。
 - **影響先**: #901・#904。
@@ -917,13 +928,13 @@ hub-wiring への転送は #905、計測は #906、CHANGELOG・ガイド・受�
   `ES256 RS256` で 1 回だけ作る（`AllowedAlgorithms::iter` は挿入順のため）。`error` は
   `BoundTokenAsBearer`・`UnboundToken` が `invalid_token`、他の `Dpop(_)` が `invalid_dpop_proof`。
   DPoP を設定していない場合の応答は従来とバイト単位で同じ。
-- **ハンドラへの受け渡し**: core には要求ごとの受け渡し領域がなく、`authenticate` を再度呼ぶと
-  `jti` の 2 回目の登録で `Replayed` になる。そこで `authenticate_after_gate(_at)` を足した。
-  同じ検査を行い、`register` の代わりに crate 内の読み取り専用 `ReplayStore::is_registered` で
-  「ゲートが登録済みであること」を要求し、未登録は `DpopError::NotAdmitted`（フェイルクローズ）。
-  `is_registered` は非公開で、挿入と対にならない照会のため TOCTOU は生じず、9.6 節の
-  「`contains` と `insert` を分けた公開の入口を持たない」契約を保つ。費用は 1 要求あたり proof の
-  署名検証が 2 回（#906 で計測）。ゲートとハンドラの間で `iat` の窓の端を越えるとハンドラ側で
-  拒否されうる。DPoP 未設定の認証器では `authenticate` と同じ。
+- **ハンドラへの受け渡し**: 9.3 節のとおり、`JwtGate::check` が検証済み `Claims` を `GateVerified<E>` として
+  `RequestExtensions` へ入れ、ハンドラは `JwtGate::<E>::verified` で読む（公開は `GateVerified`・`NotAdmitted`・
+  `JwtGate::verified` の 3 つ。`GateVerified` は `plugin-jwt` の外から構築できない）。proof の検証は 1 要求 1 回で、
+  ハンドラ側の再検証・`jti` の履歴の照会はない。`ReplayStore` の公開入口は `register` のみのまま。
+  ゲートを通っていない要求は `NotAdmitted`（`dpop` feature によらず存在）。PR のレビュー（共有履歴を通過の証明に
+  使うと、後続ゲートが拒否した要求の proof を別経路へ再送して認証が通る）を受け、`authenticate_after_gate`・
+  `DpopError::NotAdmitted`・履歴の照会は撤去した。テスト `proof_of_a_request_rejected_by_a_later_gate_is_not_admitted_elsewhere`
+  が、後続ゲートの拒否 → 別経路への再送（ゲートあり: replay で 401、ゲートなし: `NotAdmitted`）を実 HTTP 経路で固定する。
 - **新規依存なし**: `Cargo.lock` に差分はない。`Lookup::Hit` は `Claims` が `cnf` で大きくなったため
   `Box` 化した。
