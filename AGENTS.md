@@ -122,6 +122,13 @@ src/server.rs` の `Handler` trait、`fandhe_backend_routes::Router` の `route_
 影響しない（`GateContext` は `Copy` 型の単純な値渡しであり、`async fn` 化や
 I/O を一切伴わない）。詳細は `docs/design/gate-peer-addr.md` を参照。
 
+イシュー #924 で `check` に第 3 引数 `extensions: &mut RequestExtensions`（BREAKING）を
+追加した。ゲートが得た検証結果をハンドラへ渡す唯一の書き込み口で、リクエストごとに新規作成され、
+全ゲートが `Allow` を返したときだけコアが `RequestHead::extensions` へ移す（`Reject` では破棄、
+`GateOutcome` と `GateContext` は不変）。後段は `&RequestHead` から読み取るのみ。同じ型の
+`insert` が `Err` を返したら拒否を返す（fail-closed）。可視性の表は
+`docs/design/gate-request-extensions.md` 6 節を参照。
+
 ## AI エージェント向け変更ガイド
 
 TASK-11.3（#35、`docs/spec/05-tasks.md` Phase 3 / MS-3、`docs/spec/04-requirements.md`

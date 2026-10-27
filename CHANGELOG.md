@@ -9,6 +9,16 @@
 
 ### Added
 
+- `fandhe-backend-http`: リクエスト単位の型付き拡張領域 `extensions::RequestExtensions` と
+  `RequestHead::extensions()` / `extensions_mut()` を追加しました（イシュー [#924](https://github.com/Fandhe-AI/fandhe-backend/issues/924)）。
+  `RequestGate` が得た検証結果（検証済み Claims 等）を、そのゲートを通過した同じリクエストの
+  ハンドラ・`Interceptor` だけが `head.extensions().get::<T>()` で読めます。値はリクエストと同じ
+  寿命で、keep-alive の後続リクエスト・別接続・ゲート未登録・`Reject` 後には届きません。同じ型の
+  二重登録は上書きされず `Err` を返します。`Debug` は件数だけを出し、`PartialEq` の比較には含めません。
+  新規依存・`unsafe` はなく、使わない構成の追加コストはありません。設計は
+  `docs/design/gate-request-extensions.md`。追加のみで型は壊れません（`RequestHead` の新フィールドは
+  非公開）。
+
 - `fandhe-backend-plugin-jwt`: opt-in の feature `jwks-refresh` を追加しました（イシュー
   [#898](https://github.com/Fandhe-AI/fandhe-backend/issues/898)、親
   [#892](https://github.com/Fandhe-AI/fandhe-backend/issues/892)、ルート
@@ -43,6 +53,23 @@
   breaking change ではありません。
 
 ### Changed
+
+- **BREAKING** `fandhe-backend-core`: `RequestGate::check` に第 3 引数
+  `extensions: &mut RequestExtensions` を追加しました（イシュー [#924](https://github.com/Fandhe-AI/fandhe-backend/issues/924)）。ゲートが得た検証結果を
+  同じリクエストのハンドラへ渡すための経路で、コアは全ゲートが `Allow` を返したときだけ、その
+  リクエスト用の器を `RequestHead` へ移します。`GateOutcome` と `GateContext` は変わりません。
+  必須メソッドの引数追加のため、非推奨期間を挟まずに壊れます（二重メソッドを残さない方針は
+  `GateContext` を足した #486 と同じ）。
+  - 移行（値を渡さない既存ゲート）: `impl RequestGate` の `check` に第 3 引数
+    `_extensions: &mut RequestExtensions` を足すだけで、挙動は変わりません。
+    `RequestExtensions` は `fandhe_backend_core::extension` と crate ルートから使えます。
+  - 移行（`check` を直接呼ぶテスト）: `gate.check(&head, &ctx, &mut RequestExtensions::new())`
+    のように空の器を渡します。
+  - 値を渡したいゲート: `extensions.insert(value)` で入れ、`Err`（同じ型を先のゲートが入れ済み）
+    のときは拒否を返します。ハンドラは `head.extensions().get::<T>()` で読みます。
+  - 影響した workspace 内の実装: `fandhe-backend-plugin-csrf` の `CsrfGate`、
+    `fandhe-backend-plugin-hub-wiring` の `TenantGate`、`fandhe-backend-plugin-jwt` の `JwtGate`
+    （シグネチャの追随のみで挙動は変わりません）。
 
 - `fandhe-backend-plugin-webrtc`: **1 接続あたりのデータチャネル数の既定が、従来の無制限から
   16 本になりました**（送信バッファ上限はチャネルごとに効くため、チャネル数が無制限だと 1 接続の

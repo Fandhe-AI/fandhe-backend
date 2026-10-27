@@ -110,7 +110,12 @@ async fn gated_rejection_response_is_correct_over_keep_alive_connection() {
             "always-reject"
         }
 
-        fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+        fn check(
+            &self,
+            _head: &RequestHead,
+            _ctx: &GateContext,
+            _extensions: &mut fandhe_backend_core::extension::RequestExtensions,
+        ) -> GateOutcome {
             GateOutcome::reject(403, b"forbidden".to_vec())
         }
     }

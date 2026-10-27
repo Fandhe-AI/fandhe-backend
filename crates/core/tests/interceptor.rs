@@ -221,7 +221,12 @@ impl RequestGate for RequireAuthHeader {
         "require-auth-header"
     }
 
-    fn check(&self, head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+    fn check(
+        &self,
+        head: &RequestHead,
+        _ctx: &GateContext,
+        _extensions: &mut fandhe_backend_core::extension::RequestExtensions,
+    ) -> GateOutcome {
         match head.header("authorization") {
             Some(_) => GateOutcome::Allow,
             None => GateOutcome::reject(401, Vec::new()),

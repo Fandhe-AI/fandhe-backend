@@ -12,7 +12,10 @@
 //!   フレーミング・接続奪取後の処理はプラグイン側に閉じる
 //! - [`RequestGate`][]: 早期拒否（認証・認可・同意ゲート等）。[`GateOutcome`][] は
 //!   許可/拒否の判定結果のみを運び、クレーム等の hub 固有データを持ち込まない
-//!   （`docs/spec/03-poc/hub-wiring-middleware` PoC-6 の設計判断）
+//!   （`docs/spec/03-poc/hub-wiring-middleware` PoC-6 の設計判断）。判定根拠
+//!   データ（検証済み Claims 等）をハンドラへ渡す必要がある場合は、リクエスト単位の
+//!   [`RequestExtensions`] へ型付きで入れる（コアは中身の型に依存しない、
+//!   イシュー #924、`docs/design/gate-request-extensions.md`）
 //!
 //! # 本モジュールのスコープ境界
 //!
@@ -37,6 +40,7 @@
 //! 送信に留め、実際の I/O は別タスクで行う契約とする
 //! （詳細規約は TASK-2.3 で `AGENTS.md` に整備済み）。
 
+pub use fandhe_backend_http::extensions::RequestExtensions;
 use fandhe_backend_http::request::RequestHead;
 use fandhe_backend_http::response::Response;
 use std::net::SocketAddr;
@@ -348,7 +352,7 @@ impl GateContext {
 /// # Examples
 ///
 /// ```
-/// use fandhe_backend_core::extension::{GateContext, GateOutcome, RequestGate};
+/// use fandhe_backend_core::extension::{GateContext, GateOutcome, RequestExtensions, RequestGate};
 /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
 ///
 /// /// `Authorization` ヘッダの有無だけを見るトイ実装（フェイルクローズ）。
@@ -359,7 +363,7 @@ impl GateContext {
 ///         "require-auth-header"
 ///     }
 ///
-///     fn check(&self, head: &fandhe_backend_http::request::RequestHead, _ctx: &GateContext) -> GateOutcome {
+///     fn check(&self, head: &fandhe_backend_http::request::RequestHead, _ctx: &GateContext, _extensions: &mut RequestExtensions) -> GateOutcome {
 ///         match head.header("authorization") {
 ///             Some(_) => GateOutcome::Allow,
 ///             None => GateOutcome::reject(401, Vec::new()),
@@ -369,20 +373,21 @@ impl GateContext {
 ///
 /// let gate = RequireAuthHeader;
 /// let ctx = GateContext::new(None);
+/// let mut ext = RequestExtensions::new();
 ///
 /// let buf = b"GET / HTTP/1.1\r\nAuthorization: Bearer x\r\n\r\n";
 /// let head = match parse_request_head(buf).unwrap() {
 ///     ParseOutcome::Complete { head, .. } => head,
 ///     ParseOutcome::Incomplete => unreachable!(),
 /// };
-/// assert_eq!(gate.check(&head, &ctx), GateOutcome::Allow);
+/// assert_eq!(gate.check(&head, &ctx, &mut ext), GateOutcome::Allow);
 ///
 /// let buf = b"GET / HTTP/1.1\r\n\r\n";
 /// let head = match parse_request_head(buf).unwrap() {
 ///     ParseOutcome::Complete { head, .. } => head,
 ///     ParseOutcome::Incomplete => unreachable!(),
 /// };
-/// assert_eq!(gate.check(&head, &ctx), GateOutcome::reject(401, Vec::new()));
+/// assert_eq!(gate.check(&head, &ctx, &mut ext), GateOutcome::reject(401, Vec::new()));
 /// ```
 ///
 /// # ヘッダ付き拒否応答の例（`429 Retry-After`、イシュー #424）
@@ -392,7 +397,7 @@ impl GateContext {
 /// `GateOutcome::Reject` を組み立てる。
 ///
 /// ```
-/// use fandhe_backend_core::extension::{GateContext, GateOutcome, RequestGate};
+/// use fandhe_backend_core::extension::{GateContext, GateOutcome, RequestExtensions, RequestGate};
 /// use fandhe_backend_http::request::{RequestHead, parse_request_head, ParseOutcome};
 /// use fandhe_backend_http::response::Response;
 ///
@@ -404,7 +409,7 @@ impl GateContext {
 ///         "always-rate-limited"
 ///     }
 ///
-///     fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+///     fn check(&self, _head: &RequestHead, _ctx: &GateContext, _extensions: &mut RequestExtensions) -> GateOutcome {
 ///         let response = Response::new(429, b"{\"error\":\"rate limited\"}".to_vec())
 ///             .with_content_type("application/json")
 ///             .with_header("Retry-After", "30")
@@ -415,12 +420,13 @@ impl GateContext {
 ///
 /// let gate = AlwaysRateLimited;
 /// let ctx = GateContext::new(None);
+/// let mut ext = RequestExtensions::new();
 /// let buf = b"GET / HTTP/1.1\r\n\r\n";
 /// let head = match parse_request_head(buf).unwrap() {
 ///     ParseOutcome::Complete { head, .. } => head,
 ///     ParseOutcome::Incomplete => unreachable!(),
 /// };
-/// let GateOutcome::Reject { response } = gate.check(&head, &ctx) else {
+/// let GateOutcome::Reject { response } = gate.check(&head, &ctx, &mut ext) else {
 ///     unreachable!("AlwaysRateLimited は常に Reject を返す");
 /// };
 /// let wire = response.serialize(false);
@@ -428,6 +434,44 @@ impl GateContext {
 /// assert!(text.starts_with("HTTP/1.1 429"));
 /// assert!(text.contains("Retry-After: 30\r\n"));
 /// assert!(text.contains("Content-Type: application/json\r\n"));
+/// ```
+///
+/// # 検証結果をハンドラへ渡す例（イシュー #924）
+///
+/// ```
+/// use fandhe_backend_core::extension::{GateContext, GateOutcome, RequestExtensions, RequestGate};
+/// use fandhe_backend_http::request::{parse_request_head, ParseOutcome, RequestHead};
+///
+/// /// ゲートが検証して得た値（外部から勝手に作られない型にするのが望ましい）。
+/// struct Principal(String);
+///
+/// struct Authenticate;
+///
+/// impl RequestGate for Authenticate {
+///     fn name(&self) -> &'static str {
+///         "authenticate"
+///     }
+///
+///     fn check(&self, head: &RequestHead, _ctx: &GateContext, extensions: &mut RequestExtensions) -> GateOutcome {
+///         let Some(user) = head.header("x-user") else {
+///             return GateOutcome::reject(401, Vec::new());
+///         };
+///         // 同じ型が既にあれば拒否する（fail-closed）。
+///         match extensions.insert(Principal(user.to_string())) {
+///             Ok(()) => GateOutcome::Allow,
+///             Err(_) => GateOutcome::reject(500, Vec::new()),
+///         }
+///     }
+/// }
+///
+/// let ParseOutcome::Complete { mut head, .. } =
+///     parse_request_head(b"GET / HTTP/1.1\r\nX-User: alice\r\n\r\n").unwrap()
+/// else { unreachable!() };
+/// let mut ext = RequestExtensions::new();
+/// assert_eq!(Authenticate.check(&head, &GateContext::new(None), &mut ext), GateOutcome::Allow);
+/// // コアは全ゲート通過後に器を head へ移す。ハンドラは head から読む。
+/// *head.extensions_mut() = ext;
+/// assert_eq!(head.extensions().get::<Principal>().map(|p| p.0.as_str()), Some("alice"));
 /// ```
 pub trait RequestGate: Send + Sync {
     /// 診断・ログ表示用の静的識別名。
@@ -437,7 +481,19 @@ pub trait RequestGate: Send + Sync {
     /// 必ず [`GateOutcome::Reject`] を返すこと（フェイルクローズ）。`ctx` は
     /// accept したソケットの実 peer address を運ぶ（イシュー #486、
     /// [`GateContext`] の doc を参照）。
-    fn check(&self, head: &RequestHead, ctx: &GateContext) -> GateOutcome;
+    ///
+    /// `extensions` は**このリクエスト専用**の器で、先に評価されたゲートが入れた
+    /// 値も読める。全ゲートが [`GateOutcome::Allow`] を返したときだけ、コアが
+    /// 器を `RequestHead::extensions` へ移し、ハンドラが読めるようになる
+    /// （いずれかが `Reject` なら破棄される）。`insert` が `Err` を返した場合
+    /// （同じ型を別のゲートが先に入れた）は、検証結果の差し替えを避けるため
+    /// 拒否を返すこと（イシュー #924）。
+    fn check(
+        &self,
+        head: &RequestHead,
+        ctx: &GateContext,
+        extensions: &mut RequestExtensions,
+    ) -> GateOutcome;
 }
 
 #[cfg(test)]
@@ -585,7 +641,12 @@ mod tests {
             "allow-all"
         }
 
-        fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+        fn check(
+            &self,
+            _head: &RequestHead,
+            _ctx: &GateContext,
+            _extensions: &mut RequestExtensions,
+        ) -> GateOutcome {
             GateOutcome::Allow
         }
     }
@@ -598,7 +659,12 @@ mod tests {
             "fail-closed"
         }
 
-        fn check(&self, head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+        fn check(
+            &self,
+            head: &RequestHead,
+            _ctx: &GateContext,
+            _extensions: &mut RequestExtensions,
+        ) -> GateOutcome {
             match head.header("authorization") {
                 Some(_) => GateOutcome::Allow,
                 None => GateOutcome::reject(401, Vec::new()),
@@ -615,7 +681,12 @@ mod tests {
             "peer-required"
         }
 
-        fn check(&self, _head: &RequestHead, ctx: &GateContext) -> GateOutcome {
+        fn check(
+            &self,
+            _head: &RequestHead,
+            ctx: &GateContext,
+            _extensions: &mut RequestExtensions,
+        ) -> GateOutcome {
             match ctx.peer_addr() {
                 Some(_) => GateOutcome::Allow,
                 None => GateOutcome::reject(403, Vec::new()),
@@ -627,7 +698,10 @@ mod tests {
     fn request_gate_allow_outcome() {
         let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
         let ctx = GateContext::new(None);
-        assert_eq!(AllowAllGate.check(&head, &ctx), GateOutcome::Allow);
+        assert_eq!(
+            AllowAllGate.check(&head, &ctx, &mut RequestExtensions::new()),
+            GateOutcome::Allow
+        );
     }
 
     #[test]
@@ -635,7 +709,7 @@ mod tests {
         let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
         let ctx = GateContext::new(None);
         assert_eq!(
-            FailClosedGate.check(&head, &ctx),
+            FailClosedGate.check(&head, &ctx, &mut RequestExtensions::new()),
             GateOutcome::reject(401, Vec::new())
         );
     }
@@ -644,7 +718,10 @@ mod tests {
     fn request_gate_fail_closed_allows_with_authorization() {
         let head = head_from(b"GET / HTTP/1.1\r\nAuthorization: Bearer x\r\n\r\n");
         let ctx = GateContext::new(None);
-        assert_eq!(FailClosedGate.check(&head, &ctx), GateOutcome::Allow);
+        assert_eq!(
+            FailClosedGate.check(&head, &ctx, &mut RequestExtensions::new()),
+            GateOutcome::Allow
+        );
     }
 
     #[test]
@@ -664,7 +741,7 @@ mod tests {
         let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
         let ctx = GateContext::new(None);
         assert_eq!(
-            PeerRequiredGate.check(&head, &ctx),
+            PeerRequiredGate.check(&head, &ctx, &mut RequestExtensions::new()),
             GateOutcome::reject(403, Vec::new())
         );
     }
@@ -674,7 +751,10 @@ mod tests {
         let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
         let addr: std::net::SocketAddr = "203.0.113.5:54321".parse().unwrap();
         let ctx = GateContext::new(Some(addr));
-        assert_eq!(PeerRequiredGate.check(&head, &ctx), GateOutcome::Allow);
+        assert_eq!(
+            PeerRequiredGate.check(&head, &ctx, &mut RequestExtensions::new()),
+            GateOutcome::Allow
+        );
     }
 
     #[test]

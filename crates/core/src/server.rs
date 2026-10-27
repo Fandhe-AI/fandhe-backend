@@ -102,7 +102,9 @@ use fandhe_backend_http::connection::{RequestError, read_request_with_limit, sho
 use fandhe_backend_http::request::{HttpVersion, ParseError, RequestHead};
 use fandhe_backend_http::response::Response;
 
-use crate::extension::{GateContext, GateOutcome, Middleware, RequestGate, UpgradeHandler};
+use crate::extension::{
+    GateContext, GateOutcome, Middleware, RequestExtensions, RequestGate, UpgradeHandler,
+};
 use crate::interceptor::Interceptor;
 use crate::send_buffer::SendBuffer;
 use crate::streaming::{RecvOutcome, StreamingResponse};
@@ -2562,7 +2564,7 @@ pub(crate) async fn handle_connection_with_permit<S>(
             .await
         };
 
-        let request = match read_result {
+        let mut request = match read_result {
             // タイムアウト（スロークライアント・keep-alive アイドル超過）:
             // 応答を送らず接続を閉じる。
             Err(()) => return,
@@ -2602,7 +2604,17 @@ pub(crate) async fn handle_connection_with_permit<S>(
 
         // RequestGate はルーティング・アップグレードより先に評価する
         // （フェイルクローズ、モジュール冒頭の doc を参照）。
-        if let Some(rejection) = first_rejection(&server.gates, &request.head, &gate_ctx) {
+        // ゲートが入れる値の器はリクエストごとに新規作成する（接続単位に
+        // 持つと keep-alive の後続リクエストへ値が漏れる。イシュー #924、
+        // `docs/design/gate-request-extensions.md`）。空の間はヒープ確保なし。
+        debug_assert!(request.head.extensions().is_empty());
+        let mut gate_extensions = RequestExtensions::new();
+        if let Some(rejection) = first_rejection(
+            &server.gates,
+            &request.head,
+            &gate_ctx,
+            &mut gate_extensions,
+        ) {
             let GateOutcome::Reject { response } = rejection else {
                 unreachable!("first_rejection only returns Reject outcomes")
             };
@@ -2634,6 +2646,13 @@ pub(crate) async fn handle_connection_with_permit<S>(
                 return;
             }
             continue;
+        }
+        // 全ゲートが Allow した場合のみ、ゲートが入れた値をこのリクエストの
+        // head へ移す。以降（Upgrade 判定・Interceptor・Handler・map_response・
+        // on_response_with_status）は同じ head を参照するため値が見える。
+        // Reject 経路では上で器ごと drop され、後段へは届かない。
+        if !gate_extensions.is_empty() {
+            *request.head.extensions_mut() = gate_extensions;
         }
 
         if server
@@ -3229,11 +3248,14 @@ fn first_rejection(
     gates: &[Box<dyn RequestGate>],
     head: &RequestHead,
     ctx: &GateContext,
+    extensions: &mut RequestExtensions,
 ) -> Option<GateOutcome> {
-    gates.iter().find_map(|gate| match gate.check(head, ctx) {
-        GateOutcome::Allow => None,
-        reject @ GateOutcome::Reject { .. } => Some(reject),
-    })
+    gates
+        .iter()
+        .find_map(|gate| match gate.check(head, ctx, extensions) {
+            GateOutcome::Allow => None,
+            reject @ GateOutcome::Reject { .. } => Some(reject),
+        })
 }
 
 /// [`RequestError`] を応答すべき HTTP ステータスへマッピングする。
@@ -3352,7 +3374,12 @@ mod tests {
         fn name(&self) -> &'static str {
             "require-auth"
         }
-        fn check(&self, head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+        fn check(
+            &self,
+            head: &RequestHead,
+            _ctx: &GateContext,
+            _extensions: &mut RequestExtensions,
+        ) -> GateOutcome {
             match head.header("authorization") {
                 Some(_) => GateOutcome::Allow,
                 None => GateOutcome::reject(401, b"unauthorized".to_vec()),
@@ -3366,7 +3393,12 @@ mod tests {
         fn name(&self) -> &'static str {
             "always-reject"
         }
-        fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+        fn check(
+            &self,
+            _head: &RequestHead,
+            _ctx: &GateContext,
+            _extensions: &mut RequestExtensions,
+        ) -> GateOutcome {
             GateOutcome::reject(self.0, Vec::new())
         }
     }
@@ -3379,7 +3411,12 @@ mod tests {
         fn name(&self) -> &'static str {
             "rate-limit"
         }
-        fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+        fn check(
+            &self,
+            _head: &RequestHead,
+            _ctx: &GateContext,
+            _extensions: &mut RequestExtensions,
+        ) -> GateOutcome {
             let response = Response::new(429, b"{\"error\":\"rate limited\"}".to_vec())
                 .with_content_type("application/json")
                 .with_header("Retry-After", "30")
@@ -3393,7 +3430,12 @@ mod tests {
         fn name(&self) -> &'static str {
             "allow-all"
         }
-        fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+        fn check(
+            &self,
+            _head: &RequestHead,
+            _ctx: &GateContext,
+            _extensions: &mut RequestExtensions,
+        ) -> GateOutcome {
             GateOutcome::Allow
         }
     }
@@ -3408,7 +3450,12 @@ mod tests {
         fn name(&self) -> &'static str {
             "recording-peer-addr"
         }
-        fn check(&self, _head: &RequestHead, ctx: &GateContext) -> GateOutcome {
+        fn check(
+            &self,
+            _head: &RequestHead,
+            ctx: &GateContext,
+            _extensions: &mut RequestExtensions,
+        ) -> GateOutcome {
             self.observed.lock().unwrap().push(ctx.peer_addr());
             GateOutcome::Allow
         }
@@ -3420,8 +3467,13 @@ mod tests {
         fn name(&self) -> &'static str {
             (**self).name()
         }
-        fn check(&self, head: &RequestHead, ctx: &GateContext) -> GateOutcome {
-            (**self).check(head, ctx)
+        fn check(
+            &self,
+            head: &RequestHead,
+            ctx: &GateContext,
+            extensions: &mut RequestExtensions,
+        ) -> GateOutcome {
+            (**self).check(head, ctx, extensions)
         }
     }
 

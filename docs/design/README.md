@@ -28,6 +28,9 @@
   方針衝突/明確な脆弱性を招く要求の不可判定 4 カテゴリの基準を PoC-9 T-11〜T-15 と
   対応付けて記述。TASK-12.3-2、#84 で判定記録バリデータ `scripts/feasibility-check.sh` に
   よる機構組み込み・機械検証を 11 節に追記）
+- [`gate-request-extensions.md`](./gate-request-extensions.md): ゲートの検証結果をリクエスト単位で
+  ハンドラへ渡す経路（イシュー #924。`RequestGate::check` の第 3 引数 `RequestExtensions` と
+  `RequestHead::extensions`。候補比較・可視性の契約・BREAKING 判定と移行手順を記述）
 - [`unsafe-deny-lints.md`](./unsafe-deny-lints.md): 危険な `unsafe` パターンの deny lint 設定
   （TASK-14.2、#40、REQ-14。forbid/deny 2 層 lint テーブルの選定根拠とネガティブ検証）
 - [`review-gate.md`](./review-gate.md): レビューゲート運用定義・受け入れテスト

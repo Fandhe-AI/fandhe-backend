@@ -50,6 +50,9 @@
 //! 12. 同一オリジンに限るリダイレクト先の検証済み型（[`location`]、イシュー #828）。
 //!     相対パス（`/` 始まり）のみ受理する [`location::SameOriginLocation`] と
 //!     sans-IO 検証関数を提供し、[`response::Response::see_other`] が受け取る。
+//! 13. リクエスト単位の型付き拡張領域（[`extensions`]、イシュー #924）。
+//!     `RequestGate` が得た検証結果を同じリクエストのハンドラへ渡す器
+//!     [`extensions::RequestExtensions`] を提供し、[`request::RequestHead`] が保持する。
 //!
 //! 本クレートの実行時依存は tokio の `io-util`（`AsyncRead`/`AsyncReadExt`）
 //! のみであり、それ以外の依存は持たない（pay-for-what-you-use。
@@ -65,6 +68,7 @@ pub mod chunked;
 pub mod connection;
 pub mod cookie;
 pub mod error;
+pub mod extensions;
 pub mod form;
 pub mod location;
 pub mod percent;
