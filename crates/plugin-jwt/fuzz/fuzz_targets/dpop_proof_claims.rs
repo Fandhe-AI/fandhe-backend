@@ -15,8 +15,8 @@ mod common;
 
 use common::*;
 use fandhe_backend_plugin_jwt::dpop::{
-    jwk_thumbprint, verify_proof, ExpectedHtu, IatWindow, JwkThumbprint, ProofContext,
-    PublicOrigin, MAX_IAT_FUTURE, MAX_IAT_PAST, MAX_JTI_LEN,
+    ExpectedHtu, IatWindow, JwkThumbprint, MAX_IAT_FUTURE, MAX_IAT_PAST, MAX_JTI_LEN, ProofContext,
+    PublicOrigin, jwk_thumbprint, verify_proof,
 };
 use fandhe_backend_plugin_jwt::{Algorithm, AllowedAlgorithms};
 use libfuzzer_sys::fuzz_target;

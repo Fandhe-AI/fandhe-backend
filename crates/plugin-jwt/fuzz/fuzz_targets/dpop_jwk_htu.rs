@@ -14,7 +14,7 @@ mod common;
 
 use common::*;
 use fandhe_backend_plugin_jwt::dpop::{
-    jwk_thumbprint, PublicOrigin, MAX_HTU_LEN, MAX_ORIGIN_LEN, MAX_PROOF_LEN,
+    MAX_HTU_LEN, MAX_ORIGIN_LEN, MAX_PROOF_LEN, PublicOrigin, jwk_thumbprint,
 };
 use libfuzzer_sys::fuzz_target;
 use std::sync::LazyLock;
@@ -39,10 +39,11 @@ fuzz_target!(|data: &[u8]| {
             Ok(t) => {
                 assert!(s.len() <= MAX_PROOF_LEN);
                 assert_eq!(t.as_str().len(), 43);
-                assert!(t
-                    .as_str()
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+                assert!(
+                    t.as_str()
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                );
             }
             Err(e) => {
                 let _ = e.to_string();

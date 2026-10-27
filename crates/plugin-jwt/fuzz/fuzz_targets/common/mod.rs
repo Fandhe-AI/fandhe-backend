@@ -9,15 +9,15 @@
 
 #![allow(dead_code)]
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as B;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B;
 use fandhe_backend_plugin_jwt::{
     Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, KeySet, TokenType,
 };
 use ring::rand::SystemRandom;
 use ring::signature::{
-    EcdsaKeyPair, KeyPair, RsaKeyPair, RsaPublicKeyComponents, ECDSA_P256_SHA256_FIXED_SIGNING,
-    RSA_PKCS1_SHA256,
+    ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair, RSA_PKCS1_SHA256, RsaKeyPair,
+    RsaPublicKeyComponents,
 };
 
 pub const ISS: &str = "https://issuer.example";
