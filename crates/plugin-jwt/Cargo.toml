@@ -38,6 +38,10 @@ tokio = { version = "1", default-features = false, features = ["time", "sync"], 
 default = []
 # JWKS 取り直しの土台（取得関数の trait・設定型）。既定では無効。
 jwks-refresh = ["dep:tokio"]
+# DPoP proof（RFC 9449）の解析と検査（`docs/design/jwt-verify-plugin.md` 9 章）。新規依存
+# なし（ring・base64・serde・serde_json は既存の通常依存で足りる）。無効時は
+# `dpop` モジュールがコンパイルされない。
+dpop = []
 
 # 統合テスト（tests/gate.rs）が `handle_connection` を `tokio::io::duplex` 越しに駆動し、
 # ハンドラの戻り値に `HandlerFuture` を使うためだけに必要（hub-wiring と同一パターン）。

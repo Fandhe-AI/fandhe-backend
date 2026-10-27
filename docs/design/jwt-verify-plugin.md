@@ -830,3 +830,35 @@ spec の式 `ceil(T / L) + 定期の取得回数` はこれ以上なので満た
 - パス接頭辞を剥がすプロキシ構成と、信頼するプロキシからの転送ヘッダは扱わない。
 - PS256・EdDSA など proof の方式の追加は扱わない。
 - `plugin-boundary.md` 5.6 節への追記と利用者向けガイドは #907 が担う。
+
+#### 実装時の決定（#901）
+
+9.4〜9.7 節が開いたままにした点を、`dpop` feature の純関数部分（`dpop::verify_proof`・
+`jwk_thumbprint`）の実装で次のとおり決めた。
+
+- **置き場所**: `IatWindow`・`DpopConfigError`（9.6 節）と `PublicOrigin`・`ExpectedHtu`（9.5 節）
+  は #901 で `dpop` モジュールに置いた。#904 はこれらを拡張する（別の型を作らない）。
+  `TokenType` に proof 用の変種は足さない（`JwtPolicy` で proof 用の種別を作れてしまうため）。
+  proof の許可 `alg` は既存の `AllowedAlgorithms` を使い回す。
+- **ゲート側の関心は #904**: 検証済みの `Claims` を後段へ渡す形、`Authorization: DPoP` の解析、
+  `cnf.jkt` との比較、401 と `WWW-Authenticate` は #904 が決める。`verify_proof` は
+  `VerifiedProof`（サムプリント・`jti`・`iat`）だけを返す。
+- **`ExpectedHtu`**: `PublicOrigin::expected_htu(path)` で要求ごとに作る。`path` は `/` で始まり
+  `?`・`#` を含まないこと。absolute-form・`*` は `DpopError::InvalidRequestTarget`。
+  proof の `htu` は同じ規則（scheme・host の小文字化、既定ポートの省略、`%XX` の大文字化、
+  クエリ・フラグメントの除去）で正規化して完全一致を比べ、解析できない値は `UriMismatch`。
+- **ドットセグメント**: `.`・`..` に加えて `%2E` を含む表記（`%2e%2E` など）も拒否する。デコード
+  差を突く迂回を防ぐ保守側の解釈。不正な `%`・制御文字・空白・非 ASCII・`\` も拒否する。
+- **上限**: `MAX_PROOF_LEN` = 8192（`MAX_TOKEN_LEN` と同じ）、`MAX_JTI_LEN` = 256、
+  `MAX_HTU_LEN` = 4096、`MAX_ORIGIN_LEN` = 512。いずれも復号・解析の前に判定する。
+- **`jwk` の検査**: 秘密鍵の要素（`d`・`p`・`q`・`dp`・`dq`・`qi`・`oth`・`k`）は
+  `PrivateKeyMaterial`、`kty` は `RSA`・`EC`（`crv` は `P-256`）のみ。ヘッダの `alg` または
+  `jwk.alg` と食い違えば `KeyAlgorithmMismatch`。`use` があって `sig` 以外なら拒否する。
+  `kid`・`key_ops`・`x5c` は読まない。RSA の `n` は 256〜1024 バイト（2048 bit 以上）、`e` は
+  1〜8 バイトで、`n`・`e` の先頭が 0 の表現は拒否する（9.7 節の正規形）。EC の座標は 32 バイト固定。
+  `jwk` はオブジェクトだけを受け、キーの重複は `Malformed`。
+- **`typ`**: `dpop+jwt` と `application/dpop+jwt` を ASCII の大文字小文字を無視して受理する。
+- **`DpopError` の変種**: 文字列を持たず `Copy`。#903 の `jti` 関連の変種（再使用・保持上限）と
+  #904 の変種は `#[non_exhaustive]` のため後から足せる。
+- **新規依存なし**: `Cargo.lock` に差分はない。`signature_ok` は `KeyMaterial` を受ける形にして
+  JWT 検証と共有した（挙動は変えていない）。
