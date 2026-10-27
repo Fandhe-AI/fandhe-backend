@@ -242,10 +242,6 @@ fn www_authenticate(r: &str) -> Vec<&str> {
         .collect()
 }
 
-fn body(r: &str) -> &str {
-    r.split_once("\r\n\r\n").unwrap().1
-}
-
 /// ステータス行・`Content-Type`・`Content-Length`・本文をすべて検証する
 /// （AGENTS.md「アサーション網羅性」）。
 fn assert_wire(r: &str, status: u16, content_type: &str, expected_body: &str) {
@@ -265,9 +261,13 @@ fn assert_wire(r: &str, status: u16, content_type: &str, expected_body: &str) {
 const ALGS: &str = "algs=\"ES256 RS256\"";
 
 fn assert_401(r: &str, challenges: &[String], error: &str) {
-    assert!(r.starts_with("HTTP/1.1 401"), "{r}");
+    assert_wire(
+        r,
+        401,
+        "application/json",
+        &format!(r#"{{"error":"{error}"}}"#),
+    );
     assert_eq!(www_authenticate(r), challenges, "{r}");
-    assert_eq!(body(r), format!(r#"{{"error":"{error}"}}"#), "{r}");
     // ハンドラへは到達していない。
     assert!(!r.contains("org="), "{r}");
 }
@@ -338,9 +338,7 @@ async fn missing_duplicate_or_mismatched_proof_is_rejected() {
     // cnf.jkt と proof の鍵が一致しない
     let other = Key::ec();
     let r = roundtrip(&s, &req(Some(&auth), &[&other.proof(&t, "c")])).await;
-    assert!(r.starts_with("HTTP/1.1 401"), "{r}");
-    assert_eq!(www_authenticate(&r).len(), 1, "{r}");
-    assert!(!r.contains("org="), "{r}");
+    assert_401(&r, &expected, "invalid_dpop_proof");
 }
 
 // ---- 順序: 403 は DPoP 検査の後 ----
