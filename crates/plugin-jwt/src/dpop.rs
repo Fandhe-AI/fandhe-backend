@@ -6,8 +6,11 @@
 //! I/O もロックも持たず、時刻は呼び出し側が注入する。設計は
 //! `docs/design/jwt-verify-plugin.md` 9 章。
 //!
-//! 含まないもの（後続のイシュー）: `jti` の保持と再使用の検知（#903）、`cnf.jkt` との比較・
-//! `Authorization: DPoP` の解析・ゲート配線（#904）。
+//! 状態を持つ部品は [`ReplayStore`]（`jti` の再使用検知、#903）だけで、`verify_proof` とは
+//! 分けてある。呼び出し側が `verify_proof` の成功後に `register` を呼ぶ。
+//!
+//! 含まないもの（後続のイシュー）: `cnf.jkt` との比較・`Authorization: DPoP` の解析・
+//! ゲート配線（#904）。
 //!
 //! # 検査の順序（契約）
 //!
@@ -39,6 +42,7 @@
 
 mod key;
 mod origin;
+mod replay;
 
 use std::fmt;
 use std::time::Duration;
@@ -54,6 +58,7 @@ use crate::verify::{MAX_TOKEN_LEN, signature_ok};
 
 pub use key::{JwkThumbprint, jwk_thumbprint};
 pub use origin::{ExpectedHtu, MAX_HTU_LEN, MAX_ORIGIN_LEN, OriginError, PublicOrigin};
+pub use replay::{DEFAULT_REPLAY_CAPACITY, MAX_REPLAY_CAPACITY, ReplayStore};
 
 use key::{ProofJwk, build_proof_key};
 
@@ -90,6 +95,10 @@ pub enum DpopConfigError {
     IatPastTooLarge,
     /// `iat` の未来側の幅が [`MAX_IAT_FUTURE`] を超えた。
     IatFutureTooLarge,
+    /// `jti` の保持数の上限が 0。
+    ReplayCapacityZero,
+    /// `jti` の保持数の上限が [`MAX_REPLAY_CAPACITY`] を超えた。
+    ReplayCapacityTooLarge,
 }
 
 impl fmt::Display for DpopConfigError {
@@ -98,6 +107,8 @@ impl fmt::Display for DpopConfigError {
             Self::IatPastZero => "iat の過去側の許容幅は 0 にできません",
             Self::IatPastTooLarge => "iat の過去側の許容幅が上限を超えています",
             Self::IatFutureTooLarge => "iat の未来側の許容幅が上限を超えています",
+            Self::ReplayCapacityZero => "jti の保持数の上限は 0 にできません",
+            Self::ReplayCapacityTooLarge => "jti の保持数の上限が最大値を超えています",
         };
         f.write_str(msg)
     }
@@ -211,6 +222,10 @@ pub enum DpopError {
     IssuedAtOutOfWindow,
     /// リクエストターゲットから期待 `htu` を作れない。
     InvalidRequestTarget,
+    /// `jti` が窓の中で既に使われている（[`ReplayStore::register`]）。
+    Replayed,
+    /// `jti` の保持が上限に達している（[`ReplayStore::register`]）。
+    ReplayStoreFull,
 }
 
 impl fmt::Display for DpopError {
@@ -235,6 +250,8 @@ impl fmt::Display for DpopError {
             Self::AccessTokenHashMismatch => "DPoP proof の ath がアクセストークンと一致しません",
             Self::IssuedAtOutOfWindow => "DPoP proof の iat が許容窓の外です",
             Self::InvalidRequestTarget => "リクエストターゲットから期待 URI を作れません",
+            Self::Replayed => "DPoP proof の jti は既に使われています",
+            Self::ReplayStoreFull => "DPoP proof の jti の保持が上限に達しています",
         };
         f.write_str(msg)
     }
@@ -314,7 +331,7 @@ impl VerifiedProof {
         &self.thumbprint
     }
 
-    /// proof の `jti`（再使用の検知は #903 が担う）。
+    /// proof の `jti`（再使用の検知は [`ReplayStore::register`] が担う）。
     pub fn jti(&self) -> &str {
         &self.jti
     }

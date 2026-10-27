@@ -862,3 +862,31 @@ spec の式 `ceil(T / L) + 定期の取得回数` はこれ以上なので満た
   #904 の変種は `#[non_exhaustive]` のため後から足せる。
 - **新規依存なし**: `Cargo.lock` に差分はない。`signature_ok` は `KeyMaterial` を受ける形にして
   JWT 検証と共有した（挙動は変えていない）。
+
+#### 実装時の決定（#903）
+
+9.6 節の `jti` の保持を `dpop::ReplayStore`（`crates/plugin-jwt/src/dpop/replay.rs`）で実装した。
+ゲート配線（`JwtAuthenticator` への保持と 401 への対応づけ）は #904 が担う。
+
+- **入口は `register` だけ**: `register(&VerifiedProof, now_unix)` が確認と登録を同じロック区間で
+  原子的に行う。`contains` と `insert` は公開しない（TOCTOU を作らない）。`VerifiedProof` だけを
+  受けるので、署名のない入力で保持を埋められない。
+- **キー**: SHA-256(サムプリント ‖ `jti`) の 32 B。生の `jti` は保持しない。サムプリントは常に
+  43 文字の固定長なので区切りなしの連結でも曖昧さはない。ハッシュはロックの外で計算する。
+  `HashMap` は std の既定（SipHash・ランダム鍵）を使い、要求由来の値に対する HashDoS 耐性を保つ
+  （`rustc-hash` は plugin-jwt に足さない。新規依存なし）。
+- **期限と掃除の境界**: 期限は `iat + past`。`verify_proof` は `iat + past >= now` の間受理するので、
+  掃除は `期限 < now` の項目だけを除く（`<=` にすると同じ秒に 2 回受理されうる）。掃除は
+  `BinaryHeap`（期限の昇順）の先頭から行い、`map` と 1 対 1 に保つ。償却では 1 項目あたり
+  O(log n) だが、長い無通信の後の最初の `register` だけ取り出しが多くなる（#906 の計測で見直す）。
+- **満杯**: 掃除の後に判定するので、期限切れで埋まった偽の満杯は起こさない。満杯なら
+  `DpopError::ReplayStoreFull`、再使用なら `DpopError::Replayed`。拒否した proof は登録しない。
+- **容量**: 既定 `DEFAULT_REPLAY_CAPACITY` = 131,072、上限 `MAX_REPLAY_CAPACITY` = 4,194,304。
+  0 と上限超は構築時に `DpopConfigError` で拒否。上限分は事前に確保しない。保持数が減っても
+  確保済みの容量は縮めない（高水位）。
+- **契約**: 構築時の `IatWindow` と `register` の `now_unix` は、同じ要求で `verify_proof` に渡した
+  ものと揃える（#904 は 1 つの `DpopConfig` から両方を作る）。
+- **ロック規律**: ロック区間は `HashMap`/`BinaryHeap` の操作だけ。非同期待機・I/O・署名検証・
+  ハッシュ計算を含まず、モジュールは tokio に依存しない。poison は `TokenCache` と同じく
+  `into_inner` で回復する。
+- **既知の限界**: ゲートごと・プロセスごとの保持で、複数インスタンス間では共有しない（9.13 節）。
