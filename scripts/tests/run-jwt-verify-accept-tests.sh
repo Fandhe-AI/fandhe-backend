@@ -258,5 +258,13 @@ printf 'test rejects_bad_jwk ... ok\n' > "${TMP}/dpop-out.txt"
 assert_eq "dpop: 期待テストが欠けると不足として報告" "rejects_bad_signature" "$(check_test_names_ok "${TMP}/dpop-out.txt" rejects_bad_jwk rejects_bad_signature)"
 
 echo ""
+echo "===== request_gate_check_is_sync ====="
+SIG='fn check(\n        &self,\n        head: &RequestHead,\n        ctx: &GateContext,\n    ) -> GateOutcome;'
+printf 'pub trait RequestGate {\n    %b\n}\n' "${SIG}" > "${TMP}/ext-sync.rs"
+printf 'pub trait RequestGate {\n    async %b\n}\n' "${SIG}" > "${TMP}/ext-async.rs"
+if request_gate_check_is_sync "${TMP}/ext-sync.rs"; then pass "同期 check は成立"; else fail "同期 check が不成立"; fi
+if request_gate_check_is_sync "${TMP}/ext-async.rs"; then fail "陰性対照: async fn check が通る"; else pass "陰性対照: async fn check は不成立"; fi
+
+echo ""
 echo "合計: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT}"
 [ "${FAIL_COUNT}" -eq 0 ]

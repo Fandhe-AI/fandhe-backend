@@ -187,8 +187,7 @@ check_c() {
     local fail_msgs=""
     # (a) RequestGate::check が同期 fn
     #     #924 以降は引数が複数行に折り返されるため、改行を畳んでから照合する（引数の追加で旧パターンが外れる）。
-    if ! tr '\n' ' ' <crates/core/src/extension.rs | tr -s ' ' \
-        | grep -qE '(^|[^a-z_])fn check\( ?&self, head: &RequestHead, ctx: &GateContext,( extensions: &mut RequestExtensions,)? ?\) -> GateOutcome;'; then
+    if ! request_gate_check_is_sync crates/core/src/extension.rs; then
         fail_msgs+="RequestGate::check が同期 fn のシグネチャで見つからない; "
     fi
     # (b) コメントを除いたソースに I/O・非同期の痕跡なし。ただし `jwks-refresh` の取り直し

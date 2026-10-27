@@ -277,8 +277,10 @@ dpop 基準を含む版）。本追補は `crates/**/src` の production コー�
 C の (a) は `RequestGate::check` が同期 fn であることを 1 行のパターンで照合していた。#924 で第 3 引数
 （`extensions: &mut RequestExtensions`）が加わり、シグネチャが複数行に折り返されたため、旧パターンでは
 見つからず FAIL になっていた（`dpop` とは無関係な、#924 以降に既にあった不整合）。改行を畳んで、旧形（2 引数）と
-新形（3 引数）のどちらも `-> GateOutcome;` まで照合するように直した。`async fn check` は一致しないため、
-同期であることの確認は弱めていない。
+新形（3 引数）のどちらも `-> GateOutcome;` まで照合するように直した。さらに `async fn check(` が1つでもあれば
+不成立とする明示拒否を足した（`fn` 直前の空白は `[^a-z_]` を満たすため、同期パターンだけでは async を弾けない）。
+判定は `request_gate_check_is_sync` に切り出し、`async fn check` が不成立になる陰性テストを
+`scripts/tests/run-jwt-verify-accept-tests.sh` に置いた。同期であることの確認は弱めていない。
 
 ## D-2: fuzz と性能
 
