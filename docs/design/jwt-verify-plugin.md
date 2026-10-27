@@ -988,3 +988,17 @@ DPoP を有効にしたゲートの検証コストを計測した（NFR-6）。�
   `register` が全件を掃除し、約 20 ms `Mutex` を持つ。件数上限つきの掃除（残りを次回以降へ
   繰り延べる）が改善案だが、満杯判定との整合の設計が要るため本イシューでは変えず、改善候補として
   記録する（レポート 8 節）。
+
+### 9.14 実装時の決定（#907）
+
+文書の追随先と受け入れ結果の置き場所を次のとおりとした（9.11 の対応表は変えない）。
+
+- 受け入れ結果は `docs/acceptance/req16-jwt-verify.md` の末尾に、`jwks-refresh` の追補（#897）と同じ形で
+  追補として足す（別ファイルは作らない）。機械検証は `scripts/accept/jwt-verify-accept.sh` の I〜M
+  （I: proof 検査、J: `jti`、K: ゲート経路、L: hub 共通配線、M: 無効時のコストゼロ）と、F の fuzz target 3 種
+- 利用者向けは `docs/guide/dpop.md`（`jti` がインスタンス間で共有されない既知の限界と、DPoP を設定しない
+  下流は結合トークンも bearer として受理する注意を含む）。`CHANGELOG.md`・`CLAUDE.md`・`README.md`・
+  `docs/design/plugin-boundary.md` 5.6.5・`docs/design/crates-io-release.md`・`docs/api/plugin-config-api.md`・
+  `docs/dep-impact/records.md` も追随した
+- NFR-6 は #906 の計測（`benches/reports/issue906-jwt-dpop-gate-performance.md`）を引用し、本イシューでは
+  再計測しない

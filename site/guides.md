@@ -27,6 +27,9 @@ Guides セクションは fandhe-backend を**使う**ための利用者向け�
 - [JWKS の取り直し（jwks-refresh）](../docs/guide/jwks-refresh.md) —
   `fandhe-backend-plugin-jwt` の opt-in feature。取得関数（HTTP クライアント）の
   安全な書き方と、取り直しタスクの配線手順
+- [DPoP 結合トークンの検証（dpop）](../docs/guide/dpop.md) —
+  `fandhe-backend-plugin-jwt` の opt-in feature。DPoP の設定・配線例と、`jti` を
+  インスタンス間で共有しない既知の限界
 
 GitHub 上の実体は
 [`docs/guide/`](https://github.com/Fandhe-AI/fandhe-backend/tree/main/docs/guide)

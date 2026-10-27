@@ -156,13 +156,16 @@ fandhe-backend/
 │   │                            # シンク同梱案を記録）
 │   ├── guide/              # 利用者向けガイド（Getting Started・feature 構成別サンプル・
 │   │                        # チュートリアル、TASK-11.5 / #95）。「どう作るか」の docs/design/ とは
-│   │                        # 責務分離、「どう使うか」を扱う
+│   │                        # 責務分離、「どう使うか」を扱う。`jwks-refresh.md`（JWKS 取り直し）・
+│   │                        # `dpop.md`（DPoP 結合トークンの検証、イシュー #907）を含む
 │   ├── dep-impact/         # 依存インパクト（依存数・バイナリサイズ・unsafe 件数）記録台帳（TASK-15.2）
 │   └── acceptance/         # REQ-1 等・NFR-7 等の受け入れ検証結果レポート（TASK-1.6-2 で追加、
 │                            # NFR-7 分は #263、NFR-6 分は #282 で追加）。issue399-docs-site-visual.md は
 │                            # docs サイト刷新（親 #384）の視覚確認・受け入れレポート（イシュー #399。
 │                            # ライト/ダーク × 複数解像度のスクリーンショット証跡 `assets/issue399/`・
-│                            # 実ブラウザ描画でのみ発見できた CSS カスケード順序バグの検出・修正記録）
+│                            # 実ブラウザ描画でのみ発見できた CSS カスケード順序バグの検出・修正記録）。
+│                            # req16-jwt-verify.md は REQ-16 の受け入れ結果で、末尾に追加要件
+│                            # `jwks-refresh`（#897）と `dpop`（#907）の追補を持つ
 ├── Cargo.toml             # cargo workspace ルート（TASK-1.1 で構築、resolver = "3"）。
 │                            # `[workspace.package] version` + `[workspace.dependencies]`
 │                            # （内部 15 クレートを path + version で定義）で lockstep
@@ -910,7 +913,15 @@ fandhe-backend/
 │   │                                    # 取得関数 trait `JwksFetcher`・`RefreshConfig`・
 │   │                                    # `RefreshTrigger`）を提供。HTTP・TLS は持たず取得関数は
 │   │                                    # アプリが書く（実装例 `docs/guide/jwks-refresh.md`）。
-│   │                                    # 追加依存は optional の `tokio`（time・sync）のみ
+│   │                                    # 追加依存は optional の `tokio`（time・sync）のみ。
+│   │                                    # opt-in feature `dpop`（RFC 9449 の DPoP 結合トークン検証、
+│   │                                    # イシュー #900〜#907、0.5.0 には未収録、新規依存なし）で
+│   │                                    # `JwtAuthenticatorBuilder::dpop`・`DpopConfig`/`DpopMode`・
+│   │                                    # `ReplayStore`（`jti` の有界な保持）を提供。拒否は 401 +
+│   │                                    # `WWW-Authenticate: DPoP`。`jti` はプロセス内のみで
+│   │                                    # インスタンス間では共有しない既知の限界、DPoP を設定しない
+│   │                                    # 下流は結合トークンも bearer として受理する（ガイド
+│   │                                    # `docs/guide/dpop.md`、設計 `jwt-verify-plugin.md` 9 章）
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、
 │   │                                    # `crates/http/fuzz` と同パターン、イシュー #818。DPoP proof
 │   │                                    # 解析部の target `dpop_*` 3 本を追加、イシュー #902）

@@ -16,6 +16,19 @@ JWT_ALLOWED_DEPS="fandhe-backend-core fandhe-backend-http base64 serde serde_jso
 # 基準 3 の禁止パターン（同期ゲートに現れてはならない I/O・非同期の痕跡）。
 JWT_FORBIDDEN_IO_PATTERN='async fn|\.await|tokio::|std::fs|std::net|thread::sleep|std::process'
 
+# RequestGate::check が同期 fn で宣言されているかを判定する（基準 C (a)）。
+# 引数: extension.rs のパス。改行を畳んで照合し、`async fn check(` が 1 つでもあれば不成立とする
+# （`fn` 直前の空白は `[^a-z_]` を満たすため、同期パターンだけでは async を弾けない）。
+request_gate_check_is_sync() {
+    local flat
+    flat="$(tr '\n' ' ' <"$1" | tr -s ' ')"
+    if printf '%s' "${flat}" | grep -qE 'async fn check ?\('; then
+        return 1
+    fi
+    printf '%s' "${flat}" \
+        | grep -qE '(^|[^a-z_])fn check\( ?&self, head: &RequestHead, ctx: &GateContext,( extensions: &mut RequestExtensions,)? ?\) -> GateOutcome;'
+}
+
 # ディレクトリ配下の *.rs から行コメント（`//`・`///`・`//!`）だけの行を除き、
 # 禁止パターンに当たった行を `file:line:text` で出す。0 件なら何も出さない。
 # gate.rs の module doc に「`.await` なし」と書かれており、コメントを除かないと

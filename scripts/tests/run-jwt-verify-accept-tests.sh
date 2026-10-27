@@ -148,6 +148,11 @@ assert_eq "許可集合内 + dev-dependencies の tokio は違反なし" "" "$(c
 assert_eq "許可外の依存を検出する" "jsonwebtoken tokio" "$(check_dependency_allowlist "${TMP}/bad.toml" | tr '\n' ' ' | sed 's/ $//')"
 
 
+# dpop（#907）: 実 lib.rs で dpop が cfg で閉じていること、cfg を外すと失敗すること。
+if module_is_cfg_gated "${REAL_LIB}" dpop dpop; then pass "実 lib.rs: dpop は dpop の cfg 内"; else fail "実 lib.rs の dpop が cfg で閉じていない"; fi
+sed 's|#\[cfg(feature = "dpop")\]||' "${REAL_LIB}" > "${TMP}/real-lib-nodpop.rs"
+if module_is_cfg_gated "${TMP}/real-lib-nodpop.rs" dpop dpop; then fail "陰性対照: 実 lib.rs から dpop の cfg を除いても成功"; else pass "陰性対照: 実 lib.rs の dpop の cfg を除くと失敗"; fi
+
 echo "===== check_test_names_ok ====="
 printf 'test t_a ... ok\ntest t_b ... FAILED\n' > "${TMP}/out.txt"
 assert_eq "全件 ok なら空" "" "$(check_test_names_ok "${TMP}/out.txt" t_a)"
@@ -239,6 +244,26 @@ sed 's|"crates/plugin-jwt/fuzz"||' "${FUZZ_SH}" > "${TMP}/real-fuzz.sh"
 if toml_has_normal_dependency "${TMP}/real-hub.toml" fandhe-backend-plugin-jwt; then fail "陰性対照: 実 Cargo.toml から依存行を除いても検出される（偽陽性）"; else pass "陰性対照: 実 Cargo.toml の依存行を除くと FAIL"; fi
 if fuzz_dirs_registers "${TMP}/real-fuzz.sh" crates/plugin-jwt/fuzz; then fail "陰性対照: 実 fuzz.sh から登録を除いても検出される（偽陽性）"; else pass "陰性対照: 実 fuzz.sh の登録を除くと FAIL"; fi
 if workflow_job_runs_script "${TMP}/real-ci.yml" fuzz-smoke scripts/fuzz.sh; then fail "陰性対照: 実 ci.yml から run 行を除いても検出される（偽陽性）"; else pass "陰性対照: 実 ci.yml の run 行を除くと FAIL"; fi
+
+# dpop の fuzz target・期待テスト名が実ファイルに存在し、欠けると検出されること（#907）。
+for t in dpop_jwk_htu dpop_proof_claims dpop_verify_proof; do
+    if list_fuzz_targets "${REPO_ROOT}/crates/plugin-jwt/fuzz/fuzz_targets" | grep -qx "${t}"; then pass "実 fuzz target: ${t} あり"; else fail "実 fuzz target ${t} が無い"; fi
+done
+list_fuzz_targets "${REPO_ROOT}/crates/plugin-jwt/fuzz/fuzz_targets" | grep -vx dpop_verify_proof > "${TMP}/targets-missing.txt"
+if grep -qx dpop_verify_proof "${TMP}/targets-missing.txt"; then fail "陰性対照: target を除いても検出される"; else pass "陰性対照: dpop の target が欠けると検出できる"; fi
+for t in rejects_bad_jwk missing_duplicate_or_mismatched_proof_is_rejected; do
+    if grep -rqE "fn ${t}\(" "${REPO_ROOT}/crates/plugin-jwt/tests" "${REPO_ROOT}/crates/plugin-hub-wiring/tests"; then pass "期待テスト ${t} がソースに存在"; else fail "期待テスト ${t} がソースに無い"; fi
+done
+printf 'test rejects_bad_jwk ... ok\n' > "${TMP}/dpop-out.txt"
+assert_eq "dpop: 期待テストが欠けると不足として報告" "rejects_bad_signature" "$(check_test_names_ok "${TMP}/dpop-out.txt" rejects_bad_jwk rejects_bad_signature)"
+
+echo ""
+echo "===== request_gate_check_is_sync ====="
+SIG='fn check(\n        &self,\n        head: &RequestHead,\n        ctx: &GateContext,\n    ) -> GateOutcome;'
+printf 'pub trait RequestGate {\n    %b\n}\n' "${SIG}" > "${TMP}/ext-sync.rs"
+printf 'pub trait RequestGate {\n    async %b\n}\n' "${SIG}" > "${TMP}/ext-async.rs"
+if request_gate_check_is_sync "${TMP}/ext-sync.rs"; then pass "同期 check は成立"; else fail "同期 check が不成立"; fi
+if request_gate_check_is_sync "${TMP}/ext-async.rs"; then fail "陰性対照: async fn check が通る"; else pass "陰性対照: async fn check は不成立"; fi
 
 echo ""
 echo "合計: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT}"

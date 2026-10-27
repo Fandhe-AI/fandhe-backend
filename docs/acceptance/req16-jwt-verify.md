@@ -108,7 +108,7 @@ E は hub-wiring `Cargo.toml` の `[dependencies]` 表のキーのみ、F は `f
 
 ```bash
 bash scripts/tests/run-jwt-verify-accept-tests.sh   # 判定ロジックのセルフテスト（オフライン）
-bash scripts/accept/jwt-verify-accept.sh            # 基準 A〜H（cargo audit/deny は DB 更新でネットワークを使う）
+bash scripts/accept/jwt-verify-accept.sh            # 基準 A〜M（cargo audit/deny は DB 更新でネットワークを使う）
 JWT_ACCEPT_RUN_FUZZ=1 bash scripts/accept/jwt-verify-accept.sh   # fuzz 実行を含める（任意）
 cargo test -p fandhe-backend-plugin-jwt --features jwks-refresh --test refresh_gate   # H のみ（jwks-refresh）
 ```
@@ -225,3 +225,89 @@ cargo test -p fandhe-backend-plugin-jwt --features jwks-refresh --test refresh_g
   `jwks_refresh_trigger` に登録する形が前提。`unknown_key_notifier` 経由で取り直しを起動すると間引きの分だけ遅れる。
 - NFR-6 の HTTP 計測は `oha` 未導入のため未計測のまま。
 - ガイド・CHANGELOG・クレート doc への追随は #898 の担当。
+
+---
+
+# 追補: `dpop` の受け入れ結果（イシュー #907）
+
+追加要件 `dpop`（RFC 9449 の DPoP 結合アクセストークンの検証。設計 `docs/design/jwt-verify-plugin.md` 9 章。
+実装は #901〜#906）の受け入れ基準ごとの結果。仕様の pin は `26fc799`（`docs/spec/04-requirements.md` REQ-16 の
+dpop 基準を含む版）。本追補は `crates/**/src` の production コードを変更していない（変更はクレート doc の
+`//!` と検証スクリプト、文書のみ）。
+
+## 追加の受け入れ基準
+
+| 記号 | 基準（D-1 は細目の対応を含む） | 検証方法 |
+|------|------|------|
+| I | D-1 proof 検査（plugin-jwt）。RS256・ES256 の受理、`typ`・`alg` の不正、秘密鍵の要素を含む `jwk`、署名の不正、`ath`・`htm`・`htu` の不一致、窓の外の `iat` | `--features dpop --test dpop_proof` の 9 件を名前単位で照合。`rejects_bad_typ_alg_and_crit`（`typ`・`alg`）、`rejects_bad_jwk`（秘密鍵の要素は `PrivateKeyMaterial`）、`rejects_bad_signature`、`rejects_claim_mismatches`（`ath`・`htm`・`htu`）、`iat_window_boundaries`（`iat`）、`accepts_valid_es256_and_rs256_proofs`（受理）、`rfc7638_thumbprint_vector` |
+| J | D-1 再使用の `jti` の拒否と保持の上限 | `--test dpop_replay` の 7 件。`rejects_reuse_within_window_for_es256_and_rs256`、`rejects_new_proof_when_full_then_recovers`（満杯でフェイルクローズ）、`concurrent_registration_accepts_exactly_one` ほか |
+| K | D-1 ゲート経路。`Bearer` で提示された結合トークン、`DPoP` ヘッダの欠落・重複、`cnf.jkt` の不一致、401 と `WWW-Authenticate: DPoP`、`Bearer` と DPoP の方式別の挙動 | `--test dpop_gate` の 20 件。`bound_token_presented_as_bearer_is_rejected_in_both_modes`、`missing_dpop_header_is_rejected`、`duplicate_dpop_header_is_rejected`、`thumbprint_mismatch_is_rejected`、`proof_failures_are_invalid_dpop_proof`、`challenge_without_credentials`、`reused_proof_is_rejected_on_second_connection`、`authenticator_without_dpop_accepts_bound_token_as_bearer` ほか |
+| L | hub 共通配線から使えること、REQ-9 の維持 | `-p fandhe-backend-plugin-hub-wiring --features dpop --test dpop_tenant_gate` の 9 件。あわせて E（`hub-wiring-accept.sh` の再実行）が PASS |
+| F（拡張） | D-2 proof の解析部が fuzz の対象（NFR-11） | fuzz target `dpop_jwk_htu`・`dpop_proof_claims`・`dpop_verify_proof` の存在、`FUZZ_DIRS` 登録、ci.yml `fuzz-smoke` 経由を静的に確認 |
+| M | 横断: 新規依存なし、無効時のコストゼロ（設計 9.2、基準 4・5 の dpop 部分） | `lib.rs` の `dpop` が `#[cfg(feature = "dpop")]` の直後にあること、`cargo tree -p fandhe-backend-plugin-jwt -e normal` のパッケージ集合が `--features dpop` の有無で同一 |
+| NFR-6 | D-2 DPoP 有効時の性能影響の計測と記録 | 本追補では再計測せず `benches/reports/issue906-jwt-dpop-gate-performance.md`（#906）を引用（下記） |
+
+## 実行環境
+
+| 項目 | 値 |
+|------|-----|
+| 実行日 | 2026-10-27 |
+| 対象コミット | `origin/main` `dde6f49` + 本変更 |
+| rustc / cargo | 1.98.1 (2026-09-01) / 1.98.1 |
+| cargo-audit / cargo-deny | 0.22.2 / 0.19.4 |
+| 未導入ツール | `oha`（HTTP の NFR-6 は未計測）。fuzz の実行は opt-in のため未実行 |
+
+## 判定サマリー（`scripts/accept/jwt-verify-accept.sh`、終了コード 0）
+
+| 判定 | 基準 | 詳細 |
+|------|------|------|
+| PASS | A・B・D・E・G・H | 既存と同じ判定（D は `cargo audit` 0 件・`cargo deny check` 違反 0 件を含む。E は `hub-wiring-accept.sh` の再実行を含む） |
+| PASS | C | 下記「検証器の見直し」のとおり判定を直したうえで PASS。dpop の `src` も走査対象のまま、除外は足していない |
+| PASS | F | 既存 3 target と `dpop_*` 3 target が存在し、`FUZZ_DIRS` 登録・`fuzz-smoke` 経由を確認（静的確認） |
+| PASS | I | `dpop_proof` の 9 件が名前単位で ok |
+| PASS | J | `dpop_replay` の 7 件が名前単位で ok |
+| PASS | K | `dpop_gate` の 20 件が名前単位で ok |
+| PASS | L | hub-wiring の `dpop_tenant_gate` の 9 件が名前単位で ok |
+| PASS | M | `dpop` は cfg で閉じ、有効・無効でパッケージ集合が同一 |
+| SKIP | F 実行 | opt-in（`JWT_ACCEPT_RUN_FUZZ=1`）。CI の `fuzz-smoke` で担保（本レポートでは未検証） |
+| WARN | NFR-6（HTTP） | `oha` 未導入のため未計測 |
+
+## 検証器の見直し（C）
+
+C の (a) は `RequestGate::check` が同期 fn であることを 1 行のパターンで照合していた。#924 で第 3 引数
+（`extensions: &mut RequestExtensions`）が加わり、シグネチャが複数行に折り返されたため、旧パターンでは
+見つからず FAIL になっていた（`dpop` とは無関係な、#924 以降に既にあった不整合）。改行を畳んで、旧形（2 引数）と
+新形（3 引数）のどちらも `-> GateOutcome;` まで照合するように直した。さらに `async fn check(` が1つでもあれば
+不成立とする明示拒否を足した（`fn` 直前の空白は `[^a-z_]` を満たすため、同期パターンだけでは async を弾けない）。
+判定は `request_gate_check_is_sync` に切り出し、`async fn check` が不成立になる陰性テストを
+`scripts/tests/run-jwt-verify-accept-tests.sh` に置いた。同期であることの確認は弱めていない。
+
+## D-2: fuzz と性能
+
+- fuzz: proof の解析部（`jwk`・`htu`、claims、`verify_proof` 全体）の 3 target が `crates/plugin-jwt/fuzz` にある。
+  実行は CI の `fuzz-smoke`（本レポートでは未実行）
+- NFR-6: `benches/reports/issue906-jwt-dpop-gate-performance.md`（#906）の結果を引用する。1 要求あたりの追加は
+  RS256 の proof で約 13.8 µs、ES256 の proof で約 32.2 µs（Apple M4 Max、非専有のマイクロベンチ）。支配的なのは
+  proof の署名検証。HTTP の計測は `AllowUnboundBearer` の Bearer 経路のみ（`JWT_DPOP=1`）
+- **HTTP で判定できない経路**: `Required` で要求ごとに proof を付ける経路は、`oha` が固定ヘッダしか送れず、
+  `jti` の再使用検知と両立しないため HTTP では実測できない。再使用検知を無効にする設定は安全性の後退に
+  なるため足さない。マイクロベンチの絶対コストで代え、判定を丸めない
+
+## 前提と既知の限界
+
+- **`jti` の保持はゲートごと・プロセスごとで、複数インスタンス間では共有しない。** 写した proof を窓の中で
+  別インスタンスへ送る使い回しは防げない（窓を短くして余地を限る）。受け入れ基準の対象外
+- `DPoP-Nonce` は扱わない。パス接頭辞を剥がす前段プロキシは対象外（公開オリジンは設定で固定する）
+- DPoP を設定していない下流は、結合トークンも bearer として受理する
+- 満杯の後の最初の `register` は約 20 ms ロックを持つ（#906 のレポート。改善は別イシューの候補）
+- 暗号・署名の正しさは RFC 7638 のベクタと、ES256・RS256 の実鍵 fixture（`crates/plugin-jwt/tests/fixtures/`）で
+  確かめている。本レポートに鍵・トークン・proof の実値は含めない
+
+## 再現手順
+
+```bash
+bash scripts/tests/run-jwt-verify-accept-tests.sh   # 判定ロジックのセルフテスト（オフライン）
+bash scripts/accept/jwt-verify-accept.sh            # 基準 A〜M
+cargo test -p fandhe-backend-plugin-jwt --features dpop                                   # I・J・K
+cargo test -p fandhe-backend-plugin-hub-wiring --features dpop --test dpop_tenant_gate    # L
+```

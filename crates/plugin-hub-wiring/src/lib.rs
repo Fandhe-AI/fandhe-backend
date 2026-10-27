@@ -59,7 +59,7 @@
 //!   ハンドラは [`gate::TenantGate::verified`] で結果を読む。`jti` はプロセス内でのみ
 //!   保持し、複数インスタンス間では共有しない（`docs/design/jwt-verify-plugin.md` 9.6・9.13 節）。
 //!   DPoP を強制したい場合は必ず DPoP を設定すること（未設定の下流は結合トークンも
-//!   Bearer として受理する）。
+//!   Bearer として受理する）。設定例はリポジトリの `docs/guide/dpop.md` を参照。
 //!
 //! # pay-for-what-you-use
 //!

@@ -517,6 +517,12 @@ hub 固有シンボル非依存は保たれる（`docs/design/gate-request-exten
 - opt-in の `jwks-refresh` feature の取り直しタスクはゲートの外でアプリが spawn する。
   `RequestGate::check` の同期・I/O なしの契約もコアも変えず、Gate 型パターンの枠内に収まる
   （詳細は `jwt-verify-plugin.md` 8 章）
+- opt-in の `dpop` feature（RFC 9449 の DPoP 結合トークン検証、#900〜#906）も同じ枠内に収まる。
+  `RequestGate::check` の同期・I/O なしの契約は変えない。proof は要求ごとに検証し、`jti` の保持は
+  ゲート内の有界な `Mutex` 付きの器（`ReplayStore`）で行う（プロセス内のみで、インスタンス間では
+  共有しない）。検証結果は #924 の `RequestExtensions` 経由でハンドラへ渡す（`JwtGate::verified`）。
+  hub-wiring の `dpop` は `fandhe-backend-plugin-jwt/dpop` の転送のみ。利用者向けは
+  `docs/guide/dpop.md`、詳細は `jwt-verify-plugin.md` 9 章
 - 複数ゲートは AND 結合（いずれかが拒否すれば拒否）。REQ-17 の CSRF ゲートとの登録順は
   5.6.6 節で定めた（受け入れ検証は `docs/acceptance/req17-csrf-gate.md`）
 

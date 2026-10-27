@@ -42,6 +42,10 @@
 //! # Cargo feature
 //!
 //! - `dpop`: 新規依存なし。DPoP proof の純関数・`jti` の保持器・認証器への配線（`dpop` モジュールと `JwtAuthenticatorBuilder::dpop`）を有効にする。
+//!   `jti` の保持はゲートごと・プロセスごとで、複数インスタンス間では共有しない（写した proof を
+//!   `iat` の窓の中で別インスタンスへ送る使い回しは防げないため、窓を短くして余地を限る）。
+//!   DPoP を設定していない認証器は、結合トークンも bearer として受理する。設定例は
+//!   リポジトリの `docs/guide/dpop.md`、設計は `docs/design/jwt-verify-plugin.md` 9 章を参照。
 //! - `jwks-refresh`: optional の `tokio`（`time`・`sync`）のみを足す。無効時は依存も
 //!   コードもバイナリ増もゼロ。タスクはアプリが `tokio::spawn` する（本クレートは spawn しない）。
 
