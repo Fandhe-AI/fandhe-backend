@@ -244,6 +244,29 @@ fn masked_close_frame() -> Vec<u8> {
     vec![0x88, 0x80, 0, 0, 0, 0]
 }
 
+/// 101 応答の必須ヘッダを検証する共通ヘルパー（全成功ケースで `run_session` 経由で適用）。
+/// `Sec-WebSocket-Accept` の期待値は `upgrade_request` の固定キー `dGhlIHNhbXBsZSBub25jZQ==` に
+/// RFC 6455 4.2.2 節の GUID を連結した SHA-1 の base64（RFC 6455 1.3 節の例示値）。
+fn assert_handshake_headers(head: &str) {
+    let has = |name: &str, value: &str| {
+        head.lines().any(|l| {
+            l.split_once(':').is_some_and(|(n, v)| {
+                n.trim().eq_ignore_ascii_case(name) && v.trim().eq_ignore_ascii_case(value)
+            })
+        })
+    };
+    assert!(has("Upgrade", "websocket"), "{head}");
+    assert!(has("Connection", "Upgrade"), "{head}");
+    // Accept は大文字小文字を区別する base64 のため厳密一致で比較する。
+    assert!(
+        head.lines().any(|l| l
+            .trim()
+            .eq_ignore_ascii_case("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+            && l.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")),
+        "{head}"
+    );
+}
+
 /// 1 接続を完走させ、クライアントが TCP 越しに受け取った `open:` と `msg:` を返す。
 async fn run_session(addr: SocketAddr, user: Option<&str>) -> (String, String) {
     let mut stream = TcpStream::connect(addr).await.unwrap();
@@ -254,6 +277,7 @@ async fn run_session(addr: SocketAddr, user: Option<&str>) -> (String, String) {
         head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"),
         "{head}"
     );
+    assert_handshake_headers(&head);
 
     let (op, open) = read_server_frame(&mut stream).await;
     assert_eq!(op, 0x1);
