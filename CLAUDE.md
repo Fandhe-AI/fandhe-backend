@@ -16,7 +16,7 @@ OpenAPI 自動生成 / hub 配線 / 可観測性を段階的に拡張できる�
 公開対象 15 クレート（http / routes / core / plugin-* 12 種。plugin-jwt・plugin-csrf は
 0.5.0 で初公開）を crates.io へ lockstep
 バージョニングで公開する（恒久非公開: axum-ref / ws-load-client）。現行公開版は
-0.5.0（2026-10-16）。手順・区分は `docs/design/crates-io-release.md` 参照。
+0.6.0（2026-10-27）。手順・区分は `docs/design/crates-io-release.md` 参照。
 
 仕様書は [Fandhe-AI/fandhe-backend-spec](https://github.com/Fandhe-AI/fandhe-backend-spec) を
 `docs/spec/`（submodule）に取り込む。実装は `docs/spec/06-roadmap.md` の MS-1〜MS-6 に従い、
@@ -908,14 +908,14 @@ fandhe-backend/
 │   │                                    # 未知 `kid` 通知口。hub-wiring から唯一の plugin→plugin
 │   │                                    # 依存を受ける。0.5.0 で初公開。設計は
 │   │                                    # `docs/design/jwt-verify-plugin.md`。opt-in feature
-│   │                                    # `jwks-refresh`（イシュー #893〜#898、0.5.0 には未収録）で
+│   │                                    # `jwks-refresh`（イシュー #893〜#898、0.6.0 で公開済み）で
 │   │                                    # ゲートの外の JWKS 取り直しタスク（`JwksRefresher`・
 │   │                                    # 取得関数 trait `JwksFetcher`・`RefreshConfig`・
 │   │                                    # `RefreshTrigger`）を提供。HTTP・TLS は持たず取得関数は
 │   │                                    # アプリが書く（実装例 `docs/guide/jwks-refresh.md`）。
 │   │                                    # 追加依存は optional の `tokio`（time・sync）のみ。
 │   │                                    # opt-in feature `dpop`（RFC 9449 の DPoP 結合トークン検証、
-│   │                                    # イシュー #900〜#907、0.5.0 には未収録、新規依存なし）で
+│   │                                    # イシュー #900〜#907、0.6.0 で公開済み、新規依存なし）で
 │   │                                    # `JwtAuthenticatorBuilder::dpop`・`DpopConfig`/`DpopMode`・
 │   │                                    # `ReplayStore`（`jti` の有界な保持）を提供。拒否は 401 +
 │   │                                    # `WWW-Authenticate: DPoP`。`jti` はプロセス内のみで

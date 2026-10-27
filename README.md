@@ -8,7 +8,7 @@ AI によるセキュリティ脆弱性発見リスクに備え、Rust で新規
 
 ## インストール
 
-crates.io（v0.5.0、2026-10-16 公開済み。変更履歴は `CHANGELOG.md` 参照）から
+crates.io（v0.6.0、2026-10-27 公開済み。変更履歴は `CHANGELOG.md` 参照）から
 最小コアのみを使う場合は:
 
 ```bash
@@ -28,7 +28,7 @@ cargo add fandhe-backend-core --features graphql,openapi,cors
 公開対象クレートは `fandhe-backend-http` / `fandhe-backend-routes` / `fandhe-backend-core` と
 `fandhe-backend-plugin-*`（websocket / graphql / openapi / webrtc / webrtc-proxy / tracing /
 hub-wiring / jwt / csrf / cors / compression / static）の 15 クレートで、すべて同一バージョン
-（lockstep）で公開します。現時点の crates.io 公開版は 0.5.0（2026-10-16 公開、15 クレート。
+（lockstep）で公開します。現時点の crates.io 公開版は 0.6.0（2026-10-27 公開、15 クレート。
 `fandhe-backend-plugin-jwt`・`fandhe-backend-plugin-csrf` は 0.5.0 で初公開。
 変更履歴は `CHANGELOG.md`、公開手順は `docs/design/crates-io-release.md` 参照）です。
 通常は `fandhe-backend-core` の feature 経由で利用し、
@@ -38,14 +38,14 @@ core の feature を持たない独立クレートで、直接依存に加えて
 
 `fandhe-backend-plugin-jwt` には、JWKS を定期的・未知の `kid` を契機に取り直す opt-in の
 feature `jwks-refresh` があります（`cargo add fandhe-backend-plugin-jwt --features jwks-refresh`。
-crates.io 公開版 0.5.0 には未収録で、次の公開から使えます）。HTTP クライアントは持たず、取得関数を
+crates.io 公開版 0.6.0 で利用できます）。HTTP クライアントは持たず、取得関数を
 アプリが渡します。書き方は
 [JWKS の取り直しガイド](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/guide/jwks-refresh.md)
 を参照してください。
 
 `fandhe-backend-plugin-jwt` には、DPoP（RFC 9449）で結合されたアクセストークンを検証する opt-in の
 feature `dpop` もあります（`cargo add fandhe-backend-plugin-jwt --features dpop`。新規依存なし。
-crates.io 公開版 0.5.0 には未収録で、次の公開から使えます）。DPoP を設定していないゲートは結合
+crates.io 公開版 0.6.0 で利用できます）。DPoP を設定していないゲートは結合
 トークンも bearer として受理するため、強制したい下流は必ず設定してください。`jti` の保持は
 インスタンス間で共有しない既知の限界があります。設定例は
 [DPoP ガイド](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/guide/dpop.md)
