@@ -6,7 +6,8 @@
 # pinned nightly ツールチェーンで順次実行する。対象は次のとおり。
 #   - `crates/http/fuzz`: `crates/http/src` の sans-IO パーサ群（`request.rs` の doc
 #     コメント「I/O なしでそのまま fuzz（TASK-15.3 / #51）に供せる」を実現する CI 側の受け皿）
-#   - `crates/plugin-jwt/fuzz`: JWT 検証プラグインの解析部（JWKS・トークン、イシュー #818）
+#   - `crates/plugin-jwt/fuzz`: JWT 検証プラグインの解析部（JWKS・トークン、イシュー #818。
+#                           DPoP proof、イシュー #902）
 #
 # 本スクリプトは CI（ci.yml の fuzz-smoke ジョブ）から短時間実行（既定 60 秒/target）
 # される「smoke」用途と、ローカルでの長時間スクリーニング（#88 のスコープ）の両方に

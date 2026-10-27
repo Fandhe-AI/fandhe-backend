@@ -24,7 +24,7 @@ use fandhe_backend_http::request::RequestHead;
 ///     let ParseOutcome::Complete { head, .. } = parse_request_head(raw).unwrap() else {
 ///         unreachable!()
 ///     };
-///     gate.check(&head, &ctx)
+///     gate.check(&head, &ctx, &mut fandhe_backend_core::extension::RequestExtensions::new())
 /// };
 /// // 安全なメソッドは素通し。
 /// assert_eq!(check(b"GET / HTTP/1.1\r\nSec-Fetch-Site: cross-site\r\n\r\n"), GateOutcome::Allow);
@@ -89,7 +89,12 @@ impl RequestGate for CsrfGate {
         "csrf-gate"
     }
 
-    fn check(&self, head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+    fn check(
+        &self,
+        head: &RequestHead,
+        _ctx: &GateContext,
+        _extensions: &mut fandhe_backend_core::extension::RequestExtensions,
+    ) -> GateOutcome {
         if matches!(head.method(), "GET" | "HEAD" | "OPTIONS") {
             return GateOutcome::Allow;
         }
@@ -128,7 +133,11 @@ mod tests {
         else {
             panic!("incomplete")
         };
-        g.check(&head, &GateContext::new(None))
+        g.check(
+            &head,
+            &GateContext::new(None),
+            &mut fandhe_backend_core::extension::RequestExtensions::new(),
+        )
     }
 
     fn allowed(req: &str) -> bool {

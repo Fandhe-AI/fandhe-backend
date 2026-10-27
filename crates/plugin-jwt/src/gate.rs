@@ -57,7 +57,12 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> RequestGate for JwtGat
         "jwt-gate"
     }
 
-    fn check(&self, head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+    fn check(
+        &self,
+        head: &RequestHead,
+        _ctx: &GateContext,
+        _extensions: &mut fandhe_backend_core::extension::RequestExtensions,
+    ) -> GateOutcome {
         match self.auth.authenticate(head) {
             Ok(_) => GateOutcome::Allow,
             Err(e) => GateOutcome::Reject {

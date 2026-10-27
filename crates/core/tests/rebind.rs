@@ -630,7 +630,12 @@ impl RequestGate for CountingGate {
     fn name(&self) -> &'static str {
         "counting-gate"
     }
-    fn check(&self, _head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+    fn check(
+        &self,
+        _head: &RequestHead,
+        _ctx: &GateContext,
+        _extensions: &mut fandhe_backend_core::extension::RequestExtensions,
+    ) -> GateOutcome {
         self.checked.fetch_add(1, Ordering::SeqCst);
         GateOutcome::Allow
     }

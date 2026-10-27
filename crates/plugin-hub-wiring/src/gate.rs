@@ -215,7 +215,12 @@ impl RequestGate for TenantGate {
         "hub-tenant-gate"
     }
 
-    fn check(&self, head: &RequestHead, _ctx: &GateContext) -> GateOutcome {
+    fn check(
+        &self,
+        head: &RequestHead,
+        _ctx: &GateContext,
+        _extensions: &mut fandhe_backend_core::extension::RequestExtensions,
+    ) -> GateOutcome {
         // `check()` は同期・非ブロッキング（I/O なし）で Tokio ワーカーを
         // 塞がない契約を維持する（`crates/core/src/extension.rs` doc）。
         // `Authenticator::authenticate` はロックを短時間保持するのみで、
@@ -321,7 +326,11 @@ mod tests {
         let keypair = test_keypair();
         let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
         assert_eq!(
-            gate_for(&keypair).check(&head, &GateContext::new(None)),
+            gate_for(&keypair).check(
+                &head,
+                &GateContext::new(None),
+                &mut fandhe_backend_core::extension::RequestExtensions::new()
+            ),
             reject_json(401, UNAUTHORIZED_BODY)
         );
     }
@@ -332,7 +341,11 @@ mod tests {
         let raw = b"GET / HTTP/1.1\r\nAuthorization: Basic abcdef\r\n\r\n".to_vec();
         let head = head_from(&raw);
         assert_eq!(
-            gate_for(&keypair).check(&head, &GateContext::new(None)),
+            gate_for(&keypair).check(
+                &head,
+                &GateContext::new(None),
+                &mut fandhe_backend_core::extension::RequestExtensions::new()
+            ),
             reject_json(401, UNAUTHORIZED_BODY)
         );
     }
@@ -344,7 +357,11 @@ mod tests {
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
         assert_eq!(
-            gate_for(&keypair).check(&head, &GateContext::new(None)),
+            gate_for(&keypair).check(
+                &head,
+                &GateContext::new(None),
+                &mut fandhe_backend_core::extension::RequestExtensions::new()
+            ),
             GateOutcome::Allow
         );
     }
@@ -356,7 +373,11 @@ mod tests {
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: bEaReR {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
         assert_eq!(
-            gate_for(&keypair).check(&head, &GateContext::new(None)),
+            gate_for(&keypair).check(
+                &head,
+                &GateContext::new(None),
+                &mut fandhe_backend_core::extension::RequestExtensions::new()
+            ),
             GateOutcome::Allow
         );
     }
@@ -371,7 +392,11 @@ mod tests {
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer   {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
         assert_eq!(
-            gate_for(&keypair).check(&head, &GateContext::new(None)),
+            gate_for(&keypair).check(
+                &head,
+                &GateContext::new(None),
+                &mut fandhe_backend_core::extension::RequestExtensions::new()
+            ),
             GateOutcome::Allow
         );
     }
@@ -382,7 +407,11 @@ mod tests {
         let raw = b"GET / HTTP/1.1\r\nAuthorization: Bearer \r\n\r\n".to_vec();
         let head = head_from(&raw);
         assert_eq!(
-            gate_for(&keypair).check(&head, &GateContext::new(None)),
+            gate_for(&keypair).check(
+                &head,
+                &GateContext::new(None),
+                &mut fandhe_backend_core::extension::RequestExtensions::new()
+            ),
             reject_json(401, UNAUTHORIZED_BODY)
         );
     }
@@ -393,7 +422,11 @@ mod tests {
         let raw = b"GET / HTTP/1.1\r\nAuthorization: Bearer not-a-jwt\r\n\r\n".to_vec();
         let head = head_from(&raw);
         assert_eq!(
-            gate_for(&keypair).check(&head, &GateContext::new(None)),
+            gate_for(&keypair).check(
+                &head,
+                &GateContext::new(None),
+                &mut fandhe_backend_core::extension::RequestExtensions::new()
+            ),
             reject_json(401, UNAUTHORIZED_BODY)
         );
     }
@@ -405,7 +438,11 @@ mod tests {
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
         assert_eq!(
-            gate_for(&keypair).check(&head, &GateContext::new(None)),
+            gate_for(&keypair).check(
+                &head,
+                &GateContext::new(None),
+                &mut fandhe_backend_core::extension::RequestExtensions::new()
+            ),
             reject_json(401, UNAUTHORIZED_BODY)
         );
     }
@@ -417,7 +454,11 @@ mod tests {
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
         assert_eq!(
-            gate_for(&keypair).check(&head, &GateContext::new(None)),
+            gate_for(&keypair).check(
+                &head,
+                &GateContext::new(None),
+                &mut fandhe_backend_core::extension::RequestExtensions::new()
+            ),
             reject_json(401, UNAUTHORIZED_BODY)
         );
     }
@@ -434,7 +475,11 @@ mod tests {
             TenantGateConfig::from_jwks_json(r#"{"keys":[]}"#, test_policy()).unwrap();
         let gate = TenantGate::new(empty_config);
         assert_eq!(
-            gate.check(&head, &GateContext::new(None)),
+            gate.check(
+                &head,
+                &GateContext::new(None),
+                &mut fandhe_backend_core::extension::RequestExtensions::new()
+            ),
             reject_json(401, UNAUTHORIZED_BODY)
         );
     }
@@ -446,7 +491,11 @@ mod tests {
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
         assert_eq!(
-            gate_for(&keypair).check(&head, &GateContext::new(None)),
+            gate_for(&keypair).check(
+                &head,
+                &GateContext::new(None),
+                &mut fandhe_backend_core::extension::RequestExtensions::new()
+            ),
             reject_json(403, FORBIDDEN_BODY)
         );
     }
@@ -459,9 +508,11 @@ mod tests {
         // 仕様を維持し、判定ポリシー（401/403 マッピング）自体は変えない）。
         let keypair = test_keypair();
         let head = head_from(b"GET / HTTP/1.1\r\n\r\n");
-        let GateOutcome::Reject { response } =
-            gate_for(&keypair).check(&head, &GateContext::new(None))
-        else {
+        let GateOutcome::Reject { response } = gate_for(&keypair).check(
+            &head,
+            &GateContext::new(None),
+            &mut fandhe_backend_core::extension::RequestExtensions::new(),
+        ) else {
             panic!("expected Reject for missing Authorization header");
         };
         let wire = String::from_utf8(response.serialize(false)).unwrap();
@@ -474,9 +525,11 @@ mod tests {
         let token = make_token(&keypair, TEST_KID, None, 9_999_999_999);
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
-        let GateOutcome::Reject { response } =
-            gate_for(&keypair).check(&head, &GateContext::new(None))
-        else {
+        let GateOutcome::Reject { response } = gate_for(&keypair).check(
+            &head,
+            &GateContext::new(None),
+            &mut fandhe_backend_core::extension::RequestExtensions::new(),
+        ) else {
             panic!("expected Reject for missing org_id");
         };
         let wire = String::from_utf8(response.serialize(false)).unwrap();
@@ -493,7 +546,11 @@ mod tests {
         let token = make_token(&keypair, TEST_KID, Some("org-1"), 1);
         let raw = format!("GET / HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n").into_bytes();
         let head = head_from(&raw);
-        match gate_for(&keypair).check(&head, &GateContext::new(None)) {
+        match gate_for(&keypair).check(
+            &head,
+            &GateContext::new(None),
+            &mut fandhe_backend_core::extension::RequestExtensions::new(),
+        ) {
             GateOutcome::Reject { response } => {
                 let body_str = String::from_utf8_lossy(&response.body);
                 assert!(!body_str.contains(&token));
@@ -519,7 +576,11 @@ mod tests {
         let raw =
             format!("GET / HTTP/1.1\r\nAuthorization: Bearer {old_token}\r\n\r\n").into_bytes();
         assert_eq!(
-            gate.check(&head_from(&raw), &GateContext::new(None)),
+            gate.check(
+                &head_from(&raw),
+                &GateContext::new(None),
+                &mut fandhe_backend_core::extension::RequestExtensions::new()
+            ),
             GateOutcome::Allow
         );
 
@@ -527,7 +588,11 @@ mod tests {
 
         // 旧鍵の署名は新 JWKS では検証できず拒否される。
         assert_eq!(
-            gate.check(&head_from(&raw), &GateContext::new(None)),
+            gate.check(
+                &head_from(&raw),
+                &GateContext::new(None),
+                &mut fandhe_backend_core::extension::RequestExtensions::new()
+            ),
             reject_json(401, UNAUTHORIZED_BODY)
         );
 
@@ -535,7 +600,11 @@ mod tests {
         let raw2 =
             format!("GET / HTTP/1.1\r\nAuthorization: Bearer {new_token}\r\n\r\n").into_bytes();
         assert_eq!(
-            gate.check(&head_from(&raw2), &GateContext::new(None)),
+            gate.check(
+                &head_from(&raw2),
+                &GateContext::new(None),
+                &mut fandhe_backend_core::extension::RequestExtensions::new()
+            ),
             GateOutcome::Allow
         );
     }

@@ -22,6 +22,8 @@
 
 use std::ops::Range;
 
+use crate::extensions::RequestExtensions;
+
 /// リクエストヘッド（リクエストライン + ヘッダ + 空行）として許容するバイト数上限。
 ///
 /// この上限はリソース枯渇（DoS）対策であり、`\r\n\r\n`（ヘッダ終端）に到達しない
@@ -86,9 +88,52 @@ pub struct RequestHead {
     /// 出現順を保持したヘッダ列（`buf` 中の (名前, 値) の範囲。名前は大小文字を
     /// 区別せず比較する契約）。
     headers: Vec<(Range<usize>, Range<usize>)>,
+    /// `RequestGate` が入れたリクエスト単位の値（イシュー #924）。パーサは常に
+    /// 空で構築する。`PartialEq` の比較対象には含めない。
+    extensions: RequestExtensions,
 }
 
 impl RequestHead {
+    /// ゲートがこのリクエスト用に入れた値の拡張領域を返す（イシュー #924）。
+    ///
+    /// パーサが構築した直後は常に空で、コアが全ゲート通過後にのみ値を移す。
+    /// 後段（ハンドラ等）は `&RequestHead` しか持たないため読み取り専用になる。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+    ///
+    /// let ParseOutcome::Complete { head, .. } =
+    ///     parse_request_head(b"GET / HTTP/1.1\r\n\r\n").unwrap()
+    /// else { unreachable!() };
+    /// assert!(head.extensions().is_empty());
+    /// ```
+    #[must_use]
+    pub fn extensions(&self) -> &RequestExtensions {
+        &self.extensions
+    }
+
+    /// 拡張領域への可変参照を返す。
+    ///
+    /// 本番経路で書き込むのはコアだけ（全ゲート通過後に器を移す）。`&RequestHead`
+    /// しか受け取らない後段は書けない。ハンドラの単体テストで値を仕込む用途にも使う。
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fandhe_backend_http::request::{parse_request_head, ParseOutcome};
+    ///
+    /// let ParseOutcome::Complete { mut head, .. } =
+    ///     parse_request_head(b"GET / HTTP/1.1\r\n\r\n").unwrap()
+    /// else { unreachable!() };
+    /// head.extensions_mut().insert(42_u32).unwrap();
+    /// assert_eq!(head.extensions().get::<u32>(), Some(&42));
+    /// ```
+    pub fn extensions_mut(&mut self) -> &mut RequestExtensions {
+        &mut self.extensions
+    }
+
     /// リクエストメソッドを返す（RFC 9110 tchar のみで構成される token として検証済み）。
     ///
     /// # Examples
@@ -348,6 +393,7 @@ impl RequestHead {
 /// 後退する。[`RequestHead::method`]・[`RequestHead::target`]・`version`・
 /// [`RequestHead::headers`] のアクセサ経由で比較することで、内部表現
 /// （イシュー #591）に関わらず利用者から見た値の等価性のみを判定する。
+/// ワイヤ上の値ではない [`RequestHead::extensions`]（イシュー #924）は比較対象に含めない。
 impl PartialEq for RequestHead {
     fn eq(&self, other: &Self) -> bool {
         self.method() == other.method()
@@ -522,6 +568,7 @@ pub fn parse_request_head(buf: &[u8]) -> Result<ParseOutcome, ParseError> {
         target,
         version,
         headers,
+        extensions: RequestExtensions::new(),
     };
     Ok(ParseOutcome::Complete {
         head,
@@ -832,6 +879,38 @@ mod tests {
             ParseOutcome::Complete { head, consumed } => (head, consumed),
             ParseOutcome::Incomplete => panic!("expected Complete, got Incomplete"),
         }
+    }
+
+    /// パーサは常に空の拡張領域で構築する（クライアント入力から器へ値が入らない）。
+    #[test]
+    fn parsed_head_has_empty_extensions() {
+        let (head, _) = complete(b"GET / HTTP/1.1\r\nX-Test-User: alice\r\n\r\n");
+        assert!(head.extensions().is_empty());
+    }
+
+    /// 拡張領域は `PartialEq` の比較対象外、`Debug` は値を出さない、`Clone` は共有する。
+    #[test]
+    fn extensions_are_ignored_by_eq_and_hidden_from_debug() {
+        let raw = b"GET / HTTP/1.1\r\nHost: a\r\n\r\n";
+        let (plain, _) = complete(raw);
+        let (mut with_ext, _) = complete(raw);
+        with_ext
+            .extensions_mut()
+            .insert(String::from("super-secret-claims"))
+            .unwrap();
+        assert_eq!(plain, with_ext);
+        assert!(!format!("{with_ext:?}").contains("super-secret"));
+        let cloned = with_ext.clone();
+        assert_eq!(
+            cloned.extensions().get::<String>().map(String::as_str),
+            Some("super-secret-claims")
+        );
+    }
+
+    #[test]
+    fn request_head_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<RequestHead>();
     }
 
     #[test]

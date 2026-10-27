@@ -173,7 +173,11 @@ fn bench(label: &str, token: &str, keys: &KeySet, ops: usize, trials: usize) -> 
         let gate = JwtGate::new(warmed_auth(keys, &head));
         let start = Instant::now();
         for _ in 0..ops {
-            let outcome = gate.check(&head, &ctx);
+            let outcome = gate.check(
+                &head,
+                &ctx,
+                &mut fandhe_backend_core::extension::RequestExtensions::new(),
+            );
             assert!(
                 matches!(outcome, GateOutcome::Allow),
                 "ゲートが Allow を返すこと"
