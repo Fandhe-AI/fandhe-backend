@@ -43,6 +43,13 @@ jwks-refresh = ["dep:tokio"]
 # `dpop` モジュールがコンパイルされない。
 dpop = []
 
+# DPoP を有効にしたゲートの NFR-6 計測（#906）。`dpop` feature の API を使うため、feature 無効の
+# ビルド（`cargo build --all-targets` など）では対象から外す（`crates/core/Cargo.toml` の
+# `[[example]]` と同じ手当て）。
+[[example]]
+name = "jwt_dpop_bench"
+required-features = ["dpop"]
+
 # 統合テスト（tests/gate.rs）が `handle_connection` を `tokio::io::duplex` 越しに駆動し、
 # ハンドラの戻り値に `HandlerFuture` を使うためだけに必要（hub-wiring と同一パターン）。
 [dev-dependencies]

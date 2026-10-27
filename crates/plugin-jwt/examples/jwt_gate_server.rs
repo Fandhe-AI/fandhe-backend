@@ -12,6 +12,13 @@
 //! - `FANDHE_BACKEND_JWT_BENCH_TOKEN_FILE`: 指定時、起動時に作った有効トークンをこの
 //!   パスへ書く（ゲートの有無によらず書く。全系統に同じ `Authorization` を付けるため）。
 //!   トークンは stdout にもログにも出さない
+//! - `FANDHE_BACKEND_JWT_BENCH_DPOP=off|allow-unbound`（既定 `off`、#906）: `allow-unbound` は
+//!   `dpop` feature 付きビルドでのみ使え、ゲートを `DpopMode::AllowUnboundBearer` で構築する
+//!   （`cnf` のないトークンを `Bearer` で受理する。DPoP を有効にしたゲートを Bearer の通信が
+//!   通るコストの HTTP 計測用）。未知の値、`dpop` feature なしのビルドでの `allow-unbound` は
+//!   起動時にエラー終了する（設定を黙って無視しない、fail-closed）。`Required` で要求ごとに
+//!   proof を付ける経路は、`oha` が固定ヘッダしか送れず `jti` の再使用検知と両立しないため
+//!   HTTP では計測しない（`examples/jwt_dpop_bench.rs` がプロセス内で計測する）
 //! - `FANDHE_BACKEND_JWT_BENCH_ADDR`（既定 `127.0.0.1:3103`）: 待受アドレス。3000 は
 //!   minimal、3100・3101 は hub の examples、3102 は `bench-accept.sh` の既定で使われており、
 //!   3103 はリポジトリ内で未使用のため既定にした
@@ -60,6 +67,18 @@ async fn main() -> std::io::Result<()> {
     let alg = env::var("FANDHE_BACKEND_JWT_BENCH_ALG").unwrap_or_else(|_| "es256".into());
     if alg != "es256" && alg != "rs256" {
         return Err(fail("FANDHE_BACKEND_JWT_BENCH_ALG は es256 か rs256"));
+    }
+
+    let dpop = env::var("FANDHE_BACKEND_JWT_BENCH_DPOP").unwrap_or_else(|_| "off".into());
+    match dpop.as_str() {
+        "off" => {}
+        #[cfg(feature = "dpop")]
+        "allow-unbound" => {}
+        _ => {
+            return Err(fail(
+                "FANDHE_BACKEND_JWT_BENCH_DPOP は off（dpop feature 付きビルドでは allow-unbound も可）",
+            ));
+        }
     }
 
     let rsa = RsaKeyPair::from_pkcs8(RSA_PK8).map_err(|_| fail("invalid rsa fixture"))?;
@@ -125,7 +144,21 @@ async fn main() -> std::io::Result<()> {
             TokenType::AccessToken,
         );
         let keys = SharedKeySet::from_json(&jwks).map_err(|_| fail("jwks"))?;
-        let auth = JwtAuthenticator::<NoExtraClaims>::builder(keys, policy).build();
+        let builder = JwtAuthenticator::<NoExtraClaims>::builder(keys, policy);
+        #[cfg(feature = "dpop")]
+        let builder = if dpop == "allow-unbound" {
+            use fandhe_backend_plugin_jwt::dpop::{DpopConfig, DpopMode, PublicOrigin};
+            let addr = env::var("FANDHE_BACKEND_JWT_BENCH_ADDR")
+                .unwrap_or_else(|_| "127.0.0.1:3103".into());
+            let origin = PublicOrigin::new(&format!("http://{addr}"))
+                .map_err(|_| fail("FANDHE_BACKEND_JWT_BENCH_ADDR を公開オリジンにできません"))?;
+            let algs = AllowedAlgorithms::new([Algorithm::Rs256, Algorithm::Es256])
+                .map_err(|_| fail("algorithms"))?;
+            builder.dpop(DpopConfig::new(DpopMode::AllowUnboundBearer, origin, algs))
+        } else {
+            builder
+        };
+        let auth = builder.build();
         server = server.gate(JwtGate::new(auth));
     }
     let server = server.handler(router);

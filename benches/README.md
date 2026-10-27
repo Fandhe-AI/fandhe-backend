@@ -356,6 +356,23 @@ bash scripts/tests/run-bench-cpu-probe-tests.sh
 （`scripts/tests/run-nfr6-exclusive-tests.sh` と同じ手動実行方針、CI 常設組み込みは
 行わない）。
 
+## jwt-nfr6-bench.sh / jwt_dpop_bench — plugin-jwt の NFR-6 計測（イシュー #821・#906）
+
+`JwtGate` を登録した最小サーバ（`crates/plugin-jwt/examples/jwt_gate_server.rs`）へ `oha` で負荷をかけ、
+baseline（`minimal`）との RPS・p95 の中央値比を出す。全系統に同じ `Authorization: Bearer` を付ける。
+`JWT_DPOP=1` で DPoP 系列（`DpopMode::AllowUnboundBearer` + `cnf` なしトークン）を追加する（#906）。
+`DpopMode::Required` の proof 経路は `oha` では計測できない（`jti` の再使用検知と両立しない）ため、
+プロセス内の `crates/plugin-jwt/examples/jwt_dpop_bench.rs`（`--features dpop`）で計測する。
+結果は `benches/reports/issue821-jwt-verify-performance.md` と
+`benches/reports/issue906-jwt-dpop-gate-performance.md`。
+
+```bash
+cargo build --release -p fandhe-backend-core --example minimal --no-default-features
+cargo build --release -p fandhe-backend-plugin-jwt --features dpop --example jwt_gate_server
+JWT_DPOP=1 bash benches/jwt-nfr6-bench.sh
+cargo run --release -p fandhe-backend-plugin-jwt --features dpop --example jwt_dpop_bench
+```
+
 ## webrtc-nfr6-bench.sh / graphql-nfr6-bench.sh — プラグイン feature の NFR 計測
 
 `webrtc`（TASK-8.4、#29）・`graphql`（TASK-5.2、#53）の各 feature を有効化した際、
