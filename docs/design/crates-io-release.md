@@ -486,6 +486,52 @@ v0.4.2 公開（2026-09-28）後に main へ入った変更は breaking change �
   クレートも 2026-10-16 時点で owner は個人アカウント 1 件のみであり、team 名の
   確定後に 15 クレートまとめて `cargo owner --add` する
 
+### 7.8 v0.6.0 リリース（準備中）
+
+v0.5.0 公開（2026-10-16）後に main へ入った変更は breaking change を含むため、
+7 節の Cargo の 0.x 系規則（minor で breaking change を許容）に従い、公開対象
+15 クレートを 0.6.0 へ一括バンプする（所有者判断、イシュー #929）。新設クレートは
+なく、lockstep 対象は 7.7 節と同じ 15 クレートのまま変わらない。
+
+- **BREAKING CHANGE**（`fandhe-backend-core`）: `RequestGate::check` に第 3 引数
+  `extensions: &mut RequestExtensions` を追加（イシュー #924、PR #925。必須メソッドの
+  引数追加のため非推奨期間なし）。workspace 内の `CsrfGate`（plugin-csrf）・
+  `TenantGate`（plugin-hub-wiring）・`JwtGate`（plugin-jwt）はシグネチャの追随のみで
+  挙動は変わらない
+- **Added**: `fandhe-backend-http` の `RequestExtensions` と
+  `RequestHead::extensions()` / `extensions_mut()`（#924）、
+  `fandhe-backend-plugin-jwt` の opt-in feature `jwks-refresh`（JWKS の定期取得と
+  未知 `kid` 契機の取り直し、イシュー #898、PR #910・#912〜#914・#917）・opt-in feature `dpop`
+  （RFC 9449、イシュー #901〜#907、PR #920〜#923）・`GateVerified` / `JwtGate::verified`（#904）、
+  `fandhe-backend-plugin-hub-wiring` の opt-in feature `dpop` と
+  `TenantGateConfig::from_authenticator` / `TenantVerified`（#905、PR #926）、
+  `fandhe-backend-plugin-webrtc` の `with_udp_bind_addrs`（#870）・
+  `with_data_channel_send_buffer_limit`（#874）・
+  `with_max_data_channels_per_connection`（#877）。Added の各項目は新規外部依存を伴わない
+- **Changed**: `fandhe-backend-plugin-webrtc` の内部 `webrtc` を 0.17 系から 0.21 系へ
+  移行（#870。公開 API とワイヤ契約は不変だが、既定の UDP バインドが IPv4 のみに
+  狭まる）、データチャネルの送信バッファ上限の既定を無制限から 1 MiB へ（#874）、
+  1 接続あたりのデータチャネル数の既定を無制限から 16 本へ（#877）。いずれも型は
+  非破壊だが既定の挙動が変わる
+- **Security**: `webrtc` 0.21 系への移行で RUSTSEC-2026-0387（`crypto-bigint`
+  0.5.5）を解消（#870）
+- 変更の全量と移行手順は `CHANGELOG.md` の `[0.6.0]` 節を正とする（BREAKING 項目は
+  同節 Changed の先頭に置いている）
+- **実施した機械作業**: 7.7 節と同じ手順で、root `Cargo.toml` の
+  `[workspace.package] version` + `[workspace.dependencies]` の内部 15 クレート
+  `version` 値（計 16 箇所）、standalone workspace（`templates/app`・
+  `examples/with-*` 4 件）の依存 `version` 併記、`crates/plugin-openapi/openapi.json` /
+  `openapi.yaml` の `info.version` 再生成（`scripts/openapi-two-stage.sh --update`）、
+  `benches/microbench/Cargo.lock` の内部クレート版追随（`cargo update --manifest-path
+  benches/microbench/Cargo.toml -p fandhe-backend-http -p fandhe-backend-routes`）を
+  行い、`CHANGELOG.md` の `[Unreleased]` 節の内容を `[0.6.0] - 2026-10-27` 節へ移して
+  空の `[Unreleased]` を残した
+- README・`docs/guide/getting-started.md`・`site/index.md`・CLAUDE.md の現行公開版
+  表記は、前例どおり Phase B の publish 完了後に追随する
+- `standalone-crates-io.yml` は v0.6.0 publish 完了までは構造的に FAIL する
+  （7.6 節・7.7 節と同一のニワトリ卵問題、required check 対象外のためマージは
+  阻害しない）。publish 完了後に `workflow_dispatch` で再実行する
+
 ## 8. 公開前チェックリスト
 
 実際に publish を実行する際に確認すべき項目。
@@ -609,6 +655,18 @@ v0.4.2 公開（2026-09-28）後に main へ入った変更は breaking change �
       `templates/app`・`examples/with-*` 4 件の 5 クレートが `fandhe-backend-core = "^0.5.0"` 等を
       crates.io 公開版のみで解決できて PASS することを確認する（2026-10-16 実施済み、success。
       run 38912599157）
+
+### v0.6.0（Phase A 完了、Phase B 未実施）
+
+- [x] 公開対象 15 クレートの `version` および workspace 内 path 依存の `version` 併記が
+      すべて 0.6.0 に揃っている（2026-10-27 実施済み）
+- [x] `cargo publish --workspace --dry-run` が公開対象 15 クレート全件で成功する
+      （0.6.0 へのバンプ後に 15 クレート全件で実行し成功、2026-10-27）
+- [ ] Phase B: `v0.6.0` タグ push → verify → dry-run → 人間承認 → `cargo publish --workspace`
+      の実行
+- [ ] Phase B publish 完了後、`standalone-crates-io.yml` を `workflow_dispatch` で再実行し、
+      `templates/app`・`examples/with-*` 4 件の 5 クレートが `fandhe-backend-core = "^0.6.0"` 等を
+      crates.io 公開版のみで解決できて PASS することを確認する
 
 ## 参照
 

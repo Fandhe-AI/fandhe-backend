@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-27
+
+公開対象 15 クレートを lockstep バンプ（`docs/design/crates-io-release.md` 7.8 節）。
+`fandhe-backend-core` の `RequestGate::check` の引数追加（下の Changed 先頭の **BREAKING** 項目）を
+含むため minor を上げます。
+実 publish（`v0.6.0` タグ push → verify → dry-run → GitHub Environments
+`crates-io-release` の required reviewers 承認 → `cargo publish --workspace`）は
+準備中（詳細は
+[`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7.8 節・8 節チェックリスト参照）。
+
 ### Added
 
 - `fandhe-backend-http`: リクエスト単位の型付き拡張領域 `extensions::RequestExtensions` と
