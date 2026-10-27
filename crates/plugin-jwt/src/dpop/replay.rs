@@ -10,7 +10,7 @@
 //! 非同期待機・I/O・署名検証・ハッシュ計算を含まない。本モジュールは tokio に依存しない。
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt;
 use std::sync::Mutex;
 
@@ -31,6 +31,8 @@ struct ReplayState {
     map: HashMap<Key, u64>,
     /// 期限の昇順で取り出すための索引。`map` と要素が 1 対 1 に対応する。
     heap: BinaryHeap<Reverse<(u64, Key)>>,
+    /// ハンドラが受け取り済み（`claim`）のキー。`map` の部分集合で、期限切れと同時に除く。
+    claimed: HashSet<Key>,
 }
 
 /// `jti` の保持器。鍵のサムプリントと `jti` の組を `iat` の窓の間だけ保持する。
@@ -170,6 +172,7 @@ impl ReplayStore {
             st.heap.pop();
             if st.map.get(&k) == Some(&exp) {
                 st.map.remove(&k);
+                st.claimed.remove(&k);
             }
         }
         if st.map.contains_key(&key) {
@@ -183,16 +186,18 @@ impl ReplayStore {
         Ok(())
     }
 
-    /// この証明が期限内に登録済みか（読み取り専用）。`authenticate_after_gate` 専用。
+    /// ゲートが登録した証明を、ハンドラが一度だけ受け取る。`authenticate_after_gate` 専用。
     ///
-    /// 挿入と対にならない照会なので、`contains` + `insert` の TOCTOU は生じない。ゲートが
-    /// `register` に成功した要求だけがハンドラへ届く、という前提を確かめるためだけに使い、
-    /// 公開 API にはしない（確認と登録を原子的に行う唯一の入口は `register` のまま）。
-    pub(crate) fn is_registered(&self, proof: &VerifiedProof, now_unix: u64) -> bool {
+    /// 期限内に登録済みで、まだ受け取られていない場合に限り `true` を返し、同じロック区間で
+    /// 受け取り済みに印を付ける。2 回目以降は `false`。これにより、ゲートが受理した proof を
+    /// ゲートを通らない経路へ再送しても、ハンドラの検査は一度も通らない（登録だけでは認証成功に
+    /// ならない）。公開 API にはせず、確認と登録を原子的に行う唯一の入口は `register` のまま。
+    pub(crate) fn claim(&self, proof: &VerifiedProof, now_unix: u64) -> bool {
         // ハッシュ計算はロックの外で行う。
         let key = replay_key(proof.thumbprint().as_str(), proof.jti());
-        let g = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        g.map.get(&key).is_some_and(|&exp| exp >= now_unix)
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let live = g.map.get(&key).is_some_and(|&exp| exp >= now_unix);
+        live && g.claimed.insert(key)
     }
 
     /// 現在の保持数。

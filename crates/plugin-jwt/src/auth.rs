@@ -533,6 +533,11 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> JwtAuthenticator<E> {
     /// `jti` の登録の代わりに「ゲートが登録済みであること」を要求する。ゲートを通っていない
     /// 要求は `DpopError::NotAdmitted`（`dpop` feature）で拒否される（フェイルクローズ）。
     ///
+    /// 受け取りは **proof 1 つにつき一度だけ**成功する（ゲートが登録した項目を原子的に
+    /// 「受け取り済み」にする）。同じ proof をもう一度渡す（ゲートを通らない経路への再送を含む）
+    /// と `NotAdmitted` になる。このため 1 要求のハンドラで 2 回以上呼ばないこと。クレームは
+    /// 最初の戻り値を使い回す。
+    ///
     /// 同じ proof の写しはゲートが `Replayed` で止めるため、ここへ届くのはゲートが受理した
     /// 要求だけになる。proof の署名をここでもう一度検証するため、費用は 1 要求につき 2 回になる。
     /// ゲートとハンドラの間で `iat` の窓の端を越えた要求は、ここで拒否されうる。
@@ -608,7 +613,7 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> JwtAuthenticator<E> {
         match admission {
             Admission::Register => d.replay.register(&verified, now_unix)?,
             Admission::AlreadyRegistered => {
-                if !d.replay.is_registered(&verified, now_unix) {
+                if !d.replay.claim(&verified, now_unix) {
                     return Err(DpopError::NotAdmitted.into());
                 }
             }

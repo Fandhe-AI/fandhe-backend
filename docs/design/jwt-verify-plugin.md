@@ -919,10 +919,13 @@ hub-wiring への転送は #905、計測は #906、CHANGELOG・ガイド・受�
   DPoP を設定していない場合の応答は従来とバイト単位で同じ。
 - **ハンドラへの受け渡し**: core には要求ごとの受け渡し領域がなく、`authenticate` を再度呼ぶと
   `jti` の 2 回目の登録で `Replayed` になる。そこで `authenticate_after_gate(_at)` を足した。
-  同じ検査を行い、`register` の代わりに crate 内の読み取り専用 `ReplayStore::is_registered` で
-  「ゲートが登録済みであること」を要求し、未登録は `DpopError::NotAdmitted`（フェイルクローズ）。
-  `is_registered` は非公開で、挿入と対にならない照会のため TOCTOU は生じず、9.6 節の
-  「`contains` と `insert` を分けた公開の入口を持たない」契約を保つ。費用は 1 要求あたり proof の
+  同じ検査を行い、`register` の代わりに crate 内の非公開 `ReplayStore::claim` で
+  「ゲートが登録済みで、まだ受け取られていないこと」を要求し、同じロック区間で受け取り済みに印を
+  付ける（proof 1 つにつき一度だけ成功）。未登録・受け取り済みは `DpopError::NotAdmitted`
+  （フェイルクローズ）。core に要求ごとの通過証明を運ぶ領域がないため、共有履歴の「登録済み」
+  だけでは認証成功にせず、一度きりの受け取りにすることで、ゲートが受理した proof をゲートを通らない
+  経路へ再送しても通らないようにした。`claim` は非公開で、9.6 節の
+  「`contains` と `insert` を分けた公開の入口を持たない」契約を保つ。1 要求のハンドラでは 1 回だけ呼ぶ。費用は 1 要求あたり proof の
   署名検証が 2 回（#906 で計測）。ゲートとハンドラの間で `iat` の窓の端を越えるとハンドラ側で
   拒否されうる。DPoP 未設定の認証器では `authenticate` と同じ。
 - **新規依存なし**: `Cargo.lock` に差分はない。`Lookup::Hit` は `Claims` が `cnf` で大きくなったため
