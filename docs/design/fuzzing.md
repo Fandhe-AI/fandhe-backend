@@ -179,6 +179,38 @@ REQ-16 受入基準 6（NFR-11）への対応として、`fandhe-backend-plugin-
 行区切り以外の CR/LF が現れないこと。`scripts/fuzz.sh` が `fuzz_targets/*.rs` を自動列挙する
 ため CI `fuzz-smoke` でも実行される。実行結果は CI `fuzz-smoke` で確認する。
 
+## イシュー #902（DPoP proof 解析部）fuzz target 追加
+
+NFR-11 の DPoP 分として、#901 で追加した `dpop` モジュールの解析部を #818 と同じ
+`crates/plugin-jwt/fuzz` に 3 target 追加した（設計 `docs/design/jwt-verify-plugin.md` 9.4・
+9.11 節）。公開 API のみを呼び、本体には fuzz 専用の API・feature・`cfg` を足していない。
+
+| target | 対象 API | 検証範囲 |
+|--------|---------|---------|
+| `dpop_verify_proof` | `dpop::verify_proof`（署名検証まで） | 生文字列（モード A）と、ハーネスが `header.payload.signature` を組み立てヘッダ・署名のみ fuzz 入力にする構造化入力（モード B）。許可 alg（RS256+ES256 / ES256 のみ）を切り替える。空は必ず `MissingProof`、`MAX_PROOF_LEN` 超過は必ず `TooLong`、`Ok` なら `jti` 長・`iat` が窓内・サムプリント 43 文字 |
+| `dpop_proof_claims` | `dpop::verify_proof`（署名検証の後） | 入力を payload とし、ハーネスが固定ヘッダ・テスト鍵で RS256 署名して `jti`・`htm`・`htu` 正規化・`iat`・`ath` へ到達させる。`now`（0・通常・`u64::MAX` 付近）と窓（既定・最大）を切り替え、`Ok` なら鍵の結合（サムプリントが `jwk` のもの）と、独立に解いた payload の `htm`・`ath` が期待値と一致すること |
+| `dpop_jwk_htu` | `jwk_thumbprint`・`PublicOrigin::new`・`PublicOrigin::expected_htu` | 先頭バイトでモード選択。`Ok` 値の長さ上限（`MAX_PROOF_LEN`・`MAX_ORIGIN_LEN`・`MAX_HTU_LEN`）、禁止文字（`?`・`#`・`@`・空白・制御文字・非 ASCII・`\`）の不在、オリジン末尾 `/` なし |
+
+- `dpop` は Cargo feature（`dpop = []`、新規依存なし）のため、fuzz crate の依存に
+  `features = ["dpop"]` を付けた。fuzz crate はルート workspace から exclude 済みで、ルートの
+  `cargo metadata`・`Cargo.lock`・公開クレートの依存グラフは変わらない
+- `dpop_proof_claims` が RS256 を使うのは PKCS#1 v1.5 が決定的でクラッシュを再現できるため
+  （ES256 は署名が非決定的）。`verify_claims` と同様に約 2k exec/s となるが smoke 用途では許容
+- `scripts/fuzz.sh` は `fuzz_targets/*.rs` を自動列挙するため CI `fuzz-smoke` の対象に入る
+  （全 14 target × 約 61 秒。`timeout-minutes: 30` に収まる）
+- 鍵・アクセストークンはテスト専用の使い捨て値のみ。シード corpus は手で生成した JSON/base64url
+  で、CRLF の意味論を持たないため `-text` 指定は不要
+
+### 実行結果（ローカル、`-max_total_time=300 -rss_limit_mb=2048`、3 target 並列）
+
+| target | 実行回数（301 秒） | exec/s | 結果 |
+|--------|------------------|--------|------|
+| `dpop_verify_proof` | 約 1,404 万 | 約 4.7 万 | crash/hang なし |
+| `dpop_proof_claims` | 約 71 万 | 約 2.4k | crash/hang なし |
+| `dpop_jwk_htu` | 約 1,797 万 | 約 6.0 万 | crash/hang なし |
+
+libFuzzer が追記する corpus は作業用ディレクトリへ出力させ、リポジトリには手で用意したシードのみを置いた。
+
 ## スコープ外（out-of-scope-tracking）
 
 - corpus の永続化・自動最小化（`cargo fuzz cmin`）・カバレッジ計測の CI 化、

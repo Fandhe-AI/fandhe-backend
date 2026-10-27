@@ -1,4 +1,4 @@
-//! JWT fuzz target 3 本（`jwks_from_json`・`verify_token`・`verify_claims`）が共有するハーネス部品。
+//! JWT / DPoP fuzz target（`jwks_from_json`・`verify_token`・`verify_claims`・`dpop_*`）が共有するハーネス部品。
 //!
 //! 役割: テスト専用鍵（`crates/plugin-jwt/tests/fixtures`）から JWKS 文書・署名を組み立てる
 //! だけで、検証ロジック自体は持たない（検証は `fandhe_backend_plugin_jwt` の公開 API のみを
@@ -9,15 +9,15 @@
 
 #![allow(dead_code)]
 
-use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B;
+use base64::Engine;
 use fandhe_backend_plugin_jwt::{
     Algorithm, AllowedAlgorithms, Audiences, Issuer, JwtPolicy, KeySet, TokenType,
 };
 use ring::rand::SystemRandom;
 use ring::signature::{
-    ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair, RSA_PKCS1_SHA256, RsaKeyPair,
-    RsaPublicKeyComponents,
+    EcdsaKeyPair, KeyPair, RsaKeyPair, RsaPublicKeyComponents, ECDSA_P256_SHA256_FIXED_SIGNING,
+    RSA_PKCS1_SHA256,
 };
 
 pub const ISS: &str = "https://issuer.example";
@@ -90,4 +90,15 @@ pub fn policy(algs: &[Algorithm], skew_secs: u64) -> JwtPolicy {
 
 pub fn b64(bytes: &[u8]) -> String {
     B.encode(bytes)
+}
+
+/// DPoP の期待 `htu` に使う公開オリジンとリクエストパス（イシュー #902）。
+pub const DPOP_ORIGIN: &str = "https://api.example";
+pub const DPOP_PATH: &str = "/resource";
+/// DPoP の `ath` 計算元になるダミーのアクセストークン（実トークンではない）。
+pub const DPOP_ACCESS_TOKEN: &str = "fuzz-access-token";
+
+/// `DPOP_ACCESS_TOKEN` に対する正しい `ath`（SHA-256 の base64url）。
+pub fn dpop_ath() -> String {
+    b64(ring::digest::digest(&ring::digest::SHA256, DPOP_ACCESS_TOKEN.as_bytes()).as_ref())
 }
