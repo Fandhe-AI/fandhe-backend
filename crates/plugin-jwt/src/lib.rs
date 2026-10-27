@@ -26,8 +26,8 @@
 //!
 //! `dpop` feature（既定では無効）を有効にすると、DPoP proof（RFC 9449）の解析と検査
 //! （`jwk`・サムプリント・`ath`・`htm`・`htu`・`iat`）の純関数 `dpop::verify_proof` が使える。
-//! あわせて `jti` の再使用を窓の間だけ有界に保持して拒否する `dpop::ReplayStore` を含む
-//! 。新規依存を足さない。
+//! あわせて `jti` の再使用を窓の間だけ有界に保持して拒否する `dpop::ReplayStore` を含み、
+//! 新規依存を足さない。
 //! 認証器へは `JwtAuthenticatorBuilder::dpop`（`dpop::DpopConfig`・`dpop::DpopMode` を必須引数に取る）で配線し、
 //! 設定した認証器は `Authorization: DPoP` と `DPoP` ヘッダを検査する（ハンドラは
 //! `JwtAuthenticator::authenticate_after_gate` を使う）。
