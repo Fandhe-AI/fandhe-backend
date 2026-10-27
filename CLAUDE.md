@@ -914,6 +914,13 @@ fandhe-backend/
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、
 │   │                                    # `crates/http/fuzz` と同パターン、イシュー #818。DPoP proof
 │   │                                    # 解析部の target `dpop_*` 3 本を追加、イシュー #902）
+│   ├── plugin-hub-wiring              # hub 共通配線（テナント境界ゲート等、Gate 型）。opt-in feature
+│   │                                    # `dpop`（イシュー #905、既定無効）は `fandhe-backend-plugin-jwt/dpop`
+│   │                                    # の転送のみで新規依存なし。有効化は
+│   │                                    # `--features dpop`。有効にしただけでは挙動は変わらず、DPoP を
+│   │                                    # 設定した認証器を別途 `TenantGateConfig::from_authenticator`
+│   │                                    # に渡したときだけ DPoP 検証と `WWW-Authenticate: DPoP`
+│   │                                    # チャレンジが働く（`docs/design/jwt-verify-plugin.md` 9.10 節）
 │   ├── plugin-csrf                    # CSRF 検査ゲートプラグイン（REQ-17、イシュー #825/#826）。
 │   │                                    # Gate 型・依存逆転型（`RequestGate` 実装 `CsrfGate`、
 │   │                                    # core に feature なし、利用側が直接依存して

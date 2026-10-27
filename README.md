@@ -43,6 +43,12 @@ crates.io 公開版 0.5.0 には未収録で、次の公開から使えます）
 [JWKS の取り直しガイド](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/guide/jwks-refresh.md)
 を参照してください。
 
+`fandhe-backend-plugin-hub-wiring` には、DPoP の検証を使える opt-in の feature `dpop` があります
+（`cargo add fandhe-backend-plugin-hub-wiring --features dpop`。`fandhe-backend-plugin-jwt/dpop` の
+転送のみで新規依存はありません）。有効にしただけでは挙動は変わらず、DPoP を設定した認証器を別途
+`TenantGateConfig::from_authenticator` に渡したときだけ DPoP の検証と `WWW-Authenticate: DPoP` の
+チャレンジが働きます。
+
 ## Getting Started
 
 crates.io からの依存追加〜最小サーバ起動までの最短手順は [`docs/guide/getting-started.md`](https://github.com/Fandhe-AI/fandhe-backend/blob/main/docs/guide/getting-started.md) を、
