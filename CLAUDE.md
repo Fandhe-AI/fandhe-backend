@@ -902,7 +902,8 @@ fandhe-backend/
 │   │                                    # アプリが書く（実装例 `docs/guide/jwks-refresh.md`）。
 │   │                                    # 追加依存は optional の `tokio`（time・sync）のみ
 │   │   └── fuzz/                      # cargo-fuzz 専用クレート（root workspace から exclude、
-│   │                                    # `crates/http/fuzz` と同パターン、イシュー #818）
+│   │                                    # `crates/http/fuzz` と同パターン、イシュー #818。DPoP proof
+│   │                                    # 解析部の target `dpop_*` 3 本を追加、イシュー #902）
 │   ├── plugin-csrf                    # CSRF 検査ゲートプラグイン（REQ-17、イシュー #825/#826）。
 │   │                                    # Gate 型・依存逆転型（`RequestGate` 実装 `CsrfGate`、
 │   │                                    # core に feature なし、利用側が直接依存して

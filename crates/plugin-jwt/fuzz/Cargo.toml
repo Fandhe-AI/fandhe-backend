@@ -1,7 +1,8 @@
 [package]
 # JWT 検証プラグイン（`fandhe-backend-plugin-jwt`）の解析部を cargo-fuzz（libFuzzer）で
 # ファジングする専用クレート（イシュー #818、REQ-16 受入基準 6 / NFR-11。設計は
-# docs/design/jwt-verify-plugin.md 2.8 節）。
+# docs/design/jwt-verify-plugin.md 2.8 節）。イシュー #902 で DPoP proof の解析部
+# （`dpop` feature）の target 3 本（`dpop_*`）を追加した。
 #
 # root `Cargo.toml` の `[workspace] exclude` に本パスを追加しているため、本体 workspace の
 # `cargo build` / `cargo tree` / `cargo geiger` からは見えない（`libfuzzer-sys` 等の
@@ -34,6 +35,9 @@ serde_json = "1"
 [dependencies.fandhe-backend-plugin-jwt]
 # fuzz 対象クレート本体。本 fuzz クレートは workspace 外（exclude 済み）のため path 依存。
 path = ".."
+# DPoP proof の解析部（`dpop` モジュール）は feature ゲートのため明示的に有効にする。
+# `dpop` は新規依存を持たない feature（`dpop = []`）で、fuzz crate の依存グラフは増えない。
+features = ["dpop"]
 
 [profile.release]
 debug = 1
@@ -55,6 +59,27 @@ bench = false
 [[bin]]
 name = "verify_claims"
 path = "fuzz_targets/verify_claims.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpop_verify_proof"
+path = "fuzz_targets/dpop_verify_proof.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpop_proof_claims"
+path = "fuzz_targets/dpop_proof_claims.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpop_jwk_htu"
+path = "fuzz_targets/dpop_jwk_htu.rs"
 test = false
 doc = false
 bench = false

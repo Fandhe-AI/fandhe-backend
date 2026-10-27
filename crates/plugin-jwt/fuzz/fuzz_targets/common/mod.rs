@@ -1,4 +1,4 @@
-//! JWT fuzz target 3 本（`jwks_from_json`・`verify_token`・`verify_claims`）が共有するハーネス部品。
+//! JWT / DPoP fuzz target（`jwks_from_json`・`verify_token`・`verify_claims`・`dpop_*`）が共有するハーネス部品。
 //!
 //! 役割: テスト専用鍵（`crates/plugin-jwt/tests/fixtures`）から JWKS 文書・署名を組み立てる
 //! だけで、検証ロジック自体は持たない（検証は `fandhe_backend_plugin_jwt` の公開 API のみを
@@ -90,4 +90,15 @@ pub fn policy(algs: &[Algorithm], skew_secs: u64) -> JwtPolicy {
 
 pub fn b64(bytes: &[u8]) -> String {
     B.encode(bytes)
+}
+
+/// DPoP の期待 `htu` に使う公開オリジンとリクエストパス（イシュー #902）。
+pub const DPOP_ORIGIN: &str = "https://api.example";
+pub const DPOP_PATH: &str = "/resource";
+/// DPoP の `ath` 計算元になるダミーのアクセストークン（実トークンではない）。
+pub const DPOP_ACCESS_TOKEN: &str = "fuzz-access-token";
+
+/// `DPOP_ACCESS_TOKEN` に対する正しい `ath`（SHA-256 の base64url）。
+pub fn dpop_ath() -> String {
+    b64(ring::digest::digest(&ring::digest::SHA256, DPOP_ACCESS_TOKEN.as_bytes()).as_ref())
 }
