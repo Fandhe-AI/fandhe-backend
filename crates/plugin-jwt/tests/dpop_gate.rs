@@ -252,22 +252,47 @@ fn header_values<'a>(lines: &[&'a str], name: &str) -> Vec<&'a str> {
         .collect()
 }
 
-/// 401・`WWW-Authenticate` の全行（順序込み）・固定本文を検証する。
-fn assert_401(r: &str, challenges: &[&str], error: &str) {
-    let (lines, body) = split(r);
-    assert_eq!(lines[0], "HTTP/1.1 401 Unauthorized", "{r}");
-    assert_eq!(header_values(&lines, "WWW-Authenticate"), challenges, "{r}");
+/// ステータス行・`Content-Type`・`Content-Length`・本文をすべて検証する共通ヘルパー。
+/// `other` は上記以外のヘッダ名（小文字化して比較）の全集合で、余分なヘッダも許さない。
+fn assert_response(r: &str, status: &str, content_type: &str, body: &str, other: &[&str]) {
+    let (lines, actual_body) = split(r);
+    assert_eq!(lines[0], status, "{r}");
     assert_eq!(
         header_values(&lines, "Content-Type"),
-        vec!["application/json"],
+        vec![content_type],
         "{r}"
     );
-    assert_eq!(body, format!(r#"{{"error":"{error}"}}"#), "{r}");
     assert_eq!(
         header_values(&lines, "Content-Length"),
         vec![body.len().to_string()],
         "{r}"
     );
+    assert_eq!(actual_body, body, "{r}");
+    let mut names: Vec<String> = lines[1..]
+        .iter()
+        .filter_map(|l| l.split_once(": "))
+        .map(|(n, _)| n.to_ascii_lowercase())
+        .filter(|n| n != "content-type" && n != "content-length")
+        .collect();
+    names.sort();
+    let mut want: Vec<String> = other.iter().map(|n| n.to_ascii_lowercase()).collect();
+    want.sort();
+    assert_eq!(names, want, "{r}");
+}
+
+/// 401・`WWW-Authenticate` の全行（順序込み）・固定本文を検証する。
+fn assert_401(r: &str, challenges: &[&str], error: &str) {
+    let (lines, _) = split(r);
+    let mut other = vec!["connection"];
+    other.extend(std::iter::repeat_n("www-authenticate", challenges.len()));
+    assert_response(
+        r,
+        "HTTP/1.1 401 Unauthorized",
+        "application/json",
+        &format!(r#"{{"error":"{error}"}}"#),
+        &other,
+    );
+    assert_eq!(header_values(&lines, "WWW-Authenticate"), challenges, "{r}");
     assert!(!r.contains("sub="), "{r}");
 }
 
@@ -278,15 +303,13 @@ fn dpop_err(error: &str) -> String {
 }
 
 fn ok_sub(r: &str) {
-    let (lines, body) = split(r);
-    assert_eq!(lines[0], "HTTP/1.1 200 OK", "{r}");
-    assert_eq!(
-        header_values(&lines, "Content-Type"),
-        vec!["text/plain"],
-        "{r}"
+    assert_response(
+        r,
+        "HTTP/1.1 200 OK",
+        "text/plain",
+        "sub=user-1",
+        &["connection"],
     );
-    assert_eq!(header_values(&lines, "Content-Length"), vec!["10"], "{r}");
-    assert_eq!(body, "sub=user-1", "{r}");
 }
 
 // ---- 受理 ----
@@ -632,19 +655,13 @@ async fn handler_without_gate_is_not_admitted() {
 }
 
 fn assert_not_admitted(r: &str) {
-    let (lines, body) = split(r);
-    assert_eq!(lines[0], "HTTP/1.1 200 OK", "{r}");
-    assert_eq!(
-        header_values(&lines, "Content-Type"),
-        vec!["text/plain"],
-        "{r}"
+    assert_response(
+        r,
+        "HTTP/1.1 200 OK",
+        "text/plain",
+        &format!("ERR:{NotAdmitted}"),
+        &["connection"],
     );
-    assert_eq!(
-        header_values(&lines, "Content-Length"),
-        vec![body.len().to_string()],
-        "{r}"
-    );
-    assert_eq!(body, format!("ERR:{NotAdmitted}"), "{r}");
 }
 
 /// 後続ゲートが拒否した要求の proof を、ゲートを通らない別経路へ再送しても認証は通らない。
@@ -666,18 +683,12 @@ async fn proof_of_a_request_rejected_by_a_later_gate_is_not_admitted_elsewhere()
     let request = req(PATH, Some(&hdr), &[&key.good_proof(&t, "j1")]);
 
     let r = roundtrip(&server_a, &request).await;
-    let (lines, body) = split(&r);
-    assert_eq!(lines[0], "HTTP/1.1 403 Forbidden", "{r}");
-    assert_eq!(
-        header_values(&lines, "Content-Type"),
-        vec!["application/json"],
-        "{r}"
-    );
-    assert_eq!(body, r#"{"error":"forbidden"}"#, "{r}");
-    assert_eq!(
-        header_values(&lines, "Content-Length"),
-        vec![body.len().to_string()],
-        "{r}"
+    assert_response(
+        &r,
+        "HTTP/1.1 403 Forbidden",
+        "application/json",
+        r#"{"error":"forbidden"}"#,
+        &["connection"],
     );
     assert!(!r.contains("sub="), "{r}");
 
