@@ -126,8 +126,44 @@ fn request(user: Option<&str>, extra: &str, close: bool) -> Vec<u8> {
     s.into_bytes()
 }
 
-/// 1 応答を読み、(ステータス行, 本文) を返す。`Content-Length` ちょうどだけ読む。
-async fn read_response(stream: &mut TcpStream) -> (String, String) {
+/// 読み取った 1 応答（ステータス行・ヘッダ行・本文）。
+struct Resp {
+    status: String,
+    headers: Vec<String>,
+    body: String,
+}
+
+impl Resp {
+    /// ステータス行・ヘッダ・本文をすべて検証する。
+    ///
+    /// 本テストのレスポンスは `Content-Type` を持たない（`Response::new` の既定）ため、
+    /// `Content-Type` の不在と `Content-Length` が本文長と一致することを固定する。
+    fn assert_is(&self, status_line: &str, body: &str) {
+        assert_eq!(self.status, status_line);
+        assert!(
+            !self
+                .headers
+                .iter()
+                .any(|h| h.to_ascii_lowercase().starts_with("content-type:")),
+            "Content-Type が付いている: {:?}",
+            self.headers
+        );
+        let lengths: Vec<&String> = self
+            .headers
+            .iter()
+            .filter(|h| h.to_ascii_lowercase().starts_with("content-length:"))
+            .collect();
+        assert_eq!(
+            lengths,
+            vec![&format!("Content-Length: {}", body.len())],
+            "Content-Length が本文長と一致しない"
+        );
+        assert_eq!(self.body, body);
+    }
+}
+
+/// 1 応答を読む。`Content-Length` ちょうどだけ本文を読む。
+async fn read_response(stream: &mut TcpStream) -> Resp {
     let mut acc = Vec::new();
     let mut byte = [0u8; 1];
     while !acc.ends_with(b"\r\n\r\n") {
@@ -139,8 +175,14 @@ async fn read_response(stream: &mut TcpStream) -> (String, String) {
         acc.push(byte[0]);
     }
     let head = String::from_utf8(acc).unwrap();
-    let len: usize = head
-        .lines()
+    let mut lines = head.lines();
+    let status = lines.next().unwrap().to_string();
+    let headers: Vec<String> = lines
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    let len: usize = headers
+        .iter()
         .find_map(|l| l.strip_prefix("Content-Length: "))
         .map_or(0, |v| v.trim().parse().unwrap());
     let mut body = vec![0u8; len];
@@ -148,8 +190,11 @@ async fn read_response(stream: &mut TcpStream) -> (String, String) {
         .await
         .expect("応答本文がタイムアウトしないこと")
         .expect("read body");
-    let status = head.lines().next().unwrap().to_string();
-    (status, String::from_utf8(body).unwrap())
+    Resp {
+        status,
+        headers,
+        body: String::from_utf8(body).unwrap(),
+    }
 }
 
 /// (a) ゲートが入れた値を、同じリクエストのハンドラが読める（実 TCP）。
@@ -161,9 +206,9 @@ async fn handler_reads_value_inserted_by_gate_for_same_request() {
     s.write_all(&request(Some("alice"), "", true))
         .await
         .unwrap();
-    let (status, body) = read_response(&mut s).await;
-    assert!(status.starts_with("HTTP/1.1 200"));
-    assert_eq!(body, "alice");
+    read_response(&mut s)
+        .await
+        .assert_is("HTTP/1.1 200 OK", "alice");
 }
 
 /// (b) 同一 keep-alive 接続の後続リクエストへ値が漏れない。
@@ -176,15 +221,21 @@ async fn value_does_not_leak_to_next_request_on_same_connection() {
     s.write_all(&request(Some("alice"), "", false))
         .await
         .unwrap();
-    assert_eq!(read_response(&mut s).await.1, "alice");
+    read_response(&mut s)
+        .await
+        .assert_is("HTTP/1.1 200 OK", "alice");
 
     // 2 本目: ゲートは通すが何も入れない。ハンドラは none を見る。
     s.write_all(&request(None, "", false)).await.unwrap();
-    assert_eq!(read_response(&mut s).await.1, "none");
+    read_response(&mut s)
+        .await
+        .assert_is("HTTP/1.1 200 OK", "none");
 
     // 3 本目: 別の値。1 本目の値ではなく自分の値が見える。
     s.write_all(&request(Some("bob"), "", true)).await.unwrap();
-    assert_eq!(read_response(&mut s).await.1, "bob");
+    read_response(&mut s)
+        .await
+        .assert_is("HTTP/1.1 200 OK", "bob");
 }
 
 /// (c) 並行する別接続の値が交差しない。
@@ -199,7 +250,9 @@ async fn concurrent_connections_do_not_cross_values() {
             let mut s = TcpStream::connect(addr).await.unwrap();
             for _ in 0..5 {
                 s.write_all(&request(Some(&user), "", false)).await.unwrap();
-                assert_eq!(read_response(&mut s).await.1, user);
+                read_response(&mut s)
+                    .await
+                    .assert_is("HTTP/1.1 200 OK", &user);
             }
         }));
     }
@@ -218,7 +271,9 @@ async fn no_gate_means_no_value() {
     s.write_all(&request(Some("mallory"), "", true))
         .await
         .unwrap();
-    assert_eq!(read_response(&mut s).await.1, "none");
+    read_response(&mut s)
+        .await
+        .assert_is("HTTP/1.1 200 OK", "none");
 }
 
 /// (e) 先行ゲートが値を入れても、後続ゲートが Reject すればハンドラは呼ばれず、
@@ -238,13 +293,15 @@ async fn rejected_request_does_not_reach_handler_nor_leak() {
     s.write_all(&request(Some("alice"), "X-Deny: 1\r\n", false))
         .await
         .unwrap();
-    let (status, body) = read_response(&mut s).await;
-    assert!(status.starts_with("HTTP/1.1 403"));
-    assert_eq!(body, "denied");
+    read_response(&mut s)
+        .await
+        .assert_is("HTTP/1.1 403 Forbidden", "denied");
     assert_eq!(*calls.lock().unwrap(), 0, "Reject 時にハンドラが呼ばれた");
 
     s.write_all(&request(None, "", true)).await.unwrap();
-    assert_eq!(read_response(&mut s).await.1, "none");
+    read_response(&mut s)
+        .await
+        .assert_is("HTTP/1.1 200 OK", "none");
     assert_eq!(*calls.lock().unwrap(), 1);
 }
 
@@ -295,11 +352,15 @@ async fn visibility_contract_for_middleware_hooks() {
     s.write_all(&request(Some("alice"), "", false))
         .await
         .unwrap();
-    read_response(&mut s).await;
+    read_response(&mut s)
+        .await
+        .assert_is("HTTP/1.1 200 OK", "alice");
     s.write_all(&request(Some("alice"), "X-Deny: 1\r\n", true))
         .await
         .unwrap();
-    read_response(&mut s).await;
+    read_response(&mut s)
+        .await
+        .assert_is("HTTP/1.1 403 Forbidden", "denied");
     // on_response_with_status は応答送出後に呼ばれるため、閉じを待ってから検証する。
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -323,8 +384,9 @@ async fn duplicate_insert_fails_closed() {
     .await;
     let mut s = TcpStream::connect(addr).await.unwrap();
     s.write_all(&request(None, "", true)).await.unwrap();
-    let (status, _) = read_response(&mut s).await;
-    assert!(status.starts_with("HTTP/1.1 500"));
+    read_response(&mut s)
+        .await
+        .assert_is("HTTP/1.1 500 Internal Server Error", "");
     assert_eq!(*calls.lock().unwrap(), 0);
 }
 
@@ -359,7 +421,9 @@ async fn interceptor_sees_gate_value() {
     )
     .await
     .unwrap();
-    assert_eq!(read_response(&mut s).await.1, "intercepted:carol");
+    read_response(&mut s)
+        .await
+        .assert_is("HTTP/1.1 200 OK", "intercepted:carol");
 }
 
 /// 先行ゲートの値を後続ゲートが読める（認証 → 認可の連携）。

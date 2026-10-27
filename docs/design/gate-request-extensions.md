@@ -137,3 +137,24 @@ feature ゲートは不要（外部依存ゼロ）。ゲート未使用の構成
 - `plugin-websocket` の `WsOpenContext` / `WsConnContext` から値を読めるようにする件（head は委譲先へ
   clone されて渡るので技術的には届くが、公開 API にするのは別の判断）。
 - 0.6.0 への版上げとリリース作業。
+
+## 13. 拡張点閉包ゲート（`extension-closure-gate.sh`）への理由記載
+
+本変更は `RequestGate::check` のシグネチャ変更（`crates/core/src/extension.rs`）を含むため、
+`dependency-graph-contract.md` 4 節の運用に従い、E（閉包違反候補）と判定されるファイルの理由を記す
+（4.3 節・4.4 節と同形式）。
+
+1. **対象**: イシュー #924 / PR #925
+2. **E ファイルパス**:
+   - `crates/http/src/extensions.rs`（新規）
+   - `crates/http/src/request.rs`
+   - `crates/http/src/lib.rs`
+   - `crates/core/src/extension.rs`
+   - `CHANGELOG.md`
+3. **閉じない理由**: `extension-closure-check.sh` の分類規則は中間層クレート `crates/http` と
+   `CHANGELOG.md` を A〜D に含めない（4.3 節〜4.9 節と同一の運用上のギャップ）。加えて、ゲートが
+   入れる付帯データの器 `RequestExtensions` はリクエスト 1 件と寿命を共にする必要があり、
+   `RequestHead` を定義する `crates/http` の型に属する。プラグイン（A）内にも、コアの許容シーム（B）内にも
+   置けない（3 節 E-3 の採用理由）。
+4. **正当性根拠**: 追加は外部依存ゼロの加法的な型と、`RequestGate::check` への引数追加のみである。
+   依存方向（`server → routes → http`）と拡張点の種類数は変わらない。移行手順は `CHANGELOG.md` に記す。
