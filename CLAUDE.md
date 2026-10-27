@@ -157,7 +157,8 @@ fandhe-backend/
 │   ├── guide/              # 利用者向けガイド（Getting Started・feature 構成別サンプル・
 │   │                        # チュートリアル、TASK-11.5 / #95）。「どう作るか」の docs/design/ とは
 │   │                        # 責務分離、「どう使うか」を扱う。`jwks-refresh.md`（JWKS 取り直し）・
-│   │                        # `dpop.md`（DPoP 結合トークンの検証、イシュー #907）を含む
+│   │                        # `dpop.md`（DPoP 結合トークンの検証、イシュー #907）・
+│                            # `ws-gate-extensions.md`（ゲートの値を WebSocket で使う、イシュー #935）を含む
 │   ├── dep-impact/         # 依存インパクト（依存数・バイナリサイズ・unsafe 件数）記録台帳（TASK-15.2）
 │   └── acceptance/         # REQ-1 等・NFR-7 等の受け入れ検証結果レポート（TASK-1.6-2 で追加、
 │                            # NFR-7 分は #263、NFR-6 分は #282 で追加）。issue399-docs-site-visual.md は
@@ -821,7 +822,12 @@ fandhe-backend/
 │   │                                    # `futures-util` を直接依存に加えずに
 │   │                                    # ハンドラを実装できるようにした
 │   │                                    # （`docs/design/plugin-boundary.md`
-│   │                                    # 5.5.1 節参照）。
+│   │                                    # 5.5.1 節参照）。イシュー #934 で
+│   │                                    # `WsOpenContext`/`WsConnContext` に `extensions()`
+│   │                                    # （ゲートの検証結果の読み取り専用口）を追加。実 TCP の
+│   │                                    # 統合テストは `crates/core/tests/ws_gate_extensions.rs`
+│   │                                    # （#935。plugin は core に依存しないため core 側に置く）、
+│   │                                    # ガイドは `docs/guide/ws-gate-extensions.md`。
 │   ├── plugin-tracing                 # 可観測性（サンプリング付きトレーシング）プラグイン（TASK-10.1、#56。
 │   │                                    # REQ-10・PoC-10（サンプリングなし構成で RPS 劣化 31.6%）を踏まえ、
 │   │                                    # 決定的カウンタ方式のサンプリング + 既定で非同期・バッファ済み I/O

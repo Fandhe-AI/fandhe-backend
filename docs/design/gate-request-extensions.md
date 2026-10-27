@@ -227,10 +227,12 @@ feature ゲートは不要（外部依存ゼロ）。ゲート未使用の構成
   や失効も、張ったあとのセッションには反映されない。
 - アプリ側の緩和策: `JwtGate` を使う場合は `on_open` で `Claims::exp()` を読み、`WsSender::close` を
   期限に予約する。ping と idle timeout も併用する。
-- `TenantClaims` は `org_id()` だけを公開し `exp` を出さない。`TenantGate` 単独ではアプリが期限を
-  読めない。
-- コアの `max_connection_lifetime` が upgrade 後の委譲セッションにも効くかは本節では断定しない。
-  #935 の文書化の前に `crates/core/src/server.rs` で確かめる。
+- `TenantGate` 単独でも期限は読める。`TenantClaims::claims()` が `Claims<HubClaims>` を返すので、
+  `TenantVerified::tenant().claims().exp()` で読める（`crates/plugin-hub-wiring/src/auth.rs` の
+  `TenantClaims::claims` と doc test で確認、#935）。当初の「`org_id()` しか出さない」は誤り。
+- コアの `max_connection_lifetime` は upgrade 後の委譲セッションには**効かない**（#935 で確認）。
+  参照するのは `crates/core/src/server.rs` の HTTP 接続ループ（keep-alive 判定と read の時間切れ）
+  だけで、`plugin::try_handle_upgrade` は委譲後のセッションを別タスクへ切り離し、この値を見ない。
 
 ### 14.8 `Debug` とセキュリティ（OWASP）
 
@@ -249,3 +251,5 @@ feature ゲートは不要（外部依存ゼロ）。ゲート未使用の構成
   `WsHandshakeContext::head().extensions()` から読めること、ゲートが拒否した upgrade では `on_open` も
   101 もないこと、続けて張った別の接続に値が漏れないことを確かめる。あわせて CHANGELOG・ガイド
   （`exp` の限界を含む）・CLAUDE.md を更新し、`ws-connection-context-and-close.md` 17 節から逆参照を張る。
+- #935 の実施結果: 実 TCP のテストは `crates/core/tests/ws_gate_extensions.rs`（plugin-websocket は
+  core に依存しないため core 側に置いた）、ガイドは `docs/guide/ws-gate-extensions.md`。

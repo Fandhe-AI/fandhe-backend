@@ -1397,3 +1397,11 @@ security.md`）で除外する。`conn_context_debug_redacts_request_info` テ�
 - `X-Forwarded-For` の解釈（`peer_addr` は accept したソケットの実アドレス
   のみを扱う契約、#728 と同じ）
 - `GateContext` の `Debug` 方針の見直し（15.3 節と同じくスコープ外）
+
+### 17.8 ゲートの検証結果（#934 / #935）
+
+`ConnRequestInfo` は許可リストの 5 項目に加えて、ゲートが入れた `RequestExtensions` の clone を
+保持し、両コンテキストの `extensions()` から読み取り専用で参照できる。`Debug` には出さない。
+許可リスト方針との整合は `gate-request-extensions.md` 14.4 節、既知の限界（`exp` を再検証しない等）は
+14.7 節、実 TCP の確認は `crates/core/tests/ws_gate_extensions.rs`、使い方は
+`docs/guide/ws-gate-extensions.md` を参照。

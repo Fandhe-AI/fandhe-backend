@@ -76,6 +76,11 @@ title = "DPoP 結合トークンの検証（dpop）"
 source = "docs/guide/dpop.md"
 path = "/guides/dpop/"
 
+[[section.page]]
+title = "ゲートの値を WebSocket で使う"
+source = "docs/guide/ws-gate-extensions.md"
+path = "/guides/ws-gate-extensions/"
+
 [[section]]
 title = "Examples"
 index_path = "/examples/"
