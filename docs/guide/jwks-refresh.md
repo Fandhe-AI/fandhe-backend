@@ -27,7 +27,7 @@ fandhe-backend-plugin-jwt = { version = "...", features = ["jwks-refresh"] }
 
 無効のままなら依存もコードも増えません。有効にすると、workspace に既にある `tokio`
 （`time`・`sync`）への optional 依存が加わるだけで、新しい crate は増えません。
-crates.io 公開版 0.5.0 には未収録で、次の公開版から使えます。
+crates.io 公開版 0.6.0 で利用できます。
 
 ## 取得関数の契約
 
