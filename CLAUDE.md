@@ -1003,7 +1003,10 @@ fandhe-backend/
 │   ├── jwt-nfr6-bench.sh               # plugin-jwt の `JwtGate` 有効時の NFR-6 計測（イシュー #821）。
 │   │                                    # 全系統へ同一の有効トークンを付けて比較し、`TARGETS=jwt` で
 │   │                                    # nfr6-exclusive.sh から opt-in 実行。プロセス内の検証コスト計測は
-│   │                                    # `crates/plugin-jwt/examples/jwt_verify_bench.rs`
+│   │                                    # `crates/plugin-jwt/examples/jwt_verify_bench.rs`。
+│   │                                    # イシュー #906 で opt-in `JWT_DPOP=1`（DPoP の
+│   │                                    # `AllowUnboundBearer` 系列）と、`Required` の proof 経路を
+│   │                                    # プロセス内で測る `jwt_dpop_bench.rs`（`--features dpop`）を追加
 │   ├── bench-accept-exclusive.sh       # 専有実行枠で bench-accept.sh（REQ-1/NFR-1/NFR-2 判定）を
 │   │                                    # 実行する wrapper。REQ-2 基準 5（両 feature 無効時のコア
 │   │                                    # 性能維持）の再計測に使用（#260、benches/reports/

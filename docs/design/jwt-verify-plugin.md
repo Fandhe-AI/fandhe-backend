@@ -590,7 +590,7 @@ spec の式 `ceil(T / L) + 定期の取得回数` はこれ以上なので満た
 `docs/spec/04-requirements.md` の REQ-16「DPoP 結合のアクセストークンの検証（追加要件）」と
 `docs/spec/requests/fandhe-auth.md` の「#23」節。本章は設計の記録のみでコード変更を含まない。
 実装は #901〜#907 が担う。以下の数値と名前は推奨案で、最終承認は PR レビューで行う
-（#903・#906 の計測結果で見直す余地を残す）。
+（#903・#906 の計測結果で見直す余地を残す。#906 の結果は 9.14 節）。
 
 `fandhe-auth` はエージェントに DPoP 結合の資格情報を発行する。下流が資格情報の写しを使えなく
 する効果つきでそれを受け付けられるよう、`plugin-jwt` に opt-in の feature `dpop`（RFC 9449）を足す。
@@ -889,7 +889,8 @@ spec の式 `ceil(T / L) + 定期の取得回数` はこれ以上なので満た
 - **期限と掃除の境界**: 期限は `iat + past`。`verify_proof` は `iat + past >= now` の間受理するので、
   掃除は `期限 < now` の項目だけを除く（`<=` にすると同じ秒に 2 回受理されうる）。掃除は
   `BinaryHeap`（期限の昇順）の先頭から行い、`map` と 1 対 1 に保つ。償却では 1 項目あたり
-  O(log n) だが、長い無通信の後の最初の `register` だけ取り出しが多くなる（#906 の計測で見直す）。
+  O(log n) だが、長い無通信の後の最初の `register` だけ取り出しが多くなる（#906 で計測し、
+  既定容量が満杯の場合の最初の 1 回が約 20 ms と確認した。結果と判断は「実装時の決定・計測結果（#906）」）。
 - **満杯**: 掃除の後に判定するので、期限切れで埋まった偽の満杯は起こさない。満杯なら
   `DpopError::ReplayStoreFull`、再使用なら `DpopError::Replayed`。拒否した proof は登録しない。
 - **容量**: 既定 `DEFAULT_REPLAY_CAPACITY` = 131,072、上限 `MAX_REPLAY_CAPACITY` = 4,194,304。
@@ -965,3 +966,25 @@ hub 共通配線（`plugin-hub-wiring`）から DPoP の検証を使えるよう
 - **テスト**: `tests/dpop_tenant_gate.rs`（実 HTTP 経路で、受理・`Bearer` への格下げ拒否・proof の欠陥・
   `403` の順序・`jti` の再使用・互換・再 `authenticate` が `Replayed` になること）、`tests/tenant_gate.rs`
   （feature によらない受け渡しと二重登録）。`jti` はプロセス内でのみ保持する（9.6・9.13 節の既知の限界）。
+
+### 9.14 実装時の決定・計測結果（#906）
+
+DPoP を有効にしたゲートの検証コストを計測した（NFR-6）。詳細は
+`benches/reports/issue906-jwt-dpop-gate-performance.md`。`crates/plugin-jwt/src/**` は変更していない。
+
+- **方式**: プロセス内は `crates/plugin-jwt/examples/jwt_dpop_bench.rs`（`jti` が一意な proof を
+  計測区間の外で事前生成し、試行ごとに認証器を作り直す）、HTTP は `benches/jwt-nfr6-bench.sh` の
+  opt-in `JWT_DPOP=1`（`AllowUnboundBearer` の Bearer 経路のみ）。
+- **結果（Apple M4 Max、非専有）**: 1 要求あたりの追加は RS256 proof で約 13.8 µs、ES256 proof で約 32.2 µs
+  （D3 - D0）。支配的なのは proof の署名検証で、トークンのキャッシュヒット（約 0.3 µs）と
+  `register`（約 140 ns）は小さい。`AllowUnboundBearer` 下の `cnf` なし Bearer の追加は誤差内。
+- **HTTP で判定できない経路**: `Required` で要求ごとに proof を付ける経路は、`oha` が固定ヘッダしか
+  送れず `jti` の再使用検知と両立しないため HTTP では実測できない。再使用検知を無効にする設定は
+  安全性の後退になるため足さない。マイクロベンチの絶対コストと推定で代える（要求ごとに proof を
+  変える負荷クライアントは別イシューの候補）。
+- **見直した結果（容量・窓の既定）**: 9.6 節の既定（容量 131,072・過去側 60 秒）は**維持**する。
+  通常の `register` は約 140 ns でロック区間も短い。
+- **見直した結果（掃除の山）**: 9.12 節の懸念は実測で確認できた。満杯の後に窓が過ぎた最初の
+  `register` が全件を掃除し、約 20 ms `Mutex` を持つ。件数上限つきの掃除（残りを次回以降へ
+  繰り延べる）が改善案だが、満杯判定との整合の設計が要るため本イシューでは変えず、改善候補として
+  記録する（レポート 8 節）。

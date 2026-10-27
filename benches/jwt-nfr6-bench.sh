@@ -31,6 +31,18 @@
 #   - `cargo build --release -p fandhe-backend-plugin-jwt --example jwt_gate_server`
 #   - oha / jq / curl
 #
+# DPoP 系列（イシュー #906、opt-in: `JWT_DPOP=1`）:
+#   系列 (d)「ゲート有効 + DPoP（`DpopMode::AllowUnboundBearer`）+ `cnf` のない ES256 トークンを
+#   Bearer で提示」を追加する。DPoP を有効にしたゲートを Bearer の通信が通るコスト（スキームと
+#   `cnf` の検査のみ、proof なし）に当たる。比は (a) baseline と (c) ES256 ゲート有効の両方を分母に
+#   して出し、主判定のキー（`rps_ratio_pct=` ほか）は変えない。
+#   **`DpopMode::Required` で要求ごとに proof を付ける経路は、HTTP では計測しない**。`oha` は固定
+#   ヘッダしか送れず、2 回目以降は同じ proof が `jti` の再使用検知で 401 になる（検知を無効にする
+#   設定をライブラリへ足すのは安全性の後退のため行わない）。その経路はプロセス内の
+#   `crates/plugin-jwt/examples/jwt_dpop_bench.rs` で計測する。
+#   前提の追加ビルド: `cargo build --release -p fandhe-backend-plugin-jwt --features dpop --example jwt_gate_server`
+#   （`dpop` feature なしのバイナリでは起動時にエラーで終了し、中止する）
+#
 # 終了コード: 計測できれば判定に関わらず 0。前提欠落・正常性確認の失敗は非 0
 # （誤った比較を記録しないため）。
 # 呼び出し元: 人間が `bash benches/jwt-nfr6-bench.sh` として直接実行する、または
@@ -58,6 +70,8 @@ BASELINE_BIN="${BENCH_TARGET_DIR}/release/examples/minimal"
 JWT_BIN="${BENCH_TARGET_DIR}/release/examples/jwt_gate_server"
 BASELINE_PORT=3000
 JWT_PORT=3103
+# 1 のとき DPoP 系列 (d) を追加で計測する（#906）。既定は 0 で、従来の出力を変えない。
+JWT_DPOP="${JWT_DPOP:-0}"
 
 for tool in oha jq curl; do
     if ! command -v "${tool}" >/dev/null 2>&1; then
@@ -132,14 +146,16 @@ start_baseline() {
 }
 
 # サーバを起動する（stdout は捨てる。トークンは出力しない）。
-# 引数: $1 バイナリ、$2 FANDHE_BACKEND_JWT_GATE の値（"" なら未設定）、$3 ALG（"" なら既定）
+# 引数: $1 バイナリ、$2 FANDHE_BACKEND_JWT_GATE の値（"" なら未設定）、$3 ALG（"" なら既定）、
+#       $4 FANDHE_BACKEND_JWT_BENCH_DPOP の値（省略・"" なら未設定。#906）
 start_server() {
-    local bin="$1" gate="$2" alg="$3"
+    local bin="$1" gate="$2" alg="$3" dpop="${4-}"
     assert_port_free "${JWT_PORT}"
     : >"${TOKEN_FILE}"
     (
         if [ -n "${gate}" ]; then export FANDHE_BACKEND_JWT_GATE="${gate}"; fi
         if [ -n "${alg}" ]; then export FANDHE_BACKEND_JWT_BENCH_ALG="${alg}"; fi
+        if [ -n "${dpop}" ]; then export FANDHE_BACKEND_JWT_BENCH_DPOP="${dpop}"; fi
         export FANDHE_BACKEND_JWT_BENCH_TOKEN_FILE="${TOKEN_FILE}"
         exec "${bin}" >/dev/null 2>&1
     ) &
@@ -204,12 +220,15 @@ run_load() {
     local url="http://127.0.0.1:${port}/"
     local hdr="Authorization: Bearer ${token}"
 
-    oha -z 2s -c "${CONNECTIONS}" -H "${hdr}" --no-tui --output-format json "${url}" >/dev/null 2>&1 || true
+    # `-w`: oha 1.14 は HTTP/1 で期限到達時に実行中の要求を "aborted due to deadline" として
+    # errorDistribution へ数え、下の verify_all_200 が誤って計測失敗にする。期限後も実行中の
+    # 要求の完了を待たせ、通信失敗だけを失敗として扱う（#906）。
+    oha -w -z 2s -c "${CONNECTIONS}" -H "${hdr}" --no-tui --output-format json "${url}" >/dev/null 2>&1 || true
 
     local rps_values=() p95_values=()
     local i json rps p95
     for ((i = 1; i <= RUNS; i++)); do
-        json="$(oha -z "${DURATION}" -c "${CONNECTIONS}" -H "${hdr}" --no-tui --output-format json "${url}")"
+        json="$(oha -w -z "${DURATION}" -c "${CONNECTIONS}" -H "${hdr}" --no-tui --output-format json "${url}")"
         verify_all_200 "${json}" "${label} run ${i}"
         rps="$(echo "${json}" | jq -r '.summary.requestsPerSec')"
         p95="$(echo "${json}" | jq -r '.latencyPercentiles.p95')"
@@ -254,6 +273,17 @@ start_baseline
 wait_ready "${BASE_URL}" "${ES_TOKEN}" || exit 1
 expect_code 200 "$(http_code "${BASE_URL}" "${ES_TOKEN}")" "baseline・トークン付き GET /"
 stop_server
+
+if [ "${JWT_DPOP}" = "1" ]; then
+    # allow-unbound を受け付けないバイナリ（dpop feature なし）は起動時に終了し、wait_ready が
+    # それを検出して中止する。
+    start_server "${JWT_BIN}" "" "es256" "allow-unbound"
+    DPOP_TOKEN="$(read_token)"
+    wait_ready "${JWT_URL}" "${DPOP_TOKEN}" || exit 1
+    expect_code 200 "$(http_code "${JWT_URL}" "${DPOP_TOKEN}")" "DPoP(AllowUnboundBearer)・cnf なしトークン付き GET /"
+    expect_code 401 "$(http_code "${JWT_URL}" "")" "DPoP(AllowUnboundBearer)・ヘッダ無し GET /（ゲートが効いている証跡）"
+    stop_server
+fi
 echo "正常性確認 OK" >&2
 
 # --- 計測 ---
@@ -290,6 +320,16 @@ load_out="$(run_load "${JWT_PORT}" "jwt(gate on, RS256)" "${RS_TOKEN}")" || exit
 read -r rs_rps rs_p95 <<<"${load_out}"
 stop_server
 
+dpop_rps="" dpop_p95=""
+if [ "${JWT_DPOP}" = "1" ]; then
+    start_server "${JWT_BIN}" "" "es256" "allow-unbound"
+    DPOP_TOKEN="$(read_token)"
+    wait_ready "${JWT_URL}" "${DPOP_TOKEN}" || exit 1
+    load_out="$(run_load "${JWT_PORT}" "jwt(gate on, DPoP AllowUnboundBearer, ES256)" "${DPOP_TOKEN}")" || exit 1
+    read -r dpop_rps dpop_p95 <<<"${load_out}"
+    stop_server
+fi
+
 es_rps_ratio="$(ratio "${es_rps}" "${baseline_rps}")"
 es_p95_ratio="$(ratio "${es_p95}" "${baseline_p95}")"
 off_rps_ratio="$(ratio "${off_rps}" "${baseline_rps}")"
@@ -300,6 +340,15 @@ rs_p95_ratio="$(ratio "${rs_p95}" "${rs_baseline_p95}")"
 es_verdict="$(evaluate_nfr6_ratio "${es_rps_ratio}" "${es_p95_ratio}")"
 off_verdict="$(evaluate_nfr6_ratio "${off_rps_ratio}" "${off_p95_ratio}")"
 rs_verdict="$(evaluate_nfr6_ratio "${rs_rps_ratio}" "${rs_p95_ratio}")"
+
+if [ "${JWT_DPOP}" = "1" ]; then
+    # 分母は (a) baseline と (c) ES256 ゲート有効（DPoP なし）の 2 通り。
+    dpop_rps_ratio="$(ratio "${dpop_rps}" "${baseline_rps}")"
+    dpop_p95_ratio="$(ratio "${dpop_p95}" "${baseline_p95}")"
+    dpop_vs_gate_rps_ratio="$(ratio "${dpop_rps}" "${es_rps}")"
+    dpop_vs_gate_p95_ratio="$(ratio "${dpop_p95}" "${es_p95}")"
+    dpop_verdict="$(evaluate_nfr6_ratio "${dpop_rps_ratio}" "${dpop_p95_ratio}")"
+fi
 
 {
     echo ""
@@ -321,3 +370,13 @@ printf 'gate_off_rps=%s\ngate_off_p95=%s\ngate_off_rps_ratio=%s\ngate_off_p95_ra
 printf 'baseline_rs256_token_rps=%s\nbaseline_rs256_token_p95=%s\n' "${rs_baseline_rps}" "${rs_baseline_p95}"
 printf 'gate_on_rs256_rps=%s\ngate_on_rs256_p95=%s\ngate_on_rs256_rps_ratio=%s\ngate_on_rs256_p95_ratio=%s\ngate_on_rs256_verdict=%s\n' \
     "${rs_rps}" "${rs_p95}" "${rs_rps_ratio}" "${rs_p95_ratio}" "${rs_verdict}"
+
+# DPoP 系列 (d)（#906、JWT_DPOP=1 のときだけ。主判定のキー集合は変えない）。
+if [ "${JWT_DPOP}" = "1" ]; then
+    echo "jwt ゲート有効 DPoP(AllowUnboundBearer) ES256 RPS=${dpop_rps}（対 baseline ${dpop_rps_ratio}%、対 ゲート有効 ${dpop_vs_gate_rps_ratio}%） p95=${dpop_p95}（対 baseline ${dpop_p95_ratio}%、対 ゲート有効 ${dpop_vs_gate_p95_ratio}%） 判定=${dpop_verdict}" >&2
+    printf 'gate_on_dpop_unbound_rps=%s\ngate_on_dpop_unbound_p95=%s\n' "${dpop_rps}" "${dpop_p95}"
+    printf 'gate_on_dpop_unbound_rps_ratio=%s\ngate_on_dpop_unbound_p95_ratio=%s\ngate_on_dpop_unbound_verdict=%s\n' \
+        "${dpop_rps_ratio}" "${dpop_p95_ratio}" "${dpop_verdict}"
+    printf 'gate_on_dpop_unbound_vs_gate_rps_ratio=%s\ngate_on_dpop_unbound_vs_gate_p95_ratio=%s\n' \
+        "${dpop_vs_gate_rps_ratio}" "${dpop_vs_gate_p95_ratio}"
+fi
