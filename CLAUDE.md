@@ -16,7 +16,7 @@ OpenAPI 自動生成 / hub 配線 / 可観測性を段階的に拡張できる�
 公開対象 15 クレート（http / routes / core / plugin-* 12 種。plugin-jwt・plugin-csrf は
 0.5.0 で初公開）を crates.io へ lockstep
 バージョニングで公開する（恒久非公開: axum-ref / ws-load-client）。現行公開版は
-0.6.0（2026-10-27）。手順・区分は `docs/design/crates-io-release.md` 参照。
+0.6.1（2026-10-28）。手順・区分は `docs/design/crates-io-release.md` 参照。
 
 仕様書は [Fandhe-AI/fandhe-backend-spec](https://github.com/Fandhe-AI/fandhe-backend-spec) を
 `docs/spec/`（submodule）に取り込む。実装は `docs/spec/06-roadmap.md` の MS-1〜MS-6 に従い、
@@ -824,7 +824,7 @@ fandhe-backend/
 │   │                                    # （`docs/design/plugin-boundary.md`
 │   │                                    # 5.5.1 節参照）。イシュー #934 で
 │   │                                    # `WsOpenContext`/`WsConnContext` に `extensions()`
-│   │                                    # （ゲートの検証結果の読み取り専用口）を追加。実 TCP の
+│   │                                    # （ゲートの検証結果の読み取り専用口）を追加（0.6.1 で公開済み）。実 TCP の
 │   │                                    # 統合テストは `crates/core/tests/ws_gate_extensions.rs`
 │   │                                    # （#935。plugin は core に依存しないため core 側に置く）、
 │   │                                    # ガイドは `docs/guide/ws-gate-extensions.md`。
