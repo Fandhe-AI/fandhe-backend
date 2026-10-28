@@ -14,7 +14,8 @@
 patch を上げます（追加のみで patch を上げた前例は 0.4.2）。
 実 publish（`v0.6.1` タグ push → verify → dry-run → GitHub Environments
 `crates-io-release` の required reviewers 承認 → `cargo publish --workspace`）は
-準備中（詳細は
+2026-10-28 に実施完了（release run 40615727812、15 クレートすべてが crates.io
+インデックスへ反映されたことを確認済み。詳細は
 [`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7.9 節・8 節チェックリスト参照）。
 
 ### Added
