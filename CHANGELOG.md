@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-28
+
+公開対象 15 クレートを lockstep バンプ（`docs/design/crates-io-release.md` 7.9 節）。
+変更は `fandhe-backend-plugin-websocket` への追加のみで既存の API を壊さないため、
+patch を上げます（追加のみで patch を上げた前例は 0.4.2）。
+実 publish（`v0.6.1` タグ push → verify → dry-run → GitHub Environments
+`crates-io-release` の required reviewers 承認 → `cargo publish --workspace`）は
+準備中（詳細は
+[`docs/design/crates-io-release.md`](docs/design/crates-io-release.md) 7.9 節・8 節チェックリスト参照）。
+
 ### Added
 
 - `fandhe-backend-plugin-websocket`: `WsOpenContext::extensions()` / `WsConnContext::extensions()` を
@@ -18,7 +28,7 @@
   **限界**: 値はセッションの間ずっと保持され、JWT の `exp` はハンドシェイク時点でしか検証しません。
   コアの `Server::max_connection_lifetime` は upgrade 後の委譲セッションには効きません。緩和策は
   ガイド `docs/guide/ws-gate-extensions.md` を参照してください。新規依存・`unsafe` はなく、追加のみで
-  既存の型は壊れません。crates.io 公開版 0.6.0 には含まれません。
+  既存の型は壊れません。
 
 ## [0.6.0] - 2026-10-27
 
