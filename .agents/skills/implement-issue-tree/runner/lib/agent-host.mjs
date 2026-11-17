@@ -21,8 +21,8 @@
 //
 // 内容の固定（PR #851 の P0。lib/pins.mjs）: 作成時に launcher（scripts/run-verified.sh）と照合より前に source される
 // scripts/lib/signed-output.sh の sha256 を固定し、run.mjs がエージェントの起動前に固定した cfg.pins（ガード・hook・plugin）と
-// 合わせて、実行仕様の段の起動前・モデルの段の各ターンの前後に照合する。1 度でも食い違えば、以降の段はすべて実行しない
-// （実行仕様は exec-refused で失敗値、モデルの段は null。reason は pin-mismatch）。照合から起動までの差し替え（TOCTOU）は防がない。
+// 合わせて、実行仕様の段の起動前・モデルの段の隔離 worktree の作成前と各ターンの前後に照合する。1 度でも食い違えば、以降の段は
+// すべて実行しない（実行仕様は exec-refused で失敗値、モデルの段は worktree を作らずに null。reason は pin-mismatch）。照合から起動までの差し替え（TOCTOU）は防がない。
 //
 // ログ: cfg.runDir があれば、呼び出しごとに <runDir>/agents/<seq 4 桁>-<label>/ へ meta.json（通し確認の判定器が読む。
 // 形は run.mjs 冒頭の「出力の形」）・request.json・prompt.txt（モデルへ回した段）・exec.json / stdout.txt / stderr.txt
@@ -32,10 +32,30 @@
 // 実行仕様でない呼び出しは、モデルへ回さず、プロンプトの worktree-remove.sh と state.sh の行をホストが検証して順に直接実行する
 // （読めない・対象を確かめられないときは何も実行せず失敗値。読み取りの profile のモデルでは削除も状態の書き込みもできないため）。
 //
+// ランナー自身の lock（Phase 4 の通し確認で、旧 worktree が retained-locked で残った）: 隔離 worktree は作成時に
+// `claude agent <runId>-<n> (pid <ランナーの pid>)` で lock され、worktree-remove.sh を起動するのも同じプロセスなので、スクリプトからは
+// lock が常に生存と見える。worktree-remove.sh を直接実行する段（掃除の複合段・state:cleanup:#N の remove・worktree:sweep）の前に、
+// 対象のうち「このホストが makeWorktree で作り、いま隔離の段が使っていない」worktree だけ、lock の理由が作成時と一致するときに unlock し、
+// スクリプトが消さなかったものは同じ理由で lock し直す。集合はプロセス内だけに持ち、label やプロンプトからは足さない。--require-missing
+// （スクリプトも lock を外さない結びつけ）では外さない。汚れ・submodule の判定はスクリプトに任せる。
+//
+// マージを許す段の cwd（Phase 4 の通し確認で、リモートのマージは済んだのに `gh pr merge --delete-branch` がローカルのブランチ削除で
+// sandbox に拒まれ merge-failed を返した）: req.merge を決めた merge-exec は、リポジトリの外の空ディレクトリ（os.tmpdir() の下）を
+// cwd にする。gh は -R 無し（GH_REPO は flag と数えない）でもローカルにブランチがあるときだけローカル削除を試みるので、git リポジトリの
+// 外ではローカル削除を試みず、リモートのブランチ削除まで進む。置き場がリポジトリの中になってしまうときはマージを許さない（fail-closed）。
+//
+// 状態ファイルの読み込みの段（lib/state-read.mjs）: label が state:load・state:load-fill（と :fallback-<model>）で 0 行目が実行仕様でない
+// 隔離なしの呼び出しは、モデルへ回さず、args の parent から決めた状態ファイル（_/issue-trees/<parent>.json）をホストが読んで、
+// 渡された schema の形（items は番号 → 項目のオブジェクト）で返す（モデルが長い値を書き写し損ねて state:load-verify との照合が
+// 不成立になった）。キーは決めず items を丸ごと返す。状態ファイルがあるのに読めない・形が違う・置き場の外のときは、モデルの段が
+// 返すのと同じ照合不成立に倒れる値（state:load は ok: false・fileExisted: true、state:load-fill は items: {}）を返し、読む対象を
+// 決められないときは null。状態ファイルが無いときの state:load（初回の初期化）だけは従来どおりモデルの段へ回す。
+//
 // 呼び出し元: runner/run.mjs（生成物の agent 引数に渡す）と dev/implement-issue-tree/tests/runner-*.test.mjs。
-import { spawn } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import { spawn, spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { isAbsolute, join, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { isAdapterError } from './adapter-error.mjs'
 import { extractJsonObject } from './extract-json.mjs'
@@ -46,7 +66,8 @@ import { isRepoSlug, mergeNumberKinds, mergePrNumberOf } from './merge-target.mj
 import { checkPins, launcherPinPaths, mergePins, pinFiles } from './pins.mjs'
 import { recoverGitFor } from './recover-git.mjs'
 import { CLEANUP_LABEL, CLEAR_WORDS, checkCleanupTarget, parseCleanupPrompt } from './cleanup-host.mjs'
-import { createSequencer, createWorktree, verifyWorktreeGitdir } from './worktree.mjs'
+import { STATE_READ_LABEL, readStateFile, stateDirOf, stateFileOf, stateParentOf } from './state-read.mjs'
+import { createSequencer, createWorktree, gitLocationFreeEnv, relockOwnWorktree, unlockOwnWorktree, verifyWorktreeGitdir } from './worktree.mjs'
 
 // ---- 実行仕様 ----
 
@@ -199,10 +220,15 @@ export function killScriptsSync() {
 
 /**
  * スクリプトを shell なしで起動する既定の実装。detached でプロセスグループを作り、時間切れ・出力超過では
- * グループごと止める（gh などの孫プロセスを残さない）。
+ * グループごと止める（gh などの孫プロセスを残さない）。止めた後 killGraceMs（既定 2 秒）を過ぎても close が来なければ
+ * （新しいセッションへ抜けた孫が標準出力を握っている・子が D 状態にある等）、close を待たずに timedOut / overflow を
+ * 立てたまま code: null で決着する（並列の枠を握り続けない）。子が終わったとき（正常終了を含む）は、その場で同じ
+ * プロセスグループへ SIGKILL を送り、標準入出力を閉じて残った孫も止める（終了後は liveScripts から外れ、killScriptsSync の
+ * 対象にならないため。adapters/codex.mjs と同じ。回収直後に送るので pid の再利用で別のグループは撃たない）。
+ * 新しいセッションへ抜けた孫はグループの外にいるため止められない。
  * @returns {Promise<{ code: number|null, stdout: string, stderr: string, timedOut: boolean, overflow: boolean, error?: string }>}
  */
-export function spawnScript(file, args, { cwd, input, timeoutMs, env = process.env }) {
+export function spawnScript(file, args, { cwd, input, timeoutMs, env = process.env, killGraceMs = 2000 }) {
   return new Promise((resolve) => {
     let child
     try {
@@ -219,11 +245,18 @@ export function spawnScript(file, args, { cwd, input, timeoutMs, env = process.e
     let timedOut = false
     let overflow = false
     let settled = false
-    const killGroup = () => {
+    let forceTimer = null
+    const signalGroup = () => {
       try { process.kill(-child.pid, 'SIGKILL') } catch { try { child.kill('SIGKILL') } catch { /* 既に終了 */ } }
+    }
+    // 時間切れ・出力超過: グループを止め、猶予の後は close を待たずに決着する（猶予のタイマーは 1 本だけ）
+    const killGroup = () => {
+      signalGroup()
+      if (forceTimer === null) forceTimer = setTimeout(() => finish(null, undefined, true), killGraceMs)
     }
     const timer = setTimeout(() => { timedOut = true; killGroup() }, timeoutMs)
     child.stdout.on('data', (b) => {
+      if (overflow) return
       outBytes += b.length
       if (outBytes > MAX_STDOUT_BYTES) { overflow = true; killGroup(); return }
       out.push(b)
@@ -232,14 +265,18 @@ export function spawnScript(file, args, { cwd, input, timeoutMs, env = process.e
       if (errBytes < MAX_STDERR_BYTES) err.push(b.subarray(0, MAX_STDERR_BYTES - errBytes))
       errBytes += b.length
     })
-    const finish = (code, error) => {
+    const finish = (code, error, forced = false) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      clearTimeout(forceTimer)
       liveScripts.delete(child)
+      // close が来ていない: 抜けた孫が握る pipe の読み口を閉じる（イベントループを握らせず、決着後に溜め込まない）
+      if (forced) { child.stdout.destroy(); child.stderr.destroy() }
       resolve({ code, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8'), timedOut, overflow, ...(error ? { error } : {}) })
     }
     child.on('error', (e) => finish(null, String(e?.message ?? e)))
+    child.on('exit', () => { try { process.kill(-child.pid, 'SIGKILL') } catch { /* グループに残りが無い */ } })
     child.on('close', (code) => finish(code))
     // 標準入力を読まないスクリプトが先に閉じても落ちないようにする
     child.stdin.on('error', () => {})
@@ -299,13 +336,14 @@ function createLimiter(max) {
 }
 
 // 状態ファイルの置き場（<main>/_/issue-trees）を追加の書き込み可にする段（契約の req.writablePaths。監査 e670648 の MEDIUM-4）。
-// モデルの段で状態ファイルを書くのは state:load（無ければ初期化する）だけである。src の runStateAgent が付ける
+// モデルの段で状態ファイルを書くのは state:load（無ければ初期化する）だけである。状態ファイルがあるときの state:load は
+// ホストが読むので（lib/state-read.mjs）、モデルへ回るのは初期化のときだけになる。src の runStateAgent が付ける
 // `:fallback-<model>` を含め、読み取り専用の state:load-fill・直接実行の state:load-verify には一致させない
 const STATE_LOAD_LABEL = /^state:load(?::fallback-[a-z0-9]+)?$/
 
 /** label ごとの追加の書き込み可パス（絶対パスの配列）。 */
 export function writablePathsFor(label, mainRoot) {
-  return STATE_LOAD_LABEL.test(label) ? [join(mainRoot, '_', 'issue-trees')] : []
+  return STATE_LOAD_LABEL.test(label) ? [stateDirOf(mainRoot)] : []
 }
 
 // ツリーの取得（PR #851 の P1）: plan:issue-tree（と -retry）は fetch-tree.sh --root で自分の TMPDIR に
@@ -352,8 +390,14 @@ export function createAgentHost({ adapter, cfg }) {
   const autoMerge = cfg.args?.autoMerge === true
   const repo = cfg.repo ?? null
   if (repo !== null && !isRepoSlug(repo)) throw new TypeError('cfg.repo は owner/repo の形')
+  const mergeCwdParent = cfg.mergeCwdParent ?? tmpdir()
+  if (typeof mergeCwdParent !== 'string' || !isAbsolute(mergeCwdParent)) throw new TypeError('cfg.mergeCwdParent は絶対パス')
   const seq = createSequencer()
   const limiter = createLimiter(maxParallel)
+  // このホストが makeWorktree で作った worktree（パス → 作成時の lock の理由）と、いま隔離の段が使っている worktree。
+  // 入力（label・プロンプト）からは足さない
+  const ownLocks = new Map()
+  const busy = new Set()
   let adapterCalls = 0
   // ツリーの段（TREE_LABEL）の logDir。ページの段の req.readTmpOf になる（起動した順）
   const treeLogDirs = []
@@ -380,6 +424,83 @@ export function createAgentHost({ adapter, cfg }) {
     }
   }
 
+  /** 自分が作った worktree のキー（作成時のパス）。集合に無ければ null。 */
+  const ownKey = (p) => {
+    if (typeof p !== 'string' || !isAbsolute(p)) return null
+    const r = resolve(p)
+    if (ownLocks.has(r)) return r
+    try {
+      const real = realpathSync(r)
+      if (ownLocks.has(real)) return real
+    } catch { /* 実体が無い */ }
+    return null
+  }
+  /** worktree-remove.sh の前に、自分の lock だけを外す。外したキーの配列を返す（後で relockOwn に渡す）。 */
+  async function unlockOwn(paths, label) {
+    const done = []
+    for (const p of paths) {
+      const key = ownKey(p)
+      if (key === null || done.includes(key)) continue
+      if (busy.has(key)) {
+        log(`⚠️ ${label}: 隔離の段が使用中の worktree なので lock を外さない（${key}）`)
+        continue
+      }
+      const r = await unlockOwnWorktree({ mainRoot, path: key, reason: ownLocks.get(key) })
+      if (r === 'unlocked') {
+        log(`${label}: ランナーが作成時に付けた lock を外してから掃除する（${key}）`)
+        done.push(key)
+      } else if (r === 'other-lock' || r === 'error') {
+        log(`⚠️ ${label}: lock を外さない（${r === 'other-lock' ? '作成時と違う理由の lock' : 'lock を確かめられない'}: ${key}）`)
+      }
+    }
+    return done
+  }
+  /** スクリプトの後、まだ登録が残る（保持された）ものを作成時の理由で lock し直す。 */
+  async function relockOwn(keys, label) {
+    for (const key of keys) {
+      const r = await relockOwnWorktree({ mainRoot, path: key, reason: ownLocks.get(key) })
+      if (r === 'relocked') log(`${label}: 残った worktree を lock し直した（${key}）`)
+      else if (r === 'error') log(`⚠️ ${label}: 残った worktree を lock し直せない（${key}）`)
+    }
+  }
+  /** 直接実行する worktree-remove.sh の対象のパス（remove の --path・sweep の候補）。--require-missing は空（lock を外さない）。 */
+  const removeTargets = (spec, input) => {
+    if (spec.script !== 'worktree-remove.sh') return []
+    const a = spec.argv
+    if (a[0] === 'remove') {
+      if (a.includes('--require-missing')) return []
+      const i = a.indexOf('--path')
+      return i >= 0 && typeof a[i + 1] === 'string' ? [a[i + 1]] : []
+    }
+    if (a[0] === 'sweep') {
+      try {
+        const list = JSON.parse(input.toString('utf8'))
+        return Array.isArray(list) ? list.filter((x) => typeof x === 'string') : []
+      } catch {
+        return []
+      }
+    }
+    return []
+  }
+
+  /**
+   * マージを許す段の cwd を作る（リポジトリの外の空ディレクトリ）。git が work tree の中と判定する場所なら作った物を消して null。
+   */
+  const makeMergeCwd = (label) => {
+    let dir = null
+    try {
+      dir = realpathSync(mkdtempSync(join(mergeCwdParent, 'iit-merge-')))
+      // GIT_DIR・GIT_CEILING_DIRECTORIES 等を外した環境で、上へたどって git リポジトリが見つからないことを確かめる
+      const r = spawnSync('git', ['rev-parse', '--git-dir'], { cwd: dir, env: gitLocationFreeEnv(), stdio: ['ignore', 'ignore', 'ignore'], timeout: 10_000 })
+      if (r.status !== 128) throw new Error(r.status === 0 ? 'git リポジトリの中にある' : `判定できない（git の終了コード ${r.status}）`)
+      return dir
+    } catch (e) {
+      log(`⚠️ ${label}: マージの段の cwd をリポジトリの外に用意できない（${sanitizeErrorLine(e?.message ?? e)}）。この段ではマージを許さない`)
+      if (dir !== null) try { rmSync(dir, { recursive: true, force: true }) } catch { /* 消せなくても続ける */ }
+      return null
+    }
+  }
+
   async function runDirect(spec, label, schema, prompt, logDir, timeoutMs, rec) {
     // 直接実行の段は会話が無い（sessionRef は null のまま）。成否は status に残す
     rec.outcome = 'exec-spec'
@@ -400,7 +521,14 @@ export function createAgentHost({ adapter, cfg }) {
     const input = spec.stdinHex === undefined ? Buffer.alloc(0) : Buffer.from(spec.stdinHex, 'hex')
     writeLog(logDir, 'exec.json', { script: spec.script, argv: spec.argv, ret: spec.ret, stdinBytes: input.length, cwd: mainRoot })
     const started = Date.now()
-    const r = await runScript('bash', args, { cwd: mainRoot, input, timeoutMs }, { label, prompt, spec })
+    const unlocked = await unlockOwn(removeTargets(spec, input), label)
+    if (unlocked.length > 0) rec.unlocked = unlocked
+    let r
+    try {
+      r = await runScript('bash', args, { cwd: mainRoot, input, timeoutMs }, { label, prompt, spec })
+    } finally {
+      await relockOwn(unlocked, label)
+    }
     writeLog(logDir, 'stdout.txt', r.stdout ?? '')
     writeLog(logDir, 'stderr.txt', r.stderr ?? '')
     const value = interpretExecResult(spec.ret, r)
@@ -451,7 +579,14 @@ export function createAgentHost({ adapter, cfg }) {
       writeLog(logDir, `stderr-${name}.txt`, r.stderr ?? '')
       return { r }
     }
-    const s1 = await step('worktree-remove.sh', p.remove.sha256, p.remove.argv, '')
+    const unlocked = p.remove.argv.includes('--require-missing') ? [] : await unlockOwn([p.path], label)
+    if (unlocked.length > 0) rec.unlocked = unlocked
+    let s1
+    try {
+      s1 = await step('worktree-remove.sh', p.remove.sha256, p.remove.argv, '')
+    } finally {
+      await relockOwn(unlocked, label)
+    }
     if (s1.refused) return refuse(s1.refused)
     const raw = interpretExecResult('line:WORKTREE_REMOVE_RESULT', s1.r)
     const base = { code: s1.r.code, timedOut: s1.r.timedOut, overflow: s1.r.overflow }
@@ -485,6 +620,51 @@ export function createAgentHost({ adapter, cfg }) {
     return value
   }
 
+  // 状態ファイルの読み込みの段（lib/state-read.mjs）。値を返したら終わり、undefined ならモデルの段へ回す
+  // （状態ファイルが無いときの state:load = 初回の初期化だけ）
+  function runHostStateRead(label, schema, prompt, logDir, rec) {
+    const fill = STATE_READ_LABEL.exec(label)[1] === '-fill'
+    const started = Date.now()
+    const direct = (status, extra = {}) => Object.assign(rec, { outcome: 'exec-spec', direct: 'host-state-read', status, durationMs: Date.now() - started }, extra)
+    // 固定の食い違いの後は、モデルの段と同じく何もせず null
+    const mismatch = pinMismatch()
+    if (mismatch) {
+      direct('exec-refused', { reason: `pin-mismatch: ${mismatch}` })
+      return null
+    }
+    const parent = stateParentOf(cfg.args)
+    const rel = parent === null ? null : stateFileOf(parent)
+    // 読む対象を決められない・プロンプトが同じ状態ファイルを指さない: 何も読まない
+    if (rel === null || !prompt.includes(rel)) {
+      const reason = rel === null ? 'args の parent から状態ファイルを決められない' : 'プロンプトが args の parent の状態ファイルを指さない'
+      log(`⚠️ ${label}: 状態ファイルを読まない（${reason}）`)
+      direct('exec-refused', { reason })
+      return null
+    }
+    const r = readStateFile({ mainRoot, parent })
+    writeLog(logDir, 'state-read.json', { file: rel, kind: r.kind, ...(r.kind === 'bad' ? { reason: r.reason } : {}), ...(r.kind === 'ok' ? { keys: Object.keys(r.items).length } : {}) })
+    if (r.kind === 'absent' && !fill) {
+      log(`${label}: 状態ファイル（${rel}）が無いため、初期化をモデルの段へ回す`)
+      return undefined
+    }
+    let value
+    if (r.kind === 'ok') {
+      value = fill ? { items: r.items } : { ok: true, fileExisted: true, items: r.items, highWaterBytes: r.highWaterBytes, highWaterVersion: r.highWaterVersion }
+    } else {
+      // モデルの段が返すのと同じ照合不成立に倒れる値（state:load は loadState が停止し、state:load-fill は項目が未照合のまま残る）
+      if (r.kind === 'bad') log(`⚠️ ${label}: 状態ファイル（${rel}）を読めない（${r.reason}）`)
+      value = fill ? { items: {} } : { ok: false, fileExisted: true, items: {}, highWaterBytes: 0, highWaterVersion: 0 }
+    }
+    const v = validate(schema, value)
+    if (!v.ok) {
+      log(`⚠️ ${label}: 状態ファイルから作った値が schema に適合しないため null を返す`)
+      direct('exec-invalid', { errors: v.errors })
+      return null
+    }
+    direct(r.kind === 'ok' ? 'exec-ok' : 'exec-fail', { stateFile: r.kind, ...(r.kind === 'bad' ? { reason: r.reason } : {}) })
+    return value
+  }
+
   // アダプタ 1 回分。保険の時間切れ（timeoutMs + 猶予）を過ぎたら待つのをやめる（アダプタの停止責務の取りこぼし対策）
   async function callAdapter(req) {
     adapterCalls++
@@ -507,7 +687,12 @@ export function createAgentHost({ adapter, cfg }) {
     return v.ok ? { ok: true, value: obj } : { ok: false, errors: v.errors }
   }
 
-  async function runModel({ prompt, opts, label, schema, n, logDir, timeoutMs, rec }) {
+  async function runModel({ prompt, opts, label, schema, n, logDir, timeoutMs, rec, using }) {
+    // 固定の食い違いの後は、隔離 worktree も作らない（fetch・worktree add・lock の .git への書き込みを起こさない）
+    if (pinMismatch()) {
+      Object.assign(rec, { outcome: 'null', status: 'null', sessionRef: null, reason: 'pin-mismatch', detail: tampered })
+      return null
+    }
     const resolved = resolveModel(config, tool, { model: opts.model, effort: opts.effort })
     let cwd = mainRoot
     let worktreePath
@@ -517,9 +702,12 @@ export function createAgentHost({ adapter, cfg }) {
     let worktreeGitdir = null
     if (opts.isolation === 'worktree') {
       // 失敗は例外のまま上げる（契約で throw してよい 2 つのうちの 1 つ。gitdir の検証失敗も作成失敗として扱う）
-      const wt = makeWorktree({ mainRoot, runId, n })
+      const wt = await makeWorktree({ mainRoot, runId, n })
       cwd = wt.path
       worktreePath = wt.path
+      if (typeof wt.lockReason === 'string' && wt.lockReason !== '' && typeof wt.path === 'string') ownLocks.set(wt.path, wt.lockReason)
+      busy.add(wt.path)
+      using.path = wt.path
       if (wt.gitdir !== undefined) worktreeGitdir = verifyWorktreeGitdir(mainRoot, wt.gitdir)
     }
     // マージしてよい対象（契約の req.merge。MEDIUM-8）。PR 番号は前置きを足す前のホストのプロンプトから取る。
@@ -529,12 +717,18 @@ export function createAgentHost({ adapter, cfg }) {
     if (autoMerge && /^merge-exec(?::|$)/.test(label)) {
       const prNumber = mergePrNumberOf(prompt)
       const kinds = mergeNumberKinds(prompt)
-      if (prNumber !== null && repo !== null) merge = { prNumber, repo }
-      else if (prNumber === null && kinds === 0) { /* 回復専用の段: マージのコマンドを含まない */ }
+      if (prNumber !== null && repo !== null) {
+        const dir = makeMergeCwd(label)
+        if (dir !== null) {
+          merge = { prNumber, repo }
+          cwd = dir
+          using.mergeCwd = dir
+        }
+      } else if (prNumber === null && kinds === 0) { /* 回復専用の段: マージのコマンドを含まない */ }
       else log(`⚠️ ${label}: マージ対象を決められない（${prNumber === null ? `プロンプトの gh pr merge の PR 番号が ${kinds} 種類で、手順 3 の形の 1 種類に決まらない` : 'repo が未確定'}）。この段ではマージを許さない`)
     }
     const req = {
-      prompt: composePrompt({ prompt, schema, worktreePath }),
+      prompt: composePrompt({ prompt, schema, worktreePath, merge: merge !== null }),
       schema,
       model: resolved.model,
       effort: resolved.effort,
@@ -584,6 +778,13 @@ export function createAgentHost({ adapter, cfg }) {
       }
       const c = check(schema, r.value?.text)
       if (c.ok) {
+        // 隔離の段の worktreePath は、モデルの書き写しでなくランナーが作ったパスを返す（Phase 4 の通し確認で、fix の段が
+        // パスの後ろに語を足した値を返し、ホストの sanitizeWorktreePath が空にして追跡できなくなった）
+        if (worktreePath !== undefined && isPlainObject(c.value) && Object.hasOwn(c.value, 'worktreePath') && c.value.worktreePath !== worktreePath) {
+          log(`⚠️ ${label}: 返された worktreePath が作成したパスと違うため、作成したパスに置き換える（返された値: ${sanitizeErrorLine(String(c.value.worktreePath)).slice(0, 200)}）`)
+          c.value.worktreePath = worktreePath
+          rec.worktreePathReplaced = true
+        }
         outcome(turn === 0 ? 'ok' : 'repaired', { usage: r.value?.usage ?? null })
         return c.value
       }
@@ -627,7 +828,19 @@ export function createAgentHost({ adapter, cfg }) {
         }
         if (parsed.kind === 'spec') return await runDirect(parsed.spec, label, schema, prompt, logDir, timeoutMs, rec)
         if (CLEANUP_LABEL.test(label) && opts.isolation === undefined) return await runHostCleanup(label, schema, prompt, logDir, timeoutMs, rec)
-        return await runModel({ prompt, opts, label, schema, n, logDir, timeoutMs, rec })
+        if (STATE_READ_LABEL.test(label) && opts.isolation === undefined) {
+          const value = runHostStateRead(label, schema, prompt, logDir, rec)
+          if (value !== undefined) return value
+        }
+        const using = { path: null, mergeCwd: null }
+        try {
+          return await runModel({ prompt, opts, label, schema, n, logDir, timeoutMs, rec, using })
+        } finally {
+          if (using.path !== null) busy.delete(using.path)
+          if (using.mergeCwd !== null) {
+            try { rmSync(using.mergeCwd, { recursive: true, force: true }) } catch (e) { log(`⚠️ ${label}: マージの段の cwd を消せない: ${sanitizeErrorLine(e?.message ?? e)}`) }
+          }
+        }
       } finally {
         release()
       }

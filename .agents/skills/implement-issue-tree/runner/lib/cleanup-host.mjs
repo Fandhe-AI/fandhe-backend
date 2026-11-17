@@ -20,11 +20,12 @@
 //
 // 読み取りは recover-git.mjs と同じく行単位の完全一致で、どちらの行もちょうど 1 つ、run-verified.sh を起動する行は全体で 2 つだけのときに限る。
 // 値（sha256・パス・ブランチ名・状態ファイルの番号・イシュー番号）はプロンプトの行から取り、label の N と本文の numbers を束縛する。
+// discard は結びつけ（--expect-branch・--branch・--require-missing のどれか 1 つ）が付いた形だけを読む（無い形は HEAD を照合せずに消すため）。
 // 対象の worktree は、ホストが次を確かめたものに限る（checkCleanupTarget）:
 //   - 字面で <main>/.claude/worktrees/ の直下（<main> は mainRoot そのもの、またはその realpath）。.claude/worktrees は symlink で外へ出ない
 //   - 実体があれば、その realpath も同じ直下（symlink で外を指さない）でディレクトリ。実体が無い（手で消された）ときは拒まない
 //     （拒むと状態の記録が消えないまま残る。worktree-remove.sh が not-registered か登録だけの片づけで扱う）
-//   - <main>/.git/worktrees/ の下にその worktree を指す gitdir があれば、ちょうど 1 つで、realpath がその直下、commondir が
+//   - <main>/.git/worktrees/ の下にその worktree を指す gitdir（中身が相対パスなら gitdir ファイルのディレクトリを基準に直す）があれば、ちょうど 1 つで、realpath がその直下、commondir が
 //     <main>/.git を指し、worktree の .git ファイルがその gitdir を指す
 //   - 状態ファイル（_/issue-trees/<parent>.json）の .items["N"].worktree が、そのパスか空文字（JSON マージが先に空にした形）
 //
@@ -32,6 +33,7 @@
 import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { verifyWorktreeGitdir } from './worktree.mjs'
+import { gitdirTarget } from './recover-git.mjs'
 
 // runStateAgent がモデルを切り替えるときに付ける `:fallback-<model>` だけを許す（:retry 等は付かない）
 export const CLEANUP_LABEL = /^state:cleanup:#([1-9][0-9]*)(?::fallback-[a-z0-9]+)*$/
@@ -73,10 +75,14 @@ export function parseCleanupPrompt(label, prompt, { skillDir }) {
   const body = `[{"numbers":[${issue}],"patch":{"worktree":""}}]`
   if (lines[stAt[0] + 1] !== body || lines[stAt[0] + 2] !== 'STATE_EOF') return no('state.sh の本文が label のイシューの worktree を空にする 1 行でない')
   const [, rmSha, mode, path, expectBranch, requireMissing, branch, base] = r
-  // 生成物の worktreeRemoveRest と同じ組み合わせだけ（discard 以外に結びつけは付かない・--require-missing は他と併用しない）
+  // 生成物の worktreeRemoveRest が組める形のうち、src が実際に出す組み合わせだけ（discard 以外に結びつけは付かない・
+  // --require-missing は他と併用しない・discard には結びつけが 1 つ要る）
   if (mode !== 'discard' && (expectBranch || requireMissing || branch)) return no('superseded に discard 専用の引数がある')
   if (requireMissing && (expectBranch || branch)) return no('--require-missing と他の結びつけが併用されている')
   if (expectBranch && branch) return no('--expect-branch と --branch が併用されている')
+  // 結びつけの無い discard は、clean な worktree なら固有のコミットごと消す。src の discard の呼び出しはどれも結びつけを付ける
+  // （--expect-branch・--branch・--require-missing）ので、無い形は状態ファイルの破損等で値が落ちたものとして実行しない
+  if (mode === 'discard' && !expectBranch && !requireMissing && !branch) return no('discard に結びつけ（--expect-branch・--branch・--require-missing）が無い')
   const argv = ['remove', '--mode', mode, '--path', path]
   if (expectBranch) argv.push('--expect-branch', expectBranch)
   if (requireMissing) argv.push('--require-missing')
@@ -125,12 +131,13 @@ export function checkCleanupTarget({ mainRoot, path, parent, issue }) {
       if (dirname(real) !== wtParent) return no('worktree の実体が <main>/.claude/worktrees/ の直下にない（symlink で外を指す）')
       if (!lstatSync(real).isDirectory()) return no('worktree の実体がディレクトリでない')
     }
-    // この worktree を指す gitdir（<main>/.git/worktrees/<name>/gitdir の中身が <worktree>/.git）
+    // この worktree を指す gitdir（<main>/.git/worktrees/<name>/gitdir の中身が <worktree>/.git）。中身が相対パス
+    // （worktree.useRelativePaths=true）なら gitdir ファイルのディレクトリを基準に直して比べる（Issue #865。recover-git.mjs と同じ gitdirTarget）
     const wts = join(commonDir, 'worktrees')
     const want = new Set([`${p}/.git`, `${join(wtParent, basename(p))}/.git`, ...(real ? [`${real}/.git`] : [])])
     const names = lstatOrNull(wts) === null ? [] : readdirSync(wts)
     const found = names.filter((n) => {
-      try { return want.has(readFileSync(join(wts, n, 'gitdir'), 'utf8').replace(/\n$/, '')) } catch { return false }
+      try { return want.has(gitdirTarget(join(wts, n))) } catch { return false }
     })
     if (found.length > 1) return no('この worktree を指す gitdir が 2 つ以上ある')
     if (found.length === 1) {
