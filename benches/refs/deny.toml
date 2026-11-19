@@ -22,15 +22,16 @@ all-features = true
 # 本 workspace で受容する根拠（計測専用バイナリに限定した判断。公開クレートには
 # 適用しない）:
 #   1. 両バイナリは既定でループバック（127.0.0.1）にのみバインドし外部公開しない
-#   2. actix-web・Rocket とも HTTP/2 は TLS + ALPN 経由でのみ有効化され、平文 TCP
-#      （h2c）では h2 のコードパスに到達しない。本 workspace は TLS を構成せず、
-#      負荷生成（oha）も HTTP/1.1 のため、脆弱なフレーム処理は実行されない
+#   2. actix-web 4.19 以降は `HttpServer::bind()` が平文 TCP の HTTP/2（h2c）を既定で
+#      自動検出するため、actix-ref は `.auto_h2c(false)` で HTTP/1.1 のみ受ける
+#      （actix-ref/src/main.rs）。TLS は構成しないので h2 のコードパスに到達しない。
+#      Rocket 側も TLS を構成せず、負荷生成（oha）も HTTP/1.1 のため同様
 #   3. 「フレームワーク既定構成どうし」を比較する方針（benches/README.md）のため、
 #      actix-web の `http2` feature を外す構成変更（比較条件の変更）は行わない
 # 再検討トリガ: actix-web 5 系 / Rocket 0.6 系（hyper 1.x）の安定版公開時に依存を
 # 更新して本 ignore を外す。
 ignore = [
-    { id = "RUSTSEC-2026-0258", reason = "h2 0.3 は上流（actix-http 3 / hyper 0.14）固定。計測専用・ループバック限定・HTTP/2 未使用（TLS 非構成）のため到達不能。上流メジャー更新で解消" },
+    { id = "RUSTSEC-2026-0258", reason = "h2 0.3 は上流（actix-http 3 / hyper 0.14）固定。計測専用・ループバック限定。actix-ref は auto_h2c(false)・TLS 非構成で h2 に到達しない。上流メジャー更新で解消" },
 ]
 
 [licenses]
