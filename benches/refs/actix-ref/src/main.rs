@@ -98,7 +98,12 @@ fn configure(cfg: &mut web::ServiceConfig) {
 async fn main() -> std::io::Result<()> {
     // 既定でループバックのみにバインドし、計測専用バイナリを外部公開しない。
     let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3003".to_string());
-    let server = HttpServer::new(|| App::new().configure(configure)).bind(&addr)?;
+    // actix-web 4.19 以降は平文 TCP でも HTTP/2（h2c）を自動検出する。h2c を無効にして
+    // HTTP/1.1 のみ受ける。4.15 以前の `bind()` と同じ挙動で、負荷生成（oha）も HTTP/1.1
+    // のため比較条件は変わらず、脆弱な h2 のフレーム処理へ到達する経路も無くなる。
+    let server = HttpServer::new(|| App::new().configure(configure))
+        .auto_h2c(false)
+        .bind(&addr)?;
     println!("actix-ref listening on {addr}");
     server.run().await
 }
