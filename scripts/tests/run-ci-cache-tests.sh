@@ -119,6 +119,43 @@ for prof in "${T}/debug" "${T}/x86_64-unknown-linux-gnu/release"; do
     assert_exists "${label}: 無関係なファイルを残す" "${prof}/keep-me.txt"
 done
 
+# Rust 1.100 以降の build-dir: deps/ と .fingerprint/ は作られず、成果物は build/<pkg>/<hash>/
+# （fingerprint・out・run）以下に入る。プロファイルは .cargo-lock で検出する。
+make_profile_v100() {
+    local p="$1"
+    mkdir -p "${p}/examples" "${p}/incremental/demo_core-x" \
+        "${p}/build/demo-core/${H}/out" "${p}/build/demo-core/fedcba9876543210/fingerprint" \
+        "${p}/build/demo-cli/${H}/out" \
+        "${p}/build/serde/${H}/out" "${p}/build/interceptor/${H}/out"
+    touch "${p}/.cargo-lock" "${p}/.cargo-build-lock" \
+        "${p}/build/demo-core/${H}/out/libdemo_core-${H}.rlib" \
+        "${p}/build/demo-cli/${H}/out/demo_cli-${H}" \
+        "${p}/build/serde/${H}/out/libserde-${H}.rlib" \
+        "${p}/demo-cli" "${p}/keep-me.txt" "${p}/libserde.rlib"
+}
+
+T100="${WORK}/target-v100"
+make_profile_v100 "${T100}/debug"
+make_profile_v100 "${T100}/x86_64-unknown-linux-gnu/release"
+set +e
+output="$(bash "${SCRIPTS_DIR}/ci-cache-slim-target.sh" --metadata-file "${FIXTURES_DIR}/metadata.json" "${T100}" 2>&1)"
+status=$?
+set -e
+if [ "${status}" -eq 0 ]; then pass "slim（1.100 の build-dir）は exit 0"; else fail "slim（1.100）が exit ${status}: ${output}"; fi
+assert_contains "slim（1.100）は 2 プロファイルで計 10 件を削除する" "${output}" ": 10 件を削除"
+for prof in "${T100}/debug" "${T100}/x86_64-unknown-linux-gnu/release"; do
+    label="1.100 ${prof#"${T100}/"}"
+    assert_absent "${label}: ワークスペース lib の build/<pkg>/ を全 hash ごと消す" "${prof}/build/demo-core"
+    assert_absent "${label}: ワークスペース bin の build/<pkg>/ を消す" "${prof}/build/demo-cli"
+    assert_absent "${label}: examples/ を消す" "${prof}/examples"
+    assert_absent "${label}: incremental/ を消す" "${prof}/incremental"
+    assert_absent "${label}: プロファイル直下の bin を消す" "${prof}/demo-cli"
+    assert_exists "${label}: 第三者依存の build/<pkg>/ を残す" "${prof}/build/serde/${H}/out/libserde-${H}.rlib"
+    assert_exists "${label}: テスト名と衝突する第三者依存（interceptor）の build を残す" "${prof}/build/interceptor/${H}/out"
+    assert_exists "${label}: プロファイル直下の第三者依存の .rlib を残す" "${prof}/libserde.rlib"
+    assert_exists "${label}: 無関係なファイルを残す" "${prof}/keep-me.txt"
+done
+
 set +e
 output="$(bash "${SCRIPTS_DIR}/ci-cache-slim-target.sh" --metadata-file "${FIXTURES_DIR}/metadata.json" 2>&1)"
 status=$?

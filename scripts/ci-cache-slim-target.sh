@@ -10,10 +10,15 @@
 #
 # 削除対象（各 `deps/` ディレクトリを持つプロファイルディレクトリごと）:
 #   - deps/(lib)<target 名>-<16hex>[.*]   ワークスペースのターゲット（lib/test/example/bin）
-#   - .fingerprint/<パッケージ名>-* / build/<パッケージ名>-*
+#   - .fingerprint/<パッケージ名>-<16hex> / build/<パッケージ名>-<16hex>   （Rust 1.99 以前の構成）
+#   - build/<パッケージ名>/                 （Rust 1.100 以降の build-dir。成果物は
+#                                            build/<パッケージ名>/<hash>/ 以下にあり、deps/ と
+#                                            .fingerprint/ は作られない。全 hash を含めて消す）
 #   - examples/ / incremental/              （example はワークスペース由来のみ）
 #   - プロファイル直下の (lib)<target 名>[.*] （bin の実体・lib の .rlib/.so/.dylib/.dll・.d・.pdb 等）
 #   - TARGET_DIR/doc                        （`cargo doc --no-deps` の出力。毎回再生成される）
+# プロファイルディレクトリは deps/ を持つディレクトリ（1.99 以前）に加え、`.cargo-lock` を持つ
+# ディレクトリ（1.100 以降は deps/ が無い）も対象にする。
 # 第三者依存の成果物は残す（名前が偶然一致した場合は次回再ビルドされるだけで、正当性には
 # 影響しない。cargo は成果物の欠落を検知して再ビルドする）。
 #
@@ -152,9 +157,11 @@ artifact_stem() {
     fi
 }
 
-# .fingerprint/build のディレクトリ名 <pkg>-<16hex> → <pkg>（STEM に入れる）
+# .fingerprint/build のディレクトリ名 → <pkg>（STEM に入れる）。
+# 1.99 以前は <pkg>-<16hex>。1.100 以降の build/ は <pkg>（hash は子ディレクトリ）なので、
+# ハッシュ付きでなければ名前そのものを <pkg> として扱う。
 dir_pkg() {
-    STEM=""
+    STEM="$1"
     if [[ "$1" =~ ^(.+)-[0-9a-f]{16}$ ]]; then
         STEM="${BASH_REMATCH[1]}"
     fi
@@ -206,11 +213,15 @@ for target_dir in "${targets[@]}"; do
     fi
     before="$(size_kb "${target_dir}")"
     [ -d "${target_dir}/doc" ] && remove "${target_dir}/doc"
-    # deps/ を持つディレクトリ = プロファイルディレクトリ（target/debug、
-    # target/<triple>/release、target/llvm-cov-target/debug 等）。
-    while IFS= read -r deps_dir; do
-        slim_profile_dir "$(dirname "${deps_dir}")"
-    done < <(find "${target_dir}" -maxdepth 4 -type d -name deps)
+    # deps/ または .cargo-lock を持つディレクトリ = プロファイルディレクトリ（target/debug、
+    # target/<triple>/release、target/llvm-cov-target/debug 等）。1.100 以降は deps/ が無いため
+    # .cargo-lock でも検出する。doc/ は上で消し済み。
+    while IFS= read -r profile_dir; do
+        slim_profile_dir "${profile_dir}"
+    done < <({
+        find "${target_dir}" -maxdepth 4 -type d -name deps
+        find "${target_dir}" -maxdepth 4 -type f -name .cargo-lock
+    } | sed 's#/[^/]*$##' | LC_ALL=C sort -u)
     after="$(size_kb "${target_dir}")"
     echo "==> ${target_dir}: $((before / 1024)) MB -> $((after / 1024)) MB"
 done
